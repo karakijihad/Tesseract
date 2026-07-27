@@ -1,0 +1,399 @@
+# TARS permission policy — central config for tool-call permissions.
+#
+# Three postures per tool:
+#   auto — runs immediately, no prompt (read-only, self-state, memory writes)
+#   ask  — operator sees [approval needed] y/N prompt (writes, outbound, subprocess)
+#   deny — non-negotiable block
+#
+# Three security modes (edit `security_mode` below to switch):
+#   max       — writes, outbound calls, and subprocess execution all ASK.
+#               Shipped default: you should see and approve what TARS does
+#               until you've learned how it behaves.
+#   standard  — a balanced posture for day-to-day use once you trust the
+#               setup; tune `modes.standard.overrides` to relax the tools
+#               you're comfortable auto-allowing.
+#   headless  — no operator present: auto-allows file writes, bash, agent
+#               creation/promotion, and schedule mutation (see
+#               `modes.headless.overrides` below). Only switch to this once
+#               you understand exactly what it hands over — it is meant for
+#               unattended/scheduled operation, not first use.
+#
+# Hardcoded DENY rules in permissions/bash_security.py ALWAYS fire regardless
+# of mode. This file controls AUTO vs ASK only — the security layer is
+# non-negotiable.
+security_mode: max
+
+# Default posture per tool (standard mode baseline).
+tools:
+  # Read-only — runs without asking
+  memory_search: auto
+  recall_history: auto            # read-only work-history retrieval (sessions + workshop); never promotes to memory
+  pdf_read: auto
+  context7_lookup: auto
+  vault_query: auto
+  vault_search: auto
+  vault_lint: auto              # reads vault + appends LINT-REPORT.md (report surface, non-destructive)
+  conscience_status: auto       # read-only pull of the latest drift report
+
+  # Self-state — TARS manages his own interior
+  set_mood: auto
+  set_voice: auto
+  set_state: auto             # discrete orb-state command — pure UI signal, no I/O
+  memory_save: auto
+  memory_update: auto
+  memory_forget: auto
+  alarm_set: auto             # TARS-owned scheduler — same backing store as /alarm-set slash
+  alarm_list: auto            # read-only over the alarm registry
+  alarm_cancel: auto          # mutates TARS's own alarm queue, no external I/O
+  alarm_snooze: auto          # mutates TARS's own alarm queue, no external I/O
+  # Diary is TARS's private first-person reflection log — AUTO write,
+  # operator never sees prompts for it. Distilled into SOUL.md Growth
+  # by the librarian; raw entries stay in tesseract/memory-store/diary/.
+  diary_append: auto
+  # Operator-visible task checklist, Claude Code TodoWrite analog. State
+  # lives on ToolContext.todos for the session; WS emits `tasks_state`
+  # envelope on mutation. AUTO — the checklist is for operator visibility,
+  # not a write to anything the operator hasn't already authorized via the
+  # parent turn.
+  tasks_set: auto
+  tasks_update: auto
+  # Control plane for background-spawn delegates and (in a follow-up)
+  # invoke_agent. spawn_check is read-only; spawn_await consumes the task;
+  # spawn_cancel terminates. AUTO — the underlying delegate_* tool already
+  # had its operator-attended ASK at spawn time. These three just inspect /
+  # await / kill an already-authorized handle.
+  spawn_check: auto
+  spawn_await: auto
+  spawn_cancel: auto
+  # SOUL Growth bullets queue a `change_proposal` event in the workspace
+  # inbox; operator approves there. No chat ASK — workspace is the gate.
+  soul_growth_propose: auto
+  # Generic operator-gated proposal for any operator-owned workspace .md
+  # file (SOUL, IDENTITY, FOUNDATION, …). Same pattern: writes a
+  # `change_proposal` inbox event; commit happens on workspace Approve.
+  propose_change: auto
+
+  # Writes + outbound + subprocess
+  #
+  # Tools that are operator-visible (PTY panes, delegate spawns), cost-capped
+  # (brief_render via loop_cost_caps, image_generate — cheap paid grok-imagine primary, free NIM fallback), or
+  # protected by another layer (`file_write` by path_overrides) are AUTO
+  # so TARS can run without per-call ASKs during autonomous operation.
+  #
+  # `bash` itself is ASK by default (below) — bash_security.py's 25 checks
+  # gate destructive commands but say nothing about ordinary write verbs.
+  # A carve-out grants AUTO for a config-defined read-only allowlist
+  # (`bash_readonly_allowlist` — pytest, git status/log/diff/show,
+  # boot-smoke probe) in every mode; headless keeps its pre-existing
+  # blanket `bash: auto` override for full no-operator autonomy.
+  #
+  # Kept ASK: `file_write` (path_overrides handle the DENY surfaces but
+  # an unmatched path still warrants a prompt), kernel-lockdown adjacent
+  # tools (`agent_create` / `agent_promote` per the CLAUDE.md hard rule),
+  # schedule mutation, destructive session verbs.
+  file_write: ask
+  web_search: auto
+  tavily_search: auto           # read-only web research — relaxed for autonomous research
+  tavily_extract: auto          # read-only URL → markdown extraction
+  agent_create: ask            # kernel-lockdown hard rule — operator-attended
+  agent_promote: ask           # moves an agent .md from draft to active — operator-visible like agent_create
+  invoke_agent: auto           # spawns an in-process sub-agent — cheap, operator-visible
+  bash: ask                    # read-only self-verification AUTOs via bash_readonly_allowlist below; headless mode override keeps blanket auto. 19 absolute-DENY + 5 forced-ASK checks in bash_security.py still gate destructive commands regardless.
+  delegate_claude: auto        # subscription CLI — operator-visible PTY pane; cost is the Claude subscription, not per-call
+  delegate_codex: auto         # subscription CLI — operator-visible PTY pane
+  vault_ingest: auto           # writes vault/raw/ and vault/wiki/ — operator-visible vault surface
+  schedule_create: ask         # mutates schedule.yaml at runtime — operator-visible
+  schedule_list: auto          # read-only enumeration of registered jobs
+  schedule_update: ask         # toggles enabled/cadence/model_role; operator-visible
+  schedule_run: ask            # fires a job off-schedule; operator-visible
+  schedule_remove: ask         # removes a registered job — operator-visible
+  ask_clarification: auto      # agent posts a question to the workspace inbox
+  brief_render: auto           # fires Tavily searches + writes today's brief; cost capped by loop_cost_caps
+  brief_read: auto             # read-only return of today's brief body for the voice "read brief" lane
+  memory_get: auto             # read-only path-scoped read of memory-store/ markdown files
+  file_read: auto
+  glob: auto
+  grep: auto
+  image_generate: auto         # cheap per-image ($0.002 grok-imagine primary; free NIM FLUX fallback), daily-budget-capped
+
+# Mode-specific overrides. Only keys listed here override the `tools` default.
+  session_list: auto            # Mirror trio lister (interactive sessions)
+  memory_promote: auto
+  workspace_post: auto
+  workspace_reply: auto
+  channel_send_document: auto
+  channel_send_photo: auto
+  channel_send_voice: auto
+  channel_send_video: auto
+  channel_send_animation: auto
+  channel_send_video_note: auto
+  transcribe_audio: auto
+  channel_react: auto
+  channel_send_location: auto
+  channel_send_poll: auto
+  channel_send_sticker: auto
+  channel_history_read: auto
+  channel_notify: auto
+  chat_initiate: auto
+  delegate_codex_exec: auto
+  delegate_tars_controller: auto
+  start_controller_session: auto
+  session_close: auto
+  session_open: auto
+  session_result: auto
+  session_send: auto
+  controller_session_list: auto
+  lane_attach: auto
+  lane_close: auto
+  lane_list: auto
+  lane_open: auto
+  lane_read: auto
+  lane_send: auto
+  lane_turn: auto
+  lane_status: auto
+  lane_named_ensure: auto
+  lane_named_get: auto
+  lane_named_list: auto
+  surface_bind_session: auto
+  surface_close: auto
+  surface_create: auto
+  surface_focus: auto
+  surface_highlight: auto
+  surface_list: auto
+  surface_update: auto
+  doodle_open: auto
+  browser_navigate: auto
+  browser_snapshot: auto
+  browser_click: auto
+  browser_fill_form: ask
+  browser_screenshot: auto
+  browser_network_requests: auto
+  browser_close: auto
+  tool_search: auto
+  orb_visibility: auto
+  work_send: auto
+  file_copy: ask
+  file_move: ask
+  agenda_comment: auto
+  skill_create: ask
+  skill_promote: ask
+  skill_refine: ask
+modes:
+  max:
+    overrides: {}
+  standard:
+    overrides: {}
+  headless:
+    overrides:
+      # Full-autonomy posture: TARS runs without per-call ASK gates on
+      # operations that are operator-visible (PTY panes show up in the
+      # Terminal tab; delegate panes are visible).
+      # path_overrides still DENY writes to kernel/brain/mirror source
+      # trees, and bash_security.py's 19 absolute-DENY + 5 forced-ASK
+      # checks still gate destructive shell commands regardless of mode.
+      file_write: auto
+      web_search: auto
+      tavily_search: auto
+      tavily_extract: auto
+      bash: auto
+      invoke_agent: auto
+      delegate_claude: auto
+      delegate_codex: auto
+      image_generate: auto
+
+      agent_create: auto            # kernel-lockdown hard rule — operator-attended
+      agent_promote: auto           # moves an agent .md from draft to active — operator-visible like agent_create
+      schedule_create: auto         # mutates schedule.yaml at runtime — operator-visible
+      schedule_update: auto         # toggles enabled/cadence/model_role; operator-visible
+      schedule_run: auto            # fires a job off-schedule; operator-visible
+      schedule_remove: auto         # removes a registered job — operator-visible
+
+      # Every write-ASK tool gets the same full-autonomy override, including
+      # the ones hard-denied by default in any context with no operator
+      # present to answer a prompt.
+      browser_fill_form: auto
+
+# Path-scoped overrides — evaluated before mode overrides. Matched by prefix
+# (forward-slash normalized) against the tool input's path field. First
+# match wins, so AUTO allow-paths are listed before DENY source-code paths.
+#
+# Kernel lockdown: TARS can READ all source but cannot WRITE it. Source
+# edits go through `delegate_claude` / `delegate_codex` — those CLIs have
+# their own approval model and are the operator's escape hatch. DENY here
+# is absolute: the operator cannot override with `y` at the prompt.
+path_overrides:
+  file_write:
+    # ─── DENY — operator-owned workspace files. TARS routes via
+    # `propose_change`; the workspace inbox is the commit gate. ───
+    - path_prefix: tesseract/workspace/SOUL.md
+      posture: deny
+      reason: "TARS routes via propose_change; operator approves in workspace"
+    - path_prefix: tesseract/workspace/IDENTITY.md
+      posture: deny
+      reason: "TARS routes via propose_change; operator approves in workspace"
+    - path_prefix: tesseract/workspace/FOUNDATION.md
+      posture: deny
+      reason: "TARS routes via propose_change; operator approves in workspace"
+    - path_prefix: tesseract/workspace/USER.md
+      posture: deny
+      reason: "TARS routes via propose_change; operator approves in workspace"
+    - path_prefix: tesseract/workspace/VOICE.md
+      posture: deny
+      reason: "TARS routes via propose_change; operator approves in workspace"
+    - path_prefix: tesseract/workspace/AGENTS.md
+      posture: deny
+      reason: "TARS routes via propose_change; operator approves in workspace"
+    - path_prefix: tesseract/workspace/HEARTBEAT.md
+      posture: deny
+      reason: "TARS routes via propose_change; operator approves in workspace"
+    - path_prefix: tesseract/workspace/MCP.md
+      posture: deny
+      reason: "TARS routes via propose_change; operator approves in workspace"
+    - path_prefix: tesseract/workspace/TOOLS.md
+      posture: deny
+      reason: "TARS routes via propose_change; operator approves in workspace"
+    - path_prefix: tesseract/workspace/WORKSHOP.md
+      posture: deny
+      reason: "TARS routes via propose_change; operator approves in workspace"
+    - path_prefix: tesseract/workspace/DIARY.md
+      posture: deny
+      reason: "TARS routes via propose_change; operator approves in workspace"
+    - path_prefix: tesseract/workspace/BOOT.md
+      posture: deny
+      reason: "TARS routes via propose_change; operator approves in workspace"
+
+    # ─── ASK — TARS drafts markdown skills (SKILL.md + optional bundled
+    # scripts/) here; operator approves the write before it lands. Must
+    # win over any broader workspace/ rule. ───
+    - path_prefix: tesseract/workspace/skills/
+      posture: ask
+      reason: "TARS drafts skill folders here; operator approves the write"
+
+    # ─── AUTO — TARS's writable surfaces (specific paths, listed first) ───
+    - path_prefix: tesseract/memory-store/
+      posture: auto
+      reason: "memory store is TARS's canonical interior"
+    - path_prefix: tesseract/logs/sessions/
+      posture: auto
+      reason: "bookkeeping log stream (reflect/session_end/auto_compact/scheduler
+        JSONL)"
+    - path_prefix: tesseract/tars-workshop/
+      posture: auto
+      reason: "TARS's working space — task drafts, notes, scratch work (gitignored)"
+    - path_prefix: tesseract/vault/raw/
+      posture: auto
+      reason: "vault ingestion lands raw files here (when vault_ingest wires up)"
+
+    # ─── DENY — source code trees. Read-only for TARS. ───
+    - path_prefix: tesseract/kernel/
+      posture: deny
+      reason: "kernel source — edits go through delegate_claude / delegate_codex"
+    - path_prefix: tesseract/brain/
+      posture: deny
+      reason: "chat/loop source — edits go through delegate_*"
+    - path_prefix: tesseract/memory/
+      posture: deny
+      reason: "memory subsystem source (not the memory-store/) — edits go through
+        delegate_*"
+    - path_prefix: tesseract/permissions/
+      posture: deny
+      reason: "permission engine source — DENY by design"
+    - path_prefix: tesseract/orchestrator/
+      posture: deny
+      reason: "multi-agent orchestration source — edits go through delegate_*"
+    - path_prefix: tesseract/mirror/
+      posture: deny
+      reason: "Mirror frontend source — edits go through delegate_*"
+    - path_prefix: tesseract/agents/
+      posture: deny
+      reason: "agent .md files are managed via agent_create; loader.py is source"
+    - path_prefix: tesseract/config/
+      posture: ask
+      reason: "runtime config — operator edits; TARS proposes via conversation"
+    - path_prefix: tesseract/.env
+      posture: deny
+      reason: "secrets — never writable by TARS"
+    - path_prefix: scripts/
+      posture: deny
+      reason: "dev-time utilities — source, not for TARS self-edit"
+    - path_prefix: Docs/
+      posture: deny
+      reason: "session logs, audits, plans — operator-maintained"
+    - path_prefix: pyproject.toml
+      posture: deny
+    - path_prefix: CLAUDE.md
+      posture: deny
+    - path_prefix: README.md
+      posture: deny
+    # Anything not matched above falls through to tools.file_write (ASK in max).
+
+# ─────────────────────────────────────────────────────────────────────────
+# Read-only self-verification allowlist. `PermissionPolicy._bash_readonly_posture`
+# matches the `bash` tool's `command` input against these two lists BEFORE
+# mode/tools-default resolution, so a match resolves AUTO in every security
+# mode — including max/standard, where `bash` otherwise defaults to ASK (see
+# tools.bash above). Matching rejects any command containing a byte in
+# {\n \r & | ; < > ` $ ( ) \} — a byte-set denylist (not substring) so
+# single `&`, `<`, bare `$`, and newline smuggling are caught alongside
+# piping/chaining/backticks/parens — that could smuggle a write past a
+# read-only-looking prefix. It also rejects argv tokens that are
+# write-producing flags on the programs themselves (curl -o/-O/--output,
+# git --output=, pytest --junitxml/--html/--json-report/--cov-report/
+# --basetemp/-o) — these need no shell metacharacter at all, so the
+# byte-set check alone would miss them.
+#
+# Two lists:
+#  - bash_readonly_allowlist: prefix entries. Entries ending in "/" are
+#    path-scoped (pytest only runs under tesseract/tests/) — the slash is
+#    the match boundary, and a ".." in the remainder after the prefix is
+#    rejected (traversal), scoped to those entries only so `git log
+#    HEAD..main` keeps working via the plain "git log" prefix.
+#  - bash_readonly_exact_allowlist: whole-string-only entries — no
+#    trailing argument accepted at all, not even a bundled short-flag
+#    cluster (`-sO`, `-so<path>`) that the write-flag token check can't
+#    see through. The curl health probe needs no arguments to do its job,
+#    so both curl forms live here instead of the prefix list. Bare-dir
+#    pytest invocations (whole suite, no path suffix) are exact too since
+#    the prefix list's "/"-boundary form requires a path segment after it.
+#
+# This is additive, not a bypass: bash_security.py's 25 numbered checks
+# (19 absolute-DENY + 5 forced-ASK) still run first in decide.evaluate and
+# are never reachable through this allowlist — e.g. `git show; rm -rf /`
+# still hits a forced-ASK check before policy is ever consulted.
+# ─────────────────────────────────────────────────────────────────────────
+bash_readonly_allowlist:
+  - "pytest tesseract/tests/"
+  - "python -m pytest tesseract/tests/"
+  - "git status"
+  - "git log"
+  - "git diff"
+  - "git show"
+
+bash_readonly_exact_allowlist:
+  - "pytest tesseract/tests"
+  - "python -m pytest tesseract/tests"
+  - "curl http://127.0.0.1:8000/api/health"
+  - "curl -s http://127.0.0.1:8000/api/health"
+
+# ─────────────────────────────────────────────────────────────────────────
+# Session-turn thresholds. `total_turn_timeout_s` is read by
+# `kernel/tools/session_tools.py::_load_session_thresholds` for CLI-backend
+# `session_open` turns. The coalescer + reattach knobs are read by
+# `mirror/server/config.py::_load_terminal_config`.
+# ─────────────────────────────────────────────────────────────────────────
+pty_thresholds:
+  total_turn_timeout_s: 300                       # cap a single interactive-session turn
+  coalesce_flush_ms: 8.0                          # max hold-back for a WS output frame under sustained load
+  coalesce_flush_chars: 4096                       # size trigger for an early coalesced flush
+  reattach_grace_s: 30                             # keep a detached PTY alive this long for a reconnecting client
+  pause_buffer_cap_chars: 2000000                  # force-resume drain once a paused pane's queued output exceeds this
+
+# ─────────────────────────────────────────────────────────────────────────
+# Daily-brief cost caps. Hard ceiling applied per iteration by the
+# BriefRenderer (Tavily call count + per-call USD estimate). When the cap
+# fires mid-iteration the world section degrades to a "World partial —
+# cost cap reached" note instead of stopping the whole brief.
+# ─────────────────────────────────────────────────────────────────────────
+loop_cost_caps:
+  daily_brief_max_usd: 0.50              # per-iteration USD ceiling
+  daily_brief_max_tavily_calls: 10       # hard cap on Tavily calls per iteration

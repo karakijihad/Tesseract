@@ -1,0 +1,107 @@
+import { useObservationsStore } from '../../../stores/observations';
+import { linkifyText } from '../../../lib/linkify';
+import { useObserverStore } from '../../../stores/observer';
+import { useSuggestionsStore } from '../../../stores/suggestions';
+import { usePanelCollapse } from '../../../lib/usePanelCollapse';
+import { CostChip } from '../hud/CostChip';
+import { ObserverStatsChip } from './ObserverStatsChip';
+import { ObserverSuggestions } from './ObserverSuggestions';
+
+function formatTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function secondsAgo(ts: number): number {
+  return Math.max(0, Math.floor((Date.now() - ts) / 1000));
+}
+
+export function ObserverSection() {
+  const observations = useObservationsStore(s => s.observations);
+  const pending = useObservationsStore(s => s.pending);
+  const firesTotal = useObservationsStore(s => s.fires_total);
+  const resetObservations = useObservationsStore(s => s.reset);
+  const suggestions = useSuggestionsStore(s => s.suggestions);
+  const resetSuggestions = useSuggestionsStore(s => s.reset);
+  const armState = useObserverStore(s => s.state);
+  const [collapsed, toggle] = usePanelCollapse('panel.observations.collapsed', true);
+
+  const newestFirst = [...observations].reverse();
+  const isArmed = armState !== 'off';
+  const hasContent = observations.length > 0 || suggestions.length > 0;
+
+  const handleClear = () => {
+    resetObservations();
+    resetSuggestions();
+  };
+
+  return (
+    <section className="right-section">
+      <div className="right-section-header">
+        <button
+          type="button"
+          className="right-section-toggle t-meta"
+          onClick={toggle}
+          aria-expanded={!collapsed}
+        >
+          <span className="right-section-chevron">{collapsed ? '▸' : '▾'}</span>
+          Observer
+          {pending && <span className="right-section-spinner" aria-label="observer pending">◌</span>}
+        </button>
+        <span className="t-caption obs-header-count">
+          {observations.length} stored · {firesTotal} total fires
+        </span>
+      </div>
+      {!collapsed && (
+        <>
+          <div className="observer-arm-row t-meta">
+            <span className="observer-arm-state">arm: {armState}</span>
+            <div className="observer-arm-actions">
+              <CostChip role="observer_agent" shortLabel="obs" />
+              <button
+                type="button"
+                className="observer-trigger t-caption"
+                onClick={handleClear}
+                disabled={!hasContent}
+                title="Clear stored observations + suggestions from this Mirror"
+              >
+                clear
+              </button>
+            </div>
+          </div>
+          {isArmed && <ObserverStatsChip />}
+          {newestFirst.length === 0 ? (
+            <div className="t-caption right-section-empty">
+              no observations yet — type /observe in chat, or arm the observer for background passes
+            </div>
+          ) : (
+            <ul className="right-section-list observer-list">
+              {newestFirst.map((entry, idx) => (
+                <li
+                  key={`${entry.timestamp}-${idx}`}
+                  className="observation-row"
+                >
+                  <div className="observation-meta">
+                    <span className={`observation-badge observation-badge-${entry.mode} t-meta`}>
+                      {entry.mode}
+                    </span>
+                    <span className="t-meta observation-time">{formatTime(entry.timestamp)}</span>
+                    {entry.last_fire_ts != null && (
+                      <span className="t-meta obs-delta-chip">
+                        last fire {secondsAgo(entry.last_fire_ts)}s ago
+                      </span>
+                    )}
+                  </div>
+                  <pre className="observation-text t-caption">{linkifyText(entry.observation)}</pre>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="observer-suggestions-header t-meta">Suggestions</div>
+          <ObserverSuggestions />
+        </>
+      )}
+    </section>
+  );
+}

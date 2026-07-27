@@ -1,0 +1,61 @@
+# Agenda mappers — maps each autonomy event source to how it turns into an
+# agenda item (a TARS-visible proposal or task).
+#
+# Each block below is one mapper. Set `enabled: false` to stop a source from
+# generating agenda items.
+
+mappers:
+  # Fires when a provider watch signal exists.
+  provider_watch:
+    enabled: true
+    source: provider_watch
+    default_risk_class: propose
+    dedupe_window_hours: 168
+
+  # Fires on vault ingest signals worth surfacing.
+  vault_signals:
+    enabled: true
+    source: vault_signal
+    default_risk_class: autonomous
+    dedupe_window_hours: 24
+
+  # Fires when the Mirror UI detects sustained operator attention on one
+  # view (a long dwell time or repeated switching back to it).
+  operator_view:
+    enabled: true
+    source: operator_view
+    default_risk_class: propose
+    dedupe_window_hours: 24
+
+  # Fires from the periodic self-reflection heartbeat.
+  self_reflection:
+    enabled: true
+    source: self_reflection
+    default_risk_class: propose
+    dedupe_window_hours: 24
+
+  # Fires from the autonomy strategist's portfolio review. Always
+  # operator-attended — every draft requires explicit approval regardless of
+  # risk_class. dedupe_window_hours matches the strategist's own lookback
+  # window so a re-run inside that window doesn't duplicate proposals.
+  strategist:
+    enabled: true
+    source: strategist
+    default_risk_class: propose
+    dedupe_window_hours: 336
+
+  # Fires from the read-only repo-upgrade research job. Vetter-gated (see
+  # agenda.yaml::vetter.vet_required) — drafts start hidden until vetted.
+  repo_upgrade:
+    enabled: true
+    source: repo_upgrade
+    default_risk_class: propose
+    dedupe_window_hours: 24
+
+  # Fires from the identity-anchored discovery job (web search / feeds).
+  # Vetter-gated — drafts start hidden until vetted.
+  scout:
+    enabled: true
+    source: scout
+    default_risk_class: propose
+    dedupe_window_hours: 24

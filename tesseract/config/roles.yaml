@@ -1,0 +1,334 @@
+# Role Wiring — tars-reboot shape
+#
+# Roles point at provider model IDs from `providers.yaml`. No connection
+# settings, no pricing — those live in the catalog. Reference shape:
+#
+#   <tier>.<provider>.<model_id>     (e.g. api.openai.gpt54_mini)
+#
+# `primary` is required; `fallbacks` is an ordered list tried in order via
+# FallbackAdapter when the prior entry fails (network error, 5xx, rate limit).
+# Mid-turn failover is automatic. To swap a primary: edit `primary`. The Mirror
+# config watcher detects the change and calls `boot.rebuild_adapters` — no restart.
+#
+# Fresh-install defaults: the setup checklist only requires ANTHROPIC_API_KEY,
+# so every role below that needs a model defaults its `primary` to an
+# `api.anthropic.*` entry. Add any other key from `.env.example`
+# (OPENAI_API_KEY, GOOGLE_API_KEY, XAI_API_KEY, BUILD_NVIDIA_KEY, ...) and its
+# matching catalog entries become usable fallbacks automatically — nothing
+# else to configure. Two roles can't run on ANTHROPIC_API_KEY alone
+# (`embeddings` and `image_generator` — see their comments below); every
+# other role works out of the box with just that one key.
+
+# ─── Controller coder default ───────────────────────────────
+# Which coder a spawned TARS controller session uses when the caller does
+# not pass an explicit `preferred_coder`. Not a model ref — a coder choice
+# ("claude" | "codex") that selects which delegate_* tool the session keeps.
+# Soft default: if this key is absent, sessions keep BOTH delegate tools
+# (no constraint) and the controller brain picks. To pin a global lean,
+# set this; per-call `preferred_coder` always overrides it.
+coder_default: claude
+
+# ─── Embeddings ─────────────────────────────────────────────
+# Local-only by contract — per-turn retrieval can't afford a network
+# round-trip for 768-dim vectors, and the catalog has no cloud embedding
+# model. No ANTHROPIC_API_KEY substitute exists for this one: install
+# Ollama (https://ollama.com), run `ollama pull nomic-embed-text`, and
+# memory/vault retrieval works. Without it, retrieval degrades to
+# BM25-only rather than crashing.
+embeddings:
+  primary: local.ollama.nomic_embed
+
+# ─── Cognition roles ────────────────────────────────────────
+roles:
+
+  chat_brain:
+    mode: active
+    # Fresh-install default: Claude Sonnet, the balanced flagship — good
+    # tool-calling discipline and vision/PDF input for the price. Haiku is
+    # the first fallback (same key, cheaper, faster) so a rate limit or
+    # transient error still resolves on ANTHROPIC_API_KEY alone. Later
+    # fallbacks only activate once their matching key is added to .env.
+    primary: api.anthropic.sonnet_46
+    fallbacks:
+      - api.anthropic.haiku_45
+      - api.openai.gpt54_mini
+      - api.google.gemini_25_flash
+      - api.xai.grok_43
+      - api.deepseek.deepseek_v4_pro
+      - api.nim.glm_5_2
+    compact_threshold: 0.7        # compact when history >= 70% of context_window (raised from 0.4 — we have the room)
+    keep_recent_turns: 10         # legacy fallback; ignored when active_window_tokens is set
+    head_anchor_messages: 3       # first N user messages preserved verbatim across every compaction (attention-sink anchor)
+    active_window_tokens: 60000   # token-budgeted verbatim tail. MUST stay well below the SMALLEST
+                                  # context_window*compact_threshold in the chain — here DeepSeek's
+                                  # 128000*0.7 ≈ 89.6k — or compaction can never shrink history below
+                                  # the trigger and re-runs (wasting a reflection call) every turn.
+                                  # 60000 clears that bound for every current chain entry.
+    summary_char_budget: 16000     # cap on the [Context from earlier...] block; oldest slice drops first when over
+    tool_iteration_cap: 80    # hard cap on tool-call iterations per turn (runaway-loop guard)
+    consecutive_error_cap: 3  # adapter ERRORs in a row before the chat_brain circuit-breaker trips and surfaces a final ERROR (CLAUDE.md hard rule)
+    daily_budget_usd: 3.0     # role-level cap (in addition to global cap derived from sum of inner caps)
+    notes: "TARS conversational layer. Primary (Claude Sonnet) is vision-capable, so image
+      turns ride the primary directly; `find_vision_entry` still walks the chain if the
+      primary loses vision on a future swap, and `vision_agent` remains the focused-pass
+      delegate."
+
+  observer_agent:
+    mode: active
+    primary: api.anthropic.haiku_45
+    fallbacks:
+      - api.google.gemini_25_flash
+      - api.openai.gpt54_nano
+      - api.openai.gpt54_mini
+      - api.nim.gpt_oss_120b
+      - api.nim.glm_5_2
+    reasoning_effort_override: low    # observer doesn't need multi-step planning
+    max_output_tokens_override: 2048  # gemini fallback burns output tokens on internal thinking — 2048 leaves headroom for the ~200-token JSON envelope
+    daily_budget_usd: 1.0
+    notes: "Peripheral observer — stateful background subscriber + one-shot observe pass
+      share this role. Emits memory_suggestion envelopes."
+
+  claude_cli:
+    mode: active
+    primary: cli.claude.opus_48
+    notes: "Heavy lifter — coding, refactoring, reading large repos. Driven via PTY
+      or --output-format stream-json. Rides your Claude Code subscription login —
+      no API key needed, but the CLI must be installed and logged in."
+
+  codex_cli:
+    mode: active
+    primary: cli.codex.gpt55
+    notes: "Auditor — reviews, verifies, second opinions. `codex exec` for one-shot,
+      PTY for multi-turn. Rides your Codex CLI subscription login — no API key
+      needed, but the CLI must be installed and logged in."
+
+  agents_default:
+    mode: active
+    primary: api.anthropic.haiku_45
+    fallbacks:
+      - api.google.gemini_25_flash
+      - api.openai.gpt54_nano
+      - api.openai.gpt54_mini
+      - api.nim.gpt_oss_120b
+      - api.nim.glm_5_2
+    notes: "Default model for sub-agents that don't pin one in agents/INDEX.md. Cheapest
+      viable fit — agents that need more horsepower set their own."
+
+  subagents_default:
+    mode: active
+    primary: api.anthropic.haiku_45
+    fallbacks:
+      - api.google.gemini_25_flash
+      - api.openai.gpt54_nano
+      - api.openai.gpt54_mini
+      - api.nim.gpt_oss_120b
+      - api.nim.glm_5_2
+    notes: "Default model for sub-sub-agents (delegates spawned by agents)."
+
+  channel_vision:
+    mode: inactive
+    daily_budget_usd: 0.50
+    notes: "Accounting bucket for vision spend triggered by channel attachment handlers
+      (`_handlers/image.py`). The actual vision call rides on the chat_brain
+      chain — TARS picks whichever entry there declares `capabilities.vision_input`
+      — so this role has no primary of its own. `mode: inactive` keeps the schema
+      stub but the role's `daily_budget_usd` still flows into `CostLedger.per_role_caps`
+      (see `cost/ledger.py::from_bundle`), giving channel-vision spend its own daily
+      cap independent of chat_brain. Keep in sync with `channels.yaml::cost.per_role.channel_vision`."
+
+  feedback_consolidator:
+    mode: active
+    primary: api.anthropic.haiku_45
+    fallbacks:
+      - api.google.gemini_25_flash
+      - api.openai.gpt54_nano
+      - api.openai.gpt54_mini
+      - api.nim.gpt_oss_120b
+      - api.nim.glm_5_2
+    daily_budget_usd: 0.50
+    notes: "Layer B/C of feedback durability — weekly consolidator + daily sweep both
+      use this role. Cheap model on a low-cadence cron; proposals only, operator confirms
+      before any memory mutates."
+
+  autonomy_heartbeat:
+    mode: active
+    primary: api.anthropic.haiku_45
+    fallbacks:
+      - api.google.gemini_25_flash
+      - api.openai.gpt54_nano
+      - api.openai.gpt54_mini
+      - api.nim.gpt_oss_120b
+      - api.nim.glm_5_2
+    daily_budget_usd: 0.50
+    notes: "Periodic self-reflection pass. Reads recent workspace events + memory
+      writes since the last cursor, returns 0-3 bounded observations (Pydantic-validated).
+      Idle short-circuit prevents model bill on quiet ticks. Disabled by default in
+      schedule.yaml; flip on whenever you like."
+
+  autonomy_vetter:
+    mode: active
+    primary: api.anthropic.haiku_45
+    fallbacks:
+      - api.google.gemini_25_flash
+      - api.openai.gpt54_nano
+      - api.openai.gpt54_mini
+      - api.nim.gpt_oss_120b
+      - api.nim.glm_5_2
+    daily_budget_usd: 0.25
+    notes: "Agenda quality gate. Judges UNVETTED low-trust proposals in batches —
+      promote/reject/merge with a 0-1 usefulness score. Reviewing/verifying is exactly
+      codex_cli's remit; to use a stronger auditor, swap primary to cli.codex.gpt55
+      or cli.claude.opus_48 (subscription CLI, no extra API key). Idle short-circuit (no
+      unvetted items → no model bill) keeps the cap ample."
+
+  autonomy_scout:
+    mode: active
+    primary: api.anthropic.haiku_45
+    fallbacks:
+      - api.google.gemini_25_flash
+      - api.openai.gpt54_nano
+      - api.openai.gpt54_mini
+      - api.nim.gpt_oss_120b
+      - api.nim.glm_5_2
+    daily_budget_usd: 0.50
+    notes: "Identity-anchored discovery. Two LLM calls per run (query-gen, then
+      evaluation) — idle short-circuit after dedup/pre-filter skips the second
+      call on a quiet tick. This cap is the idle-work spend ceiling, separate from
+      chat_brain's budget. Disabled by default in schedule.yaml; flip on whenever
+      you like."
+
+  autonomy_strategist:
+    mode: active
+    primary: api.anthropic.haiku_45
+    fallbacks:
+      - api.google.gemini_25_flash
+      - api.openai.gpt54_nano
+      - api.openai.gpt54_mini
+      - api.nim.gpt_oss_120b
+      - api.nim.glm_5_2
+    daily_budget_usd: 0.25
+    notes: "Periodic initiative curator. Reads recent agenda outcomes, discovery
+      leaves, vault deltas, worker failures, governor pauses, and operator-view presence
+      over the lookback window configured in schedule.yaml; emits at most 3 high-conviction
+      Initiative objects with explicit success criteria. Cadence is operator-tunable
+      in schedule.yaml::autonomy_strategist.cadence; the idle short-circuit prevents
+      model bill on quiet windows so a 0.25 USD daily cap is sufficient even with
+      occasional re-renders."
+
+  # ─── Delegation roles ───────────────────────────────────────
+  vision_agent:
+    mode: active
+    primary: api.anthropic.haiku_45
+    fallbacks:
+      - api.nim.qwen3_5_397b_a17b
+      - api.nim.qwen3_5_122b_a10b
+    notes: "Image-to-text delegation. Primary needs only ANTHROPIC_API_KEY; the NIM
+      Qwen entries are free fallbacks once BUILD_NVIDIA_KEY is added to .env."
+
+  image_generator:
+    mode: active
+    primary: api.nim.flux2_klein_4b
+    fallbacks:
+      - api.nim.flux1_dev
+      - api.xai.grok_imagine_image
+    notes: "No Anthropic model does image generation, so this role can't run on
+      ANTHROPIC_API_KEY alone. Least-friction default: NIM's free FLUX.2-klein
+      (sign up for BUILD_NVIDIA_KEY at build.nvidia.com — free developer tier,
+      no payment method). Add XAI_API_KEY and swap primary to
+      api.xai.grok_imagine_image for higher-quality / image-to-image generation
+      (paid, per-image). The image_generate tool walks primary→fallbacks and skips
+      any entry whose catalog `capabilities` don't cover the requested op — the
+      FLUX entries are text-to-image only, so i2i requests only run once an xai
+      entry is reachable."
+
+  audio_transcribe:
+    mode: active
+    primary: local.whisper.local_whisper
+    # No fallback — local always available; if it fails the WS preprocessor
+    # substitutes "[audio transcription failed: <reason>]" for the audio part.
+    notes: "Audio-to-text. WS preprocessor calls local_whisper.transcribe directly
+      (engine preloaded at boot). The `transcribe_audio` tool is also registered for
+      ad-hoc re-transcription from chat_brain. Runs on CPU with no extra setup;
+      see providers.yaml's whisper comment to opt into a CUDA GPU checkpoint."
+
+# ─── Voice subsystem ────────────────────────────────────────
+# Style/character is config-only via per-surface `synthesis_presets` on each
+# TTS provider (intent / answer). Mood drives the orb only; it auto-decays
+# to neutral at the end of every turn so it can't drift.
+voice:
+  default_voice_id: Charon
+
+  # NOTE: `default_tone_prompt` is **vestigial** — it is no longer threaded
+  # into the synthesis path. Editing it has no effect on how TARS sounds.
+  # The actual character comes from
+  # `voice.tts.settings.api.google.gemini_flash_tts.synthesis_presets`
+  # below; Piper/Kokoro have their own `synthesis_presets` under
+  # `providers.yaml`. Field kept for back-compat readers (boot.py seeds
+  # VoiceState.tone_prompt from it).
+  default_tone_prompt: "Jarvis from IronMan."
+
+  # Each lane (stt / tts) follows the same primary+fallbacks shape as
+  # the chat-brain roles. `primary` and entries in `fallbacks` are
+  # catalog refs (<tier>.<provider>.<model>) — swap them in Settings →
+  # Models or by editing this file. Per-ref overrides live under
+  # `settings:`, keyed by the same catalog ref. Both lanes default to
+  # local (whisper/piper) — no API key needed at all.
+  stt:
+    mode: active
+    primary: local.whisper.local_whisper
+    fallbacks:
+      - api.google.gemini_flash_audio
+    settings:
+      local.whisper.local_whisper:
+        language:
+        daily_budget_usd: 0.00
+      api.google.gemini_flash_audio:
+        # Short transcribe instruction. The model receives it as the first
+        # content part and the audio as the second. Verbose prompts pay
+        # output-token tax for the same transcript.
+        prompt: "Transcribe this audio verbatim. Return only the transcript text —
+          no preamble, no labels, no timestamps."
+        timeout_seconds: 30
+        daily_budget_usd: 1.00
+
+  tts:
+    mode: active
+    primary: local.piper.northern_english_male
+    fallbacks:
+      - api.google.gemini_flash_tts
+      - local.kokoro.charon
+    settings:
+      local.kokoro.charon:
+        # Kokoro renders locally on GPU (CUDA) — falls back to CPU if
+        # the CUDA provider can't load. Voice timbre = the `mix` recipe
+        # in the catalog (linear blend of style embeddings); change
+        # weights there to iterate. Synthesis presets (intent/answer)
+        # are set in the catalog.
+        timeout_seconds: 60
+        daily_budget_usd: 0.00
+        # No `preload` — kokoro is a TTS fallback (piper is primary).
+        # Warm-on-first-use saves the CUDA-DLL preload + ONNX session
+        # load cost at boot. Set `preload: true` here to opt back into
+        # hot-standby behaviour for instant failover from piper.
+      local.piper.northern_english_male:
+        # Piper renders locally on CPU (near-zero VRAM). No `voice_id`
+        # knob — the ONNX file IS the voice. Synthesis presets
+        # (intent/answer) are set in the catalog. Requires the model
+        # files described in providers.yaml's piper comment.
+        timeout_seconds: 30
+        daily_budget_usd: 0.00
+      api.google.gemini_flash_tts:
+        voice_id: Charon  # cloud fallback timbre when Kokoro/Piper are unavailable
+        timeout_seconds: 30
+        daily_budget_usd: 1.00
+        # Per-surface style prompts. Gemini-TTS interprets the part
+        # before the colon as Director's Notes and does NOT speak it
+        # (documented prompted-TTS pattern: "Say cheerfully: <text>").
+        # Two fixed strings, one per surface — no per-turn variation.
+        synthesis_presets:
+          intent:
+            style_prompt: "Read aloud as Jarvis from Iron Man — calm, dry, observational,
+              brisk"
+          answer:
+            style_prompt: "Read aloud as Jarvis from Iron Man — composed, helpful,
+              lightly wry, measured pace"

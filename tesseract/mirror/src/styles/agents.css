@@ -1,0 +1,289 @@
+/* === AGENTS VIEW ===
+ * Hint / subtext / meta text MUST use var(--text-meta). var(--text-dim) is
+ * reserved for deep-background labels on near-black surfaces and is too low
+ * contrast for UI copy. See CLAUDE.md → Mirror hint-token rule.
+ */
+
+.agents-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+
+.agents-view-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-sm) 14px;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.agents-view-title {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-meta);
+}
+
+.agents-view-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-meta);
+}
+
+.agents-view-actions { margin-left: auto; }
+
+.agents-view-btn {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 4px 10px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-card);
+  border: 1px solid var(--panel-border);
+  color: var(--text-meta);
+  cursor: pointer;
+}
+.agents-view-btn:hover { color: var(--text-primary); border-color: var(--accent-dim); }
+
+.agents-view-error {
+  padding: var(--space-sm) 14px;
+  color: var(--bad);
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+.agents-view-grid {
+  flex: 1;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(320px, 2fr);
+  gap: 1px;
+  background: var(--panel-border);
+}
+
+.agents-view-list,
+.agents-view-detail {
+  background: var(--bg-deep);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* === LIST === */
+
+.agents-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-sm) 10px;
+}
+
+.agents-list-filters {
+  display: flex;
+  gap: 4px;
+}
+
+.agents-list-filter {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 3px 10px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-card);
+  border: 1px solid var(--panel-border);
+  color: var(--text-meta);
+  cursor: pointer;
+}
+.agents-list-filter:hover { color: var(--text-primary); border-color: var(--accent-dim); }
+.agents-list-filter.is-active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent-bright);
+}
+
+.agents-list-empty { font-size: 12px; }
+
+.agents-list-items {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agents-list-row {
+  width: 100%;
+  text-align: left;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  column-gap: var(--space-sm);
+  row-gap: 2px;
+  padding: 8px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-family: var(--font-body);
+}
+.agents-list-row:hover { border-color: var(--accent-dim); background: var(--bg-hover); }
+.agents-list-row.is-selected { border-color: var(--accent); background: var(--bg-hover); }
+
+.agents-list-name { font-size: 13px; font-weight: 500; }
+.agents-list-desc { grid-column: 1 / -1; font-size: 11px; }
+
+.agent-status-badge.is-active  { color: #6cd49a; border-color: rgba(108,212,154,0.25); }
+.agent-status-badge.is-pending { color: var(--warn); border-color: rgba(255,180,84,0.25); }
+.agent-status-badge.is-disabled { color: var(--text-meta); border-color: rgba(180,180,180,0.25); }
+
+.agent-detail-actions {
+  align-items: center;
+  display: flex;
+  gap: var(--space-xs);
+  margin-left: auto;
+}
+
+.agent-detail-btn {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0.25rem 0.6rem;
+}
+
+.agent-detail-btn:hover { background: var(--surface-3); }
+.agent-detail-btn:disabled { color: var(--text-meta); cursor: not-allowed; }
+
+.agent-detail-btn-primary {
+  background: rgba(80, 150, 200, 0.18);
+  border-color: rgba(80, 150, 200, 0.36);
+}
+
+.agent-detail-btn-primary:hover { background: rgba(80, 150, 200, 0.28); }
+
+.agent-detail-status {
+  font-size: 11px;
+  font-style: italic;
+}
+
+.agent-detail-editor {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  min-height: 22rem;
+  padding: 0.7rem 0.8rem;
+  resize: vertical;
+  width: 100%;
+}
+
+/* === DETAIL === */
+
+.agent-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-md) 14px;
+  flex: 1;
+}
+
+.agent-detail-placeholder {
+  align-items: center;
+  justify-content: center;
+  color: var(--text-meta);
+  font-size: 12px;
+  min-height: 120px;
+}
+
+.agent-detail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.agent-detail-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.agent-detail-version { font-family: var(--font-mono); font-size: 10px; }
+
+.agent-detail-description {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.agent-detail-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-detail-meta-row {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: var(--space-sm);
+  align-items: baseline;
+  font-size: 12px;
+}
+
+.agent-detail-meta-row dt { font-family: var(--font-mono); font-size: 10px; }
+.agent-detail-meta-row dd { font-family: var(--font-mono); color: var(--text-primary); }
+
+.agent-detail-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.agent-tool-pill {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-elevated);
+  border: 1px solid var(--panel-border);
+  color: var(--text-secondary);
+}
+
+.agent-detail-sections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.agent-detail-section { display: flex; flex-direction: column; gap: 4px; }
+
+.agent-detail-section-title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-meta);
+}
+
+.agent-detail-section-body {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg-card);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-xs);
+  padding: 8px 10px;
+}

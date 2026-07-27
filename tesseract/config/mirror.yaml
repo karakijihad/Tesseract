@@ -1,0 +1,126 @@
+# Mirror HTTP/WS server binding. Local-only, single-operator, no auth.
+
+server:
+  host: 127.0.0.1
+  port: 8000
+
+identity:
+  # Entity name surfaced in the Mirror cockpit header.
+  name: TARS
+  # Display name used for chat bubbles and greetings. Change this to your
+  # own name.
+  operator_name: Operator
+
+cors:
+  # Origins allowed to call the REST/WS API from a browser.
+  origins:
+    - http://localhost:5173
+    - http://localhost:1420
+
+logging:
+  # Durable rotating file logs for the long-lived processes (mirror
+  # backend, TARS controller). Filename is <process>.log under dir.
+  dir: logs                 # relative to TESSERACT_HOME
+  max_bytes: 5242880        # rotate at 5 MB
+  backup_count: 3
+  # Per-logger floors applied to the file handler only; console output
+  # keeps full verbosity.
+  file_min_levels:
+    aiohttp.access: WARNING
+    httpx: WARNING
+
+terminal:
+  # Operator-direct PTY channel. Bypasses the TARS permission engine by
+  # design — this is a raw shell, not a TARS tool call.
+  default_shell: cmd
+  max_tabs: 8
+  max_panes_per_tab: 4
+  shell_profiles:
+    cmd:    { argv: [cmd.exe], label: Command Prompt }
+    bash:   { argv: [bash],    label: Bash }
+    claude: { argv: [claude],  label: Claude CLI }
+    codex:  { argv: [codex],   label: Codex CLI }
+
+uploads:
+  chat:
+    max_file_mb: 50
+    max_total_mb: 50
+    max_files_per_message: 5
+    allowed_mime_types:
+      - image/png
+      - image/jpeg
+      - image/webp
+      - image/gif
+      - application/pdf
+      # Audio is auto-transcribed by local Whisper before the chat brain
+      # sees the message.
+      - audio/wav
+      - audio/mpeg
+      - audio/mp4
+      - audio/webm
+      - audio/ogg
+      - audio/flac
+
+ui:
+  # Show a toast whenever a config yaml file is reloaded after an edit.
+  show_config_reload_toasts: true
+
+code_watch:
+  # Background watcher that detects when the working tree changes under a
+  # running backend (e.g. you edited and saved source while it's live).
+  enabled: true
+  interval_seconds: 30
+  # If true, a restart-required drift schedules an automatic restart
+  # instead of waiting for you to click the toast.
+  auto_restart: false
+  show_toast: true
+
+session:
+  # Auto-resume policy when reopening the Mirror UI.
+  # today_only           — only sessions saved today auto-resume
+  # today_plus_yesterday — covers an overnight gap
+  # n_days               — sessions newer than resume_days days
+  # always               — resume any session, however old
+  resume_policy: today_plus_yesterday
+  resume_days: 1
+
+mission:
+  # Lane-aware work queue. Each worker:<kind> lane caps how many steps of
+  # that kind run concurrently across all missions. Tune max_concurrent to
+  # match your CLI subscription's parallelism — claude_cli/codex_cli are
+  # typically 1 (one shell each); markdown_agent and tars_self can fan out
+  # further.
+  #
+  # retry: feeds the worker retry policy — retry_on_classes lists error
+  # classes worth retrying; give_up_on_classes short-circuits regardless of
+  # retry budget. Omitting retry keeps a kind at zero retries.
+  lanes:
+    worker:
+      claude_cli:
+        max_concurrent: 1
+        retry:
+          max_retries: 1
+          backoff_seconds: 30
+          retry_on_classes: [transient_network, pty_timeout]
+          give_up_on_classes: [permission_denied, budget_exceeded, operator_cancelled]
+      codex_cli:
+        max_concurrent: 1
+        retry:
+          max_retries: 1
+          backoff_seconds: 30
+          retry_on_classes: [transient_network, pty_timeout]
+          give_up_on_classes: [permission_denied, budget_exceeded, operator_cancelled]
+      markdown_agent:
+        max_concurrent: 4
+        retry:
+          max_retries: 1
+          backoff_seconds: 5
+          retry_on_classes: [transient_network]
+          give_up_on_classes: [permission_denied, budget_exceeded, operator_cancelled]
+      tars_self:
+        max_concurrent: 4
+        retry:
+          max_retries: 0
+          backoff_seconds: 0
+          retry_on_classes: []
+          give_up_on_classes: []

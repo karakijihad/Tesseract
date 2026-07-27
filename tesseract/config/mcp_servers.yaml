@@ -1,0 +1,29 @@
+# Curated MCP server allowlist — OUTBOUND client.
+#
+# Each entry is an operator-approved external MCP server. TARS never adds
+# entries and never connects to a server that isn't listed here. Adding a
+# server is a manual, deliberate edit.
+#
+# Security:
+#   - Every external tool defaults to "ask" posture; loosening a specific
+#     tool to "auto" is a deliberate per-tool edit in permissions.yaml.
+#   - tool_prefix is required and unique — it stops an external tool from
+#     shadowing a core tool name (bash_tool, file_write, ...).
+#   - No inline secrets: use auth_token_env / env_passthrough (env-var
+#     NAMES only, resolved at connect time).
+#   - enabled: false keeps an entry listed but never connected.
+
+defaults:
+  connect_timeout_s: 15
+  tool_call_timeout_s: 60
+
+servers:
+  # Disabled example entry — proves the loader/transport path in tests
+  # without connecting anything at boot. Safe to delete once you add a
+  # real server.
+  echo_test:
+    transport: stdio
+    command: ["python", "-m", "tesseract.tests.helpers.mcp_echo_server"]
+    enabled: false
+    tool_prefix: "mcp_echo_"
+    env_passthrough: []

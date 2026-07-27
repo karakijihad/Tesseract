@@ -1,0 +1,111 @@
+[
+  {
+    "id": "bash_exec.git_status",
+    "family": "bash.git",
+    "description": "Compact git status — drop verbose hints, keep changed-file lines.",
+    "priority": 80,
+    "match": {
+      "tool_names": ["bash_exec"],
+      "arg_path": "command",
+      "arg_includes_any": ["git status"]
+    },
+    "transforms": ["strip_ansi", "trim_empty_edges"],
+    "reducers": [
+      {
+        "kind": "drop_regex",
+        "patterns": [
+          "^\\s+\\(use \"git ",
+          "^\\s+\\(commit or discard",
+          "^Your branch is up to date",
+          "^Your branch is ahead",
+          "^Your branch is behind",
+          "^nothing added to commit"
+        ]
+      },
+      {"kind": "head_tail", "head": 40, "tail": 10}
+    ],
+    "passthrough_when": {"max_chars": 800},
+    "on_empty": "(git status: clean working tree)"
+  },
+  {
+    "id": "bash_exec.git_log",
+    "family": "bash.git",
+    "description": "git log — first 40 lines is plenty for most lookups.",
+    "priority": 75,
+    "match": {
+      "tool_names": ["bash_exec"],
+      "arg_path": "command",
+      "arg_includes_any": ["git log"]
+    },
+    "transforms": ["strip_ansi", "trim_empty_edges"],
+    "reducers": [
+      {"kind": "head_lines", "n": 40}
+    ],
+    "passthrough_when": {"max_lines": 40}
+  },
+  {
+    "id": "bash_exec.ls_long",
+    "family": "bash.fs",
+    "description": "ls -la / dir-walk output — dedup + truncate.",
+    "priority": 60,
+    "match": {
+      "tool_names": ["bash_exec"],
+      "arg_path": "command",
+      "arg_includes_any": ["ls -", "ls /"]
+    },
+    "transforms": ["strip_ansi", "dedup_adjacent", "trim_empty_edges"],
+    "reducers": [
+      {"kind": "head_tail", "head": 50, "tail": 10}
+    ],
+    "passthrough_when": {"max_lines": 80}
+  },
+  {
+    "id": "bash_exec.find",
+    "family": "bash.fs",
+    "description": "find / fd recursive dump — dedup, head 100 lines.",
+    "priority": 60,
+    "match": {
+      "tool_names": ["bash_exec"],
+      "arg_path": "command",
+      "arg_includes_any": ["find ", "fd ", "fdfind"]
+    },
+    "transforms": ["strip_ansi", "trim_empty_edges"],
+    "reducers": [
+      {"kind": "dedup_lines"},
+      {"kind": "head_lines", "n": 100}
+    ],
+    "passthrough_when": {"max_lines": 120}
+  },
+  {
+    "id": "bash_exec.docker_ps",
+    "family": "bash.docker",
+    "description": "docker ps / images — keep header + first 30 rows.",
+    "priority": 50,
+    "match": {
+      "tool_names": ["bash_exec"],
+      "arg_path": "command",
+      "arg_includes_any": ["docker ps", "docker images", "docker container ls"]
+    },
+    "transforms": ["strip_ansi", "trim_empty_edges"],
+    "reducers": [
+      {"kind": "head_lines", "n": 30}
+    ],
+    "passthrough_when": {"max_lines": 30}
+  },
+  {
+    "id": "bash_exec.kubectl_get",
+    "family": "bash.k8s",
+    "description": "kubectl get / describe — head 60 lines.",
+    "priority": 50,
+    "match": {
+      "tool_names": ["bash_exec"],
+      "arg_path": "command",
+      "arg_includes_any": ["kubectl get", "kubectl describe", "kubectl logs"]
+    },
+    "transforms": ["strip_ansi", "trim_empty_edges"],
+    "reducers": [
+      {"kind": "head_lines", "n": 60}
+    ],
+    "passthrough_when": {"max_lines": 60}
+  }
+]

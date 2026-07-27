@@ -1,0 +1,616 @@
+/* AU-7 S1 — Autonomy Dashboard styles.
+ *
+ * Two-column grid: primary (agenda/workers/decisions) + side (approvals/
+ * blocked/recovery/scheduled). Reuses `.runtime-block` + `.t-meta` tokens
+ * from settings.css so spacing/typography stay consistent with the
+ * Settings Runtime panel that the operator already knows.
+ *
+ * Hint text uses var(--text-meta) per the Mirror frontend HARD RULE
+ * (CLAUDE.md §Mirror frontend). var(--text-dim) is forbidden for text.
+ */
+
+.autonomy-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: var(--space-md);
+  gap: var(--space-md);
+  overflow: hidden;
+}
+
+.autonomy-view__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+.autonomy-view__title {
+  font-family: var(--display-stack, var(--sans-stack));
+  font-size: 22px;
+  letter-spacing: 0.02em;
+  color: var(--text-primary);
+}
+
+.autonomy-view__refresh {
+  margin-left: auto;
+  background: transparent;
+  color: var(--text-meta);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.autonomy-view__refresh:hover { color: var(--text-primary); border-color: var(--text-meta); }
+
+.autonomy-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: var(--space-md);
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.autonomy-grid__col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  /* overflow-y:auto leaves overflow-x computed as `auto`, which surfaces a
+     horizontal scrollbar the moment a row holds an unbreakable string (long
+     URL). Long text wraps below; the panel never scrolls sideways. */
+  overflow-x: hidden;
+  padding-right: var(--space-xs);
+}
+
+.autonomy-pane {
+  /* sits on top of the shared .runtime-block frame */
+  padding: var(--space-sm);
+}
+
+.autonomy-pane__group {
+  margin-top: var(--space-sm);
+}
+
+.autonomy-pane__group-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-meta);
+  margin-bottom: var(--space-xs);
+}
+
+.autonomy-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.autonomy-list__divider {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-meta);
+  padding-top: var(--space-xs);
+  border-top: 1px solid var(--panel-border);
+}
+
+.autonomy-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  min-width: 0;
+}
+
+.autonomy-row__head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+}
+
+.autonomy-row__goal {
+  font-family: var(--sans-stack);
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.autonomy-row__rationale,
+.autonomy-row__components,
+.autonomy-row__gates {
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.autonomy-row__score {
+  margin-left: auto;
+  font-family: var(--mono-stack);
+  font-size: 11px;
+  color: var(--text-meta);
+}
+
+.autonomy-chip {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--mono-stack);
+  font-size: 10px;
+  text-transform: lowercase;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--panel-border);
+  color: var(--text-meta);
+  background: var(--bg-elevated);
+}
+
+/* status chips */
+.autonomy-chip--proposed       { color: var(--text-meta); }
+.autonomy-chip--selected       { color: var(--accent); border-color: var(--accent); }
+.autonomy-chip--running        { color: var(--ok); border-color: var(--ok); }
+.autonomy-chip--queued         { color: var(--text-meta); }
+.autonomy-chip--spawning       { color: var(--accent); border-color: var(--accent); }
+.autonomy-chip--awaiting_io    { color: var(--warn); border-color: var(--warn); }
+.autonomy-chip--awaiting_operator {
+  color: var(--warn);
+  border-color: var(--warn);
+  background: rgba(255, 180, 84, 0.10);
+}
+.autonomy-chip--resume_queued  { color: var(--accent); }
+.autonomy-chip--blocked        { color: var(--bad); border-color: var(--bad); }
+.autonomy-chip--done           { color: var(--ok); }
+.autonomy-chip--failed         { color: var(--bad); border-color: var(--bad); }
+.autonomy-chip--cancelled      { color: var(--text-meta); }
+.autonomy-chip--interrupted    { color: var(--warn); }
+.autonomy-chip--pause          { color: var(--bad); border-color: var(--bad); }
+.autonomy-chip--broken         { color: var(--bad); border-color: var(--bad); }
+.autonomy-chip--ok             { color: var(--ok); border-color: var(--ok); }
+.autonomy-chip--decision       { color: var(--text-primary); }
+.autonomy-chip--detector       { color: var(--warn); }
+
+/* risk chips */
+.autonomy-chip--risk-autonomous     { color: var(--ok); }
+.autonomy-chip--risk-propose        { color: var(--accent); }
+.autonomy-chip--risk-operator_gate  { color: var(--warn); }
+.autonomy-chip--risk-absolute_deny  { color: var(--bad); border-color: var(--bad); }
+
+/* source chips — most use the default chip styling; strategist gets a
+   distinctive accent so operator-attended portfolio initiatives stand
+   out from ambient observer/scheduler rows (AU-23). */
+.autonomy-chip--src-strategist {
+  color: var(--accent);
+  border-color: var(--accent);
+  letter-spacing: 0.04em;
+}
+
+/* TC-1 journal chips — each event_type gets its own subtle tint so the
+   operator can scan the feed without reading every label. */
+.autonomy-chip--journal-approval        { color: var(--accent); }
+.autonomy-chip--journal-dispatch        { color: var(--text-primary); }
+.autonomy-chip--journal-outcome         { color: var(--ok); }
+.autonomy-chip--journal-advice_only     { color: var(--warn); }
+.autonomy-chip--journal-follow_up_draft { color: var(--accent); }
+
+.autonomy-journal {
+  max-height: 260px;
+  overflow-y: auto;
+}
+.autonomy-row--journal {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: transparent;
+}
+.autonomy-row--journal-advice_only {
+  border-color: rgba(255, 180, 84, 0.35);
+  background: rgba(255, 180, 84, 0.04);
+}
+
+.autonomy-row--awaiting_operator {
+  border-color: rgba(255, 180, 84, 0.40);
+  background: rgba(255, 180, 84, 0.05);
+}
+
+.autonomy-row--blocked,
+.autonomy-row--pause {
+  border-color: rgba(255, 107, 106, 0.30);
+  background: rgba(255, 107, 106, 0.04);
+}
+
+.autonomy-row--broken {
+  border-color: rgba(255, 107, 106, 0.30);
+}
+
+.t-mono {
+  font-family: var(--mono-stack);
+  font-size: 11px;
+}
+
+/* ── S2 actions ───────────────────────────────────────── */
+
+.autonomy-row--clickable {
+  cursor: pointer;
+}
+.autonomy-row--clickable:hover {
+  border-color: var(--text-meta);
+}
+.autonomy-row--clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.autonomy-row.is-busy {
+  opacity: 0.6;
+}
+
+.autonomy-row__actions {
+  display: flex;
+  gap: 6px;
+  margin-top: var(--space-xs);
+  flex-wrap: wrap;
+}
+
+.autonomy-btn {
+  background: transparent;
+  color: var(--text-primary);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-sm);
+  padding: 3px 10px;
+  font-family: var(--sans-stack);
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+.autonomy-btn:hover:not(:disabled) {
+  border-color: var(--text-meta);
+}
+.autonomy-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.autonomy-btn--primary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.autonomy-btn--primary:hover:not(:disabled) {
+  background: rgba(var(--accent-rgb, 100, 180, 255), 0.08);
+}
+
+.autonomy-btn--danger {
+  border-color: rgba(255, 107, 106, 0.40);
+  color: var(--bad);
+}
+.autonomy-btn--danger:hover:not(:disabled) {
+  background: rgba(255, 107, 106, 0.06);
+}
+
+/* ── Detail modal ─────────────────────────────────────── */
+
+.autonomy-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: var(--space-lg);
+}
+
+.autonomy-modal {
+  background: var(--bg-elevated);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-md);
+  max-width: 760px;
+  width: 100%;
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.autonomy-modal__head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md);
+}
+.autonomy-modal__title {
+  font-size: 16px;
+  color: var(--text-primary);
+  flex: 1;
+}
+.autonomy-modal__close {
+  background: transparent;
+  border: 1px solid var(--panel-border);
+  color: var(--text-meta);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.autonomy-modal__section {
+  border-top: 1px solid var(--panel-border);
+  padding-top: var(--space-sm);
+}
+.autonomy-modal__section-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-meta);
+  margin-bottom: var(--space-xs);
+}
+
+.autonomy-modal__score {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: var(--space-md);
+  row-gap: 2px;
+  font-family: var(--mono-stack);
+  font-size: 11px;
+}
+.autonomy-modal__score-key {
+  color: var(--text-meta);
+}
+.autonomy-modal__score-val {
+  color: var(--text-primary);
+  text-align: right;
+}
+
+.autonomy-view__shutdown {
+  background: transparent;
+  color: var(--bad);
+  border: 1px solid rgba(255, 107, 106, 0.40);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  margin-left: var(--space-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.autonomy-view__shutdown:hover:not(:disabled) {
+  background: rgba(255, 107, 106, 0.08);
+}
+.autonomy-view__shutdown.is-armed {
+  background: rgba(255, 107, 106, 0.10);
+  color: var(--bad);
+}
+
+/* Code-drift chip — persistent header companion to the toast. */
+.code-drift-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.code-drift-chip__button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--panel-border);
+  background: transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 11px;
+}
+.code-drift-chip__button:hover { border-color: var(--accent); }
+.code-drift-chip__dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 8px;
+}
+.code-drift-chip__dot--ok       { background: var(--ok, #6ad28a); opacity: 0.7; }
+.code-drift-chip__dot--frontend  { background: var(--accent, #6ab0ff); }
+.code-drift-chip__dot--restart   { background: var(--warn, #f0c674); box-shadow: 0 0 4px var(--warn); }
+.code-drift-chip__count {
+  margin-left: 2px;
+  opacity: 0.7;
+}
+.code-drift-chip__menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 280px;
+  max-width: 360px;
+  padding: 4px;
+  gap: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  z-index: 10;
+}
+.code-drift-chip__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--panel-border);
+}
+.code-drift-chip__action {
+  background: transparent;
+  color: var(--text-primary);
+  border: none;
+  text-align: left;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.code-drift-chip__action:hover:not(:disabled) { background: var(--bg-surface); }
+.code-drift-chip__action:disabled { opacity: 0.5; cursor: progress; }
+.code-drift-chip__action--secondary { color: var(--text-meta); }
+.code-drift-chip__hint {
+  padding: 4px 8px;
+  font-style: italic;
+}
+.code-drift-chip__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 280px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.code-drift-event {
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.code-drift-event:hover { background: var(--bg-surface); }
+.code-drift-event__head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.code-drift-event__class {
+  display: inline-block;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  line-height: 1.3;
+}
+.code-drift-event__class--frontend { color: var(--accent, #6ab0ff); }
+.code-drift-event__class--restart { color: var(--warn, #f0c674); }
+.code-drift-event__when { margin-left: auto; }
+.code-drift-event__paths {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  word-break: break-all;
+  line-height: 1.4;
+}
+.code-drift-event__sha {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+.notifications-pane__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.notifications-pane__row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: var(--space-sm);
+  font-size: 12px;
+}
+.notifications-pane__cat {
+  font-family: var(--mono-stack);
+  color: var(--text-primary);
+}
+.notifications-pane__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+  background: transparent;
+  border: 0;
+  padding: 2px 4px;
+  color: var(--text-meta);
+}
+.notifications-pane__toggle:focus-visible {
+  outline: 1px solid var(--accent-bright);
+  outline-offset: 1px;
+  border-radius: 2px;
+}
+.notifications-pane__toggle.is-locked {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.notifications-pane__toggle-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  flex-shrink: 0;
+}
+.notifications-pane__toggle.is-on {
+  color: var(--ok);
+}
+.notifications-pane__toggle.is-on .notifications-pane__toggle-box {
+  background: var(--ok);
+  color: #0a0a0a;
+}
+.notifications-pane__toggle.is-off {
+  color: var(--bad);
+}
+.notifications-pane__toggle.is-off .notifications-pane__toggle-box {
+  background: transparent;
+}
+.notifications-pane__toggle-label {
+  font-family: var(--mono-stack);
+}
+
+/* ── Pruned pane (AU-7 Phase 3) ───────────────────────── */
+
+.pruned-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  margin-top: var(--space-xs);
+  margin-bottom: var(--space-sm);
+}
+
+.pruned-table th,
+.pruned-table td {
+  padding: 3px 6px;
+  text-align: left;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.pruned-table th {
+  font-weight: normal;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pruned-table td:first-child {
+  color: var(--text-primary);
+  font-family: var(--mono-stack);
+}
+
+/* Recurrent-useless signal — a source pruning heavily in the window. */
+.pruned-table__row--hot td:first-child {
+  color: var(--warn);
+  font-weight: 600;
+}

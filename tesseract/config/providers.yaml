@@ -1,0 +1,766 @@
+# Providers Catalog — tars-reboot shape
+#
+# Pure data: connection settings, named model entries, pricing. No role wiring
+# lives here — see `roles.yaml` for which model serves which slot. References
+# from `roles.yaml` and `agents/INDEX.md` use the shape:
+#
+#   <tier>.<provider>.<model_id>
+#
+# e.g. `api.openai.gpt54_mini`, `cli.claude.opus_47`, `local.ollama.nomic_embed`.
+#
+# What a provider entry is: a connection block (base_url, timeout, retries,
+# adapter) plus a `models` map of named model entries (pricing, context
+# window, capabilities). `api_key_env` names an environment variable you
+# supply in your `.env` file — see `tesseract/.env.example`. Providers under
+# the `local` and `cli` tiers need no API key at all: `local` runs on your
+# own machine (Ollama, Whisper, Piper), and `cli` rides your existing Claude
+# Code / Codex CLI subscription login instead of a per-token key.
+#
+# Hard rule (CLAUDE.md): edit infrastructure values here, never in code.
+# Missing keys raise loudly. No `get(..., "default")` patterns in adapter code.
+
+# ─── Circuit-breaker threshold ──────────────────────────────
+# Consulted by `tesseract/context/circuit_breaker.py::_default_max_failures`.
+# Observer + scheduler breakers read the same value.
+availability:
+  max_consecutive_failures: 3
+
+# ─── Fallback chain policy ──────────────────────────────────
+# Consumed by `tesseract/brain/adapter_chain.py::FallbackAdapter`.
+#
+# The chain advances to the next entry on HARD errors (auth, model
+# not found, billing, malformed request, context overflow). On
+# TRANSIENT errors (429/5xx/timeout/network) the chain retries the
+# *same* entry up to `transient_retries` times with exponential
+# backoff (`transient_backoff_ms` doubling each retry) before
+# advancing. UNKNOWN errors (adapter did not classify) are treated
+# as TRANSIENT — retry first.
+#
+# Per-provider SDK retries (`max_retries` on each connection block)
+# operate at the HTTP layer and run BEFORE these chain-level retries.
+# Compaction (`tesseract/brain/compaction.py`) bypasses this chain
+# entirely and uses only the primary; see plan 1-setsate.
+#
+# Per-provider override: any provider block below may set its own
+# `transient_retries` / `transient_backoff_ms` / `cooldown_max_failures` /
+# `cooldown_seconds` to diverge from the global. Tune when the failure
+# shape differs — e.g. set `transient_retries: 0` on a provider whose
+# outages typically last minutes (so the chain falls over instantly),
+# or raise `cooldown_seconds` for a provider whose outages are unusually
+# long.
+#
+# Cooldown breaker (per chain entry):
+# When an entry advances `cooldown_max_failures` times in a row (HARD
+# error or transient retries exhausted), the chain skips it for
+# `cooldown_seconds` and walks to the next entry instead. After the
+# cooldown elapses the entry is tried again on the next turn; success
+# closes the breaker, failure restarts the cooldown. If every entry is
+# in cooldown the chain emits a clear "all entries cooling down" error
+# (TARS retries on the next turn). Disable by setting either knob ≤ 0.
+chain:
+  transient_retries: 2          # retries per chain entry on transient errors
+  transient_backoff_ms: 250     # initial; doubles each retry
+  cooldown_max_failures: 1      # advance this many times in a row → open the breaker
+  cooldown_seconds: 60          # skip the entry for this long before trying again
+
+# ─── Cost tracking (global knobs) ───────────────────────────
+# Per-role caps live in `roles.yaml` under `roles.<role>.daily_budget_usd`.
+# Per-voice-lane caps live in `roles.yaml` under `voice.{stt,tts}.<lane>.daily_budget_usd`.
+# Unit pricing (cost_per_mtok_*, cost_per_million_chars, cost_per_audio_hour)
+# lives on the per-model entries below. Single source of pricing truth.
+cost_tracking:
+  enabled: true
+  warning_at_pct: 0.75    # one-shot warning toast at spent >= pct*cap, per scope
+  log_file: "logs/cost-tracking.jsonl"
+
+# ─── API tier ───────────────────────────────────────────────
+# Pay-per-token providers. Each needs the `.env` key named by its
+# `api_key_env` before it can serve a role — an entry with no key configured
+# is skipped by the fallback chain (treated as unreachable), never crashes.
+# `enabled` switches: tier-level (api.enabled) gates ALL api providers; per-provider
+# `enabled` gates that provider only. Disabled refs are skipped during fallback
+# (treated as "unreachable") and raise loudly when no chain entry resolves —
+# `RuntimeError("no available <role> providers ...")`. Hot-reloaded by the
+# config watcher. Reserved key — not a provider name.
+api:
+  enabled: true
+  openai:
+    enabled: true
+    base_url: "${OPENAI_BASE_URL:-https://api.openai.com/v1}"
+    api_key_env: OPENAI_API_KEY
+    timeout_seconds: 60
+    max_retries: 3
+    adapter: openai     # tesseract/kernel/adapters/openai.py
+    supports_prompt_cache_key: true   # genuine OpenAI; NIM/compat providers reuse this adapter but 400 on the param
+    models:
+      gpt54_mini:
+        model: gpt-5.4-mini
+        context_window: 400000
+        max_output_tokens: 8192
+        reasoning_effort: high
+        temperature: 1.0  # GPT-5 family only accepts default
+        knowledge_cutoff: "2024-05-31"
+        use_responses_api: true   # GPT-5 family — Responses API path (prompt cache + reasoning reuse)
+        cost_per_mtok_in: 0.75
+        cost_per_mtok_out: 4.50
+        # Native modalities — see Docs/Plan/multimodal/ for routing rules.
+        # audio_input/output flagged false: Realtime API path is not wired
+        # in the OpenAI adapter; we route audio through whisper STT + TTS roles.
+        capabilities:
+          vision_input: true
+          audio_input: false
+          video_input: false
+          pdf_input: true
+          image_output: false
+          audio_output: false
+      gpt54_nano:
+        model: gpt-5.4-nano
+        context_window: 400000
+        max_output_tokens: 8192
+        reasoning_effort: high
+        temperature: 1.0  # GPT-5 family only accepts default
+        knowledge_cutoff: "2025-08-31"
+        use_responses_api: true   # OpenAI-recommended path for GPT-5 family
+        cost_per_mtok_in: 0.20
+        cost_per_mtok_out: 1.25
+        capabilities:
+          vision_input: true
+          audio_input: false
+          video_input: false
+          pdf_input: true
+          image_output: false
+          audio_output: false
+
+  google:
+    enabled: true
+    api_key_env: GOOGLE_API_KEY
+    timeout_seconds: 60
+    max_retries: 3
+    adapter: gemini     # tesseract/kernel/adapters/gemini.py
+    models:
+      gemini_25_flash:
+        model: gemini-2.5-flash
+        context_window: 1000000
+        max_output_tokens: 8192
+        temperature: 0.7
+        knowledge_cutoff: "2025-01-01"
+        use_responses_api: false  # Gemini — no Responses API
+        cost_per_mtok_in: 0.30
+        cost_per_mtok_out: 2.50
+        cost_per_mtok_cached_in: 0.075   # Gemini cached input ≈ 25% of base; verify against ai.google.dev/pricing if rates change
+        # Image generation lives on `gemini-2.5-flash-image` (separate
+        # model); audio output lives on `gemini_flash_tts` below. The
+        # text-chat entry handles the input modalities only.
+        capabilities:
+          vision_input: true
+          audio_input: true
+          video_input: true
+          pdf_input: true
+          image_output: false
+          audio_output: false
+      gemini_flash_audio:         # voice STT
+        kind: audio_stt
+        model: gemini-2.5-flash
+        cost_per_audio_hour: 0.09  # 25 audio tokens/sec at $1/Mtok
+      gemini_flash_tts:           # voice TTS
+        kind: tts
+        model: gemini-2.5-flash-preview-tts
+        cost_per_million_chars: 10.00  # metered against char_count (text + tone_prompt)
+
+  anthropic:
+    # Enabled by default — this is the one provider a fresh install can
+    # count on: the setup checklist requires ANTHROPIC_API_KEY, so
+    # `chat_brain` and the cheap delegation roles in roles.yaml default
+    # their primary here. Every other API provider stays available for
+    # anyone who adds its key.
+    enabled: true
+    api_key_env: ANTHROPIC_API_KEY
+    timeout_seconds: 60
+    max_retries: 3
+    adapter: anthropic  # tesseract/kernel/adapters/anthropic.py
+    models:
+      opus_48:
+        model: claude-opus-4-8
+        context_window: 1000000
+        max_output_tokens: 16384
+        temperature: 0.7
+        cost_per_mtok_in: 15.00
+        cost_per_mtok_out: 75.00
+        # Anthropic accepts text + images + native PDF on every Claude 4.x
+        # family member. No native audio/video; route those through whisper STT.
+        capabilities:
+          vision_input: true
+          audio_input: false
+          video_input: false
+          pdf_input: true
+          image_output: false
+          audio_output: false
+      sonnet_46:
+        model: claude-sonnet-4-6
+        context_window: 200000
+        max_output_tokens: 16384
+        temperature: 0.7
+        cost_per_mtok_in: 3.00
+        cost_per_mtok_out: 15.00
+        capabilities:
+          vision_input: true
+          audio_input: false
+          video_input: false
+          pdf_input: true
+          image_output: false
+          audio_output: false
+      haiku_45:
+        model: claude-haiku-4-5-20251001
+        context_window: 200000
+        max_output_tokens: 8192
+        temperature: 0.7
+        cost_per_mtok_in: 1.00
+        cost_per_mtok_out: 5.00
+        capabilities:
+          vision_input: true
+          audio_input: false
+          video_input: false
+          pdf_input: true
+          image_output: false
+          audio_output: false
+
+  # xAI (api.x.ai) — OpenAI-compatible chat completions. grok-4.3 is xAI's
+  # flagship agentic tool-calling model (1M context). Billed at API rates;
+  # xAI's data-sharing program can grant recurring free credits for
+  # accounts that opt in (enable in Console → Settings → Data Sharing; see
+  # .env.example). NOT genuine OpenAI: do NOT set supports_prompt_cache_key.
+  xai:
+    enabled: true
+    base_url: "${XAI_BASE_URL:-https://api.x.ai/v1}"
+    api_key_env: XAI_API_KEY
+    timeout_seconds: 60
+    max_retries: 3
+    adapter: openai
+    # xAI's prompt cache is automatic but node-local — without this routing
+    # header same-prefix requests scatter across servers and rarely hit.
+    # docs.x.ai/developers/advanced-api-usage/prompt-caching/maximizing-cache-hits
+    cache_routing_header: x-grok-conv-id
+    models:
+      grok_43:
+        model: grok-4.3
+        context_window: 1000000
+        max_output_tokens: 8192
+        temperature: 0.7
+        # Empty string suppresses the reasoning_effort param entirely — the
+        # openai adapter only sends it when truthy (openai.py:150). grok-4.3
+        # reasons by default; the xAI OpenAI-compat surface may 400 on the
+        # knob, so leave "" (default reasoning) on all compat providers.
+        reasoning_effort: ""
+        use_responses_api: false   # chat-completions only; Responses API is OpenAI-exclusive
+        # Standard <200k-token rate. xAI doubles to 2.50/5.00 above 200k
+        # tokens/request; the cost ledger uses this flat estimate.
+        cost_per_mtok_in: 1.25
+        cost_per_mtok_out: 2.50
+        # xAI auto-caches repeated prefixes (no param needed); cached input
+        # bills at a fraction of the base rate. Explicit so the ledger
+        # doesn't fall back to a default estimate. The openai adapter
+        # already captures cached_tokens.
+        cost_per_mtok_cached_in: 0.20
+        # Multimodal INPUT per the 4.3 model card: text + image (jpg/png,
+        # base64, 256-1792 tok/image) + video. Output is text-only — image
+        # generation lives on the grok-imagine entries below.
+        capabilities:
+          vision_input: true
+          audio_input: false
+          video_input: false
+          pdf_input: false
+          image_output: false
+          audio_output: false
+      # Grok Imagine — image generation (Flux-based). Both t2i and i2i.
+      # Different REST contract from NIM FLUX: text-to-image hits
+      # /v1/images/generations, image-to-image hits /v1/images/edits (source
+      # image as a base64 data URI). The image_generate tool selects the
+      # endpoint by op via `payload_profile: xai_images`. Flat per-image
+      # pricing. `image_to_image` capability gates the fallback chain.
+      grok_imagine_image:
+        kind: image_generation
+        model: grok-imagine-image
+        base_url_override: https://api.x.ai/v1/images/generations
+        payload_profile: xai_images
+        cost_per_image: 0.02    # flat per docs.x.ai/developers/pricing
+        capabilities:
+          text_to_image: true
+          image_to_image: true
+      grok_imagine_image_quality:
+        kind: image_generation
+        model: grok-imagine-image-quality
+        base_url_override: https://api.x.ai/v1/images/generations
+        payload_profile: xai_images
+        cost_per_image: 0.05    # flat per docs.x.ai/developers/pricing
+        capabilities:
+          text_to_image: true
+          image_to_image: true
+
+  # DeepSeek (api.deepseek.com) — OpenAI-compatible. v4-flash is cheap/fast
+  # (non-thinking); v4-pro is stronger. Server-side prompt caching is
+  # automatic (cache-hit pricing) — no client param needed.
+  deepseek:
+    enabled: false
+    base_url: "${DEEPSEEK_BASE_URL:-https://api.deepseek.com}"
+    api_key_env: DEEPSEEK_API_KEY
+    timeout_seconds: 60
+    max_retries: 3
+    adapter: openai
+    models:
+      deepseek_v4_flash:
+        model: deepseek-v4-flash
+        context_window: 128000
+        max_output_tokens: 8192
+        temperature: 0.7
+        reasoning_effort: ""       # suppress on compat providers — see xai grok note
+        use_responses_api: false
+        cost_per_mtok_in: 0.14
+        cost_per_mtok_out: 0.28
+        cost_per_mtok_cached_in: 0.0028   # DeepSeek auto cache-hit rate (~2% of base)
+        capabilities:
+          vision_input: false
+          audio_input: false
+          video_input: false
+          pdf_input: false
+          image_output: false
+          audio_output: false
+      deepseek_v4_pro:
+        model: deepseek-v4-pro
+        context_window: 128000
+        max_output_tokens: 8192
+        temperature: 0.7
+        reasoning_effort: ""
+        use_responses_api: false
+        cost_per_mtok_in: 0.435
+        cost_per_mtok_out: 0.87
+        cost_per_mtok_cached_in: 0.003625   # DeepSeek auto cache-hit rate
+        capabilities:
+          vision_input: false
+          audio_input: false
+          video_input: false
+          pdf_input: false
+          image_output: false
+          audio_output: false
+
+  # NVIDIA NIM (build.nvidia.com) — OpenAI-compatible chat completions for the
+  # text/vision models, separate `ai.api.nvidia.com/v1/genai/...` endpoint
+  # (per-model `base_url_override`) for the visual-genai image models. Free
+  # developer tier (sign up at build.nvidia.com for BUILD_NVIDIA_KEY, no
+  # payment method required; rate-limited but no per-token cost). The chat
+  # path runs through the `openai` adapter unchanged; the `image_generate`
+  # tool reads `base_url_override` from the model fields and fires a direct
+  # POST.
+  nim:
+    enabled: true
+    base_url: "${NVIDIA_NIM_BASE_URL:-https://integrate.api.nvidia.com/v1}"
+    api_key_env: BUILD_NVIDIA_KEY
+    timeout_seconds: 120
+    max_retries: 2
+    adapter: openai
+    models:
+      # MoE 122B / 10B-active. Tool-calling ✓. Multimodal ✓ (image_url
+      # accepted). NOT a reasoning model — `reasoning_content` always null.
+      # `reasoning_effort` is accepted but ignored.
+      qwen3_5_122b_a10b:
+        model: qwen/qwen3.5-122b-a10b
+        context_window: 128000
+        max_output_tokens: 8192
+        temperature: 0.7
+        top_p: 0.95
+        cost_per_mtok_in: 0.00
+        cost_per_mtok_out: 0.00
+        # video flagged true per the Qwen3.5 spec (text+image+video); if
+        # the NIM gateway ever rejects a video part, the chat-loop surfaces
+        # the error cleanly. Audio capability lives on the SEPARATE
+        # Qwen3.5-Omni SKU, not this one.
+        capabilities:
+          vision_input: true
+          audio_input: false
+          video_input: true
+          pdf_input: false
+          image_output: false
+          audio_output: false
+      # Qwen3.5 flagship MoE 397B / 17B-active. Tool-calling ✓. Multimodal —
+      # image_url support confirmed. Video per spec (early-fusion VL
+      # training), NIM round-trip untested. NIM serves it non-thinking
+      # (`reasoning_content` null, answer in `content`). Sampling per
+      # Qwen's non-thinking recommendation (temp 0.7 / top_p 0.8). Context:
+      # 262K native (1M via YaRN; NIM serves the native window).
+      qwen3_5_397b_a17b:
+        model: qwen/qwen3.5-397b-a17b
+        context_window: 262144
+        max_output_tokens: 8192
+        temperature: 0.7
+        top_p: 0.8
+        cost_per_mtok_in: 0.00
+        cost_per_mtok_out: 0.00
+        capabilities:
+          vision_input: true
+          audio_input: false
+          video_input: true
+          pdf_input: false
+          image_output: false
+          audio_output: false
+      # NVIDIA's hybrid Mamba-Transformer MoE 120B / 12B-active (1M context).
+      # Tool-calling ✓. TEXT-ONLY — rejects image_url with "is not a
+      # multimodal model". Reasoning model — emits `reasoning_content`
+      # alongside `content`.
+      nemotron_3_super_120b:
+        model: nvidia/nemotron-3-super-120b-a12b
+        context_window: 1000000
+        max_output_tokens: 8192
+        reasoning_effort: high
+        temperature: 0.7
+        top_p: 0.95
+        cost_per_mtok_in: 0.00
+        cost_per_mtok_out: 0.00
+        capabilities:
+          vision_input: false
+          audio_input: false
+          video_input: false
+          pdf_input: false
+          image_output: false
+          audio_output: false
+      # OpenAI's open-weight 120B — closest spirit-match to gpt-5.4 (full).
+      # Tool-calling ✓. Text-only. Reasoning model. NIM REQUIRES
+      # `reasoning_effort` to be one of low/medium/high — null is rejected
+      # with a 400.
+      gpt_oss_120b:
+        model: openai/gpt-oss-120b
+        context_window: 128000
+        max_output_tokens: 8192
+        reasoning_effort: high  # REQUIRED by NIM — see comment above.
+        temperature: 0.7
+        top_p: 0.95
+        cost_per_mtok_in: 0.00
+        cost_per_mtok_out: 0.00
+        capabilities:
+          vision_input: false
+          audio_input: false
+          video_input: false
+          pdf_input: false
+          image_output: false
+          audio_output: false
+      # NVIDIA omni-modal MoE 30B / 3B-active. Image + text confirmed; the
+      # model name implies audio/video too — our adapter currently only
+      # sends `image_url` parts so audio/video is a future-tool concern.
+      # Tool-calling ✓.
+      #
+      # Reasoning quirk: at `reasoning_effort: medium` the model frequently
+      # stops with `finish_reason=stop` AFTER emitting only `reasoning_content`,
+      # leaving `content` empty — the OpenAI adapter only streams
+      # `delta.content`, so the operator would see nothing. Pinning to `low`
+      # fixes this: the model still reasons internally but reliably writes
+      # the final answer to `content`. For the vision_agent role (single-shot
+      # image-to-text caption) low is the right effort tier anyway.
+      nemotron_3_nano_omni_30b:
+        model: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+        context_window: 128000
+        max_output_tokens: 8192
+        reasoning_effort: low  # see comment — anything higher leaves content empty.
+        temperature: 0.7
+        top_p: 0.95
+        cost_per_mtok_in: 0.00
+        cost_per_mtok_out: 0.00
+        # Omni model: vision confirmed, audio/video advertised by the spec.
+        # NIM gateway round-trip for audio/video is untested — flagged true
+        # optimistically; chat-loop will fail loudly if NIM rejects.
+        capabilities:
+          vision_input: true
+          audio_input: true
+          video_input: true
+          pdf_input: true
+          image_output: false
+          audio_output: false
+      # Zhipu GLM-5.2 — MoE 753B / ~40B-active, text-only (multimodal lives
+      # on the separate GLM-5V SKU, which NIM does not host). Capabilities
+      # pinned all-false — correct per spec, not a temporary restriction.
+      # 1M context per the NIM model card (DSA/IndexShare sparse attention).
+      # Non-thinking by default (`reasoning_content` null); `reasoning_effort`
+      # is accepted but IGNORED (null also fine); thinking toggles via
+      # `chat_template_kwargs: {"thinking": true}` → `reasoning_content`
+      # populated, final answer still lands in `content`. The openai adapter
+      # does not forward chat_template_kwargs, so thinking stays off — the
+      # right default for a latency-sensitive chat layer.
+      glm_5_2:
+        model: z-ai/glm-5.2
+        context_window: 1000000
+        max_output_tokens: 8192
+        temperature: 0.7
+        top_p: 0.95
+        cost_per_mtok_in: 0.00
+        cost_per_mtok_out: 0.00
+        capabilities:
+          vision_input: false
+          audio_input: false
+          video_input: false
+          pdf_input: false
+          image_output: false
+          audio_output: false
+      # Text-to-image — Black Forest Labs FLUX.1-dev on the NIM genai
+      # endpoint. Body: `{prompt, mode, steps?, seed?, image?}`. Modes:
+      # `base | canny | depth`. Steps ≤ 100 (tool default = 20, see
+      # `image_generate.py::ImageGenerateInput.steps`). Response is the
+      # standard `{"artifacts":[{"base64": "..."}]}` shape — no tool change.
+      flux1_dev:
+        kind: image_generation
+        model: black-forest-labs/flux.1-dev
+        base_url_override: https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-dev
+        cost_per_image: 0.00
+        # Text-to-image only. Its canny/depth `mode` is control-net (a t2i
+        # variant via `control_image_attachment_id`), NOT general image-to-
+        # image editing — so image_to_image stays false and the chain skips
+        # this entry for i2i requests.
+        capabilities:
+          text_to_image: true
+          image_to_image: false
+      # Text-to-image — FLUX.2-klein (4B distilled rectified-flow) on the
+      # NIM genai endpoint. Contract: accepts {prompt, steps, width, height,
+      # seed?}; REJECTS `mode` (extra_forbidden) and caps cfg_scale ≤ 1 —
+      # hence `payload_profile: flux2` (image_generate.py omits mode/cfg_scale
+      # and refuses canny/depth for this profile; for control-net work swap
+      # the image_generator primary back to flux1_dev). Response is the
+      # standard {"artifacts":[{"base64": ...}]} shape (JPEG). Distilled
+      # arch — the endpoint hard-caps steps ≤ 4, so the flux2 profile
+      # clamps steps to 4.
+      flux2_klein_4b:
+        kind: image_generation
+        model: black-forest-labs/flux.2-klein-4b
+        base_url_override: https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b
+        payload_profile: flux2
+        cost_per_image: 0.00
+        capabilities:
+          text_to_image: true
+          image_to_image: false
+
+# ─── CLI tier (subscription — free at use-time) ─────────────
+# Rides your existing Claude Code / Codex CLI login — no API key, no
+# `api_key_env` here at all. `enabled` switches gate the delegate_* tools
+# (and any role that resolves to a cli ref). Disabled tier or provider →
+# tool returns "<provider> CLI disabled in providers.yaml" instead of
+# spawning the subprocess. Requires the corresponding CLI to be installed
+# and logged in on this machine.
+cli:
+  enabled: true
+  claude:
+    enabled: true
+    command: claude
+    timeout_seconds: 300
+    max_retries: 1
+    stream_json_capable: true
+    adapter: cli
+    models:
+      opus_48:
+        model: claude-opus-4-8
+        reasoning_effort: high
+        context_window: 1000000
+        max_output_ratio: 0.35
+        temperature: 0.7
+        cost_per_mtok_in: 0
+        cost_per_mtok_out: 0
+        # Underlying model supports vision/PDF, but the claude CLI's
+        # `--file file_id:path` form requires Anthropic Files API IDs
+        # (uploads need an API key, defeating subscription-only auth).
+        # Until Anthropic adds a `--image-file <local>` flag, vision is
+        # effectively unavailable through this adapter — leave false.
+        capabilities:
+          vision_input: false
+          audio_input: false
+          video_input: false
+          pdf_input: false
+          image_output: false
+          audio_output: false
+
+  codex:
+    enabled: true
+    command: codex
+    timeout_seconds: 300
+    max_retries: 1
+    stream_json_capable: true
+    adapter: cli
+    models:
+      gpt55:
+        model: gpt-5.5
+        reasoning_effort: high
+        context_window: 200000
+        max_output_ratio: 0.5
+        max_output_tokens: 100000
+        temperature: 0.7
+        cost_per_mtok_in: 0
+        cost_per_mtok_out: 0
+        # codex CLI accepts local images via `-i FILE`. The CLIAdapter
+        # extracts image content blocks from the messages list, writes
+        # each to a temp file, and emits `-i FILE` argv pairs. Audio,
+        # video, and image generation are not exposed by the codex CLI.
+        capabilities:
+          vision_input: true
+          audio_input: false
+          video_input: false
+          pdf_input: false
+          image_output: false
+          audio_output: false
+
+# ─── Local tier (this machine) ──────────────────────────────
+# Runs on your own hardware — no API key, no subscription. `enabled`
+# switches gate embeddings (ollama), local STT (whisper), and local TTS
+# (piper). Disabled refs are skipped during voice-runtime build and
+# embedding bring-up; the runtime degrades cleanly (BM25-only retrieval,
+# etc.) rather than crashing.
+local:
+  enabled: true
+  ollama:
+    enabled: true
+    base_url: "${OLLAMA_BASE_URL:-http://localhost:11434}"
+    timeout_seconds: 120
+    max_retries: 3
+    models_endpoint: /api/tags
+    auto_start: true   # Mirror startup may spawn `ollama serve` on localhost; set false in CI/headless
+    host: this_pc
+    adapter: ollama
+    models:
+      nomic_embed:
+        kind: embedding
+        model: nomic-embed-text
+        dimensions: 768
+        timeout_seconds: 30
+        max_retries: 3
+
+  # Optional second Ollama host reached over HTTP, for anyone who runs
+  # models on a separate machine on their own network. Defaults to
+  # localhost (i.e. effectively unused) until you point OLLAMA_LAN_BASE_URL
+  # at a real host. Rides the `openai` adapter against Ollama's
+  # OpenAI-compatible /v1 endpoint — no ollama chat adapter exists and none
+  # is needed. Ollama ignores the API key's value but build_adapter
+  # requires the env var to be non-empty: set OLLAMA_LAN_API_KEY in .env to
+  # any placeholder string if you use this. No auto_start — if the host is
+  # off, the chain falls through to this entry's role fallbacks.
+  ollama_lan:
+    enabled: true
+    base_url: "${OLLAMA_LAN_BASE_URL:-http://localhost:11434/v1}"
+    api_key_env: OLLAMA_LAN_API_KEY
+    timeout_seconds: 300   # large local models can be slow to cold-load, especially if partially CPU-offloaded
+    max_retries: 1
+    adapter: openai
+    models:
+      # Example entry for a Gemma-family model served by the second host.
+      # Tool-calling and thinking both work over this OpenAI-compatible
+      # path; the openai adapter streams `content` only, so any separate
+      # `reasoning` field the server returns is dropped (same posture as
+      # glm_5_2 on NIM). Sampling per the served defaults.
+      # CONTEXT: native window may exceed what the SERVER truncates at
+      # (Ollama's own context setting — app Settings → Context length, or
+      # OLLAMA_CONTEXT_LENGTH env). context_window here must never exceed
+      # the host-side setting; raise both together.
+      gemma4_26b:
+        model: "gemma4:26b"
+        context_window: 32768
+        max_output_tokens: 8192
+        temperature: 1.0
+        top_p: 0.95
+        cost_per_mtok_in: 0.00
+        cost_per_mtok_out: 0.00
+        # vision advertised by /api/show (completion, vision, tools,
+        # thinking) for this model family; round-trip for image parts is
+        # untested over LAN — chat-loop surfaces a clean error if the
+        # endpoint rejects them.
+        capabilities:
+          vision_input: true
+          audio_input: false
+          video_input: false
+          pdf_input: false
+          image_output: false
+          audio_output: false
+
+  whisper:
+    enabled: true
+    adapter: local_whisper
+    timeout_seconds: 180    # 5-minute audio cap
+    max_retries: 1
+    models:
+      # Catalog id matches the cost-ledger key for back-compat (`local_whisper`).
+      # `model` carries the actual faster-whisper checkpoint name. `base` +
+      # CPU/int8 is the fresh-install default so this works with no GPU;
+      # if you have a CUDA GPU, raise `model` to `large-v3-turbo`, `device`
+      # to `cuda`, and `compute_type` to `int8_float16` for faster, more
+      # accurate transcription.
+      local_whisper:
+        kind: stt
+        model: base
+        device: cpu
+        compute_type: int8
+        beam_size: 1
+        timeout_seconds: 180
+        preload: true
+        cost_per_audio_hour: 0.00
+
+  piper:
+    enabled: true
+    adapter: piper          # tesseract/voice/providers/piper_tts.py
+    timeout_seconds: 60
+    max_retries: 1
+    host: this_pc
+    models:
+      # Catalog id matches the cost-ledger key (`piper_northern_english_male`).
+      # `model` is the ONNX filename under `tesseract/voice/models/piper/`.
+      # Download both files into that dir (~64 MB):
+      #   en_GB-northern_english_male-medium.onnx
+      #   en_GB-northern_english_male-medium.onnx.json
+      # Source: https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_GB/northern_english_male/medium
+      northern_english_male:
+        kind: tts
+        model: en_GB-northern_english_male-medium.onnx
+        sample_rate: 22050
+        # Two synthesis presets picked by the TTS engine based on the
+        # `<intent>`/`<answer>` tag contract. Intent = quicker,
+        # deterministic. Answer = natural pace, micro-variability for
+        # warmth. Edit these to change TARS's local voice character.
+        synthesis_presets:
+          intent:
+            length_scale: 0.95
+            noise_scale: 0.0
+            noise_w: 0.0
+            sentence_silence: 0.2
+          answer:
+            length_scale: 1.0
+            noise_scale: 0.4
+            noise_w: 0.5
+            sentence_silence: 0.2
+        cost_per_million_chars: 0.00
+
+  kokoro:
+    enabled: false
+    adapter: kokoro          # tesseract/voice/providers/kokoro_tts.py
+    timeout_seconds: 120
+    max_retries: 1
+    host: this_pc
+    models:
+      # Catalog id matches the cost-ledger key. The voice is a *blend* —
+      # `mix` is a linear combination of style embeddings shipped in the
+      # voices bundle. Iterate the timbre by editing weights here; no
+      # code change needed. See tesseract/voice/models/kokoro/README.md
+      # for voice IDs and the design rationale.
+      # Download the model files (~340 MB total) into
+      # `tesseract/voice/models/kokoro/`:
+      #   kokoro-v1.0.onnx
+      #   voices-v1.0.bin
+      # Source: https://github.com/thewh1teagle/kokoro-onnx/releases
+      charon:
+        kind: tts
+        model: kokoro-v1.0.onnx
+        voices_file: voices-v1.0.bin
+        sample_rate: 24000
+        lang: en-gb
+        device: cuda            # "cuda" | "cpu" — falls back to CPU if CUDA missing
+        mix:
+          bm_george: 0.4
+          bm_daniel: 0.6
+        # Kokoro exposes only `speed` (and post-pad silence). Intent =
+        # slightly quicker. Answer = natural pace.
+        synthesis_presets:
+          intent:
+            speed: 1.05
+            sentence_silence: 0.15
+          answer:
+            speed: 1.0
+            sentence_silence: 0.25
+        cost_per_million_chars: 0.00

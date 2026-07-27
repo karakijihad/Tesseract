@@ -1,0 +1,77 @@
+# MCP control-plane server.
+#
+# TESSERACT exposes itself as a local HTTP/SSE MCP server embedded in the
+# Mirror backend. Every key below is required — the loader raises on a
+# missing or invalid value rather than silently defaulting. Secrets never
+# live in this file — only *_env names that point at environment variables.
+#
+# host/port here are the ADVERTISED endpoint, not a separate network
+# listener — the MCP server rides on the Mirror backend's own socket (see
+# mirror.yaml server.host/port). Keep these two files in sync.
+server:
+  host: "127.0.0.1"                     # loopback-only; MCP is local-only like the Mirror app
+  port: 8000                            # must match mirror.yaml server.port
+  token_secret_env: "TESSERACT_MCP_SECRET"   # env var holding the operator client's bearer token
+  max_connections: 20                   # cap on simultaneous MCP sessions
+  ask_hold_timeout_s: 120               # seconds an ASK-gated verb can hold before degrading to async
+  idle_timeout_s: 600                   # idle sessions are swept after this many seconds
+
+# Per-client identities. Default-deny: a bearer token matching no client
+# below is rejected. Each client's trust_tier is a ceiling layered on top of
+# the per-verb posture (see trust_tiers/verbs below). The operator client's
+# token_env MUST equal server.token_secret_env.
+clients:
+  - name: "operator"
+    token_env: "TESSERACT_MCP_SECRET"
+    trust_tier: "operator"
+  # Auto-provisioned identities for the built-in CLI lanes and terminal.
+  - name: "lane-claude"
+    token_env: "TESSERACT_MCP_LANE_CLAUDE_TOKEN"
+    trust_tier: "trusted"
+  - name: "lane-codex"
+    token_env: "TESSERACT_MCP_LANE_CODEX_TOKEN"
+    trust_tier: "trusted"
+  - name: "terminal-manual"
+    token_env: "TESSERACT_MCP_TERMINAL_TOKEN"
+    trust_tier: "trusted"
+
+# Posture ceiling per client trust tier: operator/trusted clients may act
+# autonomously; restricted clients need operator approval for everything.
+# A remote client should generally be more restricted than the operator,
+# never less.
+trust_tiers:
+  operator: "auto"
+  trusted: "auto"
+  restricted: "ask"
+
+# Per-verb posture allowlist (default-deny): a verb missing from this map is
+# denied regardless of anything else. A listed posture may only tighten the
+# floor (auto -> ask -> deny), never relax it.
+verbs:
+  activity.list: "auto"
+  activity.watch: "auto"
+  activity.cancel: "ask"
+  memory.search: "auto"
+  vault.search: "auto"
+  vault.query: "auto"
+  memory.save: "ask"
+  memory.update: "ask"
+  vault.ingest: "ask"
+  lane.ensure: "ask"
+  lane.send: "ask"
+  lane.read: "auto"
+  lane.close: "ask"
+  schedule.create: "ask"
+  schedule.update: "ask"
+  schedule.run: "ask"
+  schedule.remove: "ask"
+  surface.spawn: "ask"
+  surface.update: "ask"
+  surface.focus: "auto"
+  surface.close: "ask"
+  budget.status: "auto"
+  budget.set_cap: "ask"
+  budget.pause_source: "ask"
+  agent.assign: "ask"
+  agent.status: "auto"
+  agent.review: "auto"

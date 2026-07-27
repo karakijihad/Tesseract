@@ -1,0 +1,217 @@
+/* === CONSCIENCE VIEW (full tab) ============================================
+   Shares shell shape with SoulView (head + body + grid) so the two
+   operator-facing status tabs read as a pair. Colour intent comes from
+   token-level `--ok / --warn / --bad` + their `*-dim` backgrounds so
+   each signal card announces its state without extra chrome.
+*/
+.conscience-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: var(--space-md) var(--space-lg);
+  gap: var(--space-md);
+}
+/* Match the agents canonical: mono uppercase title, t-meta subtitle inline,
+ * agents-style refresh button. See `agents.css` lines 14-51. */
+.conscience-view-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-sm) 14px;
+  border-bottom: 1px solid var(--panel-border);
+  flex-shrink: 0;
+}
+.conscience-view-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  min-width: 0;
+}
+.conscience-view-title {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-meta);
+  margin: 0;
+}
+.conscience-view-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-meta);
+}
+.conscience-view-refresh {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 4px 10px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-card);
+  border: 1px solid var(--panel-border);
+  color: var(--text-meta);
+  cursor: pointer;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.conscience-view-refresh:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--accent-dim);
+}
+.conscience-view-refresh:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.conscience-view-error {
+  color: var(--bad);
+  border: 1px solid var(--bad);
+  background: var(--bad-dim);
+  border-radius: var(--radius-xs);
+  padding: var(--space-sm);
+}
+.conscience-view-empty {
+  padding: var(--space-lg);
+  text-align: center;
+  color: var(--text-meta);
+  font-style: italic;
+}
+.conscience-view-empty code {
+  font-family: var(--font-mono);
+  color: var(--accent-bright);
+  font-style: normal;
+}
+.conscience-view-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+/* Summary pills */
+.conscience-summary {
+  display: flex;
+  gap: var(--space-sm);
+  flex-shrink: 0;
+}
+.conscience-summary-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--panel-divider);
+  background: var(--bg-card);
+}
+.conscience-summary-count {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+.conscience-summary-pill--ok   { border-color: var(--ok);   background: rgba(74, 222, 128, 0.08); }
+.conscience-summary-pill--ok .conscience-summary-count   { color: var(--ok); }
+.conscience-summary-pill--warn { border-color: var(--warn); background: rgba(255, 180, 84, 0.08); }
+.conscience-summary-pill--warn .conscience-summary-count { color: var(--warn); }
+.conscience-summary-pill--bad  { border-color: var(--bad);  background: var(--bad-dim); }
+.conscience-summary-pill--bad .conscience-summary-count  { color: var(--bad); }
+
+/* Signal cards grid */
+.conscience-view-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--space-md);
+}
+.conscience-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--panel-divider);
+  border-left-width: 2px;
+  background: var(--bg-card);
+}
+.conscience-card--ok   { border-left-color: var(--ok); }
+.conscience-card--warn { border-left-color: var(--warn); background: rgba(255, 180, 84, 0.04); }
+.conscience-card--bad  { border-left-color: var(--bad);  background: var(--bad-dim); }
+.conscience-card-heading {
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 10px;
+}
+.conscience-card-value {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+.conscience-card-number {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+.conscience-card-status {
+  font-family: var(--font-ui);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  border: 1px solid currentColor;
+}
+.conscience-card-status--ok   { color: var(--ok); }
+.conscience-card-status--warn { color: var(--warn); }
+.conscience-card-status--bad  { color: var(--bad); }
+.conscience-card-thresholds {
+  color: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+}
+.conscience-card-detail {
+  color: var(--text-meta);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  word-break: break-word;
+}
+
+/* History sparkline — stacked-bar per day, segments weighted by counts */
+.conscience-history {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+}
+.conscience-history-heading {
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 10px;
+}
+.conscience-history-bars {
+  display: flex;
+  gap: 3px;
+  align-items: stretch;
+  height: 28px;
+}
+.conscience-history-bar {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--panel-divider);
+  min-width: 4px;
+}
+.conscience-history-seg {
+  display: block;
+  width: 100%;
+}
+.conscience-history-seg--ok   { background: var(--ok); }
+.conscience-history-seg--warn { background: var(--warn); }
+.conscience-history-seg--bad  { background: var(--bad); }

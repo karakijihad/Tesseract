@@ -1,0 +1,73 @@
+# Per-channel adapter configuration.
+#
+# Two tiers:
+#   * defaults:         — settings every channel inherits unless overridden.
+#   * <channel-name>:   — one block per adapter (e.g. telegram). Only list
+#                         the keys you want to override; everything else
+#                         still inherits from defaults.
+#
+# Tokens/secrets live in .env, never here. Edits to this file reload live —
+# no restart needed.
+#
+# To add a channel: add a `<name>:` block with `enabled`, `display_name`,
+# and any channel-specific fields.
+
+defaults:
+  # Sliding-window chat-session retention. One turn = one user message +
+  # one assistant reply, so history cap = max_turns_in_context * 2 entries.
+  retention:
+    max_turns_in_context: 20
+    inactivity_reset_minutes: 360     # minutes of inactivity before the session resets
+
+  # Per-kind attachment size/duration caps. Anything larger is rejected.
+  attachments:
+    voice:    { max_seconds: 600 }
+    audio:    { max_seconds: 1800 }
+    photo:    { max_bytes: 10485760 }
+    document: { max_bytes: 26214400 }
+    video:    { max_seconds: 60, max_bytes: 52428800 }
+
+  # Text-extraction caps for decoded attachments.
+  extract:
+    document_chars: 6000
+    image_caption_chars: 800
+
+  # Daily spend ceiling for tools billed per channel turn (e.g. vision).
+  cost:
+    daily_max_usd: 1.50
+    per_role:
+      channel_vision: 0.50
+
+  # How an ASK-gated action behaves when it originates from a channel turn.
+  # on_ask: workspace_nudge posts a notice and keeps the conversation open;
+  # on_ask: deny rejects the action outright.
+  gate_policy:
+    on_ask: workspace_nudge
+    approve_next_turn_ttl_s: 1800
+
+# ────────────────────────────────────────────────────────────────────
+# Telegram
+# ────────────────────────────────────────────────────────────────────
+telegram:
+  enabled: true
+  display_name: Telegram
+
+  # Push a daily-brief summary to this channel when one is ready.
+  brief_push: true
+
+  # Outbound notification rate limits, so autonomy doesn't flood the
+  # channel. Safety-critical categories (recovery, crash alerts, approval
+  # requests) always get through regardless of these caps.
+  outbound_rate:
+    default_per_hour: 6
+    per_category: {}                  # e.g. agenda_started: 12
+
+  # Notification categories the operator has muted via the dashboard.
+  muted_categories: []
+
+  # ─── Optional per-channel overrides (uncomment to override defaults) ───
+  # retention:        { max_turns_in_context: 30, inactivity_reset_minutes: 120 }
+  # attachments:      { document: { max_bytes: 52428800 } }
+  # extract:          { document_chars: 12000 }
+  # cost:             { daily_max_usd: 5.00 }
+  # gate_policy:      { on_ask: deny }

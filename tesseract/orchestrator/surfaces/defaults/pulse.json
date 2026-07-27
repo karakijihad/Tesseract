@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "view": "pulse",
+  "surfaces": [
+    {
+      "schema_version": 1,
+      "id": "pulse-filters",
+      "type": "pulse-filters",
+      "title": "Filters",
+      "mode": "embedded",
+      "position": { "x": 40, "y": 24 },
+      "size": { "w": 1120, "h": 110 },
+      "z": 1,
+      "props": {}
+    },
+    {
+      "schema_version": 1,
+      "id": "pulse-stream",
+      "type": "pulse-stream",
+      "title": "Pulse",
+      "mode": "embedded",
+      "position": { "x": 40, "y": 150 },
+      "size": { "w": 1120, "h": 660 },
+      "z": 2,
+      "props": {}
+    }
+  ]
+}

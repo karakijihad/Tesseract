@@ -1,0 +1,601 @@
+/* === TERMINAL — Mirror-themed (tokens-only) === */
+
+.wt {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+  background: var(--bg-void);
+  height: 100%;
+}
+
+/* ── Tab bar ── */
+
+.wt-tabbar {
+  display: flex;
+  align-items: stretch;
+  background: var(--bg-elevated);
+  height: 36px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-visible);
+  user-select: none;
+}
+
+.wt-tabs {
+  display: flex;
+  align-items: stretch;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.wt-tabs::-webkit-scrollbar { display: none; }
+
+.wt-tab {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 0 12px;
+  height: 100%;
+  cursor: pointer;
+  border-right: 1px solid var(--border-visible);
+  color: var(--text-meta);
+  font-size: 13px;
+  font-family: var(--font-ui);
+  transition: background var(--motion-fast), color var(--motion-fast);
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 200px;
+  position: relative;
+}
+
+.wt-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+
+.wt-tab.is-active {
+  background: var(--bg-void);
+  color: var(--ink-100);
+  border-bottom: 2px solid var(--bg-void);
+  margin-bottom: -1px;
+}
+
+.wt-tab-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.wt-tab.is-active .wt-tab-icon {
+  color: var(--accent-bright);
+}
+
+.wt-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wt-tab-close {
+  background: none;
+  border: none;
+  color: var(--text-disabled);
+  cursor: pointer;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--motion-fast), background var(--motion-fast), color var(--motion-fast);
+}
+
+.wt-tab:hover .wt-tab-close,
+.wt-tab.is-active .wt-tab-close {
+  opacity: 1;
+}
+
+.wt-tab-close:hover {
+  background: var(--bg-hover);
+  color: var(--ink-100);
+}
+
+/* ── New tab button + dropdown ── */
+
+.wt-new {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.wt-new-btn,
+.wt-new-dropdown-btn {
+  background: none;
+  border: none;
+  color: var(--text-meta);
+  cursor: pointer;
+  font-size: 16px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.wt-new-btn {
+  width: 36px;
+  font-size: 20px;
+}
+
+.wt-new-dropdown-btn {
+  width: 24px;
+  font-size: 12px;
+  border-left: 1px solid var(--border-visible);
+}
+
+.wt-new-btn:hover,
+.wt-new-dropdown-btn:hover {
+  background: var(--bg-hover);
+  color: var(--ink-100);
+}
+
+.wt-help-btn {
+  background: none;
+  border: none;
+  color: var(--text-meta);
+  cursor: pointer;
+  font-size: 14px;
+  height: 36px;
+  width: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.wt-help-btn:hover {
+  background: var(--bg-hover);
+  color: var(--ink-100);
+}
+
+/* Shell profile dropdown */
+.wt-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 100;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-visible);
+  border-radius: var(--radius-xs);
+  min-width: 180px;
+  padding: var(--space-xs) 0;
+  box-shadow: 0 4px 16px var(--bg-overlay);
+}
+
+.wt-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 14px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 13px;
+  font-family: var(--font-ui);
+  text-align: left;
+  transition: background var(--motion-fast);
+}
+
+.wt-dropdown-item:hover {
+  background: var(--accent-dim);
+  color: var(--ink-100);
+}
+
+.wt-dropdown-icon {
+  width: 18px;
+  text-align: center;
+  color: var(--info);
+  font-size: 14px;
+}
+
+/* ── Terminal body ── */
+
+.wt-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+  background: var(--bg-void);
+}
+
+.wt-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-disabled);
+}
+
+.wt-overlay {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  pointer-events: none;
+}
+
+/* ── Pane layout ── */
+
+.wt-split {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.wt-split--horizontal { flex-direction: column; }
+.wt-split--vertical { flex-direction: row; }
+
+.wt-split-child {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.wt-resize {
+  flex-shrink: 0;
+  background: var(--border-visible);
+  transition: background var(--motion-fast);
+  z-index: 5;
+}
+
+.wt-resize--horizontal { height: 2px; cursor: row-resize; }
+.wt-resize--vertical { width: 2px; cursor: col-resize; }
+.wt-resize:hover { background: var(--accent); }
+
+/* ── Single pane ── */
+
+.wt-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.wt-pane.is-focused {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.wt-pane-close {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 4;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--bg-deep) 70%, transparent);
+  color: var(--text-meta);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast);
+}
+.wt-pane:hover .wt-pane-close,
+.wt-pane.is-focused .wt-pane-close,
+.wt-pane-close:focus-visible {
+  opacity: 1;
+}
+.wt-pane-close:hover {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
+/* MO-4 — pane ownership header. Sits above .wt-canvas, shows operator/tars/worker. */
+.wt-pane-header {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--panel-border);
+  background: var(--bg-elevated);
+  color: var(--text-meta);
+}
+.wt-pane-header.is-owner_user        { color: var(--text-meta); }
+.wt-pane-header.is-owner_entity      { color: var(--accent-bright); }
+.wt-pane-header.is-lease_leased,
+.wt-pane-header.is-lease_running     { color: var(--accent-bright); border-bottom-color: var(--accent-dim); }
+.wt-pane-header.is-lease_waiting_input { color: var(--warn); border-bottom-color: rgba(255,180,84,0.25); }
+.wt-pane-header.is-lease_done        { color: #6cd49a; border-bottom-color: rgba(108,212,154,0.25); }
+.wt-pane-header.is-lease_failed      { color: var(--bad); border-bottom-color: var(--bad-dim); }
+.wt-pane-header.is-lease_released    { color: var(--text-meta); }
+
+.wt-canvas {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-void);
+  padding: var(--space-xs);
+  position: relative;
+}
+
+.wt-canvas .xterm { height: 100%; }
+
+.wt-pane-msg {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-disabled);
+  font-size: 13px;
+  font-family: var(--font-ui);
+}
+
+.wt-pane-msg--error { color: var(--bad); }
+
+/* ── Search overlay (Ctrl+F) ── */
+
+.wt-search {
+  position: absolute;
+  top: var(--space-sm);
+  right: var(--space-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 6px 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-visible);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 16px var(--bg-overlay);
+  z-index: 20;
+  font-family: var(--font-ui);
+}
+
+.wt-search-input {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-xs);
+  color: var(--ink-100);
+  padding: 4px 8px;
+  font-size: 12px;
+  width: 180px;
+  outline: none;
+  font-family: var(--font-ui);
+}
+
+.wt-search-input:focus {
+  border-color: var(--accent);
+}
+
+.wt-search-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  font-size: 12px;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.wt-search-btn:hover {
+  background: var(--accent-dim);
+  color: var(--ink-100);
+}
+
+/* ── Transcript panel ── */
+
+.wt-transcript {
+  flex-shrink: 0;
+  overflow: hidden;
+  border-top: 1px solid var(--border-visible);
+  transition: height var(--motion-med) var(--ease-out);
+}
+
+.wt-transcript.open { height: 180px; }
+.wt-transcript.closed { height: 0; }
+
+.wt-transcript-inner {
+  height: 180px;
+  overflow-y: auto;
+  padding: var(--space-sm) 12px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  background: var(--bg-panel);
+}
+
+.wt-transcript-msg {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: baseline;
+  font-size: 12px;
+  font-family: var(--font-ui);
+}
+
+.wt-transcript-role {
+  flex-shrink: 0;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+
+.wt-transcript-msg--user .wt-transcript-role { color: var(--info); }
+.wt-transcript-msg--assistant .wt-transcript-role { color: var(--ok); }
+.wt-transcript-msg--entity .wt-transcript-role { color: var(--warn); }
+
+.wt-transcript-text { color: var(--text-secondary); }
+.wt-transcript-empty { color: var(--text-disabled); font-size: 12px; }
+
+/* ── Status bar ── */
+
+/* Mirrors the chat input's inset card look (`.chat-area` 20px sides +
+   `.chat-input-wrap` rounded card) so the terminal's bottom row reads
+   as the same surface family rather than a hard full-bleed footer. */
+.wt-statusbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: var(--space-sm) 20px 0;
+  padding: 4px var(--space-sm);
+  background: var(--bg-elevated);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-md);
+  min-height: 26px;
+  flex-shrink: 0;
+  font-size: 12px;
+  font-family: var(--font-ui);
+  color: var(--text-secondary);
+}
+
+.wt-statusbar-btn {
+  border-radius: var(--radius-xs);
+}
+
+.wt-statusbar-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  padding: 0 var(--space-xs);
+  height: 100%;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.wt-statusbar-btn:hover { background: var(--bg-hover); color: var(--ink-100); }
+
+.wt-observer-dot {
+  color: var(--cyan);
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.wt-statusbar-meta {
+  margin-left: auto;
+  color: var(--text-meta);
+  font-size: 11px;
+}
+
+/* ── Command bar in status bar ── */
+
+.term-command-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex: 1;
+  min-width: 0;
+}
+
+.term-command-prefix {
+  color: var(--ink-72);
+  flex-shrink: 0;
+  font-size: 11px;
+}
+
+.term-command-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--ink-100);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 0;
+}
+
+.term-command-input::placeholder {
+  color: var(--ink-55);
+}
+
+/* ── Recording replay overlay ── */
+
+.wt-replay {
+  position: absolute;
+  inset: var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-void);
+  border: 1px solid var(--border-visible);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 32px var(--bg-overlay);
+  z-index: 30;
+  overflow: hidden;
+}
+
+.wt-replay-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: 6px 12px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-visible);
+  font-family: var(--font-ui);
+  font-size: 12px;
+}
+
+.wt-replay-title {
+  color: var(--ink-100);
+  font-weight: 500;
+}
+
+.wt-replay-status {
+  color: var(--text-meta);
+  margin-left: auto;
+}
+
+.wt-replay-close {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: var(--radius-xs);
+  font-size: 16px;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.wt-replay-close:hover {
+  background: var(--accent-dim);
+  color: var(--ink-100);
+}
+
+.wt-replay-host {
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-xs);
+  overflow: hidden;
+}
+
+.wt-replay-host .xterm { height: 100%; }
+.wt-replay-host .xterm-viewport { background-color: transparent !important; }

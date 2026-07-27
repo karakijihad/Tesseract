@@ -1,0 +1,25 @@
+# TokenJuice — tool-output compression. Sits between a tool's raw result
+# and what the model actually sees, so large tool outputs (file listings,
+# search hits, etc.) don't burn context unnecessarily.
+#
+# All keys are required — boot raises if any is missing.
+
+# Master switch. When false, every tool result passes through unchanged
+# and nothing is logged.
+enabled: true
+
+# When true, results are still classified and reduced, but the ORIGINAL
+# text is what the model sees — the audit log records both versions so you
+# can compare before trusting the reduction rules.
+dry_run: false
+
+# Append-only audit log of before/after token counts.
+audit_log: true
+
+# Per-tool rule blocklist. Keys are tool names; values are rule ids that
+# should never apply to that tool.
+#
+# Example:
+#   disabled_rules:
+#     bash_exec: ["bash_exec.git_log"]
+disabled_rules: {}

@@ -1,0 +1,64 @@
+# Operator-defined entity taxonomy.
+#
+# The librarian uses this file as the set of human-anchored entities.
+# It is free to enrich links between them (auto_links in memory frontmatter)
+# but may NOT invent new anchors. Add a new entity here when the operator
+# teaches TARS about someone / something durable.
+#
+# Schema: four top-level categories — people, projects, tools, concepts.
+# Each entry has `name` (canonical) and optional `aliases` + `notes`.
+
+people: []
+projects:
+- name: TESSERACT
+  aliases: [tesseract, tars-reboot]
+  notes: runtime — memory, permissions, tool registry, session store, kernel 
+    lockdown.
+- name: TARS
+  aliases: [tars]
+  notes: operator-facing assistant persona running inside TESSERACT.
+- name: Mirror
+  aliases: [mirror, tars-mirror, cockpit]
+  notes: browser UI for TARS (React/Vite). Phases 1–13 green.
+- name: Vault
+  aliases: [vault, vault-librarian]
+  notes: research corpus — separate from memory-store. Librarian rewiring 
+    deferred.
+
+tools:
+- name: Claude Code
+  aliases: [claude, CC, claude-code]
+  notes: subscription CLI — invoked via delegate_claude for heavy reasoning / 
+    large refactors.
+- name: Codex
+  aliases: [codex, codex-cli]
+  notes: subscription CLI — invoked via delegate_codex for fast low-latency 
+    work.
+- name: Ollama
+  aliases: [ollama]
+  notes: local embeddings provider (nomic-embed-text). Best-effort — fail-open 
+    when offline.
+
+concepts:
+- name: memory-store
+  aliases: [memory store, memory layer]
+  notes: 'canonical markdown memory. Subdirs: user/feedback/project/reference + daily/
+    capture + MEMORY.md synthesis.'
+- name: workspace
+  aliases: [tesseract/workspace]
+  notes: identity layer (IDENTITY/SOUL/USER/AGENTS/HEARTBEAT/...). Gitignored.
+- name: soul
+  aliases: [SOUL, personality]
+  notes: evolving operational commitments (4 OpenClaw sections). Self-edit 
+    transparency rule applies.
+- name: heartbeat
+  aliases: [HEARTBEAT, consolidation pass]
+  notes: scheduled librarian run (promote / dedupe / synthesize). Manual via 
+    /reflect until scheduler wired.
+- name: librarian
+  aliases: [memory-librarian]
+  notes: tesseract/memory/librarian.py — consolidation agent.
+- name: observer
+  aliases: [observer-agent, peripheral observer]
+  notes: per-turn side-brain, emits memory_suggestion envelopes. Different layer
+    from librarian.

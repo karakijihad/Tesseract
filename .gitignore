@@ -1,0 +1,197 @@
+# Environment & Secrets
+.env
+tesseract/.env
+.pii-tokens.local.json
+.venv/
+*.pyc
+__pycache__/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code local state
+.claude/
+.codex/
+.superpowers/
+.venv-kokoro
+
+# Git worktrees
+.worktrees/
+
+# OS
+Thumbs.db
+.DS_Store
+bash.exe.stackdump
+
+# Python
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.pytest-tmp*/
+.pytest_tmp/
+.pytest_tmp*/
+.pytest-basetemp-codex/
+.codex-tmp/
+.codex-runtime-temp/
+.codex-pytest-temp/
+.codex-temp-home/
+tesseract/.codex-pytest-temp/
+tesseract/.codex-temp-home/
+.codex_cuda_probe/
+.tmp/
+
+# Large reference source (don't commit)
+Research/
+Phase 1 — Kernel Build Plan.md
+Owners/
+
+# Docs — only track Logs/, Sessions/, Deferred.md (Plan/Changelog/Doclog/Audit
+# stay local-only by deliberate policy). NOT blanket-ignoring Docs/ here — that
+# would also hide the tracked Docs/Sessions, Docs/Logs, Docs/Deferred.md this
+# repo intentionally commits. Left as-is on purpose (Task 8 follow-up).
+Docs/Changelog
+Docs/Doclog
+Docs/Audit/
+Docs/**/*.png
+Docs/**/*.jpg
+Docs/**/*.jpeg
+Docs/Plan
+Matrix/
+
+# Internal security-architecture docs — never belong in a public clone.
+# These ARE currently tracked in THIS repo (a .gitignore rule does not
+# untrack an already-tracked file), so this is a no-op here; it becomes a
+# real guard the moment a future dev clone (Task 9's published repo) drops
+# a fresh CLAUDE.md/AGENTS.md in place and runs `git add -A`.
+/CLAUDE.md
+/AGENTS.md
+
+# Runtime data (personal, rebuildable, or ephemeral)
+tesseract/memory-store/
+tesseract/provisional/
+tesseract/logs/
+tesseract/telegram/
+tesseract/sessions/
+tesseract/agent-state/
+tesseract/vault/
+tesseract/workspace/
+
+# CR-1 work-history index — runtime artefact, per-machine
+/work_index.sqlite
+/work_index.sqlite-*
+tesseract/work_index.sqlite
+tesseract/work_index.sqlite-*
+
+# Session metadata derived index — runtime artefact, per-machine
+/session_metadata.sqlite
+/session_metadata.sqlite-*
+tesseract/session_metadata.sqlite
+tesseract/session_metadata.sqlite-*
+tesseract/tars-workshop/
+tesseract/compacted/
+tesseract/scheduler/state/
+tesseract/models/
+tesseract/uploads/
+# per-run browser/image scratch (hash-named PNG dirs) — runtime artifact, never source
+tesseract/browser/
+tesseract/downloads/
+# Repo-root downloads/ catches ad-hoc artefacts when TARS shells out from
+# Bash (cwd=repo root) instead of using file_write — see 2026-05-17 stray
+# `downloads/elevated-toilet-seat.{png,svg}` incident. file_write now
+# rewrites relative paths under tesseract/, but subprocess writes still
+# land here on the off chance one slips through.
+downloads/
+.playwright-mcp/
+.playwright-cli/
+tesseract/mirror/playwright-report/
+tesseract/mirror/test-results/
+tesseract/mirror/e2e/.auth/
+tesseract/mirror/node_modules/.cache/
+
+# Config files
+tesseract/config/providers copy.yaml
+
+# Rebuildable artifacts
+*.faiss
+
+# Piper TTS voice files — operator-downloaded, ~64 MB each, see
+# tesseract/voice/models/piper/README.md
+tesseract/voice/models/piper/*.onnx
+tesseract/voice/models/piper/*.onnx.json
+
+# Kokoro TTS — operator-downloaded ONNX + voices bundle (~hundreds of MB).
+# Mirror the Piper pattern: ignore the heavy artefacts, keep the README tracked.
+tesseract/voice/models/kokoro/*.onnx
+tesseract/voice/models/kokoro/*.bin
+tesseract/voice/models/kokoro/voices/
+
+# Local scratch / dev probes — operator-private
+tesseract/scratch/
+/spike_*.py
+/spike_*.json
+
+# Root-level runtime state guard (anchored — only matches repo root, not tesseract/)
+/memory-store/
+/logs/
+/sessions/
+/reviewtmp/
+/tmp_compacted/
+/tmp_review_probe_*/
+/tmpj*/
+/bash.exe.stackdump
+
+# Mission orchestrator runtime state (per CLAUDE.md — runtime never leaves tesseract/)
+tesseract/missions/
+
+# Autonomy runtime state (AU-3 / AU-4 / AU-8 / AU-9 / AU-10 / AU-11a / AU-11c / AU-20 / AU-22)
+tesseract/agenda/
+tesseract/upgrades/
+tesseract/workers/
+tesseract/runtime/
+tesseract/autonomy/
+# Delegation daemon auth state (token + port file) — local auth material, never committed
+tesseract/run/
+tesseract/worktrees/
+tesseract/worktrees-archive/
+tesseract/wiki/
+
+# TARS controller runtime (TC-4+) — controller.json singleton, heartbeats,
+# session ledger, transcripts. Audit-2 M1: live state is operator-private
+# and must never reach git.
+tesseract/tars_controller/
+# Controller lane runtime (lanes/, lanes-archive/, named-lanes/) — per-lane
+# events.jsonl + transcript + lane.json working state. Runtime never leaves git.
+tesseract/controller/
+# Operator journal — per-day operator-private jsonl, never committed.
+tesseract/operator_journal/
+# TC-3 trust store — operator-attended directory ALLOW decisions.
+tesseract/trusted_dirs.json
+
+# Repo-root dev/runtime logs (supervisor + vite) — ephemeral, per-machine.
+/supervisor-run.log
+/vite-dev.log
+
+# MCP hub provisioning drops project-scope client config into working dirs
+# (lanes, terminals — incl. repo root). Per-machine, carries env-var names only.
+.mcp.json
+
+# Runtime state leaked into src-tauri/ by the Plan-1 CWD-home bug (the Tauri
+# shell ran with CWD=src-tauri before 2a anchored TESSERACT_HOME per-user).
+# These hold REAL operator data — vault docs, memories, session dumps, channel
+# tokens, controller state. Untracked-but-unignored was one `git add -A` away
+# from publishing them. Never commit; the source tree under src-tauri/ (src/,
+# capabilities/, tauri.conf.json, Cargo.*) stays tracked.
+tesseract/mirror/src-tauri/agenda/
+tesseract/mirror/src-tauri/memory-store/
+tesseract/mirror/src-tauri/run/
+tesseract/mirror/src-tauri/sessions/
+tesseract/mirror/src-tauri/tars_controller/
+tesseract/mirror/src-tauri/telegram/
+tesseract/mirror/src-tauri/vault/
+tesseract/mirror/src-tauri/*.sqlite
+tesseract/mirror/src-tauri/*.sqlite-shm
+tesseract/mirror/src-tauri/*.sqlite-wal

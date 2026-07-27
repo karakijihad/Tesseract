@@ -1,0 +1,187 @@
+/* Voice — Phase 16 S2 */
+/* Mic button + chat-input voice-status row + waveform + transcribing dots */
+
+/* ─── Mic button states ───────────────────────────────────── */
+
+.hud-mic-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hud-voice-mode {
+  appearance: none;
+  border: 1px solid var(--panel-divider);
+  background: transparent;
+  color: var(--text-meta);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 999px;
+  cursor: pointer;
+  line-height: 1;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.hud-voice-mode:hover {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--panel-divider));
+}
+
+/* Speak — TARS speaks back. Default tone, accent-tinted. */
+.hud-voice-mode.is-speak {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--panel-divider));
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+/* Transcribe — TARS silent. Cooler, more neutral cue so the operator
+   reads "no audio reply" at a glance. */
+.hud-voice-mode.is-transcribe {
+  color: var(--text);
+  border-color: var(--panel-divider);
+  background: color-mix(in srgb, var(--text-meta) 8%, transparent);
+}
+
+/* Mic ON — saturated green so the operator reads "live capture" at a
+   glance, independent of which voice mode pill is selected. */
+.hud-mic.is-on {
+  color: #4ade80; /* green-400 */
+}
+
+.hud-mic.is-on::before {
+  /* Soft green glow ring whose alpha tracks --mic-level (audio RMS). */
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, #4ade80 calc(var(--mic-level, 0) * 70%), transparent) 0%,
+    transparent 70%
+  );
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* Mic OFF — dim red with the slash glyph so the operator reads "muted"
+   without needing color alone. Color + shape = WCAG-friendly. */
+.hud-mic.is-off {
+  color: color-mix(in srgb, #ef4444 60%, var(--text-meta));
+  opacity: 0.85;
+}
+
+.hud-mic.is-off:hover {
+  color: #ef4444;
+  opacity: 1;
+}
+
+.hud-mic {
+  position: relative;
+}
+
+.hud-mic.is-speaking {
+  /* Subtle pulse while VAD reports speech */
+  animation: hud-mic-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes hud-mic-pulse {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.08); }
+}
+
+.hud-mic.is-transcribing {
+  /* Hold the active color but stop the pulse so the user reads
+     "now waiting" rather than "still listening". */
+  color: var(--text-meta);
+}
+
+/* ─── Voice status row above textarea ────────────────────── */
+
+.voice-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text-meta);
+  border-bottom: 1px solid var(--panel-divider);
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+}
+
+.voice-status__label {
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* Transcribing — animated dots */
+
+.voice-status--transcribing .voice-status__dots {
+  display: inline-flex;
+  gap: 3px;
+  margin-left: 2px;
+}
+
+.voice-status--transcribing .voice-status__dots span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--text-meta);
+  animation: voice-dot 1.2s ease-in-out infinite;
+}
+.voice-status--transcribing .voice-status__dots span:nth-child(2) {
+  animation-delay: 0.18s;
+}
+.voice-status--transcribing .voice-status__dots span:nth-child(3) {
+  animation-delay: 0.36s;
+}
+
+@keyframes voice-dot {
+  0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+  40%           { opacity: 1;    transform: translateY(-2px); }
+}
+
+/* Waveform — 8 bars driven by --h custom prop (set inline 0..1) */
+
+.voice-waveform {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 14px;
+}
+
+.voice-waveform span {
+  display: inline-block;
+  width: 3px;
+  height: calc(var(--h, 0.3) * 100%);
+  min-height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+  transition: height 0.08s ease-out;
+}
+
+.voice-status--waveform.is-speaking .voice-waveform span {
+  background: var(--accent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.voice-status--waveform:not(.is-speaking) .voice-waveform span {
+  background: var(--text-meta);
+}
+
+/* Browser-local partial transcript — grey-italic preview that fills in
+   as the operator speaks. Replaced by the canonical voice_final on
+   commit, so the text length here is bounded by a single utterance. */
+.voice-status__partial {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: 6px;
+  font-style: italic;
+  color: var(--text-meta);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

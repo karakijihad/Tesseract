@@ -1,0 +1,34 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Phase 3d research prototypes — experimental, not shipped
+src/lib/anatomy/prototypes/
+index-harness.html
+
+# Phase 16 S2 — Silero VAD + ONNX Runtime WASM assets are vendored at
+# install-time by `scripts/copy-vad-assets.mjs` (postinstall). Tracking
+# the binaries (~36 MB) bloats the repo for no benefit; fresh clones
+# regenerate them via `pnpm install`.
+public/vad/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

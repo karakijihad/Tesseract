@@ -1,0 +1,395 @@
+/* === SPATIAL COCKPIT — SC-1 ===
+   The fixed orb stage. The TARS orb is the full-screen WebGL singleton
+   (`GlobalCanvas`, z-index 0) behind the cockpit chrome (`.cockpit-shell`,
+   z-index 1). Depth is static layering — orb far (behind), frosted panels
+   forward — so the orb reads through every summoned panel. No cursor
+   parallax (operator-rejected); the stage is fixed.
+
+   Atmosphere + palette are inherited verbatim from `tokens.css` +
+   `canvas.css` via the permanent `data-view="tars"` mode on the shell.
+   The grid frame (`.cockpit-shell` / `.cockpit-body` / `.cockpit-hud`)
+   still lives in globals.css + canvas.css and is reused as-is — this file
+   only adds the new center stage + the panel-host slot. */
+
+/* The center stage: a perspective context filling `.cockpit-center`. The
+   orb shows through from behind (the stage paints nothing), and SC-2's
+   summoned glass panels mount into `.panel-host` with a shared depth so
+   they can lift forward off the orb. Transparent + relative so the
+   panel-host's absolute children anchor here. */
+/* SC-3 — the grid asides are retired (rails are dockable panels now), so the
+   center is a direct flex child of `.cockpit-shell` and must grow to fill the
+   space between the top pill and the bottom HUD. It spans full width; the orb
+   reads through and the docked rails hug its edges as panels. */
+.cockpit-shell > .cockpit-center {
+  flex: 1 1 auto;
+}
+
+.cockpit-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  perspective: 1600px;
+  perspective-origin: 50% 42%;
+}
+
+/* SC-1: empty. SC-2 mounts the summoned view panels here, over the orb.
+   Pointer-transparent so the bare stage never intercepts pointer events
+   meant for the orb / rails; each panel re-enables `pointer-events: auto`
+   on itself. Deliberately NOT a stacking context — panels position against
+   this host but must resolve their z in `.cockpit-stage` so they interleave
+   with the Surface-Protocol cards on the shared `zStack` counter. (No panel
+   uses a 3D transform, so the old `preserve-3d` only trapped that ordering.) */
+.panel-host {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* === SC-2 — summoned view panels ===
+   Frosted glass over the orb (values mirror `.surface-card` in surfaces.css so
+   the panel + Surface-Protocol cards read as one material). `position:absolute`
+   inside `.panel-host` — never `fixed` (the `.cockpit-stage` perspective is a
+   containing block for fixed). Each panel re-enables pointer events on itself;
+   the host stays transparent so a bare stage clicks through to the orb. */
+.glass-panel {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  pointer-events: auto;
+  box-sizing: border-box;
+  min-width: 340px;
+  min-height: 240px;
+  background: hsl(248 30% 9% / 0.62);
+  border: 1px solid hsl(var(--accent-hsl) / 0.22);
+  border-radius: var(--radius-md);
+  box-shadow:
+    0 24px 70px -18px rgba(0, 0, 0, 0.7),
+    0 0 0 1px hsl(var(--accent-hsl) / 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(22px) saturate(1.25);
+  -webkit-backdrop-filter: blur(22px) saturate(1.25);
+  /* NOT `overflow: hidden` — that would clip the 7 edge/corner resize handles
+     that overhang the frame. Rounded-corner clipping lives on the bar (top) +
+     body (bottom) instead, each of which keeps its own overflow clip. */
+  opacity: 1;
+  transition:
+    opacity 160ms var(--ease-out),
+    transform 160ms var(--ease-out);
+}
+
+/* Closed = kept mounted (terminal PTY / chat scrollback survive) but invisible
+   + click-blocked — the keep-mounted contract from `.view-pane--keep-mounted`. */
+.glass-panel--hidden {
+  visibility: hidden;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.glass-panel__bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  background: hsl(var(--accent-hsl) / 0.07);
+  border-bottom: 1px solid hsl(var(--accent-hsl) / 0.14);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  cursor: grab;
+  user-select: none;
+}
+.glass-panel__bar:active {
+  cursor: grabbing;
+}
+
+.glass-panel__title {
+  font-family: var(--font-display, var(--font-ui));
+  font-size: 0.74rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Header action cluster: pin · maximize · close (pin shows on every panel incl.
+   rails; maximize is view-only — hidden on rails). */
+.glass-panel__actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.glass-panel__btn {
+  width: 1.5rem;
+  height: 1.5rem;
+  display: grid;
+  place-items: center;
+  line-height: 1;
+  font-size: 0.85rem;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-meta);
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
+}
+.glass-panel__btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.glass-panel__btn.is-active {
+  color: var(--accent-bright);
+}
+.glass-panel__close {
+  font-size: 1.1rem;
+}
+
+/* Body reproduces the `.view-pane.is-active` parent contract verbatim — flex
+   column, min-height/width:0, hard `overflow:hidden` slot boundary, and the
+   defensive `* { min-width:0 }` — so every whole view renders intact inside a
+   panel exactly as it did in the old ViewRouter slot. */
+.glass-panel__body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  box-sizing: border-box;
+  /* overflow:hidden + the bottom radius clip the view content to the rounded
+     corners now that the panel frame itself no longer clips (see `.glass-panel`). */
+  overflow: hidden;
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+}
+.glass-panel__body * {
+  min-width: 0;
+}
+
+/* Resize from any edge or corner — 8 invisible handles overhanging the frame.
+   Edges sit between the corners; corners come later in the DOM so they win the
+   shared region. Only the SE corner carries a faint visual affordance. */
+.glass-panel__resize {
+  position: absolute;
+  z-index: 2;
+}
+.glass-panel__resize--n {
+  top: -3px;
+  left: 10px;
+  right: 10px;
+  height: 8px;
+  cursor: ns-resize;
+}
+.glass-panel__resize--s {
+  bottom: -3px;
+  left: 10px;
+  right: 10px;
+  height: 8px;
+  cursor: ns-resize;
+}
+.glass-panel__resize--e {
+  right: -3px;
+  top: 10px;
+  bottom: 10px;
+  width: 8px;
+  cursor: ew-resize;
+}
+.glass-panel__resize--w {
+  left: -3px;
+  top: 10px;
+  bottom: 10px;
+  width: 8px;
+  cursor: ew-resize;
+}
+.glass-panel__resize--ne {
+  top: -3px;
+  right: -3px;
+  width: 16px;
+  height: 16px;
+  cursor: nesw-resize;
+}
+.glass-panel__resize--nw {
+  top: -3px;
+  left: -3px;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+}
+.glass-panel__resize--sw {
+  bottom: -3px;
+  left: -3px;
+  width: 16px;
+  height: 16px;
+  cursor: nesw-resize;
+}
+.glass-panel__resize--se {
+  bottom: 0;
+  right: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  background: linear-gradient(
+    135deg,
+    transparent 50%,
+    hsl(var(--accent-hsl) / 0.45) 50%
+  );
+  border-bottom-right-radius: var(--radius-md);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glass-panel {
+    transition: none;
+  }
+}
+
+/* Ambient orb captions — TARS's latest line as a fading subtitle centered in
+   the lower third of the stage (under the orb). Pointer-transparent so it never
+   blocks the orb or panels; sits below the panel layer. Fades via opacity. */
+.orb-captions {
+  position: absolute;
+  left: 50%;
+  bottom: 22%;
+  transform: translateX(-50%);
+  z-index: 2;
+  max-width: min(54ch, 76%);
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-md);
+  background: hsl(248 30% 7% / 0.42);
+  border: 1px solid hsl(var(--accent-hsl) / 0.14);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  pointer-events: none;
+  text-align: center;
+  opacity: 0;
+  transition: opacity 600ms var(--ease-out);
+}
+.orb-captions.is-visible {
+  opacity: 0.82;
+}
+.orb-captions__text {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 0.92rem;
+  line-height: 1.45;
+  letter-spacing: 0.01em;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6);
+}
+@media (prefers-reduced-motion: reduce) {
+  .orb-captions {
+    transition: none;
+  }
+}
+
+/* SC-3 — [K][L] rail toggles in the bottom HUD (reuse `.hud-tab` button base). */
+.hud-rail-toggles {
+  display: flex;
+  gap: var(--space-xs);
+}
+.hud-rail-toggle {
+  font-family: var(--font-display, var(--font-ui));
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+/* "Summoned panes" dropdown — a window list of the open view panels. The menu
+   is a frosted card that pops up above the HUD button (the HUD sits at the
+   bottom of the stage, so the menu opens upward). */
+.hud-panes {
+  position: relative;
+}
+.hud-panes__btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.hud-panes__menu {
+  /* Portalled to <body> (the HUD bar clips overflow), positioned via fixed
+     coords computed in SummonedPanes — see BottomHud.tsx. */
+  position: fixed;
+  z-index: 50;
+  min-width: 200px;
+  max-height: 60vh;
+  overflow-y: auto;
+  margin: 0;
+  padding: var(--space-xs);
+  list-style: none;
+  background: hsl(248 30% 9% / 0.82);
+  border: 1px solid hsl(var(--accent-hsl) / 0.22);
+  border-radius: var(--radius-md);
+  box-shadow: 0 18px 50px -16px rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(22px) saturate(1.25);
+  -webkit-backdrop-filter: blur(22px) saturate(1.25);
+}
+.hud-panes__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.hud-panes__jump {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  padding: 0.34rem 0.5rem;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  text-align: left;
+  cursor: pointer;
+}
+.hud-panes__row:hover .hud-panes__jump {
+  background: hsl(var(--accent-hsl) / 0.12);
+}
+.hud-panes__tag {
+  font-size: 0.66rem;
+  letter-spacing: 0.03em;
+}
+.hud-panes__close {
+  flex: 0 0 auto;
+  width: 1.4rem;
+  height: 1.4rem;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-meta);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.hud-panes__close:hover {
+  color: var(--text-primary);
+  background: hsl(var(--accent-hsl) / 0.12);
+}
+
+/* HUD responsiveness — keep the command bar usable on any width. The tab row
+   ([K][L] + 14 tabs) is the widest element; let it shrink and scroll instead of
+   overflowing. The chat input flex-shrinks; the spacer absorbs slack on wide
+   screens so nothing scrolls until it's actually needed. */
+.hud-tabs {
+  min-width: 0;
+}
+@media (max-width: 1200px) {
+  .cockpit-hud-inner {
+    gap: var(--space-sm);
+  }
+  .hud-tabs {
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+    scroll-snap-type: x proximity;
+  }
+  .hud-tabs::-webkit-scrollbar {
+    height: 4px;
+  }
+  .hud-tabs::-webkit-scrollbar-thumb {
+    background: var(--border-visible);
+    border-radius: 2px;
+  }
+}

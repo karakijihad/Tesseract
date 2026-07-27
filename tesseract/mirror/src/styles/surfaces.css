@@ -1,0 +1,768 @@
+/* Y-2 — Surface Protocol card styles.
+ *
+ * `.surface-card` is the shared card primitive (CL-6): one chrome + body
+ * shell every renderer drops into, replacing the per-pane bespoke card
+ * markup the autonomy dashboard's 9-pane sprawl used. New surface types
+ * inherit the chrome for free.
+ *
+ * Hint text uses `var(--text-meta)` / `.t-meta` per the Mirror HARD RULE.
+ */
+
+/* The overlay layer fills the stage and is pointer-transparent so clicks in
+   the gaps between cards fall through to the orb; only the cards capture
+   input. Deliberately NOT a stacking context (no z-index) — the cards must
+   share `.cockpit-stage`'s context with the glass panels so the two systems
+   interleave on the single last-focused-wins `zStack` counter (a card can sit
+   above one panel and below another). A fixed z-index here would pin every
+   card above every panel regardless of focus. */
+.surface-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.surface-card {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  pointer-events: auto;
+  /* Frosted-glass cockpit card (chrome pass): translucent dark surface over
+     the atmosphere/orb, accent-tinted edge + depth glow, backdrop blur. */
+  background: hsl(248 30% 9% / 0.62);
+  border: 1px solid hsl(var(--accent-hsl) / 0.22);
+  border-radius: var(--radius-md);
+  box-shadow:
+    0 24px 70px -18px rgba(0, 0, 0, 0.7),
+    0 0 0 1px hsl(var(--accent-hsl) / 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(22px) saturate(1.25);
+  -webkit-backdrop-filter: blur(22px) saturate(1.25);
+  overflow: hidden;
+  min-width: 160px;
+  min-height: 120px;
+}
+
+.surface-card--locked {
+  border-style: dashed;
+}
+
+/* Minimized: collapse body + resize handles; bar stays as grab handle to restore. */
+.surface-card--minimized {
+  min-height: 0;
+}
+.surface-card--minimized .surface-card__body,
+.surface-card--minimized .surface-card__rh {
+  display: none;
+}
+
+/* Maximized: the card fills the overlay; drag is inert, so drop the grab cue. */
+.surface-card--maximized {
+  border-radius: 0;
+}
+.surface-card--maximized .surface-card__bar {
+  cursor: default;
+}
+
+/* Bar button group (maximize + minimize + close side-by-side). */
+.surface-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.surface-card__action {
+  flex: 0 0 auto;
+  width: 1.4rem;
+  height: 1.4rem;
+  line-height: 1;
+  font-size: 0.7rem;
+  color: var(--text-meta);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.surface-card__action:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.surface-card--highlight {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 2px var(--accent-glow),
+    0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+.surface-card__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  background: hsl(var(--accent-hsl) / 0.07);
+  border-bottom: 1px solid hsl(var(--accent-hsl) / 0.14);
+  cursor: grab;
+  user-select: none;
+}
+
+.surface-card__bar:active {
+  cursor: grabbing;
+}
+
+.surface-card__title {
+  font-family: var(--font-ui);
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.surface-card__close {
+  flex: 0 0 auto;
+  width: 1.4rem;
+  height: 1.4rem;
+  line-height: 1;
+  font-size: 1.1rem;
+  color: var(--text-meta);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.surface-card__close:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.surface-card__lock {
+  font-size: 0.8rem;
+}
+
+.surface-card__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  background: var(--bg-surface);
+}
+
+/* A `session-transcript` card hosts ControllerMirrorBlock, whose transcript is
+   capped at 300px for its chat-embedded use. Inside a resizable surface card,
+   let it fill the card body so a taller card shows more transcript (no dead
+   space). Scoped to `.surface-card__body` — the chat use is untouched. */
+.surface-card__body .controller-mirror {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  margin-top: 0;
+  border: none;
+}
+.surface-card__body .controller-mirror__transcript {
+  flex: 1 1 auto;
+  max-height: none;
+}
+
+/* 8-way resize handles. Kept just inside the card edge (the card clips
+   overflow, so negative offsets would be invisible). Corners sit after the
+   edges in the DOM, so they win the shared overlap zone. The SE corner keeps
+   the classic diagonal-grip texture as the visible resize affordance. */
+.surface-card__rh {
+  position: absolute;
+  z-index: 3;
+}
+.surface-card__rh--n {
+  top: 0;
+  left: 10px;
+  right: 10px;
+  height: 6px;
+  cursor: ns-resize;
+}
+.surface-card__rh--s {
+  bottom: 0;
+  left: 10px;
+  right: 10px;
+  height: 6px;
+  cursor: ns-resize;
+}
+.surface-card__rh--e {
+  top: 10px;
+  right: 0;
+  bottom: 10px;
+  width: 6px;
+  cursor: ew-resize;
+}
+.surface-card__rh--w {
+  top: 10px;
+  left: 0;
+  bottom: 10px;
+  width: 6px;
+  cursor: ew-resize;
+}
+.surface-card__rh--ne {
+  top: 0;
+  right: 0;
+  width: 12px;
+  height: 12px;
+  cursor: nesw-resize;
+}
+.surface-card__rh--nw {
+  top: 0;
+  left: 0;
+  width: 12px;
+  height: 12px;
+  cursor: nwse-resize;
+}
+.surface-card__rh--se {
+  bottom: 0;
+  right: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  background: linear-gradient(
+    135deg,
+    transparent 0 50%,
+    var(--border-visible) 50% 100%
+  );
+}
+.surface-card__rh--sw {
+  bottom: 0;
+  left: 0;
+  width: 12px;
+  height: 12px;
+  cursor: nesw-resize;
+}
+
+/* -- Y-3 views-as-canvases ---------------------------------------------- */
+
+/* The migrated view shells (PulseView / TerminalView) wrap a CanvasShell;
+   fill the centre pane so the shell + cards have room. */
+.pulse-view-canvas,
+.terminal-view-canvas {
+  display: flex;
+  flex: 1 1 auto;
+  align-self: stretch;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+/* Card-hosted view bodies fill their surface card (the card supplies chrome,
+   scroll, geometry). */
+.pulse-view--card,
+.spawn-card {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.pulse-view--card .pulse-stream {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.pulse-filters--card {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  align-content: flex-start;
+  padding: var(--space-xs);
+  height: 100%;
+  overflow: auto;
+}
+
+.spawn-card .spawn-drawer-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* -- per-renderer bodies ------------------------------------------------ */
+
+.surface-folder {
+  padding: var(--space-xs) 0;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+
+.surface-folder__root {
+  padding: 0 var(--space-sm) var(--space-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.surface-folder__list {
+  list-style: none;
+}
+
+.surface-folder__entry {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  width: 100%;
+  padding: 2px var(--space-sm);
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.surface-folder__entry:hover {
+  background: var(--bg-hover);
+}
+
+.surface-folder__icon {
+  color: var(--text-meta);
+}
+
+.surface-folder__empty,
+.surface-folder__root {
+  color: var(--text-meta);
+}
+
+.surface-file--text,
+.surface-code,
+.surface-terminal__fallback {
+  margin: 0;
+  padding: var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-primary);
+}
+
+.surface-file--image {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-sm);
+}
+
+.surface-file--image img {
+  max-width: 100%;
+  height: auto;
+}
+
+.surface-file--pdf {
+  padding: var(--space-sm);
+  font-size: 0.85rem;
+}
+
+.surface-image {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: var(--space-sm);
+  overflow: auto;
+}
+
+.surface-image img {
+  max-width: 100%;
+  max-height: 100%;
+  height: auto;
+  object-fit: contain;
+}
+
+.surface-image--empty {
+  color: var(--text-meta);
+  font-size: 0.85rem;
+}
+
+.surface-markdown {
+  padding: var(--space-sm) var(--space-md);
+  font-size: 0.88rem;
+}
+
+.surface-webview,
+.surface-html {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+.surface-webview__frame {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #fff;
+}
+
+.surface-webview--empty {
+  padding: var(--space-sm);
+}
+
+.surface-extlink {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  height: 100%;
+  padding: var(--space-md);
+  text-align: center;
+}
+
+.surface-extlink__btn {
+  display: inline-block;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--border, #333);
+  border-radius: var(--radius-sm, 6px);
+  font-size: 0.95rem;
+  text-decoration: none;
+  color: var(--text, #eee);
+  background: var(--bg-raised, #1a1a1a);
+}
+
+.surface-extlink__btn:hover {
+  border-color: var(--accent, #4a9);
+}
+
+.surface-extlink__url {
+  font-size: 0.8rem;
+  word-break: break-all;
+}
+
+.surface-terminal {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-void, #000);
+}
+
+.surface-terminal__bound {
+  padding: 2px var(--space-sm);
+  color: var(--accent);
+  font-size: 0.72rem;
+}
+
+.surface-terminal__host {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.surface-json {
+  padding: var(--space-sm);
+}
+
+.surface-json__badge {
+  margin-bottom: var(--space-xs);
+  padding: 2px var(--space-xs);
+  display: inline-block;
+  font-size: 0.72rem;
+  color: var(--accent-error, #d46a6a);
+  border: 1px solid var(--accent-error, #d46a6a);
+  border-radius: var(--radius-sm);
+}
+
+.surface-json__body {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-secondary);
+}
+
+/* -- CV-1: lane cards + trio ------------------------------------------- */
+
+.lane-card {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-surface);
+}
+
+.lane-card__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.lane-card__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--text-meta);
+}
+.lane-card__dot--claude {
+  background: #d97757;
+}
+.lane-card__dot--codex {
+  background: #10a37f;
+}
+
+.lane-card__name {
+  font-family: var(--font-ui);
+  font-size: 0.82rem;
+  color: var(--text-primary);
+}
+.lane-card__model {
+  font-size: 0.72rem;
+}
+.lane-card__state {
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: var(--text-meta);
+}
+.lane-card__state.is-busy {
+  color: var(--accent);
+}
+.lane-card__queue {
+  font-size: 0.7rem;
+}
+
+.lane-card__reattach {
+  padding: 2px var(--space-sm);
+  font-size: 0.7rem;
+  color: var(--accent);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.lane-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: var(--space-xs);
+}
+.lane-card__actions button {
+  width: 1.5rem;
+  height: 1.5rem;
+  display: grid;
+  place-items: center;
+  font-size: 0.8rem;
+  line-height: 1;
+  color: var(--text-meta);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.lane-card__actions button:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.lane-card__delete.is-armed {
+  width: auto;
+  padding: 0 6px;
+  font-size: 0.68rem;
+  color: var(--accent-error, #d46a6a);
+  background: hsl(0 60% 50% / 0.12);
+}
+.lane-card__title-edit {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--bg-base);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 1px 5px;
+}
+
+/* CV-1 — trio wire flow (TARS routing card → each lane). */
+.trio-wires {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 0;
+}
+.trio-wire__line {
+  fill: none;
+  stroke: hsl(var(--accent-hsl) / 0.22);
+  stroke-width: 1;
+}
+.trio-wire__flow {
+  fill: none;
+  stroke: hsl(var(--accent-hsl) / 0.9);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-dasharray: 4 26;
+  filter: drop-shadow(0 0 4px var(--accent));
+  animation: trio-wire-flow 1.8s linear infinite;
+}
+@keyframes trio-wire-flow {
+  to {
+    stroke-dashoffset: -30;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .trio-wire__flow {
+    animation: none;
+  }
+}
+
+.lane-card__stream {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-xs) var(--space-sm);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.lane-ev {
+  margin-bottom: var(--space-xs);
+  word-break: break-word;
+}
+.lane-ev--text {
+  color: var(--text-primary);
+  white-space: pre-wrap;
+}
+/* Operator-sent message — a right-aligned accent bubble. */
+.lane-ev--sent {
+  margin-left: auto;
+  max-width: 82%;
+  width: fit-content;
+  padding: 4px 9px;
+  border-radius: 10px 10px 2px 10px;
+  background: hsl(var(--accent-hsl) / 0.16);
+  border: 1px solid hsl(var(--accent-hsl) / 0.28);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+}
+.lane-ev--tool,
+.lane-ev--result,
+.lane-ev--ask {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+}
+.lane-ev__tag {
+  display: inline-block;
+  padding: 0 4px;
+  margin-right: 4px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-elevated);
+  color: var(--text-meta);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+}
+.lane-ev--ask .lane-ev__tag {
+  color: var(--accent);
+}
+.lane-ev__io {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-meta);
+  white-space: pre-wrap;
+}
+.lane-ev--error {
+  color: var(--accent-error, #d46a6a);
+}
+.lane-ev--turn,
+.lane-ev--closed,
+.lane-card__empty {
+  font-size: 0.72rem;
+}
+
+.lane-card__input {
+  display: flex;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  border-top: 1px solid var(--border-subtle);
+}
+.lane-card__draft {
+  flex: 1 1 auto;
+  resize: none;
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 4px 6px;
+}
+.lane-card__send {
+  flex: 0 0 auto;
+  align-self: flex-end;
+  padding: 4px 10px;
+  background: var(--accent);
+  color: var(--bg-void, #000);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+.lane-card__send:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.trio-routing {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  height: 100%;
+  padding: var(--space-sm);
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+.trio-routing__title {
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  color: var(--text-primary);
+  letter-spacing: 0.08em;
+}
+.trio-routing__lanes {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.trio-routing__lane {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: 0.76rem;
+}
+.trio-routing__flow {
+  margin-left: auto;
+  color: var(--text-meta);
+}
+.trio-routing__flow.is-active {
+  color: var(--accent);
+}
+.trio-routing__note {
+  font-size: 0.7rem;
+}
+
+.trio-launcher {
+  position: absolute;
+  top: var(--space-sm);
+  right: var(--space-sm);
+  z-index: 100001; /* above the surface layer */
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.trio-launcher__btn {
+  padding: 4px 10px;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-visible);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.78rem;
+}
+.trio-launcher__btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

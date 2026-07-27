@@ -1,0 +1,21 @@
+# Conscience — drift signal thresholds. Rule-based only, no LLM involved.
+# A periodic job scans scheduler run logs and circuit-breaker state, scores
+# each signal against the thresholds below, and writes one report per run.
+#
+# Each signal has a warn and a bad threshold. Higher is always worse.
+
+drift:
+  window_hours: 24              # look back this many hours
+
+  signals:
+    circuit_breaker_open_count:
+      warn: 1                   # any open breaker warns
+      bad: 3
+
+    scheduler_failure_rate:
+      warn: 0.10                # fraction of runs in window that failed
+      bad: 0.30
+
+    scheduler_idle_hours:
+      warn: 6                   # hours with no scheduler activity
+      bad: 24

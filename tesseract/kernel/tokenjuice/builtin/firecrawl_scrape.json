@@ -1,0 +1,24 @@
+{
+  "id": "firecrawl_scrape.default",
+  "family": "web",
+  "description": "firecrawl_scrape — belt-and-suspenders nav/footer/script line drop + cap.",
+  "priority": 60,
+  "match": {"tool_names": ["firecrawl_scrape", "firecrawl_crawl"]},
+  "transforms": ["trim_empty_edges", "dedup_adjacent"],
+  "reducers": [
+    {
+      "kind": "drop_regex",
+      "patterns": [
+        "^\\s*<script",
+        "^\\s*</script>",
+        "^\\s*<nav",
+        "^\\s*<footer",
+        "^\\s*cookie\\s+(policy|consent)",
+        "^\\s*©\\s*20",
+        "^\\s*\\|\\s*$"
+      ]
+    },
+    {"kind": "cap_chars", "n": 16000}
+  ],
+  "passthrough_when": {"max_chars": 3000}
+}

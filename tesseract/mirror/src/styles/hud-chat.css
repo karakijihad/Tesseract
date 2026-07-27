@@ -1,0 +1,290 @@
+/* MP-2 ambient observer — chatbot-widget surface in the HUD.
+   Hidden entirely on the chat tab; on every other tab the operator sees a
+   collapsed "Ask TARS" toggle that expands into a slide-up panel with
+   scrollback + composer. Same conversation store, same WS session, same
+   attachments as the chat tab — just a different surface.
+   Hint-token rule: helper text uses var(--text-meta), never var(--text-dim). */
+
+/* ---- Collapsed toggle — matches .hud-tab shape so it reads as one of
+   the cockpit buttons rather than a foreign pill. 32x32 square, no
+   border by default, accent ring + dim background when open. ---- */
+
+.hud-chat-toggle {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: var(--t-sub-size);
+  transition: all var(--motion-fast) var(--ease-out);
+}
+
+.hud-chat-toggle:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.hud-chat-toggle.is-open {
+  color: var(--accent-bright);
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+/* ---- Expanded panel ---- */
+
+/* `position: fixed` so the panel escapes the HUD's `overflow: hidden`.
+   Anchored bottom-right above the HUD bar — typical website-chatbot
+   placement. The HUD itself sits at the bottom with ~48px height +
+   ~16px margin, so 72px clears it. */
+.hud-chat-panel {
+  position: fixed;
+  bottom: 72px;
+  right: var(--space-md, 16px);
+  width: 360px;
+  max-height: min(480px, calc(100vh - 120px));
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--panel-border, rgba(255, 255, 255, 0.1));
+  border-radius: var(--radius-md);
+  background: var(--panel-bg, rgba(12, 12, 16, 0.96));
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  z-index: 30;
+  animation: hud-chat-slide-up var(--motion-fast, 160ms) var(--ease-out, ease-out);
+  overflow: hidden;
+}
+
+@keyframes hud-chat-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.hud-chat-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.hud-chat-panel-title {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-meta);
+}
+
+.hud-chat-panel-close {
+  border: none;
+  background: transparent;
+  color: var(--text-meta);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+.hud-chat-panel-close:hover {
+  color: var(--accent-bright);
+}
+
+.hud-chat-panel-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hud-chat-panel-empty {
+  font-size: 11px;
+  padding: 10px 6px;
+  text-align: center;
+}
+
+/* Compact-mode overrides for chat-tab components when mounted inside
+   the HUD panel. Tool-call pills + delegate cards are hidden — operator
+   asked for "no tools" because they need horizontal room. The rest of
+   the chat-tab rendering (markdown, attachments, approval cards) stays. */
+.hud-chat-panel .tool-call-pill,
+.hud-chat-panel .delegate-card {
+  display: none !important;
+}
+
+.hud-chat-panel pre,
+.hud-chat-panel code {
+  max-width: 100%;
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.hud-chat-panel .message-bubble {
+  max-width: 100%;
+}
+
+/* ---- Composer (lives inside the panel) ---- */
+
+.hud-chat-composer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 6px 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.hud-chat-input-field {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+  transition: border-color var(--motion-fast) var(--ease-out);
+}
+
+.hud-chat-input-field:focus {
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.hud-chat-input-field::placeholder {
+  color: var(--text-meta);
+}
+
+.hud-chat-input-send,
+.hud-chat-input-attach {
+  height: 26px;
+  width: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.hud-chat-input-attach {
+  font-size: 16px;
+}
+
+.hud-chat-input-send:hover:not(:disabled),
+.hud-chat-input-attach:hover:not(:disabled) {
+  color: var(--accent-bright);
+  background: var(--accent-dim);
+}
+
+.hud-chat-input-send:disabled,
+.hud-chat-input-attach:disabled {
+  cursor: default;
+  color: var(--text-meta);
+  opacity: 0.5;
+}
+
+/* Q3 frontend — "redirect now", mirrors ChatInput.chat-steer-btn's
+   --warn accent so the verb reads the same across surfaces. */
+.hud-chat-input-steer {
+  height: 26px;
+  width: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--warn);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.hud-chat-input-steer:hover {
+  color: var(--warn);
+  background: var(--accent-dim);
+}
+
+.hud-chat-file-input {
+  display: none;
+}
+
+/* Pending-attachment chip strip — sits between scrollback and composer
+   when the operator has uploaded files but not sent yet. */
+.hud-chat-attachments {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 4px 10px;
+}
+
+.hud-chat-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-meta);
+  font-size: 11px;
+  line-height: 1.2;
+  max-width: 160px;
+}
+
+.hud-chat-attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hud-chat-attachment-remove {
+  border: none;
+  background: transparent;
+  color: var(--text-meta);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.hud-chat-attachment-remove:hover {
+  color: var(--accent-bright);
+}
+
+.hud-chat-upload-error {
+  font-size: 11px;
+  color: var(--text-meta);
+  padding: 0 10px 4px;
+}
+
+/* Q2 frontend — .chat-queue-pill base chrome lives in globals.css
+   (shared with ChatInput); .hud-chat-panel is a column flex container
+   (unlike ChatInput's row-wrap), so it only needs matching margin here. */
+.hud-chat-panel .chat-queue-pill {
+  margin: 0 10px 4px;
+}

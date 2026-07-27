@@ -1,0 +1,278 @@
+/* Y-1 — canvas substrate base styles.
+ *
+ * `.canvas-shell` fills its view slot and hosts tldraw. The tldraw
+ * background is forced transparent so the TARS orb (GlobalCanvas, a
+ * fixed full-screen WebGL field at z=0 behind the cockpit) shows through
+ * the canvas on TarsView. tldraw owns all pointer input; the orb is
+ * `pointer-events: none`, so there is no input contention.
+ */
+
+.canvas-shell {
+  position: relative;
+  /* Stretch to fill the centered `.tars-view` flex slot (globals.css
+     centers its children; flex-grow + align-self override that so the
+     canvas fills the box instead of collapsing to content size). */
+  flex: 1 1 auto;
+  align-self: stretch;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background: transparent;
+}
+
+/* Cockpit atmosphere (chrome pass, 2026-06-03): translucent nebula +
+   vignette behind the whole cockpit so it reads as deep space with the orb
+   glowing through. `::before` = nebula+vignette, `::after` = film grain.
+   position:FIXED (full viewport) — not absolute — so it is NOT bounded to the
+   centre column; a column-bounded layer made the canvas-shell rectangle read
+   as a "panel" behind the orb. Pointer-transparent; keyed off --accent-hsl.
+   Scoped to data-view="tars" so the Y-3 canvas views (pulse / terminal)
+   keep their solid view-pane background instead of the nebula.
+   SC-1: the spatial cockpit (`.cockpit-shell`, permanently data-view="tars")
+   is now the primary consumer — the orb is no longer wrapped in a
+   `.canvas-shell`, so the atmosphere is scoped to both. The pseudo MUST stay
+   on `.cockpit-shell` (no transform) — `.cockpit-stage`'s `perspective` would
+   trap the position:fixed layer to its box instead of the viewport. */
+.canvas-shell[data-view="tars"]::before,
+.cockpit-shell[data-view="tars"]::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(80% 80% at 50% 46%, hsl(var(--accent-hsl) / 0.14), transparent 58%),
+    radial-gradient(60% 55% at 14% 16%, hsl(var(--accent-hsl) / 0.09), transparent 60%),
+    radial-gradient(55% 50% at 88% 84%, hsl(210 80% 50% / 0.07), transparent 60%),
+    radial-gradient(140% 130% at 50% 50%, transparent 46%, rgba(0, 0, 0, 0.5) 100%);
+  animation: cockpit-neb 26s ease-in-out infinite alternate;
+}
+.canvas-shell[data-view="tars"]::after,
+.cockpit-shell[data-view="tars"]::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.045;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='150' height='150'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+/* Keep tldraw + the surface layer above the atmosphere pseudo-layers. */
+.canvas-shell .tl-container { position: relative; z-index: 1; }
+
+@keyframes cockpit-neb {
+  to { filter: hue-rotate(6deg) brightness(1.06); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .canvas-shell[data-view="tars"]::before,
+  .cockpit-shell[data-view="tars"]::before { animation: none; }
+}
+
+/* Let the orb read through tldraw's canvas + paper layers. Without this,
+   tldraw paints an opaque `--color-background` over the orb. */
+.canvas-shell .tl-container,
+.canvas-shell .tl-background,
+.canvas-shell .tl-canvas {
+  background: transparent !important;
+}
+
+/* TarsView immersion: drop the rail + center panel fills so the orb +
+   atmosphere read through the whole cockpit (operator-requested). Scoped to
+   data-view="tars" so the other views keep their solid panels. The rail
+   content (kernel tree, lifeline) sits at the edges where the orb is dim, so
+   legibility holds; a faint backdrop-blur keeps text crisp over bright spots. */
+.cockpit-shell[data-view="tars"] .cockpit-left,
+.cockpit-shell[data-view="tars"] .cockpit-right,
+.cockpit-shell[data-view="tars"] .cockpit-center,
+.cockpit-shell[data-view="tars"] .left-panel-inner,
+.cockpit-shell[data-view="tars"] .right-panel-inner {
+  background: transparent;
+  border-color: transparent;
+}
+.cockpit-shell[data-view="tars"] .left-panel-inner,
+.cockpit-shell[data-view="tars"] .right-panel-inner {
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* Collapsible rails (slice 2). Column widths are set inline by CockpitShell;
+   animate the transition here. Collapsed → a thin vertical re-open tab;
+   expanded → a chevron that fades in on hover. */
+.cockpit-body {
+  transition: grid-template-columns 0.26s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.cockpit-left,
+.cockpit-right {
+  position: relative;
+}
+.rail-toggle {
+  position: absolute;
+  top: 8px;
+  z-index: 6;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  font-size: 0.9rem;
+  line-height: 1;
+  color: var(--text-meta);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.rail-toggle--left { right: 6px; }
+.rail-toggle--right { left: 6px; }
+.cockpit-left:hover .rail-toggle,
+.cockpit-right:hover .rail-toggle,
+.cockpit-left[data-collapsed='true'] .rail-toggle,
+.cockpit-right[data-collapsed='true'] .rail-toggle {
+  opacity: 1;
+}
+.rail-toggle:hover {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+.rail-tab {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--text-meta);
+  user-select: none;
+}
+
+/* Top status pill (slice 2) — floating glass HUD, TARS identity at a glance. */
+.top-status-hud {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: calc(100vw - 360px);
+  padding: 7px 16px;
+  border-radius: var(--radius-pill, 999px);
+  background: hsl(248 30% 10% / 0.55);
+  border: 1px solid hsl(var(--accent-hsl) / 0.22);
+  box-shadow: 0 14px 44px -14px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(20px) saturate(1.25);
+  -webkit-backdrop-filter: blur(20px) saturate(1.25);
+  font-size: 0.8rem;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.top-status-hud__led {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--text-meta);
+}
+.top-status-hud__led.is-ok { background: #4ade80; box-shadow: 0 0 10px #4ade80; }
+.top-status-hud__led.is-active { background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+.top-status-hud__led.is-bad { background: var(--accent-error, #d46a6a); box-shadow: 0 0 10px var(--accent-error, #d46a6a); }
+.top-status-hud__name {
+  font-family: var(--font-display, inherit);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+}
+.top-status-hud__mode {
+  padding: 1px 7px;
+  border-radius: var(--radius-pill, 999px);
+  border: 1px solid hsl(var(--accent-hsl) / 0.32);
+  color: var(--accent-bright);
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.top-status-hud__model { font-family: var(--font-mono); font-size: 0.72rem; }
+.top-status-hud__sep { width: 1px; height: 14px; background: var(--border-visible); }
+.top-status-hud__state { text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.72rem; }
+.top-status-hud__reflected { font-size: 0.72rem; }
+
+/* Permanent runs indicator (HUD runs-surface fix) — replaces the bottom
+   ActivityPill, which rendered nothing when idle. Always visible; toggles
+   ActivityMap. Meta-dim at rest, accent-lit + pulsing glyph while live. */
+.top-status-hud__activity {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill, 999px);
+  border: 1px solid transparent;
+  background: none;
+  cursor: pointer;
+  color: var(--text-meta);
+}
+.top-status-hud__activity-glyph { font-size: 0.7rem; }
+.top-status-hud__activity-count { font-size: 0.72rem; }
+.top-status-hud__activity.is-live {
+  border-color: hsl(var(--accent-hsl) / 0.32);
+  color: var(--accent-bright);
+}
+.top-status-hud__activity.is-live .top-status-hud__activity-count { color: var(--accent-bright); }
+.top-status-hud__activity.is-live .top-status-hud__activity-glyph {
+  animation: top-status-hud-activity-pulse 1.8s ease-in-out infinite;
+}
+@keyframes top-status-hud-activity-pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+
+/* Self-update chip (task 13) — only rendered when behind > 0 and under
+   Tauri (see TopStatusHud.tsx). Click applies; disabled + relabeled while
+   the backend is mid-restart so a second click can never race the first. */
+.top-status-hud__update {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 9px;
+  border-radius: var(--radius-pill, 999px);
+  border: 1px solid rgba(255, 180, 84, 0.4);
+  background: rgba(255, 180, 84, 0.12);
+  color: var(--warn);
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+.top-status-hud__update:hover:not(:disabled) {
+  background: rgba(255, 180, 84, 0.2);
+}
+.top-status-hud__update:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+/* Bottom HUD goes glass on TarsView (keeps tabs + costs + voice). */
+.cockpit-shell[data-view="tars"] .cockpit-hud {
+  background: hsl(248 30% 10% / 0.55);
+  border-color: hsl(var(--accent-hsl) / 0.18);
+  box-shadow: 0 14px 44px -14px rgba(0, 0, 0, 0.6);
+}
+
+/* Zero-size, non-interactive orb marker (OrbAnchor). It names where the
+   orb belongs for Y-2 orb-relative binding; it never blocks canvas drag. */
+.orb-anchor {
+  position: absolute;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+/* Fallback renderer badge for an unregistered surface type (renderers
+   land in Y-2). Hint-token per the Mirror HARD RULE. */
+.surface-fallback {
+  padding: var(--space-xs) var(--space-sm);
+  font-size: 0.85rem;
+  color: var(--text-meta);
+}

@@ -1,0 +1,25 @@
+{
+  "id": "vault_search.default",
+  "family": "vault",
+  "description": "vault_search — drop YAML frontmatter blocks, dedup near-identical hits, cap output.",
+  "priority": 70,
+  "match": {"tool_names": ["vault_search"]},
+  "transforms": ["trim_empty_edges"],
+  "reducers": [
+    {
+      "kind": "drop_regex",
+      "patterns": [
+        "^---\\s*$",
+        "^aliases:",
+        "^tags:",
+        "^source_path:",
+        "^last_updated:",
+        "^backlinks_from:",
+        "^related_slugs:"
+      ]
+    },
+    {"kind": "dedup_lines"},
+    {"kind": "cap_chars", "n": 6000}
+  ],
+  "passthrough_when": {"max_chars": 1500}
+}

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "view": "terminal",
+  "surfaces": [
+    {
+      "schema_version": 1,
+      "id": "terminal-host",
+      "type": "terminal-host",
+      "title": "Terminal",
+      "mode": "embedded",
+      "position": { "x": 24, "y": 24 },
+      "size": { "w": 1180, "h": 760 },
+      "z": 1,
+      "props": {}
+    }
+  ]
+}

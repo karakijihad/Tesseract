@@ -1,0 +1,2584 @@
+@import "./tokens.css";
+@import "tailwindcss";
+
+/*
+ * Pin Tailwind v4 auto-content-detection to Mirror frontend only.
+ * Without an explicit @source, Tailwind v4 walks up to the git root and
+ * scans the entire repo — which makes Vite/chokidar watch every Python
+ * file under tesseract/. Any Python write (TARS, Codex, Claude, the
+ * scheduler, the Telegram bridge) then trips an HMR push that drops the
+ * WebSocket and cancels the in-flight turn (cleanup_session).
+ *
+ * Constrain Tailwind explicitly to TS/TSX/CSS under tesseract/mirror/.
+ */
+@source "../**/*.{ts,tsx,js,jsx,html,css}";
+@source "../../index.html";
+
+@import "@fontsource/space-grotesk/400.css";
+@import "@fontsource/space-grotesk/500.css";
+@import "@fontsource/space-grotesk/600.css";
+@import "@fontsource/outfit/400.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@xterm/xterm/css/xterm.css";
+@import "./terminal.css";
+@import "./soul.css";
+@import "./pulse.css";
+@import "./schedule.css";
+@import "./agents.css";
+@import "./chat.css";
+@import "./conscience.css";
+@import "./settings.css";
+@import "./autonomy.css";
+@import "./voice.css";
+@import "./canvas.css";
+@import "./surfaces.css";
+@import "./cockpit.css";
+@import "./activity.css";
+@import "./region-capture.css";
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  background-color: var(--bg-void);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: var(--t-ui-size);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* === GLOBAL CANVAS — entity particle system (always mounted, never unmounted) === */
+/* Brief opacity fade masks the resize snap between full/corner. */
+.global-canvas {
+  position: fixed;
+  pointer-events: none;
+  z-index: 0;
+  transition: opacity 150ms ease;
+}
+
+.global-canvas.full {
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+}
+
+/* Corner mode: GlobalCanvas inline-positions over the right panel's
+   .orb-dock slot. The cockpit-shell sits at z-index: 1, so the canvas
+   needs a higher index to render *above* the panel surface — otherwise
+   the panel's translucent background hides the orb (operator screenshot
+   showed only a faint blob bleeding through). z-index 5 sits above the
+   panels but below modals (toasts 800+, dialogs 950+). */
+.global-canvas.corner {
+  top: calc(100vh - 200px - 48px - var(--space-md));
+  left: calc(100vw - 200px - 256px - var(--space-md) * 2);
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+  overflow: hidden;
+  z-index: 5;
+}
+
+/* CSS fallback pulsing orb when GPU% > 90 */
+.css-pulse {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  background: radial-gradient(circle, hsla(var(--accent-hsl), 0.4) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+  animation: css-pulse-ring 3s ease-in-out infinite;
+}
+
+@keyframes css-pulse-ring {
+  0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 0.6; }
+  50%       { transform: translate(-50%, -50%) scale(1.25); opacity: 0.3; }
+}
+
+/* === COCKPIT SHELL — phase 3c s2 === */
+.cockpit-shell {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 1;
+  pointer-events: none;
+}
+.cockpit-shell > * { pointer-events: auto; }
+
+.cockpit-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 282px 1fr 282px;
+  /* Single 1fr row so all three columns stretch to full body height —
+     without this, implicit `auto` row sizing makes each column shrink to
+     content height and the panels render shorter than the cockpit body. */
+  grid-template-rows: 1fr;
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-md) 0 var(--space-md);
+  min-height: 0;
+}
+
+.cockpit-left,
+.cockpit-right {
+  background: var(--panel-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255,255,255,0.03);
+  box-shadow: 0 0 30px rgba(0,0,0,0.3);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Center stays transparent on every tab so GlobalCanvas (z-index: 0,
+   fullscreen) is always the bottom-most visual layer in the slot — the
+   orb reads through every view. Tabs live in `BottomHud`, not here, so
+   the center reclaims full top-to-bottom panel length for view content. */
+.cockpit-center {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.cockpit-hud {
+  height: 48px;
+  background: var(--panel-bg);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.03);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 0 30px rgba(0,0,0,0.3);
+  margin: var(--space-md);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.cockpit-hud-inner {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
+  padding: 0 var(--space-md);
+}
+
+.hud-reserved { flex: 1; }
+.hud-spacer { flex: 1; }
+
+.hud-tabs {
+  display: flex;
+  gap: var(--space-xs);
+}
+.hud-tab {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--motion-fast) var(--ease-out);
+}
+.hud-tab:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.hud-tab.is-active {
+  color: var(--accent-bright);
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+.hud-tab-icon { font-size: var(--t-sub-size); }
+.hud-tab { position: relative; }
+.hud-tab-badge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--accent-error, #d46a6a);
+  color: var(--bg-base, #0b0b0b);
+  font-size: 0.62rem;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+
+/* HUD separator */
+.hud-sep {
+  width: 1px;
+  height: 20px;
+  background: rgba(255,255,255,0.08);
+  flex-shrink: 0;
+}
+/* HUD status zone */
+.hud-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+}
+.hud-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.hud-status-dot.is-ok   { background: var(--ok);   box-shadow: 0 0 6px var(--ok); }
+.hud-status-dot.is-warn { background: var(--warn); box-shadow: 0 0 6px var(--warn); animation: hud-dot-pulse 2s var(--ease-smooth) infinite; }
+.hud-status-dot.is-bad  { background: var(--bad);  box-shadow: 0 0 6px var(--bad); }
+@keyframes hud-dot-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+/* HUD status line */
+.hud-status-line {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+}
+.hud-sl-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--ink-38);
+  flex-shrink: 0;
+  transition: all 0.2s;
+}
+.hud-sl-dot.is-live {
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+  animation: hud-dot-pulse 1.5s var(--ease-smooth) infinite;
+}
+.hud-sl-text {
+  font-family: var(--font-ui);
+  font-size: 9px;
+  color: var(--ink-55);
+  white-space: nowrap;
+  transition: color 0.2s;
+}
+.hud-sl-dot.is-live + .hud-sl-text { color: var(--ink-72); }
+.hud-sl-route {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--ink-55);
+  margin-left: var(--space-xs);
+  white-space: nowrap;
+}
+.hud-sl-route-sep { color: var(--ink-38); margin-right: 2px; }
+.hud-sl-role { color: var(--accent); }
+.hud-sl-provider { color: var(--ink-72); }
+.hud-sl-model { color: var(--ink-55); }
+.hud-sl-sep { color: var(--ink-38); }
+
+/* HUD grouped clusters — chat-tokens and observer sit as distinct bounded groups */
+.hud-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 4px 10px;
+  border: 1px solid rgba(255,255,255,0.05);
+  border-radius: var(--radius-sm);
+  background: rgba(8,8,16,0.35);
+}
+.hud-group--chat {
+  border-color: var(--accent-dim);
+}
+.hud-group--observer {
+  border-color: rgba(34,211,238,0.15);
+}
+
+/* HUD mic button (voice input toggle) */
+.hud-mic {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 14px;
+  transition: color 0.2s;
+}
+.hud-mic:hover { color: var(--text-primary); }
+.hud-mic.is-muted { color: var(--bad); }
+
+/* HUD model-name chip (chat + observer) */
+.hud-model {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-meta);
+  padding: 2px 8px;
+  border: 1px solid var(--panel-divider);
+  border-radius: var(--radius-xs);
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+
+/* HUD sessions-drawer trigger */
+.hud-sessions {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: var(--radius-xs);
+  font-size: 14px;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+.hud-sessions:hover {
+  color: var(--text-primary);
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+/* === LEFT PANEL === */
+.left-panel-inner,
+.right-panel-inner {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  /* Defensive horizontal clip — sticky section headers used to bleed past
+     their parents via negative margin; kept here in case any future child
+     does the same. The right panel never wants a horizontal scrollbar. */
+  overflow-x: hidden;
+}
+.left-panel-head,
+.right-panel-head {
+  padding: var(--space-md);
+  border-bottom: 1px solid var(--panel-divider);
+}
+
+/* Soul summary line — last row of the right-panel-head, just under the
+   mode/model/state row. Plain text; refresh action lives in the SOUL
+   tab to avoid duplicating the control. */
+.right-panel-head-soul {
+  margin-top: 4px;
+  white-space: normal;
+  word-break: break-word;
+}
+/* === SYNAPSE (DOM-based) === */
+.synapse-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-xs) 0;
+}
+
+/* Category container */
+.syn-cat { padding: 0 0 0 14px; }
+.syn-cat-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 0 3px;
+  font-family: var(--font-ui);
+  font-size: 8px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-meta);
+}
+.syn-cat:first-child .syn-cat-head { padding-top: 10px; }
+.syn-cat-origin {
+  font-weight: 400;
+  font-size: 7px;
+  opacity: 0.4;
+}
+
+/* Vertical flow line */
+.syn-flow {
+  position: relative;
+  padding-left: 16px;
+}
+.syn-flow::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: hsl(var(--accent-hsl) / 0.08);
+  transition: all 0.3s ease;
+}
+.syn-flow.has-activity::before {
+  background: hsl(var(--accent-hsl) / 0.25);
+  box-shadow: 0 0 4px hsl(var(--accent-hsl) / 0.15);
+}
+
+/* Stage node */
+.syn-node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2.5px 0;
+  position: relative;
+}
+.syn-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink-55);
+  opacity: 0.6;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+  transition: all 0.2s;
+}
+.syn-lbl {
+  font-family: var(--font-ui);
+  font-size: 9px;
+  font-weight: 500;
+  color: var(--ink-100);
+  opacity: 0.85;
+  transition: all 0.2s;
+}
+
+/* Depth indentation + branch connectors */
+.syn-node.d1 { margin-left: 12px; }
+.syn-node.d2 { margin-left: 24px; }
+.syn-node.d1::before,
+.syn-node.d2::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  height: 1px;
+  background: hsl(var(--accent-hsl) / 0.08);
+}
+.syn-node.d1::before { left: -12px; width: 12px; }
+.syn-node.d2::before { left: -12px; width: 12px; }
+
+/* Active state */
+.syn-node.is-active .syn-dot {
+  background: var(--accent);
+  opacity: 1;
+  box-shadow: 0 0 8px var(--accent), 0 0 16px hsl(var(--accent-hsl) / 0.25);
+  width: 7px; height: 7px;
+  animation: syn-dot-glow 2s ease-in-out infinite;
+}
+.syn-node.is-active .syn-lbl {
+  color: var(--ink-100);
+  opacity: 1;
+  font-weight: 500;
+}
+
+/* Signal path state — must be clearly visible */
+.syn-node.is-path .syn-dot {
+  background: var(--accent);
+  opacity: 0.5;
+  box-shadow: 0 0 4px hsl(var(--accent-hsl) / 0.2);
+}
+.syn-node.is-path .syn-lbl { color: var(--ink-100); opacity: 0.75; }
+
+/* Pending/unwired state */
+.syn-node.is-pending .syn-dot { opacity: 0.3; }
+.syn-node.is-pending .syn-lbl { opacity: 0.5; }
+
+@keyframes syn-dot-glow {
+  0%,100% { box-shadow: 0 0 8px var(--accent), 0 0 16px hsl(var(--accent-hsl) / 0.25); }
+  50% { box-shadow: 0 0 12px var(--accent-bright), 0 0 24px hsl(var(--accent-hsl) / 0.35); }
+}
+
+/* One-shot envelope-arrival flash. The 200ms keyframe rides on top of
+ * `is-active` for whichever node just became active (kernel path) or
+ * matched the latest tool name (tools list). */
+@keyframes synapse-flash {
+  0%   { box-shadow: 0 0 0 0 hsl(var(--accent-hsl) / 0.55); transform: scale(1); }
+  40%  { box-shadow: 0 0 14px 4px hsl(var(--accent-hsl) / 0.45); transform: scale(1.18); }
+  100% { box-shadow: 0 0 0 0 hsl(var(--accent-hsl) / 0); transform: scale(1); }
+}
+.syn-node.is-flashing .syn-dot {
+  animation: synapse-flash 220ms var(--ease-smooth, ease-out);
+}
+
+/* Sub-header divider */
+.syn-sub {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 0 2px 12px;
+  margin-left: 4px;
+}
+.syn-sub-line { flex: 1; height: 1px; background: rgba(255,255,255,0.04); }
+.syn-sub-txt {
+  font-family: var(--font-ui);
+  font-size: 7px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--ink-38);
+  flex-shrink: 0;
+}
+
+/* Category divider */
+.syn-div {
+  height: 1px;
+  background: rgba(255,255,255,0.03);
+  margin: 3px 0 0;
+}
+
+/* Per-section block. Both panels (left + right) use per-section scroll
+   so headers stay pinned while only that section's content scrolls. The
+   left panel originally used this pattern only for Kernel; the right
+   panel adopted it 2026-04-29 (owner request — main head names had been
+   scrolling away under the single-scroll model). */
+.cat-section {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  min-height: 0;
+}
+/* Right-panel cat-sections share vertical space and scroll independently.
+   Each cat-section is the scroll container; its `.right-section-header`
+   stays pinned via `position: sticky` inside that scroll context. The
+   :has() rule collapses header-only (collapsed) sections to natural
+   height so two collapsed sections don't waste half the panel each. */
+.right-panel-body > .cat-section {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+.right-panel-body > .cat-section:not(:has(.right-section-list, .right-section-empty, .observer-list, .suggestions-list, .observer-stats-chip)) {
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+/* Left panel keeps independent scrolling on its Kernel section because
+   the synapse tree is huge and Pulse below it must stay locked. */
+.left-panel-inner > .cat-section {
+  overflow-y: auto;
+  flex: 1 1 0;
+}
+
+/* Left panel weighting: Kernel is the canonical hierarchy view and
+   deserves the lion's share of the column. Pulse is fixed at the height
+   needed for its 3-row tail — never grows, never shrinks — so it always
+   shows exactly the last 3 events without stealing height from Kernel. */
+.left-panel-inner > .cat-section--kernel {
+  flex: 1 1 auto;
+}
+.left-panel-inner > .cat-section--pulse {
+  flex: 0 0 auto;
+  height: 156px;
+  overflow: hidden;
+}
+
+/* Header-anchored orb dock — 240×240 square centered in the panel.
+   Orb canvas inside is 200×200 (≈83%), leaving a ~20px visible margin
+   on every side so the dock reads as a real container, not an
+   oversized empty frame. */
+.right-panel-orb-slot {
+  flex: 0 0 220px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.orb-dock--header {
+  width: 150px;
+  height: 150px;
+  margin: 0;
+  flex-shrink: 0;
+  position: relative;
+}
+
+/* Per-category heading — no border-bottom (the .syn-div between sections
+   is the visual separator). Sits inside .cat-section so it scrolls with
+   its body, which is fine because individual sections rarely scroll the
+   title out of view. */
+.left-panel-cat-title,
+.right-panel-cat-title {
+  padding: var(--space-md) var(--space-md) var(--space-sm);
+  margin: 0;
+  flex-shrink: 0;
+}
+
+/* Reserved slot in RightPanel where GlobalCanvas tracks the corner-mode
+   orb position via ResizeObserver. The canvas element itself stays in its
+   single DOM location; only the draw coordinates follow this rect. */
+/* Base — no height; modifier classes set the dock size. The original
+   `height: 80px` overrode `.orb-dock--header { height: 200px }` because
+   both selectors hit and source order won, leaving the orb floating
+   below the dock area (operator screenshot). */
+.orb-dock {
+  flex-shrink: 0;
+  position: relative;
+}
+
+/* ViewRouter wrapper (F2 §5i keepAlive). Inactive panes are not just
+   hidden — they're removed from layout so the active pane fills the slot
+   exactly as the unwrapped view did before. Active pane is a flex column
+   so child views with `.wt`, `.chat-frame`, etc. still receive the
+   `flex: 1; min-height: 0` parent contract they were written against. */
+.view-pane {
+  display: none;
+}
+.view-pane.is-active {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+  width: 100%;
+  box-sizing: border-box;
+  /* Hard slot boundary — every tab clips to the cockpit-center box.
+     Internal scroll surfaces (chat-scroll, soul-view-body, etc.) own
+     their own overflow. A tab that wants to grow past the slot is a
+     bug, not a feature. */
+  overflow: hidden;
+}
+/* Keep-mounted panes (TerminalView) stay laid out and painting even when
+   inactive — `display: none` pauses xterm's WebGL canvas, which causes
+   half-rendered output on switch-back. When inactive, the pane overlays
+   the slot, is sized, and keeps painting, but is invisible and click-
+   blocked. `.cockpit-center` is already `position: relative`, so the
+   absolute box anchors to the slot. */
+.view-pane--keep-mounted:not(.is-active) {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  position: absolute;
+  inset: 0;
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+  width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: -1;
+}
+/* Defensive: any flex/grid descendant inside a view defaults to
+   `min-width: auto`, which lets long unbroken tokens push the parent
+   wider than the slot. Scoped to `.view-pane.is-active` so it cannot
+   bleed into LeftPanel / RightPanel / BottomHud. */
+.view-pane.is-active * {
+  min-width: 0;
+}
+
+/* Brand-styled tooltip (F2 §5m) — replaces native `title=""` browser
+   tooltips so every hint surface shares the cockpit `--hint-bg` glass
+   instead of rendering as the OS's white default. */
+.hint-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+/* Portaled to <body> by Hint.tsx — `position: fixed` so viewport coords
+   from getBoundingClientRect work as-is, escaping any ancestor
+   `overflow: hidden/auto` that would otherwise clip the popover. */
+.hint-pop {
+  position: fixed;
+  width: max-content;
+  min-width: 140px;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-family: var(--font-ui);
+  background: var(--hint-bg);
+  border: 1px solid var(--hint-border);
+  color: var(--text-primary);
+  border-radius: var(--radius-xs);
+  pointer-events: none;
+  transition: opacity var(--motion-fast) var(--ease-out);
+  z-index: 9999;
+  white-space: pre-line;
+  line-height: 1.35;
+  text-align: left;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+/* === RIGHT PANEL === */
+.right-panel-head-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+.state-led {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.state-led.is-ok     { background: var(--ok);     box-shadow: 0 0 8px var(--ok); }
+.state-led.is-active { background: var(--accent); box-shadow: 0 0 8px var(--accent); animation: hud-dot-pulse 1.5s var(--ease-smooth) infinite; }
+.state-led.is-bad    { background: var(--bad);    box-shadow: 0 0 8px var(--bad); }
+
+.state-ws-warn {
+  margin-left: auto;
+  color: var(--warn);
+}
+
+.right-panel-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-md);
+}
+
+/* Per-section scroll (owner request 2026-04-29). The panel itself no
+   longer scrolls — each cat-section owns its own vertical scroll so its
+   header stays pinned at the top of that section while the operator
+   scrolls only the section's body. Previously the panel scrolled as one
+   with sticky section headers, but the headers visibly scrolled out of
+   view when content above pushed them past the panel top. */
+.right-panel-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-sm) var(--space-md);
+  gap: 0;
+  overflow: hidden;
+}
+.right-panel-placeholder {
+  padding: var(--space-md);
+  border: 1px dashed var(--border-visible);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+/* === RIGHT PANEL SECTIONS === */
+/* No per-section divider/padding — `.syn-div` between cat-sections in
+   `RightPanel.tsx` is the visual separator. Doubling them up created
+   the floating-card look the operator flagged. */
+.right-section {
+  margin-bottom: var(--space-md);
+}
+.right-section:last-child { margin-bottom: 0; }
+.right-section h3 {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-meta);
+  margin-bottom: var(--space-sm);
+}
+.right-section-empty {
+  color: var(--text-meta);
+  font-style: italic;
+}
+/* Sticky section header. With per-section scroll (2026-04-29), the
+   header pins inside its own cat-section. `var(--panel-bg)` is alpha-
+   blended (the cockpit-right glass), so when content scrolls *under* a
+   sticky header, it bleeds through. The fix: layer a fully-opaque
+   `--bg-deep` first (occludes), then re-tint with `--panel-bg` so the
+   color still matches the panel's outer glass. Backdrop-filter as a
+   belt-and-suspenders blur. The `cat-section` border-bottom keeps the
+   visual seam between sections. */
+.right-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: var(--space-sm) 0;
+  background:
+    linear-gradient(var(--panel-bg), var(--panel-bg)),
+    var(--bg-deep);
+  background-color: var(--bg-deep);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.right-section-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-meta);
+}
+.right-section-toggle:hover { color: var(--text-primary); }
+.right-section-chevron {
+  display: inline-block;
+  width: 10px;
+  text-align: center;
+  color: var(--text-meta);
+}
+.right-section-count {
+  color: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+}
+.right-section-action {
+  background: transparent;
+  border: 1px solid var(--panel-divider);
+  border-radius: var(--radius-xs);
+  padding: 2px 8px;
+  color: var(--text-meta);
+  cursor: pointer;
+  font-family: var(--font-ui);
+}
+.right-section-action:hover {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+/* SOUL.md visualization — parsed by `## Heading` into independently
+   scrollable cards instead of a single tall <pre> blob (the operator
+   couldn't navigate the unbroken markdown). Each card caps its body
+   height so a long Continuity section doesn't push other sections off. */
+.soul-identity-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px var(--space-sm);
+  margin-bottom: var(--space-sm);
+  padding: var(--space-sm);
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--panel-divider);
+  border-radius: var(--radius-xs);
+}
+.soul-identity-grid dt {
+  color: var(--text-meta);
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  align-self: center;
+}
+.soul-identity-grid dd {
+  margin: 0;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+.soul-identity-provider {
+  color: var(--text-meta);
+}
+
+.soul-blocks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+.soul-block {
+  background: var(--accent-dim);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius-xs);
+}
+.soul-block-heading {
+  padding: 4px var(--space-sm);
+  background: rgba(0,0,0,0.18);
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 10px;
+}
+.soul-block-body {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  padding: var(--space-sm);
+  word-break: break-word;
+}
+.soul-block-body > :first-child { margin-top: 0; }
+.soul-block-body > :last-child { margin-bottom: 0; }
+.soul-block-body p { margin: 0 0 var(--space-xs); }
+.soul-block-body ul,
+.soul-block-body ol { margin: 0 0 var(--space-xs); padding-left: 1.4em; }
+.soul-block-body li { margin: 0; }
+.soul-block-body code {
+  font-family: var(--font-mono);
+  background: rgba(0,0,0,0.25);
+  padding: 0 2px;
+  border-radius: 2px;
+}
+.soul-block-body pre {
+  margin: 0 0 var(--space-xs);
+  padding: var(--space-xs);
+  background: rgba(0,0,0,0.25);
+  border-radius: var(--radius-xs);
+  white-space: pre-wrap;
+  overflow-x: hidden;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.soul-block-body a { color: var(--accent-bright); }
+
+/* === CENTER VIEWS === */
+.tars-view,
+.view-stub {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.view-stub {
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+.tars-void {
+  width: 100%;
+  height: 100%;
+}
+
+
+/* === SCHEDULER PANEL === */
+.sched-panel {
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border-subtle);
+  overflow-y: auto;
+  padding: var(--space-sm) 10px;
+}
+.sched-panel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+.sched-panel-head .t-sub { flex: 1; }
+.sched-new-btn {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border: none;
+  border-radius: var(--radius-xs);
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.sched-new-btn:hover { background: var(--accent-glow); }
+.sched-breaker-badge {
+  font-size: 9px;
+  color: var(--red);
+  background: var(--red-dim);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+.sched-breaker-warn { color: var(--red); }
+.sched-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: var(--space-sm);
+}
+.sched-input {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: 11px;
+  padding: 4px 6px;
+}
+.sched-input:focus { border-color: var(--accent); outline: none; }
+.sched-submit {
+  align-self: flex-end;
+  background: var(--accent-dim);
+  color: var(--accent);
+  border: none;
+  border-radius: var(--radius-xs);
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.sched-submit:hover { background: var(--accent-glow); }
+.sched-task-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sched-task-row {
+  border-radius: var(--radius-xs);
+  transition: background var(--motion-fast);
+}
+.sched-task-row:hover { background: var(--bg-card); }
+.sched-task-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 4px var(--space-xs);
+  cursor: pointer;
+}
+.sched-prompt {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+.sched-time {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  flex-shrink: 0;
+}
+.sched-recur {
+  font-size: 9px;
+  color: var(--text-meta);
+  flex-shrink: 0;
+}
+.sched-result-badge {
+  font-size: 8px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.sched-result-badge--success { background: var(--green-dim); color: var(--green); }
+.sched-result-badge--error { background: var(--red-dim); color: var(--red); }
+.sched-status { font-size: 10px; flex-shrink: 0; }
+.sched-status--success { color: var(--green); }
+.sched-status--error { color: var(--red); }
+.sched-task-detail {
+  padding: 4px var(--space-sm) 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sched-prompt-full {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 80px;
+  overflow-y: auto;
+  background: var(--bg-card);
+  border-radius: var(--radius-xs);
+  padding: 4px 6px;
+  margin: 0;
+  font-size: 10px;
+}
+.sched-task-actions {
+  display: flex;
+  gap: var(--space-xs);
+}
+.sched-task-actions button {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.sched-task-actions button:hover { border-color: var(--accent); color: var(--accent); }
+.sched-delete:hover { border-color: var(--red) !important; color: var(--red) !important; }
+.sched-more {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 2px 0;
+  text-align: left;
+}
+.sched-more:hover { text-decoration: underline; }
+
+/* === SECTION HEAD === */
+.section-head {
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--text-meta);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 12px 0;
+}
+
+
+/* === SCROLLBARS === */
+::-webkit-scrollbar { width: 3px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+/* === MOTION TEST PANEL (dev only, Ctrl+Shift+D or ?debug) === */
+.motion-test-panel {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  width: 320px;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  padding: 12px;
+  background: var(--panel-bg);
+  border: 1px solid var(--border-visible);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--text-primary);
+  z-index: 1000;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 8px 32px var(--bg-overlay);
+}
+.mtp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  padding-bottom: var(--space-sm);
+  border-bottom: 1px solid var(--border-muted);
+}
+.mtp-title {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+}
+.mtp-intensity {
+  font-family: var(--font-mono);
+  color: var(--accent);
+  font-size: 11px;
+}
+.mtp-section {
+  margin-bottom: 10px;
+}
+.mtp-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: var(--space-xs);
+}
+.mtp-state-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-xs);
+}
+.mtp-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  align-items: center;
+}
+.mtp-btn {
+  padding: 5px var(--space-sm);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast);
+}
+.mtp-btn:hover:not(:disabled) {
+  background: var(--bg-overlay);
+  border-color: var(--border-visible);
+  color: var(--text-primary);
+}
+.mtp-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.mtp-btn.active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+.mtp-input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px var(--space-sm);
+  background: var(--bg-deep);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-xs);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  outline: none;
+}
+.mtp-input:focus {
+  border-color: var(--accent);
+}
+.mtp-hint {
+  font-size: 10px;
+  color: var(--text-disabled);
+  text-align: center;
+  margin-top: var(--space-sm);
+  font-family: var(--font-mono);
+}
+.mtp-sliders {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+.mtp-slider {
+  display: grid;
+  grid-template-columns: 110px 1fr 42px;
+  align-items: center;
+  gap: var(--space-sm);
+  font-family: var(--font-ui);
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+.mtp-slider > span:first-child {
+  color: var(--text-secondary);
+}
+.mtp-slider input[type='range'] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.mtp-val {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-primary);
+  text-align: right;
+}
+
+/* ─── Observer HUD toggle (Block 6) ────────────────────────── */
+.hud-observer {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  padding: 2px 8px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+.hud-observer:hover {
+  color: var(--text-primary);
+  border-color: var(--cyan);
+  background: var(--cyan-dim);
+}
+.hud-observer--armed {
+  color: var(--cyan);
+  border-color: var(--cyan);
+}
+.hud-observer--observing {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+.hud-observer-icon {
+  font-size: 14px;
+}
+.hud-observer-label {
+  letter-spacing: 0.3px;
+  text-transform: lowercase;
+}
+
+/* ─── Consent prompt modal (Block 6) ────────────────────────── */
+.consent-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+}
+.consent-modal {
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-divider);
+  border-radius: 8px;
+  padding: var(--space-lg, 24px);
+  max-width: 400px;
+  width: 90%;
+}
+.consent-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md, 16px);
+}
+.consent-icon {
+  font-size: 20px;
+}
+.consent-title {
+  font-weight: 600;
+  font-size: 16px;
+  color: var(--text-primary);
+}
+.consent-body {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: var(--space-lg, 24px);
+}
+.consent-actions {
+  display: flex;
+  gap: var(--space-sm);
+  justify-content: flex-end;
+}
+.consent-btn {
+  padding: 6px 16px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid var(--panel-divider);
+  background: none;
+  color: var(--text-primary);
+  transition: background 0.15s;
+}
+.consent-btn:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.consent-btn--grant {
+  background: var(--accent);
+  color: var(--bg-void);
+  border-color: var(--accent);
+}
+.consent-btn--grant:hover {
+  filter: brightness(1.1);
+}
+
+/* === PHASE 5 — CHAT PANEL === */
+/* Bottom padding lives on `.view-pane.is-active` so every view (chat /
+   terminal / pulse) ends at the same Y as the side panels' rounded
+   bottom corners. Chat-area only owns horizontal insets; doubling the
+   bottom padding here would push the chat input one space-md *above*
+   the panels (operator caught this misalignment). */
+.chat-area {
+  flex-shrink: 0;
+  padding: 10px 20px 0;
+}
+
+/* Vertical stack — VoiceStatus banner sits above the input row so the
+   waveform / "transcribing…" cue is visible while the mic is hot. */
+.chat-input-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.chat-input-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-xs);
+  background: var(--bg-elevated);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-md);
+  padding: 7px;
+  transition: border-color var(--motion-fast) var(--ease-out);
+}
+
+.chat-input-wrap:focus-within {
+  border-color: var(--accent-glow);
+}
+
+.chat-input-wrap.is-drag-over {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-elevated));
+}
+
+.chat-file-input {
+  display: none;
+}
+
+.pending-attachments {
+  flex: 1 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 2px 2px 4px;
+}
+
+.pending-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(260px, 100%);
+  padding: 3px 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-card);
+}
+
+.pending-attachment-thumb {
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+
+.pending-attachment-doc {
+  width: 28px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-meta);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+.pending-attachment-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.pending-attachment-remove {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-meta);
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.pending-attachment-remove:hover {
+  color: var(--text-primary);
+}
+
+.chat-upload-error {
+  flex: 1 0 100%;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.chat-upload-error {
+  color: var(--bad);
+}
+
+/* Q2 frontend — composer-level FIFO queue chip. Structural chrome only
+   (border/padding/radius, matching .bubble-queued-pill); text color comes
+   from the .t-meta utility per the hint-token hard rule, not this class.
+   Base rule is layout-agnostic; each composer's flex context (row-wrap
+   here, column in hud-chat.css) supplies its own row-break rule below. */
+.chat-queue-pill {
+  width: fit-content;
+  padding: 0 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+/* .chat-input-wrap is row + flex-wrap: force the chip onto its own row,
+   same trick as .chat-upload-error / .pending-attachments above. */
+.chat-input-wrap .chat-queue-pill {
+  flex: 1 0 100%;
+  margin: 0 4px;
+}
+
+.chat-input {
+  flex: 1;
+  min-width: 0;
+  min-height: 24px;
+  max-height: 200px;
+  overflow-y: auto;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--ink-100);
+  font-family: var(--font-body);
+  font-size: var(--t-body-size);
+  line-height: var(--t-body-lh);
+  resize: none;
+  padding: 0 6px;
+}
+
+.chat-input::placeholder {
+  color: var(--ink-38);
+}
+
+.chat-input.is-dictating-preview::placeholder {
+  color: var(--text-meta);
+  font-style: italic;
+}
+
+/* Live VAD preview surfaced below the textarea when the operator already
+   has text in the input. Mirrors the placeholder's tone so the two
+   surfaces read as one preview, not two. */
+.chat-input-preview-chip {
+  flex: 1 0 100%;
+  margin: 4px 4px 0;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-meta);
+  border-left: 2px solid var(--accent-glow);
+  background: color-mix(in srgb, var(--accent-glow) 6%, transparent);
+  border-radius: var(--radius-xs);
+  word-break: break-word;
+}
+
+.chat-input:disabled {
+  color: var(--ink-50);
+  cursor: not-allowed;
+}
+
+.chat-btn {
+  flex-shrink: 0;
+  min-width: 34px;
+  height: 28px;
+  background: var(--accent);
+  color: var(--ink-100);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 0 12px;
+  font-family: var(--font-ui);
+  font-size: var(--t-ui-size);
+  cursor: pointer;
+  transition: filter var(--motion-fast) var(--ease-out);
+}
+
+.chat-btn:hover:not(:disabled) {
+  filter: brightness(1.12);
+}
+
+.chat-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.chat-attach-btn {
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+
+.chat-empty-state {
+  margin: auto;
+  width: min(100%, 560px);
+  padding: var(--space-xl);
+  color: var(--text-secondary);
+  font-size: var(--t-body-size);
+  text-align: center;
+  opacity: 0.7;
+  letter-spacing: 0.02em;
+}
+
+.message-bubble.error {
+  align-self: auto;
+  max-width: min(100%, 760px);
+  background: var(--bad-dim);
+  border: 1px solid var(--bad);
+  border-left-width: 3px;
+  color: var(--ink-100);
+  border-radius: var(--radius-sm) var(--radius-sm) var(--radius-sm) 2px;
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+}
+
+.approval-card,
+.cost-overage-card {
+  width: min(100%, 900px);
+}
+
+.scroll-to-bottom-btn {
+  position: absolute;
+  left: 50%;
+  right: auto;
+  bottom: 96px;
+  transform: translateX(-50%);
+  background: var(--accent);
+  color: var(--ink-100);
+  border: none;
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: var(--t-caption-size);
+  font-family: var(--font-ui);
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 4px 12px var(--accent-glow);
+  transition: filter var(--motion-fast) var(--ease-out);
+  z-index: 10;
+}
+
+.scroll-to-bottom-btn:hover {
+  filter: brightness(1.12);
+}
+
+.chat-stop-btn {
+  background: var(--bad);
+  color: var(--ink-100);
+  border-color: var(--bad);
+}
+
+.chat-stop-btn:hover {
+  filter: brightness(1.12);
+}
+
+/* Q3 frontend — "redirect now", distinct from send (--accent) and
+   stop (--bad): uses --warn so the three verbs read as three colors. */
+.chat-steer-btn {
+  background: var(--warn);
+  color: var(--ink-100);
+  border-color: var(--warn);
+}
+
+.chat-steer-btn:hover {
+  filter: brightness(1.12);
+}
+
+.tool-pill-expand-btn {
+  margin-top: 8px;
+  background: transparent;
+  color: var(--accent);
+  border: none;
+  padding: 4px 0;
+  font-size: var(--t-caption-size);
+  font-family: var(--font-ui);
+  cursor: pointer;
+  text-align: left;
+}
+
+.tool-pill-expand-btn:hover {
+  color: var(--accent-bright);
+  text-decoration: underline;
+}
+
+.delegate-card {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-deep);
+  overflow: hidden;
+}
+
+.delegate-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  background: var(--bg-card);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.delegate-card-tool {
+  color: var(--cyan);
+  font-weight: 500;
+}
+
+.delegate-card-state {
+  color: var(--text-meta);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Phase 4 — background spawn badge. Sits between the tool name and
+   the running/exit state; pinned to the left to read as "this call
+   is a parallel background dispatch". The card itself gets a thin
+   accent left border in is-background mode to visually distinguish
+   it from the default foreground card. */
+.delegate-card.is-background {
+  border-left: 2px solid var(--accent);
+}
+
+.delegate-card-bg-badge {
+  margin-left: auto;
+  margin-right: 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.delegate-card-output {
+  margin: 0;
+  padding: 6px 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.model-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-meta);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 1px 6px;
+  margin-bottom: 6px;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.model-badge-model {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.model-badge-provider {
+  color: var(--accent);
+}
+
+.model-badge-sep {
+  color: var(--text-meta);
+  opacity: 0.6;
+}
+
+
+/* ─── Phase 8: Session Management ─────────────────────────── */
+
+/* StatsChip — always-visible token/turn indicator in BottomHud */
+.hud-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 4px 10px;
+  border: 1px solid var(--panel-divider);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+}
+.hud-stats:hover { color: var(--text-primary); border-color: var(--text-secondary); }
+.hud-stats-text { white-space: nowrap; }
+.hud-stats-bar {
+  display: inline-flex;
+  width: 48px;
+  height: 4px;
+  background: rgba(255,255,255,0.08);
+  border-radius: 2px;
+  overflow: hidden;
+  position: relative;
+}
+.hud-stats-fill {
+  display: block;
+  height: 100%;
+  transition: width 0.3s ease, background 0.3s;
+}
+.hud-stats-fill--system {
+  background: var(--text-meta);
+  opacity: 0.55;
+}
+.hud-stats--empty { color: var(--text-meta); }
+.hud-stats-bar--empty { background: rgba(255,255,255,0.04); }
+.hud-stats--ok .hud-stats-fill--chat   { background: var(--ok); }
+.hud-stats--warn .hud-stats-fill--chat { background: var(--warn); }
+.hud-stats--bad .hud-stats-fill--chat  { background: var(--bad); }
+.hud-stats--ok .hud-stats-fill--voice  { background: var(--accent); }
+.hud-stats--warn .hud-stats-fill--voice { background: var(--warn); }
+.hud-stats--bad .hud-stats-fill--voice  { background: var(--bad); }
+.hud-stats--warn { color: var(--warn); }
+.hud-stats--bad  { color: var(--bad); border-color: var(--bad); }
+/* Cost UX overhaul — operator approved spending past 100%. Loud red
+   so the extra spend stays visible until the midnight rollover. */
+.hud-stats.is-overage {
+  color: var(--bad);
+  border-color: var(--bad);
+  background: var(--bad-dim);
+}
+.hud-stats.is-overage .hud-stats-fill--chat,
+.hud-stats.is-overage .hud-stats-fill--voice {
+  background: var(--bad);
+}
+
+/* ToastStack — transient top-right notifications */
+.toast-stack {
+  position: fixed;
+  top: var(--space-md);
+  right: var(--space-md);
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--panel-border);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  max-width: 360px;
+  text-align: left;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  animation: toast-in 180ms ease-out;
+}
+.toast--info    { border-color: var(--accent-dim); }
+.toast--warning { border-color: var(--warn); color: var(--warn); }
+.toast--error   { border-color: var(--bad); color: var(--bad); }
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.toast--alarm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: default;
+}
+.toast--alarm .toast-body {
+  white-space: pre-wrap;
+}
+.toast--alarm .toast-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: flex-end;
+}
+.toast--alarm .toast-snooze { position: relative; }
+.toast--alarm .toast-action {
+  pointer-events: auto;
+  padding: 4px 10px;
+  border: 1px solid var(--panel-border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.toast--alarm .toast-action:hover { border-color: var(--accent); }
+.toast--alarm .toast-snooze-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 4px);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--panel-border);
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  z-index: 1;
+}
+.toast--alarm .toast-snooze-opt {
+  pointer-events: auto;
+  padding: 3px 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+  min-width: 60px;
+}
+.toast--alarm .toast-snooze-opt:hover { background: var(--bg-surface); }
+
+/* Code-drift restart toast — shares button styling with alarm, no menu. */
+.toast--restart {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: default;
+}
+.toast--restart .toast-body { white-space: pre-wrap; }
+.toast--restart .toast-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.toast--restart .toast-action {
+  pointer-events: auto;
+  padding: 4px 10px;
+  border: 1px solid var(--panel-border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.toast--restart .toast-action:hover:not(:disabled) { border-color: var(--accent); }
+.toast--restart .toast-action:disabled { opacity: 0.5; cursor: progress; }
+.toast--restart .toast-error { color: var(--bad); }
+
+/* SessionDrawer — right-side overlay */
+.drawer-scrim {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-overlay);
+  border: 0;
+  cursor: pointer;
+  z-index: 800;
+}
+.session-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 320px;
+  max-width: 90vw;
+  background: var(--bg-surface);
+  border-left: 1px solid var(--panel-border);
+  display: flex;
+  flex-direction: column;
+  z-index: 801;
+  outline: none;
+  animation: drawer-in 200ms ease-out;
+}
+@keyframes drawer-in {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+.session-drawer-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  border-bottom: 1px solid var(--panel-divider);
+}
+.session-drawer-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.session-drawer-save,
+.session-drawer-close {
+  background: transparent;
+  border: 1px solid var(--panel-divider);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.session-drawer-save:hover,
+.session-drawer-close:hover {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+.session-drawer-close { font-size: 16px; padding: 0 8px; }
+.session-drawer-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.session-drawer-empty {
+  padding: var(--space-lg);
+  color: var(--text-meta);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* D-6 (Y-3): the SpawnDrawer right-overlay shell was retired — the delegate
+   transcript now renders as a `delegate-transcript` canvas card
+   (DelegateTranscriptRenderer). The inner content classes below
+   (.spawn-drawer-meta / -body / -section / -entry / …) are REUSED by that
+   card; the card chrome (title, close, border) comes from .surface-card. The
+   `.is-background` accent moved to .spawn-card. */
+.spawn-card.is-background {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.spawn-drawer-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px var(--space-md);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-meta);
+  border-bottom: 1px solid var(--panel-divider);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.spawn-drawer-callid {
+  margin-left: auto;
+  opacity: 0.7;
+}
+/* Scrollable body for the rewritten transcript drawer (prompt + chips +
+   live transcript + result). The drawer is a flex column; the body is the
+   only growing, scrolling region. overflow-x:hidden + the wrap rules below
+   keep long CLI lines (PowerShell paths, URLs) inside the panel — the
+   operator scrolls vertically, never sideways. */
+.spawn-drawer-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  background: var(--bg-deep);
+}
+.spawn-drawer-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.spawn-drawer-section-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-meta);
+}
+.spawn-drawer-prompt {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.spawn-drawer-expand {
+  align-self: flex-start;
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 11px;
+  color: var(--accent);
+  cursor: pointer;
+}
+.spawn-drawer-expand:hover {
+  text-decoration: underline;
+}
+.spawn-drawer-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.spawn-drawer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1px 7px;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.spawn-drawer-chip-key {
+  color: var(--text-meta);
+}
+.spawn-drawer-chip-val {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.spawn-drawer-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.spawn-drawer-elided {
+  font-size: 10px;
+  font-style: italic;
+}
+.spawn-drawer-entry {
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.spawn-drawer-entry.is-tool-call {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.spawn-drawer-entry-glyph {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.spawn-drawer-entry-tool {
+  color: var(--cyan, var(--text-primary));
+}
+.spawn-drawer-entry-args,
+.spawn-drawer-entry-text {
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-width: 0;
+}
+.spawn-drawer-entry.is-tool-output {
+  display: flex;
+  gap: 6px;
+  color: var(--text-meta);
+}
+.spawn-drawer-entry-prose,
+.spawn-drawer-result {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.spawn-drawer-result.is-error {
+  color: var(--bad);
+}
+.spawn-drawer-cursor {
+  color: var(--accent);
+  animation: spawn-cursor-blink 1s steps(2, start) infinite;
+}
+@keyframes spawn-cursor-blink {
+  50% { opacity: 0; }
+}
+.spawn-drawer-empty-inline {
+  font-size: 11px;
+}
+.spawn-drawer-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-lg);
+  font-size: 12px;
+  text-align: center;
+  color: var(--text-meta);
+}
+
+/* Phase 1 — archive section. Sessions older than 7 days are moved
+   into archive/YYYY-MM/ by the daily sessions_archive scheduler
+   tick; the drawer fetches the list lazily on first expand. */
+.session-archive-section {
+  margin-top: var(--space-sm);
+  padding-top: var(--space-sm);
+  border-top: 1px dashed var(--panel-divider);
+}
+
+.session-archive-toggle {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  background: transparent;
+  border: none;
+  color: var(--text-meta);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.session-archive-toggle:hover {
+  color: var(--accent);
+}
+
+.session-archive-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 8px 8px;
+}
+
+.session-archive-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-meta);
+}
+
+.session-archive-bucket {
+  flex-shrink: 0;
+  width: 56px;
+}
+
+.session-archive-name {
+  flex: 1;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-archive-meta {
+  flex-shrink: 0;
+}
+.session-drawer-actions {
+  display: flex;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--panel-divider);
+  flex-wrap: wrap;
+  align-items: center;
+}
+.session-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--panel-divider);
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  user-select: none;
+  color: var(--text-secondary);
+}
+.session-select-all:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+.session-action {
+  background: transparent;
+  border: 1px solid var(--panel-divider);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+.session-action:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+.session-action:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.session-action.is-confirming {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+.session-row {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-mono);
+}
+.session-row:hover,
+.session-row.is-focused {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--panel-divider);
+}
+.session-row.is-current {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--accent-bright);
+}
+.session-row.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.session-row-check {
+  margin: 2px 0 0 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.session-row-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.session-row-name {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-row-meta { font-size: 10px; color: var(--text-meta); }
+.session-row.is-stale .session-row-name,
+.session-row.is-stale .session-row-meta { color: var(--text-meta); }
+.session-row-stale {
+  margin-left: 6px;
+  padding: 0 4px;
+  border: 1px solid var(--panel-divider);
+  border-radius: 2px;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-meta);
+  vertical-align: middle;
+}
+.session-row-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-left: var(--space-xs);
+}
+.session-row-action {
+  font: inherit;
+  font-size: 10px;
+  padding: 2px 6px;
+  background: transparent;
+  color: var(--text-meta);
+  border: 1px solid var(--panel-divider);
+  border-radius: 2px;
+  cursor: pointer;
+}
+.session-row-action:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+.session-row-action:disabled { opacity: 0.5; cursor: default; }
+.session-row-rename {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+}
+.session-row-rename-input {
+  flex: 1;
+  font: inherit;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  padding: 2px 4px;
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+}
+.session-row-error {
+  margin-top: 2px;
+  color: var(--bad);
+}
+.session-row-preview {
+  margin-top: 4px;
+  padding: var(--space-xs);
+  background: rgba(0,0,0,0.18);
+  border-left: 2px solid var(--accent);
+  border-radius: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.session-preview-list {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.session-preview-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.session-preview-role {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.session-preview-text {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.session-preview-turn.role-user .session-preview-role { color: var(--accent-bright); }
+
+/* Chat empty-state command tips */
+.chat-empty-headline {
+  color: var(--text-secondary);
+  font-size: 14px;
+  margin-bottom: var(--space-lg);
+  text-align: center;
+}
+.command-tips {
+  max-width: 440px;
+  margin: 0 auto;
+  padding: var(--space-md);
+  border: 1px solid var(--hint-border);
+  border-radius: var(--radius-sm);
+  background: var(--hint-bg);
+  backdrop-filter: blur(6px);
+}
+.command-tips-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-meta);
+  margin-bottom: var(--space-sm);
+}
+.command-tips-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.command-tips-list li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.command-tips-cmd {
+  background: transparent;
+  border: 1px solid var(--panel-divider);
+  border-radius: var(--radius-xs);
+  color: var(--accent-bright);
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+.command-tips-cmd:hover {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.command-tips-desc {
+  color: var(--text-secondary);
+}
+
+/* Slash-command autocomplete popover above the chat input */
+.chat-input-wrap { position: relative; }
+.slash-hint {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + var(--space-xs));
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--hint-border);
+  border-radius: var(--radius-sm);
+  background: var(--hint-bg);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.5);
+  max-height: 260px;
+  overflow-y: auto;
+}
+.slash-hint-row {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+  gap: var(--space-md);
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.slash-hint-row.is-focused {
+  color: var(--text-primary);
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+/* Left column — name + argLabel stacked. argLabel may be multi-line
+   (some commands declare `<arg>\n[opt1]\n[opt2]`); pre-line preserves
+   those breaks without bleeding into the right column. */
+.slash-hint-cmd {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+/* Right column — summary + argHelp stacked, takes the remaining width
+   and wraps. min-width:0 lets it actually shrink instead of forcing
+   the row wider than the popover. */
+.slash-hint-doc {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.slash-hint-name { color: var(--accent-bright); }
+.slash-hint-arg  {
+  color: var(--text-meta);
+  font-style: italic;
+  white-space: pre-line;
+}
+.slash-hint-summary { color: var(--text-secondary); }
+.slash-hint-help { color: var(--text-meta); }
+.slash-hint-row.is-help { cursor: default; }
+
+/* Highlighted anchors — applied to <a class="linked-anchor"> everywhere
+ * the lib/linkify.tsx helper renders a URL, and to <a> children of
+ * ChatMarkdown / SoulView markdown renderers via .bubble-md a /
+ * .soul-block-body a. Same look across all surfaces: accent color,
+ * subtle underline at rest, full underline on hover/focus.
+ */
+.linked-anchor,
+a.linked-anchor:link,
+a.linked-anchor:visited {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+a.linked-anchor:hover,
+a.linked-anchor:focus-visible {
+  color: var(--accent-bright);
+  text-decoration-color: var(--accent-bright);
+}
+a.linked-anchor:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}

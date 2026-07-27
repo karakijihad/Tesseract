@@ -1,0 +1,13 @@
+{
+  "id": "tavily_search.default",
+  "family": "web",
+  "description": "tavily_search — dedup duplicate URL/snippet pairs, cap output at ~3000 tokens.",
+  "priority": 70,
+  "match": {"tool_names": ["tavily_search", "tavily_extract", "web_search"]},
+  "transforms": ["trim_empty_edges"],
+  "reducers": [
+    {"kind": "dedup_lines"},
+    {"kind": "cap_chars", "n": 12000}
+  ],
+  "passthrough_when": {"max_chars": 2000}
+}

@@ -1,0 +1,37 @@
+# TARS Cockpit — UI-facing configuration.
+#
+# trio: the two persistent lanes the cockpit's "trio" card renders. Each
+# lane's model comes from roles.yaml (the single source of truth for model
+# wiring) via model_role — no model id is hardcoded here.
+trio:
+  lanes:
+    - name: coder/claude
+      role: coder
+      kind: claude
+      model_role: claude_cli
+    - name: auditor/codex
+      role: auditor
+      kind: codex
+      model_role: codex_cli
+  # Claude<->Codex verification relay.
+  relay:
+    max_rounds: 3
+    verify_by_default: true          # route code-modifying delegations through the relay by default
+
+conductor:
+  relay_poll_s: 0.5
+  # Stall ceiling for a lane turn's event stream: the turn is abandoned only
+  # after this many seconds with NO new events (an active turn keeps
+  # extending its own deadline). Not a cap on total turn duration.
+  relay_timeout_s: 120
+  # Accept-ack ceiling for lane commands. The ack only means "queued", not
+  # "finished" — a lane turn can run far longer than this.
+  lane_ack_timeout_s: 30
+  # Max characters for a lane reply before truncation.
+  reply_cap_chars: 24000
+
+activity:
+  # Boot-time registry rebuild only re-registers controller sessions whose
+  # last activity falls inside this window; older sessions stay on disk but
+  # are not re-registered.
+  rebuild_session_window_hours: 48

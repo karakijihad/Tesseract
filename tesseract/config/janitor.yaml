@@ -1,0 +1,48 @@
+# Janitor — orphaned-process sweep policy.
+#
+# Kill rule is fixed in code: a process is only reaped when it matches a
+# fingerprint below AND is an orphan (its parent is dead). This config
+# cannot loosen the orphan requirement — it only names targets. Sweep
+# cadence lives in schedule.yaml. `pattern` is a regex matched against the
+# process's full command line.
+
+process_fingerprints:
+  # Claude Code hook scripts left running by a missing `jq` fallback.
+  - id: hook-json-bridge
+    pattern: "import json,sys,io"
+  # Ad-hoc static file servers left over from dev sessions.
+  - id: dev-http-server
+    pattern: "-m http.server"
+  # TESSERACT runtime processes (supervisor, mirror backend, controller)
+  # whose parent died without reaping them.
+  - id: tesseract-runtime
+    pattern: '-m tesseract\.'
+  # Headless Claude/Codex CLI lane processes.
+  - id: lane-claude
+    pattern: 'claude(\.exe)?"? -p '
+  - id: lane-codex
+    pattern: 'codex(\.exe)?"? exec'
+
+# Scratch directories deleted from the repo root and tesseract/.
+scratch_dir_globs:
+  - ".pytest-tmp*"
+  - ".pytest_tmp*"
+  - ".codex-pytest-temp"
+  - "tmp_*"
+
+# Archived controller-lane months older than this many days are pruned.
+archive_retention_days: 60
+
+# Controller sessions marked "active" whose owning process is dead are
+# closed once they're at least this stale, in hours.
+stale_session_grace_hours: 24
+
+# Detached-by-design processes stay exempt from the sweep while "claimed" —
+# a heartbeat file younger than this many seconds counts as claimed.
+claimed_heartbeat_max_age_s: 600
+
+# Log pruning is opt-in: paths (globs, relative to <home>/logs/) listed
+# here have files older than retention_days deleted. Empty list = off.
+log_prune:
+  retention_days: 60
+  globs: []

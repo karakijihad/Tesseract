@@ -1,0 +1,32 @@
+# Memory subsystem knobs. All keys required — missing keys raise at
+# startup (no silent defaults).
+
+auto_recall:
+  # Every operator turn is embedded and the top-k best-matching memories
+  # are injected as context before the model call.
+  top_k: 5
+
+  # Max characters of a recalled memory's rendered line (title + body,
+  # collapsed to one line). Keeps the injected block small; the model can
+  # still search/fetch the full record if needed.
+  char_cap: 300
+
+  # Minimum retrieval score for a hit to be injected; lower-scoring hits
+  # are dropped. Score is a composite rank-based value, not a normalized
+  # similarity — tune by watching real recall logs rather than reasoning
+  # about the number in isolation.
+  min_similarity: 0.01
+
+  # Turns shorter than this many words skip retrieval entirely (a one-word
+  # "ok" isn't worth a retrieval round-trip).
+  min_query_words: 3
+
+  # A memory that was just injected stays excluded from re-injection for
+  # this many subsequent turns, so the same fact doesn't repeat every turn.
+  dedup_window_turns: 3
+
+# Autonomy digest recency filter — applied before ranking so stale items
+# don't crowd out what's actually current.
+autonomy_digest:
+  # Agenda entries older than this many days are excluded from the digest.
+  max_age_days: 7

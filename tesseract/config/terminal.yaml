@@ -1,0 +1,124 @@
+terminal:
+  default_shell: cmd
+  max_panes_per_tab: 4
+  max_tabs: 8
+
+  shell_profiles:
+    cmd:
+      argv: ["cmd.exe"]
+      label: "Command Prompt"
+      icon: ">"
+    pwsh:
+      argv: ["pwsh.exe"]
+      label: "PowerShell"
+      icon: "PS"
+
+  # Keybindings — global when focus is anywhere inside the terminal view.
+  # Modifier order is normalized internally (Ctrl, Shift, Alt, Meta).
+  # Known commands:
+  #   terminal.newTab, terminal.closeTab, terminal.nextTab, terminal.prevTab,
+  #   terminal.splitVertical, terminal.splitHorizontal, terminal.search,
+  #   terminal.toggleTranscript, terminal.toggleObserver
+  keybindings:
+    # Avoid Ctrl+Shift+T (reopen tab) / Ctrl+Shift+W (close tab) — the
+    # browser owns those at the OS level; preventDefault can't suppress them.
+    - { combo: "Ctrl+Shift+K", command: "terminal.newTab" }
+    - { combo: "Ctrl+Shift+X", command: "terminal.closeTab" }
+    - { combo: "Ctrl+Shift+D", command: "terminal.splitVertical" }
+    - { combo: "Ctrl+Shift+E", command: "terminal.splitHorizontal" }
+    - { combo: "Alt+Shift+X",  command: "terminal.closePane" }
+    - { combo: "Ctrl+PageUp",  command: "terminal.prevTab" }
+    - { combo: "Ctrl+PageDown", command: "terminal.nextTab" }
+    - { combo: "Ctrl+F",  command: "terminal.search" }
+    - { combo: "Meta+F",  command: "terminal.search" }
+    - { combo: "Ctrl+`",  command: "terminal.toggleTranscript" }
+    - { combo: "Ctrl+Shift+O", command: "terminal.toggleObserver" }
+
+  # Themes — xterm.js color palettes. The `mirror` theme uses live design
+  # tokens (entity-accent-reactive). Other themes use literal hex and are
+  # static. Missing fields fall back to token defaults in `buildTheme()`.
+  #
+  # Values are either:
+  #   "token:--name"  → resolved at runtime via getComputedStyle
+  #   "#rrggbb"       → literal hex, bypasses tokens
+  #
+  # xterm.js theme keys: background, foreground, cursor, cursorAccent,
+  # selectionBackground, plus ansi.{black,red,green,yellow,blue,magenta,cyan,white}
+  # and bright_ansi.{same}.
+  active_theme: mirror
+
+  themes:
+    mirror:
+      background: "token:--bg-void"
+      foreground: "token:--ink-100"
+      cursor: "token:--accent-bright"
+      cursorAccent: "token:--bg-void"
+      selectionBackground: "token:--accent-glow"
+      ansi:
+        black:   "token:--bg-deep"
+        red:     "token:--bad"
+        green:   "token:--ok"
+        yellow:  "token:--warn"
+        blue:    "token:--info"
+        magenta: "token:--pink"
+        cyan:    "token:--cyan"
+        white:   "token:--ink-100"
+      bright_ansi:
+        black:   "token:--ink-55"
+        red:     "token:--red"
+        green:   "token:--green"
+        yellow:  "token:--orange"
+        blue:    "token:--blue"
+        magenta: "token:--accent-bright"
+        cyan:    "token:--cyan"
+        white:   "token:--ink-100"
+
+    high-contrast:
+      background: "#000000"
+      foreground: "#ffffff"
+      cursor: "#ffff00"
+      cursorAccent: "#000000"
+      selectionBackground: "#555555"
+      ansi:
+        black:   "#000000"
+        red:     "#ff2222"
+        green:   "#22ff22"
+        yellow:  "#ffff22"
+        blue:    "#5577ff"
+        magenta: "#ff55ff"
+        cyan:    "#55ffff"
+        white:   "#ffffff"
+      bright_ansi:
+        black:   "#808080"
+        red:     "#ff5555"
+        green:   "#55ff55"
+        yellow:  "#ffff55"
+        blue:    "#8888ff"
+        magenta: "#ff88ff"
+        cyan:    "#88ffff"
+        white:   "#ffffff"
+
+    solarized-dark:
+      background: "#002b36"
+      foreground: "#93a1a1"
+      cursor: "#93a1a1"
+      cursorAccent: "#002b36"
+      selectionBackground: "#073642"
+      ansi:
+        black:   "#073642"
+        red:     "#dc322f"
+        green:   "#859900"
+        yellow:  "#b58900"
+        blue:    "#268bd2"
+        magenta: "#d33682"
+        cyan:    "#2aa198"
+        white:   "#eee8d5"
+      bright_ansi:
+        black:   "#002b36"
+        red:     "#cb4b16"
+        green:   "#586e75"
+        yellow:  "#657b83"
+        blue:    "#839496"
+        magenta: "#6c71c4"
+        cyan:    "#93a1a1"
+        white:   "#fdf6e3"

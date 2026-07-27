@@ -1,0 +1,302 @@
+/* tesseract/mirror/src/styles/activity.css — AS-2 live map (HUD runs-surface
+   fix: the ambient bottom pill is retired — the toggle now lives permanently
+   in TopStatusHud, see styles/canvas.css `.top-status-hud__activity*`).
+   Hint/meta text uses var(--text-meta) per the Mirror hint-token hard rule. */
+
+.activity-map {
+  position: absolute;
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 360px;
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.12));
+  background: var(--glass-bg, rgba(20, 24, 32, 0.72));
+  backdrop-filter: blur(16px);
+  color: var(--text-primary, #e8eef6);
+}
+.activity-map__bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--glass-border, rgba(255, 255, 255, 0.1));
+  cursor: move;
+  touch-action: none;
+}
+.activity-map__title {
+  font-size: 12px;
+  font-weight: 600;
+}
+.activity-map__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.activity-map__closeall {
+  background: none;
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.14));
+  color: var(--text-meta);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.activity-map__closeall:hover:not(:disabled) {
+  color: var(--text-primary, #e8eef6);
+  border-color: var(--text-meta);
+}
+.activity-map__closeall:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.activity-map__close {
+  background: none;
+  border: none;
+  color: var(--text-meta);
+  cursor: pointer;
+  font-size: 16px;
+}
+/* The body — not the whole card — is the scroll container, so the bar +
+   close-all header stay pinned while the row list scrolls underneath. */
+.activity-map__body {
+  padding: 6px 8px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.activity-map__body::-webkit-scrollbar {
+  width: 4px;
+}
+.activity-map__body::-webkit-scrollbar-thumb {
+  background: var(--border-visible);
+  border-radius: 2px;
+}
+.activity-map__group {
+  margin-bottom: 8px;
+}
+.activity-map__group-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 4px 6px;
+}
+.activity-map__row-wrap {
+  display: flex;
+  flex-direction: column;
+}
+.activity-map__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 8px;
+  text-align: left;
+}
+.activity-map__row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+/* A failed routine/autonomy run stays visible until dismissed — same
+   --bad/--bad-dim tokens Pulse/Conscience use for error rows (tokens.css). */
+.activity-map__row--failed {
+  border-left: 2px solid var(--bad);
+  background: var(--bad-dim);
+}
+.activity-map__row--failed:hover {
+  background: var(--bad-dim);
+}
+.activity-map__row--failed .activity-map__state {
+  color: var(--bad);
+}
+.activity-map__error {
+  color: var(--bad);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.activity-map__label {
+  flex: 1;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity-map__provider,
+.activity-map__state {
+  font-size: 10px;
+}
+.activity-map__chevron {
+  font-size: 12px;
+  transition: transform 0.15s ease;
+}
+.activity-map__chevron.is-open {
+  transform: rotate(90deg);
+}
+.activity-map__row-close {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--text-meta);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.activity-map__row-close:hover:not(:disabled) {
+  color: var(--text-primary, #e8eef6);
+  background: rgba(255, 255, 255, 0.08);
+}
+.activity-map__row-close:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.activity-map__detail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 6px 8px 30px;
+  font-size: 10px;
+}
+.activity-map__more {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 6px;
+  font-size: 10px;
+}
+.activity-map__more:hover {
+  color: var(--text-primary, #e8eef6);
+}
+
+.activity-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-meta);
+  flex: none;
+}
+.activity-dot--running,
+.activity-dot--spawning {
+  background: #4ade80;
+}
+/* N3 — parked on an operator question (trio W4): distinct amber so it reads as
+   "needs you", not just generic running. */
+.activity-dot--input_required {
+  background: #fbbf24;
+}
+.activity-dot--idle {
+  background: #64748b;
+}
+.activity-dot--failed {
+  background: #f87171;
+}
+.activity-dot--done,
+.activity-dot--closed,
+.activity-dot--cancelled {
+  background: #475569;
+}
+
+/* ASK-over-MCP operator approvals — floating alert, top-center, above panels.
+   Self-hidden by the component when nothing is pending. A fixed alert layer
+   that must stay above the interleaving panel/surface stack (which shares the
+   `zStack` counter growing from ~1000), so this sits well above that range —
+   an approval prompt can never be buried under a focused panel or card. */
+.mcp-approvals {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100000;
+  min-width: 320px;
+  max-width: 460px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--glass-bg, rgba(20, 24, 32, 0.86));
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.14));
+  backdrop-filter: blur(16px);
+  color: var(--text-primary, #e8eef6);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+}
+.mcp-approvals__title {
+  font-size: 12px;
+  font-weight: 600;
+}
+.mcp-approvals__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.mcp-approvals__what {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.mcp-approvals__verb {
+  font-size: 13px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.mcp-approvals__client {
+  font-size: 11px;
+}
+.mcp-approvals__actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.mcp-approvals__approve,
+.mcp-approvals__reject {
+  font-size: 12px;
+  line-height: 1;
+  padding: 5px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.14));
+  background: none;
+  color: var(--text-primary, #e8eef6);
+}
+.mcp-approvals__approve {
+  border-color: rgba(90, 200, 130, 0.5);
+}
+.mcp-approvals__approve:hover:not(:disabled) {
+  background: rgba(90, 200, 130, 0.16);
+}
+.mcp-approvals__reject {
+  color: var(--text-meta);
+}
+.mcp-approvals__reject:hover:not(:disabled) {
+  color: var(--text-primary, #e8eef6);
+  border-color: var(--text-meta);
+}
+.mcp-approvals__approve:disabled,
+.mcp-approvals__reject:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* trio W4 — parked asks reuse the approvals styling but float at the bottom so
+   they never overlap the top-anchored MCP approvals pane. */
+.mcp-approvals.parked-asks {
+  top: auto;
+  bottom: 14px;
+}

@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0a0a0c;
+        color: #e8e8ea;
+        font-family: system-ui, sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .box {
+        text-align: center;
+        max-width: 360px;
+        padding: 24px;
+      }
+      h1 {
+        font-size: 18px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        margin: 0 0 14px;
+      }
+      #msg {
+        font-size: 13px;
+        color: #8a8a90;
+        min-height: 18px;
+      }
+      .spin {
+        width: 26px;
+        height: 26px;
+        margin: 0 auto 18px;
+        border: 2px solid #2a2a30;
+        border-top-color: #e8e8ea;
+        border-radius: 50%;
+        animation: s 0.9s linear infinite;
+      }
+      @keyframes s {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="box">
+      <div class="spin"></div>
+      <h1>Setting up TESSERACT</h1>
+      <div id="msg">Preparing first-run setup…</div>
+    </div>
+    <script>
+      // withGlobalTauri exposes window.__TAURI__.
+      const { listen } = window.__TAURI__.event;
+      listen("provision-progress", (e) => {
+        document.getElementById("msg").textContent = e.payload;
+      });
+    </script>
+  </body>
+</html>

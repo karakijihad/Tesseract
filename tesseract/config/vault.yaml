@@ -1,0 +1,55 @@
+# Vault subsystem knobs. All keys are required — missing keys raise at
+# startup (no silent defaults).
+
+ingest:
+  # Max characters of extracted source text fed to the ingest prompt.
+  max_extract_chars: 3000
+
+lint:
+  # vault_lint flags the wiki index as needing a scale-split once it has
+  # more than this many pages.
+  scale_split_threshold: 80
+
+  # Days a source page may go without a resolvable source_path before lint
+  # flags it as stale.
+  stale_grace_days: 180
+
+  # Upper bound on source-page pairs the contradiction-detection pass
+  # scores in a single run.
+  contradiction_pair_limit: 50
+
+query:
+  # vault_query scoping: pass 1 keyword-matches the index and per-page
+  # titles/concepts; pass 2 expands via related links. Both passes are
+  # deterministic and token-free — the model only reasons over the final
+  # expanded set.
+  max_seed_slugs: 6
+  max_expanded_slugs: 12
+
+search:
+  # vault_search hybrid BM25 + vector fusion. A bigger rrf_k flattens the
+  # score curve so lower-ranked results still contribute (60 is the
+  # standard reciprocal-rank-fusion tuning value).
+  rrf_k: 60
+  # Default top_k when a search call omits one; hard cap is enforced
+  # elsewhere (max 20).
+  default_top_k: 5
+
+raw_watch:
+  # Daily watcher over files dropped into vault/raw/<YYYYMMDD>/. Files
+  # passing all safety filters auto-ingest; failing files bundle into one
+  # approval request. mode: ask_all forces every file through approval
+  # regardless of filters.
+  enabled: true
+  mode: auto                     # auto | ask_all
+  max_auto_size_mb: 50           # files larger than this route to approval
+  auto_url_allowlist: []         # source-URL prefixes that auto-ingest .url/.lnk files
+  batch_size_max: 50             # max files per approval batch
+  excluded_globs:
+    - "~$*"
+    - ".DS_Store"
+    - "Thumbs.db"
+    - "*.tmp"
+    - "*.meta.yaml"
+  nonconforming_folders: log     # log | warn | error — policy for non-YYYYMMDD folder names
+  notify_on_empty: false         # silent ticks when nothing new was found

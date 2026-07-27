@@ -1,0 +1,13 @@
+{
+  "id": "memory_search.default",
+  "family": "memory",
+  "description": "memory_search — dedup repeated provenance bodies and cap at ~2000 tokens.",
+  "priority": 60,
+  "match": {"tool_names": ["memory_search"]},
+  "transforms": ["trim_empty_edges"],
+  "reducers": [
+    {"kind": "dedup_lines"},
+    {"kind": "cap_chars", "n": 8000}
+  ],
+  "passthrough_when": {"max_chars": 1500}
+}

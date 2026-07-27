@@ -1,0 +1,19 @@
+# Autonomy watchlist — sources TARS watches for ecosystem awareness (docs
+# sites, RSS feeds, saved search queries). Empty by default; add your own.
+#
+# Consumed by orchestrator/brief/ecosystem.py, which reads each `kind: docs`
+# entry's `urls:` list to attach a canonical link to the ecosystem brief.
+# `kind: feed` and `kind: query` rows are schema-reserved for future use. An
+# empty or missing list is fine — the brief simply skips the enrichment.
+#
+# Example entry (uncomment and edit to add a source):
+#
+# sources:
+#   - name: example_docs
+#     kind: docs
+#     urls:
+#       - https://example.com/docs/
+
+sources: []
+
+scan_cadence: daily   # informational only; no job reads this today

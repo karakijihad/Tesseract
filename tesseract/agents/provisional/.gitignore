@@ -1,0 +1,7 @@
+# Source-tree marker directory only — generated provisional agents land
+# at TESSERACT_HOME/provisional/<name>/ via the runtime tree (gitignored
+# at root). This local rule is defense-in-depth: if anything ever drops
+# into the source dir by mistake, it does not silently get committed.
+*
+!.gitignore
+!.gitkeep

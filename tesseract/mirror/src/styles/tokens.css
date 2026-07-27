@@ -1,0 +1,240 @@
+/* =============================================================
+   TESSERACT Mirror — Design Tokens
+   Single source of truth. No other file may declare CSS custom
+   properties or hard-code hex / px / ms values.
+   Source: cockpit-redesign-spec.md §Design Token System
+   Last-updated: 2026-04-11 (phase-3c session 1)
+   ============================================================= */
+
+:root {
+  /* -----------------------------------------------------------
+     LAYER 1 — PRIMITIVES (raw values)
+     ----------------------------------------------------------- */
+
+  /* Background layers */
+  --bg-void:     #050508;              /* app background */
+  --bg-deep:     #080810;              /* panel background below chrome */
+  --bg-surface:  #0d0d1a;             /* panel interior */
+  --bg-elevated: #121220;             /* cards, inputs */
+  --bg-overlay:  rgba(0,0,0,0.5);    /* HUD bar, scrims */
+
+  /* Ink scale (text primitives) */
+  --ink-100: #f5f5fa;                       /* near-white, OLED-friendly */
+  --ink-72:  rgba(234,234,248,0.72);        /* secondary */
+  --ink-55:  rgba(234,234,248,0.55);        /* meta */
+  --ink-38:  rgba(234,234,248,0.38);        /* disabled */
+
+  /* Accent — TARS violet (operator-preferred). Single source for UI *and*
+     the WebGL orb: GlobalCanvas reads --accent-hsl at boot and pushes it
+     through the entity store, so this block recolors both. Atmosphere,
+     synapse glows, and frosted surfaces all key off --accent-hsl too. */
+  --accent-hsl:    246 83% 68%;
+  --accent:        #7c6cf0;
+  --accent-bright: #9d8fff;
+  --accent-dim:    rgba(124,108,240,0.15);
+  --accent-glow:   rgba(124,108,240,0.25);
+
+  /* Semantic color primitives */
+  --ok:    #4ade80;
+  --warn:  #ffb454;
+  --bad:   #ff6b6b;
+  --info:  #60a5fa;
+  --cyan:  #22d3ee;
+  --pink:  #f472b6;
+  --orange: #fb923c;
+
+  /* Dim variants (for chip/pill backgrounds) */
+  --green:     #00e88f;
+  --green-dim: rgba(0,232,143,0.15);
+  --red:       #ff4d6a;
+  --red-dim:   rgba(255,77,106,0.15);
+  --bad-dim:   rgba(255,107,106,0.10);
+  --orange-dim: rgba(255,170,51,0.15);
+  --blue:      #4da6ff;
+  --blue-dim:  rgba(77,166,255,0.15);
+  --cyan-dim:  rgba(0,212,232,0.15);
+  --pink-dim:  rgba(255,110,180,0.15);
+
+  /* Legacy border primitives (kept for surviving component refs) */
+  --border-subtle:  rgba(255,255,255,0.04);
+  --border-muted:   rgba(255,255,255,0.08);
+  --border-visible: rgba(255,255,255,0.12);
+
+  /* -----------------------------------------------------------
+     LAYER 2 — SEMANTIC ALIASES (purpose-named, components use these)
+     ----------------------------------------------------------- */
+
+  /* Text */
+  --text-primary:   var(--ink-100);
+  --text-secondary: var(--ink-72);
+  --text-meta:      var(--ink-55);
+  --text-disabled:  var(--ink-38);
+
+  /* Legacy text aliases (kept for surviving component refs) */
+  --text-muted:   var(--ink-55);       /* alias → text-meta */
+  --text-bright:  var(--ink-100);      /* alias → text-primary */
+  --text-dim:     rgba(74,74,106,1);   /* low-contrast label color */
+  --text-ghost:   rgba(42,42,69,1);    /* near-invisible */
+
+  /* Panel surfaces */
+  --panel-bg:      rgba(22,22,36,0.41);       /* lifted glass — side panels stand out against void (-25% from 0.55) */
+  --panel-border:  rgba(255,255,255,0.08);
+  --panel-divider: rgba(255,255,255,0.05);
+
+  /* Hint surface — chip tooltip / popover background. Used by every
+     hint/dropdown/tooltip surface in the cockpit so they share the brand
+     glass treatment instead of drifting to white browser defaults. */
+  --hint-bg:     rgba(28,28,42,0.72);
+  --hint-border: rgba(255,255,255,0.10);
+
+  /* HUD */
+  --hud-bg:     var(--bg-overlay);
+  --hud-border: rgba(255,255,255,0.10);
+
+  /* Legacy panel/border aliases */
+  --bg-panel:    #0e0e16;
+  --bg-card:     #14141e;
+  --bg-hover:    #1a1a28;
+  --border:      #1e1e30;
+  --border-glow: hsla(var(--accent-hsl), 0.15);
+
+  /* -----------------------------------------------------------
+     SPACING
+     ----------------------------------------------------------- */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+
+  /* -----------------------------------------------------------
+     RADIUS
+     ----------------------------------------------------------- */
+  --radius-xs: 4px;
+  --radius-sm: 7px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+
+  /* -----------------------------------------------------------
+     MOTION
+     ----------------------------------------------------------- */
+  --motion-fast:   120ms;
+  --motion-med:    250ms;
+  --motion-slow:   400ms;
+  --ease-out:    cubic-bezier(0.25, 0.1, 0.25, 1);
+  --ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* -----------------------------------------------------------
+     TYPOGRAPHY
+     ----------------------------------------------------------- */
+  --font-ui:      'Space Grotesk', system-ui, sans-serif;
+  --font-body:    'Space Grotesk', system-ui, sans-serif;
+  --font-mono:    'Space Grotesk', system-ui, sans-serif;
+  --font-display: var(--font-ui);
+
+  /* Type scale — 7 tiers */
+  --t-meta-size:     10px;
+  --t-meta-family:   var(--font-ui);
+  --t-meta-color:    var(--ink-55);
+
+  --t-caption-size:  11px;
+  --t-caption-family: var(--font-ui);
+  --t-caption-color: var(--ink-72);
+
+  --t-body-size:     13px;
+  --t-body-family:   var(--font-body);
+  --t-body-color:    var(--ink-100);
+  --t-body-lh:       1.55;
+
+  --t-ui-size:       14px;
+  --t-ui-family:     var(--font-ui);
+  --t-ui-color:      var(--ink-100);
+  --t-ui-weight:     500;
+
+  --t-sub-size:      16px;
+  --t-sub-family:    var(--font-ui);
+  --t-sub-color:     var(--ink-100);
+  --t-sub-weight:    500;
+  --t-sub-tracking:  -0.003em;
+
+  --t-head-size:     19px;
+  --t-head-family:   var(--font-ui);
+  --t-head-color:    var(--ink-100);
+  --t-head-weight:   600;
+  --t-head-tracking: -0.005em;
+
+  --t-display-size:     26px;
+  --t-display-family:   var(--font-ui);
+  --t-display-color:    var(--ink-100);
+  --t-display-weight:   600;
+  --t-display-tracking: -0.015em;
+}
+
+/* =============================================================
+   TYPE SCALE UTILITY CLASSES — 7 tiers
+   Components apply via className="t-head" etc. Every text
+   element in the cockpit must use one of these classes; raw
+   font-size / color on text is a migration bug.
+   ============================================================= */
+
+.t-meta {
+  font-size: var(--t-meta-size);
+  font-family: var(--t-meta-family);
+  color: var(--t-meta-color);
+  font-weight: 400;
+  line-height: 1.4;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.t-caption {
+  font-size: var(--t-caption-size);
+  font-family: var(--t-caption-family);
+  color: var(--t-caption-color);
+  font-weight: 400;
+  line-height: 1.45;
+  letter-spacing: 0.01em;
+}
+
+.t-body {
+  font-size: var(--t-body-size);
+  font-family: var(--t-body-family);
+  color: var(--t-body-color);
+  font-weight: 400;
+  line-height: var(--t-body-lh);
+}
+
+.t-ui {
+  font-size: var(--t-ui-size);
+  font-family: var(--t-ui-family);
+  color: var(--t-ui-color);
+  font-weight: var(--t-ui-weight);
+  line-height: 1.4;
+}
+
+.t-sub {
+  font-size: var(--t-sub-size);
+  font-family: var(--t-sub-family);
+  color: var(--t-sub-color);
+  font-weight: var(--t-sub-weight);
+  line-height: 1.35;
+  letter-spacing: var(--t-sub-tracking);
+}
+
+.t-head {
+  font-size: var(--t-head-size);
+  font-family: var(--t-head-family);
+  color: var(--t-head-color);
+  font-weight: var(--t-head-weight);
+  line-height: 1.25;
+  letter-spacing: var(--t-head-tracking);
+}
+
+.t-display {
+  font-size: var(--t-display-size);
+  font-family: var(--t-display-family);
+  color: var(--t-display-color);
+  font-weight: var(--t-display-weight);
+  line-height: 1.15;
+  letter-spacing: var(--t-display-tracking);
+}

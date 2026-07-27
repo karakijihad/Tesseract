@@ -1,0 +1,134 @@
+# Agenda scoring weights and budget caps — deterministic, no LLM involved.
+# These control how autonomy proposals ("agenda items") are ranked and
+# capped. All values are operator-tunable.
+
+scoring:
+  operator_priority_weight: 50.0    # weight for an operator's manual priority nudge
+  age_weight: 1.0                   # gentle score increase the longer an item waits
+  risk_weight: -10.0                # penalty for items that need operator approval
+  budget_remaining_weight: 5.0      # items with more budget headroom score higher
+  source_trust_weight: 8.0          # trusted sources score higher (see source_trust below)
+  vet_weight: 12.0                  # boost for items that passed automated vetting
+
+age_score:
+  unit: hours
+  cap: 168                          # 7 days — max score contribution from age alone
+
+risk_score:
+  autonomous: 0.0
+  propose: 1.0
+  operator_gate: 3.0
+  absolute_deny: 1.0e9              # effectively never selected
+
+# Trust weighting per event source (0.0-1.0 typical range). Higher trust
+# sources rank above lower ones when other scores are equal.
+source_trust:
+  operator: 1.0
+  mission_reflection: 0.7
+  provider_watch: 0.6
+  repo_health: 0.4
+  memory_signal: 0.3
+  vault_signal: 0.3
+  recovery: 0.95
+  self_reflection: 0.2
+  operator_view: 0.5
+  strategist: 0.65
+  repo_upgrade: 0.4
+  scout: 0.35
+
+# Default token/time budgets per risk class. An item may raise its own cap
+# but never below these floors.
+budget_defaults:
+  autonomous:
+    tokens_cap: 50000
+    seconds_cap: 1800
+  propose:
+    tokens_cap: 200000
+    seconds_cap: 7200
+  operator_gate:
+    tokens_cap: 0                   # not applicable — waits for approval first
+    seconds_cap: 0
+
+# Global per-day ceilings across all autonomous agenda items.
+daily_caps:
+  tokens: 1500000
+  seconds: 28800                    # 8 hours of autonomous worker time per day
+  usd: 5.00                         # daily USD spend ceiling
+  exceed_behavior: pause            # pause | operator_gate_all | stop
+
+# TARS controller daemon reload behavior.
+controller:
+  drain_timeout_seconds: 30         # max wait for in-flight turns before forcing a reload
+
+# Auto-reply when an operator comments on an agenda item. Set enabled:false
+# to make agenda threads operator-notes-only.
+comment_reply:
+  enabled: true
+  idle_timeout_seconds: 180         # per-reply silence budget before the dispatch times out
+
+# Auto-reply when an operator comments on a workspace event. Set
+# enabled:false to make workspace threads operator-notes-only.
+workspace_reply:
+  enabled: true
+  idle_timeout_seconds: 180
+
+# Kernel-wide selection caps for the autonomy loop.
+kernel:
+  tick_interval_seconds: 30         # how often the loop wakes when no event fires
+  top_k: 3                          # max items selected per tick
+  max_concurrent_workers_total: 8   # hard ceiling across all worker lanes
+
+# Admission gate applied to every non-operator draft before it becomes a
+# live agenda item.
+admission:
+  max_open_total: 40                # max concurrent non-terminal agenda items
+  max_open_per_source: 8            # per-source ceiling (the operator source is exempt)
+  fuzzy_dedupe:
+    threshold: 0.9                  # similarity ratio (0-1) above which two goals count as duplicates
+    window_hours: 24
+
+# Automated vetting. Drafts from sources listed in vet_required start
+# hidden until a vetting pass promotes or rejects them.
+vetter:
+  enabled: true
+  vet_required: [self_reflection, memory_signal, vault_signal, repo_upgrade, scout]
+  max_unvetted_hours: 24            # promote a stuck unvetted item after this long
+
+# Per-worker-kind wallclock budgets, in seconds (10-1800 enforced
+# elsewhere). A worker that exceeds its budget is parked (BLOCKED), not
+# discarded — the operator can extend the budget and re-queue it.
+worker_timeouts:
+  claude_cli: 1800
+  codex_cli: 1800
+  markdown_agent: 600
+  tars_self: 600
+
+# Auto-drafts a follow-up agenda item after a completed delegation whose
+# summary looks actionable. Purely heuristic — no LLM.
+follow_up_mapper:
+  enabled: true
+  min_summary_chars: 200
+  actionable_keywords:
+    - implement
+    - create
+    - add
+    - fix
+    - refactor
+    - migrate
+    - extract
+    - rename
+    - update
+    - patch
+    - rewrite
+
+# Stop-digging safeguards. Each trigger pauses a source until the operator
+# unpauses it.
+governor:
+  cadence_seconds: 60               # detector check interval
+  loop:
+    n: 3                            # same (source, goal) repeated this many times...
+    window_hours: 24                # ...within this window pauses the source
+  cost_spiral:
+    threshold_multiplier: 2.0       # spend at/above this multiple of the cap cancels the worker
+  trust_degradation:
+    consecutive_rejections: 3       # consecutive operator rejections from a source before it's paused

@@ -1,0 +1,128 @@
+.controller-mirror {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.controller-mirror__handoff {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.controller-mirror__handoff-label {
+  font-weight: 600;
+  color: var(--text-1);
+  white-space: nowrap;
+}
+
+.controller-mirror__session-id {
+  font-family: var(--font-mono);
+  color: var(--text-meta);
+  font-size: 11px;
+}
+
+.controller-mirror__hint {
+  color: var(--text-meta);
+  font-size: 11px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.controller-mirror__thinking {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-meta);
+  font-size: 11px;
+  font-style: italic;
+}
+
+.controller-mirror__thinking-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-meta);
+  animation: controller-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes controller-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
+.controller-mirror__transcript {
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 6px 10px;
+  background: var(--bg-1);
+}
+
+.controller-mirror__transcript:empty::after {
+  content: 'Waiting for output…';
+  color: var(--text-meta);
+  font-size: 11px;
+  font-style: italic;
+}
+
+.controller-mirror__event {
+  margin-bottom: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.controller-mirror__event--text {
+  color: var(--text-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.controller-mirror__event--tool {
+  color: var(--text-meta);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.controller-mirror__event--system {
+  color: var(--text-meta);
+  font-size: 11px;
+  font-style: italic;
+}
+
+.controller-mirror__error {
+  padding: 6px 10px;
+  color: var(--color-bad, #e5534b);
+  font-size: 12px;
+  background: var(--bg-1);
+}
+
+.controller-mirror__status {
+  padding: 6px 10px;
+  color: var(--text-meta);
+  font-size: 11px;
+  font-style: italic;
+  background: var(--bg-2);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.controller-mirror__status-path {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-style: normal;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

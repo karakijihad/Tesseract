@@ -1,0 +1,49 @@
+# Runtime infrastructure limits. Every key is required — boot raises if
+# any is missing (no silent defaults).
+
+# Maximum number of synthetic workspace turns that may run concurrently
+# alongside the chat turn for one session. 1 reproduces fully-serial
+# behavior.
+max_concurrent_synthetic_turns: 3
+
+# Maximum number of chat turns that may stream concurrently against a
+# SINGLE provider, so parallel background chats don't collide on its rate
+# limit. Keyed by provider, so each provider gets its own budget. 1
+# reproduces fully-serial behavior.
+max_concurrent_chat_turns_per_provider: 3
+
+# Maximum number of simultaneously-running background spawns (delegations,
+# lane turns, sub-agent invocations) per chat session. Attempts past the
+# cap are told to wait for one to finish rather than spawning.
+max_concurrent_spawns_per_session: 8
+
+# How long a background spawn's unattended approval request stays parked in
+# the approvals queue before it's denied, in seconds. 14400 = 4 hours.
+ask_park_timeout_s: 14400
+
+# Maximum spawn nesting depth — a session already this many levels deep
+# (root chat = 0; each sub-agent invocation +1) may not register further
+# background spawns. Backstop against recursive spawn-inside-spawn chains.
+max_spawn_depth: 3
+
+# Hard cap, in seconds, on how long a foreground (blocking) delegation may
+# block the chat turn. A request whose timeout exceeds this is
+# auto-flipped to a background spawn instead.
+max_foreground_delegate_timeout_s: 180
+
+# A background spawn still running past this many seconds is flagged
+# stalled and surfaced to TARS at the next turn. Generous on purpose — most
+# hung subprocesses are already killed by their own shorter timeout.
+spawn_stall_seconds: 900
+
+# Maximum number of agents that may sit pending approval before further
+# unattended agent-creation requests are refused. Attended (operator-driven)
+# creation is always allowed.
+agent_pending_cap: 5
+
+# Same idea as agent_pending_cap, but for skills awaiting approval.
+skill_pending_cap: 5
+
+# Maximum number of chat turns that may sit queued (not yet dispatched) for
+# one session before the queue is considered full.
+chat_queue_max: 10

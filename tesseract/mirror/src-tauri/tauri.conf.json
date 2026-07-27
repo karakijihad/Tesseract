@@ -1,0 +1,51 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "TESSERACT",
+  "version": "0.2.0",
+  "identifier": "com.tesseract.mirror",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm guard:uv && pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "TESSERACT",
+        "width": 1400,
+        "height": 900,
+        "resizable": true,
+        "decorations": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "TESSERACT",
+    "copyright": "Copyright © 2026 TESSERACT",
+    "category": "Productivity",
+    "shortDescription": "Personal AI assistant runtime with memory and tools.",
+    "longDescription": "TESSERACT is a personal, self-hosted runtime for TARS — an AI assistant with persistent memory, a permissioned tool registry, and a voice-first interface. All data stays on your machine; updates are pulled from git.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": ["resources/binaries/uv.exe"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "nsis/hooks.nsh"
+      }
+    }
+  }
+}
