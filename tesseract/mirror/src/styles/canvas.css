@@ -253,6 +253,23 @@
   cursor: default;
 }
 
+/* Failed-apply variant — apply is HUD-only, so a failed attempt (including
+   the worst case: the app's respawn itself failed) has to be visible right
+   here, not just in Settings. `.is-manual` distinguishes the dead-app case
+   (user must restart TESSERACT themselves) from an ordinary retryable one
+   with a thicker border, not a different color, to stay proportionate. */
+.top-status-hud__update--failed {
+  border-color: rgba(255, 107, 106, 0.4);
+  background: var(--bad-dim);
+  color: var(--bad);
+}
+.top-status-hud__update--failed:hover {
+  background: rgba(255, 107, 106, 0.2);
+}
+.top-status-hud__update--failed.is-manual {
+  border-width: 2px;
+}
+
 /* Bottom HUD goes glass on TarsView (keeps tabs + costs + voice). */
 .cockpit-shell[data-view="tars"] .cockpit-hud {
   background: hsl(248 30% 10% / 0.55);

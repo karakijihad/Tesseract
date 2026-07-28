@@ -71,5 +71,10 @@ def _resolve_sessions_dir(ctx: JobContext) -> Path:
         tess = app.get("tesseract_dir")
         if tess is not None:
             return Path(tess) / "sessions"
-    # Module fallback — match the layout the routes use.
-    return Path(__file__).resolve().parents[2] / "sessions"
+    # Module fallback (no `app` — REPL/tests without Mirror context).
+    # Call-time home_dir(), not a `Path(__file__)` code-tree anchor —
+    # sibling fix alongside the alarms state relocation (Docs/Deferred.md);
+    # inert in production since Mirror always sets `app['tesseract_dir']`.
+    from tesseract.paths import home_dir
+
+    return home_dir() / "sessions"

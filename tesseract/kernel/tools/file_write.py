@@ -71,6 +71,61 @@ def _locked_config_home_hit(resolved: Path) -> str | None:
     return None
 
 
+_TARS_WORKSHOP_PREFIX = "tesseract/tars-workshop"
+
+
+def _tars_workshop_home_target(resolved: Path, workspace_root: Path) -> Path | None:
+    """If the fully-resolved (symlinks + `..` already collapsed) `resolved`
+    path falls under `workspace_root/tesseract/tars-workshop/`, return the
+    equivalent path anchored at `home_dir()` instead — `None` otherwise.
+
+    `tars-workshop/` is relocatable STATE, seeded under
+    `<TESSERACT_HOME>/tars-workshop/` by
+    `config_seed.ensure_tars_workshop_seeded` (Task 17) — but `workspace_root`
+    here is always the CODE tree (`REPO_ROOT` = `TESSERACT_DIR.parent`),
+    which differs from `TESSERACT_HOME` in a packaged install (`<home>/app`
+    vs `<home>`). Without this redirect, every real write through this tool
+    would land in the code tree instead of the seeded, relocatable dir the
+    work-history indexer below already assumes.
+
+    MUST be called with `resolved` (the already-`.resolve()`d absolute path
+    `_check_runtime_lockdown` was evaluated against), never the raw
+    unresolved `file_path` string — a raw string containing `..` (e.g.
+    `tesseract/tars-workshop/../config/schedule.yaml`) would `startswith`-match
+    the tars-workshop prefix before the `..` collapses, redirecting an
+    unrelated file (any `TESSERACT_HOME`-relative path, not just locked
+    config) to `home_dir()` — a path `_check_runtime_lockdown` never
+    evaluated at all, since it saw the harmless, already-collapsed
+    `workspace_root/tesseract/config/schedule.yaml` instead.
+    """
+    try:
+        workspace_root = workspace_root.resolve()
+    except OSError:
+        return None
+    try:
+        rel = resolved.relative_to(workspace_root)
+    except ValueError:
+        return None  # resolved lives outside workspace_root entirely
+    rel_posix = rel.as_posix()
+    if rel_posix != _TARS_WORKSHOP_PREFIX and not rel_posix.startswith(_TARS_WORKSHOP_PREFIX + "/"):
+        return None
+
+    from tesseract.paths import home_dir
+
+    tail = rel_posix[len(_TARS_WORKSHOP_PREFIX):].lstrip("/")
+    base = home_dir() / "tars-workshop"
+    target = (base / tail) if tail else base
+    # Belt-and-braces containment re-check (mirrors `_locked_config_home_hit`
+    # above): `rel` came from an already-resolved path so it cannot itself
+    # contain `..`, but confirm the final target still lives under `base`
+    # before handing back a write location.
+    try:
+        target.resolve().relative_to(base.resolve())
+    except (OSError, ValueError):
+        return None
+    return target
+
+
 def _check_runtime_lockdown(resolved: Path, workspace_root: Path) -> str | None:
     """Return a deny-reason if `resolved` is in the runtime lock, else None.
 
@@ -174,7 +229,11 @@ class FileWriteTool(Tool):
             # `FileWriteInput._normalize_under_tesseract` has already
             # prepended `tesseract/` if missing, so the policy layer
             # (decide.evaluate + path_overrides) saw the canonical form.
-            path = Path(context.workspace_root) / path
+            # `_tars_workshop_home_target` takes `resolved` (not `path`/
+            # `inp.file_path`) so any `..` has already been collapsed —
+            # see its docstring for why the raw string is unsafe here.
+            home_target = _tars_workshop_home_target(resolved, Path(context.workspace_root))
+            path = home_target if home_target is not None else Path(context.workspace_root) / path
 
         try:
             path.parent.mkdir(parents=True, exist_ok=True)

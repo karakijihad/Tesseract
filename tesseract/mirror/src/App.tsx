@@ -1,24 +1,24 @@
-import { useEffect, useState } from 'react';
-import { useWebSocket } from './hooks/useWebSocket';
-import { fetchCostState } from './lib/api';
-import { isTauri } from './lib/endpoints';
-import { useUIStore } from './stores/ui';
-import { useConversationStore } from './stores/conversation';
-import { useChannelsStore } from './stores/channels';
-import { useWebSocketStore } from './stores/websocket';
-import { useCostStore } from './stores/cost';
-import { useSurfacesStore } from './stores/surfaces';
-import { useUpdateStore } from './stores/update';
-import { usePanelStore } from './cockpit/panelStore';
-import { loadSlashCommands } from './lib/slashCommands';
-import { installViewSnapshotWatcher } from './lib/viewSnapshot';
-import { CockpitStage } from './cockpit/CockpitStage';
-import { RegionCapture } from './cockpit/RegionCapture';
-import { GlobalCanvas } from './components/layout/GlobalCanvas';
-import { MotionTestPanel } from './components/debug/MotionTestPanel';
-import { SessionDrawer } from './components/sessions/SessionDrawer';
-import { ToastStack } from './components/ui/ToastStack';
-import { ResetConfirmDialog } from './components/chat/ResetConfirmDialog';
+import { useEffect, useState } from "react";
+import { useWebSocket } from "./hooks/useWebSocket";
+import { fetchCostState } from "./lib/api";
+import { isTauri } from "./lib/endpoints";
+import { useUIStore } from "./stores/ui";
+import { useConversationStore } from "./stores/conversation";
+import { useChannelsStore } from "./stores/channels";
+import { useWebSocketStore } from "./stores/websocket";
+import { useCostStore } from "./stores/cost";
+import { useSurfacesStore } from "./stores/surfaces";
+import { useUpdateStore } from "./stores/update";
+import { usePanelStore } from "./cockpit/panelStore";
+import { loadSlashCommands } from "./lib/slashCommands";
+import { installViewSnapshotWatcher } from "./lib/viewSnapshot";
+import { CockpitStage } from "./cockpit/CockpitStage";
+import { RegionCapture } from "./cockpit/RegionCapture";
+import { GlobalCanvas } from "./components/layout/GlobalCanvas";
+import { MotionTestPanel } from "./components/debug/MotionTestPanel";
+import { SessionDrawer } from "./components/sessions/SessionDrawer";
+import { ToastStack } from "./components/ui/ToastStack";
+import { ResetConfirmDialog } from "./components/chat/ResetConfirmDialog";
 
 function msUntilNextLocalMidnight(now = new Date()): number {
   const next = new Date(now);
@@ -96,20 +96,20 @@ function App() {
     installViewSnapshotWatcher();
   }, []);
   const [showMotionPanel, setShowMotionPanel] = useState(() => {
-    if (typeof window === 'undefined') return false;
-    return new URLSearchParams(window.location.search).has('debug');
+    if (typeof window === "undefined") return false;
+    return new URLSearchParams(window.location.search).has("debug");
   });
 
   useEffect(() => {
     if (!import.meta.env.DEV) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
+      if (e.ctrlKey && e.shiftKey && (e.key === "D" || e.key === "d")) {
         e.preventDefault();
         setShowMotionPanel((v) => !v);
       }
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   useEffect(() => {

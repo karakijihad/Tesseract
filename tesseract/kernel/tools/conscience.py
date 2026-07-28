@@ -17,10 +17,15 @@ from pydantic import BaseModel, Field
 
 from tesseract.conscience.reader import load_latest_report
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.paths import home_dir
 
-# Avoid `from tesseract.brain.boot import TESSERACT_DIR` — boot imports
-# every tool module, so pulling from it here is a circular import.
-_DRIFT_DIR = Path(__file__).resolve().parents[2] / "logs" / "conscience"
+
+def _drift_dir() -> Path:
+    """Call-time resolution under `TESSERACT_HOME` — matches the writer
+    (`ConscienceHeartbeatJob`, home-anchored). `tesseract.paths` is a leaf
+    module (no circular-import risk), unlike `tesseract.brain.boot`, which
+    imports every tool module."""
+    return home_dir() / "logs" / "conscience"
 
 
 class ConscienceStatusInput(BaseModel):
@@ -60,7 +65,7 @@ class ConscienceStatusTool(Tool):
 
     async def run(self, tool_input: BaseModel, context: ToolContext) -> ToolResult:
         inp: ConscienceStatusInput = tool_input  # type: ignore[assignment]
-        report = load_latest_report(_DRIFT_DIR)
+        report = load_latest_report(_drift_dir())
         if report is None:
             return ToolResult(
                 output=(

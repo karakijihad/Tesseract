@@ -26,6 +26,7 @@ from tesseract.scripts._production_manifest import (
     EXCLUDE_PATHS,
 )
 from tesseract.scripts.make_shipping_config import build_shipping_config
+from tesseract.scripts.make_shipping_workspace import build_shipping_workspace
 
 
 def _force_remove(func, path, _exc) -> None:
@@ -57,6 +58,19 @@ def _shippable(rel: str) -> bool:
         return False
     name = rel.rsplit("/", 1)[-1]
     return not any(fnmatch.fnmatch(name, pat) for pat in EXCLUDE_GLOBS)
+
+
+def _write_state_dir_gitignore(d: Path) -> None:
+    """Ignore everything in a shipped state dir except its own scaffold files
+    (plus this `.gitignore` itself). Belt-and-braces: if a fresh install's
+    `TESSERACT_HOME` ever ends up inside a git repo of its own (or someone
+    runs `git init` in it directly), operator content written into these
+    dirs afterward can never be accidentally committed — only the shipped
+    scaffold/product files are ever exceptions.
+    """
+    names = sorted(p.name for p in d.iterdir() if p.is_file() and p.name != ".gitignore")
+    lines = ["*", "!.gitignore", *(f"!{name}" for name in names)]
+    (d / ".gitignore").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _reset_entities(out_root: Path) -> None:
@@ -119,6 +133,22 @@ def build(src_root: Path, out_root: Path, files: Iterable[str] | None = None) ->
     if src_config.is_dir():
         build_shipping_config(src_config, out_root / "tesseract" / "config")
 
+    # Workspace: seed a neutral starter tree from hand-authored templates —
+    # the operator's live tesseract/workspace/ never ships (Task 11f).
+    src_shipping_workspace = src_root / "tesseract" / "workspace" / "_shipping"
+    if src_shipping_workspace.is_dir():
+        build_shipping_workspace(src_shipping_workspace, out_root / "tesseract" / "workspace")
+
+    # Memory store / vault / tars-workshop: same templating shape as
+    # workspace above — ship ready with hand-authored scaffold content
+    # instead of an empty directory (Task 17).
+    for rel in ("tesseract/memory-store", "tesseract/vault", "tesseract/tars-workshop"):
+        src_shipping = src_root / rel / "_shipping"
+        if src_shipping.is_dir():
+            out_dir = out_root / rel
+            build_shipping_workspace(src_shipping, out_dir)
+            _write_state_dir_gitignore(out_dir)
+
     _reset_entities(out_root)
 
     for rel in EMPTY_DIRS:
@@ -127,6 +157,7 @@ def build(src_root: Path, out_root: Path, files: Iterable[str] | None = None) ->
             shutil.rmtree(d, onexc=_force_remove)
         d.mkdir(parents=True)
         (d / ".gitkeep").write_text("", encoding="utf-8")
+        _write_state_dir_gitignore(d)
 
 
 def main() -> None:

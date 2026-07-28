@@ -29,7 +29,7 @@ Module-size cleanup (Task 7.5) split this file's supporting responsibilities
 into sibling modules — this file keeps the orchestrating entry point
 (`assemble_system_prompt`), the total-budget enforcement, and the "Right
 now" temporal block (kept here, not in `prompt_time.py`, because several
-tests patch `_now_local` / `_IDENTITY_CONFIG_PATH` / `_TEMPORAL_FALLBACK_WARNED`
+tests patch `_now_local` / `_identity_config_path` / `_TEMPORAL_FALLBACK_WARNED`
 directly on `tesseract.brain.prompt` — see `prompt_time.py`'s docstring):
 
 - `prompt_rules.py` — operating-rules loader + the `# Trio` config block.
@@ -49,6 +49,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
+
+from tesseract.paths import home_dir
 
 from tesseract.brain.prompt_autonomy import (
     AUTONOMY_DIGEST_LEAD,
@@ -93,8 +95,8 @@ from tesseract.brain.prompt_rules import (
     _load_rules,
 )
 from tesseract.brain.prompt_time import (
-    _DEFAULT_CONSCIENCE_DIR,
     _DEFAULT_TOD_BUCKETS,
+    _default_conscience_dir,
     _age_from_iso,
     _compute_age_days,
     _drift_snippet,
@@ -106,8 +108,24 @@ from tesseract.brain.prompt_time import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MEMORY_STORE = Path(__file__).resolve().parent.parent / "memory-store"
-_IDENTITY_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "identity.yaml"
+def _default_memory_store() -> Path:
+    """Call-time default memory-store root, honoring `TESSERACT_HOME`.
+
+    Live production callers (`mirror/server/app.py::_build_chat_infra`,
+    `mirror/server/session_factory.py`'s channel prompt builder) never
+    pass `memory_store_dir` explicitly, so this default is what they
+    actually read from every chat turn — it must follow the relocated
+    home, not the code tree an app update wipes.
+    """
+    return home_dir() / "memory-store"
+
+
+def _identity_config_path() -> Path:
+    """Call-time resolution under `TESSERACT_HOME` so an operator's edits
+    to a relocated `identity.yaml` aren't silently ignored after an app
+    update replaces the code tree."""
+    return home_dir() / "config" / "identity.yaml"
+
 
 _TEMPORAL_FALLBACK_WARNED: bool = False
 
@@ -156,7 +174,7 @@ def _build_now_section(soul_frontmatter: dict[str, Any]) -> str:
     del soul_frontmatter
     lines: list[str]
     try:
-        cfg = _load_identity_config(_IDENTITY_CONFIG_PATH)
+        cfg = _load_identity_config(_identity_config_path())
         buckets_raw = cfg.get("time_of_day_buckets")
         if not buckets_raw:
             raise ValueError("identity.yaml missing required key: time_of_day_buckets")
@@ -220,7 +238,7 @@ def assemble_system_prompt(
         root = _resolve_workspace_dir()
     else:
         root = workspace_dir
-    store = memory_store_dir or _DEFAULT_MEMORY_STORE
+    store = memory_store_dir or _default_memory_store()
     sections: list[str] = []
 
     if failures_scope is None:

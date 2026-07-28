@@ -129,6 +129,78 @@ export async function fetchCostState(): Promise<CostStateData> {
   return apiFetch<CostStateData>("/api/cost/state");
 }
 
+// ── Capability report (Task 14b) ────────────────────────
+// Nothing is required — every provider/key is optional. This reports what's
+// available, what's off, and why (no key vs disabled in providers.yaml).
+// Never a gate: no `ready` flag, no secret values, names only.
+
+// "ready" = actually checked and good. "unavailable" = checked and NOT
+// good (reason says which — disabled / missing key / binary not on PATH).
+// "unverified" = enabled, keyless, non-cli — nothing cheap here confirms
+// it further (e.g. Ollama reachability, whisper/piper model files); see
+// Settings -> Local Models for that live diagnostic instead of asserting
+// availability this report doesn't actually know.
+export type CapabilityProviderStatus = "ready" | "unavailable" | "unverified";
+
+export interface CapabilityProvider {
+  tier: string;
+  provider: string;
+  enabled: boolean;
+  key_name: string | null;
+  key_present: boolean | null;
+  status: CapabilityProviderStatus;
+  reason: string | null;
+}
+
+export interface CapabilityChatCandidate {
+  provider: string;
+  model: string;
+  available: boolean;
+  reason: string | null;
+}
+
+export interface CapabilityChat {
+  available: boolean;
+  reason: string | null;
+  candidates: CapabilityChatCandidate[];
+}
+
+export interface CapabilityIntegration {
+  name: string;
+  key_name: string;
+  key_present: boolean;
+}
+
+export interface CapabilitiesResponse {
+  env_path: string;
+  chat: CapabilityChat;
+  providers: CapabilityProvider[];
+  integrations: CapabilityIntegration[];
+}
+
+export async function fetchCapabilities(): Promise<CapabilitiesResponse> {
+  return apiFetch<CapabilitiesResponse>("/api/capabilities");
+}
+
+export interface RuntimeRestartResponse {
+  status: string;
+  intent: string;
+  continuation_id: string;
+  reason: string;
+}
+
+// No session_id — the backend accepts any localhost caller for this route
+// (routes/runtime.py::post_restart_for_code_drift), which covers exactly
+// this cold-boot case where no operator chat session exists yet.
+export async function postRuntimeRestart(
+  reason: string,
+): Promise<RuntimeRestartResponse> {
+  return apiPost<RuntimeRestartResponse>(
+    "/api/runtime/restart_for_code_drift",
+    { reason },
+  );
+}
+
 export async function fetchSoul(): Promise<SoulResponse> {
   return apiFetch<SoulResponse>("/api/soul");
 }

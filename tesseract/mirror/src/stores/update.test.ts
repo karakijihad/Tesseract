@@ -8,7 +8,7 @@ vi.mock('../lib/update', () => ({
   applyUpdate: (...args: unknown[]) => applyUpdate(...args),
 }));
 
-import { useUpdateStore } from './update';
+import { needsManualRestart, useUpdateStore } from './update';
 
 function resetStore() {
   useUpdateStore.setState({
@@ -18,11 +18,22 @@ function resetStore() {
     checking: false,
     applying: false,
     error: null,
+    errorSource: null,
   });
 }
 
 function enterTauri() {
   (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+}
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 describe('useUpdateStore', () => {
@@ -51,8 +62,10 @@ describe('useUpdateStore', () => {
   it('check() surfaces a rejected promise as a readable error, not a throw', async () => {
     checkUpdate.mockRejectedValue('network unreachable');
     await expect(useUpdateStore.getState().check()).resolves.toBeUndefined();
-    expect(useUpdateStore.getState().error).toBe('network unreachable');
-    expect(useUpdateStore.getState().checking).toBe(false);
+    const s = useUpdateStore.getState();
+    expect(s.error).toBe('network unreachable');
+    expect(s.errorSource).toBe('check');
+    expect(s.checking).toBe(false);
   });
 
   it('check() is a no-op outside Tauri', async () => {
@@ -80,11 +93,38 @@ describe('useUpdateStore', () => {
     expect(checkUpdate).toHaveBeenCalledTimes(1);
   });
 
-  it('a rejected concurrent apply surfaces as a readable error', async () => {
+  it('holds applying: true across the whole post-apply re-check — the chip must never flash back to an enabled "update · N" state in between', async () => {
+    const applyD = deferred<string>();
+    const checkD = deferred<{ behind: number; summaries: string[]; version: string }>();
+    applyUpdate.mockReturnValue(applyD.promise);
+    checkUpdate.mockReturnValue(checkD.promise);
+
+    const applyPromise = useUpdateStore.getState().apply();
+    expect(useUpdateStore.getState().applying).toBe(true);
+
+    applyD.resolve('def5678');
+    // Let applyUpdate's resolution propagate into the store's microtask
+    // queue without letting the (still-pending) checkUpdate() settle.
+    await Promise.resolve();
+    await Promise.resolve();
+    // The re-check is in flight but hasn't resolved — this is exactly the
+    // window the coordinator flagged: applying must still read true here,
+    // otherwise the HUD would show a stale, still-behind "update · N" pill.
+    expect(useUpdateStore.getState().applying).toBe(true);
+
+    checkD.resolve({ behind: 0, summaries: [], version: 'def5678' });
+    await applyPromise;
+
+    expect(useUpdateStore.getState().applying).toBe(false);
+    expect(useUpdateStore.getState().behind).toBe(0);
+  });
+
+  it('a rejected concurrent apply surfaces as a readable, apply-sourced error', async () => {
     applyUpdate.mockRejectedValue('an update is already in progress');
     await expect(useUpdateStore.getState().apply()).resolves.toBeUndefined();
     const s = useUpdateStore.getState();
     expect(s.error).toBe('an update is already in progress');
+    expect(s.errorSource).toBe('apply');
     expect(s.applying).toBe(false);
     // Apply failed — no need to re-check.
     expect(checkUpdate).not.toHaveBeenCalled();
@@ -108,5 +148,20 @@ describe('useUpdateStore', () => {
     await useUpdateStore.getState().apply();
     expect(applyUpdate).not.toHaveBeenCalled();
     expect(useUpdateStore.getState().applying).toBe(false);
+  });
+
+  it('needsManualRestart distinguishes the dead-app phrase from an ordinary retryable failure', () => {
+    expect(
+      needsManualRestart(
+        'update failed (fast-forward error); additionally failed to restart the app — restart TESSERACT manually',
+      ),
+    ).toBe(true);
+    expect(
+      needsManualRestart('updated to abc123, but restarting the app failed (spawn error) — restart TESSERACT manually'),
+    ).toBe(true);
+    expect(needsManualRestart('an update is already in progress')).toBe(false);
+    expect(
+      needsManualRestart('update failed (network error); restarted on the previous version'),
+    ).toBe(false);
   });
 });

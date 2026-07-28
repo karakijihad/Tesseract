@@ -16,7 +16,7 @@ import { useIdentityStore } from '../../stores/identity';
 import { useEntityStore } from '../../stores/entity';
 import { useSoulStore } from '../../stores/soul';
 import { useActivityStore } from '../../stores/activity';
-import { useUpdateStore } from '../../stores/update';
+import { needsManualRestart, useUpdateStore } from '../../stores/update';
 import { isTauri } from '../../lib/endpoints';
 import { formatRelative } from '../../lib/time';
 import { ActivityMap } from '../../cockpit/ActivityMap';
@@ -33,8 +33,19 @@ export function TopStatusHud() {
 
   const updateBehind = useUpdateStore((s) => s.behind);
   const updateApplying = useUpdateStore((s) => s.applying);
+  const updateError = useUpdateStore((s) => s.error);
+  const updateErrorSource = useUpdateStore((s) => s.errorSource);
   const applyUpdate = useUpdateStore((s) => s.apply);
-  const showUpdateChip = isTauri() && updateBehind > 0;
+
+  // Apply is HUD-only (Settings only offers "check now"), so an apply
+  // failure — including the worst case, the app's respawn itself failing —
+  // must be visible right here, not just in a Settings panel the user has
+  // no reason to open. A stale background-check network blip stays
+  // Settings-only (errorSource === 'check'); only a failed apply attempt
+  // pre-empts the normal "update available" pill.
+  const updateFailed = isTauri() && !updateApplying && updateErrorSource === 'apply' && !!updateError;
+  const showUpdateChip = isTauri() && !updateFailed && updateBehind > 0;
+  const manualRestart = updateFailed && updateError ? needsManualRestart(updateError) : false;
 
   useEffect(() => {
     void hydrateActivity();
@@ -80,6 +91,17 @@ export function TopStatusHud() {
             onClick={() => void applyUpdate()}
           >
             {updateApplying ? 'restarting…' : `update · ${updateBehind}`}
+          </button>
+        )}
+        {updateFailed && (
+          <button
+            type="button"
+            className={`top-status-hud__update top-status-hud__update--failed${manualRestart ? ' is-manual' : ''}`}
+            aria-label={updateError ?? 'update failed'}
+            title={updateError ?? 'update failed'}
+            onClick={() => void applyUpdate()}
+          >
+            {manualRestart ? 'update failed — restart TARS' : 'update failed — retry'}
           </button>
         )}
       </div>

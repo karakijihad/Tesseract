@@ -71,14 +71,29 @@ Matrix/
 /AGENTS.md
 
 # Runtime data (personal, rebuildable, or ephemeral)
-tesseract/memory-store/
 tesseract/provisional/
 tesseract/logs/
 tesseract/telegram/
 tesseract/sessions/
 tesseract/agent-state/
-tesseract/vault/
-tesseract/workspace/
+# Operator's live workspace/memory-store/vault/tars-workshop are private and
+# never ship (SOUL.md, DIARY.md, MEMORY.md, real memories, real vault docs,
+# real workshop artifacts, ...). `_shipping/` in each is the hand-authored
+# neutral-scaffold exception — same pattern across all four — tracked so the
+# builder can seed a fresh install ready-to-use instead of empty/crashing on
+# a missing dir (Task 11f for workspace; Task 17 for the other three).
+tesseract/workspace/*
+!tesseract/workspace/_shipping/
+!tesseract/workspace/_shipping/**
+tesseract/memory-store/*
+!tesseract/memory-store/_shipping/
+!tesseract/memory-store/_shipping/**
+tesseract/vault/*
+!tesseract/vault/_shipping/
+!tesseract/vault/_shipping/**
+tesseract/tars-workshop/*
+!tesseract/tars-workshop/_shipping/
+!tesseract/tars-workshop/_shipping/**
 
 # CR-1 work-history index — runtime artefact, per-machine
 /work_index.sqlite
@@ -91,7 +106,6 @@ tesseract/work_index.sqlite-*
 /session_metadata.sqlite-*
 tesseract/session_metadata.sqlite
 tesseract/session_metadata.sqlite-*
-tesseract/tars-workshop/
 tesseract/compacted/
 tesseract/scheduler/state/
 tesseract/models/

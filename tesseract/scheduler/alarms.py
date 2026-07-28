@@ -14,6 +14,7 @@ from typing import Any, Iterable, Literal
 import yaml
 
 from tesseract.lib.yaml_io import atomic_write_text
+from tesseract.paths import home_dir
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.scheduler.log import append_run_log
 from tesseract.scheduler.types import JobContext, JobResult
@@ -22,10 +23,86 @@ log = logging.getLogger(__name__)
 
 RecurrenceKind = Literal["daily", "weekdays", "weekly", "every"]
 
-DEFAULT_STATE_DIR = Path(__file__).resolve().parent / "state"
-DEFAULT_STATE_FILE = DEFAULT_STATE_DIR / "alarms.yaml"
+# Pre-relocation location (code tree). An app update deletes and re-clones
+# the code tree, so any alarm still living here at boot is migrated by
+# `ensure_alarms_state_migrated()` — see its docstring.
+_LEGACY_STATE_FILE = Path(__file__).resolve().parent / "state" / "alarms.yaml"
 RECENT_FIRED_MAX = 16
 SNOOZE_OPTIONS = ["5m", "10m", "30m", "1h"]
+
+
+def alarms_state_path() -> Path:
+    """Resolve the alarm-state file under `<TESSERACT_HOME>/runtime`,
+    call-time (never captured at import), matching the idiom in
+    `outbound.py::outbound_rates_path` / `workspace_changes.py::
+    workspace_events_dir` — an app update that replaces the code tree
+    must not touch it.
+
+    Pure path resolution, no I/O side effects: this is called from
+    `brain/boot.py::build_tool_registry`, which the unit test suite
+    exercises constantly, so it must be safe to call unconditionally.
+    See `ensure_alarms_state_migrated` for the (deliberately separate)
+    legacy-data migration.
+    """
+    return home_dir() / "runtime" / "alarms.yaml"
+
+
+def ensure_alarms_state_migrated() -> None:
+    """One-time relocation of any pre-Phase-1 alarm state found at
+    `_LEGACY_STATE_FILE` (`scheduler/state/alarms.yaml`, code-tree
+    anchored) into `alarms_state_path()`, so upgrading operators don't
+    silently lose queued alarms.
+
+    Deliberately NOT folded into `alarms_state_path()`: that resolver is
+    reached via `build_tool_registry()`, which ordinary unit tests call
+    with an isolated `TESSERACT_HOME` (see the autouse
+    `_isolate_tesseract_home` fixture) while `_LEGACY_STATE_FILE` stays
+    anchored to the real code tree by necessity — folding migration in
+    there let a plain test run silently touch a real on-disk legacy file.
+    Call this only from the real entry points (`mirror/server/
+    __main__.py`, `supervisor/__main__.py`, `scripts/tars_controller.py`),
+    the same call site as `config_seed.py`'s `ensure_*_seeded()` —
+    explicit call only, matching that module's "no import-time or
+    incidental file I/O" contract.
+
+    Idempotent: a no-op the instant `alarms_state_path()` exists, so this
+    never overwrites live post-migration data with stale legacy data, no
+    matter how many times it runs. Copies then reads the copy back to
+    verify a byte-for-byte match before declaring success.
+
+    The legacy file is deliberately LEFT IN PLACE rather than deleted:
+    an earlier version of this function deleted it after a verified copy,
+    reasoning that a stale file risked resurrecting old alarms — but nothing
+    ever reads `_LEGACY_STATE_FILE` again once the new path has data (every
+    future call short-circuits at the `exists()` check below), so there is
+    nothing to resurrect. Deleting is irreversible and, in practice, is one
+    incidental call away from destroying real data the moment this function
+    is reachable from any test or subprocess-boot harness with an isolated
+    `TESSERACT_HOME` but the same, unisolated, real `_LEGACY_STATE_FILE` —
+    exactly the shared-fixed-path hazard this split guards against. Leaving
+    the file behind costs nothing: the next code-tree-replacing update
+    deletes it along with the rest of `<TESSERACT_HOME>/app` anyway. Every
+    migration is logged — a silent migration would be nearly as bad as a
+    silent loss, since nobody could confirm it worked.
+    """
+    new_path = alarms_state_path()
+    if new_path.exists():
+        return
+    legacy = _LEGACY_STATE_FILE
+    if not legacy.exists():
+        return
+    try:
+        legacy_text = legacy.read_text(encoding="utf-8")
+        atomic_write_text(new_path, legacy_text, prefix=".alarms-migrate-")
+        if new_path.read_text(encoding="utf-8") != legacy_text:
+            raise ValueError("post-copy verification mismatch")
+    except Exception:
+        log.exception("alarm migration: failed to relocate legacy state %s -> %s", legacy, new_path)
+        return
+    log.warning(
+        "alarm migration: relocated queued alarms %s -> %s (legacy file left in place)",
+        legacy, new_path,
+    )
 
 
 @dataclass(frozen=True)
@@ -135,8 +212,8 @@ class AlarmRegistry:
         state_file: Path | None = None,
     ) -> None:
         """`state_file` is opt-in persistence; None = pure in-memory (tests,
-        REPL without Mirror). Mirror passes `DEFAULT_STATE_FILE` so queued
-        alarms survive restart."""
+        REPL without Mirror). `brain/boot.py::build_tool_registry` passes
+        `alarms_state_path()` so queued alarms survive restart."""
         self._alarms: list[PendingAlarm] = []
         self._log_dir = log_dir
         self._state_file = state_file

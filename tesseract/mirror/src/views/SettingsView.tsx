@@ -1,3 +1,4 @@
+import { CapabilitiesSection } from './settings/Capabilities';
 import { CompactSection } from './settings/Compact';
 import { CostSection } from './settings/Cost';
 import { LocalModelsSection } from './settings/LocalModels';
@@ -21,6 +22,7 @@ export function SettingsView() {
       </div>
       <div className="settings-body">
         <ModeSection />
+        <CapabilitiesSection />
         <ModelRolesSection />
         <CompactSection />
         <LoopLimitsSection />

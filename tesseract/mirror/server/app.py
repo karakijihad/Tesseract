@@ -77,6 +77,11 @@ def create_app(config: ServerConfig) -> web.Application:
     app["adapter"] = None
     app["adapter_options"] = None
     app["adapter_entry"] = None
+    # None while chat infra is still booting or resolved cleanly; a
+    # plain-language reason string once every chat_brain candidate has been
+    # tried and failed (no key / disabled) — read by the capabilities route
+    # and by NullChatAdapter's in-chat error message. See _build_chat_infra.
+    app["chat_infra_error"] = None
     # mirror-multi-chat P2 inc.C2 — per-provider chat-turn concurrency budget.
     # `_chat_turn_provider_slot` (ws.py) lazily fills the dict with a
     # Semaphore(cap) per provider so parallel background chats can't collide on
@@ -188,6 +193,12 @@ def _register_routes(app: web.Application) -> None:
     # cancellable running unit (lanes/mcp_sessions/delegates) in one action.
     from tesseract.mirror.server.routes import activity_control as activity_control_route
     activity_control_route.register(app)
+    # Capability report — which providers/keys are live, off, or missing a
+    # key, and why. Must be reachable with zero keys set (fresh install), so
+    # it stays a plain providers.yaml + os.environ read with no substrate
+    # dependency.
+    from tesseract.mirror.server.routes import capabilities as capabilities_route
+    capabilities_route.register(app)
     app.router.add_get("/api/health", health)
     app.router.add_get("/api/controller/sessions", controller_sessions_handler)
     app.router.add_get(
@@ -2200,9 +2211,62 @@ def _build_chat_infra(app: web.Application) -> None:
         # with the adapter's ``channel_name``. Stash the resolved mode here
         # so the session layer doesn't re-read ``TARS_PROMPT_FULL`` itself.
         app["prompt_mode"] = prompt_mode
+        app["chat_infra_error"] = None
         log.info(
             "chat infra ready: provider=%s model=%s chain_len=%d prompt_mode=%s prompt_chars=%d",
             chat_cfg.provider, chat_cfg.model, len(adapter_chain), prompt_mode, len(system_prompt),
         )
+    except RuntimeError as exc:
+        # No chat_brain candidate resolved (no API key set for any of them,
+        # or every candidate disabled in providers.yaml) — not a hard
+        # failure. Nothing in TESSERACT requires an API key; degrade chat
+        # to a placeholder so the WS still connects and every non-chat
+        # capability keeps working, and let the operator find out why only
+        # when they actually try to send a chat message. The full
+        # per-candidate technical breakdown (model ids, providers.yaml flag
+        # names) goes to this log line only — `str(exc)` is
+        # `ChatBrainUnavailable.detail` when raised by
+        # `resolve_chat_brain_runtime`. The short `summary` (falling back to
+        # `str(exc)` for any other RuntimeError shape) is what actually
+        # reaches the operator via NullChatAdapter's in-chat error.
+        log.warning("chat infra degraded — no chat provider resolved: %s", exc)
+        reason = getattr(exc, "summary", None) or str(exc)
+        _build_degraded_chat_infra(app, reason)
     except Exception:
         log.exception("chat infra unavailable — /ws chat_message will fail")
+
+
+def _build_degraded_chat_infra(app: web.Application, reason: str) -> None:
+    """Populate the same app-dict slots `_build_chat_infra` would on success,
+    but backed by a `NullChatAdapter` that raises `reason` the moment a turn
+    actually calls it. `load_chat_brain_chain()` is a pure YAML parse (no
+    adapter construction), so it succeeds even with zero keys — the primary
+    entry's config (tool caps, compact thresholds, etc.) is real, only the
+    live adapter is a placeholder. Falls through to the old "adapter_entry
+    stays None" behavior if even this can't be built (e.g. malformed
+    roles.yaml) — that is a genuine boot problem, not a "no key" one.
+    """
+    try:
+        from tesseract.brain.boot import (
+            adapter_options_from_chat_brain,
+            load_chat_brain_chain,
+        )
+        from tesseract.brain.prompt import assemble_system_prompt
+        from tesseract.kernel.adapters.null_adapter import NullChatAdapter
+
+        chat_cfg = load_chat_brain_chain()[0]
+        prompt_mode = "full" if os.environ.get("TARS_PROMPT_FULL") == "1" else "manifest"
+
+        def _build_prompt() -> str:
+            return assemble_system_prompt(mode=prompt_mode)
+
+        app["adapter"] = NullChatAdapter(reason)
+        app["adapter_options"] = adapter_options_from_chat_brain(chat_cfg)
+        app["adapter_entry"] = chat_cfg
+        app["adapter_chain"] = []
+        app["system_prompt"] = _build_prompt()
+        app["prompt_builder"] = _build_prompt
+        app["prompt_mode"] = prompt_mode
+        app["chat_infra_error"] = reason
+    except Exception:
+        log.exception("chat infra degraded-build also failed — /ws chat_message will fail")

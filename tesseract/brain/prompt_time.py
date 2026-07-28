@@ -3,7 +3,7 @@ computation, identity-config loading, and the conscience drift snippet.
 
 Split out of `tesseract/brain/prompt.py` (module-size cleanup, Task 7.5).
 Pure/stateless helpers live here; `prompt.py` keeps `_build_now_section`
-and its monkeypatch-sensitive globals (`_now_local`, `_IDENTITY_CONFIG_PATH`,
+and its monkeypatch-sensitive globals (`_now_local`, `_identity_config_path`,
 `_TEMPORAL_FALLBACK_WARNED`) because several tests patch those attributes
 directly on `tesseract.brain.prompt` (see `tests/brain/test_prompt_temporal.py`,
 `tests/fix_pass_survivability_SU_3_5/test_audit_subagents.py`) — moving them
@@ -21,6 +21,8 @@ from typing import Mapping
 
 import yaml
 
+from tesseract.paths import home_dir
+
 # Logger name pinned to the historical "tesseract.brain.prompt" identity —
 # `tests/fix_pass_2026_05_05/test_directives_section.py` and
 # `tests/brain/test_prompt_temporal.py` assert on that exact logger name via
@@ -29,7 +31,12 @@ import yaml
 # operators and tests already key on.
 logger = logging.getLogger("tesseract.brain.prompt")
 
-_DEFAULT_CONSCIENCE_DIR = Path(__file__).resolve().parent.parent / "logs" / "conscience"
+
+def _default_conscience_dir() -> Path:
+    """Call-time resolution under `TESSERACT_HOME` — the writer
+    (`ConscienceHeartbeatJob`) is home-anchored; this reader must match or
+    it silently reads a location nothing writes any more post-relocation."""
+    return home_dir() / "logs" / "conscience"
 
 _DEFAULT_TOD_BUCKETS: Mapping[str, tuple[str, str]] = {
     "morning":   ("05:00", "12:00"),
@@ -96,7 +103,7 @@ def _drift_snippet(conscience_dir: Path | None = None) -> str:
     Returns empty string when healthy, when no report exists, or on any
     parse error — this is *informational* for the prompt, never critical.
     """
-    base = conscience_dir or _DEFAULT_CONSCIENCE_DIR
+    base = conscience_dir or _default_conscience_dir()
     if not base.exists():
         return ""
     files = sorted(base.glob("drift-*.jsonl"))

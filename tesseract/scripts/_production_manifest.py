@@ -19,6 +19,7 @@ from __future__ import annotations
 # Repo-root-relative prefixes dropped even though git tracks them (posix).
 EXCLUDE_PATHS = (
     "Docs",
+    "tesseract/tests",
     # CLAUDE.md/AGENTS.md document the runtime's internal security
     # architecture (bash_security's check list, permissions model,
     # kernel-lockdown mechanics) — shipping them is information disclosure.
@@ -26,6 +27,7 @@ EXCLUDE_PATHS = (
     "CLAUDE.md",
     "AGENTS.md",
     ".github",
+    "pytest.ini",
     ".pre-commit-config.yaml",
 )
 
@@ -52,15 +54,36 @@ EXCLUDE_GLOBS = (
 # output tree.
 EXCLUDE_PATH_GLOBS = (
     "tesseract/config/*.yaml",
+    # Task 11f: workspace ships from hand-authored templates only
+    # (tesseract/workspace/_shipping/*.md), never the operator's live
+    # tesseract/workspace/ (fully gitignored, private). fnmatch's `*`
+    # matches across `/`, so this one pattern excludes both a live
+    # tesseract/workspace/*.md (there shouldn't be any tracked) AND the
+    # _shipping/*.md templates themselves from the raw tracked-file copy —
+    # they map onto tesseract/workspace/*.md via
+    # make_shipping_workspace.build_shipping_workspace instead.
+    "tesseract/workspace/*.md",
+    # Task 17: memory-store/vault/tars-workshop ship ready with hand-authored
+    # scaffold content (MEMORY.md+WHAT_NOT_TO_SAVE.md, CATALOG.md,
+    # INDEX.md+README.md), same pattern as workspace above — templates live
+    # under each dir's `_shipping/`, applied via
+    # make_shipping_workspace.build_shipping_workspace, and must not also
+    # appear as a `_shipping/` subfolder in the raw tracked-file copy.
+    "tesseract/memory-store/*.md",
+    "tesseract/vault/*.md",
+    "tesseract/tars-workshop/*.md",
 )
 
 # Created empty (with .gitkeep) so the runtime has its dirs on first boot.
+# memory-store/vault/tars-workshop are NOT here — they ship with real scaffold
+# content instead (see EXCLUDE_PATH_GLOBS comment above + build_production_tree.build).
 EMPTY_DIRS = (
-    "tesseract/memory-store",
-    "tesseract/vault",
     "tesseract/logs",
     "tesseract/sessions",
     "tesseract/agenda",
+    "tesseract/runtime",
+    "tesseract/downloads",
+    "tesseract/uploads",
 )
 
 # Source dirs whose NAMES collide with state dirs — must survive the build.

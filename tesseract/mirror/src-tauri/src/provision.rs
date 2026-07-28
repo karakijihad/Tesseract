@@ -3,7 +3,7 @@ use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Emitter, Manager};
 
 /// Bump when the bundled deps change so an upgraded app re-provisions.
-pub const DEPS_VERSION: &str = "3";
+pub const DEPS_VERSION: &str = "4";
 
 /// Per-user state root: %LOCALAPPDATA%\com.tesseract.mirror (writable).
 /// Falls back to an explicit TESSERACT_HOME env override (dev), then to the
@@ -32,6 +32,33 @@ pub fn is_provisioned(home: &Path) -> bool {
         Ok(v) => v.get("deps_version").and_then(|d| d.as_str()) == Some(DEPS_VERSION),
         Err(_) => false,
     }
+}
+
+/// Fire-and-forget retry: on EVERY launch (not gated by `is_provisioned`),
+/// asks the venv's Python to fetch the pinned default Piper voice model if
+/// it's still missing. `fetch_piper_voice.py::ensure_default_voice` is a
+/// plain file-existence check per pinned file when the model is already
+/// present — no network call — so this costs nothing meaningful once the
+/// fetch has ever succeeded. It exists because `provision()`'s own attempt
+/// (during first run) writes the `provisioned.json` marker unconditionally,
+/// so a fetch that failed there (offline, transient upstream outage) would
+/// otherwise never be retried: `is_provisioned` only checks `deps_version`,
+/// not whether the voice model made it to disk.
+///
+/// Deliberately uses `spawn()`, not `output()`: this must never add
+/// perceptible latency to launch, so it is never waited on — the caller
+/// starts the supervisor immediately afterward regardless of whether this
+/// subprocess has finished, or even whether it could be spawned at all.
+pub fn refresh_piper_voice(home: &Path) {
+    let mut cmd = std::process::Command::new(venv_python(home));
+    cmd.args(["-m", "tesseract.scripts.fetch_piper_voice"]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let _ = cmd.spawn();
 }
 
 /// Clone the source repo into the per-user home, download Python + deps
@@ -75,6 +102,17 @@ pub fn provision(app: &AppHandle, home: &Path) -> Result<PathBuf, String> {
         &venv_python(home),
         &["-m", "playwright", "install", "chromium"],
     )?;
+
+    // Best-effort: fetches the pinned default Piper voice model so spoken
+    // replies work out of the box. Never propagated as a provisioning
+    // failure — the script itself always exits 0, and any spawn error here
+    // is swallowed too, so an offline first run still finishes install with
+    // voice output simply unavailable (text-only replies), same as today.
+    let _ = app.emit("provision-progress", "Downloading voice model…");
+    let _ = run_python(
+        &venv_python(home),
+        &["-m", "tesseract.scripts.fetch_piper_voice"],
+    );
 
     // Marker last, so a partial provision never reads as complete.
     let runtime = home.join("runtime");

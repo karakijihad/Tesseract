@@ -32,6 +32,10 @@ from typing import Any, Awaitable, Callable
 from tesseract.config_seed import (
     ensure_agents_seeded,
     ensure_config_seeded,
+    ensure_env_seeded,
+    ensure_memory_store_seeded,
+    ensure_tars_workshop_seeded,
+    ensure_vault_seeded,
     ensure_workspace_seeded,
 )
 from tesseract.orchestrator.tars_controller import (
@@ -50,6 +54,7 @@ from tesseract.orchestrator.tars_controller.events import (
     WorkerStatusEvent,
 )
 from tesseract.paths import CONFIG_DIR
+from tesseract.scheduler.alarms import ensure_alarms_state_migrated
 
 log = logging.getLogger(__name__)
 
@@ -1033,6 +1038,10 @@ def main(argv: list[str] | None = None) -> int:
     ensure_config_seeded()
     ensure_workspace_seeded()
     ensure_agents_seeded()
+    ensure_env_seeded()
+    ensure_memory_store_seeded()
+    ensure_vault_seeded()
+    ensure_tars_workshop_seeded()
     parser = argparse.ArgumentParser(prog="tesseract.scripts.tars_controller")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0)
@@ -1040,7 +1049,7 @@ def main(argv: list[str] | None = None) -> int:
         "--log-level",
         default=os.environ.get("TESSERACT_LOG_LEVEL", "INFO"),
     )
-    args = parser.parse_args(argv)
+    args = parser.parse_args(argv)  # --help exits here, before ever reaching migration
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -1050,6 +1059,10 @@ def main(argv: list[str] | None = None) -> int:
     from tesseract.logsetup import attach_file_logging
 
     attach_file_logging("tars-controller")
+    # After logging is attached AND after arg-parsing (so --help's SystemExit
+    # short-circuits before this ever runs) — see the identical logging-order
+    # comment in `mirror/server/__main__.py::main`.
+    ensure_alarms_state_migrated()
     try:
         return asyncio.run(run_controller(host=args.host, port=args.port))
     except KeyboardInterrupt:

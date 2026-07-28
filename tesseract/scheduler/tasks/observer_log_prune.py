@@ -65,10 +65,10 @@ def _resolve_log_dir(ctx: JobContext) -> Path:
         tess = app.get("tesseract_dir")
         if tess is not None:
             return Path(tess) / "logs" / "observer"
-    # Module fallback — matches `_OBSERVER_LOG_DIR` in observer.py.
-    from tesseract.brain.observer import _OBSERVER_LOG_DIR
+    # Module fallback — matches `_observer_log_dir()` in observer.py.
+    from tesseract.brain.observer import _observer_log_dir
 
-    return _OBSERVER_LOG_DIR
+    return _observer_log_dir()
 
 
 def _prune_old_logs(log_dir: Path, retention_days: int) -> int:

@@ -8,7 +8,7 @@ use tauri::{Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 mod provision;
 mod repo;
 mod update;
-use provision::{is_provisioned, tesseract_home, venv_python};
+use provision::{is_provisioned, refresh_piper_voice, tesseract_home, venv_python};
 
 struct SupervisorProc(Mutex<Option<Child>>);
 struct TesseractHome(PathBuf);
@@ -147,6 +147,12 @@ pub fn run() {
                         let _ = main.show();
                     }
                 }
+                // Every launch, not just first-run provisioning: retries the
+                // voice model fetch if a previous attempt failed (offline,
+                // transient outage). No-ops fast when already present — see
+                // `refresh_piper_voice`'s own doc comment. Fire-and-forget,
+                // so this never delays `spawn_supervisor` below.
+                refresh_piper_voice(&home);
                 match spawn_supervisor(&home) {
                     Ok(child) => {
                         if let Some(state) = handle.try_state::<SupervisorProc>() {

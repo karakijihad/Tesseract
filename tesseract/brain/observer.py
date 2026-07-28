@@ -27,6 +27,7 @@ from tesseract.brain.memory_suggestion import (
 from tesseract.brain.observation_transcript import ObservationTranscript, PtyLine
 from tesseract.brain.observer_budget import CircuitBreaker
 from tesseract.kernel.adapters.base import AdapterOptions, ChunkType, ModelAdapter
+from tesseract.paths import home_dir
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,14 @@ def _is_banned_observation(text: str) -> bool:
         return False
     return any(phrase in lowered for phrase in _BANLIST_PHRASES)
 
-_OBSERVER_LOG_DIR = Path(__file__).resolve().parent.parent / "logs" / "observer"
+def _observer_log_dir() -> Path:
+    """Resolve the observer log dir at call time under `TESSERACT_HOME`.
+
+    Pure — no I/O, no migration. An app update replaces the code tree
+    (`Path(__file__)`-anchored paths get wiped); anchoring here off
+    `home_dir()` instead means the log dir survives an update.
+    """
+    return home_dir() / "logs" / "observer"
 
 
 @dataclass
@@ -428,9 +436,10 @@ def _append_observation_log(*, mode: str, session_id: str, text: str) -> None:
     the log path is unwritable.
     """
     try:
-        _OBSERVER_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log_dir = _observer_log_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
         now = datetime.now(timezone.utc)
-        target = _OBSERVER_LOG_DIR / f"{now.date().isoformat()}.jsonl"
+        target = log_dir / f"{now.date().isoformat()}.jsonl"
         record = {
             "timestamp": now.isoformat(),
             "mode": mode,

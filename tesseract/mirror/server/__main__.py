@@ -12,10 +12,19 @@ from pathlib import Path
 
 from aiohttp import web
 
-from tesseract.config_seed import ensure_agents_seeded, ensure_config_seeded, ensure_workspace_seeded
+from tesseract.config_seed import (
+    ensure_agents_seeded,
+    ensure_config_seeded,
+    ensure_env_seeded,
+    ensure_memory_store_seeded,
+    ensure_tars_workshop_seeded,
+    ensure_vault_seeded,
+    ensure_workspace_seeded,
+)
 from tesseract.mirror.server.app import create_app
 from tesseract.mirror.server.config import load_server_config
 from tesseract.paths import TESSERACT_HOME
+from tesseract.scheduler.alarms import ensure_alarms_state_migrated
 
 
 def _install_windows_break_handler() -> None:
@@ -139,12 +148,21 @@ def main() -> None:
     ensure_config_seeded()
     ensure_workspace_seeded()
     ensure_agents_seeded()
+    ensure_env_seeded()
+    ensure_memory_store_seeded()
+    ensure_vault_seeded()
+    ensure_tars_workshop_seeded()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     # Durable rotating file — the console handler above dies with the
     # supervisor's console; crash forensics need a file (logsetup.py).
     from tesseract.logsetup import attach_file_logging
 
     attach_file_logging("mirror-backend")
+    # After logging is attached, not before: `ensure_alarms_state_migrated()`
+    # logs its outcome, and a log call before any handler exists falls
+    # through to `logging.lastResort` (bare stderr) — invisible once this
+    # process detaches from its parent's console.
+    ensure_alarms_state_migrated()
     # Janitor claim: a detached backend has a dead parent by design; the
     # pidfile keeps the orphan sweep off it (janitor/pidfile.py).
     from tesseract.janitor.pidfile import write_pidfile
@@ -159,4 +177,5 @@ def main() -> None:
     web.run_app(app, host=config.host, port=config.port, print=None)
 
 
-main()
+if __name__ == "__main__":  # pragma: no cover
+    main()

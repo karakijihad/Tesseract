@@ -19,8 +19,17 @@ import os
 import sys
 from pathlib import Path
 
-from tesseract.config_seed import ensure_agents_seeded, ensure_config_seeded, ensure_workspace_seeded
+from tesseract.config_seed import (
+    ensure_agents_seeded,
+    ensure_config_seeded,
+    ensure_env_seeded,
+    ensure_memory_store_seeded,
+    ensure_tars_workshop_seeded,
+    ensure_vault_seeded,
+    ensure_workspace_seeded,
+)
 from tesseract.paths import TESSERACT_HOME
+from tesseract.scheduler.alarms import ensure_alarms_state_migrated
 from tesseract.supervisor.breaker import CrashStormBreaker, crash_storm_path
 from tesseract.supervisor.daemon import (
     Supervisor,
@@ -108,7 +117,14 @@ def main(argv: list[str] | None = None) -> int:
     ensure_config_seeded()
     ensure_workspace_seeded()
     ensure_agents_seeded()
+    ensure_env_seeded()
+    ensure_memory_store_seeded()
+    ensure_vault_seeded()
+    ensure_tars_workshop_seeded()
     _setup_logging(home)
+    # After logging is attached, not before — see the identical comment in
+    # `mirror/server/__main__.py::main`.
+    ensure_alarms_state_migrated()
 
     # Reap daemon/backend children leaked by a prior supervisor that was
     # hard-killed (skipping its finally-block teardown). Runs at the production

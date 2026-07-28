@@ -164,7 +164,7 @@ from tesseract.memory.vault_indexer import VaultIndexer
 from tesseract.memory.vault_librarian import VaultLibrarian
 from tesseract.memory.vault_manager import VaultManager
 from tesseract.orchestrator.mood_state import MoodState
-from tesseract.scheduler.alarms import DEFAULT_STATE_FILE as ALARM_STATE_FILE, AlarmRegistry
+from tesseract.scheduler.alarms import AlarmRegistry, alarms_state_path
 
 # ── Paths ────────────────────────────────────────────────
 
@@ -672,6 +672,53 @@ def resolve_role_runtime(
     )
 
 
+class ChatBrainUnavailable(RuntimeError):
+    """Raised by `resolve_chat_brain_runtime()` when every chat_brain
+    candidate failed to build.
+
+    `str(self)` (== `args[0]`) is the full per-candidate technical
+    breakdown — model ids, `providers.yaml` flag names, etc. — meant for
+    the log only. `summary` is the short, plain-language form a non-
+    developer can act on: what happened, why (no key vs disabled — the
+    one distinction that matters), and the one thing to do. That's what
+    `NullChatAdapter` raises into the chat transcript, never the detail.
+    """
+
+    def __init__(self, detail: str, summary: str) -> None:
+        super().__init__(detail)
+        self.summary = summary
+
+
+def _summarize_chat_brain_failure(failures: list[str]) -> str:
+    """Plain-language, user-facing summary of why chat isn't available.
+
+    `failures` holds each candidate's raw `build_adapter()` message. Every
+    branch in `build_adapter` raises one of exactly two shapes for a
+    chat_brain candidate: "<KEY> missing from .env" (no key) or "...
+    disabled in providers.yaml (...)" (turned off) — classified by
+    substring so this stays a plain reader of `boot.py`'s own message
+    text rather than a second source of truth for the reason.
+    """
+    no_key = any("missing from .env" in f for f in failures)
+    disabled = any("disabled in providers.yaml" in f for f in failures)
+    env_path = home_dir() / ".env"
+    if no_key and not disabled:
+        return (
+            f"TARS can't answer yet — no API key is set for any configured "
+            f"chat provider. Add one to {env_path}, then restart TARS."
+        )
+    if disabled and not no_key:
+        return (
+            "TARS can't answer yet — every configured chat provider is "
+            "switched off in providers.yaml. Enable one, then restart TARS."
+        )
+    return (
+        f"TARS can't answer yet — no chat provider is available (no API "
+        f"key set, or a provider switched off in providers.yaml). Add a "
+        f"key to {env_path}, then restart TARS."
+    )
+
+
 def resolve_chat_brain_runtime() -> tuple[
     ChatBrainConfig,
     ModelAdapter,
@@ -683,9 +730,16 @@ def resolve_chat_brain_runtime() -> tuple[
     `load_chat_brain_chain()` validates config shape; adapter construction is
     a separate concern. The runtime should use the first entry whose adapter
     can actually be built, not blindly pin itself to `resolution[0]`.
+
+    Nothing in the chain is a hard requirement (no API key/provider is
+    mandatory) — if every candidate fails, raises `ChatBrainUnavailable`
+    carrying both the full technical breakdown (for the log) and a short
+    plain-language `summary` (for the caller — `_build_chat_infra` — to hand
+    to a degraded placeholder adapter instead of leaving chat silently dead).
     """
     chain_cfgs = load_chat_brain_chain()
     built_chain: list[tuple[ChatBrainConfig, ModelAdapter, AdapterOptions]] = []
+    failures: list[str] = []
     for idx, cfg in enumerate(chain_cfgs):
         try:
             adapter = build_chat_brain_adapter(cfg)
@@ -694,11 +748,13 @@ def resolve_chat_brain_runtime() -> tuple[
                 "chat_brain chain idx=%d (%s/%s) unavailable: %s",
                 idx, cfg.provider, cfg.model, exc,
             )
+            failures.append(f"{cfg.provider} ({cfg.model}): {exc}")
             continue
         options = adapter_options_from_chat_brain(cfg)
         built_chain.append((cfg, adapter, options))
     if not built_chain:
-        raise RuntimeError("no available chat_brain providers in the current environment")
+        detail = "no chat provider available — " + "; ".join(failures)
+        raise ChatBrainUnavailable(detail, _summarize_chat_brain_failure(failures))
     primary_cfg, primary_adapter, primary_options = built_chain[0]
     return (
         primary_cfg,
@@ -1506,7 +1562,14 @@ def build_tool_registry(
     registry.register(OrbVisibilityTool(app_provider=app_provider))
 
     if alarm_registry is None:
-        alarm_registry = AlarmRegistry(state_file=ALARM_STATE_FILE)
+        # Call-time resolved (never the frozen import-time constant this used
+        # to be) so a relocated TESSERACT_HOME takes effect (distributable-app
+        # pre-installer blocker, Docs/Deferred.md). The one-time legacy-state
+        # migration is a separate, explicit `ensure_alarms_state_migrated()`
+        # call at the real entry points (mirror/supervisor/tars_controller
+        # main()), not here — this function is exercised by unit tests too
+        # often to carry a destructive migration side effect safely.
+        alarm_registry = AlarmRegistry(state_file=alarms_state_path())
     registry.register(AlarmSetTool(alarm_registry=alarm_registry))
     registry.register(AlarmListTool(alarm_registry=alarm_registry))
     registry.register(AlarmCancelTool(alarm_registry=alarm_registry))
