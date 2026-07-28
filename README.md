@@ -37,7 +37,19 @@ Nothing is _required_ to install and start TESSERACT — it will open, set itsel
 
 Until you do, TESSERACT still opens and works — but when you send a message it will tell you it has no chat provider yet, rather than sitting silent.
 
-Everything beyond that is genuinely optional: web search, image generation, other model providers, Telegram. Each is unlocked by adding its own key, and if you ask for something that needs a key you haven't added, TESSERACT tells you at that moment instead of refusing to start. You can see what's on and what's off under **Settings → Capabilities**.
+### You aren't tied to Anthropic
+
+Anthropic is only the shipped default, because it needs the fewest steps to get running. TESSERACT can use any of these, and can mix them — one model for conversation, a different one for background work, a local one for anything you'd rather keep on your machine:
+
+|                            |                                                                                          |
+| -------------------------- | ---------------------------------------------------------------------------------------- |
+| **Paid APIs**              | Anthropic (Claude) · OpenAI (GPT) · Google (Gemini) · xAI (Grok) · DeepSeek · NVIDIA NIM |
+| **Subscription CLIs**      | Claude Code · Codex — use a subscription you already pay for, no separate API bill       |
+| **Local, on your machine** | Ollama for chat and embeddings · Whisper for hearing you · Piper and Kokoro for speaking |
+
+Each needs its own key in `.env` (except the local ones, which need nothing). Which model handles which job is set in `config/roles.yaml`, and you can change it while TESSERACT is running — it picks up the change without a restart.
+
+Beyond a chat model, everything else is genuinely optional: web search, image generation, Telegram. Each is unlocked by adding its own key, and if you ask for something that needs a key you haven't added, TESSERACT tells you at that moment instead of refusing to start. You can see what's on and what's off under **Settings → Capabilities**.
 
 ## What works without any key
 
@@ -70,6 +82,12 @@ Inside it, the parts worth knowing about:
 | `tars-workshop/` | Scratch space for longer pieces of work.                                          |
 
 Each of these arrives with a short explainer file inside it. They're ordinary files — nothing is hidden in a database.
+
+### Changing settings while it's running
+
+Most of `config/` reloads the moment you save it, with no restart — including `providers.yaml` and `roles.yaml`, so you can swap which model does what mid-conversation. If a change is malformed, TESSERACT logs the problem and keeps running on the previous settings rather than falling over.
+
+The exception is `.env`: keys are read once at startup, so adding one always needs a restart.
 
 ## Updates
 
