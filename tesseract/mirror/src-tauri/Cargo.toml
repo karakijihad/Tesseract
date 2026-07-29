@@ -1,6 +1,6 @@
 [package]
 name = "tesseract-mirror"
-version = "1.0.1"
+version = "1.0.2"
 description = "TESSERACT desktop shell"
 authors = ["TESSERACT"]
 edition = "2021"

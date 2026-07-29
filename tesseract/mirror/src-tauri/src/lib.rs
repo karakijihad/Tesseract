@@ -58,7 +58,34 @@ fn resolve_python(home: &Path) -> String {
     "python".to_string()
 }
 
+/// Deletes a leftover stop-request file before a supervisor is started.
+///
+/// `request_supervisor_stop` writes `runtime/supervisor_stop_request` and
+/// relies on the supervisor to consume it. If the supervisor is already dead
+/// when that write happens — it crashed, or never got past boot — nobody
+/// consumes it, and the file survives into the next launch. The new
+/// supervisor's stop-watcher then sees a stop order it never asked for and
+/// shuts down within milliseconds, on every launch, forever.
+///
+/// That is a self-perpetuating wedge: one crash makes the app permanently
+/// unstartable, and it survives an update that fixes the original crash. It is
+/// how a 2026-07-29 install stayed dead *after* the bug that killed it had been
+/// patched — each boot logged "supervisor exited gracefully" 2 ms after spawn,
+/// which read like a clean shutdown rather than a refusal to start.
+///
+/// A stop request is only ever meaningful for the process it was aimed at, so
+/// clearing it at spawn time is always correct.
+fn clear_stale_stop_request(home: &Path) {
+    let path = home.join("runtime").join("supervisor_stop_request");
+    match std::fs::remove_file(&path) {
+        Ok(()) => shell_log::log("cleared a stale supervisor stop-request from a previous run"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => shell_log::log_error(&format!("could not clear stale stop-request: {e}")),
+    }
+}
+
 fn spawn_supervisor(home: &PathBuf) -> std::io::Result<Child> {
+    clear_stale_stop_request(home);
     let mut cmd = Command::new(resolve_python(home));
     cmd.args(["-m", "tesseract.supervisor"])
         .env("TESSERACT_HOME", home)
@@ -313,6 +340,36 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression — a 2026-07-29 install stayed dead after the bug that killed
+    /// it was already fixed. `request_supervisor_stop` writes a stop-request
+    /// file for the supervisor to consume; if the supervisor is already dead
+    /// nobody consumes it, and the next launch's supervisor obeys a stop order
+    /// it never asked for. One crash therefore made the app permanently
+    /// unstartable, surviving the update that repaired the original fault.
+    #[test]
+    fn clear_stale_stop_request_removes_a_leftover_order() {
+        let home = crate::test_support::TempDir::new("stale-stop");
+        let runtime = home.path().join("runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        let marker = runtime.join("supervisor_stop_request");
+        std::fs::write(&marker, "stop
+").unwrap();
+
+        clear_stale_stop_request(home.path());
+
+        assert!(
+            !marker.exists(),
+            "a stop request from a previous run must never reach a new supervisor"
+        );
+    }
+
+    #[test]
+    fn clear_stale_stop_request_is_a_no_op_when_there_is_none() {
+        let home = crate::test_support::TempDir::new("no-stop");
+        std::fs::create_dir_all(home.path().join("runtime")).unwrap();
+        clear_stale_stop_request(home.path());
+    }
 
     #[test]
     fn query_escape_percent_encodes_reserved_and_non_ascii_bytes() {

@@ -648,8 +648,13 @@ mod tests {
         let app_dir = home.join("app");
         let origin = base.join("origin");
         let repo = crate::test_support::init_repo(&origin);
-        crate::test_support::write_commit(&repo, "README.md", "hello
-", "c1");
+        crate::test_support::write_commit(
+            &repo,
+            "README.md",
+            "hello
+",
+            "c1",
+        );
         drop(repo);
 
         // Simulate the stranded state: a complete clone sitting in staging,
@@ -697,7 +702,10 @@ mod tests {
     #[test]
     fn is_transient_lock_matches_windows_sharing_violations_only() {
         use std::io::{Error, ErrorKind};
-        assert!(is_transient_lock(&Error::new(ErrorKind::PermissionDenied, "denied")));
+        assert!(is_transient_lock(&Error::new(
+            ErrorKind::PermissionDenied,
+            "denied"
+        )));
         assert!(is_transient_lock(&Error::other(
             "The process cannot access the file because it is being used by another process."
         )));
