@@ -61,6 +61,10 @@ export function AboutSection() {
   const forceApply = useUpdateStore((s) => s.forceApply);
   const divergence = useUpdateStore((s) => s.divergence);
   const storeVersion = useUpdateStore((s) => s.version);
+  const exeAvailable = useUpdateStore((s) => s.exeAvailable);
+  const exeVersion = useUpdateStore((s) => s.exeVersion);
+  const exeApplying = useUpdateStore((s) => s.exeApplying);
+  const exeApply = useUpdateStore((s) => s.exeApply);
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
 
   useEffect(() => {
@@ -115,14 +119,14 @@ export function AboutSection() {
                     applying update, TARS will restart shortly…{" "}
                   </span>
                 )}
-                {behind === 0 && !checking && !applying && (
+                {behind === 0 && !exeAvailable && !checking && !applying && (
                   <span className="system-update-note t-meta">up to date </span>
                 )}
                 <button
                   type="button"
                   className="system-redetect"
                   onClick={() => void check()}
-                  disabled={checking || applying}
+                  disabled={checking || applying || exeApplying}
                 >
                   {checking ? "checking…" : "check for updates"}
                 </button>
@@ -135,6 +139,25 @@ export function AboutSection() {
             )}
           </span>
         </div>
+        {exeAvailable && (
+          <div className="system-row">
+            <span className="system-label t-meta">new version</span>
+            <span className="system-value">
+              <span className="system-update-note t-meta">
+                TESSERACT {exeVersion} is available — downloads, verifies, and
+                restarts the app{" "}
+              </span>
+              <button
+                type="button"
+                className="system-redetect"
+                onClick={() => void exeApply()}
+                disabled={exeApplying}
+              >
+                {exeApplying ? "downloading…" : "download & restart"}
+              </button>
+            </span>
+          </div>
+        )}
         {divergence && !applying && (
           <div className="system-row">
             <span className="system-label t-meta">divergence</span>

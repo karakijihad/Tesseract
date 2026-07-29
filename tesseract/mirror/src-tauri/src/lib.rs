@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use tauri::{Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 
+mod exe_update;
 mod provision;
 mod repo;
 mod shell_log;
@@ -340,6 +341,8 @@ pub fn run() {
             update::update_force_apply,
             update::app_version,
             update::app_info,
+            exe_update::exe_update_check,
+            exe_update::exe_update_apply,
             token::submit_github_token
         ])
         .setup(|app| {

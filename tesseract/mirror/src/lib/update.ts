@@ -50,3 +50,21 @@ export interface AppInfo {
 }
 
 export const appInfo = (): Promise<AppInfo> => invoke<AppInfo>("app_info");
+
+// Shell self-update (exe_update.rs): the UI + Rust shell ship inside the
+// installer, so git updates can't deliver them. The shell checks the
+// repo's GitHub Releases and, on an explicit operator click, downloads
+// the verified installer and restarts into it.
+export interface ExeUpdateStatus {
+  available: boolean;
+  version: string;
+  notes: string;
+}
+
+export const exeUpdateCheck = (): Promise<ExeUpdateStatus> =>
+  invoke<ExeUpdateStatus>("exe_update_check");
+
+// Long-running (~30MB download); on success the app exits and reinstalls,
+// so this promise usually never resolves in the surviving page.
+export const exeUpdateApply = (): Promise<void> =>
+  invoke<void>("exe_update_apply");
