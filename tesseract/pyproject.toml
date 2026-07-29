@@ -1,6 +1,6 @@
 [project]
 name = "tesseract"
-version = "1.0.0"
+version = "1.0.1"
 description = "TESSERACT kernel — local-first AI entity runtime"
 requires-python = ">=3.12"
 dependencies = [

@@ -303,7 +303,7 @@ fn clone_app_dir_with(app_dir: &Path, home: &Path, url: &str) -> Result<(), Prov
         return Ok(());
     }
     if app_dir.exists() {
-        std::fs::remove_dir_all(app_dir).map_err(|e| fs_error_message(&e.to_string()))?;
+        remove_tree(app_dir).map_err(|e| fs_error_message(&e.to_string()))?;
     }
 
     // Clone into a sibling staging dir, never `app_dir` itself: libgit2
@@ -323,21 +323,127 @@ fn clone_app_dir_with(app_dir: &Path, home: &Path, url: &str) -> Result<(), Prov
     );
     let staging = app_dir.with_file_name(staging_name);
     if staging.exists() {
-        std::fs::remove_dir_all(&staging).map_err(|e| fs_error_message(&e.to_string()))?;
+        // A staging dir carrying a complete `.git` is a clone that finished
+        // downloading but never got renamed into place — the rename lost a
+        // race with an antivirus scan of its own freshly written files. The
+        // bytes are already here and valid, so adopt them instead of deleting
+        // and re-downloading the whole repo. Without this the app re-fetches
+        // everything on every launch and can lose the same race forever, which
+        // is exactly how a first run wedged on 2026-07-29.
+        if staging.join(".git").exists() {
+            match finalize_clone(&staging, app_dir) {
+                Ok(()) => return Ok(()),
+                Err(_) => {
+                    // Still locked, or the tree is unusable — fall through to
+                    // the clean re-clone path rather than reporting an error
+                    // the next launch could have fixed on its own.
+                    crate::shell_log::log(
+                        "staging clone could not be adopted; clearing and re-cloning",
+                    );
+                }
+            }
+        }
+        remove_tree(&staging).map_err(|e| fs_error_message(&e.to_string()))?;
     }
     let token = crate::repo::github_token(home);
     if let Err(e) = crate::repo::clone(url, &staging, token) {
-        let _ = std::fs::remove_dir_all(&staging);
+        // Best-effort: a failed clone's partial staging dir is cleared so the
+        // next attempt starts clean. `remove_tree` (not `remove_dir_all`)
+        // because libgit2 leaves read-only objects behind even on failure, and
+        // a plain delete would silently leave them for the next run to trip on.
+        let _ = remove_tree(&staging);
         return Err(classify_clone_error(&e));
     }
     finalize_clone(&staging, app_dir).map_err(ProvisionError::from)
 }
 
+/// How many times a filesystem step that lost a race with another process is
+/// retried, and how long the backoff sleeps grow. Windows denies renames and
+/// deletions while *any* handle on the tree is open, and a freshly written
+/// clone attracts exactly that: an antivirus real-time scan walking 1000+ new
+/// files, a search indexer, or libgit2's own memory-mapped pack files not yet
+/// released. Each is transient and clears in well under a second — but a
+/// single un-retried failure aborts provisioning outright and, worse, leaves a
+/// complete clone stranded in staging.
+const FS_RETRY_DELAYS_MS: [u64; 5] = [50, 150, 400, 1000, 2500];
+
+/// Runs a filesystem mutation, retrying while the error looks like a transient
+/// lock. Non-lock errors (a full disk, a bad path) fail immediately — retrying
+/// those just delays an unavoidable message.
+fn retry_while_locked(mut op: impl FnMut() -> std::io::Result<()>) -> std::io::Result<()> {
+    let mut last = match op() {
+        Ok(()) => return Ok(()),
+        Err(e) => e,
+    };
+    for delay in FS_RETRY_DELAYS_MS {
+        if !is_transient_lock(&last) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(delay));
+        match op() {
+            Ok(()) => return Ok(()),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+fn is_transient_lock(e: &std::io::Error) -> bool {
+    if matches!(e.kind(), std::io::ErrorKind::PermissionDenied) {
+        return true;
+    }
+    let msg = e.to_string().to_lowercase();
+    msg.contains("being used by another process")
+        || msg.contains("access is denied")
+        || msg.contains("permission denied")
+}
+
+/// `remove_dir_all` that survives Windows' two standard obstacles: read-only
+/// files and transient locks.
+///
+/// libgit2 writes pack files and loose objects **read-only**, and Windows
+/// refuses to delete a read-only file — so a plain `remove_dir_all` over an
+/// abandoned `.git` fails with Access Denied. The read-only bit is cleared
+/// across the tree first, then the delete is retried through
+/// `retry_while_locked`.
+fn remove_tree(dir: &Path) -> std::io::Result<()> {
+    clear_readonly_recursive(dir);
+    retry_while_locked(|| match std::fs::remove_dir_all(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    })
+}
+
+fn clear_readonly_recursive(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() && !path.is_symlink() {
+            clear_readonly_recursive(&path);
+        }
+        if let Ok(meta) = std::fs::symlink_metadata(&path) {
+            let mut perms = meta.permissions();
+            if perms.readonly() {
+                #[allow(clippy::permissions_set_readonly_false)]
+                perms.set_readonly(false);
+                let _ = std::fs::set_permissions(&path, perms);
+            }
+        }
+    }
+}
+
 /// Renames the completed staging clone into place. Its own function so tests
 /// can force a rename failure (e.g. destination path occupied) without
 /// fighting the guard/clear logic above.
+///
+/// Retried: this is the step most likely to lose a race with an antivirus scan
+/// of the just-downloaded tree, and failing here is the worst possible moment
+/// — the clone succeeded, the bytes are on disk, and giving up strands them.
 fn finalize_clone(staging: &Path, app_dir: &Path) -> Result<(), String> {
-    std::fs::rename(staging, app_dir).map_err(|e| fs_error_message(&e.to_string()))
+    retry_while_locked(|| std::fs::rename(staging, app_dir))
+        .map_err(|e| fs_error_message(&e.to_string()))
 }
 
 /// Runs a provisioning subprocess to completion, mapping a non-zero exit into
@@ -525,6 +631,79 @@ mod tests {
         assert!(
             !app_dir.join("partial.tmp").exists(),
             "the stray leftover from the interrupted run must be cleared"
+        );
+    }
+
+    /// Regression — first-run failure observed on a real machine 2026-07-29.
+    ///
+    /// The clone finished (complete `.git`, 15 MB on disk) but the rename into
+    /// place lost a race with an antivirus scan of its own freshly written
+    /// files. Provisioning aborted, and every relaunch deleted the good clone
+    /// and re-downloaded it, able to lose the same race forever. A staging dir
+    /// holding a complete clone must now be adopted, not discarded.
+    #[test]
+    fn clone_app_dir_with_adopts_a_complete_staging_clone_instead_of_re_downloading() {
+        let base = TempDir::new("adopt-staging");
+        let home = base.join("home");
+        let app_dir = home.join("app");
+        let origin = base.join("origin");
+        let repo = crate::test_support::init_repo(&origin);
+        crate::test_support::write_commit(&repo, "README.md", "hello
+", "c1");
+        drop(repo);
+
+        // Simulate the stranded state: a complete clone sitting in staging,
+        // with no `app/` and an unreachable URL so any re-download would fail.
+        let staging = home.join("app.clone-tmp");
+        std::fs::create_dir_all(&home).unwrap();
+        crate::repo::clone(&origin.to_string_lossy(), &staging, None).expect("seed staging");
+        assert!(staging.join(".git").exists());
+
+        clone_app_dir_with(&app_dir, &home, "https://127.0.0.1:1/unreachable.git")
+            .expect("a complete staging clone must be adopted, not re-downloaded");
+
+        assert!(app_dir.join(".git").exists(), "staging must land at app/");
+        assert!(
+            app_dir.join("README.md").exists(),
+            "the adopted tree must be the real content, not an empty dir"
+        );
+        assert!(!staging.exists(), "staging must not survive adoption");
+    }
+
+    /// `remove_tree` must handle the read-only files libgit2 writes into
+    /// `.git/objects`; a plain `remove_dir_all` fails on them with Access
+    /// Denied on Windows, which was the other half of the same wedge.
+    #[test]
+    fn remove_tree_deletes_read_only_files() {
+        let base = TempDir::new("readonly-rm");
+        let dir = base.join("tree/nested");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("locked.pack");
+        std::fs::write(&file, b"objects").unwrap();
+        let mut perms = std::fs::metadata(&file).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&file, perms).unwrap();
+
+        remove_tree(&base.join("tree")).expect("read-only contents must not block removal");
+        assert!(!base.join("tree").exists());
+    }
+
+    #[test]
+    fn remove_tree_is_a_no_op_on_a_missing_directory() {
+        let base = TempDir::new("rm-missing");
+        remove_tree(&base.join("never-existed")).expect("absent dir must not be an error");
+    }
+
+    #[test]
+    fn is_transient_lock_matches_windows_sharing_violations_only() {
+        use std::io::{Error, ErrorKind};
+        assert!(is_transient_lock(&Error::new(ErrorKind::PermissionDenied, "denied")));
+        assert!(is_transient_lock(&Error::other(
+            "The process cannot access the file because it is being used by another process."
+        )));
+        assert!(
+            !is_transient_lock(&Error::other("There is not enough space on the disk.")),
+            "a full disk must fail fast, not burn the retry budget"
         );
     }
 
