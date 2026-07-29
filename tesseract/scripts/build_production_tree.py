@@ -146,7 +146,16 @@ def build(src_root: Path, out_root: Path, files: Iterable[str] | None = None) ->
     # REQUIRED — build_shipping_workspace itself raises RuntimeError when
     # `_shipping` is missing or empty, naming the path; no outer guard needed.
     src_shipping_workspace = src_root / "tesseract" / "workspace" / "_shipping"
-    build_shipping_workspace(src_shipping_workspace, out_root / "tesseract" / "workspace")
+    out_workspace = out_root / "tesseract" / "workspace"
+    build_shipping_workspace(src_shipping_workspace, out_workspace)
+    # MUST accompany the copy, exactly as for the three state dirs below.
+    # Without it the dev root `.gitignore`'s `tesseract/workspace/*` rule wins
+    # over the freshly written scaffold and `git add` silently drops every file
+    # — so `git push` shipped a production tree with no `tesseract/workspace/`
+    # at all, and every install died at boot in `ensure_workspace_seeded()`.
+    # Shipped as v1.0.0/v1.0.1 before anyone noticed; see the 2026-07-29
+    # session note.
+    _write_state_dir_gitignore(out_workspace)
 
     # Memory store / vault / tars-workshop: same templating shape as
     # workspace above — ship ready with hand-authored scaffold content
