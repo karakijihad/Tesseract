@@ -3,7 +3,7 @@ use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Emitter, Manager};
 
 /// Bump when the bundled deps change so an upgraded app re-provisions.
-pub const DEPS_VERSION: &str = "4";
+pub const DEPS_VERSION: &str = "5";
 
 /// Per-user state root: %LOCALAPPDATA%\com.tesseract.mirror (writable).
 /// Falls back to an explicit TESSERACT_HOME env override (dev), then to the
@@ -330,7 +330,7 @@ fn clone_app_dir_with(app_dir: &Path, home: &Path, url: &str) -> Result<(), Prov
         // and re-downloading the whole repo. Without this the app re-fetches
         // everything on every launch and can lose the same race forever, which
         // is exactly how a first run wedged on 2026-07-29.
-        if staging.join(".git").exists() {
+        if staging_clone_is_complete(&staging) {
             match finalize_clone(&staging, app_dir) {
                 Ok(()) => return Ok(()),
                 Err(_) => {
@@ -355,6 +355,37 @@ fn clone_app_dir_with(app_dir: &Path, home: &Path, url: &str) -> Result<(), Prov
         return Err(classify_clone_error(&e));
     }
     finalize_clone(&staging, app_dir).map_err(ProvisionError::from)
+}
+
+/// Whether a staging directory holds a clone that actually FINISHED, and is
+/// therefore safe to rename into place instead of re-downloading.
+///
+/// `.git` alone is not evidence: libgit2 creates it at the very START of a
+/// clone — init, then fetch, then checkout — so `.git` is present for nearly
+/// the entire download. Adopting on that signal alone would promote a clone
+/// interrupted at any point (app killed mid-download, sleep, crash) into
+/// `app_dir`, where the guard at the top of `clone_app_dir_with` treats any
+/// `app_dir/.git` as a finished clone forever. `is_provisioned` looks no
+/// deeper either, so the install would fail its dependency step on every
+/// launch with no repair path — re-creating the permanent wedge this adoption
+/// path exists to prevent, just from a different trigger.
+///
+/// Completeness therefore means both halves of libgit2's sequence: HEAD
+/// resolves to a real commit (fetch finished and a branch was written), and
+/// the working tree actually has content (checkout finished).
+fn staging_clone_is_complete(staging: &Path) -> bool {
+    if !staging.join(".git").exists() {
+        return false;
+    }
+    if crate::repo::head_oid(staging).is_err() {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(staging) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .any(|e| e.file_name() != std::ffi::OsStr::new(".git"))
 }
 
 /// How many times a filesystem step that lost a race with another process is
@@ -673,6 +704,60 @@ mod tests {
             "the adopted tree must be the real content, not an empty dir"
         );
         assert!(!staging.exists(), "staging must not survive adoption");
+    }
+
+    /// Reviewer catch, 2026-07-29: adoption keyed on `.git` alone was WRONG.
+    /// libgit2 creates `.git` at the START of a clone (init -> fetch ->
+    /// checkout), so an interrupted download looks identical to a finished one.
+    /// Adopting it would move a partial tree into `app_dir`, where the guard at
+    /// the top of `clone_app_dir_with` treats any `.git` as complete forever —
+    /// re-creating the permanent wedge adoption exists to prevent.
+    #[test]
+    fn a_partial_staging_clone_is_never_adopted() {
+        let base = TempDir::new("partial-staging");
+        let home = base.join("home");
+        let staging = home.join("app.clone-tmp");
+
+        // Interrupted before checkout: `.git` exists, nothing else does.
+        std::fs::create_dir_all(staging.join(".git")).unwrap();
+        assert!(
+            !staging_clone_is_complete(&staging),
+            "a bare .git with no commit and no working tree must not count as complete"
+        );
+
+        // Interrupted after fetch but before checkout: HEAD unresolvable.
+        let origin = base.join("origin");
+        let repo = crate::test_support::init_repo(&origin);
+        crate::test_support::write_commit(
+            &repo,
+            "README.md",
+            "hi
+",
+            "c1",
+        );
+        drop(repo);
+        let good = base.join("good");
+        crate::repo::clone(&origin.to_string_lossy(), &good, None).expect("seed");
+        assert!(
+            staging_clone_is_complete(&good),
+            "a genuinely finished clone must still be adoptable"
+        );
+
+        // Strip the working tree: fetch done, checkout never happened.
+        for entry in std::fs::read_dir(&good).unwrap().flatten() {
+            if entry.file_name() != std::ffi::OsStr::new(".git") {
+                let p = entry.path();
+                if p.is_dir() {
+                    let _ = std::fs::remove_dir_all(&p);
+                } else {
+                    let _ = std::fs::remove_file(&p);
+                }
+            }
+        }
+        assert!(
+            !staging_clone_is_complete(&good),
+            "a repo with no checked-out working tree must not count as complete"
+        );
     }
 
     /// `remove_tree` must handle the read-only files libgit2 writes into

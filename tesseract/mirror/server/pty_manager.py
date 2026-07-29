@@ -27,7 +27,18 @@ from pathlib import Path
 from typing import Any, Callable
 
 from aiohttp import web
-from winpty import PtyProcess
+
+# A missing pywinpty must degrade the terminal panel, never kill the whole
+# backend: this module is imported by app.py at boot, and an unguarded
+# import crashed every provisioned install on 2026-07-29 (pywinpty was an
+# optional extra the provisioner never installed).
+try:
+    from winpty import PtyProcess
+except ImportError as _exc:
+    PtyProcess = None  # type: ignore[assignment, misc]
+    _WINPTY_IMPORT_ERROR: str | None = str(_exc)
+else:
+    _WINPTY_IMPORT_ERROR = None
 
 from tesseract.mirror.server.config import ShellProfile, TerminalServerConfig
 from tesseract.orchestrator.terminal.end_of_turn import scrub_secrets, strip_ansi
@@ -566,6 +577,8 @@ class PTYManager:
         ws = self._app.get("primary_ws") if self._app is not None else None
         if ws is None or ws.closed:
             return {"ok": False, "error": "no_primary_ws"}
+        if PtyProcess is None:
+            return {"ok": False, "error": f"winpty_unavailable:{_WINPTY_IMPORT_ERROR}"}
 
         pane_id = f"pty_{uuid.uuid4().hex[:12]}"
         async with self._lock:
@@ -631,6 +644,13 @@ class PTYManager:
                     "type": "terminal_error",
                     "pane_id": pane_id,
                     "message": f"unknown shell: {shell}",
+                })
+                return
+            if PtyProcess is None:
+                await self._send(ws, {
+                    "type": "terminal_error",
+                    "pane_id": pane_id,
+                    "message": f"terminal backend unavailable (pywinpty not installed: {_WINPTY_IMPORT_ERROR})",
                 })
                 return
             try:

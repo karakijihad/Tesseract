@@ -33,6 +33,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from tesseract.supervisor.breaker import CrashStormBreaker
+from tesseract.supervisor.console_capture import (
+    ConsoleWriter,
+    popen_capture_kwargs,
+    start_drain,
+)
 from tesseract.supervisor.intent import (
     IntentFile,
     intent_path,
@@ -162,6 +167,12 @@ class Supervisor:
 
     _stop_event: threading.Event = field(default_factory=threading.Event, init=False)
     _current: BackendProcess | None = field(default=None, init=False)
+    # Console capture (2026-07-29) — one rotating writer per child name,
+    # shared across respawns. ``None`` until first spawn; stays ``None``
+    # when capture setup fails (diagnostics are fail-soft).
+    _console_writers: dict[str, ConsoleWriter | None] = field(
+        default_factory=dict, init=False
+    )
     _heartbeat_thread: threading.Thread | None = field(default=None, init=False)
     _crash_count: int = field(default=0, init=False)
     _shutdown_intent: str | None = field(default=None, init=False)
@@ -303,6 +314,16 @@ class Supervisor:
                 else:  # crash
                     self._crash_count += 1
                     respawns += 1
+                    # Inline the backend's last console lines so one file
+                    # (supervisor.log) carries the whole crash story — the
+                    # tail is what a remote "it just says exited code=1"
+                    # report can never reconstruct otherwise.
+                    writer = self._console_writers.get("backend")
+                    if writer is not None and writer.tail:
+                        log.error(
+                            "supervisor: backend crash output (last %d console lines):\n%s",
+                            len(writer.tail), writer.tail_text(),
+                        )
                     # Record into the rolling crash window. Three crashes
                     # in CRASH_WINDOW_SECONDS → latch + exit 2; the operator
                     # has to clear the marker before the next supervisor
@@ -391,11 +412,18 @@ class Supervisor:
             "stderr": None,
             "stdin": subprocess.DEVNULL,
         }
+        controller_console = (
+            None if self.separate_console else self._console_writer("tars-controller")
+        )
+        if controller_console is not None:
+            kwargs.update(popen_capture_kwargs())
         if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
         else:
             kwargs["start_new_session"] = True
         proc = subprocess.Popen(cmd, **kwargs)  # noqa: S603
+        if controller_console is not None:
+            start_drain(proc, controller_console, "tars-controller")
         self._controller_proc = proc
         self.last_controller_pid = proc.pid
 
@@ -497,6 +525,23 @@ class Supervisor:
         self._pending_continuation_id = None
         return cid
 
+    def _console_writer(self, name: str) -> ConsoleWriter | None:
+        """Lazily create (once, cached across respawns) the rotating
+        console log for a named child. Fail-soft: a capture that cannot
+        be set up must never block a spawn — the child just runs with
+        discarded stdio like it always did before 2026-07-29.
+        """
+        if name not in self._console_writers:
+            try:
+                self._console_writers[name] = ConsoleWriter(self.tesseract_home, name)
+            except Exception:  # noqa: BLE001
+                log.exception(
+                    "supervisor: console capture unavailable for %s — continuing without it",
+                    name,
+                )
+                self._console_writers[name] = None
+        return self._console_writers[name]
+
     def _spawn_backend(self, *, continuation_id: str | None) -> BackendProcess:
         env = os.environ.copy()
         env.update(self.extra_env)
@@ -508,6 +553,14 @@ class Supervisor:
             "stderr": None,
             "stdin": subprocess.DEVNULL,
         }
+        # Console capture (2026-07-29): in the packaged app the inherited
+        # streams go nowhere, so an import-time traceback was invisible —
+        # the pywinpty crash storm shipped undiagnosable. Merge stderr
+        # into a drained pipe unless the operator asked for a visible
+        # console window (separate_console keeps the old inherit).
+        backend_console = None if self.separate_console else self._console_writer("backend")
+        if backend_console is not None:
+            kwargs.update(popen_capture_kwargs())
         if sys.platform == "win32":
             # Separate process group so we can deliver CTRL_BREAK_EVENT
             # to the backend without taking down the supervisor's own
@@ -535,6 +588,8 @@ class Supervisor:
         ]
         log.info("supervisor: spawning backend cmd=%s continuation=%s", cmd, continuation_id)
         proc = subprocess.Popen(cmd, **kwargs)  # noqa: S603
+        if backend_console is not None:
+            start_drain(proc, backend_console, "backend")
         return BackendProcess(
             proc=proc,
             started_at=datetime.now(timezone.utc),

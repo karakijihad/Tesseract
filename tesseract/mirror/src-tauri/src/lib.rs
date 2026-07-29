@@ -84,8 +84,59 @@ fn clear_stale_stop_request(home: &Path) {
     }
 }
 
+/// Archives a crash-storm latch left behind by a previous run.
+///
+/// After 3 backend crashes in 45s the supervisor's breaker writes
+/// `runtime/crash_storm.json` and every later supervisor start refuses to run
+/// until the marker is cleared — which in a dev tree means running
+/// `python -m tesseract.scripts.clear_crash_storm` from a console. A packaged
+/// install has no console: the 2026-07-29 pywinpty crash storm left the app
+/// permanently dead even after the fix was published, because launch, update
+/// respawn, and re-provision all funnel into `spawn_supervisor` and all hit
+/// the latch.
+///
+/// Every `spawn_supervisor` call is operator-driven (a double-click, an update
+/// click, a provisioning run), so clearing here preserves what the latch
+/// actually guards — an unattended crash/respawn loop within one supervisor
+/// run — while making "restart TESSERACT" the recovery action. The marker is
+/// archived to the same directory the Python-side clear uses, not deleted, so
+/// the record of past storms survives.
+fn clear_stale_crash_storm(home: &Path) {
+    let marker = home.join("runtime").join("crash_storm.json");
+    if !marker.exists() {
+        return;
+    }
+    let archive_dir = home
+        .join("logs")
+        .join("supervisor")
+        .join("crash-storm-archive");
+    let _ = std::fs::create_dir_all(&archive_dir);
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let target = archive_dir.join(format!("shell-cleared-{stamp}.json"));
+    match std::fs::rename(&marker, &target) {
+        Ok(()) => shell_log::log(
+            "cleared a crash-storm latch from a previous run — archived; \
+             the supervisor gets a fresh start",
+        ),
+        // Rename can fail across odd filesystem states; plain removal still
+        // unwedges the app, which is the part that matters.
+        Err(rename_err) => match std::fs::remove_file(&marker) {
+            Ok(()) => shell_log::log(
+                "cleared a crash-storm latch from a previous run (archive failed; removed)",
+            ),
+            Err(remove_err) => shell_log::log_error(&format!(
+                "could not clear crash-storm latch: rename: {rename_err}; remove: {remove_err}"
+            )),
+        },
+    }
+}
+
 fn spawn_supervisor(home: &PathBuf) -> std::io::Result<Child> {
     clear_stale_stop_request(home);
+    clear_stale_crash_storm(home);
     let mut cmd = Command::new(resolve_python(home));
     cmd.args(["-m", "tesseract.supervisor"])
         .env("TESSERACT_HOME", home)
@@ -108,11 +159,26 @@ fn request_supervisor_stop(home: &Path, child: &mut Child) {
     let _ = std::fs::write(runtime.join("supervisor_stop_request"), "stop\n");
 
     // Wait up to 30s for the supervisor to exit on its own.
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(30);
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => {
-                shell_log::log("supervisor exited gracefully");
+            Ok(Some(status)) => {
+                // Report what actually happened, not what we hoped for. This
+                // used to log "exited gracefully" for ANY observed exit — the
+                // status was discarded — so a supervisor that refused to start
+                // and died in 2 ms read exactly like a clean shutdown. That is
+                // precisely how a stale stop-request wedge stayed invisible
+                // through several launches on 2026-07-29.
+                let elapsed = started.elapsed().as_millis();
+                if status.success() && elapsed >= 50 {
+                    shell_log::log(&format!("supervisor exited gracefully after {elapsed}ms"));
+                } else {
+                    shell_log::log_error(&format!(
+                        "supervisor exited {elapsed}ms after the stop request (status {status}) — \
+                         too fast or unsuccessful to be a clean shutdown; it likely never started"
+                    ));
+                }
                 return;
             }
             Ok(None) if Instant::now() < deadline => {
@@ -353,8 +419,11 @@ mod tests {
         let runtime = home.path().join("runtime");
         std::fs::create_dir_all(&runtime).unwrap();
         let marker = runtime.join("supervisor_stop_request");
-        std::fs::write(&marker, "stop
-").unwrap();
+        std::fs::write(
+            &marker, "stop
+",
+        )
+        .unwrap();
 
         clear_stale_stop_request(home.path());
 
@@ -369,6 +438,53 @@ mod tests {
         let home = crate::test_support::TempDir::new("no-stop");
         std::fs::create_dir_all(home.path().join("runtime")).unwrap();
         clear_stale_stop_request(home.path());
+    }
+
+    /// Regression — the 2026-07-29 pywinpty crash storm latched
+    /// `runtime/crash_storm.json`, and because every supervisor start refuses
+    /// while the marker exists, the app stayed dead even after the update that
+    /// fixed the crash. An operator-driven spawn must clear the latch, and the
+    /// marker's contents must survive in the archive dir rather than vanish.
+    #[test]
+    fn clear_stale_crash_storm_archives_the_latch() {
+        let home = crate::test_support::TempDir::new("stale-storm");
+        let runtime = home.path().join("runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        let marker = runtime.join("crash_storm.json");
+        std::fs::write(&marker, "{\"reason\":\"3 crashes\"}").unwrap();
+
+        clear_stale_crash_storm(home.path());
+
+        assert!(
+            !marker.exists(),
+            "a crash-storm latch from a previous run must not block a fresh operator-driven start"
+        );
+        let archive_dir = home
+            .path()
+            .join("logs")
+            .join("supervisor")
+            .join("crash-storm-archive");
+        let archived: Vec<_> = std::fs::read_dir(&archive_dir)
+            .expect("archive dir must exist")
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(
+            archived.len(),
+            1,
+            "the marker must be archived, not deleted"
+        );
+        assert_eq!(
+            std::fs::read_to_string(archived[0].path()).unwrap(),
+            "{\"reason\":\"3 crashes\"}"
+        );
+    }
+
+    #[test]
+    fn clear_stale_crash_storm_is_a_no_op_when_there_is_none() {
+        let home = crate::test_support::TempDir::new("no-storm");
+        std::fs::create_dir_all(home.path().join("runtime")).unwrap();
+        clear_stale_crash_storm(home.path());
+        assert!(!home.path().join("logs").exists());
     }
 
     #[test]

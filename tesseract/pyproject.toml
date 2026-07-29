@@ -1,6 +1,6 @@
 [project]
 name = "tesseract"
-version = "1.0.2"
+version = "1.0.3"
 description = "TESSERACT kernel — local-first AI entity runtime"
 requires-python = ">=3.12"
 dependencies = [
@@ -59,6 +59,12 @@ dependencies = [
     # MCP *client* (curated allowlist in mcp_servers.yaml): ClientSession +
     # stdio_client / streamable_http_client. Capability-growth Phase 2.
     "mcp>=1.12",
+
+    # WS4a-2 — Windows ConPTY backend for the embedded terminal panel.
+    # Core (not an extra): the provisioner installs bare `-e`, and a missing
+    # winpty used to kill the Mirror backend at import (2026-07-29 crash
+    # storm on a fresh install). Linux/Mac use stdlib `pty`.
+    "pywinpty>=2.0.13; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -73,11 +79,6 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
     "pytest-httpx>=0.30.0",
-]
-# WS4a-2 — Windows ConPTY backend for the embedded terminal panel.
-# `pip install tesseract[terminal]` on Windows; Linux/Mac use stdlib `pty`.
-terminal = [
-    "pywinpty>=2.0.13; sys_platform == 'win32'",
 ]
 # Local TTS — Piper (CPU-only, baked-in voice) and Kokoro (GPU/CPU,
 # style-embedding blend; needs onnxruntime + the CUDA 12 wheels on

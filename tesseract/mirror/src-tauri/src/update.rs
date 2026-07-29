@@ -59,6 +59,41 @@ fn app_dir(home: &Path) -> PathBuf {
     home.join("app")
 }
 
+/// Human-readable version for the Settings row and HUD: the pyproject
+/// semver with the short SHA in parentheses — `1.0.3 (a1b2c3d)`. The
+/// bare SHA it used to show answers "which commit", but an operator (or
+/// a friend reporting a problem) thinks in release numbers. Falls back
+/// to the SHA alone when pyproject.toml is unreadable — version display
+/// must never fail an update check.
+fn display_version(dir: &Path) -> Result<String, String> {
+    let sha = repo::head_short(dir)?;
+    Ok(match pyproject_version(dir) {
+        Some(v) => format!("{v} ({sha})"),
+        None => sha,
+    })
+}
+
+/// First `version = "…"` line of `<dir>/tesseract/pyproject.toml`. Plain
+/// line scan, not a TOML parser: the file is ours, `[project] version`
+/// is its first table entry, and a parser dependency for one key is not
+/// worth it.
+fn pyproject_version(dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join("tesseract").join("pyproject.toml")).ok()?;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("version") {
+            let rest = rest.trim_start();
+            if let Some(rest) = rest.strip_prefix('=') {
+                let v = rest.trim().trim_matches('"').trim_matches('\'');
+                if !v.is_empty() {
+                    return Some(v.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Acquires the concurrency guard, or rejects if an `update_apply` call is
 /// already in flight. Split out from `update_apply` so the exact mechanism
 /// it relies on (not a reimplementation of it) is directly unit-testable.
@@ -131,7 +166,7 @@ pub fn update_check(home: State<TesseractHome>) -> Result<UpdateStatus, String> 
     Ok(UpdateStatus {
         behind,
         summaries,
-        version: repo::head_short(&dir)?,
+        version: display_version(&dir)?,
         divergence,
     })
 }
@@ -349,7 +384,7 @@ fn force_apply_update(
 
 #[tauri::command]
 pub fn app_version(home: State<TesseractHome>) -> Result<String, String> {
-    repo::head_short(&app_dir(&home.0))
+    display_version(&app_dir(&home.0))
 }
 
 #[cfg(test)]
@@ -379,6 +414,25 @@ mod tests {
         let dest = base.join("dest");
         repo::clone(&origin_path.to_string_lossy(), &dest, None).expect("clone dest");
         (origin_path, dest)
+    }
+
+    #[test]
+    fn display_version_combines_pyproject_semver_with_the_short_sha() {
+        let base = TempDir::new("display-version");
+        let (_origin, dest) = make_origin_and_synced_clone(&base);
+
+        let sha = repo::head_short(&dest).unwrap();
+        assert_eq!(display_version(&dest).unwrap(), format!("1 ({sha})"));
+    }
+
+    #[test]
+    fn display_version_falls_back_to_the_sha_when_pyproject_is_unreadable() {
+        let base = TempDir::new("display-version-fallback");
+        let (_origin, dest) = make_origin_and_synced_clone(&base);
+        std::fs::remove_file(dest.join("tesseract").join("pyproject.toml")).unwrap();
+
+        let sha = repo::head_short(&dest).unwrap();
+        assert_eq!(display_version(&dest).unwrap(), sha);
     }
 
     #[test]
