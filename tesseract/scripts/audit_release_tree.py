@@ -21,6 +21,7 @@ and fails the build on a hit.
 from __future__ import annotations
 
 import argparse
+import codecs
 import json
 import re
 import sys
@@ -68,6 +69,44 @@ def _load_optional_tokens(tokens_file: Path | None) -> tuple[str, ...]:
     return tuple(data.get("tokens", ()))
 
 
+def _decode_text(raw: bytes) -> str | None:
+    """Decode `raw` as text, or return None if it is genuinely binary.
+
+    A NUL byte alone does not mean binary: UTF-16 puts one beside every ASCII
+    character, so a plain `b"\\x00" in raw` skip silently exempted every
+    UTF-16 file from the scan — a real gap on Windows, where hand-authored and
+    exported text is often UTF-16LE. A leaked key in such a file would have
+    passed the release gate unnoticed.
+
+    BOM-marked UTF-16 is decoded explicitly. Unmarked content is then probed
+    for the alternating-NUL pattern UTF-16 produces for ASCII-range text, so a
+    BOM-less export is still scanned. Anything left holding NULs is treated as
+    binary, as before.
+    """
+    for bom, encoding in ((codecs.BOM_UTF16_LE, "utf-16-le"), (codecs.BOM_UTF16_BE, "utf-16-be")):
+        if raw.startswith(bom):
+            return raw[len(bom):].decode(encoding, errors="ignore")
+    if raw.startswith(codecs.BOM_UTF8):
+        return raw[len(codecs.BOM_UTF8):].decode("utf-8", errors="ignore")
+
+    if b"\x00" not in raw:
+        return raw.decode("utf-8", errors="ignore")
+
+    # No BOM but NUL-bearing: distinguish BOM-less UTF-16 from a real binary by
+    # checking which byte position the NULs occupy. ASCII text in UTF-16LE has
+    # them on odd offsets, UTF-16BE on even ones.
+    sample = raw[: 4096 - (4096 % 2)]
+    if len(sample) >= 2:
+        odd_nuls = sample[1::2].count(0)
+        even_nuls = sample[0::2].count(0)
+        half = len(sample) // 2
+        if odd_nuls >= half * 0.9 and even_nuls == 0:
+            return raw.decode("utf-16-le", errors="ignore")
+        if even_nuls >= half * 0.9 and odd_nuls == 0:
+            return raw.decode("utf-16-be", errors="ignore")
+    return None
+
+
 def scan(root: Path, tokens_file: Path | None = None) -> list[str]:
     """Return one offender string per hit; empty list means clean."""
     tokens = _load_optional_tokens(tokens_file)
@@ -79,9 +118,9 @@ def scan(root: Path, tokens_file: Path | None = None) -> list[str]:
             raw = path.read_bytes()
         except OSError:
             continue
-        if b"\x00" in raw:
-            continue  # binary asset — not a text scan target
-        body = raw.decode("utf-8", errors="ignore")
+        body = _decode_text(raw)
+        if body is None:
+            continue  # genuinely binary asset — not a text scan target
         rel = path.relative_to(root)
         for pattern in _GENERIC_PATTERNS:
             for hit in pattern.findall(body):

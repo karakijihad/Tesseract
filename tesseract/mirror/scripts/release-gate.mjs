@@ -2,12 +2,19 @@
 /**
  * release-gate.mjs
  *
- * Backing script for `pnpm run release:gate` — the MANDATORY pre-release
- * command. Run this by hand (or via CI) before cutting an actual release
- * build. It is deliberately NOT wired into `tauri.conf.json`'s
- * `beforeBuildCommand`, which stays the fast `guard:uv` check so a
- * routine `pnpm tauri dev` / `pnpm tauri build` never triggers the whole
- * suite below.
+ * Backing script for `pnpm run release:gate`.
+ *
+ * **Do not build a release with `pnpm tauri build`. Use
+ * `pnpm run release:build`**, which is this gate followed by the build, so
+ * the artifact you ship is the artifact the gate passed.
+ *
+ * This stays OUT of `tauri.conf.json`'s `beforeBuildCommand` on purpose:
+ * that hook fires on `pnpm tauri dev` too, and running the whole suite on
+ * every dev launch would be unusable. The cost of that choice is that a bare
+ * `pnpm tauri build` can still produce an ungated installer — which is
+ * exactly what the 2026-07-29 Codex audit (M2) flagged. `release:build`
+ * closes it by making the gated path the documented one-command path;
+ * `PLAN-03` Task 16 step 2 names it.
  *
  * Runs each check as a child process, in order, failing fast on the
  * first non-zero exit and streaming that child's output live:

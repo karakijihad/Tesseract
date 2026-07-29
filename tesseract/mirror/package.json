@@ -16,7 +16,8 @@
     "audit:tokens": "node scripts/audit-hardcoded-tokens.mjs",
     "fetch:uv": "node scripts/fetch-uv.mjs",
     "guard:uv": "node scripts/guard-uv.mjs",
-    "release:gate": "node scripts/release-gate.mjs"
+    "release:gate": "node scripts/release-gate.mjs",
+    "release:build": "node scripts/release-gate.mjs && tauri build"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "^5.2.8",
