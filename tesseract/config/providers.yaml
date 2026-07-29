@@ -549,6 +549,14 @@ cli:
     max_retries: 1
     stream_json_capable: true
     adapter: cli
+    # Subscription auth probe — required on every cli provider, no
+    # assumed-authenticated default. Raw probe output is discarded, never
+    # logged or stored (it can carry account email/org details).
+    auth_check:
+      command: [claude, auth, status]
+      success_pattern: '"loggedIn"\s*:\s*true'
+      login_hint: claude auth login
+      timeout_seconds: 10
     models:
       opus_48:
         model: claude-opus-4-8
@@ -578,6 +586,11 @@ cli:
     max_retries: 1
     stream_json_capable: true
     adapter: cli
+    auth_check:
+      command: [codex, login, status]
+      success_pattern: 'Logged in'
+      login_hint: codex login
+      timeout_seconds: 10
     models:
       gpt55:
         model: gpt-5.5

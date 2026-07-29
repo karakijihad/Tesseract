@@ -63,7 +63,7 @@ body {
   position: fixed;
   pointer-events: none;
   z-index: 0;
-  transition: opacity 150ms ease;
+  transition: opacity var(--motion-fast) ease;
 }
 
 .global-canvas.full {
@@ -225,8 +225,8 @@ body {
   height: 14px;
   padding: 0 3px;
   border-radius: 7px;
-  background: var(--accent-error, #d46a6a);
-  color: var(--bg-base, #0b0b0b);
+  background: var(--accent-error);
+  color: var(--bg-void);
   font-size: 0.62rem;
   font-weight: 600;
   line-height: 14px;
@@ -519,7 +519,7 @@ body {
   100% { box-shadow: 0 0 0 0 hsl(var(--accent-hsl) / 0); transform: scale(1); }
 }
 .syn-node.is-flashing .syn-dot {
-  animation: synapse-flash 220ms var(--ease-smooth, ease-out);
+  animation: synapse-flash var(--motion-med) var(--ease-smooth, ease-out);
 }
 
 /* Sub-header divider */
@@ -1846,7 +1846,7 @@ body {
   max-width: 360px;
   text-align: left;
   box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-  animation: toast-in 180ms ease-out;
+  animation: toast-in var(--motion-fast) ease-out;
 }
 .toast--info    { border-color: var(--accent-dim); }
 .toast--warning { border-color: var(--warn); color: var(--warn); }
@@ -1961,7 +1961,7 @@ body {
   flex-direction: column;
   z-index: 801;
   outline: none;
-  animation: drawer-in 200ms ease-out;
+  animation: drawer-in var(--motion-med) ease-out;
 }
 @keyframes drawer-in {
   from { transform: translateX(100%); }
@@ -2283,7 +2283,7 @@ body {
   font-size: 11px;
   padding: 4px 10px;
   cursor: pointer;
-  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+  transition: border-color var(--motion-fast) ease, color var(--motion-fast) ease, background var(--motion-fast) ease;
 }
 .session-action:hover:not(:disabled) {
   color: var(--text-primary);

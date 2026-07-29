@@ -394,7 +394,7 @@
   width: 100%;
   height: 100%;
   border: none;
-  background: #fff;
+  background: var(--ink-100);
 }
 
 .surface-webview--empty {
@@ -415,16 +415,16 @@
 .surface-extlink__btn {
   display: inline-block;
   padding: var(--space-sm) var(--space-md);
-  border: 1px solid var(--border, #333);
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm, 6px);
   font-size: 0.95rem;
   text-decoration: none;
-  color: var(--text, #eee);
-  background: var(--bg-raised, #1a1a1a);
+  color: var(--text-primary);
+  background: var(--bg-elevated);
 }
 
 .surface-extlink__btn:hover {
-  border-color: var(--accent, #4a9);
+  border-color: var(--accent);
 }
 
 .surface-extlink__url {
@@ -436,7 +436,7 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--bg-void, #000);
+  background: var(--bg-void);
 }
 
 .surface-terminal__bound {
@@ -459,8 +459,8 @@
   padding: 2px var(--space-xs);
   display: inline-block;
   font-size: 0.72rem;
-  color: var(--accent-error, #d46a6a);
-  border: 1px solid var(--accent-error, #d46a6a);
+  color: var(--accent-error);
+  border: 1px solid var(--accent-error);
   border-radius: var(--radius-sm);
 }
 
@@ -498,10 +498,10 @@
   background: var(--text-meta);
 }
 .lane-card__dot--claude {
-  background: #d97757;
+  background: var(--brand-claude);
 }
 .lane-card__dot--codex {
-  background: #10a37f;
+  background: var(--brand-codex);
 }
 
 .lane-card__name {
@@ -558,7 +558,7 @@
   width: auto;
   padding: 0 6px;
   font-size: 0.68rem;
-  color: var(--accent-error, #d46a6a);
+  color: var(--accent-error);
   background: hsl(0 60% 50% / 0.12);
 }
 .lane-card__title-edit {
@@ -664,7 +664,7 @@
   white-space: pre-wrap;
 }
 .lane-ev--error {
-  color: var(--accent-error, #d46a6a);
+  color: var(--accent-error);
 }
 .lane-ev--turn,
 .lane-ev--closed,
@@ -694,7 +694,7 @@
   align-self: flex-end;
   padding: 4px 10px;
   background: var(--accent);
-  color: var(--bg-void, #000);
+  color: var(--bg-void);
   border: none;
   border-radius: var(--radius-sm);
   cursor: pointer;

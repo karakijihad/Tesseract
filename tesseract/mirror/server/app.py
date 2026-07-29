@@ -544,6 +544,18 @@ async def _init_background(app: web.Application) -> None:
         except Exception:
             log.exception("browser provision: scheduling failed — continuing boot")
 
+        # cli-auth DESIGN.md §3 — boot probe of every enabled `cli` provider's
+        # subscription auth (claude/codex sign-in state), populating the
+        # process-wide cache `capabilities.py` and the role-broken check
+        # read. Fire-and-forget: nothing at boot depends on it, and a broken
+        # or slow probe must never delay or fail boot (design constraint).
+        try:
+            from tesseract.brain import cli_auth
+
+            _schedule_warmup(app, cli_auth.refresh(), name="cli_auth")
+        except Exception:
+            log.exception("cli_auth: scheduling refresh failed — continuing boot")
+
         # ───── STAGE 1 ── parallel: ollama / tool_registry / cost_ledger / recovery
         log.info("mirror init stage 1: ollama / tool_registry / cost_ledger / recovery (parallel)")
         ollama_task = asyncio.create_task(_ensure_ollama_ready(app), name="boot:ollama")

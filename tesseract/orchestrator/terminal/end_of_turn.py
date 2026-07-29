@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import re
 
+from tesseract.lib.secret_patterns import CREDENTIAL_PATTERNS
+
 # Mirrors `brain/observation_transcript.py` so observer + PTY substrate
 # decode the same byte stream identically. Drift here would mean the
 # operator's terminal view and the observer see different text.
@@ -39,13 +41,9 @@ def strip_ansi(text: str) -> str:
 _REDACTED = "[redacted]"
 
 # Provider-prefixed API keys / tokens — whole match dropped since the
-# prefix itself is already the secret signal.
-_SECRET_PREFIX_RES: tuple[re.Pattern[str], ...] = (
-    re.compile(r"\bsk-[A-Za-z0-9_-]{10,}"),          # OpenAI / Anthropic-style
-    re.compile(r"\bgh[oprsu]_[A-Za-z0-9_-]{10,}"),   # GitHub PAT family
-    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}"),   # Slack bot/user/app tokens
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),              # AWS access key id
-)
+# prefix itself is already the secret signal. Shared with the production-tree
+# secret scanners (see `tesseract/lib/secret_patterns.py` docstring).
+_SECRET_PREFIX_RES: tuple[re.Pattern[str], ...] = CREDENTIAL_PATTERNS
 # `Bearer <token>` — keep the scheme name as a hint, drop the token.
 _BEARER_RE = re.compile(r"\b(Bearer)\s+\S+")
 # `key=value` / `token: value` / `password ...` assignments — keep the

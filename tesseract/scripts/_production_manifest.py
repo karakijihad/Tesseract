@@ -19,6 +19,11 @@ from __future__ import annotations
 # Repo-root-relative prefixes dropped even though git tracks them (posix).
 EXCLUDE_PATHS = (
     "Docs",
+    # CL-M7: excluding the whole test tree means the shipped repo carries no
+    # PII/secret guard of its own — `tesseract/scripts/audit_release_tree.py`
+    # is the standalone replacement that DOES ship (it lives under
+    # `tesseract/scripts/`, untouched by this exclusion) and that
+    # `build_production_tree.main()` runs against the tree it just built.
     "tesseract/tests",
     # CLAUDE.md/AGENTS.md document the runtime's internal security
     # architecture (bash_security's check list, permissions model,

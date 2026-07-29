@@ -22,7 +22,7 @@
   border-radius: 999px;
   cursor: pointer;
   line-height: 1;
-  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+  transition: color var(--motion-fast) ease, border-color var(--motion-fast) ease, background var(--motion-fast) ease;
 }
 
 .hud-voice-mode:hover {
@@ -48,7 +48,7 @@
 /* Mic ON — saturated green so the operator reads "live capture" at a
    glance, independent of which voice mode pill is selected. */
 .hud-mic.is-on {
-  color: #4ade80; /* green-400 */
+  color: var(--ok);
 }
 
 .hud-mic.is-on::before {
@@ -59,7 +59,7 @@
   border-radius: 50%;
   background: radial-gradient(
     circle,
-    color-mix(in srgb, #4ade80 calc(var(--mic-level, 0) * 70%), transparent) 0%,
+    color-mix(in srgb, var(--ok) calc(var(--mic-level, 0) * 70%), transparent) 0%,
     transparent 70%
   );
   pointer-events: none;
@@ -69,12 +69,12 @@
 /* Mic OFF — dim red with the slash glyph so the operator reads "muted"
    without needing color alone. Color + shape = WCAG-friendly. */
 .hud-mic.is-off {
-  color: color-mix(in srgb, #ef4444 60%, var(--text-meta));
+  color: color-mix(in srgb, var(--bad) 60%, var(--text-meta));
   opacity: 0.85;
 }
 
 .hud-mic.is-off:hover {
-  color: #ef4444;
+  color: var(--bad);
   opacity: 1;
 }
 

@@ -101,7 +101,7 @@
 
 .controller-mirror__error {
   padding: 6px 10px;
-  color: var(--color-bad, #e5534b);
+  color: var(--bad);
   font-size: 12px;
   background: var(--bg-1);
 }

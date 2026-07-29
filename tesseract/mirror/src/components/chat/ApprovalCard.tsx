@@ -52,7 +52,7 @@ export function ApprovalCard({ approval, isPrimary = false }: Props) {
       <div className="approval-card-tool">{name}</div>
       <pre className="approval-card-summary">{JSON.stringify(input, null, 2)}</pre>
       {reason && (
-        <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: 10 }}>reason: {reason}</div>
+        <div style={{ fontSize: 10, color: 'var(--text-meta)', marginBottom: 10 }}>reason: {reason}</div>
       )}
       <div className="approval-card-actions">
         <button

@@ -1161,7 +1161,7 @@
   padding: 1px 8px;
   border-radius: 10px;
   background: var(--accent-soft, rgba(255, 200, 100, 0.12));
-  color: var(--accent, #d8a64a);
+  color: var(--accent);
   font-size: 11px;
   font-weight: 500;
 }
@@ -1191,5 +1191,5 @@
   word-break: break-word;
 }
 .workspace-event-status--applied {
-  color: var(--accent, #d8a64a);
+  color: var(--accent);
 }

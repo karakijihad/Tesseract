@@ -28,8 +28,13 @@ from typing import Any, Callable, Literal, Mapping
 import yaml
 
 from tesseract.lib.yaml_io import round_trip_yaml
-from tesseract.paths import CONFIG_DIR
+from tesseract.paths import CONFIG_DIR, config_dir
 
+# Back-compat constants — frozen at import (see `tesseract.paths.CONFIG_DIR`).
+# Kept for existing consumers that import them by name (`brain/boot.py`,
+# `mirror/server/config.py`). `load_config`/`persist`/`persist_many` below
+# resolve their own defaults via `config_dir()` at call time instead, so a
+# `TESSERACT_HOME` change is honored without a fresh import of this module.
 PROVIDERS_YAML = CONFIG_DIR / "providers.yaml"
 ROLES_YAML = CONFIG_DIR / "roles.yaml"
 
@@ -74,6 +79,21 @@ def _require(d: Mapping[str, Any], key: str, where: str) -> Any:
 
 
 @dataclass(frozen=True)
+class CliAuthCheck:
+    """``cli.<provider>.auth_check`` block — how to probe subscription auth.
+
+    Required on every `cli`-tier provider (config-is-authority; no assumed-
+    authenticated default — see CLAUDE.md hard rules and
+    ``Docs/Plan/cli-auth/DESIGN.md`` §1). Consumed by
+    ``tesseract/brain/cli_auth.py``'s probe, never by adapter dispatch.
+    """
+    command: tuple[str, ...]
+    success_pattern: str
+    login_hint: str
+    timeout_seconds: float
+
+
+@dataclass(frozen=True)
 class ProviderConnection:
     """One ``providers.<tier>.<name>`` block — connection settings only.
 
@@ -94,6 +114,10 @@ class ProviderConnection:
     api_key_env: str | None = None
     command: str | None = None          # cli tier
     stream_json_capable: bool = False   # cli tier
+    # Required on every `cli`-tier provider — `_build_connection` raises at
+    # load if absent. `None` only for non-cli tiers (api/local don't probe
+    # subscription auth). See `CliAuthCheck` above.
+    auth_check: CliAuthCheck | None = None
     # Whether this connection's API accepts OpenAI's `prompt_cache_key`
     # param. True only for genuine OpenAI; openai-COMPATIBLE providers
     # (NIM, etc.) 400 on it, so the adapter must omit it for them.
@@ -263,6 +287,29 @@ class ConfigBundle:
 # ── Resolution ───────────────────────────────────────────
 
 
+def _build_auth_check(tier: str, name: str, block: Mapping[str, Any]) -> CliAuthCheck:
+    """Parse the required ``cli.<name>.auth_check`` block. Raises naming the
+    provider + missing key — no assumed-authenticated default (DESIGN.md §1)."""
+    where = f"providers.yaml {tier}.{name}"
+    raw = block.get("auth_check")
+    if raw is None:
+        raise ConfigError(
+            f"cli provider '{tier}.{name}' missing required 'auth_check' block in providers.yaml"
+        )
+    if not isinstance(raw, Mapping):
+        raise ConfigError(f"'{where}.auth_check' must be a mapping in providers.yaml")
+    where_auth = f"{where}.auth_check"
+    command = _require(raw, "command", where_auth)
+    if not isinstance(command, list) or not command:
+        raise ConfigError(f"'{where_auth}.command' must be a non-empty list in providers.yaml")
+    return CliAuthCheck(
+        command=tuple(str(c) for c in command),
+        success_pattern=str(_require(raw, "success_pattern", where_auth)),
+        login_hint=str(_require(raw, "login_hint", where_auth)),
+        timeout_seconds=float(_require(raw, "timeout_seconds", where_auth)),
+    )
+
+
 def _build_connection(
     tier: str,
     name: str,
@@ -282,6 +329,7 @@ def _build_connection(
         api_key_env=block.get("api_key_env"),
         command=block.get("command"),
         stream_json_capable=bool(block.get("stream_json_capable", False)),
+        auth_check=_build_auth_check(tier, name, block) if tier == "cli" else None,
         supports_prompt_cache_key=bool(block.get("supports_prompt_cache_key", False)),
         supports_stream_usage=bool(block.get("supports_stream_usage", True)),
         cache_routing_header=block.get("cache_routing_header"),
@@ -302,7 +350,7 @@ def _build_connection(
             "api_key_env", "command", "stream_json_capable", "models", "enabled",
             "transient_retries", "transient_backoff_ms",
             "cooldown_max_failures", "cooldown_seconds", "supports_prompt_cache_key",
-            "supports_stream_usage", "cache_routing_header",
+            "supports_stream_usage", "cache_routing_header", "auth_check",
         )},
     )
 
@@ -465,8 +513,8 @@ def load_config(
     missing required keys, and bad shape all raise at this point — not
     later when something tries to use the value.
     """
-    pp = providers_path or PROVIDERS_YAML
-    rp = roles_path or ROLES_YAML
+    pp = providers_path or (config_dir() / "providers.yaml")
+    rp = roles_path or (config_dir() / "roles.yaml")
     if not pp.exists():
         raise ConfigError(f"providers.yaml missing at {pp}")
     if not rp.exists():
@@ -533,7 +581,11 @@ def persist(
     Comments and key order are preserved (ruamel). Returns the mutated doc
     so callers can re-parse the affected sub-tree if they need to.
     """
-    target = (providers_path or PROVIDERS_YAML) if file == "providers" else (roles_path or ROLES_YAML)
+    target = (
+        (providers_path or (config_dir() / "providers.yaml"))
+        if file == "providers"
+        else (roles_path or (config_dir() / "roles.yaml"))
+    )
     if not target.exists():
         raise ConfigError(f"{file}.yaml missing at {target}")
 
@@ -555,7 +607,11 @@ def persist_many(
     Use when several leaves change together (e.g. swapping primary +
     fallbacks at once) — avoids re-parsing/re-writing the file N times.
     """
-    target = (providers_path or PROVIDERS_YAML) if file == "providers" else (roles_path or ROLES_YAML)
+    target = (
+        (providers_path or (config_dir() / "providers.yaml"))
+        if file == "providers"
+        else (roles_path or (config_dir() / "roles.yaml"))
+    )
     if not target.exists():
         raise ConfigError(f"{file}.yaml missing at {target}")
 

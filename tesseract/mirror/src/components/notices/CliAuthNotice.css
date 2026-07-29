@@ -1,0 +1,83 @@
+/* cli-auth DESIGN.md §5 — non-blocking first-run notice. Fixed card in the
+   opposite corner from .toast-stack (top-right) so the two never overlap;
+   pointer-events stay scoped to the card so the cockpit underneath remains
+   fully interactive. */
+
+.cli-auth-notice {
+  position: fixed;
+  left: var(--space-md);
+  bottom: var(--space-md);
+  z-index: 900;
+  width: min(92vw, 340px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+
+.cli-auth-notice__title {
+  font-family: var(--font-ui);
+  font-size: var(--t-caption-size);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.cli-auth-notice__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.cli-auth-notice__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cli-auth-notice__role {
+  font-family: var(--font-mono);
+  font-size: var(--t-body-size);
+  color: var(--text-primary);
+}
+
+.cli-auth-notice__actions {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+.cli-auth-notice__btn {
+  padding: var(--space-xs) var(--space-md);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--panel-border);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: var(--t-caption-size);
+}
+
+.cli-auth-notice__btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.cli-auth-notice__btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.cli-auth-notice__btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--ink-100);
+}
+
+.cli-auth-notice__btn--primary:hover:not(:disabled) {
+  background: var(--accent-bright);
+}

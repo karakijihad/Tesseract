@@ -29,11 +29,107 @@ from tesseract.kernel.tokenjuice import (
     project_rules_dir as _tj_project_rules_dir,
     user_rules_dir as _tj_user_rules_dir,
 )
+from tesseract.kernel.adapters.cli import _HARD_ERROR_NEEDLES
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.permissions import approval_log
 from tesseract.permissions.decide import AskFn, evaluate as evaluate_permission
 from tesseract.permissions.policy import PermissionPolicy
 
 logger = logging.getLogger(__name__)
+
+# cli-auth DESIGN.md §3 — use-time cache invalidation. Maps the two headless
+# delegate tools to their `providers.yaml cli.<name>` provider so a failed
+# call can drop that provider's stale "ready" auth cache entry. Reuses
+# `CLIAdapter`'s own hard-error needles (`tesseract/kernel/adapters/cli.py`)
+# narrowed to the auth-shaped subset — read-only import, kernel stays
+# unedited (kernel lockdown). `lane_turn`/`lane_send` are NOT covered here:
+# they resolve their provider through a lane binding, not a fixed tool-name
+# mapping, so there's no clean generic attachment point for this hook.
+_CLI_DELEGATE_PROVIDERS = {"delegate_claude": "claude", "delegate_codex": "codex"}
+_AUTH_SHAPED_NEEDLES = tuple(
+    n for n in _HARD_ERROR_NEEDLES if n in ("unauthorized", "authentication", "auth required")
+)
+
+# Distributable-app source-edit gate. `delegate_claude`/`delegate_codex` are
+# the sanctioned path for TARS to edit source (CLAUDE.md kernel-lockdown
+# rule) — correct on a dev checkout, where the running tree IS the repo
+# being worked on, but pointless (the next update overwrites it) and risky
+# (someone else's machine) on an installed copy. Neither tool distinguishes
+# "edit" from "analyse" via a dedicated mode/cwd argument; both DO carry a
+# `target_paths: list[str]` field ("repo-relative paths this task will
+# edit... declare them for edit tasks", already resolved against
+# `context.workspace_root` — the code tree — by `_delegate_runner.py`'s own
+# evidence snapshotting). An empty `target_paths` is the existing signal
+# for "not an edit task" (analysis/review/questions), so only a non-empty
+# declaration is gated here — non-editing delegate use is unaffected.
+_SOURCE_EDIT_DELEGATE_TOOLS = frozenset({"delegate_claude", "delegate_codex"})
+
+_INSTALLED_TREE_REFUSAL = (
+    "Source edits are disabled on an installed copy of TESSERACT — this "
+    "tree is replaced by updates. Run TESSERACT from a development "
+    "checkout to modify its source."
+)
+
+
+async def _installed_tree_source_edit_refusal(
+    tool_name: str, validated: Any, raw_input: dict[str, Any], context: ToolContext
+) -> ToolResult | None:
+    """`ToolResult` refusal when `tool_name` is a source-editing delegate
+    call with a non-empty `target_paths` AND this process is running from
+    an installed tree; `None` otherwise (proceed as normal). Logged AND
+    recorded in the durable `approvals.jsonl` ledger — same forensics trail
+    every other permission denial gets (`permissions/decide.py::evaluate`) —
+    so the refusal is visible for ops review, not just a transient log
+    line."""
+    if tool_name not in _SOURCE_EDIT_DELEGATE_TOOLS:
+        return None
+    if not getattr(validated, "target_paths", None):
+        return None
+
+    from tesseract.paths import is_installed_tree
+
+    if not is_installed_tree():
+        return None
+
+    logger.warning(
+        "%s refused on installed tree: declared target_paths=%r",
+        tool_name,
+        validated.target_paths,
+    )
+    await approval_log.record_ask(
+        session_id=context.session_id,
+        call_id=context.current_call_id,
+        tool_name=tool_name,
+        input_summary=approval_log.summarize_input(raw_input),
+        posture_source="installed_tree",
+        result="deny",
+        actor="system",
+    )
+    return ToolResult(
+        output=_INSTALLED_TREE_REFUSAL,
+        is_error=True,
+        metadata={"reason": "installed_tree_source_edit_refused"},
+    )
+
+
+def _looks_auth_shaped(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(needle in lowered for needle in _AUTH_SHAPED_NEEDLES)
+
+
+def _invalidate_cli_auth_on_failure(tool_name: str, result: ToolResult) -> None:
+    """Drop a delegate tool's cached cli-auth state after an auth-shaped
+    failure so the next capabilities read/reverify re-probes instead of
+    trusting a subscription that just lapsed. Best-effort — never raises."""
+    provider = _CLI_DELEGATE_PROVIDERS.get(tool_name)
+    if provider is None or not result.is_error or not _looks_auth_shaped(result.output):
+        return
+    try:
+        from tesseract.brain import cli_auth
+
+        cli_auth.invalidate(provider)
+    except Exception:
+        logger.warning("cli_auth invalidate on %s failure failed", tool_name, exc_info=True)
 
 
 @dataclass
@@ -122,6 +218,10 @@ async def execute_tool(
     if context.ask_fn is None and ask_fn is not None:
         context.ask_fn = ask_fn
 
+    refusal = await _installed_tree_source_edit_refusal(tool_name, validated, tool_input, context)
+    if refusal is not None:
+        return refusal
+
     denial = await evaluate_permission(
         tool=tool,
         validated=validated,
@@ -139,6 +239,7 @@ async def execute_tool(
         logger.exception("tool %s execution failed", tool_name)
         return ToolResult(output=f"tool {tool_name} error: {e}", is_error=True)
 
+    _invalidate_cli_auth_on_failure(tool_name, result)
     return _apply_tokenjuice(result, tool_name, tool_input)
 
 

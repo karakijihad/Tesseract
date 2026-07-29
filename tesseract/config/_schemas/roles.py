@@ -53,6 +53,12 @@ class RolesConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # Global lean for controller coder-selection; a per-call `preferred_coder`
+    # always overrides it. Declared here because `extra="forbid"` otherwise
+    # rejects the live `roles.yaml`, which has carried this key since the
+    # controller gained coder selection — leaving `yaml_change_proposal`
+    # unable to validate any roles.yaml edit at all.
+    coder_default: str | None = None
     embeddings: Embeddings
     roles: dict[str, RoleBody] = Field(default_factory=dict)
     voice: VoiceBlock | None = None

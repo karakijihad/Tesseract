@@ -1,8 +1,8 @@
 /**
  * audit-hardcoded-tokens.mjs
  *
- * Scans src/**\/*.{ts,tsx,css} for hard-coded values that have
- * canonical token replacements in tokens.css.
+ * Scans src/**\/*.{ts,tsx,css} and public/**\/*.html for hard-coded values
+ * that have canonical token replacements in tokens.css.
  *
  * Flags:
  *   - HEX colors:   #[0-9a-fA-F]{3,8}  (always has a token replacement)
@@ -12,6 +12,17 @@
  *   - Raw px values — spacing/radius tokens cover common values but many
  *     component-level measurements (font-size, border-width, fixed dimensions)
  *     are legitimately below the token floor. These should be reviewed manually.
+ *
+ * HTML files (public/**\/*.html) are standalone documents with no access to
+ * tokens.css, so only their <style> blocks are scanned — inline <script>
+ * bodies and HTML attributes (e.g. <input type="color" value="#...">) are
+ * implementation detail, not design surface, and are excluded to avoid
+ * false positives.
+ *
+ * public/doodle.html is excluded entirely: a standalone scratch canvas tool
+ * with its own bespoke blue/cyan palette, unrelated to the Mirror app's
+ * design system — none of its colors have (or should have) a tokens.css
+ * equivalent, so there's nothing for this audit to check there.
  *
  * Exits 1 if any hex/ms violation is found outside src/styles/tokens.css.
  *
@@ -25,24 +36,27 @@ import { fileURLToPath } from 'url';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SRC_DIR = join(__dirname, '..', 'src');
+const PUBLIC_DIR = join(__dirname, '..', 'public');
 const TOKENS_FILE = join(SRC_DIR, 'styles', 'tokens.css');
+const DOODLE_FILE = join(PUBLIC_DIR, 'doodle.html');
 
 // Patterns
 const HEX_RE = /#[0-9a-fA-F]{3,8}\b/g;
 const MS_RE  = /(?<![a-zA-Z-])\b(\d+(?:\.\d+)?)ms\b/g;
 
 /**
- * Walk src/ and collect all .ts, .tsx, .css files, excluding tokens.css.
+ * Walk dir and collect all files whose name matches extRe, excluding any
+ * file in excludeFiles.
  */
-function collectFiles(dir) {
+function collectFiles(dir, extRe, excludeFiles = []) {
   const results = [];
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);
     const stat = statSync(full);
     if (stat.isDirectory()) {
-      results.push(...collectFiles(full));
-    } else if (/\.(ts|tsx|css)$/.test(entry)) {
-      if (full !== TOKENS_FILE) {
+      results.push(...collectFiles(full, extRe, excludeFiles));
+    } else if (extRe.test(entry)) {
+      if (!excludeFiles.includes(full)) {
         results.push(full);
       }
     }
@@ -75,15 +89,27 @@ function stripStringLiterals(line) {
 }
 
 function scanFile(filePath) {
+  const isHtml = filePath.endsWith('.html');
   const content = readFileSync(filePath, 'utf-8');
   const lines = content.split('\n');
   const violations = [];
+  let inStyleBlock = false;
 
   lines.forEach((rawLine, idx) => {
     const lineNum = idx + 1;
+
+    // HTML: only scan inside <style>...</style> — script bodies and tag
+    // attributes are not design-token surface (see file header comment).
+    if (isHtml) {
+      if (/<style[^>]*>/.test(rawLine)) inStyleBlock = true;
+      const wasInStyle = inStyleBlock;
+      if (/<\/style>/.test(rawLine)) inStyleBlock = false;
+      if (!wasInStyle) return;
+    }
+
     if (isCommentLine(rawLine)) return;
 
-    const line = filePath.endsWith('.css') ? rawLine : stripStringLiterals(rawLine);
+    const line = filePath.endsWith('.css') || isHtml ? rawLine : stripStringLiterals(rawLine);
 
     // HEX check — every raw hex has a token replacement
     for (const m of line.matchAll(HEX_RE)) {
@@ -111,7 +137,10 @@ function scanFile(filePath) {
   return violations;
 }
 
-const files = collectFiles(SRC_DIR);
+const files = [
+  ...collectFiles(SRC_DIR, /\.(ts|tsx|css)$/, [TOKENS_FILE]),
+  ...collectFiles(PUBLIC_DIR, /\.html$/, [DOODLE_FILE]),
+];
 const allViolations = [];
 
 for (const f of files) {

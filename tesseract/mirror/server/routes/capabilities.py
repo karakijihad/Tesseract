@@ -4,9 +4,9 @@ Nothing in TESSERACT requires an API key or a specific provider (CLAUDE.md:
 "none of the api are requirement"). This route reports, per provider and per
 chat_brain candidate, its `status` and — when not `ready` — WHY: no API key
 set, disabled via `providers.yaml`'s `enabled` bools, or (cli tier) the
-binary isn't on PATH. It never gates the UI (no `ready`-for-the-whole-app
-flag) and never returns a secret VALUE, only key NAMES and presence
-booleans.
+binary isn't on PATH or isn't signed in. It never gates the UI (no
+`ready`-for-the-whole-app flag) and never returns a secret VALUE, only key
+NAMES and presence booleans.
 
 `status` is one of three states, not a bool — collapsing to true/false lost
 information (review fix-pass, Important-2): a keyless local provider
@@ -16,21 +16,41 @@ reachable server checked here — that live diagnostic already exists per-
 provider in Settings -> Local Models, and a network probe does not belong
 in a settings-read endpoint). So:
   - "ready": actually checked and good (key present; or, cli tier, the
-    binary was found on PATH via the same `shutil.which` check
-    `build_adapter` runs before actually using it).
+    binary was found on PATH AND the cached auth probe says signed in —
+    see `tesseract/brain/cli_auth.py` and `Docs/Plan/cli-auth/DESIGN.md`).
   - "unavailable": checked and NOT good (disabled, missing key, binary not
-    found) — `reason` says which.
+    found, or cli tier signed out / probe failed) — `reason` says which.
   - "unverified": enabled and nothing cheap here can confirm or deny it
-    further (local, keyless, non-cli providers only).
+    further — local keyless providers, or a cli provider whose boot auth
+    probe hasn't landed in the cache yet.
+
+`roles` extends the report (cli-auth DESIGN.md §4/§5): per `roles.yaml`
+role, whether it is `broken` — its `primary` resolves to an unauthenticated
+`cli` provider and no `fallback` resolves to something usable. Scoped
+strictly to cli auth: an api-tier primary is never reported broken by this
+field, even if its key is missing (that's the existing `chat` section's
+concern for chat_brain specifically).
+
+`POST /api/capabilities/reverify` forces a fresh cli-auth probe (invalidate
++ refresh) and returns the same report shape.
+
+`notice_dismissed` reflects whether the operator dismissed the frontend's
+first-run notice (DESIGN.md §5) — persisted via `POST /api/capabilities/
+dismiss` as a marker under `<TESSERACT_HOME>/runtime/`, so it survives a
+restart. It is independent of `roles`: the frontend self-suppresses the
+notice whenever no role is broken, regardless of this flag.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
+from datetime import datetime, timezone
 
 from aiohttp import web
 
+from tesseract.lib.yaml_io import atomic_write_text
 from tesseract.paths import home_dir
 
 # Integrations that aren't a `providers.yaml` provider block but are still
@@ -57,6 +77,36 @@ def _cli_binary_found(command: str) -> bool:
     return shutil.which(command) is not None or shutil.which(f"{command}.cmd") is not None
 
 
+def _cli_auth_status(command: str, provider_name: str) -> tuple[str, str | None, dict | None]:
+    """(status, reason, auth_detail) for one `cli`-tier provider row.
+
+    Layers the process-wide auth cache (`tesseract/brain/cli_auth.py`) on
+    top of the existing PATH check — see DESIGN.md §2's state table.
+    `auth_detail` carries the richer per-provider detail (login_hint,
+    checked_at) for the frontend; `None` when there's nothing cached yet.
+    """
+    from tesseract.brain import cli_auth
+
+    if not command:
+        return "unavailable", "missing 'command' in providers.yaml", None
+    if not _cli_binary_found(command):
+        return "unavailable", f"cli binary '{command}' not found on PATH", None
+
+    state = cli_auth.get(provider_name)
+    if state is None:
+        return "unverified", "signed-in status not yet verified", None
+
+    auth_detail = {
+        "status": state.status,
+        "reason": state.reason,
+        "login_hint": state.login_hint,
+        "checked_at": state.checked_at,
+    }
+    if state.status == "ready":
+        return "ready", None, auth_detail
+    return "unavailable", state.reason, auth_detail
+
+
 def _provider_rows() -> list[dict]:
     from tesseract.brain.boot import load_bundle
 
@@ -72,6 +122,7 @@ def _provider_rows() -> list[dict]:
             enabled = tier_enabled and provider_enabled
             key_name = block.get("api_key_env")
             key_present = _key_present(key_name) if key_name else None
+            auth_detail: dict | None = None
 
             if not tier_enabled:
                 status, reason = "unavailable", f"tier '{tier}' disabled in providers.yaml"
@@ -83,13 +134,7 @@ def _provider_rows() -> list[dict]:
                 else:
                     status, reason = "unavailable", f"{key_name} not set"
             elif tier == "cli":
-                command = block.get("command")
-                if not command:
-                    status, reason = "unavailable", "missing 'command' in providers.yaml"
-                elif _cli_binary_found(command):
-                    status, reason = "ready", None
-                else:
-                    status, reason = "unavailable", f"cli binary '{command}' not found on PATH"
+                status, reason, auth_detail = _cli_auth_status(block.get("command"), name)
             else:
                 # Local, keyless, non-cli provider (ollama reachability,
                 # whisper/piper model files) — enabled but not cheaply
@@ -104,8 +149,78 @@ def _provider_rows() -> list[dict]:
                 "key_present": key_present,
                 "status": status,
                 "reason": reason,
+                "auth": auth_detail,
             })
     return rows
+
+
+def _ref_covers(ref) -> bool:
+    """Whether a role's primary/fallback ref is usable enough to keep the
+    role off the `broken` list (DESIGN.md §4).
+
+    Scoped strictly to cli auth: a non-cli ref counts as covering the role
+    whenever its tier + provider are enabled — general per-tier readiness
+    (missing api key, etc.) is a separate, pre-existing concern (the `chat`
+    section, `providers` rows above) that this field does not re-litigate.
+    A cli ref only counts when the auth cache says `ready`.
+    """
+    conn = ref.connection
+    if not conn.tier_enabled or not conn.enabled:
+        return False
+    if conn.tier != "cli":
+        return True
+    from tesseract.brain import cli_auth
+
+    state = cli_auth.get(conn.name)
+    return state is not None and state.status == "ready"
+
+
+def _evaluate_role(role) -> dict:
+    base = {"role": role.name, "broken": False, "reason": None, "login_hint": None}
+    if role.primary is None or role.primary.connection.tier != "cli":
+        return base
+    if _ref_covers(role.primary) or any(_ref_covers(fb) for fb in role.fallbacks):
+        return base
+
+    from tesseract.brain import cli_auth
+
+    conn = role.primary.connection
+    state = cli_auth.get(conn.name)
+    if state is None:
+        # Boot's cli_auth refresh is fire-and-forget (app.py _init_background)
+        # — a request landing before the probe lands must not read as
+        # "broken". "Not yet verified" is the `unverified` state, not
+        # `unavailable` (DESIGN.md §2); only a completed probe that came
+        # back signed-out/failed marks the role broken.
+        return base
+    return {
+        "role": role.name,
+        "broken": True,
+        "reason": state.reason,
+        "login_hint": state.login_hint or (
+            conn.auth_check.login_hint if conn.auth_check is not None else None
+        ),
+    }
+
+
+def _dismissal_marker_path():
+    """`<TESSERACT_HOME>/runtime/cli_auth_notice_dismissed.json` — call-time
+    resolution (never a module-level constant), matching the idiom in
+    `scheduler/alarms.py::alarms_state_path`: an app update that replaces the
+    code tree must not touch operator state living under TESSERACT_HOME.
+    """
+    return home_dir() / "runtime" / "cli_auth_notice_dismissed.json"
+
+
+def _notice_dismissed() -> bool:
+    return _dismissal_marker_path().is_file()
+
+
+def _role_rows() -> list[dict]:
+    from tesseract.brain.boot import load_bundle
+
+    bundle = load_bundle()
+    return [_evaluate_role(role) for role in bundle.roles.values()]
 
 
 def _chat_candidates() -> tuple[list[dict], bool, str | None]:
@@ -144,9 +259,9 @@ def _chat_candidates() -> tuple[list[dict], bool, str | None]:
     return candidates, any_available, reason
 
 
-async def capabilities_status(request: web.Request) -> web.Response:
+def _build_report() -> dict:
     candidates, chat_available, chat_reason = _chat_candidates()
-    return web.json_response({
+    return {
         "env_path": str(home_dir() / ".env"),
         "chat": {
             "available": chat_available,
@@ -154,15 +269,50 @@ async def capabilities_status(request: web.Request) -> web.Response:
             "candidates": candidates,
         },
         "providers": _provider_rows(),
+        "roles": _role_rows(),
+        "notice_dismissed": _notice_dismissed(),
         "integrations": [
             {"name": name, "key_name": key_name, "key_present": _key_present(key_name)}
             for name, key_name in _INTEGRATIONS
         ],
-    })
+    }
+
+
+async def capabilities_status(request: web.Request) -> web.Response:
+    return web.json_response(_build_report())
+
+
+async def capabilities_reverify(request: web.Request) -> web.Response:
+    """Force a fresh cli-auth probe (DESIGN.md §3/§5), then return the same
+    report shape as GET /api/capabilities so the caller doesn't need a
+    follow-up GET."""
+    from tesseract.brain import cli_auth
+
+    cli_auth.invalidate()
+    await cli_auth.refresh()
+    return web.json_response(_build_report())
+
+
+async def capabilities_dismiss(request: web.Request) -> web.Response:
+    """POST /api/capabilities/dismiss — persist the first-run notice's
+    dismissal under <TESSERACT_HOME>/runtime (DESIGN.md §5). Returns the
+    same report shape so the caller doesn't need a follow-up GET."""
+    atomic_write_text(
+        _dismissal_marker_path(),
+        json.dumps({"dismissed_at": datetime.now(timezone.utc).isoformat()}),
+    )
+    return web.json_response(_build_report())
 
 
 def register(app: web.Application) -> None:
     app.router.add_get("/api/capabilities", capabilities_status)
+    app.router.add_post("/api/capabilities/reverify", capabilities_reverify)
+    app.router.add_post("/api/capabilities/dismiss", capabilities_dismiss)
 
 
-__all__ = ["register", "capabilities_status"]
+__all__ = [
+    "register",
+    "capabilities_status",
+    "capabilities_reverify",
+    "capabilities_dismiss",
+]

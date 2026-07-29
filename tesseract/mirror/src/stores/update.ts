@@ -1,12 +1,13 @@
 import { create } from 'zustand';
 
 import { isTauri } from '../lib/endpoints';
-import { applyUpdate, checkUpdate } from '../lib/update';
+import { applyUpdate, checkUpdate, forceApplyUpdate, type Divergence } from '../lib/update';
 
 interface UpdateStoreState {
   version: string | null;
   behind: number;
   summaries: string[];
+  divergence: Divergence | null;
   checking: boolean;
   applying: boolean;
   error: string | null;
@@ -17,6 +18,10 @@ interface UpdateStoreState {
   errorSource: 'check' | 'apply' | null;
   check: () => Promise<void>;
   apply: () => Promise<void>;
+  // The explicit "discard local changes & update" path — only ever invoked
+  // from a UI action that has already shown the operator what `divergence`
+  // says will be lost.
+  forceApply: () => Promise<void>;
 }
 
 // Tauri command errors reject with a plain string (serde Err(String)), not
@@ -40,6 +45,7 @@ export const useUpdateStore = create<UpdateStoreState>((set, get) => ({
   version: null,
   behind: 0,
   summaries: [],
+  divergence: null,
   checking: false,
   applying: false,
   error: null,
@@ -53,7 +59,12 @@ export const useUpdateStore = create<UpdateStoreState>((set, get) => ({
     set({ checking: true, error: null, errorSource: null });
     try {
       const status = await checkUpdate();
-      set({ behind: status.behind, summaries: status.summaries, version: status.version });
+      set({
+        behind: status.behind,
+        summaries: status.summaries,
+        version: status.version,
+        divergence: status.divergence,
+      });
     } catch (err) {
       set({ error: readableError(err), errorSource: 'check' });
     } finally {
@@ -82,6 +93,22 @@ export const useUpdateStore = create<UpdateStoreState>((set, get) => ({
       // to an enabled "update · N" pill showing the OLD commit count for
       // the whole duration of the re-check — visually indistinguishable
       // from the update having silently undone itself.
+      await get().check();
+    } finally {
+      set({ applying: false });
+    }
+  },
+
+  forceApply: async () => {
+    if (!isTauri() || get().applying) return;
+    set({ applying: true, error: null, errorSource: null });
+    try {
+      await forceApplyUpdate();
+    } catch (err) {
+      set({ error: readableError(err), errorSource: 'apply', applying: false });
+      return;
+    }
+    try {
       await get().check();
     } finally {
       set({ applying: false });

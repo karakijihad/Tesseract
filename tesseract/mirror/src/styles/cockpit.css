@@ -73,8 +73,8 @@
      body (bottom) instead, each of which keeps its own overflow clip. */
   opacity: 1;
   transition:
-    opacity 160ms var(--ease-out),
-    transform 160ms var(--ease-out);
+    opacity var(--motion-fast) var(--ease-out),
+    transform var(--motion-fast) var(--ease-out);
 }
 
 /* Closed = kept mounted (terminal PTY / chat scrollback survive) but invisible
@@ -263,7 +263,7 @@
   pointer-events: none;
   text-align: center;
   opacity: 0;
-  transition: opacity 600ms var(--ease-out);
+  transition: opacity var(--motion-slow) var(--ease-out);
 }
 .orb-captions.is-visible {
   opacity: 0.82;

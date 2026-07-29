@@ -20,7 +20,8 @@ Schema (per line)::
       "posture_source": "security" | "path_validator" | "path" |
                         "mode" | "default" | "tool" |
                         "workspace_decision" |
-                        "tool_tier_promotion" | "pty_delegate",
+                        "tool_tier_promotion" | "pty_delegate" |
+                        "channel_mutation" | "installed_tree",
       "result": "allow_once" | "deny" | "timeout",
       "actor": "operator" | "timeout" | "system"
     }
@@ -64,6 +65,7 @@ PostureSource = Literal[
     "tool_tier_promotion",
     "pty_delegate",
     "channel_mutation",
+    "installed_tree",
 ]
 Result = Literal["allow_once", "deny", "timeout", "cancelled", "resolved", "deleted"]
 Actor = Literal["operator", "timeout", "system"]

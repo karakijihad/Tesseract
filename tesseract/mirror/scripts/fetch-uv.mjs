@@ -21,11 +21,10 @@
  *      come with its own matching, equally-replaced `.sha256`).
  * Either mismatch aborts loudly before anything is extracted or written.
  *
- * To bump the version: change UV_VERSION below, run this script, and it
- * will fail with both the live-fetched and recorded checksums in the
- * error message. Verify the live one yourself against
- * https://github.com/astral-sh/uv/releases/tag/<version>, then update
- * UV_ZIP_SHA256 (and UV_EXE_SHA256, printed by a successful run) here.
+ * The pinned version + checksums live in `scripts/uv-pin.mjs`, shared
+ * with `guard-uv.mjs` so the build-time guard can never drift from what
+ * this script actually fetched and verified. To bump the version: see
+ * that file's header.
  */
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -42,21 +41,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { RELEASE_BASE, UV_ASSET, UV_EXE_SHA256, UV_VERSION, UV_ZIP_SHA256 } from './uv-pin.mjs';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIRROR_ROOT = resolve(__dirname, '..');
 const BIN_DIR = join(MIRROR_ROOT, 'src-tauri', 'resources', 'binaries');
 const OUT = join(BIN_DIR, 'uv.exe');
-
-const UV_VERSION = '0.11.32';
-const UV_ASSET = 'uv-x86_64-pc-windows-msvc.zip';
-const RELEASE_BASE = `https://github.com/astral-sh/uv/releases/download/${UV_VERSION}`;
-
-// Recorded at pin time from `${RELEASE_BASE}/${UV_ASSET}.sha256` — see header.
-const UV_ZIP_SHA256 = 'acfde570451cfdb8689fa159a138ee805ba4e241c466432750302c86254b0984';
-// Recorded at pin time from the uv.exe extracted out of the zip verified
-// above. Only used as a fast, local, no-network skip check — never the
-// supply-chain gate (that's UV_ZIP_SHA256 against the live download).
-const UV_EXE_SHA256 = '23cf0f8194ff576562646a1a2950c6826249c8806cd1547debd24db77eb68f58';
 
 // Windows ships bsdtar (libarchive) at this path, which extracts .zip
 // transparently. A `tar` found earlier on PATH may be GNU tar (e.g. Git
@@ -100,7 +90,7 @@ async function main() {
   if (published !== UV_ZIP_SHA256) {
     fail(
       `upstream's published checksum for ${UV_ASSET}@${UV_VERSION} is ${published}, which no ` +
-        `longer matches the value recorded in scripts/fetch-uv.mjs (${UV_ZIP_SHA256}). This could ` +
+        `longer matches the value recorded in scripts/uv-pin.mjs (${UV_ZIP_SHA256}). This could ` +
         `mean the release asset was replaced after this pin was set — verify the new checksum ` +
         `yourself at https://github.com/astral-sh/uv/releases/tag/${UV_VERSION} before updating ` +
         `the pin. Refusing to proceed.`,

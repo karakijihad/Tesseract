@@ -180,9 +180,9 @@
   border-radius: 50%;
   background: var(--text-meta);
 }
-.top-status-hud__led.is-ok { background: #4ade80; box-shadow: 0 0 10px #4ade80; }
+.top-status-hud__led.is-ok { background: var(--ok); box-shadow: 0 0 10px var(--ok); }
 .top-status-hud__led.is-active { background: var(--accent); box-shadow: 0 0 10px var(--accent); }
-.top-status-hud__led.is-bad { background: var(--accent-error, #d46a6a); box-shadow: 0 0 10px var(--accent-error, #d46a6a); }
+.top-status-hud__led.is-bad { background: var(--accent-error); box-shadow: 0 0 10px var(--accent-error); }
 .top-status-hud__name {
   font-family: var(--font-display, inherit);
   font-weight: 600;

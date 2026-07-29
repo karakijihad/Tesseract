@@ -2,6 +2,23 @@
 
 TESSERACT is a personal assistant that runs on your own Windows machine. It remembers what you tell it, keeps a research library it can search, and you can talk to it — all without sending anything to the cloud unless you choose to turn a cloud feature on.
 
+## What it is
+
+Most AI assistants forget you between sessions and can't safely do anything. TESSERACT is the layer that fixes both.
+
+It's a local-first AI runtime. It gives an assistant:
+
+- **Long-term memory that consolidates rather than hoards** — it decays and merges what it knows instead of accumulating everything forever.
+- **An append-only research vault** it can search and synthesize from, kept separate from memory so research never contaminates recall.
+- **A tool registry with a real permission model** — every file write, shell command, and outbound call is gated by policy, and the default posture asks you first.
+- **An orchestration kernel** that runs background and scheduled work with durable state and crash recovery, so a job survives a restart instead of vanishing with the process.
+
+It's **model-agnostic by design**. API providers, subscription CLIs, and local models all plug into the same role wiring, so swapping the brain is a config change, not a rewrite — see [You aren't tied to Anthropic](#you-arent-tied-to-anthropic) below.
+
+The interface is a desktop app: voice-first, with a visual HUD.
+
+Everything it remembers is plain files on your disk — Markdown you can open, read, and edit. Nothing is locked in a database.
+
 ## Install
 
 1. Go to the [Releases](../../releases) page and download the latest installer (`TESSERACT_x.y.z_x64-setup.exe`).
@@ -19,7 +36,7 @@ TESSERACT appears in your Start Menu — just search for it. Opening it a second
 
 ### A note while the project is private
 
-Right now the TESSERACT source repository is private, and the app downloads its own source code from that repository the first time it runs. That means, until it's made public, an installer alone isn't enough — you also need a GitHub account with access to the repository and a personal access token, which the person who gave you the installer will need to set you up with. If you don't have that, ask them; this section will stop applying once the repository goes public.
+Right now the TESSERACT source repository is private, and the app downloads its own source code from that repository the first time it runs. That means, until it's made public, you also need a GitHub account with access to the repository and a personal access token, which the person who gave you the installer will need to give you. If the first-run setup screen can't download the source because the repository is private, it will ask you to paste that token right there — no need to create any folders or files yourself. Paste it, and setup continues on its own. If you don't have a token, ask whoever gave you the installer; this section will stop applying once the repository goes public.
 
 ## First run
 

@@ -19,6 +19,7 @@ import { MotionTestPanel } from "./components/debug/MotionTestPanel";
 import { SessionDrawer } from "./components/sessions/SessionDrawer";
 import { ToastStack } from "./components/ui/ToastStack";
 import { ResetConfirmDialog } from "./components/chat/ResetConfirmDialog";
+import { CliAuthNotice } from "./components/notices/CliAuthNotice";
 
 function msUntilNextLocalMidnight(now = new Date()): number {
   const next = new Date(now);
@@ -151,6 +152,7 @@ function App() {
       <SessionDrawer />
       <ToastStack />
       <ResetConfirmDialog />
+      <CliAuthNotice />
       {import.meta.env.DEV && showMotionPanel && <MotionTestPanel />}
     </>
   );

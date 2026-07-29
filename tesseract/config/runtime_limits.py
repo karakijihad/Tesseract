@@ -14,10 +14,16 @@ import yaml
 
 
 def default_runtime_config_path() -> Path:
-    """Canonical path to ``tesseract/config/runtime.yaml``."""
-    from tesseract.paths import CONFIG_DIR
+    """Canonical path to ``tesseract/config/runtime.yaml``.
 
-    return CONFIG_DIR / "runtime.yaml"
+    Resolved via `config_dir()` (call-time) rather than the frozen
+    `CONFIG_DIR` constant, so callers re-invoking this mid-process (most
+    call sites do, per request/tool-call) honor a `TESSERACT_HOME` change
+    without needing a fresh import.
+    """
+    from tesseract.paths import config_dir
+
+    return config_dir() / "runtime.yaml"
 
 
 def load_runtime_config(path: Path) -> dict:

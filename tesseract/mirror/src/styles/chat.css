@@ -480,7 +480,7 @@
   color: var(--text-secondary);
   text-align: left;
   cursor: pointer;
-  transition: background 120ms ease-out;
+  transition: background var(--motion-fast) ease-out;
 }
 
 .activity-taskbar-row:hover {
@@ -796,7 +796,7 @@
   height: auto;
   margin: 0 auto;
   border: 1px solid var(--border);
-  background: #fff;
+  background: var(--ink-100);
 }
 
 .bubble-pdf-canvas.is-ready {
@@ -959,15 +959,15 @@
 .bubble-md pre .hljs-template-tag,
 .bubble-md pre .hljs-template-variable,
 .bubble-md pre .hljs-type,
-.bubble-md pre .hljs-addition { color: var(--ok, #4ade80); }
+.bubble-md pre .hljs-addition { color: var(--ok); }
 .bubble-md pre .hljs-number,
 .bubble-md pre .hljs-symbol,
 .bubble-md pre .hljs-bullet,
 .bubble-md pre .hljs-link,
 .bubble-md pre .hljs-meta,
 .bubble-md pre .hljs-selector-attr,
-.bubble-md pre .hljs-selector-pseudo { color: var(--warn, #fbbf24); }
-.bubble-md pre .hljs-deletion { color: var(--bad, #f87171); }
+.bubble-md pre .hljs-selector-pseudo { color: var(--warn); }
+.bubble-md pre .hljs-deletion { color: var(--bad); }
 .bubble-md pre .hljs-variable,
 .bubble-md pre .hljs-params,
 .bubble-md pre .hljs-attr,
@@ -1077,7 +1077,7 @@
   min-height: 360px;
   max-height: min(70vh, 720px);
   border: 0;
-  background: #fff;
+  background: var(--ink-100);
 }
 
 .chat-artifact-code {

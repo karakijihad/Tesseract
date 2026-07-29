@@ -43,6 +43,26 @@
   --pink:  #f472b6;
   --orange: #fb923c;
 
+  /* Muted/pastel success — badge & pill text where full-saturation --ok reads
+     too bright (agent status badges, worktree pane header, channel state). */
+  --ok-muted: #6cd49a;
+
+  /* --accent-error / --accent-warn were referenced via var(--x, #hex) fallback
+     at 9 call sites without ever being defined in :root — formalized here with
+     their existing (already-rendered) fallback values; zero visual change. */
+  --accent-error: #d46a6a;
+  --accent-warn:  #b85b3a;
+
+  /* Neutral status dots (activity-map idle / done-closed-cancelled) — no
+     existing semantic color matches this muted slate-gray family. */
+  --neutral:      #64748b;
+  --neutral-deep: #475569;
+
+  /* Third-party provider brand marks (lane-card dots). Fixed identity
+     colors, not theme-tunable — never recolor with accent/semantic tokens. */
+  --brand-claude: #d97757;
+  --brand-codex:  #10a37f;
+
   /* Dim variants (for chip/pill backgrounds) */
   --green:     #00e88f;
   --green-dim: rgba(0,232,143,0.15);

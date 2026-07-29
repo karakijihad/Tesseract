@@ -1,6 +1,6 @@
 [project]
 name = "tesseract"
-version = "0.2.2"
+version = "1.0.0"
 description = "TESSERACT kernel — local-first AI entity runtime"
 requires-python = ">=3.12"
 dependencies = [
@@ -78,14 +78,6 @@ dev = [
 # `pip install tesseract[terminal]` on Windows; Linux/Mac use stdlib `pty`.
 terminal = [
     "pywinpty>=2.0.13; sys_platform == 'win32'",
-]
-# AU-13 — Windows service shim. `pip install tesseract[supervisor-service]`
-# on the operator's Windows box, then `python -m tesseract.scripts.install_supervisor_service install`
-# to register `Tesseract Supervisor` with the Service Control Manager. The
-# service stop handler honors operator_quit (no respawn) via the same
-# intent.json + signal path as the CLI shutdown.
-supervisor-service = [
-    "pywin32>=308; sys_platform == 'win32'",
 ]
 # Local TTS — Piper (CPU-only, baked-in voice) and Kokoro (GPU/CPU,
 # style-embedding blend; needs onnxruntime + the CUDA 12 wheels on

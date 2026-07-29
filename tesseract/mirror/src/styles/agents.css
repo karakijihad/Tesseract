@@ -137,7 +137,7 @@
 .agents-list-name { font-size: 13px; font-weight: 500; }
 .agents-list-desc { grid-column: 1 / -1; font-size: 11px; }
 
-.agent-status-badge.is-active  { color: #6cd49a; border-color: rgba(108,212,154,0.25); }
+.agent-status-badge.is-active  { color: var(--ok-muted); border-color: rgba(108,212,154,0.25); }
 .agent-status-badge.is-pending { color: var(--warn); border-color: rgba(255,180,84,0.25); }
 .agent-status-badge.is-disabled { color: var(--text-meta); border-color: rgba(180,180,180,0.25); }
 

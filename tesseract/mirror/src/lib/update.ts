@@ -3,10 +3,22 @@
 // straight to the Rust side via @tauri-apps/api's invoke().
 import { invoke } from '@tauri-apps/api/core';
 
+// What actually differs between the checked-out branch and `origin/main`
+// when a fast-forward would be refused — uncommitted changes and local-only
+// commits. `dirty`/`ahead_summaries` are capped (see repo.rs); `dirty_total`/
+// `ahead` carry the true counts.
+export interface Divergence {
+  dirty: string[];
+  dirty_total: number;
+  ahead: number;
+  ahead_summaries: string[];
+}
+
 export interface UpdateStatus {
   behind: number;
   summaries: string[];
   version: string;
+  divergence: Divergence | null;
 }
 
 export const checkUpdate = (): Promise<UpdateStatus> => invoke<UpdateStatus>('update_check');
@@ -16,5 +28,10 @@ export const checkUpdate = (): Promise<UpdateStatus> => invoke<UpdateStatus>('up
 // respawn). Rejects with a readable string, including "an update is
 // already in progress" if a concurrent call is already in flight.
 export const applyUpdate = (): Promise<string> => invoke<string>('update_apply');
+
+// Discards local divergence (uncommitted changes and local-only commits)
+// and updates anyway. Only reachable from an explicit, operator-confirmed
+// UI action — never called automatically.
+export const forceApplyUpdate = (): Promise<string> => invoke<string>('update_force_apply');
 
 export const appVersion = (): Promise<string> => invoke<string>('app_version');

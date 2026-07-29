@@ -396,9 +396,12 @@ def load_bundle() -> ConfigBundle:
     """Read providers.yaml + roles.yaml on every call.
 
     Cheap (two file reads) and inherently fresh — Mirror's hot-reload path
-    relies on each call seeing the current on-disk state. Tests can monkeypatch
-    `PROVIDERS_YAML` / `ROLES_YAML` (re-exported from `tesseract.config.loader`)
-    to point at fixture files.
+    relies on each call seeing the current on-disk state. `load_config()`'s
+    bare call resolves `config_dir()` fresh each time (CL-m6) — tests point
+    this at fixture files via `monkeypatch.setenv("TESSERACT_HOME", ...)` +
+    seeding `<home>/config/{providers,roles}.yaml`, not by monkeypatching
+    the (frozen, back-compat-only) `PROVIDERS_YAML` / `ROLES_YAML` module
+    constants, which this function does not consult.
     """
     return load_config()
 

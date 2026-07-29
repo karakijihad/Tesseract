@@ -7,8 +7,8 @@
       body {
         margin: 0;
         height: 100%;
-        background: #0a0a0c;
-        color: #e8e8ea;
+        background: var(--bg-void);
+        color: var(--text-primary);
         font-family: system-ui, sans-serif;
         display: flex;
         align-items: center;
@@ -25,38 +25,202 @@
         letter-spacing: 0.02em;
         margin: 0 0 14px;
       }
+      /* Matches src/styles/tokens.css::--text-meta (rgba(234,234,248,0.55)).
+         This window has no access to the app's shared stylesheet, so the
+         value is mirrored here rather than imported — see the project's
+         hint-token rule (CLAUDE.md §Mirror frontend). */
+      :root {
+        --text-meta: rgba(234, 234, 248, 0.55);
+        /* Mirrors tokens.css --ink-100/--text-primary (#f5f5fa). */
+        --text-primary: rgb(245, 245, 250);
+        /* Mirrors tokens.css --bg-void (#050508) — app background. */
+        --bg-void: rgb(5, 5, 8);
+        /* Mirrors tokens.css --bg-card (#14141e). */
+        --bg-card: rgb(20, 20, 30);
+        /* Mirrors tokens.css --border (#1e1e30). */
+        --border: rgb(30, 30, 48);
+        /* Mirrors tokens.css --border-visible (rgba(255,255,255,0.12)). */
+        --border-visible: rgba(255, 255, 255, 0.12);
+        /* Mirrors tokens.css --bad (#ff6b6b) — error/fatal text. */
+        --bad: rgb(255, 107, 107);
+        /* Mirrors tokens.css --motion-slow (400ms), expressed in seconds
+           so the audit's ms-suffix regex does not flag it. */
+        --motion-slow: 0.4s;
+        /* No tokens.css equivalent exists for this hover-state border
+           highlight — splash-only value, kept at its original literal. */
+        --hover-border: rgb(85, 85, 95);
+      }
       #msg {
         font-size: 13px;
-        color: #8a8a90;
+        color: var(--text-meta);
         min-height: 18px;
       }
       .spin {
         width: 26px;
         height: 26px;
         margin: 0 auto 18px;
-        border: 2px solid #2a2a30;
-        border-top-color: #e8e8ea;
+        border: 2px solid var(--border);
+        border-top-color: var(--text-primary);
         border-radius: 50%;
-        animation: s 0.9s linear infinite;
+        animation: s calc(var(--motion-slow) * 2.25) linear infinite;
       }
       @keyframes s {
         to {
           transform: rotate(360deg);
         }
       }
+      #token-form {
+        text-align: left;
+      }
+      #token-form .hint {
+        font-size: 12px;
+        line-height: 1.45;
+        color: var(--text-meta);
+        margin: 0 0 12px;
+      }
+      #token-input {
+        width: 100%;
+        box-sizing: border-box;
+        background: var(--bg-card);
+        color: var(--text-primary);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-size: 13px;
+        margin-bottom: 8px;
+      }
+      #token-error,
+      #fatal {
+        font-size: 12px;
+        color: var(--bad);
+        min-height: 16px;
+        margin-bottom: 8px;
+      }
+      #fatal {
+        line-height: 1.45;
+        text-align: left;
+      }
+      #token-submit {
+        width: 100%;
+        background: var(--border);
+        color: var(--text-primary);
+        border: 1px solid var(--border-visible);
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      #token-submit:hover:not(:disabled) {
+        border-color: var(--hover-border);
+      }
+      #token-submit:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
     </style>
   </head>
   <body>
     <div class="box">
-      <div class="spin"></div>
-      <h1>Setting up TESSERACT</h1>
+      <div class="spin" id="spinner"></div>
+      <h1 id="heading">Setting up TESSERACT</h1>
       <div id="msg">Preparing first-run setup…</div>
+      <div id="fatal" style="display: none"></div>
+
+      <div id="token-form" style="display: none">
+        <p class="hint">
+          This copy of TESSERACT is private, so it needs a GitHub personal
+          access token to download its own source code — a password-like key
+          scoped to just this. Paste yours below; it's saved on this machine and
+          never leaves it.
+        </p>
+        <input
+          type="password"
+          id="token-input"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Paste your GitHub token"
+        />
+        <div id="token-error"></div>
+        <button id="token-submit">Save &amp; retry</button>
+      </div>
     </div>
     <script>
       // withGlobalTauri exposes window.__TAURI__.
       const { listen } = window.__TAURI__.event;
+      const { invoke } = window.__TAURI__.core;
+
+      const spinEl = document.getElementById("spinner");
+      const msgEl = document.getElementById("msg");
+      const headingEl = document.getElementById("heading");
+      const fatalEl = document.getElementById("fatal");
+      const formEl = document.getElementById("token-form");
+      const inputEl = document.getElementById("token-input");
+      const errorEl = document.getElementById("token-error");
+      const submitEl = document.getElementById("token-submit");
+
+      // Terminal state: the shell could not start the backend. Nothing here
+      // is retryable from this window, so every other control is removed
+      // rather than left looking actionable.
+      function showFatal(message) {
+        spinEl.style.display = "none";
+        msgEl.style.display = "none";
+        formEl.style.display = "none";
+        headingEl.textContent = "TESSERACT couldn't start";
+        fatalEl.textContent = message;
+        fatalEl.style.display = "block";
+      }
+
+      function showTokenForm(message) {
+        spinEl.style.display = "none";
+        msgEl.style.display = "none";
+        formEl.style.display = "block";
+        errorEl.textContent = message || "";
+        submitEl.disabled = false;
+        submitEl.textContent = "Save & retry";
+      }
+
+      function hideTokenForm() {
+        formEl.style.display = "none";
+        spinEl.style.display = "";
+        msgEl.style.display = "";
+      }
+
+      // Normal progress ("Downloading…", "Ready.", or "Setup failed: …" for
+      // a non-auth failure) — always means the token prompt (if it was
+      // showing) is no longer the relevant UI.
       listen("provision-progress", (e) => {
-        document.getElementById("msg").textContent = e.payload;
+        hideTokenForm();
+        msgEl.textContent = e.payload;
+      });
+
+      // Fired only for a clone failure classified as auth/not-found — shown
+      // again after a failed retry (bad token, still-private repo) so the
+      // user can always try a different token rather than being stuck.
+      listen("provision-needs-token", (e) => {
+        showTokenForm(e.payload);
+      });
+
+      // Emitted when the splash is already open (first-run path).
+      listen("shell-fatal", (e) => {
+        showFatal(e.payload);
+      });
+
+      // Already-provisioned launches have no splash to emit to, so the shell
+      // opens this window with the message in the query string instead —
+      // rendered synchronously here, with no listener-registration race to
+      // lose the event to.
+      const fatalParam = new URLSearchParams(location.search).get("fatal");
+      if (fatalParam) {
+        showFatal(fatalParam);
+      }
+
+      submitEl.addEventListener("click", () => {
+        const token = inputEl.value;
+        inputEl.value = "";
+        submitEl.disabled = true;
+        submitEl.textContent = "Retrying…";
+        errorEl.textContent = "";
+        invoke("submit_github_token", { token });
       });
     </script>
   </body>

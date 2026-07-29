@@ -79,7 +79,7 @@ export function ToolCallPill({ call, result }: Props) {
           <span className="tool-pill-input-truncated">{inputStr}</span>
         )}
         <span
-          style={{ marginLeft: "auto", color: "var(--text-dim)", fontSize: 10 }}
+          style={{ marginLeft: "auto", color: "var(--text-meta)", fontSize: 10 }}
         >
           {open ? "▲" : "▼"}
         </span>

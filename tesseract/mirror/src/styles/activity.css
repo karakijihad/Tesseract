@@ -17,7 +17,7 @@
   border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.12));
   background: var(--glass-bg, rgba(20, 24, 32, 0.72));
   backdrop-filter: blur(16px);
-  color: var(--text-primary, #e8eef6);
+  color: var(--text-primary);
 }
 .activity-map__bar {
   flex: none;
@@ -50,7 +50,7 @@
   white-space: nowrap;
 }
 .activity-map__closeall:hover:not(:disabled) {
-  color: var(--text-primary, #e8eef6);
+  color: var(--text-primary);
   border-color: var(--text-meta);
 }
 .activity-map__closeall:disabled {
@@ -157,7 +157,7 @@
   border-radius: 4px;
 }
 .activity-map__row-close:hover:not(:disabled) {
-  color: var(--text-primary, #e8eef6);
+  color: var(--text-primary);
   background: rgba(255, 255, 255, 0.08);
 }
 .activity-map__row-close:disabled {
@@ -182,7 +182,7 @@
   font-size: 10px;
 }
 .activity-map__more:hover {
-  color: var(--text-primary, #e8eef6);
+  color: var(--text-primary);
 }
 
 .activity-dot {
@@ -194,23 +194,23 @@
 }
 .activity-dot--running,
 .activity-dot--spawning {
-  background: #4ade80;
+  background: var(--ok);
 }
 /* N3 — parked on an operator question (trio W4): distinct amber so it reads as
    "needs you", not just generic running. */
 .activity-dot--input_required {
-  background: #fbbf24;
+  background: var(--warn);
 }
 .activity-dot--idle {
-  background: #64748b;
+  background: var(--neutral);
 }
 .activity-dot--failed {
-  background: #f87171;
+  background: var(--bad);
 }
 .activity-dot--done,
 .activity-dot--closed,
 .activity-dot--cancelled {
-  background: #475569;
+  background: var(--neutral-deep);
 }
 
 /* ASK-over-MCP operator approvals — floating alert, top-center, above panels.
@@ -234,7 +234,7 @@
   background: var(--glass-bg, rgba(20, 24, 32, 0.86));
   border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.14));
   backdrop-filter: blur(16px);
-  color: var(--text-primary, #e8eef6);
+  color: var(--text-primary);
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
 }
 .mcp-approvals__title {
@@ -274,7 +274,7 @@
   cursor: pointer;
   border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.14));
   background: none;
-  color: var(--text-primary, #e8eef6);
+  color: var(--text-primary);
 }
 .mcp-approvals__approve {
   border-color: rgba(90, 200, 130, 0.5);
@@ -286,7 +286,7 @@
   color: var(--text-meta);
 }
 .mcp-approvals__reject:hover:not(:disabled) {
-  color: var(--text-primary, #e8eef6);
+  color: var(--text-primary);
   border-color: var(--text-meta);
 }
 .mcp-approvals__approve:disabled,

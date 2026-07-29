@@ -171,15 +171,46 @@ export interface CapabilityIntegration {
   key_present: boolean;
 }
 
+// cli-auth DESIGN.md §4/§5 — per roles.yaml role, whether its primary
+// resolves to an unauthenticated cli provider with no covering fallback.
+export interface CapabilityRole {
+  role: string;
+  broken: boolean;
+  reason: string | null;
+  login_hint: string | null;
+}
+
 export interface CapabilitiesResponse {
   env_path: string;
   chat: CapabilityChat;
   providers: CapabilityProvider[];
+  roles: CapabilityRole[];
+  // Whether the operator dismissed the first-run notice (DESIGN.md §5),
+  // persisted backend-side under <TESSERACT_HOME>/runtime/.
+  notice_dismissed: boolean;
   integrations: CapabilityIntegration[];
 }
 
 export async function fetchCapabilities(): Promise<CapabilitiesResponse> {
   return apiFetch<CapabilitiesResponse>("/api/capabilities");
+}
+
+// Forces a fresh cli-auth probe; returns the same report shape.
+export async function postCapabilitiesReverify(): Promise<CapabilitiesResponse> {
+  return apiPost<CapabilitiesResponse>(
+    "/api/capabilities/reverify",
+    {},
+    { retryable: true },
+  );
+}
+
+// Persists dismissal of the first-run cli-auth notice.
+export async function postCapabilitiesDismiss(): Promise<CapabilitiesResponse> {
+  return apiPost<CapabilitiesResponse>(
+    "/api/capabilities/dismiss",
+    {},
+    { retryable: true },
+  );
 }
 
 export interface RuntimeRestartResponse {

@@ -331,7 +331,7 @@
 .wt-pane-header.is-lease_leased,
 .wt-pane-header.is-lease_running     { color: var(--accent-bright); border-bottom-color: var(--accent-dim); }
 .wt-pane-header.is-lease_waiting_input { color: var(--warn); border-bottom-color: rgba(255,180,84,0.25); }
-.wt-pane-header.is-lease_done        { color: #6cd49a; border-bottom-color: rgba(108,212,154,0.25); }
+.wt-pane-header.is-lease_done        { color: var(--ok-muted); border-bottom-color: rgba(108,212,154,0.25); }
 .wt-pane-header.is-lease_failed      { color: var(--bad); border-bottom-color: var(--bad-dim); }
 .wt-pane-header.is-lease_released    { color: var(--text-meta); }
 

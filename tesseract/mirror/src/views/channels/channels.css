@@ -189,7 +189,7 @@
 
 .channel-state-badge.state-running {
   background: rgba(110, 180, 130, 0.22);
-  color: #82c89a;
+  color: var(--ok-muted);
 }
 
 .channel-state-badge.state-stopped {
@@ -199,7 +199,7 @@
 
 .channel-state-badge.state-error {
   background: rgba(190, 100, 90, 0.22);
-  color: #d88c80;
+  color: var(--accent-error);
 }
 
 .channel-state-poll {
@@ -295,7 +295,7 @@
 
 .channel-error {
   background: var(--surface-2);
-  border: 1px solid var(--accent-warn, #b85b3a);
+  border: 1px solid var(--accent-warn);
   border-radius: var(--radius-xs);
   color: var(--text);
   font-family: var(--font-mono);

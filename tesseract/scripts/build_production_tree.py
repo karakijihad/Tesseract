@@ -19,6 +19,7 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
+from tesseract.scripts import audit_release_tree
 from tesseract.scripts._production_manifest import (
     EMPTY_DIRS,
     EXCLUDE_GLOBS,
@@ -128,26 +129,34 @@ def build(src_root: Path, out_root: Path, files: Iterable[str] | None = None) ->
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
 
-    # Config: overwrite the copied tree with reset versions.
+    # Config: overwrite the copied tree with reset versions. REQUIRED — a
+    # missing source dir must hard-fail (CL-m5), not silently ship an empty
+    # tesseract/config/ (build_shipping_config's own glob over a nonexistent
+    # src_dir finds nothing and returns quietly, so the guard must live here).
     src_config = src_root / "tesseract" / "config"
-    if src_config.is_dir():
-        build_shipping_config(src_config, out_root / "tesseract" / "config")
+    if not src_config.is_dir():
+        raise RuntimeError(
+            f"build: missing required config source dir ({src_config}) — "
+            "needed to build the shipped tesseract/config/ tree"
+        )
+    build_shipping_config(src_config, out_root / "tesseract" / "config")
 
     # Workspace: seed a neutral starter tree from hand-authored templates —
     # the operator's live tesseract/workspace/ never ships (Task 11f).
+    # REQUIRED — build_shipping_workspace itself raises RuntimeError when
+    # `_shipping` is missing or empty, naming the path; no outer guard needed.
     src_shipping_workspace = src_root / "tesseract" / "workspace" / "_shipping"
-    if src_shipping_workspace.is_dir():
-        build_shipping_workspace(src_shipping_workspace, out_root / "tesseract" / "workspace")
+    build_shipping_workspace(src_shipping_workspace, out_root / "tesseract" / "workspace")
 
     # Memory store / vault / tars-workshop: same templating shape as
     # workspace above — ship ready with hand-authored scaffold content
-    # instead of an empty directory (Task 17).
+    # instead of an empty directory (Task 17). REQUIRED, same reasoning as
+    # workspace above — build_shipping_workspace raises per-`rel` if absent.
     for rel in ("tesseract/memory-store", "tesseract/vault", "tesseract/tars-workshop"):
         src_shipping = src_root / rel / "_shipping"
-        if src_shipping.is_dir():
-            out_dir = out_root / rel
-            build_shipping_workspace(src_shipping, out_dir)
-            _write_state_dir_gitignore(out_dir)
+        out_dir = out_root / rel
+        build_shipping_workspace(src_shipping, out_dir)
+        _write_state_dir_gitignore(out_dir)
 
     _reset_entities(out_root)
 
@@ -166,6 +175,16 @@ def main() -> None:
     ap.add_argument("out_root", type=Path)
     args = ap.parse_args()
     build(args.src_root, args.out_root)
+
+    # CL-M7: fail the build itself on a PII/secret hit, not just at test time —
+    # the shipped tree carries `scripts/audit_release_tree.py` as its own
+    # standalone guard (tesseract/tests never ships), so run it here too.
+    offenders = audit_release_tree.scan(args.out_root)
+    if offenders:
+        raise RuntimeError(
+            "build_production_tree: release-audit found PII/secret pattern(s):\n"
+            + "\n".join(offenders)
+        )
     print(f"production tree written to {args.out_root}")
 
 

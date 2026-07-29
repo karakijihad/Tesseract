@@ -2,10 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const checkUpdate = vi.fn();
 const applyUpdate = vi.fn();
+const forceApplyUpdate = vi.fn();
 
 vi.mock('../lib/update', () => ({
   checkUpdate: (...args: unknown[]) => checkUpdate(...args),
   applyUpdate: (...args: unknown[]) => applyUpdate(...args),
+  forceApplyUpdate: (...args: unknown[]) => forceApplyUpdate(...args),
 }));
 
 import { needsManualRestart, useUpdateStore } from './update';
@@ -15,6 +17,7 @@ function resetStore() {
     version: null,
     behind: 0,
     summaries: [],
+    divergence: null,
     checking: false,
     applying: false,
     error: null,
@@ -41,6 +44,7 @@ describe('useUpdateStore', () => {
     resetStore();
     checkUpdate.mockReset();
     applyUpdate.mockReset();
+    forceApplyUpdate.mockReset();
     enterTauri();
   });
 
@@ -49,7 +53,12 @@ describe('useUpdateStore', () => {
   });
 
   it('check() populates behind/summaries/version', async () => {
-    checkUpdate.mockResolvedValue({ behind: 3, summaries: ['a', 'b', 'c'], version: 'abc1234' });
+    checkUpdate.mockResolvedValue({
+      behind: 3,
+      summaries: ['a', 'b', 'c'],
+      version: 'abc1234',
+      divergence: null,
+    });
     await useUpdateStore.getState().check();
     const s = useUpdateStore.getState();
     expect(s.behind).toBe(3);
@@ -57,6 +66,24 @@ describe('useUpdateStore', () => {
     expect(s.version).toBe('abc1234');
     expect(s.checking).toBe(false);
     expect(s.error).toBeNull();
+    expect(s.divergence).toBeNull();
+  });
+
+  it('check() populates divergence when the backend reports one', async () => {
+    const divergence = {
+      dirty: ['a.txt'],
+      dirty_total: 1,
+      ahead: 2,
+      ahead_summaries: ['c1', 'c2'],
+    };
+    checkUpdate.mockResolvedValue({
+      behind: 1,
+      summaries: ['origin commit'],
+      version: 'abc1234',
+      divergence,
+    });
+    await useUpdateStore.getState().check();
+    expect(useUpdateStore.getState().divergence).toEqual(divergence);
   });
 
   it('check() surfaces a rejected promise as a readable error, not a throw', async () => {
@@ -78,7 +105,12 @@ describe('useUpdateStore', () => {
   it('apply() sets applying during the call, then refreshes state to behind: 0', async () => {
     let resolveApply!: (v: string) => void;
     applyUpdate.mockReturnValue(new Promise((r) => (resolveApply = r)));
-    checkUpdate.mockResolvedValue({ behind: 0, summaries: [], version: 'def5678' });
+    checkUpdate.mockResolvedValue({
+      behind: 0,
+      summaries: [],
+      version: 'def5678',
+      divergence: null,
+    });
 
     const applyPromise = useUpdateStore.getState().apply();
     expect(useUpdateStore.getState().applying).toBe(true);
@@ -95,7 +127,12 @@ describe('useUpdateStore', () => {
 
   it('holds applying: true across the whole post-apply re-check — the chip must never flash back to an enabled "update · N" state in between', async () => {
     const applyD = deferred<string>();
-    const checkD = deferred<{ behind: number; summaries: string[]; version: string }>();
+    const checkD = deferred<{
+      behind: number;
+      summaries: string[];
+      version: string;
+      divergence: null;
+    }>();
     applyUpdate.mockReturnValue(applyD.promise);
     checkUpdate.mockReturnValue(checkD.promise);
 
@@ -112,7 +149,7 @@ describe('useUpdateStore', () => {
     // otherwise the HUD would show a stale, still-behind "update · N" pill.
     expect(useUpdateStore.getState().applying).toBe(true);
 
-    checkD.resolve({ behind: 0, summaries: [], version: 'def5678' });
+    checkD.resolve({ behind: 0, summaries: [], version: 'def5678', divergence: null });
     await applyPromise;
 
     expect(useUpdateStore.getState().applying).toBe(false);
@@ -133,7 +170,7 @@ describe('useUpdateStore', () => {
   it('a second apply() call while one is in flight is a client-side no-op', async () => {
     let resolveApply!: (v: string) => void;
     applyUpdate.mockReturnValue(new Promise((r) => (resolveApply = r)));
-    checkUpdate.mockResolvedValue({ behind: 0, summaries: [], version: 'sha' });
+    checkUpdate.mockResolvedValue({ behind: 0, summaries: [], version: 'sha', divergence: null });
 
     const first = useUpdateStore.getState().apply();
     const second = useUpdateStore.getState().apply();
@@ -148,6 +185,61 @@ describe('useUpdateStore', () => {
     await useUpdateStore.getState().apply();
     expect(applyUpdate).not.toHaveBeenCalled();
     expect(useUpdateStore.getState().applying).toBe(false);
+  });
+
+  it('forceApply() sets applying during the call, then re-checks', async () => {
+    let resolveForceApply!: (v: string) => void;
+    forceApplyUpdate.mockReturnValue(new Promise((r) => (resolveForceApply = r)));
+    checkUpdate.mockResolvedValue({
+      behind: 0,
+      summaries: [],
+      version: 'def5678',
+      divergence: null,
+    });
+
+    const forceApplyPromise = useUpdateStore.getState().forceApply();
+    expect(useUpdateStore.getState().applying).toBe(true);
+
+    resolveForceApply('def5678');
+    await forceApplyPromise;
+
+    const s = useUpdateStore.getState();
+    expect(s.applying).toBe(false);
+    expect(s.version).toBe('def5678');
+    expect(s.divergence).toBeNull();
+    expect(forceApplyUpdate).toHaveBeenCalledTimes(1);
+    expect(checkUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('a rejected forceApply() surfaces as a readable, apply-sourced error without re-checking', async () => {
+    forceApplyUpdate.mockRejectedValue('reset failed: origin/main unresolved');
+    await expect(useUpdateStore.getState().forceApply()).resolves.toBeUndefined();
+    const s = useUpdateStore.getState();
+    expect(s.error).toBe('reset failed: origin/main unresolved');
+    expect(s.errorSource).toBe('apply');
+    expect(s.applying).toBe(false);
+    expect(checkUpdate).not.toHaveBeenCalled();
+  });
+
+  it('forceApply() is a no-op outside Tauri', async () => {
+    delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+    await useUpdateStore.getState().forceApply();
+    expect(forceApplyUpdate).not.toHaveBeenCalled();
+    expect(useUpdateStore.getState().applying).toBe(false);
+  });
+
+  it('forceApply() while apply() is already in flight is a client-side no-op, sharing the same applying guard', async () => {
+    let resolveApply!: (v: string) => void;
+    applyUpdate.mockReturnValue(new Promise((r) => (resolveApply = r)));
+    checkUpdate.mockResolvedValue({ behind: 0, summaries: [], version: 'sha', divergence: null });
+
+    const applyPromise = useUpdateStore.getState().apply();
+    const forceApplyPromise = useUpdateStore.getState().forceApply();
+    resolveApply('sha');
+    await Promise.all([applyPromise, forceApplyPromise]);
+
+    expect(applyUpdate).toHaveBeenCalledTimes(1);
+    expect(forceApplyUpdate).not.toHaveBeenCalled();
   });
 
   it('needsManualRestart distinguishes the dead-app phrase from an ordinary retryable failure', () => {
