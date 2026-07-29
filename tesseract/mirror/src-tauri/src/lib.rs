@@ -339,6 +339,7 @@ pub fn run() {
             update::update_apply,
             update::update_force_apply,
             update::app_version,
+            update::app_info,
             token::submit_github_token
         ])
         .setup(|app| {

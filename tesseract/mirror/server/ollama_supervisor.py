@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -106,6 +107,12 @@ class OllamaSupervisor:
                 "stdout": subprocess.DEVNULL,
                 "stderr": subprocess.DEVNULL,
                 "stdin": subprocess.DEVNULL,
+                # Same contract as ollama_boot._spawn_ollama_serve_sync: a
+                # detached child that outlives the app must never inherit
+                # our CWD — on Windows it would lock that folder against
+                # deletion, and ours is the replaceable app tree
+                # (2026-07-29 reinstall wedge).
+                "cwd": str(Path(exe).parent),
             }
             if sys.platform == "win32":
                 kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]

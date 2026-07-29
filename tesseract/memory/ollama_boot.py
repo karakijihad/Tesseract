@@ -16,6 +16,7 @@ import logging
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
@@ -77,6 +78,14 @@ def _spawn_ollama_serve_sync() -> bool:
             "stdout": subprocess.DEVNULL,
             "stderr": subprocess.DEVNULL,
             "stdin": subprocess.DEVNULL,
+            # Never inherit our CWD: this child is detached and outlives the
+            # app by design, and on Windows a process's working directory
+            # LOCKS that folder against deletion. Inheriting the backend's
+            # CWD (inside the installed app tree) left a detached ollama
+            # holding <TESSERACT_HOME>/app, which wedged every reinstall on
+            # 2026-07-29. Its own install dir is stable and never ours to
+            # delete.
+            "cwd": str(Path(exe).parent),
         }
         if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]

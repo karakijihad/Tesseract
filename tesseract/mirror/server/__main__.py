@@ -155,9 +155,13 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     # Durable rotating file — the console handler above dies with the
     # supervisor's console; crash forensics need a file (logsetup.py).
-    from tesseract.logsetup import attach_file_logging
+    from tesseract.logsetup import (
+        attach_file_logging,
+        suppress_proactor_disconnect_noise,
+    )
 
     attach_file_logging("mirror-backend")
+    suppress_proactor_disconnect_noise()
     # After logging is attached, not before: `ensure_alarms_state_migrated()`
     # logs its outcome, and a log call before any handler exists falls
     # through to `logging.lastResort` (bare stderr) — invisible once this

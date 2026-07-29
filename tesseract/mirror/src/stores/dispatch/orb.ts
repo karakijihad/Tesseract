@@ -22,12 +22,37 @@ let _orbDwellLockUntil = 0;
 let _orbPendingState: EntityState | null = null;
 let _orbPendingTimer: ReturnType<typeof setTimeout> | null = null;
 
-export function setOrbState(target: EntityState): void {
+// Transient-error expiry (2026-07-29). A failed chat turn or command used
+// to leave the orb red until the operator's next interaction — nothing
+// time-based ever cleared it. Turn-scoped failures now pass
+// `autoClearMs` and revert to idle on expiry; connectivity-driven errors
+// (websocket.ts after max reconnects — the "TESSERACT is actually
+// broken" class) call without it and persist. Any later setOrbState call
+// cancels a pending expiry, so a persistent error can never be cleared
+// by an earlier transient's stale timer.
+let _orbErrorExpiryTimer: ReturnType<typeof setTimeout> | null = null;
+
+// How long a turn-scoped error holds the orb before it recovers to idle.
+export const TRANSIENT_ERROR_CLEAR_MS = 5000;
+
+function _cancelErrorExpiry(): void {
+  if (_orbErrorExpiryTimer !== null) {
+    clearTimeout(_orbErrorExpiryTimer);
+    _orbErrorExpiryTimer = null;
+  }
+}
+
+export function setOrbState(
+  target: EntityState,
+  opts?: { autoClearMs?: number },
+): void {
   const now = performance.now();
   const apply = (next: EntityState): void => {
     const fresh = useEntityStore.getState();
     if (fresh.state !== next) fresh.setState(next);
   };
+
+  _cancelErrorExpiry();
 
   if (target === "error") {
     if (_orbPendingTimer !== null) {
@@ -37,6 +62,17 @@ export function setOrbState(target: EntityState): void {
     }
     apply(target);
     _orbDwellLockUntil = now + _ORB_DWELL_MS;
+    const autoClearMs = opts?.autoClearMs;
+    if (autoClearMs !== undefined) {
+      _orbErrorExpiryTimer = setTimeout(() => {
+        _orbErrorExpiryTimer = null;
+        // Only clear our own error: anything else that ran meanwhile
+        // (a new turn, a persistent error) already cancelled this timer.
+        if (useEntityStore.getState().state === "error") {
+          setOrbState("idle");
+        }
+      }, autoClearMs);
+    }
     return;
   }
 

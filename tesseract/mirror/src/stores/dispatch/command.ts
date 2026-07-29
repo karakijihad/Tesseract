@@ -1,6 +1,6 @@
 import type { CommandResultData, Envelope } from "../../lib/types";
 import { useToastStore } from "../toasts";
-import { setOrbState } from "./orb";
+import { setOrbState, TRANSIENT_ERROR_CLEAR_MS } from "./orb";
 
 export function handleCommand(env: Envelope): void {
   // Pre-run + kernel-tool result envelopes for the unified slash dispatch
@@ -44,5 +44,7 @@ export function handleCommandResult(env: Envelope): void {
     return;
   }
   toasts.push(data.reason, "error");
-  setOrbState("error");
+  // Same contract as loop.ts stream_error: a failed command is
+  // turn-scoped, so the orb recovers on its own.
+  setOrbState("error", { autoClearMs: TRANSIENT_ERROR_CLEAR_MS });
 }

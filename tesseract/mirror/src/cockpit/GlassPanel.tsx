@@ -5,16 +5,24 @@
 // The hosted view is memoized on its kind so the high-frequency geometry updates
 // during a drag/resize re-render only this frame, never the view inside it.
 
-import { memo, useMemo, type PointerEvent as ReactPointerEvent } from 'react';
+import { memo, useMemo, type PointerEvent as ReactPointerEvent } from "react";
 
-import { usePanelStore, isRailKind, type PanelState } from './panelStore';
-import { VIEW_REGISTRY, VIEW_LABELS } from './viewRegistry';
+import {
+  usePanelStore,
+  isRailKind,
+  RAIL_W,
+  type PanelState,
+} from "./panelStore";
+import { VIEW_REGISTRY, VIEW_LABELS } from "./viewRegistry";
 
 const MIN_W = 340;
 const MIN_H = 240;
+// Floating rails resize down to their dock width, not the view-panel floor,
+// so an undocked rail doesn't snap 282→340 on first resize.
+const railMinW = (isRail: boolean): number => (isRail ? RAIL_W : MIN_W);
 
-type Dir = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
-const HANDLES: Dir[] = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
+type Dir = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+const HANDLES: Dir[] = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
 
 // A thumbtack — filled when pinned (locked), outline when free.
 function PinIcon({ filled }: { filled: boolean }) {
@@ -24,7 +32,7 @@ function PinIcon({ filled }: { filled: boolean }) {
       width="1em"
       height="1em"
       aria-hidden="true"
-      fill={filled ? 'currentColor' : 'none'}
+      fill={filled ? "currentColor" : "none"}
       stroke="currentColor"
       strokeWidth={1.6}
       strokeLinejoin="round"
@@ -39,7 +47,16 @@ function PinIcon({ filled }: { filled: boolean }) {
 // A short underscore — collapse the panel off-stage (reachable from the HUD).
 function MinimizeIcon() {
   return (
-    <svg viewBox="0 0 24 24" width="1em" height="1em" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round">
+    <svg
+      viewBox="0 0 24 24"
+      width="1em"
+      height="1em"
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+    >
       <path d="M6 18 H18" />
     </svg>
   );
@@ -48,12 +65,30 @@ function MinimizeIcon() {
 // Single square = maximize; nested squares = restore.
 function MaximizeIcon({ on }: { on: boolean }) {
   return on ? (
-    <svg viewBox="0 0 24 24" width="1em" height="1em" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinejoin="round">
+    <svg
+      viewBox="0 0 24 24"
+      width="1em"
+      height="1em"
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinejoin="round"
+    >
       <rect x="4" y="8" width="12" height="12" rx="1.5" />
       <path d="M8 8 V5.5 A1.5 1.5 0 0 1 9.5 4 H18.5 A1.5 1.5 0 0 1 20 5.5 V14.5 A1.5 1.5 0 0 1 18.5 16 H16" />
     </svg>
   ) : (
-    <svg viewBox="0 0 24 24" width="1em" height="1em" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinejoin="round">
+    <svg
+      viewBox="0 0 24 24"
+      width="1em"
+      height="1em"
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinejoin="round"
+    >
       <rect x="4.5" y="4.5" width="15" height="15" rx="1.6" />
     </svg>
   );
@@ -86,7 +121,8 @@ function GlassPanelImpl({ panel, maximizeRect, bounds }: GlassPanelProps) {
   const geom = maximized ? maximizeRect : panel;
   // No resize handles when maximized, when pinned (locked in place), or on a
   // docked rail (fixed dock width — drag it off to undock, then it resizes).
-  const showHandles = !maximized && !panel.pinned && !(isRail && panel.dock !== null);
+  const showHandles =
+    !maximized && !panel.pinned && !(isRail && panel.dock !== null);
 
   const startDrag = (e: ReactPointerEvent) => {
     // Locked (pinned) or maximized panels don't move.
@@ -101,19 +137,24 @@ function GlassPanelImpl({ panel, maximizeRect, bounds }: GlassPanelProps) {
       // Hard-clamp inside the visible container — a panel can't be dragged off.
       // Read the panel's live size from the store (not the render-time snapshot)
       // so the clamp bound is correct even if dimensions changed mid-interaction.
-      const live = usePanelStore.getState().panels.find((p) => p.id === panel.id) ?? panel;
-      const maxX = bounds ? Math.max(0, bounds.w - live.w) : Number.POSITIVE_INFINITY;
-      const maxY = bounds ? Math.max(0, bounds.h - live.h) : Number.POSITIVE_INFINITY;
+      const live =
+        usePanelStore.getState().panels.find((p) => p.id === panel.id) ?? panel;
+      const maxX = bounds
+        ? Math.max(0, bounds.w - live.w)
+        : Number.POSITIVE_INFINITY;
+      const maxY = bounds
+        ? Math.max(0, bounds.h - live.h)
+        : Number.POSITIVE_INFINITY;
       const nx = Math.min(Math.max(0, bx + (ev.clientX - ox)), maxX);
       const ny = Math.min(Math.max(0, by + (ev.clientY - oy)), maxY);
       move(panel.id, nx, ny);
     };
     const onUp = () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
     };
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
   };
 
   const startResize = (dir: Dir) => (e: ReactPointerEvent) => {
@@ -121,16 +162,17 @@ function GlassPanelImpl({ panel, maximizeRect, bounds }: GlassPanelProps) {
     e.preventDefault();
     e.stopPropagation();
     focus(panel.id);
-    const left = dir.includes('w');
-    const right = dir.includes('e');
-    const top = dir.includes('n');
-    const bottom = dir.includes('s');
+    const left = dir.includes("w");
+    const right = dir.includes("e");
+    const top = dir.includes("n");
+    const bottom = dir.includes("s");
     const ox = e.clientX;
     const oy = e.clientY;
     const bx = panel.x;
     const by = panel.y;
     const bw = panel.w;
     const bh = panel.h;
+    const minW = railMinW(isRail);
     const onMove = (ev: PointerEvent) => {
       const dx = ev.clientX - ox;
       const dy = ev.clientY - oy;
@@ -138,10 +180,10 @@ function GlassPanelImpl({ panel, maximizeRect, bounds }: GlassPanelProps) {
       let ny = by;
       let nw = bw;
       let nh = bh;
-      if (right) nw = Math.max(MIN_W, bw + dx);
+      if (right) nw = Math.max(minW, bw + dx);
       if (bottom) nh = Math.max(MIN_H, bh + dy);
       if (left) {
-        nw = Math.max(MIN_W, bw - dx);
+        nw = Math.max(minW, bw - dx);
         nx = bx + (bw - nw); // keep the right edge fixed
       }
       if (top) {
@@ -152,38 +194,54 @@ function GlassPanelImpl({ panel, maximizeRect, bounds }: GlassPanelProps) {
       ny = Math.max(0, ny);
       // Keep the panel inside the visible container (don't grow past an edge).
       if (bounds) {
-        nw = Math.max(MIN_W, Math.min(nw, bounds.w - nx));
+        nw = Math.max(minW, Math.min(nw, bounds.w - nx));
         nh = Math.max(MIN_H, Math.min(nh, bounds.h - ny));
       }
       // `place` updates geometry without undocking (drag is what undocks a rail).
       place(panel.id, { x: nx, y: ny, w: nw, h: nh });
     };
     const onUp = () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
     };
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
   };
 
   const stop = (e: ReactPointerEvent) => e.stopPropagation();
 
   return (
     <div
-      className={`glass-panel${panel.open && !panel.minimized ? '' : ' glass-panel--hidden'}${maximized ? ' glass-panel--maximized' : ''}`}
-      style={{ left: geom.x, top: geom.y, width: geom.w, height: geom.h, zIndex: panel.z }}
+      className={`glass-panel${panel.open && !panel.minimized ? "" : " glass-panel--hidden"}${maximized ? " glass-panel--maximized" : ""}`}
+      style={{
+        left: geom.x,
+        top: geom.y,
+        width: geom.w,
+        height: geom.h,
+        zIndex: panel.z,
+        // Rails dock at RAIL_W, below the generic 340px CSS floor — without
+        // this override the rendered box outgrows its computed position and
+        // a right-docked rail bleeds past the stage edge.
+        minWidth: isRail ? RAIL_W : undefined,
+      }}
       data-kind={panel.kind}
       onPointerDown={() => focus(panel.id)}
     >
       {/* Double-click the title bar → raise to the front (top of the z-stack). */}
-      <div className="glass-panel__bar" onPointerDown={startDrag} onDoubleClick={() => focus(panel.id)}>
+      <div
+        className="glass-panel__bar"
+        onPointerDown={startDrag}
+        onDoubleClick={() => focus(panel.id)}
+      >
         <span className="glass-panel__title">{label}</span>
         <div className="glass-panel__actions">
           {/* Pin = lock in place (no move/resize) — on every panel, rails too. */}
           <button
             type="button"
-            className={`glass-panel__btn${panel.pinned ? ' is-active' : ''}`}
-            aria-label={panel.pinned ? `Unlock ${label}` : `Pin ${label} in place`}
+            className={`glass-panel__btn${panel.pinned ? " is-active" : ""}`}
+            aria-label={
+              panel.pinned ? `Unlock ${label}` : `Pin ${label} in place`
+            }
             aria-pressed={panel.pinned}
             onPointerDown={stop}
             onClick={() => togglePin(panel.id)}
@@ -204,8 +262,10 @@ function GlassPanelImpl({ panel, maximizeRect, bounds }: GlassPanelProps) {
           {!isRail && (
             <button
               type="button"
-              className={`glass-panel__btn${panel.maximized ? ' is-active' : ''}`}
-              aria-label={panel.maximized ? `Restore ${label}` : `Maximize ${label}`}
+              className={`glass-panel__btn${panel.maximized ? " is-active" : ""}`}
+              aria-label={
+                panel.maximized ? `Restore ${label}` : `Maximize ${label}`
+              }
               aria-pressed={panel.maximized}
               onPointerDown={stop}
               onClick={() => toggleMaximize(panel.id)}

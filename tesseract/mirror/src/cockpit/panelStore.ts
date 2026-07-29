@@ -14,25 +14,33 @@
 // `tars` is the orb home — `resetAll` closes UNPINNED view panels + re-docks
 // rails + parks `view` on `'tars'` (pinned panels stay).
 
-import { create } from 'zustand';
+import { create } from "zustand";
 
-import { useUIStore, type View } from '../stores/ui';
-import { nextZ, surfacePeakZ } from './zStack';
+import { useUIStore, type View } from "../stores/ui";
+import { nextZ, surfacePeakZ } from "./zStack";
 
-export type RailKind = 'kernel' | 'lifeline';
-export type DockSide = 'left' | 'right';
+export type RailKind = "kernel" | "lifeline";
+export type DockSide = "left" | "right";
 
 // Panel kinds = every view tab except the `tars` orb home, plus the two rails.
-export type PanelKind = Exclude<View, 'tars'> | RailKind;
+export type PanelKind = Exclude<View, "tars"> | RailKind;
 
-export const RAIL_KINDS: readonly RailKind[] = ['kernel', 'lifeline'];
-const RAIL_HOME: Record<RailKind, DockSide> = { kernel: 'left', lifeline: 'right' };
+export const RAIL_KINDS: readonly RailKind[] = ["kernel", "lifeline"];
+// Docked rail width. Shared by PanelHost (dock geometry) and GlassPanel
+// (per-rail min-width): the generic `.glass-panel` CSS floor is 340px, and
+// a right-docked rail positioned for 282 but rendered at 340 overflowed
+// the stage's right edge by the difference (2026-07-29 cosmetic bug).
+export const RAIL_W = 282;
+const RAIL_HOME: Record<RailKind, DockSide> = {
+  kernel: "left",
+  lifeline: "right",
+};
 
-export function isPanelKind(kind: View): kind is Exclude<View, 'tars'> {
-  return kind !== 'tars';
+export function isPanelKind(kind: View): kind is Exclude<View, "tars"> {
+  return kind !== "tars";
 }
 export function isRailKind(kind: string): kind is RailKind {
-  return kind === 'kernel' || kind === 'lifeline';
+  return kind === "kernel" || kind === "lifeline";
 }
 
 export interface PanelState {
@@ -63,7 +71,7 @@ export interface PanelState {
 // Every OPEN panel — not just pinned ones — persists with its full state so a
 // reload restores the whole workspace (which tabs were summoned + their layout).
 export interface SavedPanel {
-  kind: Exclude<View, 'tars'>;
+  kind: Exclude<View, "tars">;
   x: number;
   y: number;
   w: number;
@@ -96,7 +104,10 @@ interface PanelStore {
   focus: (id: PanelKind) => void;
   move: (id: PanelKind, x: number, y: number) => void;
   resize: (id: PanelKind, w: number, h: number) => void;
-  place: (id: PanelKind, geom: { x: number; y: number; w: number; h: number }) => void;
+  place: (
+    id: PanelKind,
+    geom: { x: number; y: number; w: number; h: number },
+  ) => void;
   togglePin: (id: PanelKind) => void;
   toggleMaximize: (id: PanelKind) => void;
   toggleMinimize: (id: PanelKind) => void;
@@ -110,15 +121,26 @@ interface PanelStore {
 const Z_BASE = 10;
 const RAIL_Z: Record<RailKind, number> = { kernel: 4, lifeline: 5 };
 
-function topmostOpenViewKind(panels: PanelState[]): Exclude<View, 'tars'> | null {
+function topmostOpenViewKind(
+  panels: PanelState[],
+): Exclude<View, "tars"> | null {
   // Minimized panels are open (kept mounted) but off-stage — handing them
   // the active view would light a tab with nothing visible.
-  const open = panels.filter((p) => p.open && !p.minimized && !isRailKind(p.kind));
+  const open = panels.filter(
+    (p) => p.open && !p.minimized && !isRailKind(p.kind),
+  );
   if (open.length === 0) return null;
-  return open.reduce((a, b) => (b.z > a.z ? b : a)).kind as Exclude<View, 'tars'>;
+  return open.reduce((a, b) => (b.z > a.z ? b : a)).kind as Exclude<
+    View,
+    "tars"
+  >;
 }
 
-function newPanel(kind: Exclude<View, 'tars'>, z: number, extra?: Partial<PanelState>): PanelState {
+function newPanel(
+  kind: Exclude<View, "tars">,
+  z: number,
+  extra?: Partial<PanelState>,
+): PanelState {
   return {
     id: kind,
     kind,
@@ -150,7 +172,11 @@ export const usePanelStore = create<PanelStore>((set, get) => ({
     // A second click on the already-active, already-open tab closes it
     // (returns to the bare orb home) instead of re-opening a no-op — a tab
     // that's open forever with no way to un-highlight it was the bug.
-    if (useUIStore.getState().view === kind && existing?.open && !existing.minimized) {
+    if (
+      useUIStore.getState().view === kind &&
+      existing?.open &&
+      !existing.minimized
+    ) {
       get().closePanel(kind);
       return;
     }
@@ -189,39 +215,56 @@ export const usePanelStore = create<PanelStore>((set, get) => ({
         .reduce((m, p) => Math.max(m, p.z), 0);
       if (target.z < Math.max(openMaxZ, surfacePeakZ())) {
         const z = nextZ();
-        set({ topZ: z, panels: s.panels.map((p) => (p.id === id ? { ...p, z } : p)) });
+        set({
+          topZ: z,
+          panels: s.panels.map((p) => (p.id === id ? { ...p, z } : p)),
+        });
       }
     }
     if (!isRailKind(id)) useUIStore.getState().setView(id);
   },
 
   closePanel: (id) => {
-    set((s) => ({ panels: s.panels.map((p) => (p.id === id ? { ...p, open: false } : p)) }));
+    set((s) => ({
+      panels: s.panels.map((p) => (p.id === id ? { ...p, open: false } : p)),
+    }));
     if (!isRailKind(id)) {
       const next = topmostOpenViewKind(get().panels);
-      useUIStore.getState().setView(next ?? 'tars');
+      useUIStore.getState().setView(next ?? "tars");
     }
   },
 
   move: (id, x, y) =>
     set((s) => ({
-      panels: s.panels.map((p) => (p.id === id ? { ...p, x, y, dock: null } : p)),
+      panels: s.panels.map((p) =>
+        p.id === id ? { ...p, x, y, dock: null } : p,
+      ),
     })),
 
   resize: (id, w, h) =>
-    set((s) => ({ panels: s.panels.map((p) => (p.id === id ? { ...p, w, h } : p)) })),
+    set((s) => ({
+      panels: s.panels.map((p) => (p.id === id ? { ...p, w, h } : p)),
+    })),
 
   place: (id, geom) =>
     set((s) => ({
-      panels: s.panels.map((p) => (p.id === id ? { ...p, ...geom, placed: true } : p)),
+      panels: s.panels.map((p) =>
+        p.id === id ? { ...p, ...geom, placed: true } : p,
+      ),
     })),
 
   togglePin: (id) =>
-    set((s) => ({ panels: s.panels.map((p) => (p.id === id ? { ...p, pinned: !p.pinned } : p)) })),
+    set((s) => ({
+      panels: s.panels.map((p) =>
+        p.id === id ? { ...p, pinned: !p.pinned } : p,
+      ),
+    })),
 
   toggleMaximize: (id) =>
     set((s) => ({
-      panels: s.panels.map((p) => (p.id === id ? { ...p, maximized: !p.maximized } : p)),
+      panels: s.panels.map((p) =>
+        p.id === id ? { ...p, maximized: !p.maximized } : p,
+      ),
     })),
 
   // Minimize collapses a panel off-stage (kept open + mounted). Restoring
@@ -231,12 +274,16 @@ export const usePanelStore = create<PanelStore>((set, get) => ({
     const target = get().panels.find((p) => p.id === id);
     if (!target) return;
     if (!target.minimized) {
-      set((s) => ({ panels: s.panels.map((p) => (p.id === id ? { ...p, minimized: true } : p)) }));
+      set((s) => ({
+        panels: s.panels.map((p) =>
+          p.id === id ? { ...p, minimized: true } : p,
+        ),
+      }));
       // Minimizing the focused view hands off the highlight like closePanel
       // does — a lit tab with its panel off-stage reads as a broken toggle.
       if (!isRailKind(id) && useUIStore.getState().view === id) {
         const next = topmostOpenViewKind(get().panels);
-        useUIStore.getState().setView(next ?? 'tars');
+        useUIStore.getState().setView(next ?? "tars");
       }
       return;
     }
@@ -256,7 +303,9 @@ export const usePanelStore = create<PanelStore>((set, get) => ({
 
   ensureRails: () =>
     set((s) => {
-      const missing = RAIL_KINDS.filter((k) => !s.panels.some((p) => p.id === k));
+      const missing = RAIL_KINDS.filter(
+        (k) => !s.panels.some((p) => p.id === k),
+      );
       if (missing.length === 0) return s;
       const rails = missing.map<PanelState>((k) => ({
         id: k,
@@ -277,7 +326,9 @@ export const usePanelStore = create<PanelStore>((set, get) => ({
     }),
 
   toggleRail: (id) =>
-    set((s) => ({ panels: s.panels.map((p) => (p.id === id ? { ...p, open: !p.open } : p)) })),
+    set((s) => ({
+      panels: s.panels.map((p) => (p.id === id ? { ...p, open: !p.open } : p)),
+    })),
 
   // Re-open the operator's last-session panels at their saved geometry + state
   // (pinned / minimized / maximized) on boot — the full workspace, not just
@@ -287,7 +338,10 @@ export const usePanelStore = create<PanelStore>((set, get) => ({
     set((s) => {
       let z = s.topZ;
       const fresh = saved
-        .filter((sp) => !isRailKind(sp.kind) && !s.panels.some((p) => p.id === sp.kind))
+        .filter(
+          (sp) =>
+            !isRailKind(sp.kind) && !s.panels.some((p) => p.id === sp.kind),
+        )
         .map((sp) => {
           z = nextZ();
           return newPanel(sp.kind, z, {
@@ -312,7 +366,10 @@ export const usePanelStore = create<PanelStore>((set, get) => ({
   hydrateRails: (saved) =>
     set((s) => {
       const fresh = saved
-        .filter((sr) => isRailKind(sr.kind) && !s.panels.some((p) => p.id === sr.kind))
+        .filter(
+          (sr) =>
+            isRailKind(sr.kind) && !s.panels.some((p) => p.id === sr.kind),
+        )
         .map<PanelState>((sr) => ({
           id: sr.kind,
           kind: sr.kind,
@@ -338,12 +395,17 @@ export const usePanelStore = create<PanelStore>((set, get) => ({
     set((s) => ({
       panels: s.panels.map((p) => {
         if (isRailKind(p.kind)) {
-          return { ...p, open: true, dock: RAIL_HOME[p.kind as RailKind], placed: false };
+          return {
+            ...p,
+            open: true,
+            dock: RAIL_HOME[p.kind as RailKind],
+            placed: false,
+          };
         }
         if (p.pinned) return { ...p, maximized: false, minimized: false };
         return { ...p, open: false, maximized: false, minimized: false };
       }),
     }));
-    useUIStore.getState().setView('tars');
+    useUIStore.getState().setView("tars");
   },
 }));

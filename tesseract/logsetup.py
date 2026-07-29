@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Mapping
@@ -125,4 +126,39 @@ def attach_file_logging(process: str, *, config_path: Path = MIRROR_YAML) -> Pat
     return path
 
 
-__all__ = ["attach_file_logging", "load_logging_config", "MIRROR_YAML"]
+class _ProactorDisconnectFilter(logging.Filter):
+    """Drop ONE known-benign CPython artifact, nothing else.
+
+    On Windows' Proactor event loop, a client (the Tauri webview, a
+    browser tab) dropping its WebSocket/HTTP connection abruptly makes
+    asyncio log ``Exception in callback
+    _ProactorBasePipeTransport._call_connection_lost(None)`` with a
+    ``ConnectionResetError`` during transport cleanup. Nothing is wrong —
+    the peer just went away — but it lands at ERROR level and pollutes
+    every error surface. The match is deliberately narrow (that callback
+    name AND a connection-reset class); real asyncio errors pass through
+    untouched.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.exc_info and isinstance(
+            record.exc_info[1], (ConnectionResetError, ConnectionAbortedError)
+        ):
+            if "_call_connection_lost" in record.getMessage():
+                return False
+        return True
+
+
+def suppress_proactor_disconnect_noise() -> None:
+    """Attach the artifact filter to the ``asyncio`` logger (Windows only —
+    the Proactor loop doesn't exist elsewhere). Call once at process start."""
+    if sys.platform == "win32":
+        logging.getLogger("asyncio").addFilter(_ProactorDisconnectFilter())
+
+
+__all__ = [
+    "attach_file_logging",
+    "load_logging_config",
+    "suppress_proactor_disconnect_noise",
+    "MIRROR_YAML",
+]

@@ -130,6 +130,18 @@ pub fn head_short(dest: &Path) -> Result<String, String> {
     Ok(head_oid(dest)?[..8].to_string())
 }
 
+/// Unix seconds of the HEAD commit — the closest thing an installed clone
+/// has to a "release date" without a network round-trip. Display-only.
+pub fn head_commit_time(dest: &Path) -> Result<i64, String> {
+    let repo = Repository::open(dest).map_err(|e| format!("open: {e}"))?;
+    let head = repo
+        .head()
+        .map_err(|e| e.to_string())?
+        .peel_to_commit()
+        .map_err(|e| e.to_string())?;
+    Ok(head.time().seconds())
+}
+
 /// The full HEAD object id. `head_short` is for display; this is what
 /// `reset_hard` needs — an unambiguous id, captured before an update so a
 /// stage that fails *after* the fast-forward can restore the exact revision

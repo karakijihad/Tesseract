@@ -387,6 +387,27 @@ pub fn app_version(home: State<TesseractHome>) -> Result<String, String> {
     display_version(&app_dir(&home.0))
 }
 
+/// Everything the always-rendered Settings About block needs, independent
+/// of the Python backend: semver, short SHA, and the installed HEAD's
+/// commit time (the de-facto release date — no network involved).
+#[derive(Serialize)]
+pub struct AppInfo {
+    pub semver: Option<String>,
+    pub sha: String,
+    /// Unix seconds of the installed HEAD commit; the frontend formats it.
+    pub commit_epoch: i64,
+}
+
+#[tauri::command]
+pub fn app_info(home: State<TesseractHome>) -> Result<AppInfo, String> {
+    let dir = app_dir(&home.0);
+    Ok(AppInfo {
+        semver: pyproject_version(&dir),
+        sha: repo::head_short(&dir)?,
+        commit_epoch: repo::head_commit_time(&dir)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

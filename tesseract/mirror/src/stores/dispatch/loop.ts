@@ -16,8 +16,12 @@ import { useSessionStore } from "../session";
 import { useTasksStore, type TaskItem } from "../tasks";
 import { useToastStore } from "../toasts";
 import { useToolActivityStore } from "../toolActivity";
-import { setOrbState } from "./orb";
-import { addPendingTextChars, scheduleSignalsImpulse, type Signals } from "./signals";
+import { setOrbState, TRANSIENT_ERROR_CLEAR_MS } from "./orb";
+import {
+  addPendingTextChars,
+  scheduleSignalsImpulse,
+  type Signals,
+} from "./signals";
 import { ensureTtsPlayer } from "./tts";
 
 export function handleLoop(env: Envelope, signals: Signals | null): void {
@@ -311,7 +315,11 @@ export function handleLoop(env: Envelope, signals: Signals | null): void {
       }
       chat.addError(cid, msg);
       signals?.onError();
-      setOrbState("error");
+      // Turn-scoped failure (provider down, no model configured, tool
+      // blowup): the red bubble stays in the transcript as the record,
+      // but the orb recovers on its own — a failed TURN is not a failed
+      // TESSERACT. Connectivity errors (websocket.ts) stay persistent.
+      setOrbState("error", { autoClearMs: TRANSIENT_ERROR_CLEAR_MS });
       getController()?.pulseEvent("error");
       useToastStore.getState().push(msg, "error");
       break;
