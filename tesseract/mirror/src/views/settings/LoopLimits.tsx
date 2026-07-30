@@ -1,28 +1,35 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState } from "react";
 
-import { Hint } from '../../components/ui/Hint';
+import { Hint } from "../../components/ui/Hint";
+import { useWebSocketStore } from "../../stores/websocket";
 import {
   fetchSessionCaps,
   postSessionCaps,
   type SessionCapsResponse,
-} from '../../lib/api';
+} from "../../lib/api";
 
 export function LoopLimitsSection() {
   const [server, setServer] = useState<SessionCapsResponse | null>(null);
-  const [toolCap, setToolCap] = useState<string>('25');
-  const [errCap, setErrCap] = useState<string>('3');
+  const [toolCap, setToolCap] = useState<string>("25");
+  const [errCap, setErrCap] = useState<string>("3");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Re-runs on every WS (re)connection: a backend restart must replace a
+  // pre-restart "Failed to fetch" with fresh data (2026-07-30).
+  const wsGeneration = useWebSocketStore((s) => s.generation);
   useEffect(() => {
+    setError(null);
     fetchSessionCaps()
       .then((res) => {
         setServer(res);
         setToolCap(String(res.tool_iteration_cap));
         setErrCap(String(res.consecutive_error_cap));
       })
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
-  }, []);
+      .catch((err) =>
+        setError(err instanceof Error ? err.message : String(err)),
+      );
+  }, [wsGeneration]);
 
   const commitToolCap = async () => {
     if (!server) return;
@@ -38,7 +45,9 @@ export function LoopLimitsSection() {
       setServer(res);
       setToolCap(String(res.tool_iteration_cap));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'tool_iteration_cap update failed');
+      setError(
+        err instanceof Error ? err.message : "tool_iteration_cap update failed",
+      );
       setToolCap(String(server.tool_iteration_cap));
     } finally {
       setSaving(false);
@@ -59,7 +68,11 @@ export function LoopLimitsSection() {
       setServer(res);
       setErrCap(String(res.consecutive_error_cap));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'consecutive_error_cap update failed');
+      setError(
+        err instanceof Error
+          ? err.message
+          : "consecutive_error_cap update failed",
+      );
       setErrCap(String(server.consecutive_error_cap));
     } finally {
       setSaving(false);
@@ -83,7 +96,9 @@ export function LoopLimitsSection() {
             value={toolCap}
             onChange={(e) => setToolCap(e.target.value)}
             onBlur={commitToolCap}
-            onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
             disabled={!server || saving}
             className="cost-row__input"
             aria-label="tool_iteration_cap"
@@ -105,7 +120,9 @@ export function LoopLimitsSection() {
             value={errCap}
             onChange={(e) => setErrCap(e.target.value)}
             onBlur={commitErrCap}
-            onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
             disabled={!server || saving}
             className="cost-row__input"
             aria-label="consecutive_error_cap"
@@ -116,14 +133,15 @@ export function LoopLimitsSection() {
       <div className="compact-row compact-row--disabled">
         <span className="compact-row__role">DENY rules</span>
         <span className="t-meta">
-          Locked. The 24-check bash_security DENY list is non-configurable per the
-          security contract.
+          Locked. The 24-check bash_security DENY list is non-configurable per
+          the security contract.
         </span>
       </div>
       <div className="settings-hint t-meta">
-        Edits to <code>roles.chat_brain.tool_iteration_cap</code> /{' '}
-        <code>consecutive_error_cap</code> in <code>tesseract/config/roles.yaml</code> reflect
-        live; this panel mirrors the file. Live ChatSessions pick up new caps on the next turn.
+        Edits to <code>roles.chat_brain.tool_iteration_cap</code> /{" "}
+        <code>consecutive_error_cap</code> in{" "}
+        <code>tesseract/config/roles.yaml</code> reflect live; this panel
+        mirrors the file. Live ChatSessions pick up new caps on the next turn.
       </div>
       {error && <div className="settings-error">{error}</div>}
     </section>

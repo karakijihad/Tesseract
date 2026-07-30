@@ -67,6 +67,14 @@ export function AboutSection() {
   const exeApply = useUpdateStore((s) => s.exeApply);
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
 
+  // Mount-time re-check (the old System UpdateRow had this; its loss let a
+  // provisioning-window error latch forever, 2026-07-30). App.tsx owns the
+  // launch check + 6h cadence — this just refreshes state when the panel
+  // is opened.
+  useEffect(() => {
+    void check();
+  }, [check]);
+
   useEffect(() => {
     if (!isTauri()) return;
     let cancelled = false;
@@ -119,9 +127,15 @@ export function AboutSection() {
                     applying update, TARS will restart shortly…{" "}
                   </span>
                 )}
-                {behind === 0 && !exeAvailable && !checking && !applying && (
-                  <span className="system-update-note t-meta">up to date </span>
-                )}
+                {behind === 0 &&
+                  !exeAvailable &&
+                  !checking &&
+                  !applying &&
+                  !error && (
+                    <span className="system-update-note t-meta">
+                      up to date{" "}
+                    </span>
+                  )}
                 <button
                   type="button"
                   className="system-redetect"

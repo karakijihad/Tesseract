@@ -38,6 +38,11 @@ interface WebSocketState {
   reconnectAttempt: number;
   sessionId: string | null;
   lastEventTs: string | null;
+  // Bumps on every successful connection. Components with one-shot mount
+  // fetches include it in their effect deps so a backend restart (which
+  // reconnects the WS) re-runs the fetch — Settings sections used to
+  // show their pre-restart "Failed to fetch" forever (2026-07-30).
+  generation: number;
   connect: () => void;
   disconnect: () => void;
   sendMessage: (type: string, data: Record<string, unknown>) => void;
@@ -104,6 +109,7 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => {
     reconnectAttempt: 0,
     sessionId: null,
     lastEventTs: null,
+    generation: 0,
 
     connect: () => {
       const { status } = get();
@@ -129,7 +135,11 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => {
       ws.onopen = () => {
         if (!_isCurrentSocket(ws)) return;
         const prev = get();
-        set({ status: "connected", reconnectAttempt: 0 });
+        set({
+          status: "connected",
+          reconnectAttempt: 0,
+          generation: prev.generation + 1,
+        });
         // Flush messages queued while the WS was CONNECTING (e.g. the
         // terminal bootstrap's `terminal_start` for the auto-opened tab).
         if (_pendingSends.length > 0) {

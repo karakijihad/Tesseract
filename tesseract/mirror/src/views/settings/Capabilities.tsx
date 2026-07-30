@@ -7,6 +7,7 @@ import {
   type CapabilityProviderStatus,
 } from "../../lib/api";
 import { isTauri } from "../../lib/endpoints";
+import { useWebSocketStore } from "../../stores/websocket";
 
 async function revealEnvFile(path: string): Promise<void> {
   if (!isTauri()) return;
@@ -47,9 +48,14 @@ export function CapabilitiesSection() {
         setError(err instanceof Error ? err.message : String(err)),
       );
 
+  // Re-runs on every WS (re)connection: a backend restart must replace a
+  // pre-restart "Failed to fetch" with fresh data (2026-07-30).
+  const wsGeneration = useWebSocketStore((s) => s.generation);
   useEffect(() => {
+    setError(null);
     void refresh();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wsGeneration]);
 
   const onRestart = async () => {
     setRestarting(true);

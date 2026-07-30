@@ -127,6 +127,15 @@ class BackendProcess:
     # When set, ``_classify`` routes the exit as ``crash`` regardless of
     # intent so the respawn + backoff path runs.
     heartbeat_killed: bool = False
+    # Set by ``_terminate_backend`` the moment it delivers the stop
+    # signal. Makes termination idempotent: at quit, BOTH the stop-watcher
+    # thread (``request_stop``) and the main loop (``_wait_for_exit``)
+    # used to call ``_terminate_backend``, delivering a second
+    # CTRL_BREAK ~1s into the backend's graceful shutdown — which raised
+    # a KeyboardInterrupt mid-cleanup and hard-killed it
+    # (STATUS_CONTROL_C_EXIT, observed live 2026-07-30). The second
+    # caller now only waits.
+    stop_signalled: bool = False
 
 
 @dataclass
@@ -275,6 +284,25 @@ class Supervisor:
                 decision = self._classify(
                     intent, exit_code, heartbeat_killed=backend.heartbeat_killed,
                 )
+                # A stop WE initiated is planned by definition — the intent
+                # file is corroboration, not the deciding vote. Depending on
+                # it alone misclassified every update-stop and quit as a
+                # crash (observed live 2026-07-30: intent written by the
+                # backend yet read as None), sending quits through crash
+                # backoff until the shell force-killed the supervisor.
+                # Heartbeat kills keep their crash routing: that terminate
+                # is a recovery action, not a plan.
+                if (
+                    decision == "crash"
+                    and backend.stop_signalled
+                    and not backend.heartbeat_killed
+                ):
+                    log.info(
+                        "supervisor: exit followed our own stop signal — "
+                        "classifying as operator_quit (intent file said %s)",
+                        getattr(intent, "intent", None),
+                    )
+                    decision = "operator_quit"
                 # Capture the continuation id IMMEDIATELY after classify
                 # so a downstream raise (clear_intent, log formatting, etc.)
                 # in the catch-all path below can't lose the resume token
@@ -617,17 +645,19 @@ class Supervisor:
         proc = backend.proc
         if proc.poll() is not None:
             return
-        try:
-            if sys.platform == "win32":
-                if self.separate_console:
-                    stop_path = runtime_dir(self.tesseract_home) / "stop_request"
-                    stop_path.write_text("stop\n", encoding="utf-8")
+        if not backend.stop_signalled:
+            backend.stop_signalled = True
+            try:
+                if sys.platform == "win32":
+                    if self.separate_console:
+                        stop_path = runtime_dir(self.tesseract_home) / "stop_request"
+                        stop_path.write_text("stop\n", encoding="utf-8")
+                    else:
+                        os.kill(proc.pid, signal.CTRL_BREAK_EVENT)  # type: ignore[attr-defined]
                 else:
-                    os.kill(proc.pid, signal.CTRL_BREAK_EVENT)  # type: ignore[attr-defined]
-            else:
-                proc.terminate()
-        except OSError:
-            log.exception("supervisor: graceful stop signal raised")
+                    proc.terminate()
+            except OSError:
+                log.exception("supervisor: graceful stop signal raised")
         deadline = time.monotonic() + _GRACEFUL_STOP_GRACE_S
         while proc.poll() is None and time.monotonic() < deadline:
             time.sleep(0.2)

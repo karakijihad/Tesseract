@@ -41,7 +41,20 @@ def _install_windows_break_handler() -> None:
     if sys.platform != "win32" or not hasattr(signal, "SIGBREAK"):
         return
 
+    fired = False
+
     def _on_break(_signum, _frame):  # type: ignore[no-untyped-def]
+        # Once-latch (2026-07-30): a second CTRL_BREAK landing after
+        # shutdown has begun used to raise a KeyboardInterrupt in the
+        # middle of aiohttp's cleanup chain, hard-killing the backend
+        # (STATUS_CONTROL_C_EXIT) before teardown finished. The first
+        # break starts the graceful shutdown; any repeat is ignored —
+        # a genuinely wedged shutdown is the supervisor's kill
+        # escalation to solve, not a second interrupt's.
+        nonlocal fired
+        if fired:
+            return
+        fired = True
         # Best-effort raise on SIGINT so aiohttp's installed handler
         # catches it. If raising fails (no SIGINT handler yet), at
         # least translate to KeyboardInterrupt so the event loop

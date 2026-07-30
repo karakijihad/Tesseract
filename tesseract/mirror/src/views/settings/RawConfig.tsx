@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState } from "react";
 
-import { fetchConfigFiles } from '../../lib/api';
-import type { ConfigFileEntry } from '../../lib/types';
-import { useSettingsStore } from '../../stores/settings';
+import { fetchConfigFiles } from "../../lib/api";
+import type { ConfigFileEntry } from "../../lib/types";
+import { useSettingsStore } from "../../stores/settings";
+import { useWebSocketStore } from "../../stores/websocket";
 
 function bytesLabel(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -11,18 +12,28 @@ function bytesLabel(n: number): string {
 }
 
 export function RawConfigSection() {
-  const collapsed = useSettingsStore((s) => s.collapsedSections['raw-config'] ?? true);
+  const collapsed = useSettingsStore(
+    (s) => s.collapsedSections["raw-config"] ?? true,
+  );
   const toggleCollapsed = useSettingsStore((s) => s.toggleCollapsed);
   const [files, setFiles] = useState<ConfigFileEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [openFiles, setOpenFiles] = useState<Record<string, boolean>>({});
 
+  // Re-runs on every WS (re)connection: a backend restart must replace a
+  // pre-restart "Failed to fetch" with fresh data (2026-07-30).
+  const wsGeneration = useWebSocketStore((s) => s.generation);
   useEffect(() => {
     if (collapsed || files) return;
+    setError(null);
     fetchConfigFiles()
       .then((res) => setFiles(res.files))
-      .catch((err) => setError(err instanceof Error ? err.message : 'config-files fetch failed'));
-  }, [collapsed, files]);
+      .catch((err) =>
+        setError(
+          err instanceof Error ? err.message : "config-files fetch failed",
+        ),
+      );
+  }, [collapsed, files, wsGeneration]);
 
   const toggleFile = (name: string) =>
     setOpenFiles((prev) => ({ ...prev, [name]: !prev[name] }));
@@ -32,15 +43,17 @@ export function RawConfigSection() {
       <button
         type="button"
         className="settings-section__title settings-section__toggle t-meta"
-        onClick={() => toggleCollapsed('raw-config')}
+        onClick={() => toggleCollapsed("raw-config")}
         aria-expanded={!collapsed}
       >
-        <span className="settings-section__caret">{collapsed ? '▸' : '▾'}</span>
-        Raw config ({files ? files.length : '…'})
+        <span className="settings-section__caret">{collapsed ? "▸" : "▾"}</span>
+        Raw config ({files ? files.length : "…"})
       </button>
       {!collapsed && (
         <>
-          <div className="settings-hint t-meta">Read-only. Safe-list only — no secrets, no .env, no workspace files.</div>
+          <div className="settings-hint t-meta">
+            Read-only. Safe-list only — no secrets, no .env, no workspace files.
+          </div>
           {error && <div className="settings-error">{error}</div>}
           <div className="raw-config-list">
             {(files ?? []).map((f) => (
@@ -52,12 +65,14 @@ export function RawConfigSection() {
                   aria-expanded={!!openFiles[f.name]}
                   disabled={f.missing || f.content === null}
                 >
-                  <span className="raw-config-row__caret">{openFiles[f.name] ? '▾' : '▸'}</span>
+                  <span className="raw-config-row__caret">
+                    {openFiles[f.name] ? "▾" : "▸"}
+                  </span>
                   <span className="raw-config-row__name">{f.path}</span>
                   <span className="t-meta">
                     {f.missing
-                      ? '(missing)'
-                      : `${f.lines} lines · ${bytesLabel(f.bytes)}${f.truncated ? ' · truncated' : ''}`}
+                      ? "(missing)"
+                      : `${f.lines} lines · ${bytesLabel(f.bytes)}${f.truncated ? " · truncated" : ""}`}
                   </span>
                 </button>
                 {openFiles[f.name] && f.content !== null && (

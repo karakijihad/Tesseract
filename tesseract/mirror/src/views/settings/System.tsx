@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { Hint } from "../../components/ui/Hint";
 import { fetchSystem, type CapabilitySnapshot } from "../../lib/api";
+import { useWebSocketStore } from "../../stores/websocket";
 
 function fmtMaybe(v: string | null | undefined, suffix = ""): string {
   if (v == null || v === "") return "unknown";
@@ -18,13 +19,17 @@ export function SystemSection() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Re-runs on every WS (re)connection: a backend restart must replace a
+  // pre-restart "Failed to fetch" with fresh data (2026-07-30).
+  const wsGeneration = useWebSocketStore((s) => s.generation);
   useEffect(() => {
+    setError(null);
     fetchSystem(false)
       .then(setSnap)
       .catch((err) =>
         setError(err instanceof Error ? err.message : String(err)),
       );
-  }, []);
+  }, [wsGeneration]);
 
   const refresh = async () => {
     setRefreshing(true);

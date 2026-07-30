@@ -16,6 +16,7 @@ visible to the reader. Staleness is detected via ``backend_pid`` +
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from datetime import datetime, timezone
@@ -23,6 +24,8 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+log = logging.getLogger(__name__)
 
 
 IntentKind = Literal["operator_quit", "restart_upgrade", "crash"]
@@ -134,20 +137,33 @@ def read_with_staleness_check(
     Returns ``None`` on any of those, which the supervisor treats as
     ``crash``. Returns the parsed ``IntentFile`` otherwise.
     """
+    # Each None carries its reason into the log: an intent the backend
+    # verifiably wrote came back None on 2026-07-30 and the silent returns
+    # made the failure undiagnosable from the supervisor's log alone.
     if not path.exists():
+        log.info("intent read: no file at %s", path)
         return None
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         intent = IntentFile.from_payload(payload)
-    except (json.JSONDecodeError, ValueError, KeyError, TypeError):
+    except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
+        log.warning("intent read: malformed file at %s (%s)", path, exc)
         return None
     if intent.timestamp < backend_started_at:
+        log.info(
+            "intent read: stale (written %s, backend started %s)",
+            intent.timestamp.isoformat(), backend_started_at.isoformat(),
+        )
         return None
     if (
         backend_pid is not None
         and intent.backend_pid is not None
         and intent.backend_pid != backend_pid
     ):
+        log.info(
+            "intent read: pid mismatch (file %s, expected %s)",
+            intent.backend_pid, backend_pid,
+        )
         return None
     return intent
 

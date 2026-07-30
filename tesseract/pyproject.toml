@@ -1,6 +1,6 @@
 [project]
 name = "tesseract"
-version = "1.0.5"
+version = "1.0.6"
 description = "TESSERACT kernel — local-first AI entity runtime"
 requires-python = ">=3.12"
 dependencies = [
@@ -65,6 +65,14 @@ dependencies = [
     # winpty used to kill the Mirror backend at import (2026-07-29 crash
     # storm on a fresh install). Linux/Mac use stdlib `pty`.
     "pywinpty>=2.0.13; sys_platform == 'win32'",
+
+    # Local TTS runtime — Piper is the DEFAULT voice (baked-in
+    # northern_english_male; the provisioner downloads the model on first
+    # run) and TARS is voice-first, so the engine must be core: as an
+    # extra it was never installed on packaged apps and every install was
+    # silent (found live 2026-07-30). CPU onnxruntime comes transitively;
+    # GPU acceleration + Kokoro stay in the opt-in [voice-local] extra.
+    "piper-tts>=1.2.0",
 ]
 
 [project.optional-dependencies]
@@ -80,13 +88,12 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "pytest-httpx>=0.30.0",
 ]
-# Local TTS — Piper (CPU-only, baked-in voice) and Kokoro (GPU/CPU,
-# style-embedding blend; needs onnxruntime + the CUDA 12 wheels on
-# Windows so the CUDAExecutionProvider can resolve its DLLs). Both
-# voice models are operator-downloaded into
+# GPU/optional TTS — Kokoro (style-embedding blend; needs onnxruntime +
+# the CUDA 12 wheels on Windows so the CUDAExecutionProvider can resolve
+# its DLLs). Piper itself is a core dependency (see above); this extra
+# adds Kokoro + GPU acceleration only. Voice models are downloaded into
 # `tesseract/voice/models/{piper,kokoro}/`; pip only ships the runtime.
 voice-local = [
-    "piper-tts>=1.2.0",
     "kokoro-onnx>=0.5.0",
     "onnxruntime-gpu>=1.20; platform_system == 'Windows'",
     "onnxruntime>=1.20; platform_system != 'Windows'",

@@ -81,13 +81,28 @@ function App() {
   }, []);
 
   // Self-update: launch check + periodic re-check. Tauri-only — a browser
-  // dev session has no update.rs IPC bridge to call.
+  // dev session has no update.rs IPC bridge to call. The launch check
+  // retries every 30s until a check has ever succeeded (version set):
+  // on a FIRST run this code executes while provisioning is still
+  // downloading the app repo, so the first attempt fails on a
+  // not-yet-existing clone and used to latch that error until the 6h
+  // re-check (2026-07-30).
   useEffect(() => {
     if (!isTauri()) return;
     const check = useUpdateStore.getState().check;
     void check();
+    const retryId = window.setInterval(() => {
+      if (useUpdateStore.getState().version !== null) {
+        window.clearInterval(retryId);
+        return;
+      }
+      void check();
+    }, 30_000);
     const id = window.setInterval(() => void check(), UPDATE_CHECK_INTERVAL_MS);
-    return () => window.clearInterval(id);
+    return () => {
+      window.clearInterval(retryId);
+      window.clearInterval(id);
+    };
   }, []);
 
   // Hydrate the slash palette once on mount. Failures are logged but

@@ -211,6 +211,16 @@ def build(src_root: Path, out_root: Path, files: Iterable[str] | None = None) ->
 
     _reset_entities(out_root)
 
+    # Voice model dirs: `fetch_piper_voice` downloads .onnx weights INTO the
+    # clone at runtime, and without an ignore rule git reports them as
+    # uncommitted changes — the update UI then shows a scary "local history
+    # diverged" row on every install and nudges users toward force-updates
+    # (observed live 2026-07-30). Ignore everything but the shipped scaffold.
+    for rel in ("tesseract/voice/models/piper", "tesseract/voice/models/kokoro"):
+        d = out_root / rel
+        if d.is_dir():
+            _write_state_dir_gitignore(d)
+
     # Last, so it overwrites the dev `.gitignore` copied in with the tracked
     # files. Must come after every generator above, since those decide what
     # the tree contains and this decides what survives publication.

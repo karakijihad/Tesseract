@@ -1,12 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState } from "react";
 
 import {
   fetchSessionPolicy,
   postSessionPolicy,
   type SessionPolicyResponse,
   type SessionResumePolicy,
-} from '../../lib/api';
-import { useSessionPolicyStore } from '../../stores/sessionPolicy';
+} from "../../lib/api";
+import { useSessionPolicyStore } from "../../stores/sessionPolicy";
+import { useWebSocketStore } from "../../stores/websocket";
 
 interface PolicyOption {
   value: SessionResumePolicy;
@@ -16,37 +17,43 @@ interface PolicyOption {
 
 const POLICY_OPTIONS: PolicyOption[] = [
   {
-    value: 'today_only',
-    label: 'today only',
-    hint: 'Only sessions started today auto-resume on reload.',
+    value: "today_only",
+    label: "today only",
+    hint: "Only sessions started today auto-resume on reload.",
   },
   {
-    value: 'today_plus_yesterday',
-    label: 'today + yesterday',
-    hint: 'Phase 15 default. Covers an overnight gap; matches DAILY_FILES_TO_LOAD=2.',
+    value: "today_plus_yesterday",
+    label: "today + yesterday",
+    hint: "Phase 15 default. Covers an overnight gap; matches DAILY_FILES_TO_LOAD=2.",
   },
   {
-    value: 'n_days',
-    label: 'last N days',
-    hint: 'Resume any session newer than the slider days.',
+    value: "n_days",
+    label: "last N days",
+    hint: "Resume any session newer than the slider days.",
   },
   {
-    value: 'always',
-    label: 'always',
-    hint: 'Auto-resume any saved session, however old.',
+    value: "always",
+    label: "always",
+    hint: "Auto-resume any saved session, however old.",
   },
 ];
 
 export function SessionPolicySection() {
   const setPolicyStore = useSessionPolicyStore((s) => s.set);
   const [server, setServer] = useState<SessionPolicyResponse | null>(null);
-  const [policy, setPolicy] = useState<SessionResumePolicy>('today_plus_yesterday');
+  const [policy, setPolicy] = useState<SessionResumePolicy>(
+    "today_plus_yesterday",
+  );
   const [days, setDays] = useState(1);
   const [showToasts, setShowToasts] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Re-runs on every WS (re)connection: a backend restart must replace a
+  // pre-restart "Failed to fetch" with fresh data (2026-07-30).
+  const wsGeneration = useWebSocketStore((s) => s.generation);
   useEffect(() => {
+    setError(null);
     fetchSessionPolicy()
       .then((res) => {
         setServer(res);
@@ -59,8 +66,10 @@ export function SessionPolicySection() {
           show_config_reload_toasts: res.show_config_reload_toasts,
         });
       })
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
-  }, [setPolicyStore]);
+      .catch((err) =>
+        setError(err instanceof Error ? err.message : String(err)),
+      );
+  }, [setPolicyStore, wsGeneration]);
 
   const dirty =
     server !== null &&
@@ -95,8 +104,8 @@ export function SessionPolicySection() {
     <section className="settings-section">
       <h3 className="settings-section__title">Session resume</h3>
       <div className="settings-hint t-meta">
-        Auto-resume cutoff for the persisted save name on Mirror reload.
-        Older sessions still appear in the Sessions drawer for manual /load.
+        Auto-resume cutoff for the persisted save name on Mirror reload. Older
+        sessions still appear in the Sessions drawer for manual /load.
       </div>
       {error && <div className="settings-error">{error}</div>}
       <div className="session-policy-options">
@@ -113,7 +122,7 @@ export function SessionPolicySection() {
           </label>
         ))}
       </div>
-      {policy === 'n_days' && (
+      {policy === "n_days" && (
         <div className="session-policy-days">
           <label className="t-meta">days</label>
           <input
@@ -147,7 +156,7 @@ export function SessionPolicySection() {
           onClick={save}
           disabled={!dirty || saving}
         >
-          {saving ? 'saving…' : 'save'}
+          {saving ? "saving…" : "save"}
         </button>
       </div>
     </section>
