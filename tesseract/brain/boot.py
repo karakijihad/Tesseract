@@ -1465,6 +1465,24 @@ def rebuild_adapters(app: Any) -> dict[str, Any]:
             from tesseract.brain.observer_subscriber import ObserverSubscriber
 
             app["observer_subscriber"] = ObserverSubscriber(observer)
+            # Re-attach immediately when armed. The detach above flips the
+            # OLD subscriber inactive while live chat sessions still point
+            # at it, and nothing re-arms after a config reload — so every
+            # providers/roles edit silently killed the observer until the
+            # next WS reconnect (found live 2026-07-30: zero fires all
+            # evening). Late import: same mirror-layer precedent as
+            # `_build_voice_runtime` below.
+            if app.get("observer_state") in {"armed", "observing"}:
+                try:
+                    from tesseract.mirror.server.routes.observer_consent import (
+                        _attach_to_active_sessions,
+                    )
+
+                    summary["observer_reattached_sessions"] = (
+                        _attach_to_active_sessions(app)
+                    )
+                except Exception:
+                    logger.exception("rebuild_adapters: observer re-attach failed")
         else:
             app["observer_subscriber"] = None
         summary["observer"] = "rebuilt"

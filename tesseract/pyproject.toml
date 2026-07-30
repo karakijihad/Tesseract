@@ -1,6 +1,6 @@
 [project]
 name = "tesseract"
-version = "1.0.7"
+version = "1.0.8"
 description = "TESSERACT kernel — local-first AI entity runtime"
 requires-python = ">=3.12"
 dependencies = [
@@ -58,7 +58,11 @@ dependencies = [
     # 2026-07-17 — official Model Context Protocol SDK. Powers the outbound
     # MCP *client* (curated allowlist in mcp_servers.yaml): ClientSession +
     # stdio_client / streamable_http_client. Capability-growth Phase 2.
-    "mcp>=1.12",
+    # <2 pin: mcp 2.0.0 drops `streamablehttp_client` from
+    # `mcp.client.streamable_http` — an unpinned fresh install resolved 2.0.0
+    # and the outbound client failed at import on every boot (found live
+    # 2026-07-30). transport.py is written against the 1.x API.
+    "mcp>=1.12,<2",
 
     # WS4a-2 — Windows ConPTY backend for the embedded terminal panel.
     # Core (not an extra): the provisioner installs bare `-e`, and a missing

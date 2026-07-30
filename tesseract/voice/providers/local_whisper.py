@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 
 _PCM_SAMPLE_RATE_HZ = 16_000
 _model_cache: dict[tuple[str, str, str], Any] = {}
+# Config key → (device, compute_type) actually loaded. Diverges from the key
+# when a cuda-configured load fell back to CPU — status() must report what's
+# really running, not what the config asked for (review finding 2026-07-30).
+_loaded_params: dict[tuple[str, str, str], tuple[str, str]] = {}
 _model_locks: dict[tuple[str, str, str], threading.Lock] = {}
 _model_locks_guard = threading.Lock()
 _model_factory = None
@@ -46,6 +50,7 @@ def set_model_factory(factory) -> None:
     global _model_factory
     _model_factory = factory
     _model_cache.clear()
+    _loaded_params.clear()
     _model_locks.clear()
 
 
@@ -57,15 +62,19 @@ def unload_models() -> None:
     references; the process exit then releases CUDA memory deterministically.
     """
     _model_cache.clear()
+    _loaded_params.clear()
     _model_locks.clear()
 
 
 def status(cfg: LocalWhisperConfig | None) -> dict[str, Any]:
     loaded = bool(_model_cache)
-    cached = [
-        {"model": model, "device": device, "compute_type": compute_type}
-        for model, device, compute_type in _model_cache
-    ]
+    cached = []
+    for key in _model_cache:
+        model, device, compute_type = key
+        actual_device, actual_compute = _loaded_params.get(key, (device, compute_type))
+        cached.append(
+            {"model": model, "device": actual_device, "compute_type": actual_compute}
+        )
     return {
         "configured": cfg is not None,
         "provider": cfg.provider if cfg is not None else "",
@@ -97,7 +106,13 @@ def _ensure_cuda_dll_dirs(device: str) -> None:
     if _dll_directory_handles:
         return
     for package in ("nvidia.cublas", "nvidia.cudnn", "nvidia.cuda_nvrtc"):
-        spec = find_spec(package)
+        # find_spec("nvidia.x") imports the parent "nvidia" package first and
+        # raises ModuleNotFoundError when it's absent (no [gpu] extra installed)
+        # — that's the normal CPU-only case, not an error (found live 2026-07-30).
+        try:
+            spec = find_spec(package)
+        except ModuleNotFoundError:
+            return
         locations = list(spec.submodule_search_locations or []) if spec else []
         for location in locations:
             bin_dir = os.path.join(location, "bin")
@@ -135,15 +150,33 @@ def _get_model(cfg: LocalWhisperConfig) -> Any:
             return cached
         factory = _model_factory or _default_factory
         started = time.perf_counter()
-        model = factory(cfg.model, cfg.device, cfg.compute_type)
+        device, compute_type = cfg.device, cfg.compute_type
+        try:
+            model = factory(cfg.model, device, compute_type)
+        except Exception as exc:
+            if device.lower() == "cpu":
+                raise
+            # providers.yaml promises "falls back to CPU if CUDA missing" —
+            # honour it: a machine without the CUDA stack (no [gpu] extra,
+            # no NVIDIA driver) must still get local STT rather than an
+            # every-boot failure. Cached under the config's key so the
+            # cuda attempt isn't repeated per transcription.
+            device, compute_type = "cpu", "int8"
+            logger.warning(
+                "local Whisper %s load failed (%s); falling back to device=cpu compute=int8",
+                cfg.device,
+                exc,
+            )
+            model = factory(cfg.model, device, compute_type)
         logger.info(
             "local Whisper loaded model=%s device=%s compute=%s in %.2fs",
             cfg.model,
-            cfg.device,
-            cfg.compute_type,
+            device,
+            compute_type,
             time.perf_counter() - started,
         )
         _model_cache[key] = model
+        _loaded_params[key] = (device, compute_type)
         return model
 
 

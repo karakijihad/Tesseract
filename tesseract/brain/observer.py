@@ -196,9 +196,20 @@ class Observer:
         if not trimmed:
             return ""
         try:
-            text, _tokens = await self._run_stream(self._compose_messages(trimmed))
+            text, _tokens = await asyncio.wait_for(
+                self._run_stream(self._compose_messages(trimmed)),
+                timeout=self._config.timeout_seconds,
+            )
         except BudgetExhausted as exc:
             logger.info("observer skipped — %s", exc)
+            return ""
+        except asyncio.TimeoutError:
+            logger.warning(
+                "observer call exceeded %ss (provider %s/%s hung) — dropping observation",
+                self._config.timeout_seconds,
+                self._config.provider,
+                self._config.model,
+            )
             return ""
         # Stateless and incremental paths share the same counter so the
         # ObserverStatsChip "N obs" / "N tok" / "last fired" reading reflects
@@ -253,13 +264,30 @@ class Observer:
                 user_nudge="Emit your one JSON suggestion now, or NONE.",
             )
             try:
-                text, tokens = await self._run_stream(messages)
+                # Hard ceiling around the whole stream: a provider that
+                # accepts the connection but never streams (NIM, found live
+                # 2026-07-30) otherwise holds `self._lock` forever — every
+                # later turn queues behind it and the observer zombifies
+                # with zero fires, zero warnings, breaker green.
+                text, tokens = await asyncio.wait_for(
+                    self._run_stream(messages),
+                    timeout=self._config.timeout_seconds,
+                )
             except BudgetExhausted as exc:
                 # Budget skip is not an adapter failure — neither the circuit
                 # breaker nor the fires counter should move. Observer will
                 # wake up again once the ledger crosses midnight (local-tz)
                 # or the operator raises the cap in roles.yaml.
                 logger.info("observer skipped — %s", exc)
+                return None
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "observer call exceeded %ss (provider %s/%s hung) — counting as failure",
+                    self._config.timeout_seconds,
+                    self._config.provider,
+                    self._config.model,
+                )
+                self._circuit_breaker.record_failure()
                 return None
             self._fires_total += 1
             self._tokens_used_total += tokens

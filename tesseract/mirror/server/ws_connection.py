@@ -20,6 +20,7 @@ from tesseract.mirror.server.envelope import (
     make_cost_state,
     make_entity_signals,
     make_envelope,
+    make_voice_instruction,
 )
 from tesseract.mirror.server import chat_store, spawn_wake
 from tesseract.mirror.server.chat_lifecycle import _open_chats_payload
@@ -132,6 +133,7 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     await _attach_observer_subscriber_if_armed(request.app, session)
     await _emit_cost_state(request.app, session)
     await _emit_entity_signals(request.app, session)
+    await _flush_stt_fallback_notice(request.app, session)
     session.entity_signals_task = _spawn_tracked(
         request.app,
         _entity_signals_pump(request.app, session),
@@ -181,6 +183,29 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
             finally:
                 cleanup_session(request.app, session)
     return ws
+
+
+async def _flush_stt_fallback_notice(app: web.Application, session: ServerSession) -> None:
+    """Surface a latched local-STT failure as a toast on connect.
+
+    A boot-time whisper warmup failure latches a one-shot notice on the
+    engine (stt.py::warm_up_local), but its only consumer was the next
+    *voice* commit — the operator never saw the problem unless they spoke
+    (found live 2026-07-30: local STT dead all evening, zero UI signal).
+    `voice_instruction` with `instruction` set already renders a warning
+    toast on the frontend."""
+    engine = app.get("stt_engine")
+    if engine is None or not hasattr(engine, "consume_fallback_notice"):
+        return
+    try:
+        notice = engine.consume_fallback_notice()
+    except Exception:
+        log.exception("stt fallback notice flush failed")
+        return
+    if notice:
+        await send_envelope(
+            session, make_voice_instruction(session.session_id, instruction=notice)
+        )
 
 
 async def _emit_cost_state(app: web.Application, session: ServerSession) -> None:

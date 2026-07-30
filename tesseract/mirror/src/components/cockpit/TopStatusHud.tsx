@@ -52,12 +52,17 @@ export function TopStatusHud() {
     !updateApplying &&
     updateErrorSource === "apply" &&
     !!updateError;
-  const showUpdateChip = isTauri() && !updateFailed && updateBehind > 0;
   const manualRestart =
     updateFailed && updateError ? needsManualRestart(updateError) : false;
   // Shell self-update chip: a newer installer exists. Clicking is the
   // consent — download, verify, restart into the new version.
   const showExeChip = isTauri() && !updateFailed && exeAvailable;
+  // One chip at a time (operator request 2026-07-30 — two yellow chips read
+  // as duplicate actions). The exe chip wins when both are pending (the
+  // rarer, bigger update — shell + bundled frontend); the git chip
+  // resurfaces on the post-relaunch check if the app tree is still behind.
+  const showUpdateChip =
+    isTauri() && !updateFailed && updateBehind > 0 && !showExeChip;
 
   useEffect(() => {
     void hydrateActivity();

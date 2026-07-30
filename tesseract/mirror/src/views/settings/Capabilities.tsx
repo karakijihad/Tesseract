@@ -158,8 +158,14 @@ export function CapabilitiesSection() {
 
       <div className="cost-row" style={{ marginTop: "0.75rem" }}>
         <span className="t-meta">Edit this file:</span>
-        <code className="t-meta">{caps.env_path}</code>
-        {isTauri() && (
+        {/* Span the remaining tracks — the 140px value column truncated the
+            path and the button used to sit on top of it (2026-07-30). */}
+        <code className="t-meta" style={{ gridColumn: "2 / -1" }}>
+          {caps.env_path}
+        </code>
+      </div>
+      {isTauri() && (
+        <div className="cost-row cost-row--actions">
           <button
             type="button"
             className="cost-row__save"
@@ -167,8 +173,8 @@ export function CapabilitiesSection() {
           >
             Open folder
           </button>
-        )}
-      </div>
+        </div>
+      )}
       <div className="settings-hint t-meta">
         .env is read once at boot — restart TARS after editing it for changes to
         take effect.

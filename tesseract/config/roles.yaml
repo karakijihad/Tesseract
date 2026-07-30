@@ -221,9 +221,9 @@ roles:
     primary: api.anthropic.haiku_45
     fallbacks:
       - api.nim.qwen3_5_397b_a17b
-      - api.nim.qwen3_5_122b_a10b
     notes: "Image-to-text delegation. Primary needs only ANTHROPIC_API_KEY; the NIM
-      Qwen entries are free fallbacks once BUILD_NVIDIA_KEY is added to .env."
+      Qwen entry is a free fallback once BUILD_NVIDIA_KEY is added to .env.
+      (122B-A10B fallback removed — NIM end-of-life 2026-07-20.)"
 
   image_generator:
     mode: active

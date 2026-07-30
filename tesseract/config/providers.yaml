@@ -358,28 +358,8 @@ api:
     max_retries: 2
     adapter: openai
     models:
-      # MoE 122B / 10B-active. Tool-calling ✓. Multimodal ✓ (image_url
-      # accepted). NOT a reasoning model — `reasoning_content` always null.
-      # `reasoning_effort` is accepted but ignored.
-      qwen3_5_122b_a10b:
-        model: qwen/qwen3.5-122b-a10b
-        context_window: 128000
-        max_output_tokens: 8192
-        temperature: 0.7
-        top_p: 0.95
-        cost_per_mtok_in: 0.00
-        cost_per_mtok_out: 0.00
-        # video flagged true per the Qwen3.5 spec (text+image+video); if
-        # the NIM gateway ever rejects a video part, the chat-loop surfaces
-        # the error cleanly. Audio capability lives on the SEPARATE
-        # Qwen3.5-Omni SKU, not this one.
-        capabilities:
-          vision_input: true
-          audio_input: false
-          video_input: true
-          pdf_input: false
-          image_output: false
-          audio_output: false
+      # qwen3_5_122b_a10b removed 2026-07-30 — NIM returns 410 Gone
+      # ("end of life 2026-07-20T00:00:00Z").
       # Qwen3.5 flagship MoE 397B / 17B-active. Tool-calling ✓. Multimodal —
       # image_url support confirmed. Video per spec (early-fusion VL
       # training), NIM round-trip untested. NIM serves it non-thinking
