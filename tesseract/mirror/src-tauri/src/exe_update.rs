@@ -15,7 +15,7 @@
 //! explicit click, mirroring `update_apply`'s contract.
 
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -309,8 +309,8 @@ mod tests {
     #[test]
     fn owner_repo_parses_the_default_url_shape() {
         assert_eq!(
-            owner_repo("https://github.com/karakijihad/Tesseract.git"),
-            Some(("karakijihad".into(), "Tesseract".into()))
+            owner_repo("https://github.com/jane-doe/Widget.git"),
+            Some(("jane-doe".into(), "Widget".into()))
         );
         assert_eq!(
             owner_repo("https://github.com/a/b"),
@@ -318,6 +318,8 @@ mod tests {
         );
         assert_eq!(owner_repo("https://example.com/a/b.git"), None);
         assert_eq!(owner_repo("https://github.com/only-owner"), None);
+        // The compiled-in production URL must always parse.
+        assert!(owner_repo(crate::repo::DEFAULT_REPO_URL).is_some());
     }
 
     #[test]
