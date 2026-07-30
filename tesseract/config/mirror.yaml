@@ -12,7 +12,10 @@ identity:
   operator_name: Operator
 
 cors:
-  # Origins allowed to call the REST/WS API from a browser.
+  # EXTRA origins allowed to call the REST/WS API from a browser. The
+  # packaged app's own webview origins (tauri.localhost) are built into
+  # the server (mirror/server/cors.py::PACKAGED_APP_ORIGINS) and need no
+  # entry here.
   origins:
     - http://localhost:5173
     - http://localhost:1420
