@@ -278,6 +278,7 @@ async def post_restart_for_code_drift(request: web.Request) -> web.Response:
             continuation_id=cont_id,
             reason=reason,
             backend_pid=os.getpid(),
+            backend_ppid=os.getppid(),
         ),
     )
     log.info(

@@ -12,6 +12,7 @@ import { useUpdateStore } from "./stores/update";
 import { usePanelStore } from "./cockpit/panelStore";
 import { loadSlashCommands } from "./lib/slashCommands";
 import { installViewSnapshotWatcher } from "./lib/viewSnapshot";
+import { installClientErrorReporter } from "./lib/clientLog";
 import { CockpitStage } from "./cockpit/CockpitStage";
 import { RegionCapture } from "./cockpit/RegionCapture";
 import { GlobalCanvas } from "./components/layout/GlobalCanvas";
@@ -110,6 +111,9 @@ function App() {
   useEffect(() => {
     void loadSlashCommands();
     installViewSnapshotWatcher();
+    // Frontend errors → backend log; the packaged webview console is
+    // invisible, so this is the only durable trace of a UI crash.
+    installClientErrorReporter();
   }, []);
   const [showMotionPanel, setShowMotionPanel] = useState(() => {
     if (typeof window === "undefined") return false;

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Hint } from "../../components/ui/Hint";
 import { fetchSystem, type CapabilitySnapshot } from "../../lib/api";
 import { useWebSocketStore } from "../../stores/websocket";
+import { useFetchRetryTick } from "../../lib/useFetchRetry";
 
 function fmtMaybe(v: string | null | undefined, suffix = ""): string {
   if (v == null || v === "") return "unknown";
@@ -22,6 +23,7 @@ export function SystemSection() {
   // Re-runs on every WS (re)connection: a backend restart must replace a
   // pre-restart "Failed to fetch" with fresh data (2026-07-30).
   const wsGeneration = useWebSocketStore((s) => s.generation);
+  const retryTick = useFetchRetryTick(error !== null);
   useEffect(() => {
     setError(null);
     fetchSystem(false)
@@ -29,7 +31,7 @@ export function SystemSection() {
       .catch((err) =>
         setError(err instanceof Error ? err.message : String(err)),
       );
-  }, [wsGeneration]);
+  }, [wsGeneration, retryTick]);
 
   const refresh = async () => {
     setRefreshing(true);

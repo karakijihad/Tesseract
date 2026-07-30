@@ -146,6 +146,10 @@ def _register_routes(app: web.Application) -> None:
     # AU-1 — supervisor visibility + operator clean-shutdown route.
     from tesseract.mirror.server.routes import runtime as runtime_route
     runtime_route.register(app)
+    # 2026-07-30 — frontend error intake (webview console is invisible in
+    # the packaged app; UI crashes must land in a file on disk).
+    from tesseract.mirror.server.routes import client_log as client_log_route
+    client_log_route.register(app)
     # AU-4 S2 — AgendaStore REST routes (list/get/create/patch/cancel/approve).
     from tesseract.mirror.server.routes import agenda as agenda_route
     agenda_route.register(app)
@@ -1812,6 +1816,7 @@ def _make_code_drift_restart_fn(app: web.Application):
                     continuation_id=cont_id,
                     reason=f"code drift auto-restart ({len(paths)} backend path(s) changed)",
                     backend_pid=os.getpid(),
+                    backend_ppid=os.getppid(),
                 ),
             )
             log.warning(

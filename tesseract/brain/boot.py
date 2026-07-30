@@ -259,6 +259,10 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset({
 _CONDITIONAL_CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "session_open",
     "invoke_agent",  # same adapter guard as session_open
+    # Registers AFTER boot, once the STT engine is up (`transcribe_audio:
+    # registered against local STT engine`) — absent at yaml-sync time on
+    # every boot, and permanently absent when STT is unavailable.
+    "transcribe_audio",
 })
 
 _SHELL_VAR_RE = re.compile(r"^\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}$")
@@ -1965,7 +1969,20 @@ def _wire_tool_defaults(
     registered = set(class_defaults)
     yaml_listed = set(yaml_defaults)
 
-    orphans = sorted(yaml_listed - registered)
+    # Conditionally-registered tools (adapter-gated, or late-registering
+    # like transcribe_audio) are NOT orphans — flagging them told the
+    # operator to prune LIVE tools' postures on every keyless/booting
+    # install (2026-07-30).
+    orphans = sorted(yaml_listed - registered - _CONDITIONAL_CORE_TOOL_NAMES)
+    conditional_absent = sorted(
+        (yaml_listed - registered) & _CONDITIONAL_CORE_TOOL_NAMES
+    )
+    if conditional_absent:
+        logger.info(
+            "permissions.yaml::tools — %d tool(s) not registered in this "
+            "configuration (adapter/engine-gated, posture kept): %s",
+            len(conditional_absent), ", ".join(conditional_absent),
+        )
     if orphans:
         # ERROR-level so the pulse panel surfaces it. Orphans mean a tool
         # was deleted but yaml still references it — operator should prune.

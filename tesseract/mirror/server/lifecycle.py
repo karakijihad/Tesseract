@@ -96,6 +96,9 @@ def write_shutdown_intent(
             continuation_id=continuation_id,
             reason=reason,
             backend_pid=os.getpid(),
+            # Launcher-shim installs: the supervisor knows us by our
+            # parent's pid (see IntentFile.backend_ppid).
+            backend_ppid=os.getppid(),
         )
         write_atomic(intent_path(home), record)
         log.info(

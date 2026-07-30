@@ -55,6 +55,12 @@ class IntentFile(BaseModel):
     continuation_id: str | None = None
     reason: str = ""
     backend_pid: int | None = None
+    # Parent PID of the writer (2026-07-30). On packaged installs the
+    # venv `python.exe` is a launcher shim: the supervisor's Popen pid is
+    # the SHIM while the interpreter writing this file is its child —
+    # `backend_pid` never matched and every intent read back None. The
+    # reader accepts a match on either pid.
+    backend_ppid: int | None = None
 
     def to_payload(self) -> dict:
         d = self.model_dump()
@@ -66,6 +72,8 @@ class IntentFile(BaseModel):
             d.pop("reason", None)
         if d.get("backend_pid") is None:
             d.pop("backend_pid", None)
+        if d.get("backend_ppid") is None:
+            d.pop("backend_ppid", None)
         return d
 
     @classmethod
@@ -159,10 +167,13 @@ def read_with_staleness_check(
         backend_pid is not None
         and intent.backend_pid is not None
         and intent.backend_pid != backend_pid
+        # The launcher-shim case: the supervisor's pid is the writer's
+        # PARENT. Either identity proves this backend instance wrote it.
+        and intent.backend_ppid != backend_pid
     ):
         log.info(
-            "intent read: pid mismatch (file %s, expected %s)",
-            intent.backend_pid, backend_pid,
+            "intent read: pid mismatch (file pid %s / ppid %s, expected %s)",
+            intent.backend_pid, intent.backend_ppid, backend_pid,
         )
         return None
     return intent

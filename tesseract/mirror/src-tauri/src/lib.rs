@@ -135,6 +135,36 @@ fn clear_stale_crash_storm(home: &Path) {
     }
 }
 
+/// Routes the supervisor's own stdout/stderr into
+/// `logs/supervisor-console.log`. The supervisor captures its CHILDREN's
+/// consoles, but its own pre-logging output was discarded by this
+/// console-less shell — a supervisor that died on config validation
+/// (observed live 2026-07-30) left literally zero trace. Truncated when
+/// it grows past a small cap: after boot the supervisor logs to its own
+/// rotating file, so this only holds early-boot output and tracebacks.
+fn attach_supervisor_console(home: &Path, cmd: &mut Command) {
+    const MAX_BYTES: u64 = 2 * 1024 * 1024;
+    let dir = home.join("logs");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("supervisor-console.log");
+    let oversized = std::fs::metadata(&path)
+        .map(|m| m.len() > MAX_BYTES)
+        .unwrap_or(false);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).write(true);
+    if oversized {
+        opts.truncate(true);
+    } else {
+        opts.append(true);
+    }
+    if let Ok(out) = opts.open(&path) {
+        if let Ok(err) = out.try_clone() {
+            cmd.stdout(std::process::Stdio::from(out));
+            cmd.stderr(std::process::Stdio::from(err));
+        }
+    }
+}
+
 fn spawn_supervisor(home: &PathBuf) -> std::io::Result<Child> {
     clear_stale_stop_request(home);
     clear_stale_crash_storm(home);
@@ -143,6 +173,7 @@ fn spawn_supervisor(home: &PathBuf) -> std::io::Result<Child> {
         .env("TESSERACT_HOME", home)
         .env("SUPERVISOR_HEADLESS", "1")
         .env("SUPERVISOR_DEV_VITE", "0");
+    attach_supervisor_console(home, &mut cmd);
     hide_console(&mut cmd);
     let result = cmd.spawn();
     match &result {

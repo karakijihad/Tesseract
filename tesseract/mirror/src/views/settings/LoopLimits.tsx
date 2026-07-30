@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { Hint } from "../../components/ui/Hint";
 import { useWebSocketStore } from "../../stores/websocket";
+import { useFetchRetryTick } from "../../lib/useFetchRetry";
 import {
   fetchSessionCaps,
   postSessionCaps,
@@ -18,6 +19,7 @@ export function LoopLimitsSection() {
   // Re-runs on every WS (re)connection: a backend restart must replace a
   // pre-restart "Failed to fetch" with fresh data (2026-07-30).
   const wsGeneration = useWebSocketStore((s) => s.generation);
+  const retryTick = useFetchRetryTick(error !== null);
   useEffect(() => {
     setError(null);
     fetchSessionCaps()
@@ -29,7 +31,8 @@ export function LoopLimitsSection() {
       .catch((err) =>
         setError(err instanceof Error ? err.message : String(err)),
       );
-  }, [wsGeneration]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wsGeneration, retryTick]);
 
   const commitToolCap = async () => {
     if (!server) return;

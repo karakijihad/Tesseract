@@ -4,6 +4,7 @@ import { fetchConfigFiles } from "../../lib/api";
 import type { ConfigFileEntry } from "../../lib/types";
 import { useSettingsStore } from "../../stores/settings";
 import { useWebSocketStore } from "../../stores/websocket";
+import { useFetchRetryTick } from "../../lib/useFetchRetry";
 
 function bytesLabel(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -23,6 +24,7 @@ export function RawConfigSection() {
   // Re-runs on every WS (re)connection: a backend restart must replace a
   // pre-restart "Failed to fetch" with fresh data (2026-07-30).
   const wsGeneration = useWebSocketStore((s) => s.generation);
+  const retryTick = useFetchRetryTick(error !== null);
   useEffect(() => {
     if (collapsed || files) return;
     setError(null);
@@ -33,7 +35,7 @@ export function RawConfigSection() {
           err instanceof Error ? err.message : "config-files fetch failed",
         ),
       );
-  }, [collapsed, files, wsGeneration]);
+  }, [collapsed, files, wsGeneration, retryTick]);
 
   const toggleFile = (name: string) =>
     setOpenFiles((prev) => ({ ...prev, [name]: !prev[name] }));

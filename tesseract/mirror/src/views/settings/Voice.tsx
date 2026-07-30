@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { Hint } from "../../components/ui/Hint";
 import { useWebSocketStore } from "../../stores/websocket";
+import { useFetchRetryTick } from "../../lib/useFetchRetry";
 import {
   fetchVoiceSettings,
   postVoiceSettings,
@@ -17,6 +18,7 @@ export function VoiceSection() {
   // Re-runs on every WS (re)connection: a backend restart must replace a
   // pre-restart "Failed to fetch" with fresh data (2026-07-30).
   const wsGeneration = useWebSocketStore((s) => s.generation);
+  const retryTick = useFetchRetryTick(error !== null);
   useEffect(() => {
     setError(null);
     fetchVoiceSettings()
@@ -27,7 +29,8 @@ export function VoiceSection() {
       .catch((err) =>
         setError(err instanceof Error ? err.message : String(err)),
       );
-  }, [wsGeneration]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wsGeneration, retryTick]);
 
   const dirty = voice !== null && voiceId !== voice.voice_id;
 

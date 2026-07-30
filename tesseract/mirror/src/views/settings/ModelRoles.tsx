@@ -11,6 +11,7 @@ import type {
 } from "../../lib/types";
 import { useIdentityStore } from "../../stores/identity";
 import { useWebSocketStore } from "../../stores/websocket";
+import { useFetchRetryTick } from "../../lib/useFetchRetry";
 
 function ctxLabel(ctx: number | undefined): string {
   if (!ctx) return "—";
@@ -37,6 +38,7 @@ export function ModelRolesSection() {
     try {
       const c = await fetchCatalog();
       setCatalog(c);
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "failed to load catalog");
     }
@@ -45,10 +47,11 @@ export function ModelRolesSection() {
   // Re-runs on every WS (re)connection: a backend restart must replace a
   // pre-restart "Failed to fetch" with fresh data (2026-07-30).
   const wsGeneration = useWebSocketStore((s) => s.generation);
+  const retryTick = useFetchRetryTick(error !== null);
   useEffect(() => {
     void reloadCatalog();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wsGeneration]);
+  }, [wsGeneration, retryTick]);
 
   const targetRows: CatalogTargetMeta[] = useMemo(
     () => catalog?.targets ?? [],

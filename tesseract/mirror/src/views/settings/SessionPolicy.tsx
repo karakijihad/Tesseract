@@ -8,6 +8,7 @@ import {
 } from "../../lib/api";
 import { useSessionPolicyStore } from "../../stores/sessionPolicy";
 import { useWebSocketStore } from "../../stores/websocket";
+import { useFetchRetryTick } from "../../lib/useFetchRetry";
 
 interface PolicyOption {
   value: SessionResumePolicy;
@@ -52,6 +53,7 @@ export function SessionPolicySection() {
   // Re-runs on every WS (re)connection: a backend restart must replace a
   // pre-restart "Failed to fetch" with fresh data (2026-07-30).
   const wsGeneration = useWebSocketStore((s) => s.generation);
+  const retryTick = useFetchRetryTick(error !== null);
   useEffect(() => {
     setError(null);
     fetchSessionPolicy()
@@ -69,7 +71,8 @@ export function SessionPolicySection() {
       .catch((err) =>
         setError(err instanceof Error ? err.message : String(err)),
       );
-  }, [setPolicyStore, wsGeneration]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setPolicyStore, wsGeneration, retryTick]);
 
   const dirty =
     server !== null &&
