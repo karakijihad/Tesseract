@@ -410,7 +410,7 @@
   box-shadow: 0 0 10px hsl(var(--accent-hsl) / 0.35);
 }
 .hud-section.is-live {
-  color: var(--accent-success, #4ade80);
+  color: var(--ok);
   border-color: rgba(74, 222, 128, 0.3);
 }
 
