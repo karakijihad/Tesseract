@@ -5,21 +5,22 @@ import {
   useRef,
   useState,
   type ReactNode,
-} from 'react';
-import { createPortal } from 'react-dom';
-import { useUIStore, type View } from '../../stores/ui';
-import { usePanelStore, isRailKind } from '../../cockpit/panelStore';
-import { VIEW_LABELS } from '../../cockpit/viewRegistry';
-import { useCaptionsStore } from '../../stores/captions';
-import { useOrbVisibilityStore } from '../../stores/orbVisibility';
-import { useWorkspaceStore } from '../../stores/workspace';
-import { spawnTrio } from '../../canvas/triorenderer';
-import { Hint } from '../ui/Hint';
-import { ChatHudGroup } from './hud/ChatHudGroup';
-import { HudChatInput } from './hud/HudChatInput';
-import { ObserverHudGroup } from './hud/ObserverHudGroup';
-// StatusLine removed from the HUD — entity state already renders in the
-// right-panel header next to the TARS name, no point duplicating it.
+  type RefObject,
+} from "react";
+import { createPortal } from "react-dom";
+import { useUIStore, type View } from "../../stores/ui";
+import { usePanelStore, isRailKind } from "../../cockpit/panelStore";
+import { VIEW_LABELS } from "../../cockpit/viewRegistry";
+import { useCaptionsStore } from "../../stores/captions";
+import { useOrbVisibilityStore } from "../../stores/orbVisibility";
+import { useWorkspaceStore } from "../../stores/workspace";
+import { useHudDockStore } from "../../stores/hudDock";
+import { spawnTrio } from "../../canvas/triorenderer";
+import { Hint } from "../ui/Hint";
+import { HudSection } from "./hud/HudSection";
+import { ChatHudGroup } from "./hud/ChatHudGroup";
+import { HudChatInput } from "./hud/HudChatInput";
+import { ObserverHudGroup } from "./hud/ObserverHudGroup";
 
 interface TabDef {
   id: View;
@@ -113,7 +114,10 @@ const SoulIcon = () => (
   >
     <circle cx="10" cy="10" r="2.5" />
     <circle cx="10" cy="10" r="6" opacity="0.55" />
-    <path d="M10 1.5 V3.5 M10 16.5 V18.5 M1.5 10 H3.5 M16.5 10 H18.5" opacity="0.7" />
+    <path
+      d="M10 1.5 V3.5 M10 16.5 V18.5 M1.5 10 H3.5 M16.5 10 H18.5"
+      opacity="0.7"
+    />
   </svg>
 );
 
@@ -200,62 +204,109 @@ const SettingsIcon = () => (
   </svg>
 );
 
+// Section faces — sectioned dock (2026-07-31). Stage = three-pane frame,
+// Views = four-tile grid; both stroke-only like the tab icons.
+const StageSectionIcon = () => (
+  <svg
+    viewBox="0 0 20 20"
+    width="1em"
+    height="1em"
+    stroke="currentColor"
+    fill="none"
+    strokeWidth={1.4}
+    strokeLinejoin="round"
+  >
+    <rect x="2.5" y="3.5" width="15" height="13" rx="1.5" />
+    <path d="M6.5 3.5 V16.5" />
+    <path d="M13.5 3.5 V16.5" />
+  </svg>
+);
+
+const ViewsSectionIcon = () => (
+  <svg
+    viewBox="0 0 20 20"
+    width="1em"
+    height="1em"
+    stroke="currentColor"
+    fill="none"
+    strokeWidth={1.4}
+    strokeLinejoin="round"
+  >
+    <rect x="3" y="3" width="6" height="6" rx="1" />
+    <rect x="11" y="3" width="6" height="6" rx="1" />
+    <rect x="3" y="11" width="6" height="6" rx="1" />
+    <rect x="11" y="11" width="6" height="6" rx="1" />
+  </svg>
+);
+
 const TABS: TabDef[] = [
-  { id: 'autonomy',   icon: '⚡',               label: 'Autonomy' },
-  { id: 'pulse',      icon: <PulseIcon />,      label: 'Pulse' },
-  { id: 'chat',       icon: <ChatIcon />,       label: 'Chat' },
-  { id: 'terminal',   icon: '❯',                label: 'Terminal' },
-  { id: 'schedule',   icon: <ScheduleIcon />,   label: 'Schedule' },
-  { id: 'agents',     icon: <AgentsIcon />,     label: 'Agents' },
-  { id: 'channels',   icon: <ChannelsIcon />,   label: 'Channels' },
-  { id: 'soul',       icon: <SoulIcon />,       label: 'Soul' },
-  { id: 'conscience', icon: <ConscienceIcon />, label: 'Conscience' },
-  { id: 'workspace',  icon: <WorkspaceIcon />,  label: 'Workspace' },
-  { id: 'settings',   icon: <SettingsIcon />,   label: 'Settings' },
+  { id: "autonomy", icon: "⚡", label: "Autonomy" },
+  { id: "pulse", icon: <PulseIcon />, label: "Pulse" },
+  { id: "chat", icon: <ChatIcon />, label: "Chat" },
+  { id: "terminal", icon: "❯", label: "Terminal" },
+  { id: "schedule", icon: <ScheduleIcon />, label: "Schedule" },
+  { id: "agents", icon: <AgentsIcon />, label: "Agents" },
+  { id: "channels", icon: <ChannelsIcon />, label: "Channels" },
+  { id: "soul", icon: <SoulIcon />, label: "Soul" },
+  { id: "conscience", icon: <ConscienceIcon />, label: "Conscience" },
+  { id: "workspace", icon: <WorkspaceIcon />, label: "Workspace" },
+  { id: "settings", icon: <SettingsIcon />, label: "Settings" },
 ];
 
 function _badgeText(n: number): string {
-  return n > 9 ? '9+' : String(n);
+  return n > 9 ? "9+" : String(n);
 }
 
-function TabsZone() {
-  const view = useUIStore(s => s.view);
+// Views section — the 11 tabs as a vertical stack. Labels fly right
+// (sectioned-dock spec); badges bubble up to the section face so the
+// workspace unread count stays visible with the stack closed.
+function ViewsSection() {
+  const view = useUIStore((s) => s.view);
   // SC-2 — a tab summons its whole view as a glass panel (openPanel also drives
   // `setView`, preserving the terminal-fit / chat-collapse / snapshot
   // subscribers). `tars` routes to the orb home (resetAll) inside openPanel.
-  const openPanel = usePanelStore(s => s.openPanel);
-  const fetchInbox = useWorkspaceStore(s => s.fetchInbox);
-  const fetchSeen = useWorkspaceStore(s => s.fetchSeen);
-  const unreadCount = useWorkspaceStore(s => s.unreadCount());
+  const openPanel = usePanelStore((s) => s.openPanel);
+  const closeSections = useHudDockStore((s) => s.closeSections);
+  const fetchInbox = useWorkspaceStore((s) => s.fetchInbox);
+  const fetchSeen = useWorkspaceStore((s) => s.fetchSeen);
+  const unreadCount = useWorkspaceStore((s) => s.unreadCount());
 
   // One-shot load on mount so the badge is correct before the operator
-  // ever opens the Workspace tab.
+  // ever opens the Workspace stack.
   useEffect(() => {
     fetchInbox();
     fetchSeen();
   }, [fetchInbox, fetchSeen]);
 
-  const badgeFor = (id: View): { count: number; label: string } | null => {
-    if (id === 'workspace' && unreadCount > 0) return { count: unreadCount, label: 'pending' };
-    return null;
-  };
-
   return (
-    <nav className="hud-tabs" aria-label="Cockpit tabs">
+    <HudSection
+      id="views"
+      label="Views"
+      icon={<ViewsSectionIcon />}
+      badge={unreadCount}
+    >
       {TABS.map((t) => {
-        const badge = badgeFor(t.id);
+        const badge =
+          t.id === "workspace" && unreadCount > 0
+            ? { count: unreadCount, label: "pending" }
+            : null;
         return (
-          <Hint key={t.id} label={t.label} position="top" maxWidth={120}>
+          <Hint key={t.id} label={t.label} position="right" maxWidth={140}>
             <button
               type="button"
-              className={`hud-tab${view === t.id ? ' is-active' : ''}`}
-              onClick={() => openPanel(t.id)}
+              className={`hud-tab${view === t.id ? " is-active" : ""}`}
+              onClick={() => {
+                openPanel(t.id);
+                closeSections();
+              }}
               aria-label={
                 badge ? `${t.label} (${badge.count} ${badge.label})` : t.label
               }
-              aria-current={view === t.id ? 'page' : undefined}
+              aria-current={view === t.id ? "page" : undefined}
             >
-              <span className="hud-tab-icon" aria-hidden="true">{t.icon}</span>
+              <span className="hud-tab-icon" aria-hidden="true">
+                {t.icon}
+              </span>
               {badge && (
                 <span className="hud-tab-badge" aria-hidden="true">
                   {_badgeText(badge.count)}
@@ -265,37 +316,52 @@ function TabsZone() {
           </Hint>
         );
       })}
-    </nav>
+    </HudSection>
   );
 }
 
 // SC-3 — [K][L] toggles hide/show the Kernel / right (id: lifeline, hosts
 // Breakers/Observer) rail panels; active reflects the rail's open state (a
-// rail closed by its × un-presses the toggle).
-function RailToggles() {
+// rail closed by its × un-presses the toggle). Sectioned dock renders them
+// inside the Stage stack with right-flying hints.
+function RailToggleItems() {
   const toggleRail = usePanelStore((s) => s.toggleRail);
-  const kernelOpen = usePanelStore((s) => s.panels.find((p) => p.id === 'kernel')?.open ?? false);
-  const lifelineOpen = usePanelStore((s) => s.panels.find((p) => p.id === 'lifeline')?.open ?? false);
-  const rails: { id: 'kernel' | 'lifeline'; key: string; label: string; open: boolean }[] = [
-    { id: 'kernel', key: 'K', label: 'Kernel', open: kernelOpen },
-    { id: 'lifeline', key: 'L', label: 'Monitor', open: lifelineOpen },
+  const kernelOpen = usePanelStore(
+    (s) => s.panels.find((p) => p.id === "kernel")?.open ?? false,
+  );
+  const lifelineOpen = usePanelStore(
+    (s) => s.panels.find((p) => p.id === "lifeline")?.open ?? false,
+  );
+  const rails: {
+    id: "kernel" | "lifeline";
+    key: string;
+    label: string;
+    open: boolean;
+  }[] = [
+    { id: "kernel", key: "K", label: "Kernel", open: kernelOpen },
+    { id: "lifeline", key: "L", label: "Monitor", open: lifelineOpen },
   ];
   return (
-    <div className="hud-rail-toggles" aria-label="Rail toggles">
+    <>
       {rails.map((r) => (
-        <Hint key={r.id} label={`${r.open ? 'Hide' : 'Show'} ${r.label}`} position="top" maxWidth={120}>
+        <Hint
+          key={r.id}
+          label={`${r.open ? "Hide" : "Show"} ${r.label}`}
+          position="right"
+          maxWidth={140}
+        >
           <button
             type="button"
-            className={`hud-tab hud-rail-toggle${r.open ? ' is-active' : ''}`}
+            className={`hud-tab hud-rail-toggle${r.open ? " is-active" : ""}`}
             onClick={() => toggleRail(r.id)}
-            aria-label={`${r.open ? 'Hide' : 'Show'} ${r.label} rail`}
+            aria-label={`${r.open ? "Hide" : "Show"} ${r.label} rail`}
             aria-pressed={r.open}
           >
             {r.key}
           </button>
         </Hint>
       ))}
-    </div>
+    </>
   );
 }
 
@@ -313,7 +379,9 @@ function SummonedPanes() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLUListElement>(null);
-  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
+  const [coords, setCoords] = useState<{ top: number; left: number } | null>(
+    null,
+  );
 
   const summoned = panels.filter((p) => p.open && !isRailKind(p.kind));
 
@@ -330,7 +398,10 @@ function SummonedPanes() {
     let top = tRect.top - mRect.height - SUMMONED_GAP; // open upward
     if (top < SUMMONED_PAD) top = tRect.bottom + SUMMONED_GAP; // flip down if no room
     let left = tRect.left;
-    left = Math.max(SUMMONED_PAD, Math.min(left, vw - mRect.width - SUMMONED_PAD));
+    left = Math.max(
+      SUMMONED_PAD,
+      Math.min(left, vw - mRect.width - SUMMONED_PAD),
+    );
     setCoords({ top, left });
   }, []);
 
@@ -342,8 +413,8 @@ function SummonedPanes() {
       if (ref.current?.contains(t) || menuRef.current?.contains(t)) return;
       setOpen(false);
     };
-    window.addEventListener('mousedown', onDown);
-    return () => window.removeEventListener('mousedown', onDown);
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
   }, [open]);
 
   useLayoutEffect(() => {
@@ -354,15 +425,15 @@ function SummonedPanes() {
   useEffect(() => {
     if (!open) return;
     const handler = () => reposition();
-    window.addEventListener('scroll', handler, true);
-    window.addEventListener('resize', handler);
+    window.addEventListener("scroll", handler, true);
+    window.addEventListener("resize", handler);
     return () => {
-      window.removeEventListener('scroll', handler, true);
-      window.removeEventListener('resize', handler);
+      window.removeEventListener("scroll", handler, true);
+      window.removeEventListener("resize", handler);
     };
   }, [open, reposition]);
 
-  const jumpTo = (id: (typeof summoned)[number]['id'], minimized: boolean) => {
+  const jumpTo = (id: (typeof summoned)[number]["id"], minimized: boolean) => {
     // A minimized panel restores (toggleMinimize raises + re-activates); an
     // already-visible one just comes to the front.
     if (minimized) toggleMinimize(id);
@@ -372,20 +443,25 @@ function SummonedPanes() {
 
   return (
     <div className="hud-panes" ref={ref}>
-      <Hint label="Summoned panes" position="top" maxWidth={120}>
+      <Hint label="Summoned panes" position="right" maxWidth={140}>
         <button
           type="button"
-          className={`hud-tab hud-panes__btn${open ? ' is-active' : ''}`}
+          className={`hud-tab hud-panes__btn${open ? " is-active" : ""}`}
           onClick={() => setOpen((v) => !v)}
           aria-label={`Summoned panes (${summoned.length} open)`}
           aria-expanded={open}
           disabled={summoned.length === 0}
         >
           <span aria-hidden="true">▤</span>
-          {summoned.length > 0 && <span className="hud-tab-badge" aria-hidden="true">{summoned.length}</span>}
+          {summoned.length > 0 && (
+            <span className="hud-tab-badge" aria-hidden="true">
+              {summoned.length}
+            </span>
+          )}
         </button>
       </Hint>
-      {open && summoned.length > 0 &&
+      {open &&
+        summoned.length > 0 &&
         createPortal(
           <ul
             ref={menuRef}
@@ -405,8 +481,12 @@ function SummonedPanes() {
                   className="hud-panes__jump"
                   onClick={() => jumpTo(p.id, p.minimized)}
                 >
-                  <span className="hud-panes__label">{VIEW_LABELS[p.kind]}</span>
-                  {p.minimized && <span className="hud-panes__tag t-meta">minimized</span>}
+                  <span className="hud-panes__label">
+                    {VIEW_LABELS[p.kind]}
+                  </span>
+                  {p.minimized && (
+                    <span className="hud-panes__tag t-meta">minimized</span>
+                  )}
                 </button>
                 <button
                   type="button"
@@ -449,10 +529,10 @@ function TrioButton() {
   const [busy, setBusy] = useState(false);
   const load = useCallback(() => {
     setBusy(true);
-    void spawnTrio('tars').finally(() => setBusy(false));
+    void spawnTrio("tars").finally(() => setBusy(false));
   }, []);
   return (
-    <Hint label="Load trio lanes" position="top" maxWidth={140}>
+    <Hint label="Load trio lanes" position="right" maxWidth={140}>
       <button
         type="button"
         className="hud-tab hud-rail-toggle"
@@ -460,7 +540,9 @@ function TrioButton() {
         aria-label="Load trio lanes (coder + auditor)"
         disabled={busy}
       >
-        <span className="hud-tab-icon" aria-hidden="true"><TrioIcon /></span>
+        <span className="hud-tab-icon" aria-hidden="true">
+          <TrioIcon />
+        </span>
       </button>
     </Hint>
   );
@@ -473,12 +555,16 @@ function OrbToggle() {
   const visible = useOrbVisibilityStore((s) => s.visible);
   const toggle = useOrbVisibilityStore((s) => s.toggle);
   return (
-    <Hint label={`${visible ? 'Hide' : 'Show'} orb`} position="top" maxWidth={140}>
+    <Hint
+      label={`${visible ? "Hide" : "Show"} orb`}
+      position="right"
+      maxWidth={140}
+    >
       <button
         type="button"
-        className={`hud-tab hud-rail-toggle${visible ? ' is-active' : ''}`}
+        className={`hud-tab hud-rail-toggle${visible ? " is-active" : ""}`}
         onClick={toggle}
-        aria-label={`${visible ? 'Hide' : 'Show'} the TARS orb`}
+        aria-label={`${visible ? "Hide" : "Show"} the TARS orb`}
         aria-pressed={visible}
       >
         ◉
@@ -492,12 +578,16 @@ function CaptionsToggle() {
   const enabled = useCaptionsStore((s) => s.enabled);
   const toggle = useCaptionsStore((s) => s.toggle);
   return (
-    <Hint label={`${enabled ? 'Hide' : 'Show'} orb captions`} position="top" maxWidth={140}>
+    <Hint
+      label={`${enabled ? "Hide" : "Show"} orb captions`}
+      position="right"
+      maxWidth={140}
+    >
       <button
         type="button"
-        className={`hud-tab hud-rail-toggle${enabled ? ' is-active' : ''}`}
+        className={`hud-tab hud-rail-toggle${enabled ? " is-active" : ""}`}
         onClick={toggle}
-        aria-label={`${enabled ? 'Hide' : 'Show'} ambient TARS captions`}
+        aria-label={`${enabled ? "Hide" : "Show"} ambient TARS captions`}
         aria-pressed={enabled}
       >
         CC
@@ -506,27 +596,126 @@ function CaptionsToggle() {
   );
 }
 
-// Layout: [K][L] | tabs | chat-group (mic + sessions + stats) | observer-group | ←spacer→
-// Entity state lives in the right-panel header — keeping it here too
-// would duplicate the same `idle` / `thinking` / `error` text in two
-// surfaces 80px apart.
-export function BottomHud() {
+// Stage section — the left control cluster (rails, panes, trio, orb, CC) as a
+// vertical stack. The summoned-pane count doubles as the section-face badge.
+function StageSection() {
+  const panels = usePanelStore((s) => s.panels);
+  const summonedCount = panels.filter(
+    (p) => p.open && !isRailKind(p.kind),
+  ).length;
   return (
-    <div className="cockpit-hud-inner">
-      <RailToggles />
-      <span className="hud-sep" aria-hidden="true" />
+    <HudSection
+      id="stage"
+      label="Stage controls"
+      icon={<StageSectionIcon />}
+      badge={summonedCount}
+    >
+      <RailToggleItems />
       <SummonedPanes />
       <TrioButton />
       <OrbToggle />
       <CaptionsToggle />
-      <span className="hud-sep" aria-hidden="true" />
-      <TabsZone />
-      <span className="hud-sep" aria-hidden="true" />
-      <ChatHudGroup />
-      <span className="hud-sep" aria-hidden="true" />
-      <ObserverHudGroup />
-      <div className="hud-spacer" aria-hidden="true" />
-      <HudChatInput />
-    </div>
+    </HudSection>
+  );
+}
+
+// Fold-when-needed (sectioned-dock spec): the bar folds the chat/observer
+// chips into auto sections the moment its content stops fitting, and unfolds
+// once the measured unfolded width fits again (hysteresis prevents thrash at
+// the boundary). Content-driven — no viewport breakpoint to drift out of sync
+// with panel scaling or future chips.
+const FOLD_HYSTERESIS_PX = 24;
+
+function useHudFold(ref: RefObject<HTMLDivElement | null>): boolean {
+  const [folded, setFolded] = useState(false);
+  const foldedRef = useRef(false);
+  const neededRef = useRef(0);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      if (!foldedRef.current) {
+        if (el.scrollWidth > el.clientWidth + 1) {
+          neededRef.current = el.scrollWidth;
+          foldedRef.current = true;
+          setFolded(true);
+        }
+      } else if (el.clientWidth > neededRef.current + FOLD_HYSTERESIS_PX) {
+        foldedRef.current = false;
+        setFolded(false);
+      }
+    };
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    measure();
+    return () => ro.disconnect();
+  }, [ref]);
+
+  return folded;
+}
+
+// Single-arrow collapse (operator spec): ▾ tucks the whole bar; the portalled
+// ▴ edge tab brings it back. Mirrors the section-button styling.
+function CollapseButton() {
+  const setTucked = useHudDockStore((s) => s.setTucked);
+  return (
+    <Hint label="Hide HUD" position="top" maxWidth={120}>
+      <button
+        type="button"
+        className="hud-tab hud-section hud-collapse"
+        onClick={() => setTucked(true)}
+        aria-label="Hide the bottom HUD"
+      >
+        ▾
+      </button>
+    </Hint>
+  );
+}
+
+function DockRestoreTab() {
+  const tucked = useHudDockStore((s) => s.tucked);
+  const setTucked = useHudDockStore((s) => s.setTucked);
+  if (!tucked) return null;
+  return createPortal(
+    <button
+      type="button"
+      className="hud-dock-tab"
+      onClick={() => setTucked(false)}
+      aria-label="Show the bottom HUD"
+    >
+      ▴
+    </button>,
+    document.body,
+  );
+}
+
+// Layout (sectioned dock, 2026-07-31): [stage §][views §] | mic + chat group |
+// observer group | ←spacer→ chat input | ▾. The chat/observer groups fold into
+// auto sections when the bar stops fitting. Entity state lives in the
+// right-panel header — keeping it here too would duplicate the same `idle` /
+// `thinking` / `error` text in two surfaces 80px apart.
+export function BottomHud() {
+  const barRef = useRef<HTMLDivElement>(null);
+  const folded = useHudFold(barRef);
+  const tucked = useHudDockStore((s) => s.tucked);
+  return (
+    <>
+      <div
+        ref={barRef}
+        className={`cockpit-hud-inner${folded ? " is-folded" : ""}${tucked ? " is-tucked" : ""}`}
+      >
+        <StageSection />
+        <ViewsSection />
+        <span className="hud-sep" aria-hidden="true" />
+        <ChatHudGroup folded={folded} />
+        <span className="hud-sep" aria-hidden="true" />
+        <ObserverHudGroup folded={folded} />
+        <div className="hud-spacer" aria-hidden="true" />
+        <HudChatInput />
+        <CollapseButton />
+      </div>
+      <DockRestoreTab />
+    </>
   );
 }

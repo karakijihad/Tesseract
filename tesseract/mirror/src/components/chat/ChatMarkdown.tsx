@@ -1,12 +1,22 @@
-import { Children, isValidElement, useEffect, useRef, useState, type ReactNode } from 'react';
-import ReactMarkdown, { type Components } from 'react-markdown';
-import remarkBreaks from 'remark-breaks';
-import remarkGfm from 'remark-gfm';
-import rehypeHighlight from 'rehype-highlight';
-import { ChatArtifact, isPreviewableArtifact } from './ChatArtifact';
-import { copyToClipboard } from '../../lib/clipboard';
-import { ExpandOverlay } from '../common/ExpandOverlay';
-import { backendAssetUrl } from '../../lib/endpoints';
+import {
+  Children,
+  isValidElement,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkBreaks from "remark-breaks";
+import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeHighlight from "rehype-highlight";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
+import { ChatArtifact, isPreviewableArtifact } from "./ChatArtifact";
+import { copyToClipboard } from "../../lib/clipboard";
+import { ExpandOverlay } from "../common/ExpandOverlay";
+import { backendAssetUrl } from "../../lib/endpoints";
 
 interface Props {
   children: string;
@@ -32,19 +42,19 @@ const components: Components = {
     // are different origins, so a bare `/api/...` URL would 404 against the
     // Vite origin. `backendAssetUrl` rewrites root-relative paths to the
     // resolved BACKEND_BASE; absolute URLs and data: URIs pass through.
-    const resolvedSrc = typeof src === 'string' ? backendAssetUrl(src) : src;
+    const resolvedSrc = typeof src === "string" ? backendAssetUrl(src) : src;
     return (
       <img
         {...props}
         src={resolvedSrc}
-        alt={alt ?? ''}
+        alt={alt ?? ""}
         loading="lazy"
         className="chat-md-image"
       />
     );
   },
   pre({ node: _node, children, ...props }) {
-    const code = textFromNode(children).replace(/\n$/, '');
+    const code = textFromNode(children).replace(/\n$/, "");
     const language = languageFromCodeNode(children);
     if (isPreviewableArtifact(language)) {
       return <ChatArtifact code={code} language={language} />;
@@ -66,12 +76,18 @@ const components: Components = {
   },
 };
 
-const rehypePlugins = [[rehypeHighlight, { detect: true, ignoreMissing: true }]] as const;
+// KaTeX `output: 'html'` — the default dual HTML+MathML output duplicates
+// every formula in text-selection copies; HTML-only keeps the DOM lean.
+// `throwOnError: false` renders bad TeX in red instead of crashing the bubble.
+const rehypePlugins = [
+  [rehypeKatex, { output: "html", throwOnError: false }],
+  [rehypeHighlight, { detect: true, ignoreMissing: true }],
+] as const;
 
 export function ChatMarkdown({ children }: Props) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkBreaks]}
+      remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
       rehypePlugins={rehypePlugins as never}
       components={components}
     >
@@ -81,25 +97,32 @@ export function ChatMarkdown({ children }: Props) {
 }
 
 function textFromNode(node: ReactNode): string {
-  if (node === null || node === undefined || typeof node === 'boolean') return '';
-  if (typeof node === 'string' || typeof node === 'number') return String(node);
-  if (Array.isArray(node)) return node.map(textFromNode).join('');
+  if (node === null || node === undefined || typeof node === "boolean")
+    return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(textFromNode).join("");
   if (isValidElement(node)) {
     const props = node.props as { children?: ReactNode };
     return textFromNode(props.children);
   }
-  return Children.toArray(node).map(textFromNode).join('');
+  return Children.toArray(node).map(textFromNode).join("");
 }
 
 function languageFromCodeNode(node: ReactNode): string {
   const first = Array.isArray(node) ? node[0] : node;
-  if (!isValidElement(first)) return '';
+  if (!isValidElement(first)) return "";
   const props = first.props as { className?: string };
   const match = props.className?.match(/language-([\w-]+)/);
-  return match?.[1] ?? '';
+  return match?.[1] ?? "";
 }
 
-function CodeExpandButton({ code, language }: { code: string; language: string }) {
+function CodeExpandButton({
+  code,
+  language,
+}: {
+  code: string;
+  language: string;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -114,10 +137,12 @@ function CodeExpandButton({ code, language }: { code: string; language: string }
       <ExpandOverlay
         open={open}
         onClose={() => setOpen(false)}
-        title={language ? `Code (${language})` : 'Code'}
+        title={language ? `Code (${language})` : "Code"}
         actions={<CodeCopyButton code={code} />}
       >
-        <pre><code>{code}</code></pre>
+        <pre>
+          <code>{code}</code>
+        </pre>
       </ExpandOverlay>
     </>
   );
@@ -127,9 +152,12 @@ function CodeCopyButton({ code }: { code: string }) {
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<number | null>(null);
 
-  useEffect(() => () => {
-    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    },
+    [],
+  );
 
   const onCopy = async () => {
     await copyToClipboard(code);
@@ -145,7 +173,7 @@ function CodeCopyButton({ code }: { code: string }) {
       onClick={onCopy}
       aria-label="Copy code"
     >
-      {copied ? 'Copied' : 'Copy'}
+      {copied ? "Copied" : "Copy"}
     </button>
   );
 }

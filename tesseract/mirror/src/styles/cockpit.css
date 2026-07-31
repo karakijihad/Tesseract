@@ -393,3 +393,94 @@
     border-radius: 2px;
   }
 }
+
+/* ── Sectioned dock (2026-07-31, operator-approved mockup v6) ──────────────
+   Two always-on section buttons (stage · views) open vertical glass stacks;
+   the chat/observer chips fold into auto sections when the bar stops fitting
+   (`.is-folded`, ResizeObserver-driven in BottomHud.tsx); ▾ tucks the whole
+   bar into a single ▴ edge tab. Stacks portal to <body> — the HUD clips
+   overflow — and reuse the summoned-panes frosted-card treatment. */
+.hud-section {
+  position: relative;
+  border-color: hsl(var(--accent-hsl) / 0.28);
+  background: hsl(var(--accent-hsl) / 0.1);
+}
+.hud-section.is-open {
+  border-color: var(--accent);
+  box-shadow: 0 0 10px hsl(var(--accent-hsl) / 0.35);
+}
+.hud-section.is-live {
+  color: var(--accent-success, #4ade80);
+  border-color: rgba(74, 222, 128, 0.3);
+}
+
+.hud-section-stack {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  /* column-reverse: first child sits nearest the button, like the mockup. */
+  flex-direction: column-reverse;
+  gap: var(--space-xs);
+  padding: var(--space-xs);
+  background: hsl(248 30% 9% / 0.82);
+  border: 1px solid hsl(var(--accent-hsl) / 0.22);
+  border-radius: var(--radius-md);
+  box-shadow: 0 18px 50px -16px rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(22px) saturate(1.25);
+  -webkit-backdrop-filter: blur(22px) saturate(1.25);
+}
+/* Stack items are the ordinary hud controls rendered vertically; give the
+   text chips (model badge, stats) a consistent left-aligned row shape. */
+.hud-section-stack .hud-model,
+.hud-section-stack .hud-stats {
+  justify-content: flex-start;
+}
+
+/* Single-arrow collapse + portalled restore tab. */
+.hud-collapse {
+  color: var(--accent);
+}
+.cockpit-hud:has(.cockpit-hud-inner.is-tucked) {
+  transform: translateY(calc(100% + 18px));
+  opacity: 0;
+  pointer-events: none;
+}
+.cockpit-hud {
+  transition:
+    transform 0.22s ease,
+    opacity 0.22s ease;
+}
+.hud-dock-tab {
+  position: fixed;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  z-index: 40;
+  width: 52px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: hsl(248 30% 10% / 0.72);
+  border: 1px solid hsl(var(--accent-hsl) / 0.24);
+  border-bottom: none;
+  color: var(--accent);
+  font-size: 0.62rem;
+  cursor: pointer;
+}
+.hud-dock-tab:hover {
+  background: hsl(var(--accent-hsl) / 0.16);
+}
+
+/* Folded mode — the mic keeps its button, only the mode pill hides. */
+.cockpit-hud-inner.is-folded .hud-voice-mode {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cockpit-hud,
+  .hud-section-stack {
+    transition: none;
+  }
+}
