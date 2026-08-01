@@ -46,13 +46,20 @@ function _normalize(head: string): string {
   return head.toLowerCase().replace(/-/g, '_');
 }
 
-// Backoff schedule for retrying /api/commands while the backend's stage-3
-// startup (which builds command_registry) is still in flight. The Mirror's
-// stages 1+2 typically finish in <2s but stage 3 can take 5-15s on cold
-// boot — so we retry up to ~30s before giving up. A 503 from the route
-// means "not ready, retry"; any other failure (network down, 5xx, non-
-// JSON) drops to the silent-failure path so chat still works.
-const _RETRY_DELAYS_MS = [400, 600, 900, 1300, 1900, 2800, 4200, 6300, 9400];
+// Retry cadence for `/api/commands` while the backend's stage-3 startup
+// (which builds command_registry) is still in flight. Doubles from 400ms,
+// caps at 5s, then keeps polling at that interval for the life of the page.
+//
+// This was a fixed 9-step schedule totalling ~28s, after which the loader
+// gave up silently and cached nothing. Measured packaged-install boot is
+// ~39s from backend spawn to `command_registry: N specs ready`, so the
+// budget expired before the registry existed and the palette stayed empty
+// for the lifetime of the page: typing `/` showed no list while commands
+// still dispatched, because `parseSlashInput` stays optimistic while
+// unloaded. The supervisor also respawns the backend after a crash, so any
+// fixed budget is eventually wrong. One GET per 5s at a local port is cheap.
+const _RETRY_BASE_MS = 400;
+const _RETRY_MAX_MS = 5_000;
 
 function _sleep(ms: number): Promise<void> {
   return new Promise((res) => setTimeout(res, ms));
@@ -62,67 +69,56 @@ export async function loadSlashCommands(): Promise<void> {
   if (_loaded) return;
   if (_loading) return _loading;
   _loading = (async () => {
-    try {
-      for (let attempt = 0; attempt <= _RETRY_DELAYS_MS.length; attempt++) {
+    let delay = _RETRY_BASE_MS;
+    let warned = false;
+    for (;;) {
+      try {
         const r = await fetch(`${BACKEND_BASE}/api/commands`);
-        if (r.status === 503) {
-          // Registry not built yet — retry after backoff.
-          if (attempt < _RETRY_DELAYS_MS.length) {
-            await _sleep(_RETRY_DELAYS_MS[attempt]);
-            continue;
+        // 503 is the route's explicit "registry not built yet".
+        if (r.ok) {
+          const ctype = r.headers.get('content-type') || '';
+          if (!ctype.includes('application/json')) {
+            throw new Error(`/api/commands non-JSON response (got ${ctype || 'no content-type'})`);
           }
-          throw new Error(`/api/commands still 503 after ${attempt} attempts — backend registry never came up`);
-        }
-        if (!r.ok) throw new Error(`/api/commands HTTP ${r.status}`);
-        const ctype = r.headers.get('content-type') || '';
-        if (!ctype.includes('application/json')) {
-          throw new Error(`/api/commands non-JSON response (got ${ctype || 'no content-type'}) — backend likely unreachable`);
-        }
-        const data = await r.json();
-        const raw: RawSpec[] = data.commands || [];
-        // Empty list with HTTP 200 used to be a sticky failure mode (the
-        // registry race wrote `_loaded=true` with zero commands forever).
-        // Stage-3 always produces 21+ specs, so an empty 200 means the
-        // registry is built-but-empty, which shouldn't happen — treat it
-        // as a retryable not-ready instead of caching the broken state.
-        if (raw.length === 0) {
-          if (attempt < _RETRY_DELAYS_MS.length) {
-            console.warn(`[slashCommands] /api/commands returned 0 specs (attempt ${attempt + 1}) — retrying`);
-            await _sleep(_RETRY_DELAYS_MS[attempt]);
-            continue;
-          }
-          // Exhausted retries with an empty 200 — registry still empty
-          // after ~28s. Throw rather than caching `_loaded=true` with
-          // zero specs (the original sticky-cache bug). On next call
-          // `_loading` will be null and a fresh retry cycle will run.
-          throw new Error(`/api/commands returned 0 specs after ${attempt + 1} attempts — registry never populated`);
-        }
-        const defs: SlashCommandDef[] = raw.map((c) => ({
-          name: c.name,
-          summary: c.summary || '',
-          source: c.source,
-          aliases: c.aliases || [],
-          argLabel: c.arg_label,
-          argHelp: c.arg_help,
-          mutatesSession: !!c.mutates_session,
-          takesArg: !!c.arg_label,
-        }));
-        _commands = defs;
-        const byName = new Map<string, SlashCommandDef>();
-        for (const d of defs) {
-          byName.set(_normalize(d.name), d);
-          for (const a of d.aliases) {
-            byName.set(_normalize(a), d);
+          const data = await r.json();
+          const raw: RawSpec[] = data.commands || [];
+          // An empty list with HTTP 200 means built-but-empty, which should
+          // not happen — keep retrying rather than caching the broken state.
+          if (raw.length > 0) {
+            const defs: SlashCommandDef[] = raw.map((c) => ({
+              name: c.name,
+              summary: c.summary || '',
+              source: c.source,
+              aliases: c.aliases || [],
+              argLabel: c.arg_label,
+              argHelp: c.arg_help,
+              mutatesSession: !!c.mutates_session,
+              takesArg: !!c.arg_label,
+            }));
+            const byName = new Map<string, SlashCommandDef>();
+            for (const d of defs) {
+              byName.set(_normalize(d.name), d);
+              for (const a of d.aliases) {
+                byName.set(_normalize(a), d);
+              }
+            }
+            _commands = defs;
+            _byName = byName;
+            _loaded = true;
+            return;
           }
         }
-        _byName = byName;
-        _loaded = true;
-        return;
+      } catch (err) {
+        // Backend down, restarting, or unreachable — same handling as a 503.
+        // Warn once so a permanently broken backend leaves a trace without
+        // spamming the console every 5s.
+        if (!warned) {
+          warned = true;
+          console.warn('[slashCommands] /api/commands unavailable — retrying', err);
+        }
       }
-    } catch (err) {
-      console.error('[slashCommands] load failed', err);
-    } finally {
-      _loading = null;
+      await _sleep(delay);
+      delay = Math.min(delay * 2, _RETRY_MAX_MS);
     }
   })();
   return _loading;

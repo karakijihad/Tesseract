@@ -21,6 +21,15 @@ import {
 // path; a dead service shows red at most 30s late.
 const POLL_INTERVAL_MS = 30_000;
 
+// `device: auto` resolves per machine at model load, so the configured value
+// is a placeholder until something is cached. Report what actually loaded —
+// `status()["cached"]` carries the resolved device, the config field does not.
+function whisperDevice(whisper: WhisperStatusResponse): string {
+  const loaded = whisper.cached[0];
+  if (loaded) return `${loaded.device}/${loaded.compute_type}`;
+  return `${whisper.device}/${whisper.compute_type}`;
+}
+
 export function LocalModelsSection() {
   const [status, setStatus] = useState<OllamaStatusResponse | null>(null);
   const [whisper, setWhisper] = useState<WhisperStatusResponse | null>(null);
@@ -244,7 +253,7 @@ export function LocalModelsSection() {
         <label className="cost-row__label">Whisper STT</label>
         <span className="t-meta">
           {whisper?.configured
-            ? `${whisper.model} · ${whisper.device}/${whisper.compute_type}`
+            ? `${whisper.model} · ${whisperDevice(whisper)}`
             : 'not configured'}
         </span>
         <span className="cost-row__spend t-meta">

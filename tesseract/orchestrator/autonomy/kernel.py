@@ -107,6 +107,7 @@ DEFAULT_MAX_OPEN_PER_SOURCE = 8
 DEFAULT_FUZZY_THRESHOLD = 0.9
 DEFAULT_FUZZY_WINDOW_HOURS = 24
 DEFAULT_MAX_UNVETTED_HOURS = 24
+DEFAULT_MAX_RESUME_ATTEMPTS = 2
 DEFAULT_VET_REQUIRED: tuple[str, ...] = (
     "self_reflection",
     "memory_signal",
@@ -174,6 +175,9 @@ REASON_DAILY_CAP_PAUSE = "daily_cap_reached"
 REASON_TOTAL_CONCURRENCY_BLOCK = "max_concurrent_workers_total_reached"
 REASON_DEDUPE_HIT = "dedupe_hit"
 REASON_AWAITING_OPERATOR = "awaiting_operator_approval"
+REASON_RESUME_ALL_DONE = "resume_all_done"
+REASON_RESUME_RETRY = "resume_retry"
+REASON_RESUME_EXHAUSTED = "resume_attempts_exhausted"
 
 
 @dataclass(frozen=True)
@@ -202,6 +206,7 @@ class KernelConfig:
     vet_enabled: bool = False
     vet_required: frozenset[AgendaSource] = field(default_factory=frozenset)
     max_unvetted_hours: int = DEFAULT_MAX_UNVETTED_HOURS
+    max_resume_attempts: int = DEFAULT_MAX_RESUME_ATTEMPTS
 
     @classmethod
     def from_yaml_dict(cls, raw: dict[str, Any]) -> "KernelConfig":
@@ -242,6 +247,9 @@ class KernelConfig:
             vet_required=frozenset(vet_required),
             max_unvetted_hours=int(
                 vetter.get("max_unvetted_hours", DEFAULT_MAX_UNVETTED_HOURS)
+            ),
+            max_resume_attempts=int(
+                kernel_block.get("max_resume_attempts", DEFAULT_MAX_RESUME_ATTEMPTS)
             ),
         )
 
@@ -499,6 +507,86 @@ class AutonomyKernel:
                 promoted += 1
         return {"unvetted_checked": checked, "unvetted_promoted": promoted}
 
+    def _resolve_resume_queued_items(self) -> dict[str, int]:
+        """**RESUME_QUEUED terminus.** Recovery parks interrupted items in
+        ``RESUME_QUEUED`` on the documented promise that "the kernel
+        re-derives the outcome from worker state" — but selection only
+        ever walked ``PROPOSED`` items, so nothing ever picked them up.
+        They accumulated silently (15 items between 2026-07-08 and
+        2026-07-30 on the live install). This is that missing terminus.
+
+        Per item: all linked workers DONE → ``DONE``. Otherwise the work
+        was lost, so re-propose it — bounded by
+        ``config.max_resume_attempts`` (counted from the item's own
+        transition history, so the budget survives restarts). Past the
+        budget the item goes ``BLOCKED`` with a reason the operator can
+        see, never back to an invisible queue.
+
+        Unloadable worker records count as lost work, not as a reason to
+        leave the item parked: an item whose evidence is gone is exactly
+        the case that stuck forever before. A worker still in a live
+        status means this boot is running it — leave it alone.
+
+        Called every :meth:`tick` and once from
+        :meth:`repair_stale_agenda_items` at boot, same as the UNVETTED
+        escape valve above.
+        """
+        from tesseract.orchestrator.workers.record import load_record
+
+        resolved = {"resume_checked": 0, "resume_done": 0,
+                    "resume_requeued": 0, "resume_exhausted": 0}
+        for item in list(self._agenda.iter_active()):
+            if item.status is not AgendaStatus.RESUME_QUEUED:
+                continue
+            resolved["resume_checked"] += 1
+
+            records = []
+            lost = not item.linked_workers
+            for worker_id in item.linked_workers:
+                try:
+                    record = load_record(worker_id)
+                except Exception:  # noqa: BLE001 — one bad record must not stall the sweep
+                    record = None
+                if record is None:
+                    lost = True
+                    continue
+                records.append(record)
+            if any(r.status not in WORKER_TERMINAL_STATUSES for r in records):
+                continue  # a live worker owns this item right now
+
+            if not lost and records and all(
+                r.status is WorkerStatus.DONE for r in records
+            ):
+                self._agenda.transition(
+                    item, AgendaStatus.DONE, reason=REASON_RESUME_ALL_DONE,
+                )
+                resolved["resume_done"] += 1
+                continue
+
+            attempts = sum(
+                1
+                for t in item.status_history
+                if t.to_status is AgendaStatus.PROPOSED
+                and t.reason == REASON_RESUME_RETRY
+            )
+            if attempts >= max(0, self._config.max_resume_attempts):
+                item.blocked_reason = REASON_RESUME_EXHAUSTED
+                self._agenda.transition(
+                    item, AgendaStatus.BLOCKED, reason=REASON_RESUME_EXHAUSTED,
+                )
+                resolved["resume_exhausted"] += 1
+                continue
+            self._agenda.transition(
+                item, AgendaStatus.PROPOSED, reason=REASON_RESUME_RETRY,
+            )
+            resolved["resume_requeued"] += 1
+        if any(v for k, v in resolved.items() if k != "resume_checked"):
+            log.info(
+                "autonomy: resume-queue sweep — %s",
+                ", ".join(f"{k}={v}" for k, v in resolved.items() if v),
+            )
+        return resolved
+
     def repair_stale_agenda_items(self) -> dict[str, int]:
         """Reconcile any active agenda items whose linked workers are
         already terminal. One-shot. Idempotent. Synchronous file I/O —
@@ -513,9 +601,10 @@ class AutonomyKernel:
         ``items_with_missing_worker`` counter and a per-item WARNING
         log so the operator can triage manually.
 
-        Also runs :meth:`_promote_stale_unvetted_items` (see its
-        docstring) so the UNVETTED escape valve fires once at boot in
-        addition to every tick.
+        Also runs :meth:`_promote_stale_unvetted_items` and
+        :meth:`_resolve_resume_queued_items` (see their docstrings) so
+        both escape valves fire once at boot — right after recovery has
+        parked interrupted items — in addition to every tick.
 
         Returns a small summary dict for logging.
         """
@@ -531,6 +620,7 @@ class AutonomyKernel:
             "unvetted_promoted": 0,
         }
         summary.update(self._promote_stale_unvetted_items())
+        summary.update(self._resolve_resume_queued_items())
         for item in list(self._agenda.iter_active()):
             if item.status not in (AgendaStatus.RUNNING, AgendaStatus.SELECTED):
                 continue
@@ -675,6 +765,10 @@ class AutonomyKernel:
         # UNVETTED item does not depend on the vetter job's schedule
         # staying enabled for the lifetime of a long-running kernel.
         self._promote_stale_unvetted_items()
+        # Same reasoning for RESUME_QUEUED: an item parked mid-tick (worker
+        # crash, kernel restart under a live process) must not wait for the
+        # next boot to be re-derived.
+        self._resolve_resume_queued_items()
 
         # Step 5: daily caps + global concurrency. If we're paused for
         # the day we still drained + persisted (recovery resumes the

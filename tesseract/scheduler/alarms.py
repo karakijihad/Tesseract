@@ -23,12 +23,36 @@ log = logging.getLogger(__name__)
 
 RecurrenceKind = Literal["daily", "weekdays", "weekly", "every"]
 
-# Pre-relocation location (code tree). An app update deletes and re-clones
-# the code tree, so any alarm still living here at boot is migrated by
-# `ensure_alarms_state_migrated()` — see its docstring.
-_LEGACY_STATE_FILE = Path(__file__).resolve().parent / "state" / "alarms.yaml"
 RECENT_FIRED_MAX = 16
 SNOOZE_OPTIONS = ["5m", "10m", "30m", "1h"]
+
+
+def _legacy_state_file() -> Path:
+    """Legacy alarms state, anchored at the state root — not at `__file__`.
+
+    The old anchor pointed inside the code tree, so a packaged install grew a
+    `scheduler/` directory full of Python source under its state root and the
+    data-sync repo started tracking `engine.py`. Resolving under
+    `TESSERACT_HOME` at call time also means test isolation follows from the
+    isolated home rather than from a per-directory monkeypatch.
+    """
+    return home_dir() / "scheduler" / "alarms.yaml"
+
+
+def _legacy_state_candidates() -> tuple[Path, ...]:
+    """Every place a pre-relocation alarms file can still be sitting.
+
+    The historic anchor was `Path(__file__)/state/alarms.yaml`, inside the code
+    tree. Re-anchoring alone would orphan anything stranded there — a file
+    written by a pre-relocation build would become permanently invisible to the
+    migration — so that path stays in the list as a read-only probe. Safe to
+    probe from any process: migration copies and leaves the original in place,
+    and never writes to a code-tree path.
+    """
+    return (
+        _legacy_state_file(),
+        Path(__file__).resolve().parent / "state" / "alarms.yaml",
+    )
 
 
 def alarms_state_path() -> Path:
@@ -48,17 +72,13 @@ def alarms_state_path() -> Path:
 
 
 def ensure_alarms_state_migrated() -> None:
-    """One-time relocation of any pre-Phase-1 alarm state found at
-    `_LEGACY_STATE_FILE` (`scheduler/state/alarms.yaml`, code-tree
-    anchored) into `alarms_state_path()`, so upgrading operators don't
-    silently lose queued alarms.
+    """One-time relocation of any pre-Phase-1 alarm state found at one of
+    `_legacy_state_candidates()` into `alarms_state_path()`, so upgrading
+    operators don't silently lose queued alarms.
 
     Deliberately NOT folded into `alarms_state_path()`: that resolver is
     reached via `build_tool_registry()`, which ordinary unit tests call
-    with an isolated `TESSERACT_HOME` (see the autouse
-    `_isolate_tesseract_home` fixture) while `_LEGACY_STATE_FILE` stays
-    anchored to the real code tree by necessity — folding migration in
-    there let a plain test run silently touch a real on-disk legacy file.
+    constantly, and it must stay pure path resolution with no file I/O.
     Call this only from the real entry points (`mirror/server/
     __main__.py`, `supervisor/__main__.py`, `scripts/tars_controller.py`),
     the same call site as `config_seed.py`'s `ensure_*_seeded()` —
@@ -73,23 +93,17 @@ def ensure_alarms_state_migrated() -> None:
     The legacy file is deliberately LEFT IN PLACE rather than deleted:
     an earlier version of this function deleted it after a verified copy,
     reasoning that a stale file risked resurrecting old alarms — but nothing
-    ever reads `_LEGACY_STATE_FILE` again once the new path has data (every
+    ever reads the legacy path again once the new path has data (every
     future call short-circuits at the `exists()` check below), so there is
-    nothing to resurrect. Deleting is irreversible and, in practice, is one
-    incidental call away from destroying real data the moment this function
-    is reachable from any test or subprocess-boot harness with an isolated
-    `TESSERACT_HOME` but the same, unisolated, real `_LEGACY_STATE_FILE` —
-    exactly the shared-fixed-path hazard this split guards against. Leaving
-    the file behind costs nothing: the next code-tree-replacing update
-    deletes it along with the rest of `<TESSERACT_HOME>/app` anyway. Every
-    migration is logged — a silent migration would be nearly as bad as a
-    silent loss, since nobody could confirm it worked.
+    nothing to resurrect, and deleting is irreversible. Every migration is
+    logged — a silent migration would be nearly as bad as a silent loss,
+    since nobody could confirm it worked.
     """
     new_path = alarms_state_path()
     if new_path.exists():
         return
-    legacy = _LEGACY_STATE_FILE
-    if not legacy.exists():
+    legacy = next((path for path in _legacy_state_candidates() if path.exists()), None)
+    if legacy is None:
         return
     try:
         legacy_text = legacy.read_text(encoding="utf-8")

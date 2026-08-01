@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -10,7 +11,18 @@ from typing import Any
 
 from tesseract.paths import TESSERACT_HOME
 
-UPLOAD_ROOT = TESSERACT_HOME / "uploads" / "chat"
+
+def upload_root() -> Path:
+    """Resolve at call time so a relocated `TESSERACT_HOME` is honoured.
+
+    Was a module-level constant frozen at import, so a packaged install (or a
+    test fixture pointing at tmp_path) kept writing to whatever home happened
+    to be resolved when this module first loaded. Mirrors
+    `downloads/_storage.py::_download_root`.
+    """
+    home_env = os.environ.get("TESSERACT_HOME")
+    base = Path(home_env) if home_env else TESSERACT_HOME
+    return base / "uploads" / "chat"
 
 
 @dataclass(frozen=True)
@@ -61,7 +73,7 @@ def _attachment_url(session_id: str, attachment_id: str, filename: str) -> str:
 
 def _is_within_upload_root(path: Path) -> bool:
     try:
-        path.resolve().relative_to(UPLOAD_ROOT.resolve())
+        path.resolve().relative_to(upload_root().resolve())
         return True
     except ValueError:
         return False
@@ -71,10 +83,10 @@ def _attachment_dir(att: StoredAttachment | None) -> Path | None:
     if att is None:
         return None
     if att.storage_path:
-        path = UPLOAD_ROOT / Path(att.storage_path)
+        path = upload_root() / Path(att.storage_path)
         if _is_within_upload_root(path):
             return path
-    legacy_path = UPLOAD_ROOT / att.session_id / att.id
+    legacy_path = upload_root() / att.session_id / att.id
     if _is_within_upload_root(legacy_path):
         return legacy_path
     return None

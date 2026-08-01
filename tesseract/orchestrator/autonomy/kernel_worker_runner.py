@@ -204,6 +204,13 @@ class KernelWorkerRunner:
             write_record(record)
             await self._fire_timeout_notification(record)
             return
+        # Same "keep the work, park the worker" contract as the wallclock
+        # case, for failures that are about this process rather than the
+        # task (missing tool). No operator ping: nothing to extend.
+        if result.get("parked"):
+            record.transition_to(WorkerStatus.BLOCKED, reason=result["reason"])
+            write_record(record)
+            return
         terminal = WorkerStatus.DONE if result["ok"] else WorkerStatus.FAILED
         record.transition_to(terminal, reason=result["reason"])
         write_record(record)
@@ -338,6 +345,26 @@ class KernelWorkerRunner:
                 "reason": "unsupported_kind",
                 "error_class": "UnsupportedKindError",
                 "error_message": tool_args,
+            }
+
+        # A tool the registry never got (chat_brain adapter unresolved at
+        # boot → no invoke_agent) is an environment problem, not a bad
+        # item: burning it as FAILED with "unknown tool: invoke_agent"
+        # threw away 15 items on the live install. Park it instead, the
+        # same way a wallclock overrun parks one.
+        if self._registry.get(tool_name) is None:
+            message = (
+                f"{tool_name} is not registered in this process — "
+                f"worker {record.id} cannot dispatch"
+            )
+            log.error("kernel_worker_runner: %s", message)
+            return {
+                "ok": False,
+                "summary": message,
+                "reason": "tool_unavailable",
+                "error_class": "ToolUnavailableError",
+                "error_message": message,
+                "parked": True,
             }
 
         # Apply operator-configured timeout if the kind has one.

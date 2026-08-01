@@ -671,16 +671,19 @@ local:
     max_retries: 1
     models:
       # Catalog id matches the cost-ledger key for back-compat (`local_whisper`).
-      # `model` carries the actual faster-whisper checkpoint name. `base` +
-      # CPU/int8 is the fresh-install default so this works with no GPU;
-      # if you have a CUDA GPU, raise `model` to `large-v3-turbo`, `device`
-      # to `cuda`, and `compute_type` to `int8_float16` for faster, more
-      # accurate transcription.
+      # `model` carries the actual faster-whisper checkpoint name. `base` is the
+      # fresh-install default — small enough to run anywhere; raise it to
+      # `large-v3-turbo` for better accuracy if the machine can take it.
+      # Leave `device: auto`: it probes this machine's CUDA device count AND
+      # whether the cuBLAS runtime is actually loadable, then picks. Pinning
+      # `cuda` by hand skips that probe, and a machine with an NVIDIA driver
+      # but no CUDA runtime wheels then dies at first transcription with
+      # "Library cublas64_12.dll is not found".
       local_whisper:
         kind: stt
         model: base
-        device: cpu
-        compute_type: int8
+        device: auto            # "auto" | "cuda" | "cpu" — auto probes CUDA + cuBLAS per machine
+        compute_type: int8      # raised to int8_float16 when auto resolves to cuda
         beam_size: 1
         timeout_seconds: 180
         preload: true

@@ -66,6 +66,36 @@ def config_dir() -> Path:
     return _home_at_call_time() / "config"
 
 
+def install_root() -> Path:
+    """Parent of `home/`, `app/`, and `runtime/` — the READ boundary.
+
+    In a packaged install this is `%LOCALAPPDATA%\\com.tesseract.mirror`. In a
+    dev checkout `home_dir()` is the source package, so this is the repo root
+    and the layout collapses to today's behaviour.
+    """
+    return _home_at_call_time().parent
+
+
+def app_dir() -> Path:
+    """The sealed application tree: code plus factory templates.
+
+    Written only by the updater (`repo.rs`). Outside the write boundary for
+    every agent, which is what makes the seal the absence of authority rather
+    than a special case.
+    """
+    return install_root() / "app"
+
+
+def runtime_dir() -> Path:
+    """Machine-local machinery: venv, caches, pidfiles, ops logs, markers.
+
+    Never synced between machines, never shipped. Outside the write boundary
+    for agents, but the runtime's own writers (supervisor, janitor, circuit
+    breakers) write here directly without passing through `decide.evaluate`.
+    """
+    return install_root() / "runtime"
+
+
 def is_installed_tree() -> bool:
     """True iff this process is running from a packaged install's code
     checkout, never a dev checkout.

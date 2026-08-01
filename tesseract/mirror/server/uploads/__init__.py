@@ -6,16 +6,16 @@ from typing import Any
 from aiohttp import web
 
 from tesseract.mirror.server.uploads._storage import (
-    UPLOAD_ROOT,
     StoredAttachment,
     _attachment_file_path,
     attachment_part_for_model,
+    upload_root,
 )
 from tesseract.mirror.server.uploads._index import _metadata_path
 from tesseract.mirror.server.uploads._validation import _safe_segment
 
 __all__ = [
-    "UPLOAD_ROOT",
+    "upload_root",
     "StoredAttachment",
     "attachment_part_for_model",
     "load_attachment",

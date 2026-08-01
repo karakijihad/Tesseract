@@ -78,25 +78,25 @@ def _resolve_schedule_log_dir(ctx: JobContext):
       2. `app["memory_bundle"].store.store_dir.parent / "logs" / "schedule"`
          (shared `resolve_runtime_subdir` helper) so tests that drop the
          engine can still pin reads to a tmp tree.
-      3. Module default `scheduler_log._DEFAULT_LOG_DIR` (repo path).
+      3. `scheduler_log.default_log_dir()` (`<TESSERACT_HOME>/logs/schedule`).
     """
     if ctx.log_dir is not None:
         return ctx.log_dir
     app = ctx.app
     if app is None or not hasattr(app, "get"):
-        return scheduler_log._DEFAULT_LOG_DIR
+        return scheduler_log.default_log_dir()
     bundle = app.get("memory_bundle")
     store = getattr(bundle, "store", None) if bundle is not None else None
     if getattr(store, "store_dir", None) is None:
-        return scheduler_log._DEFAULT_LOG_DIR
+        return scheduler_log.default_log_dir()
     # Shared helper performs the store_dir.parent / *parts join.
     return resolve_runtime_subdir(
-        app, "logs", "schedule", fallback_root=scheduler_log._DEFAULT_LOG_DIR.parent,
+        app, "logs", "schedule", fallback_root=scheduler_log.default_log_dir().parent,
     )
 
 
 def _load_rows_for(target: date, log_dir=None) -> list[dict]:
-    base = log_dir if log_dir is not None else scheduler_log._DEFAULT_LOG_DIR
+    base = log_dir if log_dir is not None else scheduler_log.default_log_dir()
     path = base / scheduler_log._LOG_FILENAME
     if not path.exists():
         return []

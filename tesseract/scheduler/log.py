@@ -2,15 +2,39 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+from tesseract.paths import TESSERACT_HOME
 from tesseract.scheduler.types import JobContext, JobResult
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_LOG_DIR = Path("tesseract/logs/schedule")
 _LOG_FILENAME = "runs.jsonl"
+
+
+def default_log_dir() -> Path:
+    """`<TESSERACT_HOME>/logs/schedule` — resolved at call time.
+
+    This used to be a module-level `Path("tesseract/logs/schedule")`: a
+    RELATIVE path, so the run log landed wherever the process happened to be
+    started from. In a dev checkout (cwd = repo root) that coincides with the
+    right place, which is why it went unnoticed; in a packaged install the
+    supervisor is spawned with no `current_dir` and inherits the shortcut's
+    cwd, so `runs.jsonl` was written outside `TESSERACT_HOME` — or not at all.
+
+    Two failures followed, both silent. `load_last_runs` reads this same
+    location, so `_compute_catchup` saw no prior run for any job and skipped
+    every missed tick. And `recovery/manager.py` + `conscience/drift.py` both
+    look under `home / "logs" / "schedule"`, so they were reading a file the
+    writer never created.
+
+    Call-time (not import-time) so a `TESSERACT_HOME` monkeypatch in tests is
+    honored without re-importing this module — the canonical pattern from
+    `kernel/workspace_changes.py::workspace_events_dir`.
+    """
+    return Path(os.environ.get("TESSERACT_HOME") or TESSERACT_HOME) / "logs" / "schedule"
 
 
 def append_run_log(
@@ -20,7 +44,7 @@ def append_run_log(
     log_dir: Path | None = None,
 ) -> Path:
     """Append one JSON line to runs.jsonl; create the directory on first write."""
-    target_dir = log_dir if log_dir is not None else _DEFAULT_LOG_DIR
+    target_dir = log_dir if log_dir is not None else default_log_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / _LOG_FILENAME
 
@@ -51,7 +75,7 @@ def load_last_runs(log_dir: Path | None = None) -> dict[str, datetime]:
     We key on `fired_at` (not `completed_at`) because that's the tick time the
     cron schedule corresponds to. Malformed lines are skipped with a WARN.
     """
-    target_dir = log_dir if log_dir is not None else _DEFAULT_LOG_DIR
+    target_dir = log_dir if log_dir is not None else default_log_dir()
     target = target_dir / _LOG_FILENAME
     latest: dict[str, datetime] = {}
     if not target.exists():

@@ -77,6 +77,8 @@ kernel:
   tick_interval_seconds: 30         # how often the loop wakes when no event fires
   top_k: 3                          # max items selected per tick
   max_concurrent_workers_total: 8   # hard ceiling across all worker lanes
+  max_resume_attempts: 2            # re-proposals allowed for an interrupted item before
+                                    # it is BLOCKED for the operator instead of retried
 
 # Admission gate applied to every non-operator draft before it becomes a
 # live agenda item.

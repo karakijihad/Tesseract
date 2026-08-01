@@ -19,6 +19,10 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 _PCM_SAMPLE_RATE_HZ = 16_000
+# Compute types paired with each resolved device. CPU int8 is the only
+# widely-safe CTranslate2 quantisation; int8_float16 needs a GPU.
+_CPU_COMPUTE_TYPE = "int8"
+_CUDA_COMPUTE_TYPE = "int8_float16"
 _model_cache: dict[tuple[str, str, str], Any] = {}
 # Config key → (device, compute_type) actually loaded. Diverges from the key
 # when a cuda-configured load fell back to CPU — status() must report what's
@@ -128,6 +132,68 @@ def _ensure_cuda_dll_dirs(device: str) -> None:
                 logger.exception("local Whisper failed to add CUDA DLL directory: %s", bin_dir)
 
 
+def _cuda_runtime_loadable() -> bool:
+    """True when CTranslate2's cuBLAS dependency can actually be loaded.
+
+    A driver-only machine (GPU present, no CUDA runtime wheels in the
+    venv) passes every device probe and then fails at first compute with
+    "Library cublas64_12.dll is not found" — the exact live failure this
+    resolver exists to avoid. Non-Windows builds link the runtime through
+    the loader's normal search path, so the check is Windows-only.
+    """
+    if sys.platform != "win32":
+        return True
+    import ctypes
+
+    for name in ("cublas64_12.dll", "cublas64_11.dll"):
+        try:
+            ctypes.WinDLL(name)
+            return True
+        except OSError:
+            continue
+    return False
+
+
+def resolve_device(cfg: LocalWhisperConfig) -> tuple[str, str]:
+    """Resolve ``device: auto`` to a concrete ``(device, compute_type)``.
+
+    Explicit values pass through untouched — an operator who writes
+    ``cuda`` gets cuda (and the runtime demote if it turns out to be a
+    lie). ``auto`` exists because `providers.yaml` is shared between the
+    operator's two machines: one config cannot name the right device for
+    both.
+    """
+    if (cfg.device or "").strip().lower() != "auto":
+        return cfg.device, cfg.compute_type
+    try:
+        import ctranslate2  # type: ignore[import-not-found]
+
+        devices = int(ctranslate2.get_cuda_device_count())
+    except Exception as exc:  # noqa: BLE001 — any probe failure means "no cuda"
+        logger.info("local Whisper device=auto → cpu (cuda probe failed: %s)", exc)
+        return "cpu", _CPU_COMPUTE_TYPE
+    if devices <= 0:
+        logger.info("local Whisper device=auto → cpu (no CUDA device)")
+        return "cpu", _CPU_COMPUTE_TYPE
+    _ensure_cuda_dll_dirs("cuda")
+    if not _cuda_runtime_loadable():
+        logger.info(
+            "local Whisper device=auto → cpu (%d CUDA device(s) present but the "
+            "cuBLAS runtime is not loadable — install nvidia-cublas-cu12 + "
+            "nvidia-cudnn-cu12 to use the GPU)",
+            devices,
+        )
+        return "cpu", _CPU_COMPUTE_TYPE
+    compute_type = cfg.compute_type
+    if compute_type == _CPU_COMPUTE_TYPE:
+        compute_type = _CUDA_COMPUTE_TYPE
+    logger.info(
+        "local Whisper device=auto → cuda compute=%s (%d device(s))",
+        compute_type, devices,
+    )
+    return "cuda", compute_type
+
+
 def get_model(cfg: LocalWhisperConfig) -> Any:
     """Return the cached faster-whisper model for ``cfg``.
 
@@ -150,7 +216,7 @@ def _get_model(cfg: LocalWhisperConfig) -> Any:
             return cached
         factory = _model_factory or _default_factory
         started = time.perf_counter()
-        device, compute_type = cfg.device, cfg.compute_type
+        device, compute_type = resolve_device(cfg)
         try:
             model = factory(cfg.model, device, compute_type)
         except Exception as exc:
@@ -161,7 +227,7 @@ def _get_model(cfg: LocalWhisperConfig) -> Any:
             # no NVIDIA driver) must still get local STT rather than an
             # every-boot failure. Cached under the config's key so the
             # cuda attempt isn't repeated per transcription.
-            device, compute_type = "cpu", "int8"
+            device, compute_type = "cpu", _CPU_COMPUTE_TYPE
             logger.warning(
                 "local Whisper %s load failed (%s); falling back to device=cpu compute=int8",
                 cfg.device,
@@ -177,6 +243,36 @@ def _get_model(cfg: LocalWhisperConfig) -> Any:
         )
         _model_cache[key] = model
         _loaded_params[key] = (device, compute_type)
+        return model
+
+
+def _loaded_device(cfg: LocalWhisperConfig) -> str:
+    key = (cfg.model, cfg.device, cfg.compute_type)
+    return _loaded_params.get(key, (cfg.device, cfg.compute_type))[0]
+
+
+def _demote_to_cpu(cfg: LocalWhisperConfig) -> Any:
+    """Evict the GPU-loaded model for ``cfg`` and reload it on CPU.
+
+    CTranslate2 defers its cuBLAS / cuDNN load to the first compute, so a
+    machine with an NVIDIA driver but no CUDA runtime DLLs constructs the
+    model fine and only fails inside ``transcribe`` ("Library
+    cublas64_12.dll is not found or cannot be loaded"). `_get_model`'s
+    construction-time fallback cannot see that; this applies the same
+    demotion at call time, once, under the same per-key lock.
+    """
+    key = (cfg.model, cfg.device, cfg.compute_type)
+    with _model_locks_guard:
+        lock = _model_locks.setdefault(key, threading.Lock())
+    with lock:
+        cached = _model_cache.get(key)
+        if cached is not None and _loaded_params.get(key, ("", ""))[0] == "cpu":
+            return cached  # another thread already demoted
+        _model_cache.pop(key, None)
+        factory = _model_factory or _default_factory
+        model = factory(cfg.model, "cpu", _CPU_COMPUTE_TYPE)
+        _model_cache[key] = model
+        _loaded_params[key] = ("cpu", _CPU_COMPUTE_TYPE)
         return model
 
 
@@ -218,18 +314,34 @@ async def transcribe(audio_bytes: bytes, cfg: LocalWhisperConfig) -> str:
     if samples.size == 0:
         return ""
 
-    def run() -> str:
-        started = time.perf_counter()
-        model = _get_model(cfg)
+    def _once(model: Any) -> str:
+        # faster-whisper returns a generator — the CTranslate2 compute (and
+        # any CUDA-runtime failure) happens while consuming it, not at the
+        # call. Both must sit inside the caller's try.
         segments, _info = model.transcribe(
             samples,
             language=cfg.language,
             beam_size=cfg.beam_size,
             vad_filter=True,
         )
-        text = " ".join(
+        return " ".join(
             seg.text.strip() for seg in segments if getattr(seg, "text", "").strip()
         ).strip()
+
+    def run() -> str:
+        started = time.perf_counter()
+        model = _get_model(cfg)
+        try:
+            text = _once(model)
+        except Exception as exc:
+            if _loaded_device(cfg).lower() == "cpu":
+                raise
+            logger.warning(
+                "local Whisper GPU transcription failed (%s); demoting to "
+                "device=cpu compute=int8 and retrying",
+                exc,
+            )
+            text = _once(_demote_to_cpu(cfg))
         logger.info(
             "local Whisper transcribed %.2fs audio in %.2fs chars=%d",
             samples.size / _PCM_SAMPLE_RATE_HZ,
@@ -248,9 +360,9 @@ async def transcribe(audio_bytes: bytes, cfg: LocalWhisperConfig) -> str:
 
 async def warm_up(cfg: LocalWhisperConfig) -> None:
     """Load the configured model and exercise one tiny transcription."""
-    def run() -> None:
-        model = _get_model(cfg)
-        samples = np.zeros(_PCM_SAMPLE_RATE_HZ // 10, dtype=np.float32)
+    samples = np.zeros(_PCM_SAMPLE_RATE_HZ // 10, dtype=np.float32)
+
+    def _drain(model: Any) -> None:
         segments, _info = model.transcribe(
             samples,
             language=cfg.language or "en",
@@ -259,5 +371,21 @@ async def warm_up(cfg: LocalWhisperConfig) -> None:
         )
         for _segment in segments:
             pass
+
+    def run() -> None:
+        model = _get_model(cfg)
+        try:
+            _drain(model)
+        except Exception as exc:
+            # Same deferred-CUDA-load demotion as `transcribe`, done here so
+            # the first real utterance doesn't pay for the discovery.
+            if _loaded_device(cfg).lower() == "cpu":
+                raise
+            logger.warning(
+                "local Whisper GPU warm-up failed (%s); demoting to "
+                "device=cpu compute=int8 and retrying",
+                exc,
+            )
+            _drain(_demote_to_cpu(cfg))
 
     await asyncio.to_thread(run)

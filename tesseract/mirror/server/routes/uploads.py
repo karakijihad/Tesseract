@@ -11,7 +11,6 @@ from tesseract.mirror.server.uploads._index import (
     _unindex_attachment,
 )
 from tesseract.mirror.server.uploads._storage import (
-    UPLOAD_ROOT,
     StoredAttachment,
     _attachment_dir,
     _attachment_file_path,
@@ -19,6 +18,7 @@ from tesseract.mirror.server.uploads._storage import (
     _is_within_upload_root,
     _remove_tree_async,
     _storage_path,
+    upload_root,
 )
 from tesseract.mirror.server.uploads._validation import (
     _EXT_MIME,
@@ -54,7 +54,7 @@ async def upload_chat_attachment(request: web.Request) -> web.Response:
     created_at = datetime.now(timezone.utc)
     kind = _kind_for_mime(mime_type)
     storage_path = _storage_path(kind, created_at, session_id, attachment_id)
-    dest_dir = UPLOAD_ROOT / storage_path
+    dest_dir = upload_root() / storage_path
     dest_dir.mkdir(parents=True, exist_ok=True)
     file_path = dest_dir / filename
 
@@ -137,7 +137,7 @@ async def delete_chat_attachment(request: web.Request) -> web.Response:
     if not session_id or not attachment_id:
         return web.json_response({"error": "not_found"}, status=404)
     att = load_attachment(session_id, attachment_id)
-    dest_dir = _attachment_dir(att) if att is not None else UPLOAD_ROOT / session_id / attachment_id
+    dest_dir = _attachment_dir(att) if att is not None else upload_root() / session_id / attachment_id
     if dest_dir is None or not _is_within_upload_root(dest_dir):
         return web.json_response({"error": "not_found"}, status=404)
     await _remove_tree_async(dest_dir)

@@ -1393,6 +1393,42 @@ def rebuild_adapters(app: Any) -> dict[str, Any]:
         app["adapter_chain"] = adapter_chain
         summary["chat_brain"] = f"{chat_cfg.provider}/{chat_cfg.model}"
 
+        # Heal a registry that booted without a chat adapter: the
+        # sub-agent tools are gated on one, and their absence silently
+        # kills autonomy dispatch (see `register_agent_session_tools`).
+        # Only fires when they are genuinely missing — a healthy registry
+        # keeps the handles it already has.
+        live_registry = app.get("tool_registry")
+        if live_registry is not None and live_registry.get("invoke_agent") is None:
+            try:
+                config = app.get("config")
+                register_agent_session_tools(
+                    live_registry,
+                    adapter=(
+                        build_fallback_adapter(adapter_chain)
+                        if adapter_chain else adapter
+                    ),
+                    options=options,
+                    chat_cfg=chat_cfg,
+                    policy=getattr(config, "permissions", None),
+                    cost_ledger=app.get("cost_ledger"),
+                )
+                # Attach the two class-default postures to the live policy;
+                # boot's own pass ran before these tools existed.
+                _wire_tool_defaults(
+                    live_registry, getattr(config, "permissions", None)
+                )
+                summary["agent_tools_registered"] = True
+                logger.info(
+                    "rebuild_adapters: registered invoke_agent + session_open "
+                    "into the live registry (chat_brain resolved after a "
+                    "boot without one)"
+                )
+            except Exception:
+                logger.exception(
+                    "rebuild_adapters: agent-session tool registration failed"
+                )
+
         # Re-build the system prompt only if the prompt builder closure
         # exists — otherwise the Mirror started without chat infra and we
         # leave system_prompt at its boot value.
@@ -1518,6 +1554,49 @@ def rebuild_adapters(app: Any) -> dict[str, Any]:
             logger.exception("rebuild_adapters: voice_state refresh failed")
 
     return summary
+
+
+def register_agent_session_tools(
+    registry: ToolRegistry,
+    *,
+    adapter: ModelAdapter,
+    options: AdapterOptions,
+    chat_cfg: ChatBrainConfig,
+    policy: "PermissionPolicy | None" = None,
+    cost_ledger: Any = None,
+) -> None:
+    """Register the two adapter-gated sub-agent tools into ``registry``.
+
+    Split out of :func:`build_tool_registry` so :func:`rebuild_adapters`
+    can heal a registry that booted without a chat adapter — before this,
+    a credential/provider blip at boot removed ``invoke_agent`` for the
+    life of the process and only a restart brought it back.
+    """
+    registry.register(InvokeAgentTool(
+        agents_dir=_home_agents_dir(),
+        adapter=adapter,
+        options=options,
+        parent_registry=registry,
+        max_tool_iterations=chat_cfg.tool_iteration_cap,
+        max_consecutive_adapter_errors=chat_cfg.consecutive_error_cap,
+        policy=policy,
+        cost_ledger=cost_ledger,
+    ))
+    registry.register(SessionOpenTool(
+        agents_dir=_home_agents_dir(),
+        adapter=adapter,
+        options=options,
+        registry=registry,
+        max_tool_iterations=chat_cfg.tool_iteration_cap,
+        max_consecutive_adapter_errors=chat_cfg.consecutive_error_cap,
+    ))
+    # Both are `_CORE_TOOL_NAMES` entries. At boot `_apply_tool_tiers`
+    # would do this; on the rebuild path nothing else would, and an
+    # extended-tier invoke_agent is invisible to the chat prompt.
+    for name in ("invoke_agent", "session_open"):
+        tool = registry.get(name)
+        if tool is not None and name in _CORE_TOOL_NAMES:
+            tool.tier = "core"
 
 
 def build_tool_registry(
@@ -1826,24 +1905,25 @@ def build_tool_registry(
     # site (REPL, retired 2026-07-13) re-registered with its own per-process
     # ask_fn for the single-operator case.
     if invoke_adapter is not None and chat_cfg is not None:
-        registry.register(InvokeAgentTool(
-            agents_dir=agents_dir,
+        register_agent_session_tools(
+            registry,
             adapter=invoke_adapter,
             options=chat_options,
-            parent_registry=registry,
-            max_tool_iterations=chat_cfg.tool_iteration_cap,
-            max_consecutive_adapter_errors=chat_cfg.consecutive_error_cap,
+            chat_cfg=chat_cfg,
             policy=policy,
             cost_ledger=(app.get("cost_ledger") if app is not None else None),
-        ))
-        registry.register(SessionOpenTool(
-            agents_dir=agents_dir,
-            adapter=invoke_adapter,
-            options=chat_options,
-            registry=registry,
-            max_tool_iterations=chat_cfg.tool_iteration_cap,
-            max_consecutive_adapter_errors=chat_cfg.consecutive_error_cap,
-        ))
+        )
+    else:
+        # Not cosmetic: with these two absent, every autonomy dispatch of a
+        # MARKDOWN_AGENT / TARS_SELF worker dies on "unknown tool:
+        # invoke_agent" (live install, 2026-07-30). Name the consequence so
+        # a boot-time credential blip is diagnosable from the log alone.
+        logger.warning(
+            "chat_brain adapter unavailable — invoke_agent + session_open are "
+            "NOT registered; autonomy markdown_agent/tars_self dispatch will "
+            "fail until the chain resolves (config edit → rebuild_adapters, "
+            "or restart)"
+        )
     registry.register(SessionSendTool())
     registry.register(SessionResultTool())
     registry.register(SessionCloseTool())

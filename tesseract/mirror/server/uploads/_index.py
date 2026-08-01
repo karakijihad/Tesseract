@@ -6,9 +6,9 @@ import os
 from pathlib import Path
 
 from tesseract.mirror.server.uploads._storage import (
-    UPLOAD_ROOT,
     StoredAttachment,
     _is_within_upload_root,
+    upload_root,
 )
 
 _INDEX_DIR = "_index"
@@ -21,7 +21,7 @@ def _lock_for(session_id: str) -> asyncio.Lock:
 
 
 def _index_path(session_id: str) -> Path:
-    return UPLOAD_ROOT / _INDEX_DIR / f"{session_id}.json"
+    return upload_root() / _INDEX_DIR / f"{session_id}.json"
 
 
 def _read_index(session_id: str) -> dict[str, str]:
@@ -58,7 +58,7 @@ async def _index_attachment(att: StoredAttachment) -> None:
 
 async def _index_metadata_path(session_id: str, attachment_id: str, meta_path: Path) -> None:
     try:
-        storage_path = meta_path.parent.relative_to(UPLOAD_ROOT).as_posix()
+        storage_path = meta_path.parent.relative_to(upload_root()).as_posix()
     except ValueError:
         return
     async with _lock_for(session_id):
@@ -80,14 +80,14 @@ def _indexed_metadata_path(session_id: str, attachment_id: str) -> Path | None:
     storage_path = _read_index(session_id).get(attachment_id)
     if not isinstance(storage_path, str) or not storage_path:
         return None
-    candidate = UPLOAD_ROOT / Path(storage_path) / "metadata.json"
+    candidate = upload_root() / Path(storage_path) / "metadata.json"
     if _is_within_upload_root(candidate) and candidate.exists():
         return candidate
     return None
 
 
 def _metadata_path(session_id: str, attachment_id: str) -> Path | None:
-    legacy = UPLOAD_ROOT / session_id / attachment_id / "metadata.json"
+    legacy = upload_root() / session_id / attachment_id / "metadata.json"
     if _is_within_upload_root(legacy) and legacy.exists():
         return legacy
     indexed = _indexed_metadata_path(session_id, attachment_id)
@@ -99,7 +99,7 @@ def _metadata_path(session_id: str, attachment_id: str) -> Path | None:
         f"*/*/{session_id}/{attachment_id}/metadata.json",
     )
     for pattern in patterns:
-        for candidate in UPLOAD_ROOT.glob(pattern):
+        for candidate in upload_root().glob(pattern):
             if _is_within_upload_root(candidate) and candidate.exists():
                 return candidate
     return None
