@@ -5,10 +5,12 @@ order:
   1. Tool's own `check_permissions` — the security layer. Returns DENY
      for hardcoded blocks (injection, destructive verbs). Otherwise
      PASSTHROUGH or ASK.
-  2. Path validation for write-side file tools (`_WRITE_PATH_TOOLS`):
-     the 12-vector `validate_path()` runs against `context.workspace_root`.
-     Blocks null bytes, UNC, tilde, double-encoded traversal, and
-     workspace-boundary escapes before policy is consulted.
+  2. Path validation for file tools, under two boundaries: writes
+     (`_WRITE_PATH_TOOLS`) are bounded at `home_dir()`, reads
+     (`_READ_PATH_TOOLS`) at `install_root()`. The 12-vector
+     `validate_path()` blocks null bytes, UNC, tilde, double-encoded
+     traversal, and boundary escapes before policy is consulted. The seal
+     on `app/` is the absence of write authority, not a special case.
   3. Operator policy (`permissions.yaml`) — the AUTO/ASK/DENY decision
      surface. Path overrides normalize absolute paths against
      `workspace_root` so kernel lockdown rules can't be bypassed by
@@ -41,6 +43,7 @@ from tesseract.kernel.tools.base import (
     ToolContext,
     ToolResult,
 )
+from tesseract.paths import home_dir, install_root
 from tesseract.permissions import approval_log
 from tesseract.permissions.path_validator import validate_path
 from tesseract.permissions.policy import PermissionPolicy
@@ -48,16 +51,44 @@ from tesseract.permissions.policy import PermissionPolicy
 AskFn = Callable[[Tool, Any, ToolContext], Awaitable[bool]]
 
 # Tools whose path arguments are sent through `validate_path` before the
-# tool runs, mapped to the raw-input keys to validate. Writes only — read
-# tools may legitimately want to read files outside the workspace
-# (delegate_* uses these), and validate_path's workspace-boundary check
-# would block them. Audit fix C1: 2026-04-29. file_copy validates only its
-# destination (source is a read, same posture as file_read); file_move
-# validates both ends (removing the source is a write).
+# tool runs, mapped to the raw-input keys to validate. Audit fix C1:
+# 2026-04-29. file_copy validates only its destination here (its source is a
+# read, and appears in `_READ_PATH_TOOLS` below); file_move validates both
+# ends (removing the source is a write).
 _WRITE_PATH_TOOLS: dict[str, tuple[str, ...]] = {
     "file_write": ("file_path", "path"),
     "file_copy": ("dest_path",),
     "file_move": ("source_path", "dest_path"),
+}
+
+# Read-side path tools. Until this existed, `validate_path` ran only against
+# the write tools, so `file_read` with an absolute path reached any file on
+# the machine. Reads are bounded at the install root, not at `home/`: a sealed
+# `app/` should still be legible to the agent running inside it.
+#
+# `file_copy`'s source belongs here rather than nowhere — leaving it unbounded
+# would let a copy pull any file on the machine into `home/`, where reading it
+# is allowed, which defeats the read boundary in one hop. `memory_get` is
+# deliberately absent: its input is memory-store-relative and it enforces a
+# stricter root of its own.
+#
+# The `channel_send_*` media tools belong here for a sharper reason than the
+# rest: each reads `source_path` off disk and forwards the bytes to an external
+# chat, at `auto` posture. Unbounded, that is a read of any file on the machine
+# followed by an unattended exfiltration of it.
+_READ_PATH_TOOLS: dict[str, tuple[str, ...]] = {
+    "file_read": ("file_path", "path"),
+    "pdf_read": ("file_path",),
+    "glob": ("path",),
+    "grep": ("path",),
+    "file_copy": ("source_path",),
+    "vault_ingest": ("source_path",),
+    "channel_send_photo": ("source_path",),
+    "channel_send_document": ("source_path",),
+    "channel_send_video": ("source_path",),
+    "channel_send_animation": ("source_path",),
+    "channel_send_video_note": ("source_path",),
+    "channel_send_voice": ("audio_path",),
 }
 
 logger = logging.getLogger(__name__)
@@ -99,10 +130,20 @@ async def evaluate(
             deny_reason="security layer (tool.check_permissions DENY)",
         )
 
-    for path_key in _WRITE_PATH_TOOLS.get(tool.name, ()):
-        raw_path = raw_input.get(path_key) or ""
-        if raw_path:
-            valid, reason = validate_path(str(raw_path), context.workspace_root)
+    write_root = str(home_dir())
+    read_root = str(install_root())
+    checks = (
+        (_WRITE_PATH_TOOLS.get(tool.name, ()), "write"),
+        (_READ_PATH_TOOLS.get(tool.name, ()), "read"),
+    )
+    for path_keys, mode in checks:
+        for path_key in path_keys:
+            raw_path = raw_input.get(path_key) or ""
+            if not raw_path:
+                continue
+            valid, reason = validate_path(
+                str(raw_path), write_root=write_root, read_root=read_root, mode=mode
+            )
             if not valid:
                 logger.warning("path validation rejected %s: %s", tool.name, reason)
                 await approval_log.record_ask(

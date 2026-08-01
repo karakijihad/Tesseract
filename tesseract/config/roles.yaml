@@ -296,20 +296,7 @@ voice:
     primary: local.piper.northern_english_male
     fallbacks:
       - api.google.gemini_flash_tts
-      - local.kokoro.charon
     settings:
-      local.kokoro.charon:
-        # Kokoro renders locally on GPU (CUDA) — falls back to CPU if
-        # the CUDA provider can't load. Voice timbre = the `mix` recipe
-        # in the catalog (linear blend of style embeddings); change
-        # weights there to iterate. Synthesis presets (intent/answer)
-        # are set in the catalog.
-        timeout_seconds: 60
-        daily_budget_usd: 0.00
-        # No `preload` — kokoro is a TTS fallback (piper is primary).
-        # Warm-on-first-use saves the CUDA-DLL preload + ONNX session
-        # load cost at boot. Set `preload: true` here to opt back into
-        # hot-standby behaviour for instant failover from piper.
       local.piper.northern_english_male:
         # Piper renders locally on CPU (near-zero VRAM). No `voice_id`
         # knob — the ONNX file IS the voice. Synthesis presets

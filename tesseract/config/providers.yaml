@@ -385,22 +385,6 @@ api:
       # Tool-calling ✓. TEXT-ONLY — rejects image_url with "is not a
       # multimodal model". Reasoning model — emits `reasoning_content`
       # alongside `content`.
-      nemotron_3_super_120b:
-        model: nvidia/nemotron-3-super-120b-a12b
-        context_window: 1000000
-        max_output_tokens: 8192
-        reasoning_effort: high
-        temperature: 0.7
-        top_p: 0.95
-        cost_per_mtok_in: 0.00
-        cost_per_mtok_out: 0.00
-        capabilities:
-          vision_input: false
-          audio_input: false
-          video_input: false
-          pdf_input: false
-          image_output: false
-          audio_output: false
       # OpenAI's open-weight 120B — closest spirit-match to gpt-5.4 (full).
       # Tool-calling ✓. Text-only. Reasoning model. NIM REQUIRES
       # `reasoning_effort` to be one of low/medium/high — null is rejected
@@ -433,25 +417,6 @@ api:
       # fixes this: the model still reasons internally but reliably writes
       # the final answer to `content`. For the vision_agent role (single-shot
       # image-to-text caption) low is the right effort tier anyway.
-      nemotron_3_nano_omni_30b:
-        model: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
-        context_window: 128000
-        max_output_tokens: 8192
-        reasoning_effort: low  # see comment — anything higher leaves content empty.
-        temperature: 0.7
-        top_p: 0.95
-        cost_per_mtok_in: 0.00
-        cost_per_mtok_out: 0.00
-        # Omni model: vision confirmed, audio/video advertised by the spec.
-        # NIM gateway round-trip for audio/video is untested — flagged true
-        # optimistically; chat-loop will fail loudly if NIM rejects.
-        capabilities:
-          vision_input: true
-          audio_input: true
-          video_input: true
-          pdf_input: true
-          image_output: false
-          audio_output: false
       # Zhipu GLM-5.2 — MoE 753B / ~40B-active, text-only (multimodal lives
       # on the separate GLM-5V SKU, which NIM does not host). Capabilities
       # pinned all-false — correct per spec, not a temporary restriction.
@@ -721,42 +686,4 @@ local:
             noise_scale: 0.4
             noise_w: 0.5
             sentence_silence: 0.2
-        cost_per_million_chars: 0.00
-
-  kokoro:
-    enabled: false
-    adapter: kokoro          # tesseract/voice/providers/kokoro_tts.py
-    timeout_seconds: 120
-    max_retries: 1
-    host: this_pc
-    models:
-      # Catalog id matches the cost-ledger key. The voice is a *blend* —
-      # `mix` is a linear combination of style embeddings shipped in the
-      # voices bundle. Iterate the timbre by editing weights here; no
-      # code change needed. See tesseract/voice/models/kokoro/README.md
-      # for voice IDs and the design rationale.
-      # Download the model files (~340 MB total) into
-      # `tesseract/voice/models/kokoro/`:
-      #   kokoro-v1.0.onnx
-      #   voices-v1.0.bin
-      # Source: https://github.com/thewh1teagle/kokoro-onnx/releases
-      charon:
-        kind: tts
-        model: kokoro-v1.0.onnx
-        voices_file: voices-v1.0.bin
-        sample_rate: 24000
-        lang: en-gb
-        device: cuda            # "cuda" | "cpu" — falls back to CPU if CUDA missing
-        mix:
-          bm_george: 0.4
-          bm_daniel: 0.6
-        # Kokoro exposes only `speed` (and post-pad silence). Intent =
-        # slightly quicker. Answer = natural pace.
-        synthesis_presets:
-          intent:
-            speed: 1.05
-            sentence_silence: 0.15
-          answer:
-            speed: 1.0
-            sentence_silence: 0.25
         cost_per_million_chars: 0.00

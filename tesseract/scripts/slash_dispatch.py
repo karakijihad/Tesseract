@@ -54,6 +54,7 @@ from tesseract.kernel.tools.base import (
     ToolContext,
     ToolResult,
 )
+from tesseract.paths import home_dir, install_root
 from tesseract.permissions.decide import _WRITE_PATH_TOOLS
 from tesseract.permissions.path_validator import validate_path
 
@@ -256,9 +257,9 @@ def _security_gate(tool: Tool, validated: BaseModel, ctx: ToolContext) -> str | 
     pattern blocks). Operator slash cannot bypass this.
 
     Layer 2: ``validate_path`` for write tools — kernel-lockdown
-    boundary checks (workspace escape, UNC, tilde, double-encoded
+    boundary checks (write-boundary escape, UNC, tilde, double-encoded
     traversal). Apply to operator slash too: protects against typos
-    and accidental writes outside the workspace.
+    and accidental writes outside the state root.
 
     Layer 3 (policy posture) is *intentionally* skipped — the operator
     initiated the call, so there is nothing to confirm. ASK returned
@@ -270,7 +271,12 @@ def _security_gate(tool: Tool, validated: BaseModel, ctx: ToolContext) -> str | 
     for path_key in _WRITE_PATH_TOOLS.get(tool.name, ()):
         path = raw.get(path_key) or ""
         if path:
-            valid, reason = validate_path(str(path), ctx.workspace_root)
+            valid, reason = validate_path(
+                str(path),
+                write_root=str(home_dir()),
+                read_root=str(install_root()),
+                mode="write",
+            )
             if not valid:
                 return f"[denied: path validation rejected {tool.name}: {reason}]"
     return None

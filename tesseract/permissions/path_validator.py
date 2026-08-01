@@ -13,6 +13,7 @@ import os
 import re
 import unicodedata
 from pathlib import Path
+from typing import Literal
 from urllib.parse import unquote
 
 # Windows reserved device names (case-insensitive)
@@ -26,13 +27,31 @@ _MAX_PATH_LENGTH = 32767  # Windows MAX_PATH extended
 _MAX_COMPONENT_LENGTH = 255
 
 
+def _is_within(candidate: str, root: str) -> bool:
+    """Segment-aware containment.
+
+    A bare `startswith` accepts a sibling whose name merely extends the root's
+    (`…/homework` under `…/home`). The install layout puts `app/`, `home/`, and
+    `runtime/` side by side under one parent, so that near-miss is now a way
+    past the write boundary rather than a curiosity.
+    """
+    return candidate == root or candidate.startswith(root.rstrip(os.sep) + os.sep)
+
+
 def validate_path(
     raw_path: str,
-    workspace_root: str,
     *,
+    write_root: str,
+    read_root: str,
+    mode: Literal["read", "write"] = "write",
     resolve_symlinks: bool = True,
 ) -> tuple[bool, str]:
-    """Validate a path against 12 attack vectors.
+    """Validate a path against 12 attack vectors under two boundaries.
+
+    `read_root` is the install root — `app/`, `home/`, and `runtime/` are all
+    readable, because a sealed tree should still be legible to the agent that
+    runs inside it. `write_root` is `home/`, so the seal on `app/` needs no
+    special case: it is simply outside write authority.
 
     Returns (True, "") if valid, (False, reason) if blocked.
     """
@@ -91,24 +110,28 @@ def validate_path(
 
     # --- Pass 2: Filesystem-level checks ---
 
+    # Which root applies depends on what the caller is about to do with the
+    # path — including how a relative path is anchored.
+    boundary = write_root if mode == "write" else read_root
+
     try:
         path = Path(raw_path)
         if not path.is_absolute():
-            path = Path(workspace_root) / path
+            path = Path(boundary) / path
 
         if resolve_symlinks:
             resolved = path.resolve()
         else:
             resolved = path.absolute()
 
-        workspace_resolved = Path(workspace_root).resolve()
+        boundary_resolved = Path(boundary).resolve()
     except (OSError, ValueError) as e:
         return False, f"path resolution error: {e}"
 
     # Vector 9: Relative path traversal (../)
     # Checked after resolution — catches symlinks that escape
     resolved_str = str(resolved)
-    workspace_str = str(workspace_resolved)
+    boundary_str = str(boundary_resolved)
 
     # Vector 10: Root or near-root paths
     if len(resolved.parts) <= 2:
@@ -121,16 +144,18 @@ def validate_path(
         if drive_root:
             return False, "Windows drive root blocked"
 
-    # Vector 12: Workspace boundary check (the critical one)
-    if not resolved_str.startswith(workspace_str):
-        return False, "path outside workspace boundary"
+    # Vector 12: Boundary check (the critical one)
+    if not _is_within(resolved_str, boundary_str):
+        return False, f"path outside {mode} boundary"
 
-    # Vector 9b: Symlink resolution — double-check after resolve
+    # Vector 9b: Symlink resolution — double-check after resolve. Compares
+    # against the same boundary, so a link inside `home/` pointing into `app/`
+    # cannot smuggle a write past the seal.
     if resolve_symlinks and path.exists():
         try:
             real = path.resolve(strict=True)
-            if not str(real).startswith(workspace_str):
-                return False, "symlink resolves outside workspace"
+            if not _is_within(str(real), boundary_str):
+                return False, f"symlink resolves outside {mode} boundary"
         except OSError:
             pass  # File doesn't exist yet (write target), allow
 
