@@ -1,8 +1,8 @@
 """BashTool — executes shell commands with security layer.
 
 Not concurrent-safe, not read-only. Requires Stage 2 security layer.
-Commands pass through 25 numbered bash security checks before
-execution. The 19 absolute-DENY checks block hard at
+Commands pass through 26 numbered bash security checks before
+execution. The 20 absolute-DENY checks block hard at
 ``check_permissions`` time and again at ``run`` time (defense in depth).
 The 6 forced-ASK checks (8, 10, 15, 17, 18, 24) surface as
 ``PermissionResult.ASK`` and route through ``decide.evaluate``'s
@@ -24,11 +24,20 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 30.0
 
+# Mirrors `bash_security._LOCKED_POSTURE_YAMLS`, both spellings. Kept in sync
+# by hand: this list only names the file in the operator-visible audit row, so
+# a missing entry degrades the deny reason to "<unknown>" rather than letting
+# the write through — silent, and precisely for the install-shaped paths the
+# bare spelling exists to catch.
 _LOCKED_POSTURE_YAMLS_FOR_EXTRACT: tuple[str, ...] = (
     "tesseract/config/permissions.yaml",
     "tesseract/config/roles.yaml",
     "tesseract/config/providers.yaml",
     "tesseract/config/mirror.yaml",
+    "config/permissions.yaml",
+    "config/roles.yaml",
+    "config/providers.yaml",
+    "config/mirror.yaml",
 )
 
 

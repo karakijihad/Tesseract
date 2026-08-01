@@ -208,28 +208,17 @@ jobs:
   # each job sees fresh work from the one before; all jobs are idempotent
   # so re-runs converge.
 
-  - name: leaf_extract
+  - name: leaf_intake
     cadence: "*/5 * * * *"        # every 5 min — pending → admitted/dropped
-    handler: "tesseract.scheduler.tasks.leaf_extract.ExtractChunkJob"
+    handler: "tesseract.scheduler.tasks.leaf_intake.LeafIntakeJob"
     enabled: true
     on_failure: log
     retry_policy:
       max_retries: 0
       backoff_seconds: 0
     config:
-      max_per_tick: 64
-
-  - name: leaf_append
-    cadence: "*/5 * * * *"        # every 5 min — admitted → buffered
-    handler: "tesseract.scheduler.tasks.leaf_append.AppendBufferJob"
-    enabled: true
-    on_failure: log
-    retry_policy:
-      max_retries: 0
-      backoff_seconds: 0
-    config:
-      max_per_tick: 256
-
+      extract_max_per_tick: 64
+      append_max_per_tick: 256
   - name: leaf_seal
     cadence: "*/15 * * * *"       # every 15 min — buffered → sealed when threshold met
     handler: "tesseract.scheduler.tasks.leaf_seal.SealJob"

@@ -183,13 +183,21 @@ async def run_delegate_foreground(
     target_paths = list(getattr(inp, "target_paths", None) or [])
     before = snapshot_target_state(context.workspace_root, target_paths)
 
+    # `workspace_root` is the CODE tree, which in a packaged install IS the
+    # sealed `app/`. Left alone, every delegation would start a CLI inside the
+    # tree the next update overwrites. See `seal_guard.safe_cwd` for why this
+    # relocates rather than refuses.
+    from tesseract.orchestrator.seal_guard import safe_cwd
+
+    spawn_cwd = str(safe_cwd(context.workspace_root))
+
     use_streaming = context.cli_sink is not None and context.current_call_id
 
     if use_streaming:
         result = await run_subprocess_with_sink(
             tool_name=tool_name,
             argv=argv,
-            cwd=context.workspace_root,
+            cwd=spawn_cwd,
             timeout=inp.timeout,
             sink=context.cli_sink,
             call_id=context.current_call_id or "",
@@ -215,7 +223,7 @@ async def run_delegate_foreground(
             *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=context.workspace_root,
+            cwd=spawn_cwd,
             env=env,
         )
         result = await race_communicate(process, cancel_event, inp.timeout, tool_name)
@@ -325,7 +333,13 @@ async def run_delegate(
             output=f"{tool_name} unavailable: argv/model resolution failed: {exc}",
             is_error=True,
         )
-    await provision_delegate_mcp(provider, context.workspace_root)
+    # Relocated before provisioning, not just before the spawn: provisioning
+    # mkdirs its working dir and writes `.mcp.json` into it, so passing the
+    # code tree here writes into the sealed tree no matter where the
+    # subprocess later runs.
+    from tesseract.orchestrator.seal_guard import safe_cwd
+
+    await provision_delegate_mcp(provider, str(safe_cwd(context.workspace_root)))
     # mission-era gate removed 2026-07-13; delegates intentionally never bind
     # the turn cancel_event — background spawns outlive their launching turn
     # (behavior unchanged).

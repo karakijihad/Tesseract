@@ -573,6 +573,21 @@ class PTYManager:
         cwd = payload.get("cwd")
         if cwd is not None and not isinstance(cwd, str):
             return {"ok": False, "error": "cwd_must_be_string"}
+        if cwd:
+            # A pane is where a hand-launched claude/codex actually runs, and
+            # nothing downstream can see what it edits. Refuse the cwd rather
+            # than the writes — this is the last moment the runtime controls.
+            # Returns the pane API's error shape; it is not exception-based.
+            from tesseract.orchestrator.seal_guard import (
+                SealViolation,
+                assert_cwd_outside_seal,
+            )
+
+            try:
+                assert_cwd_outside_seal(cwd)
+            except SealViolation as exc:
+                log.warning("pty: refused sealed cwd %r", cwd)
+                return {"ok": False, "error": f"sealed_tree:{exc}"}
 
         ws = self._app.get("primary_ws") if self._app is not None else None
         if ws is None or ws.closed:

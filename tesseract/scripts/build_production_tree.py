@@ -234,6 +234,42 @@ def build(src_root: Path, out_root: Path, files: Iterable[str] | None = None) ->
         (d / ".gitkeep").write_text("", encoding="utf-8")
         _write_state_dir_gitignore(d)
 
+    _write_seal_notices(src_root, out_root)
+
+
+def _write_seal_notices(src_root: Path, out_root: Path) -> None:
+    """Put the seal where a coding agent will actually read it.
+
+    `SEALED.md` is prose nothing loads on its own. Claude Code auto-loads
+    `CLAUDE.md` and Codex auto-loads `AGENTS.md` from the directory they start
+    in — so a CLI launched inside the installed tree sees the rule before its
+    first edit, without anyone having to tell it.
+
+    Both filenames are excluded from the copied tree on purpose (the dev
+    versions document the security architecture — see `_production_manifest.
+    EXCLUDE_PATHS`), so these are generated, and deliberately carry no
+    enforcement detail: the rule is the point, the mechanism is not.
+    """
+    sealed = (src_root / "tesseract" / "SEALED.md").read_text(encoding="utf-8")
+    (out_root / "SEALED.md").write_text(sealed, encoding="utf-8")
+
+    for name in ("CLAUDE.md", "AGENTS.md"):
+        (out_root / name).write_text(
+            f"# {name.split('.')[0].title()} instructions for this directory\n\n"
+            "**This is a sealed application tree. Do not edit any file in it.**\n\n"
+            "Read `SEALED.md` in this directory before doing anything else. The\n"
+            "short version: this checkout is replaced wholesale by every update,\n"
+            "so an edit made here is destroyed silently and reaches nobody. Read\n"
+            "anything you like; write nothing.\n\n"
+            "Write to the `home` directory beside this one instead: its\n"
+            "`tars-workshop` folder for scratch work and drafts, its\n"
+            "`downloads` folder for files you fetch.\n\n"
+            "If the task genuinely requires changing this application, that work\n"
+            "belongs in its development repository, not in the installed copy.\n"
+            "Say so and stop rather than approximating the fix here.\n",
+            encoding="utf-8",
+        )
+
 
 def main() -> None:
     ap = argparse.ArgumentParser(prog="python -m tesseract.scripts.build_production_tree")

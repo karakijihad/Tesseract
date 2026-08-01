@@ -1,4 +1,4 @@
-"""Bash command security — 25 numbered checks (19 absolute DENY + 6 forced-ASK).
+"""Bash command security — 26 numbered checks (20 absolute DENY + 6 forced-ASK).
 
 Checks are numbered, not named — prevents attack hints in logs. Each
 check returns (check_number, posture) on failure, None on pass. The
@@ -15,7 +15,11 @@ check returns (check_number, posture) on failure, None on pass. The
     operator-attended approval channel; cannot auto-allow. Hits checks
     8, 10, 15, 17, 18, 24.
 
-Call sites must branch on the second tuple element. The 19 DENY checks
+Evaluation order is the order of ``_CHECKS``, not the numbering: check 26
+(sealed-tree writes) runs ahead of check 24 so ``rm -rf app/`` is denied
+rather than offered as an ASK.
+
+Call sites must branch on the second tuple element. The 20 DENY checks
 remain the canonical hard floor; the 6 ASK checks are surfaced through
 ``decide.evaluate``'s ``ask_fn`` flow when an operator is attached, and
 hard-fail (mission BLOCKED) when no approval channel is wired.
@@ -28,10 +32,10 @@ import unicodedata
 
 
 def check(command: str) -> tuple[int, str] | None:
-    """Run all 25 security checks. Returns (check_num, posture) on failure.
+    """Run all 26 security checks. Returns (check_num, posture) on failure.
 
-    ``posture`` is ``"blocked"`` for the 19 absolute DENY checks
-    (1-7, 9, 11-14, 16, 19-23, 25) and ``"ask"`` for the 6 forced-ASK
+    ``posture`` is ``"blocked"`` for the 20 absolute DENY checks
+    (1-7, 9, 11-14, 16, 19-23, 25, 26) and ``"ask"`` for the 6 forced-ASK
     checks (8, 10, 15, 17, 18, 24). Returns ``None`` when every check
     passes.
     """
@@ -314,11 +318,19 @@ def _check_24(cmd: str) -> tuple[int, str] | None:
     return None
 
 
+# Both spellings on purpose. The repo-relative form is what a dev checkout
+# produces; the bare form is what a real install produces, where config lives
+# at `<home>/config/` and the install directory is `com.tesseract.mirror` — no
+# `tesseract/config/` substring appears anywhere in that path.
 _LOCKED_POSTURE_YAMLS: tuple[str, ...] = (
     "tesseract/config/permissions.yaml",
     "tesseract/config/roles.yaml",
     "tesseract/config/providers.yaml",
     "tesseract/config/mirror.yaml",
+    "config/permissions.yaml",
+    "config/roles.yaml",
+    "config/providers.yaml",
+    "config/mirror.yaml",
 )
 
 # Redirect / write verbs checked in an 80-char prefix before the locked path.
@@ -371,10 +383,104 @@ def _check_25(cmd: str) -> tuple[int, str] | None:
     return None
 
 
+# Sealed trees, as a path token opens a segment: `app/…`, `./app/…`,
+# `runtime/…`. Deliberately NOT matched when nested (`tars-workshop/app/x`) —
+# that is the operator's own directory that happens to share a name, and the
+# seal is about the install's `app/`, not about the word.
+_SEALED_SEGMENT_RE = re.compile(r"""(?:^|[\s"'=(;|&])(?:\./)?(app|runtime)/""")
+
+# Write verbs for the seal check. Broader than `_REDIRECT_VERBS_WORD` because
+# the target here is a whole tree rather than four known files: creating,
+# truncating and permission-changing all count as edits to a sealed tree.
+_SEAL_WRITE_VERBS: tuple[str, ...] = (
+    "tee ", "tee.exe ",
+    "sed -i", "sed.exe -i",
+    "set-content", "out-file", "add-content",
+    "writelines", "write_text", "write_bytes",
+    "cp ", "copy ", "copy.exe ", "move ", "mv ",
+    "rm ", "rm.exe ", "rmdir ", "del ", "erase ", "remove-item",
+    "touch ", "mkdir ", "md ", "truncate ", "chmod ", "chown ", "attrib ",
+    "install ", "patch ", "unzip ", "tar ",
+)
+
+# The subset that takes source and destination, where only the destination is
+# a write. Copying a file OUT of the sealed tree is a read.
+_SEAL_COPY_VERBS: tuple[str, ...] = (
+    "cp ", "copy ", "copy.exe ", "move ", "mv ", "install ",
+)
+
+
+def _check_26(cmd: str) -> tuple[int, str] | None:
+    """Absolute DENY: write verbs targeting the sealed `app/` or `runtime/`.
+
+    The write boundary in `path_validator` covers the file tools, but `bash`
+    never reaches it, and neither do the CLIs an agent can launch through it.
+    Reads are deliberately untouched — `app/` is read-only, which means
+    readable: TARS can inspect his own source, just not edit it.
+
+    Path-shaped and therefore approximate by construction. It catches the two
+    forms an agent actually produces — a relative path from the install root
+    and a resolved absolute one. Known and accepted misses, in rough order of
+    how likely they are to come up:
+
+    * `cd app && <relative write>` — once the shell has moved, the command
+      text carries no `app/` at all. Blocking `cd app` outright would break
+      ordinary read-only exploration, which is explicitly allowed.
+    * paths reached through `..`, assembled from shell variables, or split
+      across quoting.
+    * the reverse: an unrelated external project with its own top-level
+      `app/` (a Next.js or Flask layout) is denied identically, because the
+      check sees command text and has no cwd to disambiguate with.
+
+    This is a guard against the accident, not a sandbox against a determined
+    process; `SEALED.md` and the generated `CLAUDE.md`/`AGENTS.md` at the tree
+    root state the rule for the cases it misses.
+    """
+    lower = cmd.lower()
+
+    def _blocked_at(idx: int) -> bool:
+        before = lower[max(0, idx - 80):idx]
+        if _REDIRECT_RE.search(before):
+            return True
+        if any(verb in before for verb in _SEAL_WRITE_VERBS):
+            # Two-operand verbs write to their LAST operand. `cp app/x home/y`
+            # reads out of the seal, which is allowed — only a sealed path in
+            # the destination slot is a write. One remaining operand means the
+            # match is that destination.
+            if any(verb in before for verb in _SEAL_COPY_VERBS):
+                return len(lower[idx:].split()) == 1
+            return True
+        return "open(" in before and "'r'" not in before and '"r"' not in before
+
+    for match in _SEALED_SEGMENT_RE.finditer(lower):
+        if _blocked_at(match.start(1)):
+            return 26, "blocked"
+
+    # Resolved absolute paths: the tree names carry no meaning on their own
+    # once a path is absolute, so compare against the real roots.
+    try:
+        from tesseract.paths import app_dir, runtime_dir
+
+        roots = (str(app_dir()), str(runtime_dir()))
+    except Exception:  # noqa: BLE001 — the segment matcher above still stands
+        return None
+    for root in roots:
+        for variant in (root.lower(), root.lower().replace("\\", "/")):
+            idx = lower.find(variant)
+            if idx >= 0 and _blocked_at(idx):
+                return 26, "blocked"
+    return None
+
+
+# Order is evaluation order; the numbers are labels, not positions. `_check_26`
+# runs ahead of `_check_24` deliberately: 24 forces ASK on recursive-destructive
+# verbs, so `rm -rf app/` would otherwise be one operator `y` away from deleting
+# the sealed tree. A DENY on the sealed trees outranks an ASK on the verb.
 _CHECKS: list = [
     _check_01, _check_02, _check_03, _check_04, _check_05,
     _check_06, _check_07, _check_08, _check_09, _check_10,
     _check_11, _check_12, _check_13, _check_14, _check_15,
     _check_16, _check_17, _check_18, _check_19, _check_20,
-    _check_21, _check_22, _check_23, _check_24, _check_25,
+    _check_21, _check_22, _check_23, _check_26, _check_24,
+    _check_25,
 ]

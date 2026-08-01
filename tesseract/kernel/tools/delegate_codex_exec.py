@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import ClassVar
 
 from pydantic import BaseModel, Field
@@ -94,8 +95,13 @@ class DelegateCodexExecTool(Tool):
         # trio W1 — wire the spawn to the MCP hub (best-effort; a failed
         # provision must never block an audit/second-opinion run).
         from tesseract.kernel.tools._delegate_runner import provision_delegate_mcp
+        from tesseract.orchestrator.seal_guard import safe_cwd
 
-        await provision_delegate_mcp("codex", context.workspace_root or "")
+        # Second delegate spawn path: this tool does not route through
+        # `run_delegate_foreground`, so it needs the seal guard of its own.
+        spawn_cwd = str(safe_cwd(context.workspace_root or Path.cwd()))
+
+        await provision_delegate_mcp("codex", spawn_cwd)
 
         # Sink route: chat-direct call with a Mirror cli_sink + call_id.
         # Output streams through cli_start / cli_output / cli_end envelopes
@@ -105,7 +111,7 @@ class DelegateCodexExecTool(Tool):
                 return await run_subprocess_with_sink(
                     tool_name=self.name,
                     argv=(executable, "exec", inp.prompt),
-                    cwd=context.workspace_root or "",
+                    cwd=spawn_cwd,
                     timeout=inp.timeout,
                     sink=context.cli_sink,
                     call_id=context.current_call_id,
@@ -130,7 +136,7 @@ class DelegateCodexExecTool(Tool):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
-                cwd=context.workspace_root or None,
+                cwd=spawn_cwd,
             )
         except FileNotFoundError as exc:
             return ToolResult(
