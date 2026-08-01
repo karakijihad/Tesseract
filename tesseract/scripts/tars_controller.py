@@ -470,10 +470,13 @@ class ControllerRuntime:
                 ROOT,
                 build_tool_registry,
             )
+            from tesseract.paths import home_dir
             from tesseract.permissions.policy import load_permission_policy
 
+            # State root, not the repo — `path_overrides` prefixes are
+            # home-relative (see `mirror/server/config.py` for the full note).
             policy = load_permission_policy(
-                PERMISSIONS_YAML, workspace_root=str(ROOT)
+                PERMISSIONS_YAML, workspace_root=str(home_dir())
             )
             registry, *_ = build_tool_registry(policy=policy)
             self.tool_registry = registry

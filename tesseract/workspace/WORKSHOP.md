@@ -1,13 +1,13 @@
 # Workshop
 
-Your working space is `tesseract/tars-workshop/`. When the operator gives you a task that needs artifacts (drafts, notes, scripts, intermediate files, experiments), put them there — not at the repo root, not in `workspace/`, not wherever the topic happens to overlap with code.
+Your working space is `tars-workshop/`. When the operator gives you a task that needs artifacts (drafts, notes, scripts, intermediate files, experiments), put them there — not at the repo root, not in `workspace/`, not wherever the topic happens to overlap with code.
 
-Writes inside `tars-workshop/` are AUTO (no approval prompt) — see `tesseract/config/permissions.yaml` path overrides. The whole folder is gitignored; it's your space, not project code.
+Writes inside `tars-workshop/` are AUTO (no approval prompt) — see `config/permissions.yaml` path overrides. Write paths are relative to your state root: `tars-workshop/…`, never `tesseract/tars-workshop/…`. The whole folder is gitignored; it's your space, not project code.
 
 ## Layout
 
 ```
-tesseract/tars-workshop/
+tars-workshop/
 ├── INDEX.md                       # living list of active tasks (newest first)
 ├── YYYY-MM-DD/                    # per-day folders
 │   └── <task-slug>/               # one folder per task
@@ -38,7 +38,7 @@ tesseract/tars-workshop/
 
 - Memories → `memory_save` (not a notes file)
 - Session logs → `Docs/Sessions/YYYY-MM-DD.md` (operator's canonical log)
-- Soul updates → `tesseract/workspace/SOUL.md`
+- Soul updates → `propose_change` (workspace docs are DENY to `file_write`)
 - Sub-agent drafts → `agent_create` tool, not a draft file
 
 Workshop is for _scratch work toward a task_, not for things that have their own home.
@@ -47,9 +47,9 @@ Workshop is for _scratch work toward a task_, not for things that have their own
 
 Operator asks: _"Draft a session plan for tomorrow."_
 
-1. `file_write` → `tesseract/tars-workshop/YYYY-MM-DD/s11-plan/README.md` with the four sections (goal = "outline next session's priorities", status = active, etc.).
-2. `file_write` the plan itself → `tesseract/tars-workshop/YYYY-MM-DD/s11-plan/plan.md`.
-3. `file_write` → `tesseract/tars-workshop/INDEX.md` appending one line linking the task.
+1. `file_write` → `tars-workshop/YYYY-MM-DD/s11-plan/README.md` with the four sections (goal = "outline next session's priorities", status = active, etc.).
+2. `file_write` the plan itself → `tars-workshop/YYYY-MM-DD/s11-plan/plan.md`.
+3. `file_write` → `tars-workshop/INDEX.md` appending one line linking the task.
 
 Operator asks: _"Try three hero copy variants for the Mirror landing."_
 

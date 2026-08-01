@@ -48,14 +48,11 @@ roles:
     # the first fallback (same key, cheaper, faster) so a rate limit or
     # transient error still resolves on ANTHROPIC_API_KEY alone. Later
     # fallbacks only activate once their matching key is added to .env.
-    primary: api.anthropic.sonnet_46
+    primary: api.nim.gpt_oss_120b
     fallbacks:
-      - api.anthropic.haiku_45
-      - api.openai.gpt54_mini
-      - api.google.gemini_25_flash
-      - api.xai.grok_43
-      - api.deepseek.deepseek_v4_pro
       - api.nim.glm_5_2
+      - api.google.gemini_25_flash
+      - api.openai.gpt56_luna
     compact_threshold: 0.7        # compact when history >= 70% of context_window (raised from 0.4 — we have the room)
     keep_recent_turns: 10         # legacy fallback; ignored when active_window_tokens is set
     head_anchor_messages: 3       # first N user messages preserved verbatim across every compaction (attention-sink anchor)
@@ -68,83 +65,64 @@ roles:
     tool_iteration_cap: 80    # hard cap on tool-call iterations per turn (runaway-loop guard)
     consecutive_error_cap: 3  # adapter ERRORs in a row before the chat_brain circuit-breaker trips and surfaces a final ERROR (CLAUDE.md hard rule)
     daily_budget_usd: 3.0     # role-level cap (in addition to global cap derived from sum of inner caps)
-    notes: "TARS conversational layer. Primary (Claude Sonnet) is vision-capable, so image
-      turns ride the primary directly; `find_vision_entry` still walks the chain if the
-      primary loses vision on a future swap, and `vision_agent` remains the focused-pass
-      delegate."
+    notes: "TARS conversational layer. Primary (Claude Sonnet) is vision-capable,
+      so image turns ride the primary directly; `find_vision_entry` still walks the
+      chain if the primary loses vision on a future swap, and `vision_agent` remains
+      the focused-pass delegate."
 
   observer_agent:
     mode: active
-    primary: api.anthropic.haiku_45
+    primary: api.nim.gpt_oss_120b
     fallbacks:
-      - api.google.gemini_25_flash
-      - api.openai.gpt54_nano
-      - api.openai.gpt54_mini
-      - api.nim.gpt_oss_120b
       - api.nim.glm_5_2
+      - api.google.gemini_25_flash
+      - api.openai.gpt56_luna
     reasoning_effort_override: low    # observer doesn't need multi-step planning
     max_output_tokens_override: 2048  # gemini fallback burns output tokens on internal thinking — 2048 leaves headroom for the ~200-token JSON envelope
     daily_budget_usd: 1.0
-    notes: "Peripheral observer — stateful background subscriber + one-shot observe pass
-      share this role. Emits memory_suggestion envelopes."
+    notes: "Peripheral observer — stateful background subscriber + one-shot observe
+      pass share this role. Emits memory_suggestion envelopes."
 
   claude_cli:
     mode: active
-    primary: cli.claude.opus_48
+    primary: cli.claude.opus_5
     notes: "Heavy lifter — coding, refactoring, reading large repos. Driven via PTY
       or --output-format stream-json. Rides your Claude Code subscription login —
       no API key needed, but the CLI must be installed and logged in."
 
   codex_cli:
     mode: active
-    primary: cli.codex.gpt55
+    primary: cli.codex.gpt56_terra
     notes: "Auditor — reviews, verifies, second opinions. `codex exec` for one-shot,
-      PTY for multi-turn. Rides your Codex CLI subscription login — no API key
-      needed, but the CLI must be installed and logged in."
+      PTY for multi-turn. Rides your Codex CLI subscription login — no API key needed,
+      but the CLI must be installed and logged in."
 
   agents_default:
     mode: active
-    primary: api.anthropic.haiku_45
+    primary: api.nim.gpt_oss_120b
     fallbacks:
-      - api.google.gemini_25_flash
-      - api.openai.gpt54_nano
-      - api.openai.gpt54_mini
-      - api.nim.gpt_oss_120b
       - api.nim.glm_5_2
+      - api.google.gemini_25_flash
+      - api.openai.gpt56_luna
     notes: "Default model for sub-agents that don't pin one in agents/INDEX.md. Cheapest
       viable fit — agents that need more horsepower set their own."
 
   subagents_default:
     mode: active
-    primary: api.anthropic.haiku_45
+    primary: api.nim.gpt_oss_120b
     fallbacks:
-      - api.google.gemini_25_flash
-      - api.openai.gpt54_nano
-      - api.openai.gpt54_mini
-      - api.nim.gpt_oss_120b
       - api.nim.glm_5_2
+      - api.google.gemini_25_flash
+      - api.openai.gpt56_luna
     notes: "Default model for sub-sub-agents (delegates spawned by agents)."
-
-  channel_vision:
-    mode: inactive
-    daily_budget_usd: 0.50
-    notes: "Accounting bucket for vision spend triggered by channel attachment handlers
-      (`_handlers/image.py`). The actual vision call rides on the chat_brain
-      chain — TARS picks whichever entry there declares `capabilities.vision_input`
-      — so this role has no primary of its own. `mode: inactive` keeps the schema
-      stub but the role's `daily_budget_usd` still flows into `CostLedger.per_role_caps`
-      (see `cost/ledger.py::from_bundle`), giving channel-vision spend its own daily
-      cap independent of chat_brain. Keep in sync with `channels.yaml::cost.per_role.channel_vision`."
 
   feedback_consolidator:
     mode: active
-    primary: api.anthropic.haiku_45
+    primary: api.nim.gpt_oss_120b
     fallbacks:
-      - api.google.gemini_25_flash
-      - api.openai.gpt54_nano
-      - api.openai.gpt54_mini
-      - api.nim.gpt_oss_120b
       - api.nim.glm_5_2
+      - api.google.gemini_25_flash
+      - api.openai.gpt56_luna
     daily_budget_usd: 0.50
     notes: "Layer B/C of feedback durability — weekly consolidator + daily sweep both
       use this role. Cheap model on a low-cadence cron; proposals only, operator confirms
@@ -152,13 +130,11 @@ roles:
 
   autonomy_heartbeat:
     mode: active
-    primary: api.anthropic.haiku_45
+    primary: api.nim.gpt_oss_120b
     fallbacks:
-      - api.google.gemini_25_flash
-      - api.openai.gpt54_nano
-      - api.openai.gpt54_mini
-      - api.nim.gpt_oss_120b
       - api.nim.glm_5_2
+      - api.google.gemini_25_flash
+      - api.openai.gpt56_luna
     daily_budget_usd: 0.50
     notes: "Periodic self-reflection pass. Reads recent workspace events + memory
       writes since the last cursor, returns 0-3 bounded observations (Pydantic-validated).
@@ -167,79 +143,62 @@ roles:
 
   autonomy_vetter:
     mode: active
-    primary: api.anthropic.haiku_45
+    primary: api.nim.gpt_oss_120b
     fallbacks:
-      - api.google.gemini_25_flash
-      - api.openai.gpt54_nano
-      - api.openai.gpt54_mini
-      - api.nim.gpt_oss_120b
+      - api.openai.gpt56_luna
       - api.nim.glm_5_2
+      - api.google.gemini_25_flash
     daily_budget_usd: 0.25
     notes: "Agenda quality gate. Judges UNVETTED low-trust proposals in batches —
       promote/reject/merge with a 0-1 usefulness score. Reviewing/verifying is exactly
       codex_cli's remit; to use a stronger auditor, swap primary to cli.codex.gpt55
-      or cli.claude.opus_48 (subscription CLI, no extra API key). Idle short-circuit (no
-      unvetted items → no model bill) keeps the cap ample."
+      or cli.claude.opus_48 (subscription CLI, no extra API key). Idle short-circuit
+      (no unvetted items → no model bill) keeps the cap ample."
 
   autonomy_scout:
     mode: active
-    primary: api.anthropic.haiku_45
+    primary: api.nim.gpt_oss_120b
     fallbacks:
-      - api.google.gemini_25_flash
-      - api.openai.gpt54_nano
-      - api.openai.gpt54_mini
-      - api.nim.gpt_oss_120b
       - api.nim.glm_5_2
+      - api.google.gemini_25_flash
+      - api.openai.gpt56_luna
     daily_budget_usd: 0.50
-    notes: "Identity-anchored discovery. Two LLM calls per run (query-gen, then
-      evaluation) — idle short-circuit after dedup/pre-filter skips the second
-      call on a quiet tick. This cap is the idle-work spend ceiling, separate from
-      chat_brain's budget. Disabled by default in schedule.yaml; flip on whenever
-      you like."
+    notes: "Identity-anchored discovery. Two LLM calls per run (query-gen, then evaluation)
+      — idle short-circuit after dedup/pre-filter skips the second call on a quiet
+      tick. This cap is the idle-work spend ceiling, separate from chat_brain's budget.
+      Disabled by default in schedule.yaml; flip on whenever you like."
 
   autonomy_strategist:
     mode: active
-    primary: api.anthropic.haiku_45
+    primary: api.nim.gpt_oss_120b
     fallbacks:
-      - api.google.gemini_25_flash
-      - api.openai.gpt54_nano
-      - api.openai.gpt54_mini
-      - api.nim.gpt_oss_120b
       - api.nim.glm_5_2
+      - api.google.gemini_25_flash
+      - api.openai.gpt56_luna
     daily_budget_usd: 0.25
-    notes: "Periodic initiative curator. Reads recent agenda outcomes, discovery
-      leaves, vault deltas, worker failures, governor pauses, and operator-view presence
-      over the lookback window configured in schedule.yaml; emits at most 3 high-conviction
+    notes: "Periodic initiative curator. Reads recent agenda outcomes, discovery leaves,
+      vault deltas, worker failures, governor pauses, and operator-view presence over
+      the lookback window configured in schedule.yaml; emits at most 3 high-conviction
       Initiative objects with explicit success criteria. Cadence is operator-tunable
       in schedule.yaml::autonomy_strategist.cadence; the idle short-circuit prevents
       model bill on quiet windows so a 0.25 USD daily cap is sufficient even with
       occasional re-renders."
 
   # ─── Delegation roles ───────────────────────────────────────
-  vision_agent:
-    mode: active
-    primary: api.anthropic.haiku_45
-    fallbacks:
-      - api.nim.qwen3_5_397b_a17b
-    notes: "Image-to-text delegation. Primary needs only ANTHROPIC_API_KEY; the NIM
-      Qwen entry is a free fallback once BUILD_NVIDIA_KEY is added to .env.
-      (122B-A10B fallback removed — NIM end-of-life 2026-07-20.)"
-
   image_generator:
     mode: active
     primary: api.nim.flux2_klein_4b
     fallbacks:
       - api.nim.flux1_dev
       - api.xai.grok_imagine_image
-    notes: "No Anthropic model does image generation, so this role can't run on
-      ANTHROPIC_API_KEY alone. Least-friction default: NIM's free FLUX.2-klein
-      (sign up for BUILD_NVIDIA_KEY at build.nvidia.com — free developer tier,
-      no payment method). Add XAI_API_KEY and swap primary to
-      api.xai.grok_imagine_image for higher-quality / image-to-image generation
-      (paid, per-image). The image_generate tool walks primary→fallbacks and skips
-      any entry whose catalog `capabilities` don't cover the requested op — the
-      FLUX entries are text-to-image only, so i2i requests only run once an xai
-      entry is reachable."
+    notes: "No Anthropic model does image generation, so this role can't run on ANTHROPIC_API_KEY
+      alone. Least-friction default: NIM's free FLUX.2-klein (sign up for BUILD_NVIDIA_KEY
+      at build.nvidia.com — free developer tier, no payment method). Add XAI_API_KEY
+      and swap primary to api.xai.grok_imagine_image for higher-quality / image-to-image
+      generation (paid, per-image). The image_generate tool walks primary→fallbacks
+      and skips any entry whose catalog `capabilities` don't cover the requested op
+      — the FLUX entries are text-to-image only, so i2i requests only run once an
+      xai entry is reachable."
 
   audio_transcribe:
     mode: active
@@ -248,8 +207,8 @@ roles:
     # substitutes "[audio transcription failed: <reason>]" for the audio part.
     notes: "Audio-to-text. WS preprocessor calls local_whisper.transcribe directly
       (engine preloaded at boot). The `transcribe_audio` tool is also registered for
-      ad-hoc re-transcription from chat_brain. Runs on CPU with no extra setup;
-      see providers.yaml's whisper comment to opt into a CUDA GPU checkpoint."
+      ad-hoc re-transcription from chat_brain. Runs on CPU with no extra setup; see
+      providers.yaml's whisper comment to opt into a CUDA GPU checkpoint."
 
 # ─── Voice subsystem ────────────────────────────────────────
 # Style/character is config-only via per-surface `synthesis_presets` on each

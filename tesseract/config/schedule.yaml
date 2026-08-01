@@ -180,59 +180,6 @@ jobs:
     config:
       retention_days: 7           # live drawer holds this many days; archive holds older
 
-  - name: provider_watch
-    cadence: "30 6 * * 1,4"       # 06:30 Mon+Thu — twice-weekly keeps broad provider coverage within a modest search budget; daily_brief covers day-to-day
-    handler: "tesseract.scheduler.tasks.provider_watch.ProviderWatchJob"
-    enabled: true                 # requires TAVILY_API_KEY to be set
-    on_failure: log
-    model_role: agents_default    # cheap default; override via Mirror Schedule UI without touching Python
-    retry_policy:
-      max_retries: 1
-      backoff_seconds: 300
-    config:
-      max_results_per_provider: 5
-      providers:
-        - name: Anthropic
-          queries:
-            - "Anthropic Claude new model release pricing context window"
-            - "Claude Code CLI release notes new feature"
-        - name: OpenAI
-          queries:
-            - "OpenAI GPT new model release pricing context window"
-            - "OpenAI Codex CLI changelog new feature"
-        - name: Google
-          queries:
-            - "Google Gemini new model release"
-            - "Google AI Studio pricing context window"
-        - name: NVIDIA NIM
-          queries:
-            - "NVIDIA NIM new model deployment"
-            - "NIM endpoint pricing changes"
-        - name: ElevenLabs
-          queries:
-            - "ElevenLabs new voice model release"
-            - "ElevenLabs pricing changes"
-        - name: Ecosystem
-          queries:
-            - "MCP server new release Model Context Protocol"
-            - "agent framework release LLM tools 2026"
-        - name: xAI
-          queries:
-            - "xAI Grok new model release"
-            - "Grok API pricing context window"
-        - name: DeepSeek
-          queries:
-            - "DeepSeek new model release open weights"
-            - "DeepSeek API pricing changes"
-        - name: Qwen
-          queries:
-            - "Alibaba Qwen new model release"
-            - "Qwen open weights release"
-        - name: Zhipu
-          queries:
-            - "Zhipu GLM new model release"
-            - "GLM API pricing context window"
-
   - name: interests_decay
     cadence: "15 3 * * *"         # 03:15 local — quiet window before reflection (04:00)
     handler: "tesseract.scheduler.tasks.interests_decay.InterestsDecayJob"
@@ -305,7 +252,6 @@ jobs:
       max_retries: 0
       backoff_seconds: 0
     config: {}
-
   - name: leaf_digest_daily
     cadence: "30 20 * * *"        # 20:30 local — after chat_digest settles
     handler: "tesseract.scheduler.tasks.leaf_digest_daily.DigestDailyJob"
@@ -336,7 +282,6 @@ jobs:
       max_retries: 0
       backoff_seconds: 0
     config: {}
-
   - name: autonomy_vetter
     cadence: "*/15 * * * *"      # every 15 min; batches pending UNVETTED items. Cron is the only tuning knob.
     handler: "tesseract.scheduler.tasks.autonomy_vetter.AutonomyVetterJob"
@@ -347,7 +292,6 @@ jobs:
       max_retries: 0
       backoff_seconds: 0
     config: {}
-
   - name: autonomy_strategist
     cadence: "0 10 * * *"         # daily at 10:00 local; idle short-circuit prevents bill on quiet windows. Change the cron expression to widen/narrow the tick; lookback_days / dedupe_window_days below cushion the cadence.
     handler: "tesseract.scheduler.tasks.autonomy_strategist.AutonomyStrategistJob"
@@ -371,16 +315,6 @@ jobs:
       max_retries: 0
       backoff_seconds: 0
     config: {}                    # tesseract_home / seen_path overrides accepted
-
-  - name: operator_nudge
-    cadence: "0 */2 * * *"        # periodic "still here, all good" toast through OutboundNotifier; fires every 2h on the hour (croniter parses `*/120` as "minute multiples of 120" → minute 0 each hour, NOT 2h cadence)
-    handler: "tesseract.scheduler.tasks.operator_nudge.OperatorNudgeJob"
-    enabled: false                # opt in via schedule_update; disabled by default to avoid surprise traffic
-    on_failure: log
-    retry_policy:
-      max_retries: 0
-      backoff_seconds: 0
-    config: {}
 
   - name: daily_brief
     cadence: "0 8 * * *"          # 08:00 daily — morning brief lands before the day starts
@@ -433,36 +367,3 @@ jobs:
       max_retries: 0
       backoff_seconds: 0
     config: {}
-
-  # Scans logs/skills/usage.jsonl and files a skill_refinement inbox card
-  # for any skill whose error/correction ratio crosses the threshold.
-  - name: skill_refinement
-    cadence: "0 2 * * 0"          # weekly Sunday 02:00 local
-    handler: tesseract.scheduler.tasks.skill_refinement.SkillRefinementJob
-    enabled: true                 # idle short-circuits (no cards) until usage.jsonl has signal
-    on_failure: log
-    model_role: subagents_default # LLM role for the revised-SKILL.md proposal (pick from roles.yaml)
-    retry_policy:
-      max_retries: 0
-      backoff_seconds: 0
-    config:
-      window_days: 7
-      min_loads: 3                # ignore skills with too little signal
-      ratio_threshold: 0.34       # flag when ≥34% of loads ended in error/correction
-      max_cards: 3                # cap cards per run
-
-  # Reads recent daily digests and suggests (never drafts) skills for
-  # uncovered recurring task shapes via a nudge card. TARS/operator decides
-  # whether to skill_create.
-  - name: skill_suggest
-    cadence: "0 3 * * 0"          # weekly Sunday 03:00 local
-    handler: tesseract.scheduler.tasks.skill_suggest.SkillSuggestJob
-    enabled: true                 # no-ops when no recent digests / no uncovered shapes
-    on_failure: log
-    model_role: subagents_default # LLM role for shape detection (pick from roles.yaml)
-    retry_policy:
-      max_retries: 0
-      backoff_seconds: 0
-    config:
-      lookback_days: 7
-      max_suggestions: 2

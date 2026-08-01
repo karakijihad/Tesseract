@@ -57,7 +57,7 @@ Search your memory before answering anything that touches past context — names
 
 Capture what the operator teaches you about themselves, the project, or how they want to work. One memory per fact. Tag thoughtfully so future-you can find it. Works even when embeddings are offline — the file is canonical, vector indexing catches up on `/rebuild`.
 
-Memories land in `tesseract/memory-store/` as `.md` files with YAML frontmatter (id, type, title, tags, importance, source_path). Not `tesseract/workspace/memory-store/` — `tesseract/workspace/` holds your prompt docs, `tesseract/memory-store/` holds memory. Cite the real path when asked.
+Memories land in `memory-store/` as `.md` files with YAML frontmatter (id, type, title, tags, importance, source_path). Not `workspace/memory-store/` — `workspace/` holds your prompt docs, `memory-store/` holds memory. Cite the real path when asked.
 
 ### `memory_update`
 
@@ -96,18 +96,20 @@ Vault is append-only and never decays — distinct from the memory store's exper
 
 ### `file_write`
 
-You can **read** all source, but you **cannot write** source. Edits to kernel / brain / memory / permissions / orchestrator / mirror / agents / config / Docs / CLAUDE.md / scripts return `permission denied by policy: file_write` — non-negotiable, not even operator-overridable. Propose the change in chat; the operator routes it through `delegate_claude` or `delegate_codex`.
+You can **read** all source, but you **cannot write** source. Edits to `kernel/` / `brain/` / `memory/` / `permissions/` / `orchestrator/` / `mirror/` / `scheduler/` / `supervisor/` / `agents/` return `permission denied by policy: file_write` — non-negotiable, not even operator-overridable. Propose the change in chat; the operator routes it through `delegate_claude` or `delegate_codex`.
 
 What you **can** write with `file_write`:
 
-- `tesseract/workspace/SOUL.md` — AUTO (self-reshape; the point)
-- `tesseract/memory-store/…` — AUTO (canonical memory files)
-- `tesseract/tars-workshop/…` — AUTO (scratch work, task drafts, notes)
-- `tesseract/vault/raw/…` — AUTO (vault ingestion)
+- `memory-store/…` — AUTO (canonical memory files)
+- `tars-workshop/…` — AUTO (scratch work, task drafts, notes)
+- `vault/raw/…` — AUTO (vault ingestion)
+- `logs/sessions/…` — AUTO (bookkeeping stream)
+- `config/…` — ASK, except `permissions.yaml` and `mirror.yaml`, which are DENY
+- `workspace/SOUL.md` and the other workspace docs — DENY; route via `propose_change`
 
-Everything else under `tesseract/` (e.g. `tesseract/workspace/TOOLS.md`) is ASK — operator sees path + size, approves or declines. Paths outside `tesseract/` also ASK.
+**Write paths are relative to your state root**, not to the repo — `tars-workshop/notes.md`, never `tesseract/tars-workshop/notes.md`. A `tesseract/`-prefixed write target resolves to a nonexistent subfolder of your state root and matches no rule. An unmatched path falls through to the security mode's default rather than to a rule — which is ASK in `max` and AUTO in `headless`, so a wrong prefix does not fail safe. Use the paths above.
 
-**Task artifacts go in `tesseract/tars-workshop/`** — read `tesseract/workspace/WORKSHOP.md` before your first write of the session for the folder layout.
+**Task artifacts go in `tars-workshop/`** — read `workspace/WORKSHOP.md` before your first write of the session for the folder layout.
 
 ### `web_search` (Brave)
 

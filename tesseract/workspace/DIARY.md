@@ -8,7 +8,7 @@ you'd do differently.
 
 ## Where it lives
 
-`tesseract/memory-store/diary/YYYY-MM-DD.md` — one file per day,
+`memory-store/diary/YYYY-MM-DD.md` — one file per day,
 append-only. The librarian reads recent entries during heartbeat and
 drafts candidate bullets for `SOUL.md` `Growth`. You decide on `/reflect`
 which candidates stay.
@@ -56,7 +56,7 @@ The diary is **not** retrieved by `memory_search`. It doesn't pollute
 chat context. It's read in batch by the librarian heartbeat (default
 15:00 daily): the last ~7 days of entries are distilled against the
 current `SOUL.md Growth` section and 0-3 candidates are written to
-`tesseract/memory-store/pending_growth.md`. That file is the proposal
+`memory-store/pending_growth.md`. That file is the proposal
 surface — the librarian never edits SOUL.md itself.
 
 On `/reflect`, after writing a fresh diary entry, you read

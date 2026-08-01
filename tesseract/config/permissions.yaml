@@ -223,109 +223,132 @@ modes:
 # is absolute: the operator cannot override with `y` at the prompt.
 path_overrides:
   file_write:
+    # Prefixes are STATE-ROOT-relative (`<home>/…`), matching the anchor
+    # `PermissionPolicy._normalize_for_prefix_match` resolves against. They
+    # are not repo-relative: source lives in the sealed `app/` tree, which is
+    # outside the write boundary entirely and never reaches this layer.
+    #
+    # `_path_posture` takes the FIRST matching prefix, not the longest —
+    # specific rules must precede the general ones they sit under.
+
     # ─── DENY — operator-owned workspace files. TARS routes via
     # `propose_change`; the workspace inbox is the commit gate. ───
-    - path_prefix: tesseract/workspace/SOUL.md
+    - path_prefix: workspace/SOUL.md
       posture: deny
       reason: "TARS routes via propose_change; operator approves in workspace"
-    - path_prefix: tesseract/workspace/IDENTITY.md
+    - path_prefix: workspace/IDENTITY.md
       posture: deny
       reason: "TARS routes via propose_change; operator approves in workspace"
-    - path_prefix: tesseract/workspace/FOUNDATION.md
+    - path_prefix: workspace/FOUNDATION.md
       posture: deny
       reason: "TARS routes via propose_change; operator approves in workspace"
-    - path_prefix: tesseract/workspace/USER.md
+    - path_prefix: workspace/USER.md
       posture: deny
       reason: "TARS routes via propose_change; operator approves in workspace"
-    - path_prefix: tesseract/workspace/VOICE.md
+    - path_prefix: workspace/VOICE.md
       posture: deny
       reason: "TARS routes via propose_change; operator approves in workspace"
-    - path_prefix: tesseract/workspace/AGENTS.md
+    - path_prefix: workspace/AGENTS.md
       posture: deny
       reason: "TARS routes via propose_change; operator approves in workspace"
-    - path_prefix: tesseract/workspace/HEARTBEAT.md
+    - path_prefix: workspace/HEARTBEAT.md
       posture: deny
       reason: "TARS routes via propose_change; operator approves in workspace"
-    - path_prefix: tesseract/workspace/MCP.md
+    - path_prefix: workspace/MCP.md
       posture: deny
       reason: "TARS routes via propose_change; operator approves in workspace"
-    - path_prefix: tesseract/workspace/TOOLS.md
+    - path_prefix: workspace/TOOLS.md
       posture: deny
       reason: "TARS routes via propose_change; operator approves in workspace"
-    - path_prefix: tesseract/workspace/WORKSHOP.md
+    - path_prefix: workspace/WORKSHOP.md
       posture: deny
       reason: "TARS routes via propose_change; operator approves in workspace"
-    - path_prefix: tesseract/workspace/DIARY.md
+    - path_prefix: workspace/DIARY.md
       posture: deny
       reason: "TARS routes via propose_change; operator approves in workspace"
-    - path_prefix: tesseract/workspace/BOOT.md
+    - path_prefix: workspace/BOOT.md
       posture: deny
       reason: "TARS routes via propose_change; operator approves in workspace"
 
-    # ─── ASK — TARS drafts markdown skills (SKILL.md + optional bundled
-    # scripts/) here; operator approves the write before it lands. Must
-    # win over any broader workspace/ rule. ───
-    - path_prefix: tesseract/workspace/skills/
+    # ─── ASK — P6 Task 4/4b "workshop": TARS drafts markdown skills
+    # (SKILL.md + optional bundled scripts/) here; operator approves the
+    # write before it lands. Must win over any broader workspace/ rule. ───
+    - path_prefix: workspace/skills/
       posture: ask
       reason: "TARS drafts skill folders here; operator approves the write"
 
     # ─── AUTO — TARS's writable surfaces (specific paths, listed first) ───
-    - path_prefix: tesseract/memory-store/
+    - path_prefix: memory-store/
       posture: auto
       reason: "memory store is TARS's canonical interior"
-    - path_prefix: tesseract/logs/sessions/
+    - path_prefix: logs/sessions/
       posture: auto
       reason: "bookkeeping log stream (reflect/session_end/auto_compact/scheduler
         JSONL)"
-    - path_prefix: tesseract/tars-workshop/
+    - path_prefix: tars-workshop/
       posture: auto
       reason: "TARS's working space — task drafts, notes, scratch work (gitignored)"
-    - path_prefix: tesseract/vault/raw/
+    - path_prefix: vault/raw/
       posture: auto
       reason: "vault ingestion lands raw files here (when vault_ingest wires up)"
 
-    # ─── DENY — source code trees. Read-only for TARS. ───
-    - path_prefix: tesseract/kernel/
+    # ─── DENY — source trees, state-root-relative. Inert in a packaged
+    # install (source lives in the sealed `app/` tree, and `<home>/kernel/`
+    # does not exist); load-bearing in a DEV checkout, where the state root
+    # IS the source package and the write boundary therefore cannot separate
+    # them. `file_write::_RUNTIME_LOCK_PREFIXES` enforces the same set
+    # absolutely, below policy. ───
+    - path_prefix: kernel/
       posture: deny
       reason: "kernel source — edits go through delegate_claude / delegate_codex"
-    - path_prefix: tesseract/brain/
+    - path_prefix: brain/
       posture: deny
       reason: "chat/loop source — edits go through delegate_*"
-    - path_prefix: tesseract/memory/
+    - path_prefix: memory/
       posture: deny
       reason: "memory subsystem source (not the memory-store/) — edits go through
         delegate_*"
-    - path_prefix: tesseract/permissions/
+    - path_prefix: permissions/
       posture: deny
       reason: "permission engine source — DENY by design"
-    - path_prefix: tesseract/orchestrator/
+    - path_prefix: orchestrator/
       posture: deny
       reason: "multi-agent orchestration source — edits go through delegate_*"
-    - path_prefix: tesseract/mirror/
+    - path_prefix: mirror/
       posture: deny
       reason: "Mirror frontend source — edits go through delegate_*"
-    - path_prefix: tesseract/agents/
+    - path_prefix: scheduler/
+      posture: deny
+      reason: "scheduler source — edits go through delegate_*"
+    - path_prefix: supervisor/
+      posture: deny
+      reason: "supervisor source — edits go through delegate_*"
+
+    # ─── DENY — state TARS must not rewrite directly. ───
+    - path_prefix: agents/
       posture: deny
       reason: "agent .md files are managed via agent_create; loader.py is source"
-    - path_prefix: tesseract/config/
-      posture: ask
-      reason: "runtime config — operator edits; TARS proposes via conversation"
-    - path_prefix: tesseract/.env
+    - path_prefix: .env
       posture: deny
       reason: "secrets — never writable by TARS"
-    - path_prefix: scripts/
+
+    # ─── Config: the two locks that survive, then the rest at ASK. Order is
+    # load-bearing — `config/` would shadow both specific rules if it came
+    # first, and TARS could widen his own permissions at ASK. ───
+    - path_prefix: config/permissions.yaml
       posture: deny
-      reason: "dev-time utilities — source, not for TARS self-edit"
-    - path_prefix: Docs/
+      reason: "TARS must not widen his own permissions; operator edits by hand or
+        in Settings"
+    - path_prefix: config/mirror.yaml
       posture: deny
-      reason: "session logs, audits, plans — operator-maintained"
-    - path_prefix: pyproject.toml
-      posture: deny
-    - path_prefix: CLAUDE.md
-      posture: deny
-    - path_prefix: README.md
-      posture: deny
-    # Anything not matched above falls through to tools.file_write (ASK in max).
+      reason: "Mirror server config — operator-owned"
+    - path_prefix: config/
+      posture: ask
+      reason: "providers/roles/schedule/identity — the trio may edit, operator
+        approves each write"
+    # Anything not matched above falls through to the MODE override, then to
+    # `tools.file_write`. That is ASK in the shipped `max` mode, but AUTO in
+    # `headless` — add the rule; do not rely on the fallthrough.
 
 # ─────────────────────────────────────────────────────────────────────────
 # Read-only self-verification allowlist. `PermissionPolicy._bash_readonly_posture`

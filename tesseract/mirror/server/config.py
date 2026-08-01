@@ -14,7 +14,7 @@ from tesseract.config.loader import (
     ResolvedRef,
     load_config,
 )
-from tesseract.paths import CONFIG_DIR
+from tesseract.paths import CONFIG_DIR, home_dir
 from tesseract.permissions.policy import PermissionPolicy, load_permission_policy
 
 _TESSERACT_DIR = Path(__file__).resolve().parents[2]
@@ -92,7 +92,11 @@ def load_server_config() -> ServerConfig:
 
     bundle = load_config(providers_path=PROVIDERS_YAML, roles_path=ROLES_YAML)
     models = synthesize_legacy_models_dict(bundle)
-    permissions = load_permission_policy(PERMISSIONS_YAML, workspace_root=str(_REPO_ROOT))
+    # Anchored at the state root, not the repo: `path_overrides` prefixes are
+    # home-relative, and `_normalize_for_prefix_match` rewrites an absolute
+    # path against this root before matching. Anchor it anywhere else and every
+    # rule falls through to the mode override — AUTO in headless.
+    permissions = load_permission_policy(PERMISSIONS_YAML, workspace_root=str(home_dir()))
     terminal = _load_terminal_config(mirror)
     uploads = _load_upload_config(mirror)
 

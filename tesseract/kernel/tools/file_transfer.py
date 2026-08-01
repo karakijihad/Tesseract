@@ -4,9 +4,10 @@ File management previously had no dedicated tool, so TARS routed
 copies through bash (`copy /Y`, `shutil` one-liners) — a needless trip
 through the shell security layer for a pure file operation (live
 incident: session 2026-07-12-1818). These tools share `file_write`'s
-posture: bare-relative paths normalize under `tesseract/`, destinations
-pass the runtime-tree lockdown, and `decide.evaluate` runs
-`validate_path` on the write-side fields (see `_WRITE_PATH_TOOLS`).
+posture: bare-relative paths anchor at the state root, destinations pass
+the locked-config check, and `decide.evaluate` runs `validate_path` on the
+write-side fields (see `_WRITE_PATH_TOOLS`) and on the read-side source
+(see `_READ_PATH_TOOLS`).
 
 Copy validates only its destination — the source is a read, same
 posture as `file_read`. Move validates both ends: removing the source
@@ -16,10 +17,10 @@ is a write.
 from __future__ import annotations
 
 import shutil
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import ClassVar
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
 from tesseract.kernel.tools.file_write import (
@@ -27,20 +28,6 @@ from tesseract.kernel.tools.file_write import (
     _maybe_index_workshop_write,
     _resolve_for_check,
 )
-
-
-def _normalize_under_tesseract(value: str) -> str:
-    """Same canonicalization as `FileWriteInput` — bare-relative paths get
-    a `tesseract/` prefix so lockdown rules and path_overrides line up."""
-    if not value:
-        return value
-    raw = value.replace("\\", "/")
-    if raw.startswith("/") or (len(raw) > 1 and raw[1] == ":"):
-        return value
-    head = PurePosixPath(raw).parts[:1]
-    if head and head[0] == "tesseract":
-        return raw
-    return str(PurePosixPath("tesseract") / raw)
 
 
 class FileTransferInput(BaseModel):
@@ -54,11 +41,6 @@ class FileTransferInput(BaseModel):
     overwrite: bool = Field(
         default=False, description="Replace dest_path if it already exists."
     )
-
-    @field_validator("source_path", "dest_path", mode="after")
-    @classmethod
-    def _canonicalize(cls, value: str) -> str:
-        return _normalize_under_tesseract(value)
 
 
 class _FileTransferTool(Tool):
@@ -86,22 +68,25 @@ class _FileTransferTool(Tool):
 
     async def run(self, tool_input: BaseModel, context: ToolContext) -> ToolResult:
         inp = tool_input if isinstance(tool_input, FileTransferInput) else FileTransferInput(**tool_input.model_dump())
-        workspace_root = Path(context.workspace_root)
+
+        from tesseract.paths import home_dir
+
+        state_root = home_dir()
 
         try:
-            source = _resolve_for_check(inp.source_path, workspace_root)
-            dest = _resolve_for_check(inp.dest_path, workspace_root)
+            source = _resolve_for_check(inp.source_path, state_root)
+            dest = _resolve_for_check(inp.dest_path, state_root)
         except (OSError, RuntimeError) as exc:
             return ToolResult(output=f"path resolution failed: {exc}", is_error=True)
 
         for field in self._lockdown_fields:
             resolved = source if field == "source_path" else dest
-            reason = _check_runtime_lockdown(resolved, workspace_root)
+            reason = _check_runtime_lockdown(resolved)
             if reason is not None:
                 msg = (
-                    f"{reason} — TARS cannot edit the live runtime. "
-                    "Delegate new tools to Claude/Codex for operator review and promotion, "
-                    "or use workspace/ / agents/ / tars-workshop/."
+                    f"{reason} — TARS cannot grant himself permissions or "
+                    "reconfigure the Mirror server. The operator edits these "
+                    "two files by hand or in Settings."
                 )
                 try:
                     from tesseract.workspace_events.runtime_lock import emit_runtime_lock_deny

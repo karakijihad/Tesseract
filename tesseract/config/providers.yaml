@@ -113,16 +113,15 @@ api:
           pdf_input: true
           image_output: false
           audio_output: false
-      gpt54_nano:
-        model: gpt-5.4-nano
+      gpt56_luna:
+        model: gpt-5.6-luna
         context_window: 400000
         max_output_tokens: 8192
         reasoning_effort: high
-        temperature: 1.0  # GPT-5 family only accepts default
-        knowledge_cutoff: "2025-08-31"
-        use_responses_api: true   # OpenAI-recommended path for GPT-5 family
-        cost_per_mtok_in: 0.20
-        cost_per_mtok_out: 1.25
+        temperature: 1.0
+        use_responses_api: true
+        cost_per_mtok_in: 0.2
+        cost_per_mtok_out: 1.2
         capabilities:
           vision_input: true
           audio_input: false
@@ -130,7 +129,6 @@ api:
           pdf_input: true
           image_output: false
           audio_output: false
-
   google:
     enabled: true
     api_key_env: GOOGLE_API_KEY
@@ -179,8 +177,8 @@ api:
     max_retries: 3
     adapter: anthropic  # tesseract/kernel/adapters/anthropic.py
     models:
-      opus_48:
-        model: claude-opus-4-8
+      opus_5:
+        model: claude-opus-5
         context_window: 1000000
         max_output_tokens: 16384
         temperature: 0.7
@@ -195,8 +193,8 @@ api:
           pdf_input: true
           image_output: false
           audio_output: false
-      sonnet_46:
-        model: claude-sonnet-4-6
+      sonnet_5:
+        model: claude-sonnet-5
         context_window: 200000
         max_output_tokens: 16384
         temperature: 0.7
@@ -209,26 +207,6 @@ api:
           pdf_input: true
           image_output: false
           audio_output: false
-      haiku_45:
-        model: claude-haiku-4-5-20251001
-        context_window: 200000
-        max_output_tokens: 8192
-        temperature: 0.7
-        cost_per_mtok_in: 1.00
-        cost_per_mtok_out: 5.00
-        capabilities:
-          vision_input: true
-          audio_input: false
-          video_input: false
-          pdf_input: true
-          image_output: false
-          audio_output: false
-
-  # xAI (api.x.ai) — OpenAI-compatible chat completions. grok-4.3 is xAI's
-  # flagship agentic tool-calling model (1M context). Billed at API rates;
-  # xAI's data-sharing program can grant recurring free credits for
-  # accounts that opt in (enable in Console → Settings → Data Sharing; see
-  # .env.example). NOT genuine OpenAI: do NOT set supports_prompt_cache_key.
   xai:
     enabled: true
     base_url: "${XAI_BASE_URL:-https://api.x.ai/v1}"
@@ -299,57 +277,6 @@ api:
   # DeepSeek (api.deepseek.com) — OpenAI-compatible. v4-flash is cheap/fast
   # (non-thinking); v4-pro is stronger. Server-side prompt caching is
   # automatic (cache-hit pricing) — no client param needed.
-  deepseek:
-    enabled: false
-    base_url: "${DEEPSEEK_BASE_URL:-https://api.deepseek.com}"
-    api_key_env: DEEPSEEK_API_KEY
-    timeout_seconds: 60
-    max_retries: 3
-    adapter: openai
-    models:
-      deepseek_v4_flash:
-        model: deepseek-v4-flash
-        context_window: 128000
-        max_output_tokens: 8192
-        temperature: 0.7
-        reasoning_effort: ""       # suppress on compat providers — see xai grok note
-        use_responses_api: false
-        cost_per_mtok_in: 0.14
-        cost_per_mtok_out: 0.28
-        cost_per_mtok_cached_in: 0.0028   # DeepSeek auto cache-hit rate (~2% of base)
-        capabilities:
-          vision_input: false
-          audio_input: false
-          video_input: false
-          pdf_input: false
-          image_output: false
-          audio_output: false
-      deepseek_v4_pro:
-        model: deepseek-v4-pro
-        context_window: 128000
-        max_output_tokens: 8192
-        temperature: 0.7
-        reasoning_effort: ""
-        use_responses_api: false
-        cost_per_mtok_in: 0.435
-        cost_per_mtok_out: 0.87
-        cost_per_mtok_cached_in: 0.003625   # DeepSeek auto cache-hit rate
-        capabilities:
-          vision_input: false
-          audio_input: false
-          video_input: false
-          pdf_input: false
-          image_output: false
-          audio_output: false
-
-  # NVIDIA NIM (build.nvidia.com) — OpenAI-compatible chat completions for the
-  # text/vision models, separate `ai.api.nvidia.com/v1/genai/...` endpoint
-  # (per-model `base_url_override`) for the visual-genai image models. Free
-  # developer tier (sign up at build.nvidia.com for BUILD_NVIDIA_KEY, no
-  # payment method required; rate-limited but no per-token cost). The chat
-  # path runs through the `openai` adapter unchanged; the `image_generate`
-  # tool reads `base_url_override` from the model fields and fires a direct
-  # POST.
   nim:
     enabled: true
     base_url: "${NVIDIA_NIM_BASE_URL:-https://integrate.api.nvidia.com/v1}"
@@ -366,29 +293,6 @@ api:
       # (`reasoning_content` null, answer in `content`). Sampling per
       # Qwen's non-thinking recommendation (temp 0.7 / top_p 0.8). Context:
       # 262K native (1M via YaRN; NIM serves the native window).
-      qwen3_5_397b_a17b:
-        model: qwen/qwen3.5-397b-a17b
-        context_window: 262144
-        max_output_tokens: 8192
-        temperature: 0.7
-        top_p: 0.8
-        cost_per_mtok_in: 0.00
-        cost_per_mtok_out: 0.00
-        capabilities:
-          vision_input: true
-          audio_input: false
-          video_input: true
-          pdf_input: false
-          image_output: false
-          audio_output: false
-      # NVIDIA's hybrid Mamba-Transformer MoE 120B / 12B-active (1M context).
-      # Tool-calling ✓. TEXT-ONLY — rejects image_url with "is not a
-      # multimodal model". Reasoning model — emits `reasoning_content`
-      # alongside `content`.
-      # OpenAI's open-weight 120B — closest spirit-match to gpt-5.4 (full).
-      # Tool-calling ✓. Text-only. Reasoning model. NIM REQUIRES
-      # `reasoning_effort` to be one of low/medium/high — null is rejected
-      # with a 400.
       gpt_oss_120b:
         model: openai/gpt-oss-120b
         context_window: 128000
@@ -450,7 +354,8 @@ api:
       flux1_dev:
         kind: image_generation
         model: black-forest-labs/flux.1-dev
-        base_url_override: https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-dev
+        base_url_override: 
+          https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-dev
         cost_per_image: 0.00
         # Text-to-image only. Its canny/depth `mode` is control-net (a t2i
         # variant via `control_image_attachment_id`), NOT general image-to-
@@ -471,7 +376,8 @@ api:
       flux2_klein_4b:
         kind: image_generation
         model: black-forest-labs/flux.2-klein-4b
-        base_url_override: https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b
+        base_url_override: 
+          https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b
         payload_profile: flux2
         cost_per_image: 0.00
         capabilities:
@@ -503,8 +409,8 @@ cli:
       login_hint: claude auth login
       timeout_seconds: 10
     models:
-      opus_48:
-        model: claude-opus-4-8
+      opus_5:
+        model: claude-opus-5
         reasoning_effort: high
         context_window: 1000000
         max_output_ratio: 0.35
@@ -537,8 +443,8 @@ cli:
       login_hint: codex login
       timeout_seconds: 10
     models:
-      gpt55:
-        model: gpt-5.5
+      gpt56_terra:
+        model: gpt-5.6-terra
         reasoning_effort: high
         context_window: 200000
         max_output_ratio: 0.5
