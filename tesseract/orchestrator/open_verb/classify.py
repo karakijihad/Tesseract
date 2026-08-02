@@ -9,13 +9,15 @@ names a real file never meant a web search.
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Mapping
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from tesseract.config.open_verb import FORBIDDEN_LAUNCH_EXTENSIONS
+from tesseract.orchestrator.open_verb import suffixes
 
 
 class TargetKind(StrEnum):
@@ -58,17 +60,10 @@ _REFUSED_SCHEMES = frozenset(
 _DOMAIN_RE = re.compile(r"^(?!-)[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$")
 _HAS_SUFFIX_RE = re.compile(r"\.[A-Za-z0-9]{1,10}$")
 
-# Text and code suffixes that are not in `launch_extensions` (they render in
-# the cockpit rather than being handed to the OS) but still mark a string as
-# file-shaped rather than a hostname.
-_TEXT_SUFFIXES = frozenset(
-    {
-        ".py", ".ts", ".tsx", ".js", ".jsx", ".rs", ".go", ".java", ".rb",
-        ".c", ".h", ".cpp", ".hpp", ".cs", ".sh", ".yaml", ".yml", ".toml",
-        ".ini", ".cfg", ".json", ".xml", ".html", ".htm", ".css", ".log",
-        ".tsv", ".sql", ".env",
-    }
-)
+# Every suffix the cockpit can render, so a filename is never mistaken for
+# a hostname. Shared with `resolve` — maintaining two copies is how they
+# drifted before.
+_TEXT_SUFFIXES = suffixes.RENDERABLE
 
 # `.com` is both a top-level domain and a DOS executable suffix. Everywhere
 # else the two vocabularies are disjoint, so this is the single carve-out:
@@ -78,8 +73,50 @@ _TLD_COLLISION = ".com"
 
 
 def _file_shaped_suffixes(launch_extensions: frozenset[str]) -> frozenset[str]:
-    suffixes = launch_extensions | FORBIDDEN_LAUNCH_EXTENSIONS | _TEXT_SUFFIXES
-    return suffixes - {_TLD_COLLISION}
+    known = launch_extensions | FORBIDDEN_LAUNCH_EXTENSIONS | _TEXT_SUFFIXES
+    return known - {_TLD_COLLISION}
+
+
+def _without_userinfo(raw: str, split: SplitResult) -> str:
+    """Drop `user:password@` from a URL's authority, keeping everything else.
+
+    Rebuilt from `netloc` rather than `hostname`: the latter lowercases and
+    strips the brackets an IPv6 literal needs, so `https://[::1]:8080/` would
+    come back as the unparseable `https://::1:8080/`.
+    """
+    netloc = split.netloc
+    if "@" not in netloc:
+        return raw
+    # Only the last `@` separates userinfo from the host; one may legally
+    # appear inside the userinfo itself.
+    host_part = netloc.rsplit("@", 1)[1]
+    return urlunsplit(
+        (split.scheme, host_part, split.path, split.query, split.fragment)
+    )
+
+
+_DRIVE_REMOTE = 4
+
+
+def _is_network_drive(target: str) -> bool:
+    """True when `target` starts with a drive letter mapped to a remote share.
+
+    Windows-only and deliberately fail-open: if the API is unavailable or
+    errors, this returns False and the target is handled as an ordinary path.
+    Failing closed would refuse every local drive on any platform where the
+    call does not exist.
+    """
+    if not sys.platform.startswith("win"):
+        return False
+    if not re.match(r"^[A-Za-z]:[\\/]", target):
+        return False
+    try:
+        import ctypes
+
+        drive = f"{target[0]}:\\"
+        return ctypes.windll.kernel32.GetDriveTypeW(drive) == _DRIVE_REMOTE
+    except Exception:  # noqa: BLE001 — an unavailable API is not a refusal
+        return False
 
 
 def _looks_like_a_path(target: str) -> bool:
@@ -115,7 +152,20 @@ def classify(
     scheme = split.scheme.lower()
     if scheme:
         if scheme in _ALLOWED_SCHEMES:
-            return Classification(TargetKind.URL, raw, "explicit http(s) url")
+            # `http://` and `https:///a` carry no host. Left to the probe they
+            # surface as an httpx error rather than as something the operator
+            # can act on, so they end here with a sentence instead.
+            if not split.hostname:
+                return Classification(
+                    TargetKind.REFUSED, raw, f"{raw!r} has no host to open"
+                )
+            # `user:password@` is stripped here, once, so no credential reaches
+            # a persisted surface, the tool metadata or the audit record.
+            # Nothing is lost: browsers have dropped userinfo in URLs, so it
+            # would not have authenticated anything anyway.
+            return Classification(
+                TargetKind.URL, _without_userinfo(raw, split), "explicit http(s) url"
+            )
         # A bare Windows drive (`C:\x`) parses as scheme "c" — not a scheme.
         is_drive = re.match(r"^[A-Za-z]:[\\/]", raw) is not None
         if not is_drive and (raw[len(scheme) + 1 :].startswith("//") or scheme in _REFUSED_SCHEMES):
@@ -124,6 +174,24 @@ def classify(
                 raw,
                 f"{scheme}: is not a scheme this can open",
             )
+
+    # A UNC path must never be stat'd. `Path("\\\\host\\share").exists()` opens
+    # an SMB connection, and Windows will hand the operator's NTLM credentials
+    # to whatever answers — so a target that merely *reads* like a share is a
+    # credential-theft primitive when it arrives from tool-supplied content.
+    if raw.startswith("\\\\") or raw.startswith("//"):
+        return Classification(
+            TargetKind.REFUSED, raw, "network paths are not opened"
+        )
+
+    # A mapped drive letter reads like a local volume but resolves over SMB, so
+    # stat'ing it authenticates exactly as a UNC path would. `GetDriveTypeW` is
+    # a local API call against the mount table — it answers without touching
+    # the network, which is what makes this checkable at all.
+    if _is_network_drive(raw):
+        return Classification(
+            TargetKind.REFUSED, raw, "network paths are not opened"
+        )
 
     # 2. Something that exists outranks every guess below.
     expanded = Path(raw).expanduser()

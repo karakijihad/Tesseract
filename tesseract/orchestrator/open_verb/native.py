@@ -5,11 +5,18 @@ protected by `bash_security`: `os.startfile` invokes ShellExecute directly and
 never forms a shell command for those 26 checks to inspect. Every control this
 path gets, it gets here.
 
-What this guarantees: we ShellExecute only a canonical existing object below
-the read boundary, re-resolved immediately before invocation, whose type is on
-a positive allowlist. What it cannot guarantee: what the registered handler
-then does with the file. That gap is real and is stated in
-`Docs/Plan/open-verb/DESIGN.md` rather than papered over.
+Deliberately NOT bounded by the read boundary. That boundary exists so an
+agent cannot pull arbitrary files into its own context; ShellExecute does the
+opposite — it hands a file to another program on the operator's machine and
+TESSERACT learns nothing from it. Applying a data-exfiltration control to an
+action that exfiltrates nothing would only stop the operator opening their own
+Desktop documents, which they can already do with `bash start`.
+
+What this guarantees: we ShellExecute only a canonical existing object,
+re-resolved immediately before invocation, whose type is on a positive
+allowlist and never an executable or an indirection format — and only after the
+operator approves, since `os_launch` is ASK. What it cannot guarantee: what the
+registered handler then does with the file.
 """
 
 from __future__ import annotations
@@ -22,8 +29,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from tesseract.config.open_verb import FORBIDDEN_LAUNCH_EXTENSIONS
-from tesseract.paths import home_dir, install_root
-from tesseract.permissions.path_validator import validate_path
+from tesseract.orchestrator.open_verb.classify import _is_network_drive
 
 
 class LaunchRefused(PermissionError):
@@ -39,6 +45,19 @@ _ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
 # further right is an alternate data stream — `report.pdf:evil.exe` is a real
 # file whose suffix check passes and whose contents are something else.
 _DRIVE_PREFIX = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def reject_network_path(raw: str) -> None:
+    """Refuse UNC and mapped-network targets before anything stats them.
+
+    A stat on either opens an SMB connection, and Windows will hand the
+    operator's NTLM credentials to whatever answers. Exposed (not private)
+    because callers must be able to run it before deciding file-vs-folder.
+    """
+    if raw.startswith("\\\\") or raw.startswith("//"):
+        raise LaunchRefused("network paths are not opened")
+    if _is_network_drive(raw):
+        raise LaunchRefused("network paths are not opened")
 
 
 def _reject_alternate_data_streams(raw: str) -> None:
@@ -87,16 +106,6 @@ def _reject_reparse_points(path: Path) -> None:
             )
 
 
-def _require_inside_read_boundary(raw: str) -> tuple[bool, str]:
-    return validate_path(
-        raw,
-        write_root=str(home_dir()),
-        read_root=str(install_root()),
-        mode="read",
-        resolve_symlinks=True,
-    )
-
-
 def launch_path(
     path: str,
     *,
@@ -104,17 +113,13 @@ def launch_path(
 ) -> Path:
     """Guard chain, in order. Each rung assumes the ones above it have run."""
     raw = str(path)
+    reject_network_path(raw)
     # String-level checks first, then the boundary — so nothing outside the
     # read root is ever stat'd, and a refusal leaks no filesystem existence.
     _reject_alternate_data_streams(raw)
 
     candidate = Path(raw).expanduser()
     _reject_forbidden_suffix(candidate)
-
-    ok, reason = _require_inside_read_boundary(str(candidate))
-    if not ok:
-        raise LaunchRefused(reason)
-
     _reject_reparse_points(candidate)
 
     if not candidate.exists():
@@ -130,9 +135,11 @@ def launch_path(
     # path that could have been replaced in the meantime.
     final = candidate.resolve()
     _reject_forbidden_suffix(final)
-    ok, reason = _require_inside_read_boundary(str(final))
-    if not ok:
-        raise LaunchRefused(f"target moved outside the read boundary: {reason}")
+    # The positive allowlist is re-checked too, not just the forbidden list.
+    # Checking only the latter would let a swap to an unlisted-but-not-
+    # forbidden type (.iso, .rar, .vhd) through the race window, which is
+    # precisely what "documents and media only" is supposed to prevent.
+    _require_allowed_suffix(final, allowed_extensions)
 
     _shell_execute(str(final))
     return final
@@ -140,23 +147,52 @@ def launch_path(
 
 def launch_directory(path: str) -> Path:
     raw = str(path)
+    reject_network_path(raw)
     _reject_alternate_data_streams(raw)
     candidate = Path(raw).expanduser()
-
-    ok, reason = _require_inside_read_boundary(str(candidate))
-    if not ok:
-        raise LaunchRefused(reason)
     _reject_reparse_points(candidate)
     if not candidate.is_dir():
         raise LaunchRefused(f"not a directory: {candidate}")
 
     final = candidate.resolve()
-    ok, reason = _require_inside_read_boundary(str(final))
-    if not ok:
-        raise LaunchRefused(f"target moved outside the read boundary: {reason}")
-
     _shell_execute(str(final))
     return final
+
+
+def launch_app(identity: str, *, allowed: frozenset[str]) -> str:
+    """Launch a configured application by identity.
+
+    Deliberately NOT `launch_path`: an application is an executable, and that
+    path refuses executables absolutely — routing apps through it is why
+    `open("notepad")` never worked. The control here is different in kind:
+    deny-by-default against the identities in `open_verb.yaml::apps`, so the
+    set of launchable programs is a config decision rather than a filesystem
+    property. Arguments are refused outright, since an identity plus arguments
+    is a command line, and this is not a way to run one.
+    """
+    if identity not in allowed:
+        raise LaunchRefused(
+            f"{identity!r} is not a configured application — add it to "
+            f"open_verb.yaml::apps to make it launchable"
+        )
+    if any(ch in identity for ch in '\t"\'&|;<>^%$`\n\r'):
+        raise LaunchRefused("an application identity may not carry arguments")
+
+    # A bare name is resolved by ShellExecute against the app-paths registry,
+    # PATH and the working directory — so a `notepad.exe` dropped in the cwd
+    # could win the lookup. An absolute path removes the search entirely, which
+    # is why the config validator requires one.
+    target = Path(identity)
+    if not target.is_absolute():
+        raise LaunchRefused(
+            f"{identity!r} must be an absolute path — a bare name is resolved "
+            f"against PATH and the working directory, which is hijackable"
+        )
+    if not target.is_file():
+        raise LaunchRefused(f"configured application not found: {identity}")
+
+    _shell_execute(str(target))
+    return str(target)
 
 
 def launch_url(url: str) -> str:

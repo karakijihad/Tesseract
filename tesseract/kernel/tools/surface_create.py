@@ -2,7 +2,10 @@
 
 AUTO posture: canvas mutations are not security-sensitive at the tool layer
 (security lives at the renderer / data-fetch layer). Returns the surface_id.
-``mode: external`` opens an OS-native surface instead of a canvas card."""
+``mode`` is a rendering hint only. ``external`` does NOT open anything on
+the OS — the canvas simply declines to draw the card (`SurfaceLayer.tsx`), so
+a descriptor written with it is invisible and inert. Opening something outside
+the cockpit is `open`'s job, via `os_open_url` / `os_launch`."""
 
 from __future__ import annotations
 
@@ -46,7 +49,10 @@ class SurfaceCreateInput(BaseModel):
     )
     mode: str = Field(
         default="embedded",
-        description="embedded (canvas card) | external (OS surface) | background (no visual).",
+        description=(
+            "embedded (canvas card) | external (not drawn — NOT an OS open; "
+            "use `open` for that) | background (no visual)."
+        ),
     )
     replaces: str | None = Field(
         default=None,

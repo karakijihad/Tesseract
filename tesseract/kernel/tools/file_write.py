@@ -29,12 +29,19 @@ _RUNTIME_LOCK_PREFIXES: tuple[str, ...] = (
     "supervisor",
 )
 
-# The two config files TARS must never write, whatever `permissions.yaml`
-# says. `providers.yaml` and `roles.yaml` left this set when the trio was
-# given ASK-level edit rights over them.
+# The config files TARS must never write, whatever `permissions.yaml` says.
+# `providers.yaml` and `roles.yaml` left this set when the trio was given
+# ASK-level edit rights over them.
+#
+# `mcp.yaml` joined it when the MCP verb floors moved out of source: it became
+# the sole authority for what an MCP client may do, and a `path_overrides`
+# entry alone would not have held — those apply to `file_write` only, so
+# `file_copy`/`file_move` could have overwritten it at their own ASK posture.
+# The lock has to live here, where all three write paths share it.
 _LOCKED_CONFIG_FILES: frozenset[str] = frozenset({
     "config/permissions.yaml",
     "config/mirror.yaml",
+    "config/mcp.yaml",
 })
 
 _LOCKED_CONFIG_NAMES: frozenset[str] = frozenset(

@@ -18,6 +18,7 @@ from pathlib import Path
 from aiohttp import web
 
 from tesseract.orchestrator.open_verb.asset_token import verify
+from tesseract.orchestrator.open_verb.suffixes import is_secret
 from tesseract.paths import home_dir, install_root
 from tesseract.permissions.path_validator import validate_path
 
@@ -67,6 +68,18 @@ def _authorized(raw_path: str, signature: str) -> Path | None:
         return None
 
     candidate = Path(raw_path).expanduser().resolve()
+
+    # Enforced HERE, not only in the resolver. A signature is durable: one
+    # minted before this rule existed, or by any future caller that forgets it,
+    # would otherwise still serve. The endpoint is the last gate before bytes
+    # leave, so it does not delegate this to whoever produced the link.
+    #
+    # Credentials only. The operator's own memory, sessions and journal are
+    # theirs to look at — this endpoint needs a signature, so nothing reaches it
+    # that `open` did not resolve on their behalf.
+    if is_secret(candidate.name):
+        return None
+
     if not candidate.is_file():
         return None
     return candidate

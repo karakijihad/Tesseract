@@ -18,8 +18,8 @@ export function SettingsView() {
       <div className="settings-header">
         <span className="settings-header__title">Settings</span>
         <span className="settings-header__meta t-meta">
-          Runtime controls — edits persist to models.yaml + permissions.yaml +
-          mirror.yaml; raw config is read-only
+          Runtime controls — edits persist to providers.yaml + roles.yaml +
+          permissions.yaml + mirror.yaml; raw config is read-only
         </span>
       </div>
       <div className="settings-body">

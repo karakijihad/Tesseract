@@ -161,6 +161,14 @@ class ToolContext:
     named_lane_manager_provider: Optional[NamedLaneManagerProvider] = field(default=None, repr=False)
     tool_registry_provider: Optional[ToolRegistryProvider] = field(default=None, repr=False)
     ask_fn: Optional[AskFn] = field(default=None, repr=False)
+    # The effective PermissionPolicy for this call, synced by
+    # `brain.tools.execute_tool` alongside `ask_fn`. A tool that dispatches to
+    # another tool MUST forward this: `decide.evaluate` resolves a posture from
+    # `permissions.yaml` only when a policy is present, so a nested call made
+    # without one silently proceeds at PASSTHROUGH — skipping every ASK and
+    # DENY the operator configured. Typed loosely to avoid importing
+    # `permissions.policy` here (circular).
+    policy: Optional[Any] = field(default=None, repr=False)
     # Per-session "tool is doing X" status callback. None = silent. See
     # StatusEmit type alias above. Tools should guard with `if status_emit:`
     # rather than assume it's wired so test fixtures don't have to plumb it.

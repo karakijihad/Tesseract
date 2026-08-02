@@ -21,6 +21,7 @@ from tesseract.permissions.path_validator import validate_path
 # A text surface renders content, not a link, so the file has to be read. That
 # is a read against the boundary and belongs here rather than in the resolver.
 _MAX_TEXT_BYTES = 400_000
+_MAX_DIR_ENTRIES = 500
 
 
 @dataclass(frozen=True)
@@ -38,9 +39,19 @@ class ExecutionUnavailable(RuntimeError):
     """No tool registry on the context — `open` cannot reach its primitives."""
 
 
-def _read_text(path_str: str) -> str:
+def _pinned(path_str: str) -> Path:
+    """Resolve first, validate what resolved, then use exactly that.
+
+    Validating the caller's string and re-resolving afterwards leaves the two
+    free to differ — the check and the use must be the same object.
+    """
+    try:
+        path = Path(path_str).expanduser().resolve()
+    except OSError as exc:
+        raise PermissionError(f"unreadable path: {exc}") from exc
+
     ok, why = validate_path(
-        path_str,
+        str(path),
         write_root=str(home_dir()),
         read_root=str(install_root()),
         mode="read",
@@ -48,14 +59,32 @@ def _read_text(path_str: str) -> str:
     )
     if not ok:
         raise PermissionError(why)
+    return path
 
-    path = Path(path_str)
-    raw = path.read_bytes()[: _MAX_TEXT_BYTES + 1]
+
+def _read_text(path_str: str) -> str:
+    # Read the cap, not the file. `read_bytes()[:cap]` loads the whole thing
+    # first, so pointing `open` at a multi-gigabyte log would pull it entirely
+    # into memory to show 400KB of it.
+    with _pinned(path_str).open("rb") as handle:
+        raw = handle.read(_MAX_TEXT_BYTES + 1)
     text = raw.decode("utf-8", errors="replace")
     if len(raw) > _MAX_TEXT_BYTES:
         # Say so rather than ending mid-line as if that were the whole file.
         return text[:_MAX_TEXT_BYTES] + "\n\n… truncated — the file is larger than this card shows."
     return text
+
+
+def _list_dir(path_str: str) -> list[dict[str, str]]:
+    """The rows `FolderRenderer` draws. Bounded like every other read, and
+    capped — a card is not a place to render 40,000 filenames."""
+    root = _pinned(path_str)
+    entries: list[dict[str, str]] = []
+    for child in sorted(root.iterdir(), key=lambda c: (c.is_file(), c.name.lower())):
+        entries.append({"name": child.name, "kind": "dir" if child.is_dir() else "file"})
+        if len(entries) >= _MAX_DIR_ENTRIES:
+            break
+    return entries
 
 
 async def execute(
@@ -72,12 +101,18 @@ async def execute(
 
     from tesseract.brain.tools import execute_tool
 
+    # `policy` is not optional here. `decide.evaluate` resolves a tool's
+    # posture from permissions.yaml ONLY when a policy is present; without one
+    # the nested call proceeds at PASSTHROUGH and `os_launch`'s ASK — the only
+    # gate in this design — never fires. `execute_tool` syncs it onto the
+    # context for exactly this hand-off.
     result: ToolResult = await execute_tool(
         registry,
         tool_name,
         tool_input,
         context,
         ask_fn=context.ask_fn,
+        policy=context.policy,
     )
 
     if result.is_error:
@@ -112,6 +147,8 @@ def _dispatch_for(resolution: Resolution, view: str) -> tuple[str, dict[str, Any
         props = dict(resolution.props)
         if resolution.text_from:
             props["text"] = _read_text(resolution.text_from)
+        if resolution.list_dir:
+            props["entries"] = _list_dir(resolution.list_dir)
         return "surface_create", {
             "type": resolution.surface_type,
             "view": view,
@@ -124,5 +161,8 @@ def _dispatch_for(resolution: Resolution, view: str) -> tuple[str, dict[str, Any
 
     if resolution.handler == "launch":
         return "os_launch", {"path": resolution.canonical_target}
+
+    if resolution.handler == "app":
+        return "os_launch", {"app": resolution.canonical_target}
 
     raise ValueError(f"unroutable resolution handler: {resolution.handler!r}")

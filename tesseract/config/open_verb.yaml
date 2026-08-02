@@ -12,6 +12,17 @@ search_url: "https://duckduckgo.com/?q={query}"
 # than a card that never paints.
 probe_timeout_s: 4.0
 
+# Networks the probe refuses to reach. `open` fetches whatever URL it is
+# given, so without this a target could be used to sweep the local network or
+# a cloud metadata endpoint. Loopback and private ranges are deliberately NOT
+# listed: opening `http://localhost:5173` is a normal thing to ask for on the
+# operator's own machine.
+blocked_networks:
+  - 169.254.0.0/16   # link-local, incl. cloud metadata at 169.254.169.254
+  - 100.64.0.0/10    # carrier-grade NAT
+  - 198.18.0.0/15    # benchmark range
+  - ::ffff:169.254.0.0/112
+
 # Applications `open` may launch by name. Deny-by-default: an identifier absent
 # from this map is never launched, whatever it resolves to on PATH.
 apps: {}

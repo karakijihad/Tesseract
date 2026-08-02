@@ -79,6 +79,12 @@ async def run_kernel_tool(
     tool = registry.tools[tool_name]
     policy = ctx.app["config"].permissions
     context = _mcp_tool_context(ctx, ask_fn)
+    # A tool that dispatches to another tool (`open` → os_launch) reads the
+    # policy off the context. This path calls `decide.evaluate` directly rather
+    # than going through `brain.tools.execute_tool`, so it must do that sync
+    # itself — without it the nested call proceeds at PASSTHROUGH and skips the
+    # posture the operator configured.
+    context.policy = policy
     raw = tool_input.model_dump()
     denial = await decide.evaluate(tool, tool_input, raw, context, ask_fn=ask_fn, policy=policy)
     if denial is not None:

@@ -218,6 +218,15 @@ async def execute_tool(
     if context.ask_fn is None and ask_fn is not None:
         context.ask_fn = ask_fn
 
+    # Same reasoning for the policy: a tool that dispatches to another tool
+    # (`open` → os_launch/os_open_url/surface_create) must be able to forward
+    # it. Without it `decide.evaluate` never reaches the operator-policy layer
+    # and the nested call proceeds at PASSTHROUGH, skipping its configured
+    # ASK/DENY entirely. Syncing here fixes every caller at once rather than
+    # asking each one to remember.
+    if context.policy is None and policy is not None:
+        context.policy = policy
+
     refusal = await _installed_tree_source_edit_refusal(tool_name, validated, tool_input, context)
     if refusal is not None:
         return refusal

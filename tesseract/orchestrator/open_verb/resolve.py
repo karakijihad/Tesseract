@@ -17,11 +17,14 @@ from urllib.parse import quote
 
 from tesseract.config.open_verb import OpenConfig
 from tesseract.orchestrator.open_verb.asset_token import sign
+from tesseract.orchestrator.open_verb import suffixes
 from tesseract.orchestrator.open_verb.classify import TargetKind, classify
-from tesseract.orchestrator.open_verb.probe import probe_path, probe_url
+from tesseract.orchestrator.open_verb.probe import _redacted, probe_path, probe_url
+from tesseract.paths import home_dir, install_root
+from tesseract.permissions.path_validator import validate_path
 
 Destination = Literal["canvas", "os"]
-Handler = Literal["surface", "url", "launch"]
+Handler = Literal["surface", "url", "launch", "app"]
 
 
 class AmbiguousTarget(ValueError):
@@ -45,29 +48,30 @@ class Resolution:
     # is a side effect bounded by `validate_path`, so it belongs in the
     # executing layer rather than here.
     text_from: str | None = None
+    # Same reasoning for a folder card: `FolderRenderer` draws `props.entries`,
+    # and without them the card is an empty box.
+    list_dir: str | None = None
 
 
-_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico"})
-_VIDEO_SUFFIXES = frozenset({".mp4", ".webm", ".mov", ".m4v", ".ogv"})
-_AUDIO_SUFFIXES = frozenset({".mp3", ".wav", ".ogg", ".oga", ".flac", ".m4a", ".aac"})
-_TABLE_SUFFIXES = frozenset({".csv", ".tsv"})
-_MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
-_HTML_SUFFIXES = frozenset({".html", ".htm"})
-_CODE_SUFFIXES = frozenset(
-    {
-        ".txt", ".log", ".py", ".ts", ".tsx", ".js", ".jsx", ".rs", ".go",
-        ".java", ".rb", ".c", ".h", ".cpp", ".hpp", ".cs", ".sh", ".yaml",
-        ".yml", ".toml", ".ini", ".cfg", ".json", ".xml", ".css", ".sql",
-    }
-)
+_IMAGE_SUFFIXES = suffixes.IMAGE
+_VIDEO_SUFFIXES = suffixes.VIDEO
+_AUDIO_SUFFIXES = suffixes.AUDIO
+_TABLE_SUFFIXES = suffixes.TABLE
+_MARKDOWN_SUFFIXES = suffixes.MARKDOWN
+_HTML_SUFFIXES = suffixes.HTML
+_CODE_SUFFIXES = suffixes.CODE
+_LANGUAGE_BY_SUFFIX = suffixes.LANGUAGE_BY_SUFFIX
 
-_LANGUAGE_BY_SUFFIX = {
-    ".py": "python", ".ts": "typescript", ".tsx": "tsx", ".js": "javascript",
-    ".jsx": "jsx", ".rs": "rust", ".go": "go", ".java": "java", ".rb": "ruby",
-    ".c": "c", ".h": "c", ".cpp": "cpp", ".hpp": "cpp", ".cs": "csharp",
-    ".sh": "bash", ".yaml": "yaml", ".yml": "yaml", ".toml": "toml",
-    ".json": "json", ".xml": "xml", ".css": "css", ".sql": "sql",
-}
+
+def _inside_read_boundary(path: Path) -> bool:
+    ok, _reason = validate_path(
+        str(path),
+        write_root=str(home_dir()),
+        read_root=str(install_root()),
+        mode="read",
+        resolve_symlinks=True,
+    )
+    return ok
 
 
 def asset_href(path: str) -> str:
@@ -90,9 +94,12 @@ async def resolve(target: str, *, config: OpenConfig) -> Resolution:
         raise AmbiguousTarget(classification.reason)
 
     if kind is TargetKind.APP:
+        # `app`, not `launch`: an application IS an executable, and the launch
+        # path refuses those absolutely. The gate for an app is the config
+        # allowlist, not a file-type check.
         return Resolution(
             destination="os",
-            handler="launch",
+            handler="app",
             reason=f"launched {target}",
             canonical_target=classification.canonical,
             resolved_kind=str(kind),
@@ -119,6 +126,35 @@ async def resolve(target: str, *, config: OpenConfig) -> Resolution:
 def _resolve_path(path: Path, kind: str) -> Resolution:
     probe = probe_path(path)
     name = path.name or str(path)
+
+    # A card is persisted to canvas state and visible to anyone looking at the
+    # Mirror, so rendering a secret is disclosure. Refused outright rather than
+    # handed to the OS — "open my .env" should not silently succeed either way.
+    # Credentials only. Memory, sessions and the journal are the operator's own
+    # and they are the only person at the Mirror — refusing to show them their
+    # own state would be paternalism, not security. A secret is different: it
+    # would land in a persisted card AND in TARS's context.
+    if suffixes.is_secret(name):
+        raise RefusedTarget(
+            f"{name} holds credentials — it is not rendered and not opened"
+        )
+
+    # The asset endpoint serves only what is inside the read boundary. Without
+    # this check a file outside it resolves to a card, reports "opened", and
+    # renders a 404 — a lie the operator has to debug.
+    if not _inside_read_boundary(path):
+        # The cockpit cannot FETCH it — serving bytes over /api/asset is a read,
+        # and reads are bounded. Handing it to the OS is not a read: the file
+        # goes to another program on the operator's machine and TESSERACT sees
+        # nothing of it. So a Desktop PDF opens in Adobe, as it always has.
+        return Resolution(
+            destination="os",
+            handler="launch",
+            reason=f"{name} lives outside the install, so the cockpit cannot "
+            f"fetch it — opened it in the application that owns it",
+            canonical_target=str(path),
+            resolved_kind=kind,
+        )
 
     def inside(surface_type: str, **extra: Any) -> Resolution:
         props: dict[str, Any] = {"url": asset_href(str(path))} | extra
@@ -153,6 +189,7 @@ def _resolve_path(path: Path, kind: str) -> Resolution:
             resolved_kind=kind,
             surface_type="folder",
             props={"root": str(path)},
+            list_dir=str(path),
         )
 
     suffix = probe.suffix
@@ -184,7 +221,17 @@ def _resolve_path(path: Path, kind: str) -> Resolution:
 
 
 async def _resolve_url(url: str, kind: str, config: OpenConfig) -> Resolution:
-    probe = await probe_url(url, timeout_s=config.probe_timeout_s)
+    probe = await probe_url(
+        url,
+        timeout_s=config.probe_timeout_s,
+        blocked_networks=config.blocked_networks,
+    )
+    if probe.blocked:
+        raise RefusedTarget(
+            f"{_redacted(probe.final_url or url)} resolves into a network this "
+            f"will not reach"
+        )
+
     ctype = probe.content_type
     final = probe.final_url or url
 
@@ -192,7 +239,7 @@ async def _resolve_url(url: str, kind: str, config: OpenConfig) -> Resolution:
         return Resolution(
             destination="canvas",
             handler="surface",
-            reason=f"opened {final} in the cockpit",
+            reason=f"opened {_redacted(final)} in the cockpit",
             canonical_target=final,
             resolved_kind=kind,
             surface_type=surface_type,
@@ -222,13 +269,13 @@ async def _resolve_url(url: str, kind: str, config: OpenConfig) -> Resolution:
         if probe.frameable:
             return inside("webview")
         return outside(
-            f"{final} refuses to be embedded — opened it in your browser"
+            f"{_redacted(final)} refuses to be embedded — opened it in your browser"
         )
 
     if not ctype and probe.status == 0:
-        return outside(f"could not reach {final} to check — opened it in your browser")
+        return outside(f"could not reach {_redacted(final)} to check — opened it in your browser")
 
     return outside(
         f"{ctype or 'that content type'} is not something the cockpit renders — "
-        f"opened {final} in your browser"
+        f"opened {_redacted(final)} in your browser"
     )

@@ -33,16 +33,16 @@ export function FolderRenderer({ descriptor, dispatch }: RendererProps) {
         <ul className="surface-folder__list">
           {entries.map((e) => (
             <li key={e.name}>
-              <button
-                type="button"
-                className="surface-folder__entry"
-                onClick={() => dispatch('clicked', { name: e.name, kind: e.kind })}
-              >
+              {/* Plain row, not a button: `SurfaceLayer` passes a no-op
+                  dispatch, so a click went nowhere. A control that looks
+                  interactive and does nothing is worse than a list. Wiring
+                  this to `open` is the follow-up (Docs/Deferred.md). */}
+              <span className="surface-folder__entry">
                 <span className="surface-folder__icon" aria-hidden="true">
                   {e.kind === 'dir' ? '▸' : '·'}
                 </span>
                 {e.name}
-              </button>
+              </span>
             </li>
           ))}
         </ul>

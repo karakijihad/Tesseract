@@ -86,7 +86,7 @@ class _FileTransferTool(Tool):
                 msg = (
                     f"{reason} — TARS cannot grant himself permissions or "
                     "reconfigure the Mirror server. The operator edits these "
-                    "two files by hand or in Settings."
+                    "these files by hand or in Settings."
                 )
                 try:
                     from tesseract.workspace_events.runtime_lock import emit_runtime_lock_deny

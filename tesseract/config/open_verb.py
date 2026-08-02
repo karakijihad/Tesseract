@@ -49,6 +49,7 @@ class OpenConfig(BaseModel):
     search_url: str
     probe_timeout_s: float = Field(gt=0)
     apps: dict[str, str]
+    blocked_networks: frozenset[str]
     launch_extensions: frozenset[str]
 
     @field_validator("search_url")
@@ -56,6 +57,31 @@ class OpenConfig(BaseModel):
     def _must_carry_query_placeholder(cls, v: str) -> str:
         if "{query}" not in v:
             raise ValueError("search_url must contain the '{query}' placeholder")
+        return v
+
+    @field_validator("blocked_networks")
+    @classmethod
+    def _parseable_networks(cls, v: frozenset[str]) -> frozenset[str]:
+        """A malformed CIDR would silently stop blocking anything, which is the
+        worst failure mode for a denylist."""
+        import ipaddress
+
+        for entry in v:
+            ipaddress.ip_network(entry, strict=False)
+        return v
+
+    @field_validator("apps")
+    @classmethod
+    def _apps_are_absolute(cls, v: dict[str, str]) -> dict[str, str]:
+        """A bare name is resolved by ShellExecute against the app-paths
+        registry, PATH and the working directory, so a dropped executable can
+        win the lookup. Requiring an absolute path removes the search."""
+        relative = sorted(k for k, path in v.items() if not Path(path).is_absolute())
+        if relative:
+            raise ValueError(
+                f"apps entries must map to an absolute path (a bare name is "
+                f"resolved against PATH and is hijackable): {relative}"
+            )
         return v
 
     @field_validator("launch_extensions")
@@ -88,7 +114,13 @@ def load_open_config() -> OpenConfig:
     raw: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError(f"{path} must contain a mapping")
-    missing = {"search_url", "probe_timeout_s", "apps", "launch_extensions"} - raw.keys()
+    missing = {
+        "search_url",
+        "probe_timeout_s",
+        "apps",
+        "launch_extensions",
+        "blocked_networks",
+    } - raw.keys()
     if missing:
         raise KeyError(f"{path} missing required key(s): {sorted(missing)}")
     return OpenConfig(**raw)

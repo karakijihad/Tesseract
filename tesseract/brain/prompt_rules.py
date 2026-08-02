@@ -52,7 +52,7 @@ _RULE_NAME_TO_FILE: dict[str, str] = {
     "_VAULT_REFLEX_RULE_TEXT": "12-vault-reflex.md",
     "_STATE_NUDGE_TEXT": "13-state.md",
     "_MULTIMODAL_BODY_TEXT": "14-multimodal-body.md",
-    "_OUTPUT_CONTRACT_RULE_TEXT": "17-output-contract.md",
+    "_OUTPUT_CONTRACT_RULE_TEXT": "16-output-contract.md",
     "_SOURCE_OF_TRUTH_TEXT": "15-source-of-truth.md",
 }
 

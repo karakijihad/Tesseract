@@ -327,10 +327,14 @@ _LOCKED_POSTURE_YAMLS: tuple[str, ...] = (
     "tesseract/config/roles.yaml",
     "tesseract/config/providers.yaml",
     "tesseract/config/mirror.yaml",
+    "tesseract/config/mcp.yaml",
     "config/permissions.yaml",
     "config/roles.yaml",
     "config/providers.yaml",
     "config/mirror.yaml",
+    # `mcp.yaml` decides what an MCP client may do. Locking it in the tool
+    # layer alone would leave the shell as an open door to the same file.
+    "config/mcp.yaml",
 )
 
 # Redirect / write verbs checked in an 80-char prefix before the locked path.

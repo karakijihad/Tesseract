@@ -72,29 +72,32 @@ def _load_or_create_key() -> bytes:
 
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     key = secrets.token_bytes(_KEY_BYTES)
-    # Owner-only from the moment it exists — a readable key lets any local
-    # account forge references and pull anything inside the read boundary
-    # through the endpoint. On Windows the POSIX mode is advisory and the real
-    # protection is that runtime/ sits inside the per-user install root; the
-    # flags still matter for the non-Windows path and cost nothing here.
+    # O_EXCL on the FINAL path, not a temp file that is then renamed. A rename
+    # would happily clobber a key another process had already published, and
+    # every asset URL signed with it would stop verifying. Losing the race is
+    # the normal case, not an error: whoever created it first wins, and we
+    # adopt their key.
     #
-    # Written to a temp file first so a torn write never leaves a truncated key
-    # that would silently invalidate every previously signed card. O_EXCL means
-    # a stale temp from a crashed run fails loudly rather than being trusted.
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    # Owner-only from the moment it exists — a readable key lets any local
+    # account forge references and pull anything inside the read boundary.
+    # On Windows the POSIX mode is advisory and the real protection is that
+    # runtime/ sits inside the per-user install root; the flags still matter
+    # for the non-Windows path and cost nothing here.
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        existing = _read_key(path)
+        if existing is None:
+            raise
+        _CACHE[path] = existing
+        return existing
     try:
         os.write(fd, key)
     finally:
         os.close(fd)
-    os.replace(tmp, path)
 
-    # Another process may have won the race and replaced the file between the
-    # write and here. Whatever is on disk is authoritative — signing with a key
-    # that is not there would produce references nothing can verify.
-    landed = _read_key(path) or key
-    _CACHE[path] = landed
-    return landed
+    _CACHE[path] = key
+    return key
 
 
 def _canonical(path: str) -> bytes:
