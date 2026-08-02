@@ -40,6 +40,7 @@ from typing import Any, Awaitable, Callable
 
 from aiohttp import WSMsgType, web
 
+from tesseract.mirror.server.cors import origin_is_allowed
 from tesseract.mirror.server.envelope import make_envelope
 from tesseract.orchestrator.tars_controller.ipc_client import (
     ControllerClient,
@@ -78,6 +79,13 @@ async def controller_ws_handler(request: web.Request) -> web.WebSocketResponse:
       envelope, then the WS closes. The frontend can offer a
       reconnect button.
     """
+    # Same boundary as `/ws`: this stream carries live chat, tool and PTY
+    # transcript. A WS handshake is exempt from same-origin policy, so without
+    # this a page in the operator's browser could read the session's output.
+    origin = request.headers.get("Origin", "")
+    if not origin_is_allowed(origin, request.app["allowed_origins"]):
+        log.warning("controller ws: refused handshake from origin %r", origin)
+        raise web.HTTPForbidden(text="origin not allowed")
     session_id = request.match_info["session_id"]
     ws = web.WebSocketResponse()
     await ws.prepare(request)

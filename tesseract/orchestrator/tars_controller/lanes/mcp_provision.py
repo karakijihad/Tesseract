@@ -1,17 +1,24 @@
-"""Auto-provisions MCP hub connectivity into a lane's or terminal's working
-directory so a spawned/hand-launched ``claude``/``codex`` CLI wakes up
-already connected to the embedded hub (``tesseract/config/mcp.yaml``).
+"""Auto-provisions MCP hub connectivity for ``claude``/``codex`` so a spawned
+or hand-launched CLI wakes up already connected to the embedded hub
+(``tesseract/config/mcp.yaml``).
 
-Claude Code: merges a project-scope ``.mcp.json`` — ``mcpServers.tesseract``
-entry, HTTP transport, env-expanded ``Authorization`` header. Shape per
-code.claude.com/docs/en/mcp ("Environment variable expansion" — ``${VAR}``
-syntax; ``.mcp.json`` project scope).
+Both CLIs are provisioned at **user scope** — one file each, applying in every
+directory. Project scope was the original choice for Claude Code, and it tied
+connectivity to the directory the pane happened to open in: a lane or an
+operator who moved somewhere else before launching got a CLI with no hub at
+all. What actually distinguishes "launched inside TESSERACT" from any other
+shell is the bearer token in the environment, which only the runtime's own
+child processes inherit — so directory scope bought nothing and cost reach.
 
-Codex: merges the user-global ``~/.codex/config.toml`` ``[mcp_servers.
-tesseract]`` table — ``url`` + ``bearer_token_env_var`` (native env
-indirection, no literal secret). Shape per
-developers.openai.com/codex/config-reference. Codex config is global, not
-per-project, so every codex-capable provision call targets the same file.
+Claude Code: merges ``~/.claude.json`` ``mcpServers.tesseract`` — HTTP
+transport, env-expanded ``Authorization`` header (``${VAR}`` syntax).
+Codex: merges ``~/.codex/config.toml`` ``[mcp_servers.tesseract]`` — ``url`` +
+``bearer_token_env_var`` (native env indirection, no literal secret).
+
+Neither file is ours. ``~/.claude.json`` in particular holds a live session's
+own state and is rewritten by it constantly, so both writers no-op when the
+entry already matches: provisioning touches disk when the endpoint or identity
+actually changes, and never again.
 
 Config-as-authority: raises if the resolved client's token env var is unset
 at provision time — a dead hub connection is caught at spawn, not first use.
@@ -42,42 +49,29 @@ _CLIENT_NAME_BY_KIND: dict[str, str] = {
     "terminal": "terminal-manual",
 }
 
-_MCP_JSON_NAME = ".mcp.json"
+_CLAUDE_CONFIG_NAME = ".claude.json"
 _CODEX_BLOCK_HEADER = "[mcp_servers.tesseract]"
-# ``~/.codex/config.toml`` is a single global file every codex/terminal
-# provision call reads-modifies-writes — serialize access so two concurrent
-# callers (e.g. a codex lane opening alongside a terminal pane, "parallel by
-# default") can't interleave a torn read/write.
+# Each CLI's config is a single global file that every lane, delegate, and
+# terminal provision call reads-modifies-writes, and those run in parallel
+# (asyncio.to_thread). One lock per file so concurrent callers can't interleave
+# a torn read/write or race the identity-precedence snapshot.
 _CODEX_CONFIG_LOCK = threading.Lock()
-
-# M12 — the project ``.mcp.json`` is read-modify-written by lane, delegate, and
-# terminal provisioning, which run in parallel (asyncio.to_thread) against the
-# same working dir. Serialize per resolved path so concurrent writers can't
-# tear the file or race the TOCTOU identity-precedence snapshot.
-_MCP_JSON_LOCKS: dict[str, threading.Lock] = {}
-_MCP_JSON_LOCKS_GUARD = threading.Lock()
+_CLAUDE_CONFIG_LOCK = threading.Lock()
 
 
-def _mcp_json_lock(path: Path) -> threading.Lock:
-    key = str(path.resolve())
-    with _MCP_JSON_LOCKS_GUARD:
-        lock = _MCP_JSON_LOCKS.get(key)
-        if lock is None:
-            lock = threading.Lock()
-            _MCP_JSON_LOCKS[key] = lock
-        return lock
+def provision(kind: ProvisionKind, mcp_cfg: MCPConfig) -> None:
+    """Ensure the hub is reachable from the operator's claude and/or codex
+    config. ``kind="terminal"`` provisions both, since a hand-launched
+    terminal may run either CLI.
 
+    Identity precedence: a terminal provision never overwrites an existing
+    LANE identity. Both CLIs' configs are global, so lane and terminal write
+    the same key, and last-writer-wins would re-identify every live lane as
+    ``terminal-manual``. Lane provisions still overwrite freely (lane wins).
 
-def provision(working_dir: Path, kind: ProvisionKind, mcp_cfg: MCPConfig) -> None:
-    """Ensure the hub is reachable from ``working_dir`` (claude) and/or the
-    operator's codex config (codex). ``kind="terminal"`` provisions both,
-    since a hand-launched terminal may run either CLI.
-
-    Identity precedence (trio W1, Doclog 2026-07-09): a terminal provision
-    never overwrites an existing LANE identity — lane and terminal write the
-    same ``.mcp.json`` key / global codex table, so last-writer-wins used to
-    re-identify every co-located lane as ``terminal-manual`` (W0 audit D4).
-    Lane provisions still overwrite freely (lane wins)."""
+    The flip side of global scope is that two claude identities cannot be held
+    at once — a lane and a manual terminal share one entry. Codex has always
+    worked this way; claude now matches."""
     client_name = _CLIENT_NAME_BY_KIND.get(kind)
     if client_name is None:
         raise RuntimeError(f"mcp_provision: unknown kind {kind!r}")
@@ -102,7 +96,7 @@ def provision(working_dir: Path, kind: ProvisionKind, mcp_cfg: MCPConfig) -> Non
         )
 
     if kind in ("claude", "terminal"):
-        _provision_claude_mcp_json(working_dir, url, client.token_env, preserve_envs)
+        _provision_claude_user_config(url, client.token_env, preserve_envs)
     if kind in ("codex", "terminal"):
         _provision_codex_config_toml(url, client.token_env, preserve_envs)
 
@@ -119,14 +113,13 @@ def _auth_header_env(entry: object) -> str | None:
     return match.group(1) if match else None
 
 
-def _provision_claude_mcp_json(
-    working_dir: Path, url: str, token_env: str, preserve_envs: frozenset[str] = frozenset()
+def _provision_claude_user_config(
+    url: str, token_env: str, preserve_envs: frozenset[str] = frozenset()
 ) -> None:
-    path = working_dir / _MCP_JSON_NAME
-    # Hold the per-path lock across the whole read-modify-write so the identity
-    # snapshot and the write are atomic w.r.t. concurrent provisions (M12).
-    with _mcp_json_lock(path):
-        working_dir.mkdir(parents=True, exist_ok=True)
+    # Hold the lock across the whole read-modify-write so the identity snapshot
+    # and the write are atomic w.r.t. concurrent provisions.
+    with _CLAUDE_CONFIG_LOCK:
+        path = Path.home() / _CLAUDE_CONFIG_NAME
         existing: dict = {}
         if path.exists():
             text = path.read_text(encoding="utf-8")
@@ -136,7 +129,11 @@ def _provision_claude_mcp_json(
         servers = existing.setdefault("mcpServers", {})
         if not isinstance(servers, dict):
             raise RuntimeError(f"mcp_provision: {path} 'mcpServers' is not an object")
-        if _auth_header_env(servers.get("tesseract")) in preserve_envs:
+        current = servers.get("tesseract")
+        current_env = _auth_header_env(current)
+        if isinstance(current, dict) and current.get("url") == url and current_env == token_env:
+            return  # already provisioned by this exact client — no-op
+        if current_env in preserve_envs:
             return  # existing lane identity wins over a terminal provision
         servers["tesseract"] = {
             "type": "http",

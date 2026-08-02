@@ -66,7 +66,9 @@ export function PdfRenderer({ descriptor }: RendererProps) {
         canvas.style.height = `${Math.floor(viewport.height)}px`;
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-        renderTask = rendered.render({ canvasContext: ctx, viewport });
+        // `canvas` alongside `canvasContext`: pdf.js needs the element itself,
+        // not just its 2D context, and its types require both.
+        renderTask = rendered.render({ canvas, canvasContext: ctx, viewport });
         await (renderTask as unknown as { promise: Promise<void> }).promise;
         if (!cancelled) setState('ready');
       } catch {

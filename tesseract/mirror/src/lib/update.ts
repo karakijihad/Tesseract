@@ -1,4 +1,4 @@
-// Tauri IPC wrappers for the self-update commands (task-12's update.rs).
+// Tauri IPC wrappers for the self-update commands in update.rs.
 // Not HTTP — these bypass the api.ts/timedFetch path entirely and talk
 // straight to the Rust side via @tauri-apps/api's invoke().
 import { invoke } from "@tauri-apps/api/core";

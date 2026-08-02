@@ -41,6 +41,7 @@ from tesseract.mirror.server.envelope import make_envelope
 from tesseract.mirror.server.session import ServerSession, send_envelope
 from tesseract.scripts.slash_dispatch import (
     _MIRROR_OPERATOR_TOKEN,
+    NOT_SLASH_CALLABLE,
     _usage_for,
     parse_slash,
     run_slash,
@@ -459,6 +460,8 @@ def build_command_registry(tool_registry: ToolRegistry) -> CommandRegistry:
         canonical = tool_name.lower()
         if canonical in mirror_taken:
             continue  # Mirror session command shadows this kernel tool
+        if canonical in NOT_SLASH_CALLABLE:
+            continue  # cannot run without the policy this path does not carry
         tool = tool_registry.get(tool_name)
         if tool is None:
             continue

@@ -36,7 +36,7 @@ def crash_storm_path(tesseract_home: Path) -> Path:
 
 
 def crash_storm_archive_dir(tesseract_home: Path) -> Path:
-    """``<TESSERACT_HOME>/logs/supervisor/crash-storm-archive/`` — every
+    """``runtime/logs/supervisor/crash-storm-archive/`` — every
     cleared marker lands here so the operator has a record of past
     storms across reboots."""
     base = tesseract_home.parent / "runtime" / "logs" / "supervisor" / "crash-storm-archive"

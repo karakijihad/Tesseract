@@ -24,6 +24,7 @@ from tesseract.mirror.server.envelope import (
 )
 from tesseract.mirror.server import chat_store, spawn_wake
 from tesseract.mirror.server.chat_lifecycle import _open_chats_payload
+from tesseract.mirror.server.cors import origin_is_allowed
 from tesseract.mirror.server.session import (
     ChatInfraNotReady,
     ServerSession,
@@ -89,6 +90,14 @@ def _spawn_tracked(app: web.Application, coro, name: str) -> asyncio.Task:
 
 
 async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
+    # Refuse before the upgrade: `/ws` dispatches `terminal_*` straight to the
+    # PTY, which spawns a configured shell without a permission prompt. Binding
+    # to loopback is no defence — a page in the operator's browser can reach
+    # 127.0.0.1, and browsers do not apply same-origin policy to WS handshakes.
+    origin = request.headers.get("Origin", "")
+    if not origin_is_allowed(origin, request.app["allowed_origins"]):
+        log.warning("ws: refused handshake from origin %r", origin)
+        raise web.HTTPForbidden(text="origin not allowed")
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     try:

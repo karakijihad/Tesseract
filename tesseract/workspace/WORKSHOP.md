@@ -2,7 +2,7 @@
 
 Your working space is `tars-workshop/`. When the operator gives you a task that needs artifacts (drafts, notes, scripts, intermediate files, experiments), put them there — not at the repo root, not in `workspace/`, not wherever the topic happens to overlap with code.
 
-Writes inside `tars-workshop/` are AUTO (no approval prompt) — see `config/permissions.yaml` path overrides. Write paths are relative to your state root: `tars-workshop/…`, never `tars-workshop/…`. The whole folder is gitignored; it's your space, not project code.
+Writes inside `tars-workshop/` are AUTO (no approval prompt) — see `config/permissions.yaml` path overrides. Write paths are relative to your state root: `tars-workshop/…`, never `tesseract/tars-workshop/…`. The whole folder is gitignored; it's your space, not project code.
 
 ## Layout
 

@@ -25,6 +25,7 @@ from tesseract.orchestrator.open_verb.native import (
     launch_directory,
     launch_path,
     reject_network_path,
+    reject_reparse_points,
 )
 
 
@@ -82,6 +83,13 @@ class OsLaunchTool(Tool):
                 # first would authenticate before any guard had a say.
                 reject_network_path(str(inp.path))
                 candidate = Path(str(inp.path)).expanduser()
+                # Same reason, one indirection further out: `reject_network_path`
+                # only reads the string, so `C:\dir\junction` pointing at
+                # \\host\share passes it — and `is_dir()` FOLLOWS the junction,
+                # authenticating before either branch's own reparse check gets
+                # to refuse. `reject_reparse_points` uses `lstat`, so it does
+                # not follow; both branches re-run it, which is harmless.
+                reject_reparse_points(candidate)
                 if candidate.is_dir():
                     opened = launch_directory(str(inp.path))
                 else:

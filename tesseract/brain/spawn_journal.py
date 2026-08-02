@@ -1,7 +1,6 @@
 """Best-effort spawn start/terminal journal (P6 Task 3 §G5).
 
-The probe (see ``.superpowers/sdd/p6-task-3-report.md``) confirmed the
-restored-history-scan alternative is not viable: ``chat_store.py`` persists
+The restored-history-scan alternative is not viable: ``chat_store.py`` persists
 role/content history only, and spawn completions are one-shot injections
 spliced into the adapter message list — never appended to ``ChatSession.
 history`` (``chat.py::_messages_for_turn``) — so there is nothing

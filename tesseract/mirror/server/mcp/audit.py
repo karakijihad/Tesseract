@@ -1,5 +1,5 @@
 """MCP verb audit sink — one JSON line per verb call to
-``<TESSERACT_HOME>/logs/audit/mcp.jsonl``.
+``runtime/logs/audit/mcp.jsonl``.
 
 A verb *call* is traffic (audit log), not a top-level Activity record
 (Doclog 2026-07-01 §No mcp_call). Mirrors ``browser/pc_audit.py``: path

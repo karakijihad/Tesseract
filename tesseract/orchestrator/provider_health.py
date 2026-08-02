@@ -1,7 +1,7 @@
 """Provider-health JSONL telemetry — AU-14 substrate.
 
 Append-only per-role log at
-``<TESSERACT_HOME>/logs/provider-health/<role>.jsonl``. Producers:
+``runtime/logs/provider-health/<role>.jsonl``. Producers:
 
   * The :class:`tesseract.scheduler.tasks.provider_probe.ProviderProbeJob`
     (scheduled probe).

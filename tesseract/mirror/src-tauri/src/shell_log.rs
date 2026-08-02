@@ -23,8 +23,8 @@ static LOG_LOCK: Mutex<()> = Mutex::new(());
 /// durable trace instead of vanishing with the console-less packaged GUI
 /// process. Call once, at the very top of `run()` — before `init`, which
 /// needs an `AppHandle` and so can only run once Tauri has resolved the
-/// per-user home directory. A panic before that point is not captured; see
-/// task-19-report.md for why that gap is accepted.
+/// per-user home directory. A panic before that point is not captured — the
+/// gap is accepted because nothing durable exists yet to write a trace into.
 pub fn install_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

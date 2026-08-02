@@ -29,15 +29,20 @@ def _redacted(url: str) -> str:
     would otherwise write it to the log verbatim."""
     try:
         parts = urlsplit(url)
-        if not parts.hostname:
-            return "<no host>"
-        # `.port` parses lazily and raises on a malformed port, so it belongs
-        # inside the guard — a redaction helper must never be the thing that
-        # raises while reporting an error.
-        authority = parts.hostname + (f":{parts.port}" if parts.port else "")
-        return urlunsplit((parts.scheme, authority, parts.path, "", ""))
     except ValueError:
         return "<unparseable url>"
+    if not parts.netloc:
+        return "<no host>"
+    # Rebuilt from `netloc`, not `hostname` + `port`: the former keeps the
+    # brackets an IPv6 literal needs, so `https://[::1]:8080/` survives instead
+    # of coming back as the unparseable `https://::1:8080/`. It also cannot
+    # raise — `.port` parses lazily and throws on a malformed port, and a
+    # redaction helper must never be the thing that fails while reporting a
+    # failure. Only the last `@` separates userinfo from the host; one may
+    # legally appear inside the userinfo itself.
+    authority = parts.netloc.rsplit("@", 1)[-1]
+    # Query and fragment are dropped, not redacted: either can carry a token.
+    return urlunsplit((parts.scheme, authority, parts.path, "", ""))
 
 
 @dataclass(frozen=True)

@@ -1,9 +1,8 @@
-// Y-2 — folder surface. Renders a path's entries as a flat file-tree.
+// Folder surface. Renders a path's entries as a flat file-tree.
 // `props.root` is the folder path; `props.entries` (optional) is the
 // directory listing the tool supplied — `{name, kind}` rows or bare name
-// strings. Live filesystem listing is a P4-1 concern; Y-2 renders what the
-// descriptor carries. Clicking an entry emits `clicked` for the tool to act
-// on (e.g. open via OS in a later phase).
+// strings. It renders what the descriptor carries; it does not list the
+// filesystem itself. Entries are inert — see the row comment below.
 
 import type { RendererProps } from './index';
 
@@ -19,7 +18,7 @@ function normalizeEntries(raw: unknown): Entry[] {
   );
 }
 
-export function FolderRenderer({ descriptor, dispatch }: RendererProps) {
+export function FolderRenderer({ descriptor }: RendererProps) {
   const root = String(descriptor.props?.root ?? '');
   const entries = normalizeEntries(descriptor.props?.entries);
   return (

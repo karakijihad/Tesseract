@@ -5,7 +5,7 @@ The marker (``<TESSERACT_HOME>/runtime/crash_storm.json``) is written
 when the supervisor latches after 3 crashes in 5 minutes. While
 present, ``python -m tesseract.supervisor`` refuses to start (unless
 ``--force`` is passed for one-shot bypass). This CLI moves the marker
-to ``<TESSERACT_HOME>/logs/supervisor/crash-storm-archive/<timestamp>.json``
+to ``runtime/logs/supervisor/crash-storm-archive/<timestamp>.json``
 so the operator keeps a record across reboots, then clears the live
 file.
 """

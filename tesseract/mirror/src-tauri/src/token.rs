@@ -36,8 +36,8 @@ fn clean_pasted_token(raw: &str) -> Option<String> {
 /// secret content. Relies on `%LOCALAPPDATA%`'s default per-user NTFS ACL
 /// as the confidentiality boundary — the same trust boundary the sibling
 /// `.env` file (which already holds live API keys in this same directory)
-/// relies on; see task-19-report.md for why no additional ACL-narrowing was
-/// added.
+/// relies on; no additional ACL-narrowing is layered on top of that
+/// existing boundary.
 fn save_github_token(home: &Path, token: &str) -> std::io::Result<()> {
     let runtime = crate::provision::runtime_dir(home);
     std::fs::create_dir_all(&runtime)?;

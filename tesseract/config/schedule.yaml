@@ -314,13 +314,7 @@ jobs:
     retry_policy:
       max_retries: 0
       backoff_seconds: 0
-    config:
-      # cost_caps override — falls back to defaults from CostCaps when absent.
-      # Mirrors the loop_cost_caps block in permissions.yaml so operator edits
-      # to the policy file stay the single source of truth.
-      cost_caps:
-        daily_brief_max_usd: 0.50
-        daily_brief_max_tavily_calls: 10   # kept in sync with permissions.yaml::loop_cost_caps
+    config: {}                     # spend ceilings live in permissions.yaml::loop_cost_caps
 
   - name: agenda_reaper
     cadence: "30 12 * * *"         # 12:30 local — daily sweep; general agenda hygiene, transitions

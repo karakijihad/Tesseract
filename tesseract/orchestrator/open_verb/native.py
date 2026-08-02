@@ -88,7 +88,7 @@ def _require_allowed_suffix(path: Path, allowed: frozenset[str]) -> None:
         )
 
 
-def _reject_reparse_points(path: Path) -> None:
+def reject_reparse_points(path: Path) -> None:
     """A junction or symlink anywhere in the chain can redirect the final
     target after validation resolved it. Refuse the whole shape rather than
     reason about which hop is safe."""
@@ -120,7 +120,7 @@ def launch_path(
 
     candidate = Path(raw).expanduser()
     _reject_forbidden_suffix(candidate)
-    _reject_reparse_points(candidate)
+    reject_reparse_points(candidate)
 
     if not candidate.exists():
         raise LaunchRefused(f"nothing exists at {candidate}")
@@ -150,7 +150,7 @@ def launch_directory(path: str) -> Path:
     reject_network_path(raw)
     _reject_alternate_data_streams(raw)
     candidate = Path(raw).expanduser()
-    _reject_reparse_points(candidate)
+    reject_reparse_points(candidate)
     if not candidate.is_dir():
         raise LaunchRefused(f"not a directory: {candidate}")
 

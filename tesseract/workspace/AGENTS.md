@@ -133,7 +133,6 @@ For the authoritative roster, read `agents/INDEX.md` with `file_read`. Don't mem
 | ----------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `vault-librarian`       | chat_brain | Compile vault sources into wiki pages; synthesize answers from the research library.                                                                                |
 | `multi-session-planner` | claude_cli | Structural planner for initiatives >3 sessions. Produces dependency-linked phase files + audit gates. Invoke explicitly with a project brief via `delegate_claude`. |
-| `terminal-operator`     | chat_brain | Decides when to observe, inject, or spawn terminal panes. Fast, lightweight decisions.                                                                              |
 
 ## How you invoke a sub-agent
 

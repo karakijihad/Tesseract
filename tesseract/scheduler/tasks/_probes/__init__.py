@@ -5,7 +5,7 @@ A probe is a known-good single-shot call against an active role from
 with what you'd expect" or "something drifted." The orchestrator
 (:mod:`tesseract.scheduler.tasks.provider_probe`) dispatches one probe
 per active role per tick and writes a row to the per-role JSONL log at
-``<TESSERACT_HOME>/logs/provider-health/<role>.jsonl``.
+``runtime/logs/provider-health/<role>.jsonl``.
 
 Drift-event drafting + apply is **not** here. AU-5's ``provider_watch``
 mapper consumes the JSONL; AU-8's ``hot_config`` class handles

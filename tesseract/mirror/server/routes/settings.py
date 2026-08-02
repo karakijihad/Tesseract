@@ -1333,7 +1333,7 @@ async def get_voice(request: web.Request) -> web.Response:
 async def get_system(request: web.Request) -> web.Response:
     """GET /api/settings/system?refresh=1 — capability snapshot.
 
-    Reads the cached snapshot at `tesseract/logs/capability-snapshot.json`.
+    Reads the cached snapshot at `runtime/logs/capability-snapshot.json`.
     With `?refresh=1` re-runs `check_dependencies.collect()` first.
     """
     from tesseract.scripts import check_dependencies

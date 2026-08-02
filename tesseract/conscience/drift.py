@@ -3,7 +3,7 @@
 No LLM, no live instrumentation. Three signals for the MVP rewire:
 
   * circuit_breaker_open_count — how many breakers under
-    `tesseract/logs/circuit-breakers/` currently have `tripped` as their
+    `runtime/logs/circuit-breakers/` currently have `tripped` as their
     most recent event.
   * scheduler_failure_rate — fraction of `runs.jsonl` entries in the
     configured window where `ok == False`.

@@ -100,13 +100,10 @@ class MCPConfig:
     verbs: Mapping[str, str]  # verb -> posture, exactly as the operator wrote it
     trust_tiers: Mapping[str, str]  # trust tier -> posture cap (floor on strictness)
 
-    def client_for_trust_tier(self, tier: str) -> MCPClient | None:
-        return next((c for c in self.clients if c.trust_tier == tier), None)
-
     def trust_tier_cap(self, tier: str) -> str:
-        """Posture cap for a trust tier — a floor layered into the effective
-        posture via ``strictest(...)``. KeyError if the tier is unconfigured
-        (the loader guarantees all three tiers are present)."""
+        """Posture cap for a trust tier, layered into the effective posture via
+        ``strictest(...)``. KeyError if the tier is unconfigured (the loader
+        guarantees all three tiers are present)."""
         return self.trust_tiers[tier]
 
 

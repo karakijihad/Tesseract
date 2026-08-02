@@ -3,7 +3,7 @@
 The four sweeps are independent, so they run concurrently on a thread
 pool (parallel-by-default); one sweep failing is recorded in
 `SweepReport.errors` and never aborts the others. Every sweep appends a
-JSONL row to `<home>/logs/janitor/sweeps.jsonl`."""
+JSONL row to `runtime/logs/janitor/sweeps.jsonl`."""
 
 from __future__ import annotations
 

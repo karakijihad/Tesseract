@@ -25,7 +25,9 @@ from tesseract.mirror.server.approvals_parse import (
 from tesseract.mirror.server.session import ServerSession, send_envelope
 from tesseract.mirror.server.uploads import load_attachment
 from tesseract.mirror.server.uploads._storage import _attachment_file_path
-# No-auth: local-only, single-operator deployment.
+# Messages here carry no per-message auth: the handshake is the boundary.
+# `websocket_handler` refuses any upgrade whose Origin is outside the
+# allowlist, which is what keeps `terminal_*` out of a hostile page's reach.
 
 log = logging.getLogger(__name__)
 

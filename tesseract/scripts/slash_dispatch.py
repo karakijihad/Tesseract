@@ -72,6 +72,22 @@ _COMMAND_ALIASES: dict[str, str] = {
     "read_brief": "brief_read",
 }
 
+# Tools the slash console does not offer, and why. `run_slash` runs a tool
+# against a deliberately policy-free context — the operator IS the authority
+# here, so postures do not apply. A tool that dispatches to OTHER tools cannot
+# work under that: `open` resolves a target and hands it to `surface_create` or
+# `os_launch` through the permission stack, which needs the policy this path
+# does not carry. Left in the registry it resolves by name and dies with an
+# internal error, so it is refused with a sentence instead. Mirrored by
+# `commands_registry.py`, which skips these when building the palette.
+NOT_SLASH_CALLABLE: dict[str, str] = {
+    "open": (
+        "`open` dispatches through the permission stack, which the slash "
+        "console deliberately bypasses. Use the cockpit, ask TARS, or run "
+        "`python -m tesseract.scripts.open_cli <target>` from a terminal."
+    ),
+}
+
 # Operator-only sentinels. Only operator-driven frontends and the
 # Mirror WS slash dispatch (`tesseract.mirror.server.commands_registry`)
 # may import these — both are operator-only surfaces. A Tool importing
@@ -231,6 +247,9 @@ async def run_slash(
             "policy posture."
         )
     resolved_name = _COMMAND_ALIASES.get(name, name)
+    refusal = NOT_SLASH_CALLABLE.get(resolved_name)
+    if refusal is not None:
+        return f"[/{name} is not available here]\n  {refusal}"
     tool = registry.get(resolved_name)
     if tool is None:
         suggestions = difflib.get_close_matches(name, registry.names(), n=3, cutoff=0.5)
@@ -296,7 +315,7 @@ def _category_of(name: str) -> str:
 
 
 def print_slash_help(registry: ToolRegistry) -> None:
-    names = sorted(registry.names())
+    names = sorted(n for n in registry.names() if n not in NOT_SLASH_CALLABLE)
     by_cat: dict[str, list[str]] = {}
     for n in names:
         by_cat.setdefault(_category_of(n), []).append(n)

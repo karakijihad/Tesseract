@@ -21,6 +21,7 @@ blocked_networks:
   - 169.254.0.0/16   # link-local, incl. cloud metadata at 169.254.169.254
   - 100.64.0.0/10    # carrier-grade NAT
   - 198.18.0.0/15    # benchmark range
+  - fe80::/10        # IPv6 link-local, the native form of the range above
   - ::ffff:169.254.0.0/112
 
 # Applications `open` may launch by name. Deny-by-default: an identifier absent

@@ -509,10 +509,14 @@ class PTYManager:
             # Sleep at most until the deadline; don't oversleep past it.
             await asyncio.sleep(min(poll_interval, max(deadline - now, 0.0)))
 
-    async def _provision_terminal_mcp(self, cwd: str | None) -> None:
-        """P2 Task 2 — wire the pane's cwd (or this process's cwd when the
-        pane has none) to the embedded MCP hub, so a hand-launched
-        `claude`/`codex` in this pane wakes up already connected.
+    async def _provision_terminal_mcp(self) -> None:
+        """Wire the operator's claude/codex config to the embedded MCP hub, so
+        a hand-launched CLI in this pane wakes up already connected — from
+        whatever directory they end up in, not only the one the pane opened.
+
+        The pane inherits this process's environment, which carries the hub
+        bearer token; a shell the operator opened themselves does not. That is
+        what separates "launched inside TESSERACT" from any other terminal.
 
         Terminal panes are general-purpose shells (cmd/bash/powershell
         too), not committed to running an MCP-aware CLI at open time — a
@@ -524,12 +528,11 @@ class PTYManager:
                 mcp_provision,
             )
 
-            target = Path(cwd) if cwd else Path.cwd()
             await asyncio.to_thread(
-                mcp_provision.provision, target, "terminal", load_mcp_config()
+                mcp_provision.provision, "terminal", load_mcp_config()
             )
         except Exception:  # noqa: BLE001 — best-effort, must not block terminal open
-            log.warning("pty: mcp_provision(terminal) failed for cwd=%r", cwd, exc_info=True)
+            log.warning("pty: mcp_provision(terminal) failed", exc_info=True)
 
     def list_panes_for_agent(self) -> list[dict[str, Any]]:
         """Snapshot of all live panes — read-only pane-viewer substrate."""
@@ -624,9 +627,9 @@ class PTYManager:
 
         # Phase 6 — auto-grant observer consent on agent-spawned panes too.
         self._maybe_auto_grant_consent(pane_id)
-        # P2 Task 2 — a hand-launched claude/codex in this pane's cwd
-        # should wake up already connected to the hub.
-        await self._provision_terminal_mcp(cwd)
+        # A hand-launched claude/codex in this pane should wake up already
+        # connected to the hub.
+        await self._provision_terminal_mcp()
 
         opened_at = datetime.now(timezone.utc).isoformat()
         await self._send(ws, {
@@ -696,10 +699,9 @@ class PTYManager:
         # Operator can still toggle the whole observer off via the
         # right-panel arm/disarm control — that path clears all consents.
         self._maybe_auto_grant_consent(pane_id)
-        # P2 Task 2 — a hand-launched claude/codex in this pane's cwd
-        # should wake up already connected to the hub. `_start` spawns with
-        # no explicit cwd, so the pane inherits this process's cwd.
-        await self._provision_terminal_mcp(None)
+        # A hand-launched claude/codex in this pane should wake up already
+        # connected to the hub.
+        await self._provision_terminal_mcp()
 
         await self._send(ws, {
             "type": "terminal_started",

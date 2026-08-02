@@ -211,8 +211,7 @@ fn log_update_result(label: &str, result: &Result<String, String>) {
 /// running app until this function spawns a new one, so every failure branch
 /// that runs after that point makes a best-effort respawn attempt before
 /// returning an error — the caller must never be left with a dead app when a
-/// respawn is possible. See `task-12-report.md` for the full failure-state
-/// table (what the app looks like after a failure at each step).
+/// respawn is possible.
 #[tauri::command]
 pub fn update_apply(
     app: tauri::AppHandle,

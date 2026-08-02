@@ -1025,7 +1025,7 @@ mod tests {
     /// Regression fixture: the exact (credential-free) error text libgit2's
     /// WinHTTP backend produces for a real, unresolvable host on Windows —
     /// captured from a live run against
-    /// `https://this-host-can-never-resolve.invalid/...` (task-19-report.md).
+    /// `https://this-host-can-never-resolve.invalid/...`.
     /// The original phrase list (`"resolve host"`/`"resolve address"`) did
     /// not match this real wording and fell through to the generic fallback
     /// message instead of the friendlier network one — still `Other`, never
@@ -1055,9 +1055,8 @@ mod tests {
 
     /// Manual, network-touching proof that the auth-failure/retry loop
     /// works against a REAL private GitHub repo, at the exact layer the
-    /// shell drives (clone + classify + token file) — the same repo
-    /// `karakijihad/tesseract-dev` used for the live splash-window
-    /// verification in task-19-report.md. `#[ignore]`d because it requires
+    /// shell drives (clone + classify + token file), against a private repo.
+    /// `#[ignore]`d because it requires
     /// outbound internet access and hits github.com; run manually:
     /// `cargo test --lib clone_app_dir_with_needs_token_then_retries_after_a_saved_token -- --ignored`
     #[test]

@@ -143,9 +143,9 @@ export function ToolCallPill({ call, result }: Props) {
           )}
         </div>
       )}
-      {/* X-2 (2026-06-02) — controller-card surfaces independent of the
-          tool-pill expansion gate. Closes Codex audit-2026-06-01 H2
-          ("controller sessions not first-class in Mirror"). */}
+      {/* X-2 — controller-card surfaces independent of the tool-pill
+          expansion gate: a controller session must stay visible in Mirror
+          even when the pill itself is collapsed. */}
       {controllerMeta && (
         <ControllerMirrorBlock
           session_id={controllerMeta.session_id}

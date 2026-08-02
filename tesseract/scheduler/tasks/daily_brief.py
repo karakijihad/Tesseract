@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from tesseract.config.cost_caps import load_loop_cost_caps, require_cap
 from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
 from tesseract.kernel.tools.brief_render import (
     _make_digester_invoker,
@@ -50,7 +51,7 @@ class DailyBriefJob(BaseJob):
             agents_dir = _resolve_agents_dir(ctx)
             memory_store = _resolve_memory_store(ctx)
             event_store = _resolve_event_store(ctx)
-            caps = _resolve_cost_caps(ctx)
+            caps = _resolve_cost_caps()
 
             vault_paths = _resolve_vault_paths(ctx)
             ecosystem_home = _resolve_ecosystem_home(ctx)
@@ -238,15 +239,17 @@ def _resolve_event_store(ctx: JobContext):
     return app.get("workspace_event_store")
 
 
-def _resolve_cost_caps(ctx: JobContext) -> CostCaps:
-    block = ctx.config.get("cost_caps") or {}
-    if not isinstance(block, dict):
-        block = {}
+def _resolve_cost_caps() -> CostCaps:
+    """Read the ceilings from ``permissions.yaml::loop_cost_caps``.
+
+    The job used to read its own mirrored copy out of ``schedule.yaml``, so
+    editing the policy file — which every comment in the tree names as the
+    authority — changed nothing. The mirror is gone; this is the one source.
+    """
+    caps = load_loop_cost_caps()
     return CostCaps(
-        max_usd=float(block.get("daily_brief_max_usd", CostCaps().max_usd)),
-        max_tavily_calls=int(
-            block.get("daily_brief_max_tavily_calls", CostCaps().max_tavily_calls),
-        ),
+        max_usd=require_cap(caps, "daily_brief_max_usd"),
+        max_tavily_calls=int(require_cap(caps, "daily_brief_max_tavily_calls")),
     )
 
 

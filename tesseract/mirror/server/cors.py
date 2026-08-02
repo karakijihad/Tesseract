@@ -25,12 +25,45 @@ PACKAGED_APP_ORIGINS = frozenset(
 )
 
 
+def resolve_allowed_origins(configured: Iterable[str]) -> frozenset[str]:
+    """Every origin the local backend answers to: operator-configured plus the
+    packaged webview's own. One allowlist so the CORS middleware and the
+    WebSocket handshake gate cannot drift apart.
+    """
+    return frozenset(configured) | PACKAGED_APP_ORIGINS
+
+
+def origin_is_allowed(origin: str, allowed: frozenset[str]) -> bool:
+    """Whether a handshake carrying `origin` may proceed.
+
+    A browser always sends `Origin` on a WebSocket handshake and cannot be made
+    to forge it, so a present origin outside the allowlist is a cross-site
+    caller. An absent one is a native client — the Tauri shell, a CLI, a test —
+    which no web page can impersonate.
+    """
+    if not origin:
+        return True
+    return origin in allowed
+
+
+# Methods that can change state. A cross-site page can issue any of these
+# against loopback without a preflight — `Request.json` does not require a
+# JSON content-type, so `text/plain` carrying JSON is enough to reach a
+# handler. Reading is not gated: it is the writes that must prove origin.
+_STATE_CHANGING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
 def build_cors_middleware(allowed_origins: Iterable[str]) -> web.middleware:
-    allowed = frozenset(allowed_origins) | PACKAGED_APP_ORIGINS
+    allowed = resolve_allowed_origins(allowed_origins)
 
     @web.middleware
     async def cors_middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
         origin = request.headers.get("Origin", "")
+        if request.method in _STATE_CHANGING and not origin_is_allowed(origin, allowed):
+            # Refuse before the handler runs. Decorating the response after the
+            # fact — all this middleware used to do — leaves the write already
+            # committed; CORS headers only tell a browser what it may read.
+            raise web.HTTPForbidden(text="origin not allowed")
         if request.method == "OPTIONS":
             response = web.Response(status=204)
         else:

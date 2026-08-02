@@ -25,6 +25,22 @@ EXCLUDE_PATHS = (
     # `tesseract/scripts/`, untouched by this exclusion) and that
     # `build_production_tree.main()` runs against the tree it just built.
     "tesseract/tests",
+    # Frontend test surface, Python's counterpart to `tesseract/tests` above:
+    # e2e specs + their shared fixtures never run outside a dev checkout (no
+    # `playwright` browser install ships), and the runner configs they need
+    # (`playwright.config.ts`, `vitest.config.ts`) have no other consumer —
+    # `release:build` runs `release-gate.mjs && tauri build` only, never
+    # `test`/`e2e`. Per-file `*.test.ts(x)` units ship alongside their
+    # source today; those are dropped via EXCLUDE_GLOBS below instead, since
+    # a path-prefix rule can't reach files interleaved throughout `src/`.
+    "tesseract/mirror/e2e",
+    "tesseract/mirror/playwright.config.ts",
+    "tesseract/mirror/vitest.config.ts",
+    # `#[cfg(test)]`-gated in `lib.rs` (`mod test_support;`) — never compiled
+    # into a release build, so dropping the file cannot break `cargo build
+    # --release` / `tauri build`. Only `cargo test` (never run against the
+    # shipped tree) needs it.
+    "tesseract/mirror/src-tauri/src/test_support.rs",
     # CLAUDE.md/AGENTS.md document the runtime's internal security
     # architecture (bash_security's check list, permissions model,
     # kernel-lockdown mechanics) — shipping them is information disclosure.
@@ -46,6 +62,12 @@ EXCLUDE_GLOBS = (
     "trusted_dirs.json",
     ".mcp.json",
     "owners-notes.md",
+    # Vitest unit specs live beside the source they cover throughout
+    # `tesseract/mirror/src/**`, not under one prefix EXCLUDE_PATHS could
+    # name — matched by filename instead, same reasoning as the e2e/
+    # exclusion above.
+    "*.test.ts",
+    "*.test.tsx",
 )
 
 # Full-relative-path globs (matched against the whole posix path, not just

@@ -61,12 +61,10 @@ def new_recovery_manager(
     Every scan only reads from disk — no live-substrate dependency.
     """
     home = (tesseract_home or TESSERACT_HOME).resolve()
-    missions_root = home / "missions"
     schedule_log_dir = log_dir("schedule")
     workspace_logs_dir = home_logs_root()
     return RecoveryManager(
         tesseract_home=home,
-        missions_root=missions_root,
         schedule_log_dir=schedule_log_dir,
         workspace_logs_dir=workspace_logs_dir,
     )
@@ -85,12 +83,10 @@ class RecoveryManager:
         self,
         *,
         tesseract_home: Path,
-        missions_root: Path,  # unused (mission engine deleted); kept — see new_recovery_manager
         schedule_log_dir: Path,
         workspace_logs_dir: Path,
     ) -> None:
         self.tesseract_home = tesseract_home
-        self.missions_root = missions_root
         self.schedule_log_dir = schedule_log_dir
         self.workspace_logs_dir = workspace_logs_dir
         self._event_store: EventStore | None = None

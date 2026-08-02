@@ -1,5 +1,5 @@
 """Outbound MCP-client audit sink — one JSON line per external tool call to
-``<TESSERACT_HOME>/logs/audit/mcp-client.jsonl``.
+``runtime/logs/audit/mcp-client.jsonl``.
 
 The inverse of the inbound server sink (``mirror/server/mcp/audit.py``): that
 records verbs OTHER clients call on us; this records tool calls WE make on

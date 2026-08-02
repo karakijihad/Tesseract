@@ -281,10 +281,13 @@ def main() -> None:
     # CL-M7: fail the build itself on a PII/secret hit, not just at test time —
     # the shipped tree carries `scripts/audit_release_tree.py` as its own
     # standalone guard (tesseract/tests never ships), so run it here too.
-    offenders = audit_release_tree.scan(args.out_root)
+    # `scan_all` also covers test-surface files and work-note comments
+    # reaching the tree — a manifest gap or an unrewritten comment fails the
+    # build the same way a leaked credential would.
+    offenders = audit_release_tree.scan_all(args.out_root)
     if offenders:
         raise RuntimeError(
-            "build_production_tree: release-audit found PII/secret pattern(s):\n"
+            "build_production_tree: release-audit found violation(s):\n"
             + "\n".join(offenders)
         )
     print(f"production tree written to {args.out_root}")

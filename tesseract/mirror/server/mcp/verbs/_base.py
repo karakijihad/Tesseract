@@ -35,6 +35,12 @@ class VerbContext:
     # decide.evaluate applies its no-ask_fn rule (read-only auto-allow / write
     # deny). Set by the dispatcher.
     ask_fn: Any = None
+    # Tool-level ask_fn for a tool reached by ANOTHER tool's dispatch, rather
+    # than by this verb directly. `ask_fn` covers the tool the verb names; this
+    # covers what that tool goes on to call, which for `surface.open` is
+    # `os_launch`. None → `ask_fn` is used for both, the pre-2026-08-02
+    # behaviour. Set by the dispatcher.
+    nested_ask_fn: Any = None
 
 
 class MCPVerbError(Exception):
@@ -78,7 +84,11 @@ async def run_kernel_tool(
         raise MCPVerbError(503, f"{tool_name} unavailable (tool registry not ready)")
     tool = registry.tools[tool_name]
     policy = ctx.app["config"].permissions
-    context = _mcp_tool_context(ctx, ask_fn)
+    # The context's ask_fn is what a NESTED dispatch reaches (`open` →
+    # `os_launch`); `ask_fn` below is what this tool's own posture consults.
+    # They differ deliberately: the verb approval covers the tool it names, and
+    # a tool it goes on to call is asked for separately.
+    context = _mcp_tool_context(ctx, ctx.nested_ask_fn or ask_fn)
     # A tool that dispatches to another tool (`open` → os_launch) reads the
     # policy off the context. This path calls `decide.evaluate` directly rather
     # than going through `brain.tools.execute_tool`, so it must do that sync

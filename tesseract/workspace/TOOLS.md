@@ -105,10 +105,10 @@ What you **can** write with `file_write`:
 - `tars-workshop/…` — AUTO (scratch work, task drafts, notes)
 - `vault/raw/…` — AUTO (vault ingestion)
 - `logs/sessions/…` — AUTO (bookkeeping stream)
-- `config/…` — ASK, except `permissions.yaml` and `mirror.yaml`, which are DENY
+- `config/…` — ASK, except `permissions.yaml`, `mirror.yaml` and `mcp.yaml`, which are DENY
 - `workspace/SOUL.md` and the other workspace docs — DENY; route via `propose_change`
 
-**Write paths are relative to your state root**, not to the repo — `tars-workshop/notes.md`, never `tars-workshop/notes.md`. A `tesseract/`-prefixed write target resolves to a nonexistent subfolder of your state root and matches no rule. An unmatched path falls through to the security mode's default rather than to a rule — which is ASK in `max` and AUTO in `headless`, so a wrong prefix does not fail safe. Use the paths above.
+**Write paths are relative to your state root**, not to the repo — `tars-workshop/notes.md`, never `tesseract/tars-workshop/notes.md`. A `tesseract/`-prefixed write target resolves to a nonexistent subfolder of your state root and matches no rule. An unmatched path falls through to the security mode's default rather than to a rule — which is ASK in `max` and AUTO in `headless`, so a wrong prefix does not fail safe. Use the paths above.
 
 **Task artifacts go in `tars-workshop/`** — read `workspace/WORKSHOP.md` before your first write of the session for the folder layout.
 

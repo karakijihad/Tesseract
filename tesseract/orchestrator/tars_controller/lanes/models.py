@@ -2,8 +2,9 @@
 
 Every shape on the wire — `LaneEvent`, `LaneStatus`, `Lane`, `LaneSnapshot`,
 `LaneSendResult` — is defined here exactly once. The contract enforces
-`assistant_text` and `tool_result` as distinct `LaneEventKind` values
-(audit-2026-05-24 Critical regression guard)."""
+`assistant_text` and `tool_result` as distinct `LaneEventKind` values —
+conflating them, or dropping one in favor of the other, silently erases
+tool-call visibility on the wire."""
 
 from __future__ import annotations
 

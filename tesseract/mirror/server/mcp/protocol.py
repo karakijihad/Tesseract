@@ -24,6 +24,7 @@ from typing import Any
 import mcp.types as types
 
 from tesseract.config.mcp import MCPClient
+from tesseract.mirror.server.mcp.orientation import build_instructions
 from tesseract.mirror.server.mcp.session import MCPSession
 from tesseract.mirror.server.mcp.tools import call_result, list_tools, verb_for_tool
 
@@ -122,6 +123,7 @@ def _initialize(server: Any, client: MCPClient, msg_id: Any, params: dict[str, A
         protocolVersion=version,
         capabilities=types.ServerCapabilities(tools=types.ToolsCapability(listChanged=False)),
         serverInfo=types.Implementation(name=_SERVER_NAME, version=_SERVER_VERSION),
+        instructions=build_instructions(),
     ).model_dump(by_alias=True, exclude_none=True)
     return Handled(_ok(msg_id, result), new_session=session)
 

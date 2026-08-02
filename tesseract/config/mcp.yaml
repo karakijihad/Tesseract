@@ -45,8 +45,11 @@ trust_tiers:
   restricted: "ask"
 
 # Per-verb posture allowlist (default-deny): a verb missing from this map is
-# denied regardless of anything else. A listed posture may only tighten the
-# floor (auto -> ask -> deny), never relax it.
+# denied. This file is the sole authority — there are no source-side floors,
+# and _KNOWN_VERBS in config/mcp.py is a typo net, not a floor. The posture set
+# here is the whole decision, capped only by the client's trust tier above.
+# That is why config/mcp.yaml is DENY to TARS in permissions.yaml: with no
+# floor beneath it, a write here would widen his own reach.
 verbs:
   activity.list: "auto"
   activity.watch: "auto"

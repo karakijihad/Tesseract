@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 from tesseract.kernel.adapters.base import AdapterOptions
 from tesseract.mirror.server.config import ServerConfig
-from tesseract.mirror.server.cors import build_cors_middleware
+from tesseract.mirror.server.cors import build_cors_middleware, resolve_allowed_origins
 from tesseract.mirror.server.routes import agents as agents_route
 from tesseract.mirror.server.routes import brief as brief_route
 from tesseract.mirror.server.routes import channels as channels_route
@@ -63,6 +63,11 @@ _LOOP_LAG_WARN_S = 2.0
 def create_app(config: ServerConfig) -> web.Application:
     app = web.Application(middlewares=[build_cors_middleware(config.cors_origins)])
     app["config"] = config
+    # The WebSocket handshake is not CORS-gated by the middleware — CORS only
+    # decorates responses, it never refuses one. `/ws` reaches the PTY, which
+    # is operator-direct and deliberately outside the permission engine, so the
+    # handshake enforces this allowlist itself.
+    app["allowed_origins"] = resolve_allowed_origins(config.cors_origins)
     # Writable user-state root — settings.py's yaml read/write helpers key
     # off this to resolve config under TESSERACT_HOME, not the source tree.
     app["tesseract_dir"] = TESSERACT_HOME

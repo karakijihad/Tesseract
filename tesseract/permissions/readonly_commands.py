@@ -29,7 +29,7 @@ is a single argv, no piping or redirection) so the byte-set check alone
 does not see them; without this second gate a "read-only-looking" allowlist
 match could silently overwrite an arbitrary path with zero operator ASK.
 
-Two allowlist shapes (2026-07-02 review fix, task-5 findings 1+2):
+Two allowlist shapes:
 
 - ``allowlist`` — prefix entries. A command matches if it equals the
   entry, or starts with ``entry + " "``. This is where flag-bearing

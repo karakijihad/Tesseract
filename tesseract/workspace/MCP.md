@@ -34,18 +34,25 @@ TESSERACT also _is_ an MCP server — a spec-compliant Streamable-HTTP endpoint 
 - **Auth:** bearer token from `$TESSERACT_MCP_SECRET` (the operator client). Default-deny: an unknown token is rejected.
 - **Transport:** Streamable-HTTP — POST JSON-RPC (`initialize` → `tools/list` → `tools/call`). GET → 405 (no server-push stream in this build). DELETE ends the session.
 - **Session:** `initialize` returns an `Mcp-Session-Id` = the `mcp_session` Activity record ("who's in the chair"); killable via `activity.cancel`.
+- **Orientation:** `initialize` also returns server `instructions` — a live brief telling the connecting CLI what the memory and vault actually hold (current entry counts and date range), which verbs are worth reaching for, and that `app/` and `runtime/` are not to be written. It is computed per handshake, so it never goes stale.
 - **Tools:** the verbs across `activity / memory / vault / lane / mission / schedule / surface / budget / agent` families (dots → underscores, e.g. `activity_list`). ASK-posture verbs return an `awaiting_operator` result — approve in Mirror, then re-issue.
 - **`surface_open`** is the one to reach for when you want the operator to *see* something: a URL, a file, a folder, an app, or a search phrase. It resolves the target and renders it in the cockpit when it can, or opens it in the owning application when it can't, and the result says which. Use it instead of `surface_spawn` unless you are authoring a card from content you generated.
 
-### Register with Claude Code CLI
+### How a CLI gets connected
+
+Registration is automatic and nobody has to type it. Opening a terminal pane, starting a lane, or running a delegate provisions both CLIs at **user scope** — `~/.claude.json` (`mcpServers.tesseract`) and `~/.codex/config.toml` (`[mcp_servers.tesseract]`). Neither file records a secret; both reference the bearer token by environment-variable name.
+
+That environment variable is the real gate. Panes and lanes are children of the Mirror backend and inherit it; a shell the operator opened from the desktop does not. So a `claude` or `codex` launched inside TESSERACT wakes up connected from whatever directory it is in, and the same binary launched outside sees no hub.
+
+In a connected session the verbs appear as `mcp__tesseract__memory_search`, `mcp__tesseract__activity_list`, and so on.
+
+Manual registration, if a client ever needs it:
 
 ```bash
 export TESSERACT_MCP_SECRET=<the operator token from tesseract/.env>
-claude mcp add --transport http tesseract http://127.0.0.1:8000/mcp \
+claude mcp add --scope user --transport http tesseract http://127.0.0.1:8000/mcp \
   --header "Authorization: Bearer $TESSERACT_MCP_SECRET"
 ```
-
-Then in a Claude Code session the verbs appear as `mcp__tesseract__activity_list`, `mcp__tesseract__lane_ensure`, etc. Codex CLI registers the same endpoint via its MCP-server config block (HTTP transport, same Authorization header).
 
 ## Deferred
 

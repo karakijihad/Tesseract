@@ -2,8 +2,9 @@
 `_shared/lane-contract.md` v1.
 
 `assistant_text` and `tool_result` are DISTINCT event kinds — never
-conflate them at the wire (audit-2026-05-24 Critical regression guard).
-Each lane owns one `asyncio.Lock`; cross-lane work runs concurrently."""
+conflate them into one event, and never drop one in favor of the other,
+at the wire. Each lane owns one `asyncio.Lock`; cross-lane work runs
+concurrently."""
 
 from __future__ import annotations
 
@@ -211,9 +212,10 @@ class LaneManager:
         Same contract as `IpcLaneManager.send_and_await` so
         `lane_send(wait=True)` blocks identically in-process and over IPC.
         `timeout` bounds SILENCE (stall), not total turn duration — lane
-        activity extends the wait (2026-07-13 incident: wall-clock caps
-        abandoned healthy long turns). On stall, returns the send result —
-        caller reads the remaining events via lane_read."""
+        activity extends the wait. A wall-clock cap on total duration
+        abandons healthy long-running turns, which is why silence, not
+        elapsed time, is what this bounds. On stall, returns the send
+        result — caller reads the remaining events via lane_read."""
         _, cursor = self.read(lane_id, None)  # capture current tail
         result = await self.send(lane_id, message)
         if not result.accepted:
@@ -345,7 +347,7 @@ class LaneManager:
             runtime.busy = False
             # Reset here, not after the post-processing below: a raising
             # run_turn (e.g. provisioning failure) otherwise leaves a stale
-            # turn id in lane status while busy=False (Deferred 2026-07-12).
+            # turn id in lane status while busy=False.
             runtime.current_turn_id = None
             update_lane_state(lane.lane_id, "ready")  # AS-1 — back to idle
         new_session_id = result.get("session_id") if isinstance(result, dict) else None
@@ -584,9 +586,9 @@ def _translate_adapter_event(
 
     A single Claude assistant message can carry BOTH text blocks and
     tool_use blocks; the contract requires emitting them as separate
-    LaneEvents (audit-2026-05-24 Critical regression guard — neither
-    conflate them into one event NOR drop one in favor of the other).
-    Returning a list makes that explicit. Empty list = nothing to log."""
+    LaneEvents — neither conflate them into one event nor drop one in
+    favor of the other. Returning a list makes that explicit. Empty
+    list = nothing to log."""
     etype = raw.get("type")
     if kind == "claude":
         if etype == "assistant":
@@ -737,7 +739,7 @@ def _default_adapter_factory(lane: Lane, runtime: LaneRuntime) -> LaneAdapter:
     """Build the production adapter for `lane`.
 
     X-4 Session D introduced a `pty` transport alongside `headless`;
-    the P4 PTY prune (2026-07-04) retired it — `headless` (subprocess +
+    the P4 PTY prune retired it — `headless` (subprocess +
     stream-JSON) is the only wired mode."""
     if lane.mode == "headless":
         from tesseract.orchestrator.tars_controller.interactive.cli_adapter import (
@@ -778,7 +780,6 @@ class _HeadlessCliLaneAdapter:
             # raises here, not on the CLI's own connect attempt.
             await asyncio.to_thread(
                 mcp_provision.provision,
-                Path(self.lane.working_dir),
                 self.lane.kind,
                 load_mcp_config(),
             )

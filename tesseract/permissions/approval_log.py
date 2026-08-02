@@ -5,7 +5,7 @@ and the REPL has no record at all. Once TARS commands terminals,
 subprocesses, and delegated workers, ASK history must survive process
 restarts for forensics and ops review.
 
-Lives at ``TESSERACT_HOME/logs/approvals.jsonl``. One JSON object per
+Lives at ``runtime/logs/approvals.jsonl`` (``runtime_logs_root()``). One JSON object per
 line. Single async lock serializes writes so concurrent tool calls
 cannot interleave bytes.
 

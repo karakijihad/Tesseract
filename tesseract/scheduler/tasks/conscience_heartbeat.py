@@ -1,11 +1,11 @@
 """ConscienceHeartbeatJob — daily rule-based drift scrape.
 
 No LLM, no live instrumentation. Scrapes:
-  - tesseract/logs/schedule/runs.jsonl   (scheduler failure + idle signals)
-  - tesseract/logs/circuit-breakers/*.jsonl  (open-breaker count)
+  - home/logs/schedule/runs.jsonl   (scheduler failure + idle signals)
+  - runtime/logs/circuit-breakers/*.jsonl  (open-breaker count)
 
 Emits one JSONL line per run to
-tesseract/logs/conscience/drift-YYYY-MM-DD.jsonl. The Mirror
+home/logs/conscience/drift-YYYY-MM-DD.jsonl. The Mirror
 `/api/conscience/drift` route reads the latest file for display.
 
 When the worst-status band changes between consecutive reports

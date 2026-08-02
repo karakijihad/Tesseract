@@ -29,8 +29,25 @@ async def memory_search(ctx: VerbContext) -> str:
         entity=ctx.params.get("entity"),
         source_slug=ctx.params.get("source_slug"),
         since=ctx.params.get("since"),
+        include_work_history=_work_history_flag(ctx),
     )
     return await run_kernel_tool(ctx, "memory_search", tool_input, ask_fn=ctx.ask_fn)
+
+
+def _work_history_flag(ctx: VerbContext) -> bool:
+    """``include_work_history``, defaulting to the tool's own default.
+
+    Omitting this from the verb left MCP clients unable to suppress the
+    non-authoritative session/workshop block — a caller that only wants
+    promoted memory had no way to say so and paid for the extra text on
+    every call.
+    """
+    raw = ctx.params.get("include_work_history")
+    if raw is None:
+        return MemorySearchInput.model_fields["include_work_history"].default
+    if not isinstance(raw, bool):
+        raise MCPVerbError(400, "memory.search 'include_work_history' must be a boolean")
+    return raw
 
 
 def _validation_summary(exc: ValidationError) -> str:

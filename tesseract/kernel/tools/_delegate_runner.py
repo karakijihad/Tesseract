@@ -124,8 +124,8 @@ async def provision_delegate_mcp(kind: str, workspace_root: str) -> None:
     """Best-effort hub provisioning for a delegate spawn (trio W1).
 
     Mirrors the lane adapter's call site (`lanes/manager.py`): wires the
-    CLI's working dir (claude `.mcp.json`) / global codex config so the
-    spawned CLI wakes up hub-connected. Failures are logged, never raised —
+    operator's global claude/codex config so the spawned CLI wakes up
+    hub-connected. Failures are logged, never raised —
     a dead hub connection must not block the delegation itself (same
     contract as the pty_manager terminal call site)."""
     try:
@@ -134,7 +134,6 @@ async def provision_delegate_mcp(kind: str, workspace_root: str) -> None:
 
         await asyncio.to_thread(
             mcp_provision.provision,
-            Path(workspace_root),
             kind,
             load_mcp_config(),
         )

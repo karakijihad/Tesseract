@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from tesseract.brain.tools import ToolRegistry, execute_tool
+from tesseract.config.cockpit import load_conductor_relay
 from tesseract.kernel.tools.base import ToolContext
 from tesseract.orchestrator.autonomy.summary_sanitize import clean_summary_tail
 from tesseract.orchestrator.autonomy.worker_dispatch import WorkerRunner
@@ -168,6 +169,16 @@ class KernelWorkerRunner:
         # Never raises — handler swallows callback exceptions.
         self._timeout_notifier = timeout_notifier
 
+    def _execution_root(self, record: WorkerRecord) -> str:
+        """Where this worker's tools actually run.
+
+        The kernel allocates an isolated worktree for code-editing workers and
+        records it on the record. Running them in the shared base workspace
+        instead would make that allocation a no-op and let concurrent workers
+        edit the same tree.
+        """
+        return record.worktree_path or self._workspace_root
+
     async def run(self, record: WorkerRecord) -> None:
         # Surface that the dispatch reached the runner. Mission worker
         # would transition QUEUED → RUNNING here; the autonomy kernel
@@ -271,7 +282,7 @@ class KernelWorkerRunner:
                 lane_name,
                 kind=kind,
                 model=default_model,
-                working_dir=self._workspace_root,
+                working_dir=self._execution_root(record),
             )
         except NamedLaneError as exc:
             return {
@@ -290,8 +301,17 @@ class KernelWorkerRunner:
                 "error_message": str(exc)[:500],
             }
 
+        # A bare `send` acks "queued", never "completed" — returning ok on that
+        # ack would mark the worker DONE and let the agenda reconcile before the
+        # turn had run. Capture the tail first so an earlier queued turn's
+        # `turn_ended` cannot satisfy this wait, then await our own.
+        _, cursor = mgr.lane_manager.read(binding.lane_id, None)
+        poll_s, relay_timeout_s = load_conductor_relay()
+        timeout = float(self._worker_timeouts.get(record.kind, relay_timeout_s))
         try:
-            send_result = await mgr.lane_manager.send(binding.lane_id, prompt)
+            send_result = await mgr.lane_manager.send_and_await(
+                binding.lane_id, prompt, timeout=timeout, poll_s=poll_s
+            )
         except Exception as exc:  # noqa: BLE001
             return {
                 "ok": False,
@@ -310,9 +330,37 @@ class KernelWorkerRunner:
                 "error_class": "LaneSendRejected",
                 "error_message": str(reason)[:500],
             }
+
+        # Attribution is only exact when this turn was the sole one queued.
+        # `turn_id` is minted after the turn takes the lane lock, so `send`
+        # cannot hand one back to match against; with turns queued ahead, the
+        # first `turn_ended` past our cursor may belong to one of them.
+        # Closing that needs `send` to mint and return the id — a change to
+        # the shared lane API and its IPC twin, not to this caller.
+        events, _ = mgr.lane_manager.read(binding.lane_id, cursor)
+        ended = next((e for e in events if e.kind == "turn_ended"), None)
+        if ended is None:
+            # `send_and_await` bounds silence, not turn duration, so this is a
+            # stalled lane rather than a slow one. BLOCKED, not FAILED.
+            return {
+                "ok": False,
+                "summary": f"lane {lane_name} stalled with no turn_ended",
+                "reason": "timeout",
+                "error_class": "LaneStalled",
+                "error_message": f"no turn_ended within {timeout}s of silence",
+            }
+        if ended.payload.get("is_error"):
+            error = str(ended.payload.get("error") or "lane turn failed")
+            return {
+                "ok": False,
+                "summary": error[:_OUTPUT_SUMMARY_TAIL_CHARS],
+                "reason": "tool_error",
+                "error_class": "LaneTurnError",
+                "error_message": error[:500],
+            }
         return {
             "ok": True,
-            "summary": f"dispatched to named lane {lane_name} ({binding.lane_id})",
+            "summary": f"lane {lane_name} ({binding.lane_id}) completed the turn",
             "reason": "ok",
         }
 
@@ -375,7 +423,7 @@ class KernelWorkerRunner:
             tool_args = {**tool_args, "timeout": float(timeout)}
 
         ctx = ToolContext(
-            workspace_root=self._workspace_root,
+            workspace_root=self._execution_root(record),
             session_id="autonomy",
             current_call_id=record.id,
         )

@@ -34,11 +34,26 @@ assert len(_TOOL_TO_VERB) == len(_VERB_TO_TOOL), "verb→tool name collision"
 _DESCRIPTIONS: dict[str, str] = {
     "activity.list": "List current TESSERACT activity records (lanes, sessions, delegates).",
     "activity.cancel": "Cancel a running activity by its activity_id (delegate/lane/mcp_session).",
-    "memory.search": "Search TARS long-term memory. Returns matching memory entries.",
+    "memory.search": (
+        "Search the operator's long-term memory — who they are, how they work, "
+        "decisions they have already made, and the history of this project. "
+        "Reach for it before asking the operator anything about past work or "
+        "stated preferences; the answer is usually already here. Returns at "
+        "most seven entries, so it is cheap to call. Set include_work_history "
+        "false for promoted memory only, without session/workshop recall."
+    ),
     "memory.save": "Save a new memory entry (ASK — operator approval required).",
     "memory.update": "Update an existing memory entry by id (ASK).",
-    "vault.search": "BM25 + vector search over the research vault. Returns matching passages.",
-    "vault.query": "Synthesised answer from the vault wiki for a natural-language question.",
+    "vault.search": (
+        "BM25 + vector search over the operator's research library. Returns "
+        "matching passages with their source paths — use when you want the "
+        "source text itself."
+    ),
+    "vault.query": (
+        "Synthesised answer over the research library's compiled wiki. Use for "
+        "a natural-language question when you want a conclusion rather than "
+        "passages to read."
+    ),
     "vault.ingest": "Ingest a local document into the vault (ASK).",
     "lane.ensure": "Ensure a named terminal lane (claude/codex) exists; returns its lane id (ASK).",
     "lane.send": "Send input to a terminal lane (ASK).",
@@ -66,6 +81,7 @@ _DESCRIPTIONS: dict[str, str] = {
 }
 
 _STRING = {"type": "string"}
+_BOOL = {"type": "boolean"}
 # Curated input schemas for the direct-param verbs (the make_tool_verb verbs
 # supply their own via the attached Pydantic model).
 _CURATED_SCHEMAS: dict[str, dict[str, Any]] = {
@@ -80,6 +96,7 @@ _CURATED_SCHEMAS: dict[str, dict[str, Any]] = {
         "properties": {
             "query": _STRING, "type_filter": _STRING, "scope": _STRING,
             "entity": _STRING, "source_slug": _STRING, "since": _STRING,
+            "include_work_history": _BOOL,
         },
         "required": ["query"],
     },
