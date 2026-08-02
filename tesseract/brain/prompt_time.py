@@ -21,7 +21,7 @@ from typing import Mapping
 
 import yaml
 
-from tesseract.paths import home_dir
+from tesseract.paths import home_dir, log_dir
 
 # Logger name pinned to the historical "tesseract.brain.prompt" identity —
 # `tests/fix_pass_2026_05_05/test_directives_section.py` and
@@ -36,7 +36,7 @@ def _default_conscience_dir() -> Path:
     """Call-time resolution under `TESSERACT_HOME` — the writer
     (`ConscienceHeartbeatJob`) is home-anchored; this reader must match or
     it silently reads a location nothing writes any more post-relocation."""
-    return home_dir() / "logs" / "conscience"
+    return log_dir("conscience")
 
 _DEFAULT_TOD_BUCKETS: Mapping[str, tuple[str, str]] = {
     "morning":   ("05:00", "12:00"),

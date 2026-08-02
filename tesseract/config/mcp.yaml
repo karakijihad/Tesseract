@@ -65,6 +65,7 @@ verbs:
   schedule.update: "ask"
   schedule.run: "ask"
   schedule.remove: "ask"
+  surface.open: "ask"
   surface.spawn: "ask"
   surface.update: "ask"
   surface.focus: "auto"

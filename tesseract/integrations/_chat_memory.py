@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable
 
-from tesseract.paths import TESSERACT_HOME
+from tesseract.paths import TESSERACT_HOME, log_dir
 
 if TYPE_CHECKING:  # avoid heavy imports at module load
     from tesseract.brain.boot import MemoryBundle
@@ -85,7 +85,7 @@ def _channels_logs_root() -> Path:
     import still land their writes under the temp dir."""
     home_env = os.environ.get("TESSERACT_HOME")
     base = Path(home_env) if home_env else TESSERACT_HOME
-    return base / "logs" / "channels"
+    return log_dir("channels")
 
 
 def _safe_segment(value: str) -> str:

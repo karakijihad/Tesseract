@@ -766,3 +766,132 @@
   opacity: 0.6;
   cursor: default;
 }
+
+/* ── open-verb surfaces: pdf, video, audio, table ─────────────────────────
+   Hint/caption text uses var(--text-meta) per the Mirror HARD RULE. */
+
+.surface-media {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
+  width: 100%;
+  height: 100%;
+  padding: var(--space-sm);
+  overflow: hidden;
+}
+
+.surface-media__player {
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.surface-media--audio .surface-media__player {
+  width: 100%;
+}
+
+.surface-media__label {
+  font-size: 0.8rem;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.surface-media--empty {
+  color: var(--text-meta);
+  font-size: 0.85rem;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.surface-pdf {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.surface-pdf__page {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  justify-content: center;
+  padding: var(--space-sm);
+}
+
+.surface-pdf__bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  border-top: 1px solid var(--border-muted);
+  font-size: 0.8rem;
+}
+
+.surface-pdf__bar button {
+  background: none;
+  border: 1px solid var(--border-muted);
+  border-radius: 4px;
+  color: inherit;
+  cursor: pointer;
+  padding: 0 var(--space-sm);
+  line-height: 1.6;
+}
+
+.surface-pdf__bar button:disabled {
+  color: var(--text-meta);
+  cursor: default;
+}
+
+.surface-pdf--empty {
+  padding: var(--space-sm);
+  color: var(--text-meta);
+  font-size: 0.85rem;
+}
+
+.surface-table {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Wide tables scroll inside their own box; the card must never scroll. */
+.surface-table__scroll {
+  flex: 1;
+  overflow: auto;
+}
+
+.surface-table table {
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  width: max-content;
+  min-width: 100%;
+}
+
+.surface-table th,
+.surface-table td {
+  border: 1px solid var(--border-muted);
+  padding: 2px var(--space-xs);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.surface-table th {
+  position: sticky;
+  top: 0;
+  background: var(--ink-100);
+  font-weight: 600;
+}
+
+.surface-table__note,
+.surface-table--empty {
+  padding: var(--space-xs) var(--space-sm);
+  font-size: 0.78rem;
+  color: var(--text-meta);
+}

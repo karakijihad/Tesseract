@@ -13,7 +13,10 @@ mod shell_log;
 mod test_support;
 mod token;
 mod update;
-use provision::{hide_console, is_provisioned, refresh_piper_voice, tesseract_home, venv_python};
+use provision::{
+    app_dir, hide_console, home_dir, is_provisioned, refresh_piper_voice, runtime_dir,
+    tesseract_home, venv_python,
+};
 
 struct SupervisorProc(Mutex<Option<Child>>);
 struct TesseractHome(PathBuf);
@@ -77,7 +80,7 @@ fn resolve_python(home: &Path) -> String {
 /// A stop request is only ever meaningful for the process it was aimed at, so
 /// clearing it at spawn time is always correct.
 fn clear_stale_stop_request(home: &Path) {
-    let path = home.join("runtime").join("supervisor_stop_request");
+    let path = runtime_dir(home).join("supervisor_stop_request");
     match std::fs::remove_file(&path) {
         Ok(()) => shell_log::log("cleared a stale supervisor stop-request from a previous run"),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -103,11 +106,11 @@ fn clear_stale_stop_request(home: &Path) {
 /// archived to the same directory the Python-side clear uses, not deleted, so
 /// the record of past storms survives.
 fn clear_stale_crash_storm(home: &Path) {
-    let marker = home.join("runtime").join("crash_storm.json");
+    let marker = runtime_dir(home).join("crash_storm.json");
     if !marker.exists() {
         return;
     }
-    let archive_dir = home
+    let archive_dir = runtime_dir(home)
         .join("logs")
         .join("supervisor")
         .join("crash-storm-archive");
@@ -144,7 +147,7 @@ fn clear_stale_crash_storm(home: &Path) {
 /// rotating file, so this only holds early-boot output and tracebacks.
 fn attach_supervisor_console(home: &Path, cmd: &mut Command) {
     const MAX_BYTES: u64 = 2 * 1024 * 1024;
-    let dir = home.join("logs");
+    let dir = runtime_dir(home).join("logs");
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("supervisor-console.log");
     let oversized = std::fs::metadata(&path)
@@ -168,9 +171,18 @@ fn attach_supervisor_console(home: &Path, cmd: &mut Command) {
 fn spawn_supervisor(home: &PathBuf) -> std::io::Result<Child> {
     clear_stale_stop_request(home);
     clear_stale_crash_storm(home);
+    // Python derives install_root() as home_dir().parent, so it must be
+    // handed the `home/` sibling — handing it the root would put every state
+    // path one level too high. Created first: the very first launch spawns
+    // before anything Python-side has made it.
+    let state_home = home_dir(home);
+    let _ = std::fs::create_dir_all(&state_home);
     let mut cmd = Command::new(resolve_python(home));
     cmd.args(["-m", "tesseract.supervisor"])
-        .env("TESSERACT_HOME", home)
+        // Deterministic cwd: without one, a relative default anchored on the
+        // process working directory can land outside the install entirely.
+        .current_dir(app_dir(home))
+        .env("TESSERACT_HOME", &state_home)
         .env("SUPERVISOR_HEADLESS", "1")
         .env("SUPERVISOR_DEV_VITE", "0");
     attach_supervisor_console(home, &mut cmd);
@@ -186,7 +198,7 @@ fn spawn_supervisor(home: &PathBuf) -> std::io::Result<Child> {
 fn request_supervisor_stop(home: &Path, child: &mut Child) {
     shell_log::log("requesting supervisor stop");
     // Graceful: write the stop-request file Task 1 watches.
-    let runtime = home.join("runtime");
+    let runtime = runtime_dir(home);
     let _ = std::fs::create_dir_all(&runtime);
     let _ = std::fs::write(runtime.join("supervisor_stop_request"), "stop\n");
 
@@ -494,8 +506,7 @@ mod tests {
             !marker.exists(),
             "a crash-storm latch from a previous run must not block a fresh operator-driven start"
         );
-        let archive_dir = home
-            .path()
+        let archive_dir = runtime_dir(home.path())
             .join("logs")
             .join("supervisor")
             .join("crash-storm-archive");

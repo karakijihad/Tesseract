@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 
 
 def _home() -> Path:
-    from tesseract.paths import TESSERACT_HOME
+    from tesseract.paths import TESSERACT_HOME, runtime_dir
 
     env = os.environ.get("TESSERACT_HOME")
     return Path(env).resolve() if env else TESSERACT_HOME
@@ -55,7 +55,9 @@ def _controller_alive(controller_dir: Path, max_heartbeat_age_s: int) -> bool:
 
 
 def sweep_sessions(cfg: JanitorConfig, *, dry_run: bool) -> list[Finding]:
-    controller_dir = _home() / "tars_controller"
+    from tesseract.paths import runtime_dir
+
+    controller_dir = runtime_dir() / "tars_controller"
     sessions_dir = controller_dir / "sessions"
     if not sessions_dir.is_dir():
         return []

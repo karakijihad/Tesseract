@@ -13,9 +13,14 @@ from tesseract.permissions.policy import DEFAULT_POSTURE
 
 log = logging.getLogger(__name__)
 
-from tesseract.paths import TESSERACT_HOME as _TESSERACT_HOME, workspace_dir
+from tesseract.paths import log_dir, workspace_dir
 
-BREAKERS_DIR = _TESSERACT_HOME / "logs" / "circuit-breakers"
+
+def breakers_dir() -> Path:
+    """Circuit breakers are machine ops, so they live under `runtime/logs`.
+    Resolved at call time — an import-time constant freezes the path before
+    a relocated home is known."""
+    return log_dir("circuit-breakers")
 
 
 def soul_path() -> Path:
@@ -55,8 +60,9 @@ async def terminal_config(request: web.Request) -> web.Response:
 
 async def breakers(request: web.Request) -> web.Response:
     out: list[dict] = []
-    if BREAKERS_DIR.exists():
-        for log_file in sorted(BREAKERS_DIR.glob("*.jsonl")):
+    breakers = breakers_dir()
+    if breakers.exists():
+        for log_file in sorted(breakers.glob("*.jsonl")):
             out.append(_project_breaker(log_file))
     return web.json_response({"breakers": out})
 

@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from tesseract.conscience.reader import load_latest_report
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
-from tesseract.paths import home_dir
+from tesseract.paths import home_dir, log_dir
 
 
 def _drift_dir() -> Path:
@@ -25,7 +25,7 @@ def _drift_dir() -> Path:
     (`ConscienceHeartbeatJob`, home-anchored). `tesseract.paths` is a leaf
     module (no circular-import risk), unlike `tesseract.brain.boot`, which
     imports every tool module."""
-    return home_dir() / "logs" / "conscience"
+    return log_dir("conscience")
 
 
 class ConscienceStatusInput(BaseModel):

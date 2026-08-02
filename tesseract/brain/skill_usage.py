@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from tesseract.paths import TESSERACT_HOME
+from tesseract.paths import TESSERACT_HOME, log_dir
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ def usage_log_path() -> Path:
     """`<TESSERACT_HOME>/logs/skills/usage.jsonl`, resolved at call time."""
     override = os.environ.get("TESSERACT_HOME")
     home = Path(override).resolve() if override else TESSERACT_HOME
-    return home / "logs" / "skills" / _USAGE_FILENAME
+    return log_dir("skills") / _USAGE_FILENAME
 
 
 def skill_name_for_path(path: str | Path) -> str | None:

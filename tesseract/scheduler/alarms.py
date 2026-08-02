@@ -14,7 +14,7 @@ from typing import Any, Iterable, Literal
 import yaml
 
 from tesseract.lib.yaml_io import atomic_write_text
-from tesseract.paths import home_dir
+from tesseract.paths import home_dir, runtime_dir
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.scheduler.log import append_run_log
 from tesseract.scheduler.types import JobContext, JobResult
@@ -52,6 +52,10 @@ def _legacy_state_candidates() -> tuple[Path, ...]:
     return (
         _legacy_state_file(),
         Path(__file__).resolve().parent / "state" / "alarms.yaml",
+        # Last: the migration quarantines the leaked `scheduler/` tree under
+        # `runtime/`, so a pre-relocation alarms file can be sitting there too.
+        # Probed after the historic anchors, which are the older writes.
+        runtime_dir() / "scheduler" / "alarms.yaml",
     )
 
 
@@ -68,7 +72,7 @@ def alarms_state_path() -> Path:
     See `ensure_alarms_state_migrated` for the (deliberately separate)
     legacy-data migration.
     """
-    return home_dir() / "runtime" / "alarms.yaml"
+    return runtime_dir() / "alarms.yaml"
 
 
 def ensure_alarms_state_migrated() -> None:

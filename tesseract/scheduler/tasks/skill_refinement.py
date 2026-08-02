@@ -29,7 +29,7 @@ from typing import Any
 
 from tesseract.brain.skill_usage import read_usage
 from tesseract.brain.skills import SKILL_FILENAME, list_skills_names
-from tesseract.paths import TESSERACT_HOME
+from tesseract.paths import TESSERACT_HOME, home_logs_root
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.scheduler.role_chain import build_chain_for_job
 from tesseract.scheduler.types import JobContext, JobResult
@@ -239,7 +239,7 @@ def _resolve_logs_dir(ctx: JobContext) -> Path:
         return Path(override)
     env = os.environ.get("TESSERACT_HOME")
     home = Path(env).resolve() if env else TESSERACT_HOME
-    return home / "logs"
+    return home_logs_root()
 
 
 def _resolve_store(ctx: JobContext) -> Any:

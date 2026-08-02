@@ -35,7 +35,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 
-from tesseract.paths import TESSERACT_HOME
+from tesseract.paths import TESSERACT_HOME, runtime_dir
 
 log = logging.getLogger(__name__)
 
@@ -79,11 +79,11 @@ def _home() -> Path:
 
 
 def outbound_rates_path() -> Path:
-    return _home() / "runtime" / "outbound-rates.json"
+    return runtime_dir() / "outbound-rates.json"
 
 
 def outbound_mutes_path() -> Path:
-    return _home() / "runtime" / "outbound-mutes.json"
+    return runtime_dir() / "outbound-mutes.json"
 
 
 @dataclass(frozen=True)

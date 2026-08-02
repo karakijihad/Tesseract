@@ -5,9 +5,10 @@ use tauri::{AppHandle, Emitter, Manager};
 /// Bump when the bundled deps change so an upgraded app re-provisions.
 pub const DEPS_VERSION: &str = "5";
 
-/// Per-user state root: %LOCALAPPDATA%\com.tesseract.mirror (writable).
-/// Falls back to an explicit TESSERACT_HOME env override (dev), then to the
-/// app_local_data_dir. Never returns the read-only resource/install dir.
+/// The INSTALL ROOT: %LOCALAPPDATA%\com.tesseract.mirror (writable).
+/// `app/`, `home/` and `runtime/` hang off it. Falls back to an explicit
+/// TESSERACT_HOME env override (dev), then to the app_local_data_dir. Never
+/// returns the read-only resource/install dir.
 pub fn tesseract_home(app: &AppHandle) -> PathBuf {
     if let Ok(explicit) = std::env::var("TESSERACT_HOME") {
         return PathBuf::from(explicit);
@@ -17,13 +18,37 @@ pub fn tesseract_home(app: &AppHandle) -> PathBuf {
         .expect("no app_local_data_dir available")
 }
 
-/// The provisioned venv interpreter under the per-user home (Windows layout).
-pub fn venv_python(home: &Path) -> PathBuf {
-    home.join("venv").join("Scripts").join("python.exe")
+/// The three siblings, mirroring `tesseract/paths.py`. Python derives its own
+/// `install_root()` as `home_dir().parent`, so the `TESSERACT_HOME` this shell
+/// exports must be `home_dir(root)` — not the root — or every Python path
+/// lands one level too high.
+pub fn home_dir(root: &Path) -> PathBuf {
+    root.join("home")
 }
 
-fn marker_path(home: &Path) -> PathBuf {
-    home.join("runtime").join("provisioned.json")
+pub fn app_dir(root: &Path) -> PathBuf {
+    root.join("app")
+}
+
+pub fn runtime_dir(root: &Path) -> PathBuf {
+    root.join("runtime")
+}
+
+/// The provisioned venv. Machine-local, so it lives under `runtime/` and is
+/// never synced between PCs.
+pub fn venv_dir(root: &Path) -> PathBuf {
+    runtime_dir(root).join("venv")
+}
+
+/// The venv interpreter (Windows layout). Derived from `venv_dir` so the
+/// location the venv is CREATED at and the one it is looked for at cannot
+/// drift apart.
+pub fn venv_python(root: &Path) -> PathBuf {
+    venv_dir(root).join("Scripts").join("python.exe")
+}
+
+fn marker_path(root: &Path) -> PathBuf {
+    runtime_dir(root).join("provisioned.json")
 }
 
 /// True iff the provisioning marker matches AND the artifacts it claims exist
@@ -57,8 +82,8 @@ fn marker_matches(home: &Path) -> bool {
 /// check, not an import or a health probe — this runs on the launch hot path
 /// before any window is shown, and a deeper check would trade startup latency
 /// for cases `provision()` already handles.
-fn install_is_intact(home: &Path) -> bool {
-    home.join("app").join(".git").exists() && venv_python(home).exists()
+fn install_is_intact(root: &Path) -> bool {
+    app_dir(root).join(".git").exists() && venv_python(root).exists()
 }
 
 /// Drops the provisioning marker so the next launch re-provisions.
@@ -166,7 +191,7 @@ pub fn provision(app: &AppHandle, home: &Path) -> Result<PathBuf, ProvisionError
     let uv = resolve_uv(app)?;
 
     emit_progress(app, "Downloading TESSERACT…");
-    clone_app_dir(&home.join("app"), home)?;
+    clone_app_dir(&app_dir(home), home)?;
 
     provision_stages(
         home,
@@ -202,7 +227,7 @@ fn provision_stages(
     run_uv: &dyn Fn(&Path, &[&str]) -> Result<(), String>,
     run_python: &dyn Fn(&Path, &[&str]) -> Result<(), String>,
 ) -> Result<PathBuf, String> {
-    let venv = home.join("venv");
+    let venv = venv_dir(home);
     let py = venv_python(home);
 
     progress("Downloading Python…");
@@ -245,7 +270,7 @@ fn provision_stages(
 /// Writes the completion marker `is_provisioned` reads. Only ever called as
 /// the final step of a fully successful provision.
 fn write_marker(home: &Path) -> Result<(), String> {
-    let runtime = home.join("runtime");
+    let runtime = runtime_dir(home);
     std::fs::create_dir_all(&runtime).map_err(|e| e.to_string())?;
     let body = serde_json::json!({ "deps_version": DEPS_VERSION });
     std::fs::write(marker_path(home), body.to_string()).map_err(|e| e.to_string())
@@ -270,7 +295,7 @@ fn reinstall_deps_with(
     home: &Path,
     run_uv: &dyn Fn(&Path, &[&str]) -> Result<(), String>,
 ) -> Result<(), String> {
-    let pkg = home.join("app").join("tesseract");
+    let pkg = app_dir(home).join("tesseract");
     run_uv(
         uv,
         &[
@@ -1273,7 +1298,7 @@ mod tests {
 
         assert_eq!(py, venv_python(home.path()));
 
-        let venv = home.join("venv");
+        let venv = venv_dir(home.path());
         let pkg = home.join("app").join("tesseract");
         let py_path = venv_python(home.path());
         let expected: Recorded = vec![

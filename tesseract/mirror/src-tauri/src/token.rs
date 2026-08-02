@@ -39,7 +39,7 @@ fn clean_pasted_token(raw: &str) -> Option<String> {
 /// relies on; see task-19-report.md for why no additional ACL-narrowing was
 /// added.
 fn save_github_token(home: &Path, token: &str) -> std::io::Result<()> {
-    let runtime = home.join("runtime");
+    let runtime = crate::provision::runtime_dir(home);
     std::fs::create_dir_all(&runtime)?;
     std::fs::write(runtime.join("github_token"), token)
 }

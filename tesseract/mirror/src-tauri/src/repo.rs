@@ -35,7 +35,7 @@ pub fn github_token(home: &Path) -> Option<String> {
             return Some(t);
         }
     }
-    std::fs::read_to_string(home.join("runtime").join("github_token"))
+    std::fs::read_to_string(crate::provision::runtime_dir(home).join("github_token"))
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())

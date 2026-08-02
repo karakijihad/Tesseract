@@ -22,6 +22,8 @@ from tesseract.mirror.server.routes import conscience as conscience_route
 from tesseract.mirror.server.routes import cost as cost_route
 from tesseract.mirror.server.routes import downloads as downloads_route
 from tesseract.mirror.server.routes import events as events_route
+from tesseract.mirror.server.routes import asset_files as asset_files_route
+from tesseract.mirror.server.routes import home_files as home_files_route
 from tesseract.mirror.server.routes import local_models as local_models_route
 from tesseract.mirror.server.routes import observe as observe_route
 from tesseract.mirror.server.routes import ollama as ollama_route
@@ -48,7 +50,7 @@ from tesseract.mirror.server.log_forwarder import (
 from tesseract.mirror.server.pty_manager import PTYManager
 from tesseract.mirror.server.ws import websocket_handler
 from tesseract.mirror.server.controller_ws import controller_ws_handler
-from tesseract.paths import CONFIG_DIR, TESSERACT_HOME
+from tesseract.paths import CONFIG_DIR, TESSERACT_HOME, home_logs_root
 
 log = logging.getLogger(__name__)
 
@@ -350,6 +352,10 @@ def _register_routes(app: web.Application) -> None:
         "/api/downloads/chat/{session_id}/{artifact_id}/{filename}",
         downloads_route.get_chat_download,
     )
+    # Read-only serving of the operator's own trees. Distinct from the
+    # chat-scoped route above, which is artifact-indexed.
+    home_files_route.register(app)
+    asset_files_route.register(app)
     app.router.add_get("/api/terminal/config", system_route.terminal_config)
     app.router.add_get("/api/events", events_route.events)
     app.router.add_get("/api/workspace/inbox", workspace_route.list_inbox)
@@ -1072,7 +1078,7 @@ def _build_workspace_event_store():
     # TESSERACT_HOME is the user-state root (runtime logs, memory-store,
     # sessions) — same place the consolidator/sweep jobs and chat.py drain
     # use. Sharing the dir means all three see the same events.jsonl.
-    return EventStore(TESSERACT_HOME / "logs")
+    return EventStore(home_logs_root())
 
 
 def _build_conversation_store():

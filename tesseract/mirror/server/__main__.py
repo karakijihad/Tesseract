@@ -23,7 +23,7 @@ from tesseract.config_seed import (
 )
 from tesseract.mirror.server.app import create_app
 from tesseract.mirror.server.config import load_server_config
-from tesseract.paths import TESSERACT_HOME
+from tesseract.paths import TESSERACT_HOME, runtime_dir
 from tesseract.scheduler.alarms import ensure_alarms_state_migrated
 
 
@@ -72,8 +72,7 @@ _STACK_DUMP_REQUEST_POLL_S = 1.0
 
 
 def _stop_request_path() -> Path:
-    home = Path(os.environ.get("TESSERACT_HOME") or TESSERACT_HOME).resolve()
-    return home / "runtime" / "stop_request"
+    return runtime_dir() / "stop_request"
 
 
 def _watch_stop_request() -> None:
@@ -118,9 +117,8 @@ def _watch_stack_dump_requests() -> None:
     stacks via faulthandler, which still works when the asyncio loop is blocked
     but the interpreter can schedule this watchdog thread.
     """
-    home = Path(os.environ.get("TESSERACT_HOME") or TESSERACT_HOME).resolve()
-    request_dir = home / "runtime" / "diagnostics"
-    log_dir = home / "logs" / "supervisor"
+    request_dir = runtime_dir() / "diagnostics"
+    log_dir = runtime_dir() / "logs" / "supervisor"
     log = logging.getLogger(__name__)
     pid = os.getpid()
     log.info("mirror: stack-dump watcher armed at %s", request_dir)

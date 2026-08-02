@@ -11,13 +11,13 @@ import os
 from pathlib import Path
 from typing import Any
 
-from tesseract.paths import TESSERACT_HOME
+from tesseract.paths import TESSERACT_HOME, log_dir
 
 
 def audit_dir() -> Path:
     override = os.environ.get("TESSERACT_HOME")
     base = Path(override).resolve() if override else TESSERACT_HOME
-    return base / "logs" / "tokenjuice"
+    return log_dir("tokenjuice")
 
 
 def write_audit(record: dict[str, Any]) -> None:

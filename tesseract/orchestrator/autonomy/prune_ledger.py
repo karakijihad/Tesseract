@@ -24,7 +24,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, field_validator
 
 from tesseract.orchestrator.autonomy.models import AgendaSource
-from tesseract.paths import TESSERACT_HOME
+from tesseract.paths import TESSERACT_HOME, log_dir
 
 log = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ def _pruned_path() -> Path:
     """Resolve ``<TESSERACT_HOME>/logs/autonomy/pruned.jsonl`` at call time."""
     override = os.environ.get("TESSERACT_HOME")
     home = Path(override).resolve() if override else TESSERACT_HOME
-    return home / "logs" / "autonomy" / "pruned.jsonl"
+    return log_dir("autonomy") / "pruned.jsonl"
 
 
 def record_prune(rec: PruneRecord) -> None:

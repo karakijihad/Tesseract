@@ -144,16 +144,6 @@ describe('reference renderers render without crashing', () => {
     expect(html).not.toContain('allow-same-origin');
   });
 
-  it('external-link renders a click-to-open anchor for a non-embeddable url', () => {
-    const R = getRenderer('external-link');
-    const out = renderToStaticMarkup(
-      <R descriptor={desc({ type: 'external-link', props: { url: 'https://www.linkedin.com/in/x' } })} dispatch={noop} />,
-    );
-    expect(out).toContain('href="https://www.linkedin.com/in/x"');
-    expect(out).toContain('target="_blank"');
-    expect(out).toContain('Open in browser');
-  });
-
   it('WebViewRenderer rejects a non-http(s) scheme (javascript:)', () => {
     const html = renderToStaticMarkup(
       <WebViewRenderer descriptor={desc({ type: 'webview', props: { url: 'javascript:alert(1)' } })} dispatch={noop} />,

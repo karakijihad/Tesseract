@@ -96,34 +96,79 @@ def runtime_dir() -> Path:
     return install_root() / "runtime"
 
 
+# `logs/` is not one thing. Half of it is the operator's record and follows
+# them between machines; half is this machine's operational output and never
+# leaves it. Kept as data in one place so a new category is a decision made
+# here rather than guessed at a call site.
+_HOME_LOG_DIRS = frozenset(
+    {
+        "sessions", "observer", "conscience", "autonomy", "consolidator",
+        "feedback-sweep", "skills", "schedule", "channels", "workspace",
+    }
+)
+_RUNTIME_LOG_DIRS = frozenset(
+    {
+        "audit", "circuit-breakers", "supervisor", "janitor", "provider-health",
+        "tokenjuice", "governor",
+    }
+)
+
+
+def home_logs_root() -> Path:
+    """`home/logs` — the half of the log tree that follows the operator."""
+    return home_dir() / "logs"
+
+
+def runtime_logs_root() -> Path:
+    """`runtime/logs` — machine ops output, never synced."""
+    return runtime_dir() / "logs"
+
+
+def log_dir(category: str) -> Path:
+    """Resolve one log category to whichever half owns it.
+
+    Raises on an unknown category rather than defaulting: a silent default
+    would put operator history on the wrong side of the sync boundary, and
+    that is invisible until the second machine is missing it.
+    """
+    if category in _HOME_LOG_DIRS:
+        return home_logs_root() / category
+    if category in _RUNTIME_LOG_DIRS:
+        return runtime_logs_root() / category
+    raise KeyError(
+        f"unknown log category {category!r} — add it to _HOME_LOG_DIRS "
+        "(follows the operator) or _RUNTIME_LOG_DIRS (machine-local) in "
+        "tesseract/paths.py; do not guess at the call site."
+    )
+
+
 def is_installed_tree() -> bool:
     """True iff this process is running from a packaged install's code
     checkout, never a dev checkout.
 
     Packaged layout (`mirror/src-tauri/src/provision.rs::tesseract_home` +
-    `clone_app_dir`): the shell always points `TESSERACT_HOME` at the
-    per-user state root and clones the production repo into
-    ``<TESSERACT_HOME>/app`` — so this package's ``ROOT``
-    (``TESSERACT_DIR.parent``) equals ``home_dir() / "app"``. In a dev
-    checkout, ``TESSERACT_HOME`` is either unset (``home_dir() ==
-    TESSERACT_DIR``, whose ``/"app"`` is a subdirectory *inside* the repo,
-    never equal to the repo's own parent) or an operator-chosen override —
-    neither shape coincides with the packaged equality by accident.
+    `clone_app_dir`): the shell points `TESSERACT_HOME` at the ``home/``
+    sibling and clones the production repo into ``app/`` beside it — so this
+    package's ``ROOT`` (``TESSERACT_DIR.parent``) equals ``app_dir()``. In a
+    dev checkout, ``TESSERACT_HOME`` is either unset (``home_dir() ==
+    TESSERACT_DIR``, so ``app_dir()`` is the repo's sibling and never equals
+    the repo's own parent) or an operator-chosen override — neither shape
+    coincides with the packaged equality by accident.
 
     Path equality alone still isn't proof: an operator could point
-    ``TESSERACT_HOME`` one level above their own checkout without meaning
-    to. The provisioning marker (``<home>/runtime/provisioned.json``,
-    written once by ``provision.rs::write_marker`` at the end of a REAL
-    first-run install, never produced by anything a dev checkout runs) must
-    also be present. A false "installed" verdict is the worst outcome here
-    — it would refuse the operator's own dev-checkout source edits — so
-    this predicate ANDs both signals rather than trusting either alone.
+    ``TESSERACT_HOME`` somewhere that happens to line up. The provisioning
+    marker (``runtime/provisioned.json``, written once by
+    ``provision.rs::write_marker`` at the end of a REAL first-run install,
+    never produced by anything a dev checkout runs) must also be present. A
+    false "installed" verdict is the worst outcome here — it would refuse the
+    operator's own dev-checkout source edits — so this predicate ANDs both
+    signals rather than trusting either alone.
     """
     try:
         root = ROOT.resolve()
-        candidate = (home_dir() / "app").resolve()
+        candidate = app_dir().resolve()
     except OSError:
         return False
     if os.path.normcase(str(root)) != os.path.normcase(str(candidate)):
         return False
-    return (home_dir() / "runtime" / "provisioned.json").is_file()
+    return (runtime_dir() / "provisioned.json").is_file()

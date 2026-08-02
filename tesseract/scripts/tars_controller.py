@@ -1029,8 +1029,8 @@ async def run_controller(*, host: str = "127.0.0.1", port: int = 0) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    # Idempotent (each `ensure_*_seeded` no-ops once TESSERACT_HOME/<dir>
-    # exists) — safe whether this process was spawned by the supervisor
+    # Idempotent (each `ensure_*_seeded` copies only templates the install is
+    # missing) — safe whether this process was spawned by the supervisor
     # (already seeded on disk) or run directly per this module's own
     # `python -m tesseract.scripts.tars_controller` entry point. Same
     # seed-before-boot order as `mirror/server/__main__.py::main` and

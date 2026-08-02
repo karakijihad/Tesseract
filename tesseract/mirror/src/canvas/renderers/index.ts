@@ -12,12 +12,15 @@ import type { SurfaceDescriptor, OperatorEvent } from '../protocol/types';
 import { FolderRenderer } from './FolderRenderer';
 import { FileRenderer } from './FileRenderer';
 import { WebViewRenderer } from './WebViewRenderer';
-import { ExternalLinkRenderer } from './ExternalLinkRenderer';
 import { TerminalRenderer } from './TerminalRenderer';
 import { CodeRenderer } from './CodeRenderer';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { HtmlRenderer } from './HtmlRenderer';
 import { ImageRenderer } from './ImageRenderer';
+import { PdfRenderer } from './PdfRenderer';
+import { VideoRenderer } from './VideoRenderer';
+import { AudioRenderer } from './AudioRenderer';
+import { TableRenderer } from './TableRenderer';
 import { JsonDumpRenderer } from './JsonDumpRenderer';
 import { LaneRenderer } from './LaneRenderer';
 import { RoutingRenderer } from './RoutingRenderer';
@@ -41,13 +44,16 @@ export const RENDERERS: Record<string, RendererComponent> = {
   browser: WebViewRenderer, // `browser` is a webview with a chrome bar; same renderer for v1.
   url: WebViewRenderer,
   iframe: WebViewRenderer, // advertised in the surface_create vocabulary; same strict-sandbox webview
-  'external-link': ExternalLinkRenderer, // sites that can't be iframed — best-effort auto-open + one-click card
 
   terminal: TerminalRenderer,
   code: CodeRenderer,
   markdown: MarkdownRenderer,
   html: HtmlRenderer,
   image: ImageRenderer, // generated/standalone image (e.g. image_generate → props.url)
+  pdf: PdfRenderer,
+  video: VideoRenderer,
+  audio: AudioRenderer,
+  table: TableRenderer, // csv/tsv text -> grid
   json: JsonDumpRenderer,
   lane: LaneRenderer, // CV-1 — live Claude/Codex controller lane
   'trio-routing': RoutingRenderer, // CV-1 — center "TARS routing" applet

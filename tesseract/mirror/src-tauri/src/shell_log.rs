@@ -33,11 +33,16 @@ pub fn install_panic_hook() {
     }));
 }
 
-/// Points the shell log at `<home>/logs/shell.log`. Call once, as early as
-/// possible after `home` is resolved and before provisioning starts —
-/// nothing logged before this call is captured (the path isn't known yet).
-pub fn init(home: &Path) {
-    let _ = LOG_PATH.set(home.join("logs").join("shell.log"));
+/// Points the shell log at `<root>/runtime/logs/shell.log`. Call once, as
+/// early as possible after the install root is resolved and before
+/// provisioning starts — nothing logged before this call is captured (the
+/// path isn't known yet).
+///
+/// Under `runtime/`: this is machine-local ops output, and writing it at the
+/// root would recreate a `logs/` directory beside the three siblings on every
+/// launch.
+pub fn init(root: &Path) {
+    let _ = LOG_PATH.set(crate::provision::runtime_dir(root).join("logs").join("shell.log"));
     log("shell log started");
 }
 

@@ -31,14 +31,14 @@ from pathlib import Path
 from typing import IO, Any, Iterator
 
 from tesseract.integrations._channel_adapter import ChannelMessage
-from tesseract.paths import TESSERACT_HOME
+from tesseract.paths import TESSERACT_HOME, log_dir
 
 log = logging.getLogger(__name__)
 
 
 def _channels_root() -> Path:
     root = Path(os.environ.get("TESSERACT_HOME") or TESSERACT_HOME).resolve()
-    out = root / "logs" / "channels"
+    out = log_dir("channels")
     out.mkdir(parents=True, exist_ok=True)
     return out
 

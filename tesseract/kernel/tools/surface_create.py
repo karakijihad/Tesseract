@@ -19,13 +19,10 @@ class SurfaceCreateInput(BaseModel):
         description=(
             "Surface type — drives the renderer. One of the protocol "
             "vocabulary: folder, file, url, app, terminal, browser, document, "
-            "media, iframe, webview, external-link, lane, channel, mission, "
+            "media, iframe, webview, lane, channel, mission, "
             "memory, approval, code, markdown, html, form, tree, timeline, "
-            "graph, image, diff. Use `external-link` (props {url}) for a site "
-            "that can't be embedded (LinkedIn/Google/X and most logged-in "
-            "sites refuse iframing) — it best-effort opens a real browser tab "
-            "and shows a one-click 'Open ↗' card. Unknown types render as a "
-            "JSON-dump fallback card."
+            "graph, image, diff, pdf, video, audio, table. Unknown types "
+            "render as a JSON-dump fallback card."
         )
     )
     view: str = Field(description="Canvas view the surface belongs to (e.g. 'tars').")
@@ -35,7 +32,7 @@ class SurfaceCreateInput(BaseModel):
             "Renderer payload — key depends on type: html {html} (a full "
             "document or fragment; text/content/body also accepted), "
             "markdown {text}, code {text,language}, file {text}, "
-            "folder {root}, webview/browser/url/iframe/external-link {url} "
+            "folder {root}, webview/browser/url/iframe {url} "
             "(http(s) only — file:// URLs are blocked by the browser), "
             "image {url}."
         ),
@@ -56,8 +53,7 @@ class SurfaceCreateInput(BaseModel):
         description=(
             "surface_id this new surface supersedes — it's closed automatically "
             "once the new one is created. Use it on a fallback so the dead card "
-            "doesn't pile up: e.g. a webview embed came back blank/blocked and "
-            "you're replacing it with an external-link card. Best-effort; an "
+            "doesn't pile up when one supersedes another. Best-effort; an "
             "unknown/already-closed id is ignored."
         ),
     )
@@ -74,9 +70,12 @@ class SurfaceCreateTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Spawn a surface on a canvas view. Returns surface_id. Use "
-            "surface_update to mutate it, surface_focus to raise it, "
-            "surface_close to dismiss it."
+            "Author a surface from content you generated — a live html app, a "
+            "chart, markdown or code you wrote. Returns surface_id. To SHOW "
+            "something that already exists (a url, a file, a folder, an app), "
+            "use `open` instead: it resolves the target and picks the type "
+            "itself. Use surface_update to mutate a card, surface_focus to "
+            "raise it, surface_close to dismiss it."
         )
 
     @property

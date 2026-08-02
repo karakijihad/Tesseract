@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from tesseract.paths import TESSERACT_HOME
+from tesseract.paths import TESSERACT_HOME, runtime_logs_root
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ def ledger_path() -> Path:
     this module has already been imported."""
     override = os.environ.get("TESSERACT_HOME")
     home = Path(override).resolve() if override else TESSERACT_HOME
-    return home / "logs" / "approvals.jsonl"
+    return runtime_logs_root() / "approvals.jsonl"
 
 
 async def record_ask(

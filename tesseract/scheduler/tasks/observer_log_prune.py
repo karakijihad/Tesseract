@@ -62,10 +62,9 @@ def _resolve_log_dir(ctx: JobContext) -> Path:
         explicit = app.get("observer_log_dir")
         if explicit is not None:
             return Path(explicit)
-        tess = app.get("tesseract_dir")
-        if tess is not None:
-            return Path(tess) / "logs" / "observer"
-    # Module fallback — matches `_observer_log_dir()` in observer.py.
+    # Single resolution — `_observer_log_dir()` routes through the logs split,
+    # so deriving a second path from `app["tesseract_dir"]` could only ever
+    # disagree with the writer.
     from tesseract.brain.observer import _observer_log_dir
 
     return _observer_log_dir()

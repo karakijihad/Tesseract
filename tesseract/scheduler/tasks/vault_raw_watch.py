@@ -37,7 +37,7 @@ import yaml
 from tesseract.memory._shortcut_extractor import extract_url
 from tesseract.memory.vault_indexer import VaultIndexer
 from tesseract.memory.vault_manager import VaultManager
-from tesseract.paths import CONFIG_DIR, TESSERACT_HOME
+from tesseract.paths import CONFIG_DIR, TESSERACT_HOME, home_logs_root
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.scheduler.types import JobContext, JobResult
 from tesseract.workspace_events.events import EventStore, WorkspaceEvent
@@ -672,7 +672,7 @@ def _resolve_event_store(ctx: JobContext) -> EventStore:
         store = app.get("workspace_event_store")
         if isinstance(store, EventStore):
             return store
-    return EventStore(_resolve_home() / "logs")
+    return EventStore(home_logs_root())
 
 
 def _resolve_config(ctx: JobContext) -> RawWatchConfig:

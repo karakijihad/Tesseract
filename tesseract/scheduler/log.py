@@ -6,7 +6,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tesseract.paths import TESSERACT_HOME
+from tesseract.paths import TESSERACT_HOME, log_dir
 from tesseract.scheduler.types import JobContext, JobResult
 
 log = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ def default_log_dir() -> Path:
     honored without re-importing this module — the canonical pattern from
     `kernel/workspace_changes.py::workspace_events_dir`.
     """
-    return Path(os.environ.get("TESSERACT_HOME") or TESSERACT_HOME) / "logs" / "schedule"
+    return log_dir("schedule")
 
 
 def append_run_log(

@@ -27,7 +27,7 @@ from tesseract.brain.memory_suggestion import (
 from tesseract.brain.observation_transcript import ObservationTranscript, PtyLine
 from tesseract.brain.observer_budget import CircuitBreaker
 from tesseract.kernel.adapters.base import AdapterOptions, ChunkType, ModelAdapter
-from tesseract.paths import home_dir
+from tesseract.paths import home_dir, log_dir
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ def _observer_log_dir() -> Path:
     (`Path(__file__)`-anchored paths get wiped); anchoring here off
     `home_dir()` instead means the log dir survives an update.
     """
-    return home_dir() / "logs" / "observer"
+    return log_dir("observer")
 
 
 @dataclass

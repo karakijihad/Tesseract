@@ -124,6 +124,9 @@ from tesseract.kernel.tools.doodle_open import DoodleOpenTool
 from tesseract.kernel.tools.lane_read import LaneReadTool
 from tesseract.kernel.tools.surface_bind_session import SurfaceBindSessionTool
 from tesseract.kernel.tools.surface_close import SurfaceCloseTool
+from tesseract.kernel.tools.open_target import OpenTool
+from tesseract.kernel.tools.os_launch import OsLaunchTool
+from tesseract.kernel.tools.os_open_url import OsOpenUrlTool
 from tesseract.kernel.tools.surface_create import SurfaceCreateTool
 from tesseract.kernel.tools.surface_focus import SurfaceFocusTool
 from tesseract.kernel.tools.surface_highlight import SurfaceHighlightTool
@@ -170,7 +173,7 @@ from tesseract.scheduler.alarms import AlarmRegistry, alarms_state_path
 
 logger = logging.getLogger(__name__)
 
-from tesseract.paths import CONFIG_DIR, ROOT, TESSERACT_HOME, home_dir, workspace_dir
+from tesseract.paths import CONFIG_DIR, ROOT, TESSERACT_HOME, home_dir, home_logs_root, log_dir, workspace_dir
 from tesseract.paths import agents_dir as _home_agents_dir
 
 ENV_PATH = TESSERACT_HOME / ".env"
@@ -216,10 +219,12 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "alarm_set", "alarm_cancel",
     # channel
     "channel_notify",
-    # surface — create/update/list/close are the coherent-loop minimum:
-    # spawn, mutate, see what exists, clean up. (focus/highlight/bind stay
-    # extended — reachable via tool_search when actually needed.)
-    "surface_create", "surface_update", "surface_list", "surface_close",
+    # surface — two distinct jobs, both core. `open` SHOWS something that
+    # already exists (a url, a file, a folder) and resolves the type itself, so
+    # nothing is guessed. `surface_create` AUTHORS a card from content TARS
+    # generated — a live html app, a chart, a document it wrote — which `open`
+    # cannot do, because there is no target to resolve.
+    "open", "surface_create", "surface_update", "surface_list", "surface_close",
     # browser — TARS's own headless-Playwright eyes. The read-only observe
     # verbs are core so "look at what I just rendered" is a reflex, not a
     # tool_search away. (click/fill/close stay extended.)
@@ -1649,7 +1654,7 @@ def build_tool_registry(
 
     from tesseract.workspace_events import EventStore
 
-    workspace_store = EventStore(Path(os.environ.get("TESSERACT_HOME") or TESSERACT_HOME) / "logs")
+    workspace_store = EventStore(home_logs_root())
     registry.register(WorkspacePostTool(store=workspace_store, app_provider=app_provider))
     registry.register(WorkspaceReplyTool(store=workspace_store))
 
@@ -1723,6 +1728,14 @@ def build_tool_registry(
     registry.register(SurfaceCloseTool())
     registry.register(SurfaceListTool())
     registry.register(SurfaceHighlightTool())
+
+    # `open` resolves a target and dispatches to one of these; nothing selects
+    # them directly. The canvas half stays ungated — rendering carries no
+    # tool-layer weight — while `os_launch` is ASK, because ShellExecute starts
+    # whatever program owns the file and `bash_security` never sees that call.
+    registry.register(OsOpenUrlTool())
+    registry.register(OsLaunchTool())
+    registry.register(OpenTool())
     registry.register(SurfaceBindSessionTool())
     registry.register(DoodleOpenTool())
 
@@ -1893,7 +1906,7 @@ def build_tool_registry(
         vault_manager=vault_manager,
         vault_config=vault_cfg,
         vault_librarian=vault_librarian,
-        log_dir=TESSERACT_HOME / "logs" / "circuit-breakers",
+        log_dir=log_dir("circuit-breakers"),
         agents_dir=agents_dir,
     ))
 

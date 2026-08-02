@@ -35,7 +35,7 @@ from typing import Any, Literal
 import yaml as _yaml
 from ruamel.yaml import YAML
 
-from tesseract.paths import TESSERACT_HOME, home_dir, workspace_dir
+from tesseract.paths import TESSERACT_HOME, home_dir, home_logs_root, workspace_dir
 
 
 def workspace_events_dir() -> Path:
@@ -44,7 +44,7 @@ def workspace_events_dir() -> Path:
     that point the kernel at a tmp_path)."""
     override = os.environ.get("TESSERACT_HOME")
     home = Path(override).resolve() if override else TESSERACT_HOME
-    return home / "logs"
+    return home_logs_root()
 
 ProposalAction = Literal["append", "replace", "append_to_section"]
 

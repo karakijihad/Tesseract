@@ -55,6 +55,11 @@ export const KNOWN_SURFACE_TYPES = [
   'markdown',
   'html',
   'json',
+  // `open` renders these directly rather than handing the file to the OS.
+  'pdf',
+  'video',
+  'audio',
+  'table',
   // CV-1 runtime objects.
   'lane',
   'trio-routing',

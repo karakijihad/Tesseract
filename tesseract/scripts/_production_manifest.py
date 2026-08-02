@@ -79,17 +79,15 @@ EXCLUDE_PATH_GLOBS = (
     "tesseract/tars-workshop/*.md",
 )
 
-# Created empty (with .gitkeep) so the runtime has its dirs on first boot.
-# memory-store/vault/tars-workshop are NOT here — they ship with real scaffold
-# content instead (see EXCLUDE_PATH_GLOBS comment above + build_production_tree.build).
-EMPTY_DIRS = (
-    "tesseract/logs",
-    "tesseract/sessions",
-    "tesseract/agenda",
-    "tesseract/runtime",
-    "tesseract/downloads",
-    "tesseract/uploads",
-)
+# Nothing. The shipped tree is `app/` — sealed, replaced wholesale by every
+# update — and no state may live in it. State directories are created under
+# `home/` and `runtime/` at boot instead, which is also the only place they
+# survive an update.
+#
+# memory-store/vault/tars-workshop were never here either: they ship real
+# scaffold content (see EXCLUDE_PATH_GLOBS above + build_production_tree.build)
+# which phase 5's additive seeding copies into `home/`.
+EMPTY_DIRS: tuple[str, ...] = ()
 
 # Source dirs whose NAMES collide with state dirs — must survive the build.
 # Asserted by the test suite; listed here so the collision stays documented.

@@ -135,11 +135,11 @@ def _read_failures_snapshot(failures_scope: str | None) -> FailuresSnapshot:
 
     from tesseract.brain import failures_signal
     from tesseract.context.circuit_breaker import load_tripped_breakers
-    from tesseract.paths import TESSERACT_HOME
+    from tesseract.paths import TESSERACT_HOME, log_dir
 
     override = os.environ.get("TESSERACT_HOME")
     home = Path(override).resolve() if override else TESSERACT_HOME
-    tripped = load_tripped_breakers(home / "logs" / "circuit-breakers")
+    tripped = load_tripped_breakers(log_dir("circuit-breakers"))
     return FailuresSnapshot(
         tripped_breakers=tuple(sorted(tripped)),
         stalled_count=failures_signal.stalled_count(),

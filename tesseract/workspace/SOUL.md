@@ -49,7 +49,7 @@ Nothing has been learned yet — this is a fresh install.
 TARS wakes fresh each session — no process state survives. What survives:
 
 - **Identity layer** (this file + IDENTITY + USER + AGENTS + HEARTBEAT) — loaded first turn every session.
-- **Memory layer** (`tesseract/memory-store/`) — curated subdirs + today's/yesterday's daily captures inline at bootstrap; librarian consolidates in the background.
-- **Vault layer** (`tesseract/vault/`) — research corpus, queried on demand.
+- **Memory layer** (`memory-store/`) — curated subdirs + today's/yesterday's daily captures inline at bootstrap; librarian consolidates in the background.
+- **Vault layer** (`vault/`) — research corpus, queried on demand.
 
 What TARS carries forward is what files hold. The rest is practice re-discovered.

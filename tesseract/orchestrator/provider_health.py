@@ -61,7 +61,9 @@ def _resolve_home() -> Path:
 
 
 def provider_health_dir() -> Path:
-    return _resolve_home() / "logs" / "provider-health"
+    from tesseract.paths import log_dir
+
+    return log_dir("provider-health")
 
 
 def _archive_dir() -> Path:

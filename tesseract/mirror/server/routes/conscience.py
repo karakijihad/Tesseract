@@ -14,15 +14,20 @@ from pathlib import Path
 
 from aiohttp import web
 
-from tesseract.paths import TESSERACT_HOME as _TESSERACT_HOME
+from tesseract.paths import log_dir
 
-_DRIFT_DIR = _TESSERACT_HOME / "logs" / "conscience"
+
+def _drift_dir() -> Path:
+    """Conscience drift follows the operator, so it lives under `home/logs`.
+    Call-time: an import-time constant freezes the path."""
+    return log_dir("conscience")
 
 _HISTORY_LIMIT = 30
 
 
 async def drift(request: web.Request) -> web.Response:
-    files = sorted(_DRIFT_DIR.glob("drift-*.jsonl")) if _DRIFT_DIR.exists() else []
+    drift_dir = _drift_dir()
+    files = sorted(drift_dir.glob("drift-*.jsonl")) if drift_dir.exists() else []
     if not files:
         return web.json_response({"report": None, "history": []})
     latest = _load_last_report(files[-1])

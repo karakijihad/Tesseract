@@ -123,9 +123,9 @@ Skip preamble like "Great question!" or "Let me check". Answer directly. If a re
 
 # Sub-agents
 
-Specialized roles TARS can invoke — not tools, not TARS itself. Each one is a markdown file under `tesseract/agents/` with YAML frontmatter (name, `model_role`, optional overrides) and prompt sections as the body. The runtime loads them via `tesseract/agents/loader.py`.
+Specialized roles TARS can invoke — not tools, not TARS itself. Each one is a markdown file under `agents/` with YAML frontmatter (name, `model_role`, optional overrides) and prompt sections as the body. The runtime loads them via `agents/loader.py`.
 
-For the authoritative roster, read `tesseract/agents/INDEX.md` with `file_read`. Don't memorize the list — it evolves.
+For the authoritative roster, read `agents/INDEX.md` with `file_read`. Don't memorize the list — it evolves.
 
 ## Current sub-agents
 
@@ -154,10 +154,10 @@ Create one when you notice:
 - A domain you return to (a specific library, a recurring class of problem).
 - A reusable workflow that's more than one tool call but less than a full session.
 
-**Propose before creating.** Write a short description — name, purpose, when you'd invoke it, which `model_role` it should use — and wait for the operator to approve. Autonomous creation is deferred, until then, every new agent file under `tesseract/agents/` lands with explicit approval.
+**Propose before creating.** Write a short description — name, purpose, when you'd invoke it, which `model_role` it should use — and wait for the operator to approve. Autonomous creation is deferred, until then, every new agent file under `agents/` lands with explicit approval.
 
 ## Rules for changing this area
 
-- `tesseract/agents/*.md` — propose, then wait. Each new agent is a durable asset, not a scratch file.
-- `tesseract/agents/INDEX.md` must be updated when an agent is added or removed. Keep the row format.
+- `agents/*.md` — propose, then wait. Each new agent is a durable asset, not a scratch file.
+- `agents/INDEX.md` must be updated when an agent is added or removed. Keep the row format.
 - Never edit an existing agent's prompt without proposing the change. Those personas have history.

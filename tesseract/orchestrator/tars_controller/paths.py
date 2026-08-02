@@ -14,7 +14,7 @@ import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tesseract.paths import TESSERACT_HOME
+from tesseract.paths import TESSERACT_HOME, runtime_dir
 
 SESSION_ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-[0-9a-f]{8}$")
 
@@ -25,7 +25,7 @@ def _home() -> Path:
 
 
 def controller_dir() -> Path:
-    return _home() / "tars_controller"
+    return runtime_dir() / "tars_controller"
 
 
 def sessions_dir() -> Path:
@@ -45,7 +45,7 @@ def controller_record_path() -> Path:
 
 
 def run_dir() -> Path:
-    return _home() / "run"
+    return runtime_dir() / "run"
 
 
 def port_file_path() -> Path:

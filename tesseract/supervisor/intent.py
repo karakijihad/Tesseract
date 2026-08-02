@@ -85,12 +85,17 @@ class IntentFile(BaseModel):
 
 
 def runtime_dir(tesseract_home: Path) -> Path:
-    """Resolve ``<TESSERACT_HOME>/runtime/`` and create on demand.
+    """Resolve the ``runtime/`` sibling of the given home, creating it.
 
     All supervisor-owned state files (intent.json, crash_storm.json,
-    supervisor.pid) live here. Gitignored under TESSERACT_HOME.
+    supervisor.pid) live here. Machine-local, never synced.
+
+    Derived as the home's *sibling*, matching ``paths.runtime_dir()``, which
+    resolves it from ``install_root()`` — i.e. ``home_dir().parent``. Takes
+    the home explicitly rather than reading the environment because the
+    supervisor passes the value it was launched with.
     """
-    target = tesseract_home / "runtime"
+    target = tesseract_home.parent / "runtime"
     target.mkdir(parents=True, exist_ok=True)
     return target
 

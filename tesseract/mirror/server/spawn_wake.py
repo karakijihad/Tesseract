@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from tesseract.context.circuit_breaker import CircuitBreaker
-from tesseract.paths import TESSERACT_HOME
+from tesseract.paths import TESSERACT_HOME, log_dir
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +101,7 @@ def _wake_breaker_log_dir() -> Path:
     workspace_events_dir idiom)."""
     override = os.environ.get("TESSERACT_HOME")
     home = Path(override).resolve() if override else TESSERACT_HOME
-    return home / "logs" / "circuit-breakers"
+    return log_dir("circuit-breakers")
 
 
 def _get_wake_breaker() -> CircuitBreaker:

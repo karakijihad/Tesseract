@@ -10,7 +10,7 @@ from typing import Any
 from aiohttp import WSCloseCode, WSMsgType, web
 
 from tesseract.brain.boot import SESSIONS_DIR
-from tesseract.paths import TESSERACT_HOME
+from tesseract.paths import TESSERACT_HOME, log_dir
 from tesseract.brain.session_store import (
     default_session_name,
     save_session,
@@ -447,7 +447,7 @@ async def _autosave(app: web.Application, session: ServerSession) -> None:
         append_log_entry(
             header=f"## [session_end] Session {session.session_id[:8]} closed {now.strftime('%Y-%m-%dT%H:%M:%SZ')}",
             body=body,
-            log_dir=TESSERACT_HOME / "logs" / "sessions",
+            log_dir=log_dir("sessions"),
             date=now,
             idempotency_probe=f"id={session.session_id}",
         )

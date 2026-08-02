@@ -31,7 +31,7 @@ from typing import Any
 from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
 from tesseract.memory.store import MemoryStore
 from tesseract.memory.types import MemoryFrontmatter
-from tesseract.paths import TESSERACT_HOME
+from tesseract.paths import TESSERACT_HOME, log_dir
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.scheduler.role_chain import build_chain_for_job
 from tesseract.scheduler.tasks.feedback_sweep import _extract_first_json_object
@@ -183,7 +183,7 @@ def _resolve_log_dir(ctx: JobContext) -> Path:
         tdir = app.get("tesseract_dir")
         if tdir is not None:
             return Path(tdir) / "logs" / "consolidator"
-    return TESSERACT_HOME / "logs" / "consolidator"
+    return log_dir("consolidator")
 
 
 def _load_active_feedback(store_dir: Path) -> list[MemoryFrontmatter]:

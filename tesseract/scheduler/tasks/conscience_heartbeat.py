@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from tesseract.paths import TESSERACT_HOME
+from tesseract.paths import TESSERACT_HOME, log_dir
 from tesseract.conscience.config import load_drift_config
 from tesseract.conscience.drift import evaluate_drift
 from tesseract.conscience.memory_writer import (
@@ -41,7 +41,7 @@ from tesseract.scheduler.types import JobContext, JobResult
 
 log = logging.getLogger(__name__)
 
-_LOGS_DIR = TESSERACT_HOME / "logs"
+
 
 Status = Literal["ok", "warn", "bad"]
 
@@ -51,8 +51,8 @@ class ConscienceHeartbeatJob(BaseJob):
         t0 = time.monotonic()
         try:
             cfg = load_drift_config()
-            schedule_log_dir = ctx.log_dir or (_LOGS_DIR / "schedule")
-            breakers_dir = _LOGS_DIR / "circuit-breakers"
+            schedule_log_dir = ctx.log_dir or log_dir("schedule")
+            breakers_dir = log_dir("circuit-breakers")
             conscience_dir = _resolve_conscience_dir(ctx)
             enabled_job_count = _count_enabled_jobs(ctx.app)
             report = evaluate_drift(
@@ -202,7 +202,7 @@ def _resolve_conscience_dir(ctx: JobContext) -> Path:
     # don't leak into the repo's tesseract/logs/conscience/.
     if ctx.log_dir is not None:
         return Path(ctx.log_dir).parent / "conscience"
-    return _LOGS_DIR / "conscience"
+    return log_dir("conscience")
 
 
 def _count_enabled_jobs(app: Any) -> int | None:

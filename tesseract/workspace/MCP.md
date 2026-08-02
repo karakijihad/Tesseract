@@ -34,7 +34,8 @@ TESSERACT also _is_ an MCP server — a spec-compliant Streamable-HTTP endpoint 
 - **Auth:** bearer token from `$TESSERACT_MCP_SECRET` (the operator client). Default-deny: an unknown token is rejected.
 - **Transport:** Streamable-HTTP — POST JSON-RPC (`initialize` → `tools/list` → `tools/call`). GET → 405 (no server-push stream in this build). DELETE ends the session.
 - **Session:** `initialize` returns an `Mcp-Session-Id` = the `mcp_session` Activity record ("who's in the chair"); killable via `activity.cancel`.
-- **Tools:** the 30 verbs across `activity / memory / vault / lane / mission / schedule / surface / budget / agent` families (dots → underscores, e.g. `activity_list`). ASK-posture verbs return an `awaiting_operator` result — approve in Mirror, then re-issue.
+- **Tools:** the verbs across `activity / memory / vault / lane / mission / schedule / surface / budget / agent` families (dots → underscores, e.g. `activity_list`). ASK-posture verbs return an `awaiting_operator` result — approve in Mirror, then re-issue.
+- **`surface_open`** is the one to reach for when you want the operator to *see* something: a URL, a file, a folder, an app, or a search phrase. It resolves the target and renders it in the cockpit when it can, or opens it in the owning application when it can't, and the result says which. Use it instead of `surface_spawn` unless you are authoring a card from content you generated.
 
 ### Register with Claude Code CLI
 

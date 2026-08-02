@@ -26,10 +26,10 @@ _LOCK = asyncio.Lock()
 
 def mcp_client_audit_path() -> Path:
     override = os.environ.get("TESSERACT_HOME")
-    from tesseract.paths import TESSERACT_HOME
+    from tesseract.paths import TESSERACT_HOME, log_dir
 
     home = Path(override).resolve() if override else TESSERACT_HOME
-    return home / "logs" / "audit" / "mcp-client.jsonl"
+    return log_dir("audit") / "mcp-client.jsonl"
 
 
 def hash_params(params: dict) -> str:

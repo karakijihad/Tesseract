@@ -16,7 +16,7 @@ from aiohttp import web
 
 from tesseract.brain.session_ops import auto_compact_if_needed
 from tesseract.memory.log_notes import append_log_entry
-from tesseract.paths import TESSERACT_HOME
+from tesseract.paths import TESSERACT_HOME, log_dir
 from tesseract.mirror.server.chunk_handler import _handle_chunk
 from tesseract.mirror.server.envelope import make_envelope
 from tesseract.mirror.server.session import ServerSession, send_envelope
@@ -444,7 +444,7 @@ async def _maybe_auto_compact(
                 f"Auto-compact fired (session={session.session_id[:8]}, turn={session.turn_count}).\n"
                 f"Tokens before: {before}  |  Tokens after: {after}  |  Ratio: {ratio_pct}%"
             ),
-            log_dir=TESSERACT_HOME / "logs" / "sessions",
+            log_dir=log_dir("sessions"),
             date=now,
         )
     except Exception:

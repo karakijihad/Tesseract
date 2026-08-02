@@ -51,7 +51,7 @@ def _resolve_health_url() -> str:
 
 
 def _setup_logging(home: Path) -> None:
-    log_dir = home / "logs"
+    log_dir = home.parent / "runtime" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     handler = logging.FileHandler(log_dir / "supervisor.log", encoding="utf-8")
     handler.setFormatter(

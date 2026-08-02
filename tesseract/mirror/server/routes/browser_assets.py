@@ -14,10 +14,11 @@ _SAFE_SEG = re.compile(r"^[A-Za-z0-9_.\-]{1,128}$")
 
 
 def _browser_root() -> Path:
-    override = os.environ.get("TESSERACT_HOME")
-    from tesseract.paths import TESSERACT_HOME
-    home = Path(override).resolve() if override else TESSERACT_HOME
-    return home / "browser"
+    # Browser captures are machine-local, so they live under the `runtime/`
+    # sibling — not in the operator's home, which syncs between PCs.
+    from tesseract.paths import runtime_dir
+
+    return runtime_dir() / "browser"
 
 
 async def get_browser_asset(request: web.Request) -> web.Response:

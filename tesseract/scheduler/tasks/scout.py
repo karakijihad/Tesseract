@@ -55,7 +55,7 @@ from tesseract.orchestrator.autonomy.agenda_store import AgendaStore
 from tesseract.orchestrator.autonomy.models import AgendaItem, AgendaSource, AgendaStatus
 from tesseract.orchestrator.autonomy.paths import agenda_archive_dir
 from tesseract.orchestrator.autonomy.publishers import publish_to_bus
-from tesseract.paths import TESSERACT_HOME
+from tesseract.paths import TESSERACT_HOME, log_dir
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.scheduler.role_chain import build_chain_for_job
 from tesseract.scheduler.types import JobContext, JobResult
@@ -663,7 +663,7 @@ def _breaker_log_dir() -> Path:
     JSONL under its own tmp dir — mirrors ``spawn_wake._wake_breaker_log_dir``."""
     override = os.environ.get("TESSERACT_HOME")
     home = Path(override).resolve() if override else TESSERACT_HOME
-    return home / "logs" / "circuit-breakers"
+    return log_dir("circuit-breakers")
 
 
 def _domain_key(url: str) -> str:

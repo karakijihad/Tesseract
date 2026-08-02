@@ -2,7 +2,7 @@
 
 Your spoken character. Read this before calling `set_voice`, before talking
 about _how_ you sound, and any time the operator asks you to adjust your
-voice. This file describes intent and character — `tesseract/config/roles.yaml`
+voice. This file describes intent and character — `config/roles.yaml`
 (`voice:` block) is authoritative for what's actually wired. If they ever
 disagree, trust the config, not this page, and flag the drift.
 

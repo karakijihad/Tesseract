@@ -1,0 +1,54 @@
+# `open` — the single verb for showing anything.
+#
+# Config is authority: every key here is required. The loader raises rather
+# than substituting a default, so a missing search endpoint fails loudly at
+# boot instead of quietly sending the operator somewhere they did not ask for.
+
+# Where a bare query goes. `{query}` is URL-encoded at call time.
+search_url: "https://duckduckgo.com/?q={query}"
+
+# How long a frameability probe may take. On timeout the target is treated as
+# unframeable and routed to the OS — a slow site becomes a browser tab rather
+# than a card that never paints.
+probe_timeout_s: 4.0
+
+# Applications `open` may launch by name. Deny-by-default: an identifier absent
+# from this map is never launched, whatever it resolves to on PATH.
+apps: {}
+
+# Extensions the OS launch path may hand to ShellExecute. Documents and media
+# only. Executable, script and indirection types are refused in code regardless
+# of what appears here, so a mis-edited list cannot enable them.
+launch_extensions:
+  - .pdf
+  - .doc
+  - .docx
+  - .xls
+  - .xlsx
+  - .ppt
+  - .pptx
+  - .odt
+  - .ods
+  - .rtf
+  - .txt
+  - .csv
+  - .md
+  - .png
+  - .jpg
+  - .jpeg
+  - .gif
+  - .webp
+  - .svg
+  - .bmp
+  - .tiff
+  - .mp3
+  - .wav
+  - .flac
+  - .ogg
+  - .m4a
+  - .mp4
+  - .webm
+  - .mkv
+  - .mov
+  - .avi
+  - .zip

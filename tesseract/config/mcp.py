@@ -6,8 +6,11 @@ than substituting a hardcoded infrastructure default. Mirrors the raise-loudly
 convention of ``config/cockpit.py``.
 
 Schema + invariants: ``Docs/Plan/mcp-control-plane/_shared/mcp-yaml-schema.md``.
-The verb floor set (``_VERB_FLOORS``) covers both the P2 read-only and P3
-write verb surfaces.
+
+Posture is decided by this yaml alone. There is no source-side floor: the
+operator's file is the single authority, which is why `config/mcp.yaml` is DENY
+in `permissions.yaml` alongside `permissions.yaml` itself — it is a permissions
+file, and TARS must not be able to widen his own reach by editing it.
 """
 
 from __future__ import annotations
@@ -26,45 +29,44 @@ _LOCAL_BIND = "127.0.0.1"
 _VALID_TRUST_TIERS = frozenset({"operator", "trusted", "restricted"})
 _VALID_POSTURES = frozenset({"auto", "ask", "deny"})
 
-# Posture floors from ``_shared/mcp-verb-surface.md``. A ``verbs`` key not in
-# this map is a config error (invariant 3, typo guard); a posture that relaxes
-# below its floor is a config error (invariant 4). Grows per phase as verb
-# families land (P2 read-only; P3 write verbs).
-_VERB_FLOORS: dict[str, str] = {
-    # P2 — read-only
-    "activity.list": "auto",
-    "activity.watch": "auto",
-    # P3 — cancel
-    "activity.cancel": "ask",
-    "memory.search": "auto",
-    "vault.search": "auto",
-    "vault.query": "auto",
-    # P3 s1 — write (kernel-tool-backed)
-    "memory.save": "ask",
-    "memory.update": "ask",
-    "vault.ingest": "ask",
-    # P3 s2 — lane / schedule / surface
-    "lane.ensure": "ask",
-    "lane.send": "ask",
-    "lane.read": "auto",
-    "lane.close": "ask",
-    "schedule.create": "ask",
-    "schedule.update": "ask",
-    "schedule.run": "ask",
-    "schedule.remove": "ask",
-    "surface.spawn": "ask",
-    "surface.update": "ask",
-    "surface.focus": "auto",
-    "surface.close": "ask",
-    # P3 s3 — budget
-    "budget.status": "auto",
-    "budget.set_cap": "ask",
-    "budget.pause_source": "ask",
-    # P3 s3 — agent
-    "agent.assign": "ask",
-    "agent.status": "auto",
-    "agent.review": "auto",
-}
+# The verb surface from ``_shared/mcp-verb-surface.md``. This is a typo net
+# only: a key absent from here is a config error (invariant 3), because a
+# misspelled verb would sit in the yaml doing nothing. Posture is decided
+# solely by ``mcp.yaml`` — there is no source-side floor, so the operator's
+# yaml is the single authority. `config/mcp.yaml` is DENY in
+# `permissions.yaml` for exactly that reason: it is now a permissions file.
+_KNOWN_VERBS: frozenset[str] = frozenset(
+    {
+        "activity.list",
+        "activity.watch",
+        "activity.cancel",
+        "memory.search",
+        "vault.search",
+        "vault.query",
+        "memory.save",
+        "memory.update",
+        "vault.ingest",
+        "lane.ensure",
+        "lane.send",
+        "lane.read",
+        "lane.close",
+        "schedule.create",
+        "schedule.update",
+        "schedule.run",
+        "schedule.remove",
+        "surface.open",
+        "surface.spawn",
+        "surface.update",
+        "surface.focus",
+        "surface.close",
+        "budget.status",
+        "budget.set_cap",
+        "budget.pause_source",
+        "agent.assign",
+        "agent.status",
+        "agent.review",
+    }
+)
 
 # auto < ask < deny — a posture may only move a verb UP this ladder.
 _STRICTNESS = {"auto": 0, "ask": 1, "deny": 2}
@@ -95,7 +97,7 @@ class MCPServerBind:
 class MCPConfig:
     server: MCPServerBind
     clients: tuple[MCPClient, ...]
-    verbs: Mapping[str, str]  # verb -> effective posture (already floor-checked)
+    verbs: Mapping[str, str]  # verb -> posture, exactly as the operator wrote it
     trust_tiers: Mapping[str, str]  # trust tier -> posture cap (floor on strictness)
 
     def client_for_trust_tier(self, tier: str) -> MCPClient | None:
@@ -106,11 +108,6 @@ class MCPConfig:
         posture via ``strictest(...)``. KeyError if the tier is unconfigured
         (the loader guarantees all three tiers are present)."""
         return self.trust_tiers[tier]
-
-
-def effective_floor(verb: str) -> str:
-    """The mcp-verb-surface floor for ``verb`` (KeyError if unknown)."""
-    return _VERB_FLOORS[verb]
 
 
 def strictest(*postures: str) -> str:
@@ -250,15 +247,12 @@ def _load_verbs(raw: dict[str, Any]) -> Mapping[str, str]:
         if posture not in _VALID_POSTURES:
             raise RuntimeError(f"mcp.yaml verbs.{verb} posture {posture!r} not in {sorted(_VALID_POSTURES)}")
         # Invariant 3 — every allowlisted verb must be a known surface verb.
-        floor = _VERB_FLOORS.get(verb)
-        if floor is None:
+        # This is a typo net, not a posture rule: a misspelled key would
+        # otherwise sit in the yaml doing nothing while the operator believed
+        # it was in force.
+        if verb not in _KNOWN_VERBS:
             raise RuntimeError(
                 f"mcp.yaml verbs.{verb} is not a known verb (see mcp-verb-surface.md)"
-            )
-        # Invariant 4 — a posture may only tighten the floor, never relax it.
-        if _STRICTNESS[posture] < _STRICTNESS[floor]:
-            raise RuntimeError(
-                f"mcp.yaml verbs.{verb}={posture!r} relaxes below floor {floor!r}"
             )
         out[verb] = posture
     return out
@@ -269,7 +263,6 @@ __all__ = [
     "MCPServerBind",
     "MCPConfig",
     "load_mcp_config",
-    "effective_floor",
     "strictest",
     "MCP_YAML",
 ]

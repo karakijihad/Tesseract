@@ -37,7 +37,7 @@ from tesseract.orchestrator.tars_controller.dispatcher import (
     DispatcherError,
     dispatch_to_controller,
 )
-from tesseract.paths import TESSERACT_DIR
+from tesseract.paths import TESSERACT_DIR, home_logs_root
 from tesseract.workspace_events.broadcast import broadcast_comment_appended
 from tesseract.workspace_events.events import EventStore, WorkspaceComment, WorkspaceEvent
 
@@ -150,7 +150,7 @@ def _store_for_home() -> EventStore:
     captured at import time."""
     import os
     home = Path(os.environ.get("TESSERACT_HOME") or TESSERACT_DIR).resolve()
-    return EventStore(home / "logs")
+    return EventStore(home_logs_root())
 
 
 async def dispatch_workspace_reply(

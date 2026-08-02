@@ -17,11 +17,11 @@ log = logging.getLogger(__name__)
 
 
 def _run_dir() -> Path:
-    from tesseract.paths import TESSERACT_HOME
+    from tesseract.paths import TESSERACT_HOME, runtime_dir
 
     env = os.environ.get("TESSERACT_HOME")
     home = Path(env).resolve() if env else TESSERACT_HOME
-    return home / "run"
+    return runtime_dir() / "run"
 
 
 def write_pidfile(name: str) -> None:

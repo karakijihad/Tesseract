@@ -25,7 +25,7 @@ from typing import Any, Awaitable, Callable
 
 from aiohttp import web
 
-from tesseract.config.mcp import MCPClient, MCPConfig, effective_floor, strictest
+from tesseract.config.mcp import MCPClient, MCPConfig, strictest
 from tesseract.mirror.server.mcp.approvals import MCPApprovalTimeout
 from tesseract.mirror.server.mcp.audit import append_mcp_audit_row
 from tesseract.mirror.server.mcp.models import (
@@ -61,13 +61,13 @@ class MCPVerbDispatcher:
 
     def resolve_posture(self, verb: str, client: MCPClient) -> str:
         """Effective posture for a verb+client. Default-deny for an
-        un-allowlisted verb; otherwise the strictest of the surface floor, the
-        mcp.yaml posture, and the client's trust-tier cap."""
+        un-allowlisted verb; otherwise the stricter of the mcp.yaml posture and
+        the client's trust-tier cap. There is no source-side floor — the yaml
+        is the authority, and it is DENY to TARS in `permissions.yaml`."""
         mcp_posture = self._config.verbs.get(verb)
         if mcp_posture is None:
             return "deny"
         return strictest(
-            effective_floor(verb),
             mcp_posture,
             self._config.trust_tier_cap(client.trust_tier),
         )

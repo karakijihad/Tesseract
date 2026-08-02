@@ -45,6 +45,7 @@ from tesseract.mirror.server.mcp.verbs.schedule import (
 )
 from tesseract.mirror.server.mcp.verbs.surface import (
     surface_close,
+    surface_open,
     surface_focus,
     surface_spawn,
     surface_update,
@@ -78,6 +79,7 @@ CALL_VERBS: dict[str, CallHandler] = {
     "schedule.update": schedule_update,
     "schedule.run": schedule_run,
     "schedule.remove": schedule_remove,
+    "surface.open": surface_open,
     "surface.spawn": surface_spawn,
     "surface.update": surface_update,
     "surface.focus": surface_focus,

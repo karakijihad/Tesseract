@@ -48,11 +48,10 @@ roles:
     # the first fallback (same key, cheaper, faster) so a rate limit or
     # transient error still resolves on ANTHROPIC_API_KEY alone. Later
     # fallbacks only activate once their matching key is added to .env.
-    primary: api.nim.gpt_oss_120b
+    primary: api.openai.gpt56_luna
     fallbacks:
-      - api.nim.glm_5_2
-      - api.google.gemini_25_flash
-      - api.openai.gpt56_luna
+      - api.openai.gpt54_mini
+      - api.xai.grok_43
     compact_threshold: 0.7        # compact when history >= 70% of context_window (raised from 0.4 — we have the room)
     keep_recent_turns: 10         # legacy fallback; ignored when active_window_tokens is set
     head_anchor_messages: 3       # first N user messages preserved verbatim across every compaction (attention-sink anchor)
@@ -75,7 +74,6 @@ roles:
     primary: api.nim.gpt_oss_120b
     fallbacks:
       - api.nim.glm_5_2
-      - api.google.gemini_25_flash
       - api.openai.gpt56_luna
     reasoning_effort_override: low    # observer doesn't need multi-step planning
     max_output_tokens_override: 2048  # gemini fallback burns output tokens on internal thinking — 2048 leaves headroom for the ~200-token JSON envelope
@@ -102,7 +100,6 @@ roles:
     primary: api.nim.gpt_oss_120b
     fallbacks:
       - api.nim.glm_5_2
-      - api.google.gemini_25_flash
       - api.openai.gpt56_luna
     notes: "Default model for sub-agents that don't pin one in agents/INDEX.md. Cheapest
       viable fit — agents that need more horsepower set their own."
@@ -112,7 +109,6 @@ roles:
     primary: api.nim.gpt_oss_120b
     fallbacks:
       - api.nim.glm_5_2
-      - api.google.gemini_25_flash
       - api.openai.gpt56_luna
     notes: "Default model for sub-sub-agents (delegates spawned by agents)."
 
@@ -121,7 +117,6 @@ roles:
     primary: api.nim.gpt_oss_120b
     fallbacks:
       - api.nim.glm_5_2
-      - api.google.gemini_25_flash
       - api.openai.gpt56_luna
     daily_budget_usd: 0.50
     notes: "Layer B/C of feedback durability — weekly consolidator + daily sweep both
@@ -133,7 +128,6 @@ roles:
     primary: api.nim.gpt_oss_120b
     fallbacks:
       - api.nim.glm_5_2
-      - api.google.gemini_25_flash
       - api.openai.gpt56_luna
     daily_budget_usd: 0.50
     notes: "Periodic self-reflection pass. Reads recent workspace events + memory
@@ -160,7 +154,6 @@ roles:
     primary: api.nim.gpt_oss_120b
     fallbacks:
       - api.nim.glm_5_2
-      - api.google.gemini_25_flash
       - api.openai.gpt56_luna
     daily_budget_usd: 0.50
     notes: "Identity-anchored discovery. Two LLM calls per run (query-gen, then evaluation)
@@ -173,7 +166,6 @@ roles:
     primary: api.nim.gpt_oss_120b
     fallbacks:
       - api.nim.glm_5_2
-      - api.google.gemini_25_flash
       - api.openai.gpt56_luna
     daily_budget_usd: 0.25
     notes: "Periodic initiative curator. Reads recent agenda outcomes, discovery leaves,

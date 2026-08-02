@@ -155,6 +155,9 @@ tools:
   lane_named_get: auto
   lane_named_list: auto
   surface_bind_session: auto
+  open: auto
+  os_launch: ask
+  os_open_url: auto
   surface_close: auto
   surface_create: auto
   surface_focus: auto
@@ -342,6 +345,10 @@ path_overrides:
     - path_prefix: config/mirror.yaml
       posture: deny
       reason: "Mirror server config — operator-owned"
+    - path_prefix: config/mcp.yaml
+      posture: deny
+      reason: "MCP verb postures — the sole authority since the source-side
+        floors were removed; TARS must not widen his own reach"
     - path_prefix: config/
       posture: ask
       reason: "providers/roles/schedule/identity — the trio may edit, operator

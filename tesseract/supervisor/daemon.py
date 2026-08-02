@@ -834,7 +834,7 @@ class Supervisor:
         if stack_request is not None:
             payload["stack_dump"] = stack_request
         try:
-            log_dir = self.tesseract_home / "logs" / "supervisor"
+            log_dir = self.tesseract_home.parent / "runtime" / "logs" / "supervisor"
             log_dir.mkdir(parents=True, exist_ok=True)
             with (log_dir / "heartbeat-incidents.jsonl").open(
                 "a", encoding="utf-8",
@@ -850,7 +850,7 @@ class Supervisor:
         """Ask the backend watchdog to dump all Python thread stacks."""
         try:
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-            log_dir = self.tesseract_home / "logs" / "supervisor"
+            log_dir = self.tesseract_home.parent / "runtime" / "logs" / "supervisor"
             request_dir = runtime_dir(self.tesseract_home) / "diagnostics"
             log_dir.mkdir(parents=True, exist_ok=True)
             request_dir.mkdir(parents=True, exist_ok=True)

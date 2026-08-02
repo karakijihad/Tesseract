@@ -73,10 +73,14 @@ def sweep_archives(cfg: JanitorConfig, *, dry_run: bool) -> list[Finding]:
                 except OSError:
                     pass
 
-    logs_root = _home() / "logs"
+    # Both halves of the split tree. Sweeping only one would silently stop
+    # pruning the other, and the machine-ops half is the one that grows.
+    from tesseract.paths import home_logs_root, runtime_logs_root
+
+    logs_roots = (home_logs_root(), runtime_logs_root())
     log_cutoff = now - cfg.log_prune.retention_days * _DAY_S
     for glob in cfg.log_prune.globs:
-        for hit in logs_root.glob(glob):
+        for hit in (h for root in logs_roots for h in root.glob(glob)):
             try:
                 if not hit.is_file() or hit.stat().st_mtime >= log_cutoff:
                     continue

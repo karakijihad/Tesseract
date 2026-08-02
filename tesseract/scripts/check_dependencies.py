@@ -34,9 +34,9 @@ from typing import Any, Literal
 
 log = logging.getLogger(__name__)
 
-from tesseract.paths import TESSERACT_DIR, TESSERACT_HOME
+from tesseract.paths import TESSERACT_DIR, TESSERACT_HOME, runtime_logs_root
 
-SNAPSHOT_PATH = TESSERACT_HOME / "logs" / "capability-snapshot.json"
+SNAPSHOT_PATH = runtime_logs_root() / "capability-snapshot.json"
 
 
 @dataclass

@@ -41,11 +41,11 @@ def _own_ancestry() -> set[int]:
 def _controller_claim(cfg: JanitorConfig) -> set[int]:
     """The controller daemon is detached by design; a fresh heartbeat
     file (path published in controller.json) is its claim."""
-    from tesseract.paths import TESSERACT_HOME
+    from tesseract.paths import TESSERACT_HOME, runtime_dir
 
     env = os.environ.get("TESSERACT_HOME")
     home = Path(env).resolve() if env else TESSERACT_HOME
-    meta_path = home / "tars_controller" / "controller.json"
+    meta_path = runtime_dir() / "tars_controller" / "controller.json"
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         pid = int(meta["pid"])

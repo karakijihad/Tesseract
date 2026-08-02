@@ -23,9 +23,9 @@ class BrowserContextNotFound(Exception):
 
 def _browser_root() -> Path:
     override = os.environ.get("TESSERACT_HOME")
-    from tesseract.paths import TESSERACT_HOME
+    from tesseract.paths import TESSERACT_HOME, runtime_dir
     home = Path(override).resolve() if override else TESSERACT_HOME
-    return home / "browser"
+    return runtime_dir() / "browser"
 
 
 async def _default_launcher():

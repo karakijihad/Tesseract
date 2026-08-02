@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, ClassVar
 
-from tesseract.paths import TESSERACT_HOME
+from tesseract.paths import TESSERACT_HOME, home_logs_root, runtime_dir
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.scheduler.types import JobContext, JobResult
 
@@ -42,7 +42,7 @@ def _logs_dir() -> Path:
     import os
     override = os.environ.get("TESSERACT_HOME")
     base = Path(override).resolve() if override else TESSERACT_HOME
-    return base / "logs"
+    return home_logs_root()
 
 
 @dataclass(frozen=True)
@@ -157,7 +157,7 @@ def _crash_storm_latched() -> bool:
     import os
     override = os.environ.get("TESSERACT_HOME")
     base = Path(override).resolve() if override else TESSERACT_HOME
-    return (base / "runtime" / "crash_storm.json").exists()
+    return (runtime_dir() / "crash_storm.json").exists()
 
 
 def _capture_snapshot() -> _StatusSnapshot:

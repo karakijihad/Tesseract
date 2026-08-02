@@ -28,7 +28,7 @@ from tesseract.orchestrator.recovery.summary import (
     build_recovery_event,
     empty_scan_counts,
 )
-from tesseract.paths import TESSERACT_HOME
+from tesseract.paths import TESSERACT_HOME, home_logs_root, log_dir
 from tesseract.workspace_events import EventStore, WorkspaceEvent
 
 log = logging.getLogger(__name__)
@@ -62,8 +62,8 @@ def new_recovery_manager(
     """
     home = (tesseract_home or TESSERACT_HOME).resolve()
     missions_root = home / "missions"
-    schedule_log_dir = home / "logs" / "schedule"
-    workspace_logs_dir = home / "logs"
+    schedule_log_dir = log_dir("schedule")
+    workspace_logs_dir = home_logs_root()
     return RecoveryManager(
         tesseract_home=home,
         missions_root=missions_root,

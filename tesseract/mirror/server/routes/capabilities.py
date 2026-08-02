@@ -51,7 +51,7 @@ from datetime import datetime, timezone
 from aiohttp import web
 
 from tesseract.lib.yaml_io import atomic_write_text
-from tesseract.paths import home_dir
+from tesseract.paths import home_dir, runtime_dir
 
 # Integrations that aren't a `providers.yaml` provider block but are still
 # optional, key-gated features (tool availability, channel bridges). Kept
@@ -209,7 +209,7 @@ def _dismissal_marker_path():
     `scheduler/alarms.py::alarms_state_path`: an app update that replaces the
     code tree must not touch operator state living under TESSERACT_HOME.
     """
-    return home_dir() / "runtime" / "cli_auth_notice_dismissed.json"
+    return runtime_dir() / "cli_auth_notice_dismissed.json"
 
 
 def _notice_dismissed() -> bool:

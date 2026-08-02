@@ -33,11 +33,11 @@ _SWEEPS = (
 
 
 def _report_path() -> Path:
-    from tesseract.paths import TESSERACT_HOME
+    from tesseract.paths import TESSERACT_HOME, log_dir
 
     env = os.environ.get("TESSERACT_HOME")
     home = Path(env).resolve() if env else TESSERACT_HOME
-    return home / "logs" / "janitor" / "sweeps.jsonl"
+    return log_dir("janitor") / "sweeps.jsonl"
 
 
 def _write_report(report: SweepReport) -> None:

@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from tesseract.paths import TESSERACT_HOME
+from tesseract.paths import TESSERACT_HOME, log_dir
 
 
 def _home() -> Path:
@@ -67,4 +67,4 @@ def source_pauses_path() -> Path:
 
 def governor_log_path() -> Path:
     """Append-only event log: every pause / unpause / detector trigger."""
-    return _home() / "logs" / "governor" / "pauses.jsonl"
+    return log_dir("governor") / "pauses.jsonl"

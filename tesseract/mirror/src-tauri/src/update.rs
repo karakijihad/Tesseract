@@ -56,7 +56,7 @@ impl Drop for ApplyGuard<'_> {
 }
 
 fn app_dir(home: &Path) -> PathBuf {
-    home.join("app")
+    crate::provision::app_dir(home)
 }
 
 /// Human-readable version for the Settings row and HUD: the pyproject

@@ -48,6 +48,11 @@ _DESCRIPTIONS: dict[str, str] = {
     "schedule.update": "Update a scheduled job (ASK).",
     "schedule.run": "Run a scheduled job now (ASK).",
     "schedule.remove": "Remove a scheduled job (ASK).",
+    "surface.open": (
+        "Open anything on the operator's machine: a URL, a file, a folder, "
+        "an application, or a search phrase. Renders it in the cockpit when "
+        "possible, otherwise opens it in the application that owns it."
+    ),
     "surface.spawn": "Spawn a cockpit surface/panel (ASK).",
     "surface.update": "Update a cockpit surface (ASK).",
     "surface.focus": "Focus a cockpit surface.",

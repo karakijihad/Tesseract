@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from tesseract.paths import TESSERACT_HOME
+from tesseract.paths import TESSERACT_HOME, log_dir
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ def spawn_journal_path(session_id: str) -> Path:
     workspace_events_dir`` idiom)."""
     override = os.environ.get("TESSERACT_HOME")
     home = Path(override).resolve() if override else TESSERACT_HOME
-    return home / "logs" / "sessions" / session_id / "spawns.jsonl"
+    return log_dir("sessions") / session_id / "spawns.jsonl"
 
 
 def _append(session_id: str, entry: dict[str, Any]) -> None:
