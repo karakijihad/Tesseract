@@ -18,6 +18,7 @@ re-initializes.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -93,7 +94,10 @@ async def handle(
         return Handled(None)
 
     if method == "initialize":
-        return _initialize(server, client, msg_id, message.get("params") or {})
+        params = _object_params(message)
+        if params is None:
+            return Handled(_err(msg_id, _INVALID_PARAMS, "initialize 'params' must be an object"))
+        return await _initialize(server, client, msg_id, params)
     if method == "ping":
         return Handled(_ok(msg_id, {}))
 
@@ -109,21 +113,47 @@ async def handle(
         ).model_dump(by_alias=True, exclude_none=True)
         return Handled(_ok(msg_id, result))
     if method == "tools/call":
-        return await _tools_call(server, app, client, session, msg_id, message.get("params") or {})
+        params = _object_params(message)
+        if params is None:
+            return Handled(_err(msg_id, _INVALID_PARAMS, "tools/call 'params' must be an object"))
+        return await _tools_call(server, app, client, session, msg_id, params)
 
     return Handled(_err(msg_id, _METHOD_NOT_FOUND, f"method not found: {method}"))
 
 
-def _initialize(server: Any, client: MCPClient, msg_id: Any, params: dict[str, Any]) -> Handled:
+def _object_params(message: dict[str, Any]) -> dict[str, Any] | None:
+    """The request's ``params`` as an object, or None if it is not one.
+
+    JSON-RPC permits ``params`` to be an array; every MCP method that takes
+    params defines an object. An array otherwise reaches ``.get`` and raises,
+    which the client sees as a transport failure rather than the parameter
+    error it can actually act on.
+    """
+    params = message.get("params")
+    if params is None:
+        return {}  # absent or JSON null — the method's own defaults apply
+    # `or {}` here would coerce every FALSEY non-object ([], 0, "", false) to
+    # an empty dict and wave it through, while rejecting [1, 2] — the same
+    # malformed input answered two ways depending on whether it was empty.
+    return params if isinstance(params, dict) else None
+
+
+async def _initialize(
+    server: Any, client: MCPClient, msg_id: Any, params: dict[str, Any]
+) -> Handled:
     if len(server._sessions) >= server._config.server.max_connections:
         return Handled(_err(msg_id, _SERVER_ERROR, "max MCP connections reached"))
     version = _negotiate(params.get("protocolVersion"))
     session = server._sessions.open(client, version)
+    # `build_instructions` walks the memory store and vault to count them. That
+    # is filesystem work proportional to the operator's history, and the loop
+    # has WS heartbeats and live turns to service.
+    instructions = await asyncio.to_thread(build_instructions)
     result = types.InitializeResult(
         protocolVersion=version,
         capabilities=types.ServerCapabilities(tools=types.ToolsCapability(listChanged=False)),
         serverInfo=types.Implementation(name=_SERVER_NAME, version=_SERVER_VERSION),
-        instructions=build_instructions(),
+        instructions=instructions,
     ).model_dump(by_alias=True, exclude_none=True)
     return Handled(_ok(msg_id, result), new_session=session)
 

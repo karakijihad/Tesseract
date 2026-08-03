@@ -14,6 +14,7 @@ The relay recipe:
 
 Rules of the road:
 
+- The auditor lane is read-only by construction — it reports findings, it never edits. Fixes always go back to the coder lane. If you catch yourself asking the auditor to apply a fix, that is the bug.
 - Every hop is a background `lane_turn` — never block the chat waiting on a lane. Keep answering the operator between hops.
 - Narrate each hop as it lands ("auditor found 2 issues — sending back to the coder").
 - Lanes are hub-connected (MCP): the auditor can `memory_search`/`vault_search` for context on its own; you don't need to paste the whole world into the brief.

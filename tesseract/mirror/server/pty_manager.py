@@ -509,7 +509,7 @@ class PTYManager:
             # Sleep at most until the deadline; don't oversleep past it.
             await asyncio.sleep(min(poll_interval, max(deadline - now, 0.0)))
 
-    async def _provision_terminal_mcp(self) -> None:
+    async def _provision_terminal_mcp(self, cwd: str | None = None) -> None:
         """Wire the operator's claude/codex config to the embedded MCP hub, so
         a hand-launched CLI in this pane wakes up already connected — from
         whatever directory they end up in, not only the one the pane opened.
@@ -517,6 +517,10 @@ class PTYManager:
         The pane inherits this process's environment, which carries the hub
         bearer token; a shell the operator opened themselves does not. That is
         what separates "launched inside TESSERACT" from any other terminal.
+
+        `cwd` is no longer where the config is written — it is where a stale
+        project-scope `.mcp.json` from the previous scheme may still sit,
+        shadowing what we just provisioned.
 
         Terminal panes are general-purpose shells (cmd/bash/powershell
         too), not committed to running an MCP-aware CLI at open time — a
@@ -529,7 +533,11 @@ class PTYManager:
             )
 
             await asyncio.to_thread(
-                mcp_provision.provision, "terminal", load_mcp_config()
+                lambda: mcp_provision.provision(
+                    "terminal",
+                    load_mcp_config(),
+                    cleanup_dirs=[Path(cwd) if cwd else Path.cwd()],
+                )
             )
         except Exception:  # noqa: BLE001 — best-effort, must not block terminal open
             log.warning("pty: mcp_provision(terminal) failed", exc_info=True)
@@ -629,7 +637,7 @@ class PTYManager:
         self._maybe_auto_grant_consent(pane_id)
         # A hand-launched claude/codex in this pane should wake up already
         # connected to the hub.
-        await self._provision_terminal_mcp()
+        await self._provision_terminal_mcp(cwd)
 
         opened_at = datetime.now(timezone.utc).isoformat()
         await self._send(ws, {

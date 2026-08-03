@@ -83,6 +83,7 @@ async def memory_update(ctx: VerbContext) -> str:
 # without this, memory.save/update fell back to a vague
 # `{"additionalProperties": true}` curated schema (P7 live-gate finding: a
 # lane client guessed at param shapes and got error_400 three times).
+memory_search.mcp_input_model = MemorySearchInput
 memory_save.mcp_input_model = MemorySaveInput
 memory_update.mcp_input_model = MemoryUpdateInput
 

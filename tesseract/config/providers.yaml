@@ -181,7 +181,7 @@ api:
         model: claude-opus-5
         context_window: 1000000
         max_output_tokens: 16384
-        temperature: 0.7
+        # No temperature/top_p/top_k — see the cli.claude entry below.
         cost_per_mtok_in: 15.00
         cost_per_mtok_out: 75.00
         # Anthropic accepts text + images + native PDF on every Claude 4.x
@@ -414,7 +414,10 @@ cli:
         reasoning_effort: high
         context_window: 1000000
         max_output_ratio: 0.35
-        temperature: 0.7
+        # No temperature/top_p/top_k: this generation removed the sampling
+        # parameters and rejects them with a 400. Harmless while the CLI
+        # adapter drops them, fatal the moment an API-backed adapter reads
+        # this same entry.
         cost_per_mtok_in: 0
         cost_per_mtok_out: 0
         # Underlying model supports vision/PDF, but the claude CLI's
@@ -488,52 +491,6 @@ local:
         dimensions: 768
         timeout_seconds: 30
         max_retries: 3
-
-  # Optional second Ollama host reached over HTTP, for anyone who runs
-  # models on a separate machine on their own network. Defaults to
-  # localhost (i.e. effectively unused) until you point OLLAMA_LAN_BASE_URL
-  # at a real host. Rides the `openai` adapter against Ollama's
-  # OpenAI-compatible /v1 endpoint — no ollama chat adapter exists and none
-  # is needed. Ollama ignores the API key's value but build_adapter
-  # requires the env var to be non-empty: set OLLAMA_LAN_API_KEY in .env to
-  # any placeholder string if you use this. No auto_start — if the host is
-  # off, the chain falls through to this entry's role fallbacks.
-  ollama_lan:
-    enabled: true
-    base_url: "${OLLAMA_LAN_BASE_URL:-http://localhost:11434/v1}"
-    api_key_env: OLLAMA_LAN_API_KEY
-    timeout_seconds: 300   # large local models can be slow to cold-load, especially if partially CPU-offloaded
-    max_retries: 1
-    adapter: openai
-    models:
-      # Example entry for a Gemma-family model served by the second host.
-      # Tool-calling and thinking both work over this OpenAI-compatible
-      # path; the openai adapter streams `content` only, so any separate
-      # `reasoning` field the server returns is dropped (same posture as
-      # glm_5_2 on NIM). Sampling per the served defaults.
-      # CONTEXT: native window may exceed what the SERVER truncates at
-      # (Ollama's own context setting — app Settings → Context length, or
-      # OLLAMA_CONTEXT_LENGTH env). context_window here must never exceed
-      # the host-side setting; raise both together.
-      gemma4_26b:
-        model: "gemma4:26b"
-        context_window: 32768
-        max_output_tokens: 8192
-        temperature: 1.0
-        top_p: 0.95
-        cost_per_mtok_in: 0.00
-        cost_per_mtok_out: 0.00
-        # vision advertised by /api/show (completion, vision, tools,
-        # thinking) for this model family; round-trip for image parts is
-        # untested over LAN — chat-loop surfaces a clean error if the
-        # endpoint rejects them.
-        capabilities:
-          vision_input: true
-          audio_input: false
-          video_input: false
-          pdf_input: false
-          image_output: false
-          audio_output: false
 
   whisper:
     enabled: true

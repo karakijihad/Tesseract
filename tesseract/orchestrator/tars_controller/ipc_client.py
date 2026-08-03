@@ -565,6 +565,7 @@ class ControllerClient:
         model: str,
         working_dir: str,
         env: dict[str, str] | None = None,
+        read_only: bool = False,
     ) -> str:
         payload = await self._lane_call(
             {
@@ -574,6 +575,7 @@ class ControllerClient:
                 "model": model,
                 "working_dir": working_dir,
                 "env": env,
+                "read_only": read_only,
             }
         )
         return str(payload.get("lane_id") or "")

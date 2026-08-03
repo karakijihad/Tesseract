@@ -133,9 +133,13 @@ async def provision_delegate_mcp(kind: str, workspace_root: str) -> None:
         from tesseract.orchestrator.tars_controller.lanes import mcp_provision
 
         await asyncio.to_thread(
-            mcp_provision.provision,
-            kind,
-            load_mcp_config(),
+            lambda: mcp_provision.provision(
+                kind,
+                load_mcp_config(),
+                # Where the project-scope scheme used to write, so where a
+                # stale entry can still shadow the user-scope one.
+                cleanup_dirs=[Path(workspace_root)],
+            )
         )
     except Exception:  # noqa: BLE001 — best-effort, never fail the delegation
         log.warning(
@@ -333,9 +337,9 @@ async def run_delegate(
             is_error=True,
         )
     # Relocated before provisioning, not just before the spawn: provisioning
-    # mkdirs its working dir and writes `.mcp.json` into it, so passing the
-    # code tree here writes into the sealed tree no matter where the
-    # subprocess later runs.
+    # no longer writes into this directory, but it does look there for a stale
+    # project-scope `.mcp.json` to reclaim, and the sealed tree is not
+    # somewhere we go rummaging.
     from tesseract.orchestrator.seal_guard import safe_cwd
 
     await provision_delegate_mcp(provider, str(safe_cwd(context.workspace_root)))

@@ -71,6 +71,9 @@ async def _dispatch(app: web.Application, session: ServerSession, raw: str) -> N
         await _handle_voice_cancel(app, session, data)
     elif kind == "voice_mode_set":
         _handle_voice_mode_set(session, data)
+    elif kind == "surface.open":
+        from tesseract.mirror.server.surface_open import handle_surface_open
+        await handle_surface_open(app, session, data)
     elif kind == "view_snapshot":
         from tesseract.mirror.server.routes.operator_view import handle_view_snapshot
         await handle_view_snapshot(app, session, data)

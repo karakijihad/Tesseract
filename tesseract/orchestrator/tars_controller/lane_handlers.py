@@ -47,6 +47,7 @@ class _LaneHandlersMixin:
                 model=msg.model,
                 working_dir=msg.working_dir,
                 env=msg.env,
+                read_only=msg.read_only,
             )
         except Exception as exc:  # noqa: BLE001 — surface as result error
             await self._push_lane_result(

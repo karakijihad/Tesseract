@@ -73,9 +73,11 @@ _WRITE_PATH_TOOLS: dict[str, tuple[str, ...]] = {
 # stricter root of its own.
 #
 # The `channel_send_*` media tools belong here for a sharper reason than the
-# rest: each reads `source_path` off disk and forwards the bytes to an external
+# rest: each reads a local path off disk and forwards the bytes to an external
 # chat, at `auto` posture. Unbounded, that is a read of any file on the machine
-# followed by an unattended exfiltration of it.
+# followed by an unattended exfiltration of it. The path field is not spelled
+# the same across them (`audio_path`, `sticker_path`, `source_path`) — every
+# media tool that takes a local path belongs in this map, whatever it calls it.
 _READ_PATH_TOOLS: dict[str, tuple[str, ...]] = {
     "file_read": ("file_path", "path"),
     "pdf_read": ("file_path",),
@@ -89,6 +91,7 @@ _READ_PATH_TOOLS: dict[str, tuple[str, ...]] = {
     "channel_send_animation": ("source_path",),
     "channel_send_video_note": ("source_path",),
     "channel_send_voice": ("audio_path",),
+    "channel_send_sticker": ("sticker_path",),
 }
 
 logger = logging.getLogger(__name__)

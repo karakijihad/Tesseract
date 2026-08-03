@@ -8,17 +8,19 @@ once per session rather than per turn, so it can afford to carry live counts.
 
 Numbers are computed per ``initialize`` (never cached) so a long-running Mirror
 does not hand a stale picture to a CLI that connects hours later. Counting is a
-directory walk plus ``stat`` — no frontmatter parsing — and the whole build is
-best-effort: a failure degrades to the static text rather than failing the
-handshake.
+directory walk, a ``stat``, and a one-line read per file to tell a memory record
+from folder documentation — the caller runs it off the event loop. The whole
+build is best-effort: a failure degrades to the static text rather than failing
+the handshake.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
+from tesseract.memory.store import list_frontmatter
 from tesseract.memory.types import MemoryType
 from tesseract.paths import home_dir
 
@@ -28,58 +30,67 @@ log = logging.getLogger(__name__)
 # counting them would advertise memory the operator never wrote.
 _TEMPLATE_DIR = "_shipping"
 
+# Skeleton files `vault_manager.seed_wiki_skeleton` writes on first boot. They
+# exist before any research does, so counting them advertises compiled pages
+# that were never compiled.
+_WIKI_CONTROL_FILES = frozenset({"INDEX.md", "ingest-log.md"})
+
 
 def _memory_stats(home: Path) -> tuple[int, str | None, str | None]:
     """``(entry_count, earliest_iso_date, latest_iso_date)`` for the store.
 
-    Walks the canonical type subdirectories recursively so operator-curated
-    sub-buckets (``reference/people/``, ``project/sprints/``) are counted.
-    Dates come from file mtime: the frontmatter carries authored timestamps,
-    but reading them means parsing every file, and the range only needs to
-    convey depth of history.
+    Counts through ``MemoryStore.list_all`` rather than a walk of its own. A
+    parallel walk has to reimplement which files count — the frontmatter fence,
+    the parse that follows it, the sub-buckets, the folder documentation that
+    looks like a record and is not — and any of those going out of step
+    advertises a number ``memory_search`` cannot deliver.
+
+    Dates come from ``created_at`` rather than file mtime, which moves whenever
+    a sync or restore touches the file.
+
+    Shipped templates need no filtering here: they carry no frontmatter fence,
+    so ``list_all`` already skips them for the same reason it skips README.md.
+
+    Goes through ``list_frontmatter`` rather than ``MemoryStore``: constructing
+    the store calls ``_ensure_dirs``, which creates any missing subdirectory.
+    A handshake must not do that — answering "how much memory is there" is a
+    read, and a read that materialises what it is counting is a write wearing
+    a question's clothes.
     """
-    store = home / "memory-store"
-    count = 0
-    oldest: float | None = None
-    newest: float | None = None
-    for mem_type in MemoryType:
-        subdir = store / mem_type.value
-        if not subdir.is_dir():
-            continue
-        for path in subdir.rglob("*.md"):
-            if _TEMPLATE_DIR in path.parts or not path.is_file():
-                continue
-            count += 1
-            try:
-                mtime = path.stat().st_mtime
-            except OSError:
-                continue
-            oldest = mtime if oldest is None else min(oldest, mtime)
-            newest = mtime if newest is None else max(newest, mtime)
-    return count, _as_date(oldest), _as_date(newest)
+    entries = list_frontmatter(home / "memory-store")
+    if not entries:
+        return 0, None, None
+    stamps = [fm.created_at for fm in entries]
+    return len(entries), _as_date(min(stamps)), _as_date(max(stamps))
 
 
-def _as_date(stamp: float | None) -> str | None:
+def _as_date(stamp: datetime | None) -> str | None:
     if stamp is None:
         return None
-    return datetime.fromtimestamp(stamp, tz=timezone.utc).strftime("%Y-%m-%d")
+    return stamp.strftime("%Y-%m-%d")
+
+
+def _plural(count: int, singular: str, plural: str) -> str:
+    return f"{count} {singular}" if count == 1 else f"{count} {plural}"
 
 
 def _vault_stats(home: Path) -> tuple[int, int]:
     """``(source_document_count, wiki_page_count)``."""
     vault = home / "vault"
 
-    def _count(sub: str) -> int:
+    def _count(sub: str, skip: frozenset[str] = frozenset()) -> int:
         root = vault / sub
         if not root.is_dir():
             return 0
         return sum(
             1
             for path in root.rglob("*")
-            if path.is_file() and _TEMPLATE_DIR not in path.parts
+            if path.is_file()
+            and _TEMPLATE_DIR not in path.parts
+            and path.name not in skip
         )
 
-    return _count("raw"), _count("wiki")
+    return _count("raw"), _count("wiki", _WIKI_CONTROL_FILES)
 
 
 def _memory_line(count: int, oldest: str | None, newest: str | None) -> str:
@@ -91,7 +102,7 @@ def _memory_line(count: int, oldest: str | None, newest: str | None) -> str:
     span = f"{oldest} to {newest}" if oldest and newest else "spanning their work to date"
     types = ", ".join(t.value for t in MemoryType)
     return (
-        f"  memory_search — the operator's long-term memory: {count} entries, "
+        f"  memory_search — the operator's long-term memory: {_plural(count, 'entry', 'entries')}, "
         f"{span}, across {types}. Retrieval is hybrid keyword + vector and "
         f"returns at most seven entries, so calling it is cheap. Do not ask the "
         f"operator for context you could have fetched."
@@ -102,9 +113,10 @@ def _vault_line(sources: int, wiki_pages: int) -> str:
     if sources == 0 and wiki_pages == 0:
         return "  vault_search / vault_query — the research vault. Currently empty."
     return (
-        f"  vault_search / vault_query — the research library: {sources} source "
-        f"documents, {wiki_pages} compiled wiki pages. Search returns passages; "
-        f"query returns a synthesised answer over the wiki."
+        f"  vault_search / vault_query — the research library: "
+        f"{_plural(sources, 'source document', 'source documents')}, "
+        f"{_plural(wiki_pages, 'compiled wiki page', 'compiled wiki pages')}. "
+        f"Search returns passages; query returns a synthesised answer over the wiki."
     )
 
 
@@ -131,12 +143,12 @@ _FILESYSTEM = """THE FILESYSTEM
   config/, workspace/. Read it freely. It is context, not clutter, and it is
   usually a faster answer than asking.
 
-  Never write inside app/ or runtime/. app/ is installed source: it is not
-  under version control on this machine, the next update deletes your edit
-  without showing anyone a diff, and no reviewer ever sees it. runtime/ is
-  machine state. The runtime refuses to START a process inside either tree,
-  but it cannot see writes your own file tools make once you are running —
-  so this one is on you.
+  Never write inside app/ or runtime/. app/ is installed source — a clone the
+  updater manages, not a working copy. An edit there is outside the review
+  that every other change goes through, and the next update overwrites it
+  without showing anyone a diff. runtime/ is machine state. The runtime
+  refuses to START a process inside either tree, but it cannot see writes your
+  own file tools make once you are running — so this one is on you.
 
   Write in tars-workshop/. That directory exists to be written in."""
 

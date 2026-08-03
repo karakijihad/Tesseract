@@ -50,9 +50,11 @@ class _IpcBase:
 
 class IpcLaneManager(_IpcBase):
     async def open(self, *, kind: LaneKind, mode: LaneMode = "headless", model: str,
-                   working_dir: str, env: dict[str, str] | None = None) -> str:
+                   working_dir: str, env: dict[str, str] | None = None,
+                   read_only: bool = False) -> str:
         return await self._call("lane_open", kind=kind, mode=mode, model=model,
-                                working_dir=working_dir, env=env)
+                                working_dir=working_dir, env=env,
+                                read_only=read_only)
 
     async def send(self, lane_id: str, message: str) -> LaneSendResult:
         d = await self._call("lane_send", lane_id, message)

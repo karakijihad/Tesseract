@@ -74,6 +74,49 @@ def _inject_kind_tag(frontmatter: MemoryFrontmatter) -> MemoryFrontmatter:
     return frontmatter.model_copy(update={"tags": deduped})
 
 
+RECORD_SUBDIRS = ("user", "feedback", "project", "reference", "conscience")
+
+
+def list_frontmatter(
+    store_dir: Path, type_filter: MemoryType | None = None
+) -> list[MemoryFrontmatter]:
+    """Every parseable memory record under ``store_dir``, frontmatter only.
+
+    A module-level function rather than a method because constructing a
+    ``MemoryStore`` calls ``_ensure_dirs``, which creates the store tree. Read-
+    only callers — anything answering "what is in here" rather than writing to
+    it — must be able to ask without bringing the tree into existence.
+    """
+    subdirs = (
+        (type_filter.value,) if type_filter else RECORD_SUBDIRS
+    )
+    results: list[MemoryFrontmatter] = []
+    for subdir in subdirs:
+        subdir_path = store_dir / subdir
+        if not subdir_path.exists():
+            continue
+        # rglob walks operator sub-buckets (`reference/people/`, etc.)
+        # so files dropped into a new folder are picked up without a
+        # schema change. The frontmatter `type` still routes writes;
+        # sub-buckets are organizational only.
+        for md_file in subdir_path.rglob("*.md"):
+            # Skip pure operator docs (README.md, INDEX.md) silently —
+            # they live alongside memory records as folder-level
+            # documentation and intentionally carry no frontmatter.
+            # Files WITH a malformed frontmatter still log a warning
+            # via the except below.
+            try:
+                with md_file.open("r", encoding="utf-8") as f:
+                    first = f.readline()
+                if first.strip() != "---":
+                    continue
+                text = MemoryStore._read_frontmatter_block(md_file)
+                results.append(MemoryStore._parse_frontmatter_only(text))
+            except Exception:
+                logger.warning("Failed to parse %s", md_file)
+    return results
+
+
 class MemoryStore:
     def __init__(self, store_dir: Path) -> None:
         self._store_dir = store_dir
@@ -240,38 +283,7 @@ class MemoryStore:
         return fm, body
 
     def list_all(self, type_filter: MemoryType | None = None) -> list[MemoryFrontmatter]:
-        results = []
-        subdirs = ["user", "feedback", "project", "reference", "conscience"]
-
-        if type_filter:
-            target = self._type_to_subdir(type_filter)
-            subdirs = [target]
-
-        for subdir in subdirs:
-            subdir_path = self._store_dir / subdir
-            if not subdir_path.exists():
-                continue
-            # rglob walks operator sub-buckets (`reference/people/`, etc.)
-            # so files dropped into a new folder are picked up without a
-            # schema change. The frontmatter `type` still routes writes;
-            # sub-buckets are organizational only.
-            for md_file in subdir_path.rglob("*.md"):
-                # Skip pure operator docs (README.md, INDEX.md) silently —
-                # they live alongside memory records as folder-level
-                # documentation and intentionally carry no frontmatter.
-                # Files WITH a malformed frontmatter still log a warning
-                # via the except below.
-                try:
-                    with md_file.open("r", encoding="utf-8") as f:
-                        first = f.readline()
-                    if first.strip() != "---":
-                        continue
-                    text = self._read_frontmatter_block(md_file)
-                    fm = self._parse_frontmatter_only(text)
-                    results.append(fm)
-                except Exception:
-                    logger.warning("Failed to parse %s", md_file)
-        return results
+        return list_frontmatter(self._store_dir, type_filter)
 
     def list_active_directives(
         self,

@@ -81,7 +81,6 @@ _DESCRIPTIONS: dict[str, str] = {
 }
 
 _STRING = {"type": "string"}
-_BOOL = {"type": "boolean"}
 # Curated input schemas for the direct-param verbs (the make_tool_verb verbs
 # supply their own via the attached Pydantic model).
 _CURATED_SCHEMAS: dict[str, dict[str, Any]] = {
@@ -91,19 +90,11 @@ _CURATED_SCHEMAS: dict[str, dict[str, Any]] = {
         "properties": {"activity_id": _STRING},
         "required": ["activity_id"],
     },
-    "memory.search": {
-        "type": "object",
-        "properties": {
-            "query": _STRING, "type_filter": _STRING, "scope": _STRING,
-            "entity": _STRING, "source_slug": _STRING, "since": _STRING,
-            "include_work_history": _BOOL,
-        },
-        "required": ["query"],
-    },
-    # memory.save / memory.update / vault.ingest carry their kernel input
-    # models via `mcp_input_model` (verbs/memory.py, verbs/vault.py) — the
-    # former permissive placeholders here were dead weight that would shadow
-    # nothing but mislead readers (trio W1 schema curation).
+    # memory.search / memory.save / memory.update / vault.ingest carry their
+    # kernel input models via `mcp_input_model` (verbs/memory.py,
+    # verbs/vault.py) — the former placeholders here were dead weight that
+    # would shadow nothing but mislead readers, and a hand-copied field list
+    # drifts from the model the verb actually validates against.
     "vault.search": {
         "type": "object",
         "properties": {"query": _STRING, "top_k": {"type": "integer"}, "category": _STRING},

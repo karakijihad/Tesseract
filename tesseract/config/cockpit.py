@@ -59,7 +59,48 @@ def load_trio_lanes() -> list[dict[str, Any]]:
         role = lane.get("model_role")
         if role and not lane.get("model"):
             lane["model"] = _resolve_role_model(role)
+        # Not `.get(..., False)`: defaulting picks a security posture on the
+        # config's behalf, and the direction that reads as harmless is the
+        # one that re-opens the audit boundary.
+        if "read_only" not in lane:
+            raise KeyError(
+                f"trio lane {lane.get('name')!r} is missing read_only in "
+                "cockpit.yaml; state the posture explicitly"
+            )
+        if not isinstance(lane["read_only"], bool):
+            raise TypeError(
+                f"trio lane {lane.get('name')!r} read_only must be a bool, "
+                f"got {lane['read_only']!r}"
+            )
     return lanes
+
+
+def trio_lane_read_only(name: str) -> bool:
+    """Configured write posture for a trio lane, or ``False`` for a name the
+    trio does not define.
+
+    The fallback is not a default for a *missing* key — a defined lane with
+    no stated posture raises. It covers ad-hoc named lanes (``scratch/claude``)
+    that live outside the trio definition and are writeable like any other.
+
+    Reads the posture without resolving models: a broken role ref in
+    roles.yaml must not make every lane un-openable, only the trio's."""
+    raw = yaml.safe_load(_COCKPIT_YAML.read_text(encoding="utf-8")) or {}
+    for lane in raw["trio"]["lanes"]:
+        if lane.get("name") != name:
+            continue
+        if "read_only" not in lane:
+            raise KeyError(
+                f"trio lane {name!r} is missing read_only in cockpit.yaml; "
+                "state the posture explicitly"
+            )
+        if not isinstance(lane["read_only"], bool):
+            raise TypeError(
+                f"trio lane {name!r} read_only must be a bool, "
+                f"got {lane['read_only']!r}"
+            )
+        return lane["read_only"]
+    return False
 
 
 def load_trio_relay() -> dict[str, Any]:

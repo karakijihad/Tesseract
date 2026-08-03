@@ -201,14 +201,22 @@ class ClaudeStreamAdapter:
 class CodexStreamAdapter:
     """Codex CLI driver: argv builder + stream-json turn runner.
 
-    Flags verified against codex-cli 0.131.0: `exec <task> --json` for open
-    turns; `exec resume <session_id> <message> --json` for resume turns.
+    `exec <task> --json` for open turns; `exec resume <session_id> <message>
+    --json` for resume turns. Two access modes, mutually exclusive:
     `--dangerously-bypass-approvals-and-sandbox` for full access
-    (operator-approved, mirrors claude's --dangerously-skip-permissions)."""
+    (operator-approved, mirrors claude's --dangerously-skip-permissions);
+    `--sandbox read-only` for a lane that must never modify the tree.
+    `codex exec` has no approval prompt at all, so a refused write fails the
+    command rather than blocking the headless turn."""
 
     binary = "codex"
 
-    def __init__(self, spawn: SpawnFn | None = None, model: str | None = None) -> None:
+    def __init__(
+        self,
+        spawn: SpawnFn | None = None,
+        model: str | None = None,
+        read_only: bool = False,
+    ) -> None:
         self._spawn = spawn or _codex_spawn
         # Windows: npm installs `codex` as an extensionless script wrapper
         # that asyncio's CreateProcess can't exec — it needs `codex.cmd`.
@@ -217,17 +225,20 @@ class CodexStreamAdapter:
         # Without an explicit --model the CLI runs its own config default,
         # silently ignoring the model recorded on the lane binding.
         self.model = model
+        # Selects codex's own read-only sandbox instead of full access, so a
+        # reviewer lane can inspect the tree but never modify it.
+        self.read_only = read_only
 
     def build_argv(self, *, task: str, session_id: str | None) -> list[str]:
         if session_id:
             argv = [self.binary, "exec", "resume", session_id, task]
         else:
             argv = [self.binary, "exec", task]
-        argv += [
-            "--json",
-            "--skip-git-repo-check",
-            "--dangerously-bypass-approvals-and-sandbox",
-        ]
+        argv += ["--json", "--skip-git-repo-check"]
+        if self.read_only:
+            argv += ["--sandbox", "read-only"]
+        else:
+            argv += ["--dangerously-bypass-approvals-and-sandbox"]
         if self.model:
             argv += ["--model", self.model]
         return argv

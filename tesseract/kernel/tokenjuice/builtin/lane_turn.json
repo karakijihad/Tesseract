@@ -1,0 +1,12 @@
+{
+  "id": "lane_turn.default",
+  "family": "delegate",
+  "description": "lane transcript — keep head + tail; intermediate prose elides.",
+  "priority": 60,
+  "match": {"tool_names": ["lane_turn", "lane_read"]},
+  "transforms": ["strip_ansi", "trim_empty_edges"],
+  "reducers": [
+    {"kind": "head_tail", "head": 40, "tail": 80}
+  ],
+  "passthrough_when": {"max_lines": 120}
+}

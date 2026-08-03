@@ -144,10 +144,14 @@ class LaneManager:
         model: str,
         working_dir: str,
         env: dict[str, str] | None = None,
+        read_only: bool = False,
     ) -> str:
         """Create a new lane. Returns the lane id; status starts at
         ``spawning`` and flips to ``ready`` once the runtime cache is
-        populated. `headless` is the only mode wired."""
+        populated. `headless` is the only mode wired.
+
+        `read_only` opens the lane under the CLI's own read-only sandbox —
+        it inspects the tree and never modifies it."""
         lane_id = _mint_lane_id(kind)
         lane = Lane(
             lane_id=lane_id,
@@ -157,6 +161,7 @@ class LaneManager:
             working_dir=working_dir,
             env=dict(env or {}),
             lifecycle="ready",
+            read_only=read_only,
         )
         write_lane(lane)
         runtime = LaneRuntime(lane=lane)
@@ -748,9 +753,17 @@ def _default_adapter_factory(lane: Lane, runtime: LaneRuntime) -> LaneAdapter:
         )
 
         if lane.kind == "claude":
+            if lane.read_only:
+                # The claude CLI has no read-only counterpart to codex's
+                # sandbox flag. Refusing beats spawning a lane that reports
+                # itself read-only and can still write.
+                raise LaneManagerError(
+                    "read_only lanes are not supported for kind 'claude'; "
+                    "the CLI has no read-only sandbox flag"
+                )
             base = ClaudeStreamAdapter(model=lane.model)
         elif lane.kind == "codex":
-            base = CodexStreamAdapter(model=lane.model)
+            base = CodexStreamAdapter(model=lane.model, read_only=lane.read_only)
         else:  # pragma: no cover — Literal narrows; defensive only
             raise LaneManagerError(f"unknown lane kind {lane.kind!r}")
         return _HeadlessCliLaneAdapter(base=base, lane=lane)
@@ -766,6 +779,7 @@ class _HeadlessCliLaneAdapter:
     base: Any  # ClaudeStreamAdapter | CodexStreamAdapter
     lane: Lane
     _mcp_provisioned: bool = field(default=False, init=False, repr=False)
+    _mcp_warned: bool = field(default=False, init=False, repr=False)
 
     async def run_turn(
         self,
@@ -775,15 +789,38 @@ class _HeadlessCliLaneAdapter:
         cancel_event: asyncio.Event | None,
     ) -> dict[str, Any]:
         if not self._mcp_provisioned:
-            # P2 Task 2 — wire the CLI to the embedded MCP hub before its
-            # first turn. Config-as-authority: a missing token env var
-            # raises here, not on the CLI's own connect attempt.
-            await asyncio.to_thread(
-                mcp_provision.provision,
-                self.lane.kind,
-                load_mcp_config(),
+            # Wire the CLI to the embedded MCP hub before its first turn.
+            # Config-as-authority: a missing token env var raises here, not on
+            # the CLI's own connect attempt.
+            #
+            # Latch only on success. `provision` returns False when it backed
+            # off rather than overwrite a config another process was writing —
+            # latching that would leave this lane with no hub for the rest of
+            # its life, silently, because nothing else retries per-lane.
+            self._mcp_provisioned = await asyncio.to_thread(
+                lambda: mcp_provision.provision(
+                    self.lane.kind,
+                    load_mcp_config(),
+                    # Where the project-scope scheme used to write, so where a
+                    # stale entry can still shadow the user-scope one.
+                    cleanup_dirs=[Path(self.lane.working_dir)],
+                )
             )
-            self._mcp_provisioned = True
+            if not self._mcp_provisioned:
+                # Warn once, then drop to debug. Retrying every turn is correct,
+                # but a permanently broken config would otherwise emit one
+                # warning per turn forever and bury the signal it exists to
+                # carry.
+                if self._mcp_warned:
+                    log.debug(
+                        "lane %s: MCP provisioning still incomplete", self.lane.lane_id
+                    )
+                else:
+                    self._mcp_warned = True
+                    log.warning(
+                        "lane %s: MCP provisioning did not complete; retrying each turn",
+                        self.lane.lane_id,
+                    )
         accumulator = await self.base.run_turn(
             task=message,
             session_id=self.lane.cli_session_id,

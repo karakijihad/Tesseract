@@ -8,10 +8,11 @@
 // deferred additive enhancement). Drag/resize/close mutate the store
 // optimistically and POST the operator event back via `emitSurfaceEvent`.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useSurfacesStore } from "../stores/surfaces";
-import type { SurfaceDescriptor } from "./protocol/types";
+import { useWebSocketStore } from "../stores/websocket";
+import type { OperatorEvent, SurfaceDescriptor } from "./protocol/types";
 import { getRenderer } from "./renderers";
 
 interface SurfaceLayerProps {
@@ -132,6 +133,21 @@ const RESIZE_HANDLES: Array<{ dir: string; dx: -1 | 0 | 1; dy: -1 | 0 | 1 }> = [
 ];
 
 function SurfaceCard({ view, descriptor, bounds }: SurfaceCardProps) {
+  const sendMessage = useWebSocketStore((s) => s.sendMessage);
+  // Renderer → tool. Only `clicked` routes anywhere today: it carries a
+  // `target` the renderer resolved (a folder row joins its root and name), and
+  // goes over the chat WS rather than the surface REST route, because `open`
+  // can reach `os_launch`'s ASK and only the WS can put that question to the
+  // operator. Geometry events keep their own REST path — they need no gate.
+  const dispatch = useCallback(
+    (event: OperatorEvent, detail?: Record<string, unknown>) => {
+      if (event !== "clicked") return;
+      const target = typeof detail?.target === "string" ? detail.target : "";
+      if (!target) return;
+      sendMessage("surface.open", { target, view });
+    },
+    [sendMessage, view],
+  );
   const move = useSurfacesStore((s) => s.moveSurface);
   const resize = useSurfacesStore((s) => s.resizeSurface);
   const dragSurface = useSurfacesStore((s) => s.dragSurface);
@@ -295,7 +311,7 @@ function SurfaceCard({ view, descriptor, bounds }: SurfaceCardProps) {
         )}
       </div>
       <div className="surface-card__body">
-        <Renderer descriptor={descriptor} dispatch={() => undefined} />
+        <Renderer descriptor={descriptor} dispatch={dispatch} />
       </div>
       {!geoLocked && !isMinimized
         ? RESIZE_HANDLES.map((hd) => (

@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from tesseract.config.cockpit import trio_lane_read_only
 from tesseract.orchestrator.activity.hooks import register_lane
 
 from ._common import home_root, utc_now_iso
@@ -191,8 +192,15 @@ class NamedLaneManager:
         On a `kind` mismatch the call raises rather than silently
         re-opening — operators must `release` first to swap kinds; the
         guard avoids accidentally pointing `coder/claude` at a Codex
-        lane mid-flight."""
+        lane mid-flight.
+
+        The lane's write posture is NOT a caller argument — it is read from
+        cockpit.yaml by name, so no caller can ask for a writeable auditor.
+        A live lane whose posture disagrees with config is replaced rather
+        than reused: a binding opened before the auditor became read-only
+        would otherwise stay writeable for the life of the install."""
         _validate_name(name)
+        read_only = trio_lane_read_only(name)
         lock = self._name_locks.setdefault(name, asyncio.Lock())
         async with lock:
             existing = read_named_lane(name)
@@ -202,7 +210,9 @@ class NamedLaneManager:
                         f"named lane {name!r} is bound to kind={existing.kind}; "
                         f"requested kind={kind}. Release the binding first."
                     )
-                if self._is_lane_alive(existing.lane_id):
+                if self._is_lane_alive(existing.lane_id) and self._posture_matches(
+                    existing.lane_id, read_only
+                ):
                     # Root fix (Deferred 2026-07-12): a reused disk-alive
                     # binding was never attached into this process's runtime
                     # cache after a restart, so the first send/turn failed
@@ -259,6 +269,7 @@ class NamedLaneManager:
                 model=model,
                 working_dir=working_dir,
                 env=env,
+                read_only=read_only,
             )
             record = NamedLaneRecord(
                 name=name,
@@ -273,6 +284,21 @@ class NamedLaneManager:
             # LaneManager.open just registered for this fresh lane.
             register_lane(record.lane_id, label=record.name, provider=record.kind)
             return record
+
+    def _posture_matches(self, lane_id: str, read_only: bool) -> bool:
+        """Whether the live lane's persisted write posture equals what config
+        now says. A mismatch sends `ensure` down the replace path — the same
+        repair a dead lane gets, for the same reason: the binding no longer
+        describes the lane it points at.
+
+        An unreadable record reports a mismatch, so the doubt costs a
+        respawn rather than a lane that might be writeable."""
+        from .store import read_lane
+
+        try:
+            return read_lane(lane_id).read_only == read_only
+        except Exception:  # noqa: BLE001 — unreadable record: replace it
+            return False
 
     def _is_lane_alive(self, lane_id: str) -> bool:
         """Read the on-disk `lane.json` lifecycle — file-canonical truth.

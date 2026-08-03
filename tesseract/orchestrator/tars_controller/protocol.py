@@ -161,6 +161,7 @@ class LaneOpenMessage(BaseModel):
     model: str
     working_dir: str
     env: dict[str, str] | None = None
+    read_only: bool = False
 
 
 class LaneSendMessage(BaseModel):

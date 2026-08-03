@@ -109,6 +109,11 @@ class Lane(BaseModel):
     # (Codex per-turn, Claude post-daemon-restart) can `--resume` the
     # on-disk session state instead of starting fresh.
     cli_session_id: str | None = None
+    # Opens the CLI with its own read-only sandbox. Persisted rather than
+    # derived at spawn time: the adapter is rebuilt from this record after a
+    # restart, and a reviewer lane that came back writeable would be a silent
+    # audit-boundary failure.
+    read_only: bool = False
     closed_at_utc: str | None = None
     close_reason: str | None = None
 

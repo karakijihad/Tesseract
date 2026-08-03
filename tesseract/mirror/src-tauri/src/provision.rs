@@ -260,6 +260,14 @@ fn provision_stages(
     progress("Downloading voice model…");
     let _ = run_python(&py, &["-m", "tesseract.scripts.fetch_piper_voice"]);
 
+    // Best-effort, same contract as the voice model above: installs Ollama
+    // if absent and pulls the configured embedding model, so semantic
+    // search works on a fresh machine instead of silently degrading to
+    // keyword-only. The script always exits 0 and any spawn error here is
+    // swallowed, so an offline first run still completes.
+    progress("Setting up embeddings…");
+    let _ = run_python(&py, &["-m", "tesseract.scripts.ensure_ollama"]);
+
     // Marker last, so a partial provision never reads as complete.
     write_marker(home)?;
 
@@ -1340,10 +1348,17 @@ mod tests {
                 ],
             ),
             (
-                py_path,
+                py_path.clone(),
                 vec![
                     "-m".to_string(),
                     "tesseract.scripts.fetch_piper_voice".to_string(),
+                ],
+            ),
+            (
+                py_path,
+                vec![
+                    "-m".to_string(),
+                    "tesseract.scripts.ensure_ollama".to_string(),
                 ],
             ),
         ];
@@ -1361,6 +1376,7 @@ mod tests {
                 "Downloading dependencies…".to_string(),
                 "Downloading browser engine…".to_string(),
                 "Downloading voice model…".to_string(),
+                "Setting up embeddings…".to_string(),
                 "Ready.".to_string(),
             ],
             "progress messages must fire in stage order"
@@ -1504,10 +1520,43 @@ mod tests {
             .expect("a failed voice-model fetch must not be fatal");
 
         assert_eq!(py, venv_python(home.path()));
-        assert_eq!(*python_calls.borrow(), 2, "both stages must have run");
+        assert_eq!(
+            *python_calls.borrow(),
+            3,
+            "a failed voice fetch must not skip the embedding stage after it"
+        );
         assert!(
             marker_path(home.path()).exists(),
             "the marker must still be written despite the voice-model failure"
+        );
+    }
+
+    #[test]
+    fn provision_stages_survives_a_failed_embedding_setup() {
+        let home = TempDir::new("embeddings-fail");
+        let uv = PathBuf::from("uv-stub");
+        let python_calls = RefCell::new(0u32);
+
+        let run_uv = |_: &Path, _: &[&str]| -> Result<(), String> { Ok(()) };
+        let run_python = |_: &Path, _: &[&str]| -> Result<(), String> {
+            *python_calls.borrow_mut() += 1;
+            // Last stage is ensure_ollama; an offline first run fails it.
+            if *python_calls.borrow() == 3 {
+                Err("ollama boom".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        let progress = |_: &str| {};
+
+        let py = provision_stages(home.path(), &uv, &progress, &run_uv, &run_python)
+            .expect("a failed embedding setup must not be fatal");
+
+        assert_eq!(py, venv_python(home.path()));
+        assert!(
+            marker_path(home.path()).exists(),
+            "an offline first run must still finish provisioning; embeddings \
+             are optional and degrade to keyword-only search"
         );
     }
 
