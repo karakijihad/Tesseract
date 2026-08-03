@@ -166,11 +166,10 @@ api:
         cost_per_million_chars: 10.00  # metered against char_count (text + tone_prompt)
 
   anthropic:
-    # Enabled by default — this is the one provider a fresh install can
-    # count on: the setup checklist requires ANTHROPIC_API_KEY, so
-    # `chat_brain` and the cheap delegation roles in roles.yaml default
-    # their primary here. Every other API provider stays available for
-    # anyone who adds its key.
+    # Enabled but not wired: no role names an anthropic ref by default.
+    # A fresh install talks through `api.openai.*` (chat_brain) and
+    # `api.nim.*` (background roles) — see roles.yaml. Add
+    # ANTHROPIC_API_KEY and repoint a role to use these entries.
     enabled: true
     api_key_env: ANTHROPIC_API_KEY
     timeout_seconds: 60
@@ -274,9 +273,9 @@ api:
           text_to_image: true
           image_to_image: true
 
-  # DeepSeek (api.deepseek.com) — OpenAI-compatible. v4-flash is cheap/fast
-  # (non-thinking); v4-pro is stronger. Server-side prompt caching is
-  # automatic (cache-hit pricing) — no client param needed.
+  # NVIDIA build tier — OpenAI-compatible, free with no payment method.
+  # Every background role defaults here so unattended work stays off the
+  # paid chat key.
   nim:
     enabled: true
     base_url: "${NVIDIA_NIM_BASE_URL:-https://integrate.api.nvidia.com/v1}"

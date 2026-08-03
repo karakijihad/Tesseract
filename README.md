@@ -46,25 +46,31 @@ This takes several minutes — roughly five to ten, depending on your internet c
 
 ## One thing to add before you can talk to it
 
-Nothing is _required_ to install and start TESSERACT — it will open, set itself up, and run. But to actually hold a conversation it needs a language model, and out of the box it's set up to use Anthropic's Claude. So add one key:
+Nothing is _required_ to install and start TESSERACT — it will open, set itself up, and run. But to actually hold a conversation it needs a language model, and out of the box it's set up to use OpenAI. So add one key:
 
-1. Get an API key from [console.anthropic.com](https://console.anthropic.com/settings/keys).
+1. Get an API key from [platform.openai.com](https://platform.openai.com/signup).
 2. Open the `.env` file in your data folder (see below) — it's already there, with every key listed and commented.
-3. Paste your key after `ANTHROPIC_API_KEY=`, save, and **restart TESSERACT**. It only reads that file at startup.
+3. Paste your key after `OPENAI_API_KEY=`, save, and **restart TESSERACT**. It only reads that file at startup.
 
 Until you do, TESSERACT still opens and works — but when you send a message it will tell you it has no chat provider yet, rather than sitting silent.
 
-### You aren't tied to Anthropic
+### One more key, free, worth adding
 
-Anthropic is only the shipped default, because it needs the fewest steps to get running. TESSERACT can use any of these, and can mix them — one model for conversation, a different one for background work, a local one for anything you'd rather keep on your machine:
+TESSERACT does a lot of work you never see: an observer that watches the conversation, sub-agents, background reasoning, image generation. Out of the box all of that is pointed at **NVIDIA's build tier, which is free and needs no payment method** — so it doesn't run up a bill on your OpenAI key.
+
+Get a key at [build.nvidia.com](https://build.nvidia.com/) and paste it after `BUILD_NVIDIA_KEY=`. If you skip it, everything still works; that background work just falls back to OpenAI and you pay for it.
+
+### You aren't tied to OpenAI
+
+OpenAI is only the shipped default. TESSERACT can use any of these, and can mix them — one model for conversation, a different one for background work, a local one for anything you'd rather keep on your machine:
 
 |                            |                                                                                          |
 | -------------------------- | ---------------------------------------------------------------------------------------- |
-| **Paid APIs**              | Anthropic (Claude) · OpenAI (GPT) · Google (Gemini) · xAI (Grok) · DeepSeek · NVIDIA NIM |
+| **Paid APIs**              | OpenAI (GPT) · Anthropic (Claude) · Google (Gemini) · xAI (Grok) · NVIDIA NIM (free tier) |
 | **Subscription CLIs**      | Claude Code · Codex — use a subscription you already pay for, no separate API bill       |
 | **Local, on your machine** | Ollama for chat and embeddings · Whisper for hearing you · Piper and Kokoro for speaking |
 
-Each needs its own key in `.env` (except the local ones, which need nothing). Which model handles which job is set in `config/roles.yaml`, and you can change it while TESSERACT is running — it picks up the change without a restart.
+Each needs its own key in `.env` (except the local ones, which need nothing). Which model handles which job is set in `config/roles.yaml`, or under **Settings → Model roles**, and you can change it while TESSERACT is running — it picks up the change without a restart. [SETUP.md](SETUP.md) walks through swapping a provider and adding one that isn't listed.
 
 Beyond a chat model, everything else is genuinely optional: web search, image generation, Telegram. Each is unlocked by adding its own key, and if you ask for something that needs a key you haven't added, TESSERACT tells you at that moment instead of refusing to start. You can see what's on and what's off under **Settings → Capabilities**.
 
@@ -76,6 +82,21 @@ Beyond a chat model, everything else is genuinely optional: web search, image ge
 - **Its research library** — documents you add are indexed and searchable.
 
 These all need a language model to be _useful_ in conversation, but they run on your machine and cost nothing.
+
+## What happens when a key is missing
+
+Nothing fails at startup. TESSERACT starts with whatever you've given it and tells you at the moment you ask for something it can't do. The full table is in [SETUP.md](SETUP.md); the short version:
+
+| Missing               | What you lose                                     | What you still have                                    |
+| --------------------- | ------------------------------------------------- | ------------------------------------------------------ |
+| Chat key              | Conversation                                       | Everything else — it just can't reply                   |
+| `BUILD_NVIDIA_KEY`    | Free background work                               | The same work, billed to your chat key instead          |
+| `BRAVE_SEARCH_API_KEY`| The `web_search` tool                              | Memory, vault, and the model's own knowledge            |
+| `TAVILY_API_KEY`      | `tavily_search` / pulling a web page into the vault| The same — these two are separate from Brave, not a fallback for it |
+| Ollama                | Meaning-based search of memory and the vault       | Keyword search over both, automatically                 |
+| Telegram token        | The Telegram bridge                                | Everything else; the bridge just stays off              |
+
+Web search is the one people trip over: **Brave and Tavily are two different tools, not alternatives.** Brave backs `web_search`; Tavily backs `tavily_search` and `tavily_extract`. Neither key covers the other's tools, so if you want the web fully available, add both. Both have free tiers.
 
 ## Where your data lives
 
