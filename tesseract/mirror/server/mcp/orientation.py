@@ -152,6 +152,21 @@ _FILESYSTEM = """THE FILESYSTEM
 
   Write in tars-workshop/. That directory exists to be written in."""
 
+# The store only stays shared if connecting models actually write to it. Every
+# other block here describes what exists; this one asks for something, and it
+# goes last so it reads as the instruction the session closes on. Deliberately
+# narrow about what to save — an open invitation produces transcript dumps,
+# which cost more to retrieve past than they are worth.
+_CLOSING = """BEFORE YOU FINISH
+  Save what outlived this session. A decision and the reason behind it, a
+  constraint you discovered the hard way, a preference the operator stated,
+  where something non-obvious lives — memory_save takes these.
+
+  Not the transcript, not a summary of what you did, not anything already
+  recoverable from the code or its history. Someone else picks up this work
+  next — possibly the resident assistant, possibly the other CLI — and reads
+  the same store you just read. Leave it better than you found it."""
+
 
 def build_instructions() -> str:
     """Server ``instructions`` for the ``initialize`` result."""
@@ -171,7 +186,7 @@ def build_instructions() -> str:
             "  memory_search — the operator's long-term memory.\n"
             "  vault_search / vault_query — the research library."
         )
-    return "\n\n".join([_PREAMBLE, reach, _SURFACE, _FILESYSTEM])
+    return "\n\n".join([_PREAMBLE, reach, _SURFACE, _FILESYSTEM, _CLOSING])
 
 
 __all__ = ["build_instructions"]
