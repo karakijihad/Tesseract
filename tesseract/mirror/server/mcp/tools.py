@@ -57,6 +57,12 @@ _DESCRIPTIONS: dict[str, str] = {
     "vault.ingest": "Ingest a local document into the vault (ASK).",
     "lane.ensure": "Ensure a named terminal lane (claude/codex) exists; returns its lane id (ASK).",
     "lane.send": "Send input to a terminal lane (ASK).",
+    "lane.turn": (
+        "Send a task to a terminal lane and get the completed reply — send, "
+        "await and read in one call, instead of lane.send followed by polling "
+        "lane.read. Pass background false when the next step in this turn must "
+        "consume the reply inline."
+    ),
     "lane.read": "Read recent output from a terminal lane.",
     "lane.close": "Close a terminal lane (ASK).",
     "schedule.create": "Create a scheduled job (ASK).",

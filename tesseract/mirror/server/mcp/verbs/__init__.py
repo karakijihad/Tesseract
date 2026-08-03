@@ -31,6 +31,7 @@ from tesseract.mirror.server.mcp.verbs.lane import (
     lane_ensure,
     lane_read,
     lane_send,
+    lane_turn,
 )
 from tesseract.mirror.server.mcp.verbs.memory import (
     memory_save,
@@ -73,6 +74,7 @@ CALL_VERBS: dict[str, CallHandler] = {
     # P3 s2 — lane / schedule / surface (kernel-tool-backed)
     "lane.ensure": lane_ensure,
     "lane.send": lane_send,
+    "lane.turn": lane_turn,
     "lane.read": lane_read,
     "lane.close": lane_close,
     "schedule.create": schedule_create,

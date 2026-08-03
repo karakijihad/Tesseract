@@ -48,6 +48,7 @@ _KNOWN_VERBS: frozenset[str] = frozenset(
         "vault.ingest",
         "lane.ensure",
         "lane.send",
+        "lane.turn",
         "lane.read",
         "lane.close",
         "schedule.create",

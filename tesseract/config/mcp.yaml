@@ -60,10 +60,19 @@ verbs:
   memory.save: "ask"
   memory.update: "ask"
   vault.ingest: "auto"
-  lane.ensure: "ask"
-  lane.send: "ask"
+  # The whole lane surface runs unattended (operator's call, 2026-08-03): a
+  # relay that stops for approval at every hop is not a relay. What this gives
+  # up is real and worth naming — lane.send/lane.turn inject instruction text
+  # into a CLI running outside this permission engine, and the ASK prompt was
+  # the only brake on that path (no iteration or budget cap reaches it;
+  # max_spawn_depth guards nesting, _check_daily_caps is autonomy-only, and
+  # the cost ledger does not debit subscription-backed lanes). The turn budget
+  # that replaces it belongs to the relay.
+  lane.ensure: "auto"
+  lane.send: "auto"
+  lane.turn: "auto"
   lane.read: "auto"
-  lane.close: "ask"
+  lane.close: "auto"
   schedule.create: "ask"
   schedule.update: "ask"
   schedule.run: "ask"
