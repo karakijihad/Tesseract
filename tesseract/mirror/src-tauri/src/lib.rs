@@ -275,6 +275,13 @@ fn kill_process_tree(child: &mut Child) {
 /// in a console-less GUI process. A backend that did not start is now a
 /// visible error instead of a dead-looking app.
 fn finish_provisioning_success(handle: &tauri::AppHandle, home: &PathBuf) {
+    // Populates the remembered `uv` path before the refresh spawns anything:
+    // `provision_hardware` needs it to install GPU wheels, and on an
+    // already-provisioned launch nothing else would have resolved it. An
+    // error here only costs that one stage, so it is logged, not propagated.
+    if let Err(e) = provision::resolve_uv(handle) {
+        shell_log::log_error(&format!("could not resolve uv for hardware profiling: {e}"));
+    }
     refresh_optional_assets(home);
     match spawn_supervisor(home) {
         Ok(child) => {

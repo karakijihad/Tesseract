@@ -107,8 +107,31 @@ dev = [
 # of this; the CUDA 12 wheels are here so Kokoro's CUDAExecutionProvider
 # can resolve its DLLs on Windows. Voice models are downloaded into
 # `tesseract/voice/models/{piper,kokoro}/`; pip only ships the runtime.
+#
+# Installing this extra is NOT sufficient on its own, for two reasons, both
+# measured rather than assumed:
+#
+# 1. The upper bound is load-bearing. onnxruntime-gpu 1.27 moved to CUDA 13
+#    and asks the loader for `cublasLt64_13.dll`, which the cu12 wheels
+#    beside it do not provide; the session then falls back to CPU silently,
+#    reporting CUDAExecutionProvider as *available* the whole time. 1.26 is
+#    the last CUDA 12 build — verified against this catalog's Kokoro model.
+# 2. `onnxruntime` (CPU) arrives transitively via piper-tts/kokoro-onnx and
+#    unpacks into the same `onnxruntime/` directory. Resolvers treat it as a
+#    separate distribution, so it is reinstalled by any later editable
+#    install and whichever landed last wins. It has to be REMOVED after the
+#    install, which no extra can express — `scripts/provision_hardware.py`
+#    owns that step.
 voice-local = [
-    "onnxruntime-gpu>=1.20; platform_system == 'Windows'",
+    "onnxruntime-gpu>=1.20,<1.27; platform_system == 'Windows'",
+    # cuBLAS and cuDNN are ALSO in [gpu], and both extras need them: the CUDA
+    # execution provider links against them exactly as CTranslate2 does, and
+    # `onnxruntime_providers_cuda.dll` will not load without them on the DLL
+    # search path. Declaring them only in [gpu] meant a machine that wanted
+    # Kokoro on the GPU but had declined speech-to-text installed a stack
+    # that could never resolve, and silently synthesised on the CPU.
+    "nvidia-cublas-cu12>=12.9.2.10; platform_system == 'Windows'",
+    "nvidia-cudnn-cu12>=9.21.1.3; platform_system == 'Windows'",
     "nvidia-cuda-runtime-cu12; platform_system == 'Windows'",
     "nvidia-cuda-nvrtc-cu12; platform_system == 'Windows'",
     "nvidia-cufft-cu12; platform_system == 'Windows'",

@@ -1,0 +1,74 @@
+# What this machine should be given, decided by what it turns out to have.
+#
+# Speech models differ enormously in what they cost to run, and the cost
+# depends on the machine far more than on the model. The largest model is
+# the most accurate one and, without a supported graphics card to run it on,
+# by far the most expensive — slow enough to make speech unusable. So the
+# install looks at the machine first and picks accordingly, rather than
+# giving every computer the same payload.
+#
+# `profiles` is ordered and the FIRST match wins. Put the most specific
+# first, and leave the last profile's `match` empty so that every machine
+# resolves to something — a machine that matched nothing would get no answer
+# at all, and during setup that means silently falling back to the slowest
+# configuration.
+#
+# Applied once, during setup, before the model files are downloaded — the
+# choice has to be settled before there is anything to fetch. It is recorded
+# afterwards and not applied again, so a model you choose yourself in
+# Settings stays chosen. The package check is separate and runs on every
+# launch, which is how a computer that was offline during setup still picks
+# up graphics acceleration later. When it is already in place, nothing is
+# downloaded and nothing is installed.
+#
+# What this file does not decide: which voice speaks. That is asked during
+# setup and it is a question about character, not speed — answering it from
+# your hardware would overrule something you said in words.
+
+profiles:
+  - name: nvidia
+    # The threshold is about headroom for the model's weights, not about
+    # speed: any supported card runs the large model far faster than a
+    # processor does.
+    match:
+      gpu_vendor: nvidia
+      min_vram_mb: 4096
+    stt_model: large-v3-turbo
+    pip_extras: [gpu, voice-local]
+    tts_note: kokoro-gpu
+
+  - name: nvidia-small-vram
+    match:
+      gpu_vendor: nvidia
+      min_vram_mb: 0
+    stt_model: small
+    pip_extras: [gpu, voice-local]
+    tts_note: kokoro-gpu
+
+  - name: cpu
+    # The floor, and the reason its match is deliberately empty. A smaller
+    # model here because there is no card to absorb the cost, and the note
+    # points at the lighter of the two voices — the heavier one synthesises
+    # close to the speed it speaks on a processor, so the first sentence
+    # takes noticeably longer to start.
+    match: {}
+    stt_model: base
+    pip_extras: []
+    tts_note: piper-preferred
+
+# Packages to remove after the graphics extras are installed. The processor
+# build of the speech runtime is pulled in automatically as a dependency of
+# the voice engines and unpacks into the same folder as the graphics build,
+# where whichever was written last decides whether the card is used at all.
+# Package metadata cannot express "install this and drop that", so it is done
+# here, as a step, after the install rather than before it.
+conflicts:
+  voice-local: [onnxruntime]
+
+# Which speech engine each graphics package set exists to speed up. If you
+# turned an engine off during setup, its packages are not installed — there
+# is nothing for them to accelerate, and declining a feature should not cost
+# you a two-gigabyte download for it.
+extra_consumers:
+  gpu: [whisper]
+  voice-local: [kokoro]

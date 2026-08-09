@@ -65,10 +65,7 @@ async def transcribe_voice_audio(
             started = time.perf_counter()
             model = local_whisper.get_model(cfg)
             segments, info = model.transcribe(
-                tmp_path,
-                language=cfg.language,
-                beam_size=cfg.beam_size,
-                vad_filter=True,
+                tmp_path, **local_whisper.decode_options(cfg)
             )
             text = " ".join(
                 seg.text.strip()

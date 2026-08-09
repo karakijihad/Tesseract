@@ -1,9 +1,25 @@
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Emitter, Manager};
 
 /// Bump when the bundled deps change so an upgraded app re-provisions.
+///
+/// Deliberately NOT bumped for the GPU-wheel work: a mismatch here sends
+/// every existing install through `uv venv --clear`, and the corrected
+/// `[voice-local]` bound reaches them through `provision_hardware` on the
+/// next launch instead — same outcome, without rebuilding a working venv.
 pub const DEPS_VERSION: &str = "5";
+
+/// Where `uv` was found, remembered so the Python stages can be handed it.
+///
+/// `uv.exe` ships as a Tauri resource, which puts it OUTSIDE the state root —
+/// so `provision_hardware.py`, which has to install the GPU wheels this
+/// machine turns out to want, cannot derive the path from `TESSERACT_HOME`
+/// the way it derives every other one. Resolved once by `resolve_uv` and
+/// exported to every child by `point_at_state_root`, rather than threaded
+/// through call sites that have no other use for it.
+static UV_PATH: OnceLock<PathBuf> = OnceLock::new();
 
 /// The INSTALL ROOT: %LOCALAPPDATA%\com.tesseract.mirror (writable).
 /// `app/`, `home/` and `runtime/` hang off it. Falls back to an explicit
@@ -142,7 +158,31 @@ pub(crate) fn hide_console(cmd: &mut std::process::Command) {
 /// that decision into config, and these then have nothing to fetch, on this
 /// launch and every later one. Gating in the shell instead would put the same
 /// decision in two places and let them disagree.
-const LAUNCH_REFRESH_ASSETS: [&[&str]; 5] = [
+/// `provision_hardware` is here for its package half: it is how a machine
+/// that was offline on first run — or one whose wheels were wrong before this
+/// version shipped — reaches the GPU path without a reinstall. When they
+/// already resolve it returns without invoking the installer at all, which is
+/// what keeps an every-launch retry free.
+///
+/// That it can therefore pull ~2.2 GB of CUDA wheels in the background on an
+/// already-provisioned machine is a WEIGHED DECISION, not an oversight: the
+/// standing rule is that the install detects what the machine can sustain and
+/// then gives it that, and a computer whose speech is unusably slow is not
+/// better off waiting to be asked. It is bounded — nothing is fetched when
+/// the packages already load, when there is no CUDA device, or when the
+/// operator declined the engines the wheels would accelerate. Surfacing the
+/// download while it happens is the provisioning-transparency work, not a
+/// reason to withhold the capability until then.
+///
+/// These are spawned CONCURRENTLY, so nothing here may depend on running
+/// before another entry. The model-choice half is ordered in
+/// `provision_stages` instead. The one case where that matters is an install
+/// whose first run never got to profile: the fetcher can then read
+/// `providers.yaml` in the same moment the profiler is rewriting it and
+/// fetch the outgoing model. It settles on the next launch — the profile is
+/// recorded by then, and the fetcher is a no-op once the snapshot is present.
+const LAUNCH_REFRESH_ASSETS: [&[&str]; 6] = [
+    &["-m", "tesseract.scripts.provision_hardware"],
     &["-m", "tesseract.scripts.fetch_whisper_model"],
     &["-m", "tesseract.scripts.fetch_kokoro_voice"],
     &["-m", "tesseract.scripts.fetch_piper_voice"],
@@ -245,10 +285,13 @@ pub fn provision(app: &AppHandle, home: &Path) -> Result<PathBuf, ProvisionError
 /// Locates the bundled `uv.exe` the installer ships as a Tauri resource.
 /// Shared by `provision()` and `reinstall_deps` so the resource path and its
 /// error text exist in exactly one place.
-fn resolve_uv(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path()
+pub fn resolve_uv(app: &AppHandle) -> Result<PathBuf, String> {
+    let uv = app
+        .path()
         .resolve("resources/binaries/uv.exe", BaseDirectory::Resource)
-        .map_err(|e| format!("resource resources/binaries/uv.exe: {e}"))
+        .map_err(|e| format!("resource resources/binaries/uv.exe: {e}"))?;
+    let _ = UV_PATH.set(uv.clone());
+    Ok(uv)
 }
 
 /// Every post-clone provisioning stage, in order, with the progress sink and
@@ -302,6 +345,22 @@ fn provision_stages(
     // failing the install over it would be a bad trade.
     progress("Applying your setup…");
     let _ = run_python(&py, &["-m", "tesseract.scripts.apply_first_run_setup"]);
+
+    // Between the config seed and the fetchers, and that position is the
+    // whole point: this decides WHICH speech model this machine should have,
+    // and the fetch stage below downloads whatever `providers.yaml` names by
+    // then. Run it after and the machine downloads one model and uses
+    // another; run it before the seed and there is no config to write into.
+    //
+    // Also installs the GPU wheels the profile calls for — the step that was
+    // missing entirely, which is why a laptop with an NVIDIA card ran its
+    // speech models on the CPU and paid 75 seconds a turn for it.
+    //
+    // Best-effort like every stage around it: a machine that could not be
+    // profiled keeps the shipped defaults and the CPU path, which is slow
+    // rather than broken.
+    progress("Checking your hardware…");
+    let _ = run_python(&py, &["-m", "tesseract.scripts.provision_hardware"]);
 
     // Best-effort, and each one reads the config the setup form just wrote:
     // an operator who declined speech has no lane named in `roles.yaml`, so
@@ -590,6 +649,12 @@ fn finalize_clone(staging: &Path, app_dir: &Path) -> Result<(), String> {
 pub(crate) fn point_at_state_root(cmd: &mut std::process::Command, root: &Path) {
     cmd.current_dir(app_dir(root))
         .env("TESSERACT_HOME", home_dir(root));
+    // Only `provision_hardware` reads it; every other stage ignores it. Set
+    // here rather than at that one call site so the launch-refresh path and
+    // the first-run path cannot disagree about whether it was exported.
+    if let Some(uv) = UV_PATH.get() {
+        cmd.env("TESSERACT_UV", uv);
+    }
 }
 
 /// Runs a provisioning subprocess to completion, mapping a non-zero exit into
@@ -1368,6 +1433,69 @@ mod tests {
         ));
     }
 
+    /// `provision_hardware.py` cannot install the GPU wheels without being
+    /// handed the `uv` path, and `uv.exe` ships as a resource outside the
+    /// state root, so it is the one thing the Python side cannot derive for
+    /// itself. The stage-order test cannot cover this: it injects bare
+    /// closures that never build a `Command`, so nothing there exercises the
+    /// env at all. Without this, the handoff could be dropped and every
+    /// affected machine would quietly stay on the CPU path — which is
+    /// precisely the failure the stage exists to end, and it fails silently.
+    /// The launch-refresh list is what carries the hardware check to an
+    /// ALREADY-provisioned machine — the one that was offline during setup,
+    /// or whose wheels were wrong before this version. Dropping it from here
+    /// leaves those installs on the CPU path with no path back short of a
+    /// reinstall, and nothing else would fail.
+    #[test]
+    fn the_launch_refresh_list_carries_the_hardware_check() {
+        let modules: Vec<&str> = LAUNCH_REFRESH_ASSETS
+            .iter()
+            .filter_map(|args| args.last().copied())
+            .collect();
+        assert!(
+            modules.contains(&"tesseract.scripts.provision_hardware"),
+            "hardware profiling must be retried on every launch, got {modules:?}",
+        );
+        // Every entry is a `python -m <module>` pair; a malformed one would
+        // spawn silently and do nothing, since these are never awaited.
+        for args in LAUNCH_REFRESH_ASSETS {
+            assert_eq!(args[0], "-m", "launch-refresh entries must be `-m <module>`");
+        }
+    }
+
+    #[test]
+    fn point_at_state_root_hands_the_uv_path_to_the_python_stages() {
+        let home = TempDir::new("uv-handoff");
+        let _ = UV_PATH.set(home.path().join("resources").join("uv.exe"));
+        // Read back what the OnceLock actually holds rather than trusting our
+        // own `set`: cargo runs the whole file in one process, so a future
+        // test setting it first would win, and asserting against the local
+        // value would then fail for a reason unrelated to the handoff.
+        let uv = UV_PATH.get().expect("UV_PATH must be set by now").clone();
+
+        let mut cmd = std::process::Command::new("python");
+        point_at_state_root(&mut cmd, home.path());
+
+        let envs: Vec<_> = cmd.get_envs().collect();
+        let uv_env = envs
+            .iter()
+            .find(|(k, _)| *k == std::ffi::OsStr::new("TESSERACT_UV"))
+            .map(|(_, v)| v.expect("TESSERACT_UV must carry a value"));
+        assert_eq!(
+            uv_env,
+            Some(uv.as_os_str()),
+            "the python stages must receive the resolved uv path",
+        );
+
+        // The state root still has to arrive too — this must not have been
+        // bought by breaking what was already there.
+        let home_env = envs
+            .iter()
+            .find(|(k, _)| *k == std::ffi::OsStr::new("TESSERACT_HOME"))
+            .map(|(_, v)| v.expect("TESSERACT_HOME must carry a value"));
+        assert_eq!(home_env, Some(home_dir(home.path()).as_os_str()));
+    }
+
     #[test]
     fn provision_stages_runs_every_stage_in_order_with_the_exact_argv() {
         let home = TempDir::new("stages-order");
@@ -1440,6 +1568,15 @@ mod tests {
                     "tesseract.scripts.apply_first_run_setup".to_string(),
                 ],
             ),
+            // After the config seed, before the fetchers: it chooses the
+            // speech model they then download. This position is the contract.
+            (
+                py_path.clone(),
+                vec![
+                    "-m".to_string(),
+                    "tesseract.scripts.provision_hardware".to_string(),
+                ],
+            ),
             (
                 py_path.clone(),
                 vec![
@@ -1490,6 +1627,7 @@ mod tests {
                 "Downloading dependencies…".to_string(),
                 "Downloading browser engine…".to_string(),
                 "Applying your setup…".to_string(),
+                "Checking your hardware…".to_string(),
                 "Downloading speech recognition model…".to_string(),
                 "Downloading voice models…".to_string(),
                 "Downloading reranker model…".to_string(),
@@ -1644,6 +1782,7 @@ mod tests {
     fn a_failed_optional_stage_never_skips_the_ones_behind_it() {
         for failing in [
             "tesseract.scripts.apply_first_run_setup",
+            "tesseract.scripts.provision_hardware",
             "tesseract.scripts.fetch_whisper_model",
             "tesseract.scripts.fetch_kokoro_voice",
             "tesseract.scripts.fetch_piper_voice",

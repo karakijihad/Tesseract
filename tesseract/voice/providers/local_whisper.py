@@ -24,6 +24,8 @@ _PCM_SAMPLE_RATE_HZ = 16_000
 # Compute types paired with each resolved device. CPU int8 is the only
 # widely-safe CTranslate2 quantisation; int8_float16 needs a GPU.
 _CPU_COMPUTE_TYPE = "int8"
+# What a blank `roles.yaml::...language` resolves to. See `decode_options`.
+_DEFAULT_LANGUAGE = "en"
 _CUDA_COMPUTE_TYPE = "int8_float16"
 _model_cache: dict[tuple[str, str, str], Any] = {}
 # Config key → (device, compute_type) actually loaded. Diverges from the key
@@ -325,6 +327,36 @@ def _pcm_to_float32(audio_bytes: bytes) -> np.ndarray:
     return samples
 
 
+def decode_options(cfg: LocalWhisperConfig) -> dict[str, Any]:
+    """The arguments every `model.transcribe` call in the runtime shares.
+
+    One builder because these drifted: `warm_up` passed `cfg.language or
+    "en"` where `transcribe` passed it bare, so a config that left the
+    language blank warmed a path the first real utterance did not take and
+    paid for language detection then.
+
+    `condition_on_previous_text` defaults on upstream, which is what makes a
+    mis-heard phrase repeat itself across segments. Turning it off is a
+    correctness choice, not a speed one — measured on CPU int8 it moves
+    latency by less than the run-to-run spread.
+    """
+    # Blank falls back to English rather than to detection. Detection costs a
+    # fixed pass over the first 30s on every call regardless of clip length —
+    # on CPU that pass alone was most of a 38s transcription, and it is why a
+    # 4.5s utterance cost the same as a 17.5s one. English is the shipped
+    # default and the config key remains the override: name any language here
+    # and it is honoured. This is deliberately not "auto" — an install that
+    # seeded before the default was pinned still has a blank value, and config
+    # seeding only ever ADDS keys, so those installs could not be reached any
+    # other way.
+    return {
+        "language": cfg.language or _DEFAULT_LANGUAGE,
+        "beam_size": cfg.beam_size,
+        "vad_filter": True,
+        "condition_on_previous_text": False,
+    }
+
+
 async def transcribe(audio_bytes: bytes, cfg: LocalWhisperConfig) -> str:
     if not audio_bytes:
         return ""
@@ -337,12 +369,7 @@ async def transcribe(audio_bytes: bytes, cfg: LocalWhisperConfig) -> str:
         # faster-whisper returns a generator — the CTranslate2 compute (and
         # any CUDA-runtime failure) happens while consuming it, not at the
         # call. Both must sit inside the caller's try.
-        segments, _info = model.transcribe(
-            samples,
-            language=cfg.language,
-            beam_size=cfg.beam_size,
-            vad_filter=True,
-        )
+        segments, _info = model.transcribe(samples, **decode_options(cfg))
         return " ".join(
             seg.text.strip() for seg in segments if getattr(seg, "text", "").strip()
         ).strip()
@@ -382,12 +409,7 @@ async def warm_up(cfg: LocalWhisperConfig) -> None:
     samples = np.zeros(_PCM_SAMPLE_RATE_HZ // 10, dtype=np.float32)
 
     def _drain(model: Any) -> None:
-        segments, _info = model.transcribe(
-            samples,
-            language=cfg.language or "en",
-            beam_size=cfg.beam_size,
-            vad_filter=True,
-        )
+        segments, _info = model.transcribe(samples, **decode_options(cfg))
         for _segment in segments:
             pass
 
