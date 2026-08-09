@@ -128,6 +128,11 @@ def create_app(config: ServerConfig) -> web.Application:
     app["code_watcher"] = None  # CodeWatcher | None — source drift detection (mirror.yaml::code_watch)
     app["config_reload_toasts_enabled"] = _config_reload_toasts_enabled(config)
     app["_warmup_tasks"] = []  # list[asyncio.Task] — fire-and-forget model warm-ups; drained on shutdown
+    # Created here, not lazily in the appender: `_build_voice_runtime` queues
+    # into it from a worker thread while the drainer consumes it on the loop,
+    # and two racing `setdefault` calls could each install a list, silently
+    # dropping one lane's warm-up.
+    app["_serial_warmups"] = []  # list[(name, coro)] — GIL-bound, drained one at a time
     app["log_forwarder"] = None  # MirrorLogHandler | None — installed by _on_startup, removed on shutdown
     app["workspace_event_store"] = _build_workspace_event_store()
     app["conversation_store"] = _build_conversation_store()
@@ -829,6 +834,11 @@ async def _init_background(app: web.Application) -> None:
         except Exception:
             log.exception("reattach_operator_panes: failed — boot continues")
         log.info("mirror: background init complete; backend fully ready")
+        # Deferred to here deliberately: these block the loop while they run
+        # (see `_queue_serial_warmup`), and doing that before the backend is
+        # answering is what produced the UI's "failed to fetch".
+        app["_serial_warmups_started"] = True
+        _ensure_serial_drainer(app)
     except Exception:
         log.exception("mirror: background init crashed — leaving backend in partial-ready state")
     finally:
@@ -1114,6 +1124,28 @@ async def _drain_warmup_tasks(app: web.Application) -> None:
     acceptable: the operator has already asked for shutdown, so we just
     don't block on long-running model loads."""
     pending = [t for t in app.get("_warmup_tasks", []) if not t.done()]
+    # The serial drainer is tracked separately (only one may exist — see
+    # `_ensure_serial_drainer`) and so is missed by the list above. Left
+    # running, shutdown tears down the voice engines while it is still
+    # building an ONNX session against them.
+    serial = app.get("serial_warmup_task")
+    if serial is not None and not serial.done():
+        pending.append(serial)
+    # Anything still queued is dropped rather than run: the operator has
+    # asked to exit, and closing the coroutines keeps "never awaited"
+    # warnings out of the shutdown log they would be read in.
+    #
+    # Emptied IN PLACE and taken before the cancel below, for two reasons.
+    # The drainer captured this exact list object when it started, so
+    # rebinding the key would leave it popping from the old one; and taking
+    # the entries first means the drainer cannot pop one in the same tick
+    # this loop closes it, which would raise "cannot close a running
+    # coroutine" in the middle of an otherwise clean shutdown.
+    queue = app.get("_serial_warmups") or []
+    queued = list(queue)
+    queue.clear()
+    for _name, coro in queued:
+        coro.close()
     if not pending:
         return
     for t in pending:
@@ -1357,6 +1389,124 @@ async def _warm_embeddings(bundle) -> None:
             await reranker.warm_up()
         except Exception:
             log.exception("reranker warm_up failed — first retrieval loads lazily")
+
+
+def _queue_serial_warmup(app: web.Application, coro, *, name: str) -> None:
+    """Hold a GIL-BOUND warm-up back, to be run one at a time after boot.
+
+    `asyncio.to_thread` only buys concurrency when the native call releases
+    the GIL, and onnxruntime's session constructor does not: measured on an
+    8 GB laptop, building the Kokoro session blocks the event loop for 4.6s
+    of its 4.7s, and Piper for 6.5s of 6.9s. CTranslate2 DOES release it —
+    whisper's 13.9s load costs 0.25s of lag — which is why it still goes
+    through `_schedule_warmup` and is not queued here.
+
+    So these cannot overlap each other, and running them as three concurrent
+    tasks never made boot shorter; it only stacked the blocked stretches into
+    one long outage. A live boot showed 36.5s in a single window, during which
+    the backend answered no HTTP at all and the UI reported "failed to fetch".
+    Worse, the lost wall-clock ran Kokoro's own preload past its timeout, and
+    the timeout latched the lane off — so a slow boot silently demoted the
+    operator to the fallback voice for the rest of the session.
+
+    Draining them serially and only after `background init complete` keeps the
+    window where the UI connects answerable, at no cost to total boot time.
+    """
+    app.setdefault("_serial_warmups", []).append((name, coro))
+    # Boot queues these before the drain is started, so nothing to kick. A
+    # LATER caller — a voice-config hot reload rebuilding the runtime — has
+    # missed that drain, and its warm-ups would otherwise never run.
+    #
+    # Exactly ONE drainer may exist. A reload queues two lanes, and kicking a
+    # drainer per queued item gives two drainers that pop different entries
+    # and await them at the same time — which is precisely the concurrent
+    # GIL-bound session construction this whole mechanism exists to prevent,
+    # reintroduced by the fix for the reload gap.
+    if app.get("_serial_warmups_started"):
+        _ensure_serial_drainer(app)
+
+
+def _ensure_serial_drainer(app: web.Application) -> None:
+    """Start the drainer if and only if one is not already running.
+
+    The single-drainer rule is the mechanism. Two drainers pop different
+    entries and await them concurrently, which is the GIL contention this
+    exists to prevent — so the identity of the running task is tracked in one
+    place (`serial_warmup_task`) rather than through the generic warm-up task
+    list, where a second caller could not see it.
+
+    Callable from off the loop: `_build_voice_runtime` runs under
+    `asyncio.to_thread` on a hot reload, where `create_task` would raise.
+    """
+    if app.get("_serial_drain_active"):
+        return  # it drains until empty, so it will reach the new entry
+
+    def _spawn() -> None:
+        if app.get("_serial_drain_active"):
+            return  # won the race to schedule, lost the race to be first
+        # Set BEFORE creating the task: the coroutine does not start running
+        # until the loop schedules it, and a second caller in between must
+        # not conclude that no drainer is coming.
+        app["_serial_drain_active"] = True
+        app["serial_warmup_task"] = asyncio.get_running_loop().create_task(
+            _drain_serial_warmups(app), name="mirror-serial-warmups",
+        )
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        main_loop = app.get("_main_loop")
+        if main_loop is None:
+            log.warning("serial warm-ups queued with no loop to drain them")
+            return
+        main_loop.call_soon_threadsafe(_spawn)
+        return
+    _spawn()
+
+
+async def _drain_serial_warmups(app: web.Application) -> None:
+    """Run the queued GIL-bound warm-ups one at a time, until none are left.
+
+    Sequential on purpose — see `_queue_serial_warmup`. Each failure is
+    logged and the next still runs: these are optimisations, and one lane
+    that could not preload must not stop the others from doing so.
+
+    Drains in a loop rather than taking one snapshot, because
+    `_build_voice_runtime` runs again on a voice-config hot reload and queues
+    a fresh pair. A single-shot drain would leave those sitting unexecuted
+    for the life of the process, and the symptom — lanes silently never
+    preloading again after any Settings change — would look like nothing at
+    all until the first sentence after a reload came back slow.
+    """
+    queue = app.setdefault("_serial_warmups", [])
+    try:
+        while True:
+            if not queue:
+                # Stand down, then look ONCE more. `task.done()` is not a safe
+                # signal for the queuer: this coroutine can decide the queue is
+                # empty and return while its Task is still not marked done, so
+                # a reload appending right then would see a live drainer, defer
+                # to it, and be stranded forever. Clearing the flag before the
+                # re-check closes that window — both halves run on the loop
+                # with no await between them, so the ordering is decided, not
+                # hoped for.
+                app["_serial_drain_active"] = False
+                if not queue:
+                    return
+                app["_serial_drain_active"] = True
+                continue
+            name, coro = queue.pop(0)
+            started = time.perf_counter()
+            try:
+                await coro
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("warmup %r failed — continuing fail-open", name)
+            else:
+                log.info("warmup %r ready in %.2fs", name, time.perf_counter() - started)
+    finally:
+        app["_serial_drain_active"] = False
 
 
 def _schedule_warmup(app: web.Application, coro, *, name: str) -> None:
@@ -2276,6 +2426,7 @@ def _build_voice_runtime(app: web.Application) -> None:
                     sample_rate=int(piper_entry.get("sample_rate", 22050)),
                     presets=presets,
                     preload=bool(piper_entry.get("preload", False)),
+                    timeout_seconds=float(piper_entry.get("timeout_seconds", 60.0)),
                 )
             if kokoro_entry:
                 kokoro_models_dir = Path(__file__).resolve().parents[2] / "voice" / "models" / "kokoro"
@@ -2330,13 +2481,13 @@ def _build_voice_runtime(app: web.Application) -> None:
                 and kokoro_config is not None
                 and (primary_tts_adapter == "kokoro" or kokoro_config.preload)
             ):
-                _schedule_warmup(app, app["tts_engine"].warm_up_kokoro(), name="kokoro")
+                _queue_serial_warmup(app, app["tts_engine"].warm_up_kokoro(), name="kokoro")
             if (
                 app["tts_engine"] is not None
                 and piper_config is not None
                 and (primary_tts_adapter == "piper" or piper_config.preload)
             ):
-                _schedule_warmup(app, app["tts_engine"].warm_up_piper(), name="piper")
+                _queue_serial_warmup(app, app["tts_engine"].warm_up_piper(), name="piper")
     except Exception:
         log.exception("voice runtime unavailable — /api/voice/* will report disabled")
 

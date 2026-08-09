@@ -50,6 +50,11 @@ class PiperTTSConfig:
     sample_rate: int
     presets: Mapping[str, PiperPreset] = field(default_factory=dict)
     preload: bool = False
+    # Warm-up cap, from `roles.yaml::voice.tts.settings`. Present for the
+    # same reason Kokoro's is: without it the engine used a hardcoded 60
+    # while the config asked for 30, so the lane's preload could run for
+    # twice what the operator had written down.
+    timeout_seconds: float = 60.0
 
 
 class PiperTTSError(RuntimeError):

@@ -298,7 +298,7 @@ def _load_kokoro(cfg: KokoroTTSConfig) -> dict[str, Any]:
     providers = [p for p in preferred if p in available] or ["CPUExecutionProvider"]
 
     try:
-        sess = ort.InferenceSession(str(cfg.model_path), providers=providers)
+        sess = _session_from_cached_graph(ort, cfg.model_path, providers)
     except Exception as exc:
         raise KokoroTTSError(f"onnxruntime InferenceSession failed: {exc}") from exc
 
@@ -324,6 +324,73 @@ def _load_kokoro(cfg: KokoroTTSConfig) -> dict[str, Any]:
         len(kokoro.get_voices()),
     )
     return entry
+
+
+def _session_from_cached_graph(ort: Any, model_path: Path, providers: list[str]) -> Any:
+    """Build the session from a pre-optimised graph, writing it on first use.
+
+    Most of an `InferenceSession` construction is graph optimisation, and it
+    is redone from scratch on every launch. That would be merely wasteful if
+    it happened off the event loop, but onnxruntime's constructor holds the
+    GIL, so every second of it is a second the backend answers nothing.
+
+    Measured on this catalog's Kokoro model: 4.26s to optimise-and-build,
+    1.96s to build from the cached graph. Lowering the optimisation level
+    instead reaches a similar build time but pays it back at every synthesis;
+    caching keeps the fully optimised graph and pays nothing.
+
+    The cache is derived, never authoritative: any failure to write it, and
+    any failure to load it, falls back to building from the original model.
+
+    It lives under `runtime/` and NOT beside the model. Beside the model is
+    inside the app tree, which the updater COPIES wholesale to swap versions —
+    a 325 MB derived file there would be duplicated on every update, making
+    worse the exact update-copy cost the plan already tracks. `runtime/` is
+    machine-local, never synced between the operator's machines, and correct
+    for something regenerable that describes this box's onnxruntime build.
+
+    Keyed by the model's name and mtime, so a re-fetched or swapped model
+    cannot silently keep using a graph optimised from the previous one.
+    """
+    from tesseract.paths import runtime_dir
+
+    try:
+        cache_dir = runtime_dir() / "onnx-cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cached = cache_dir / f"{model_path.stem}.optimized.onnx"
+    except OSError as exc:
+        logger.debug("Kokoro: no onnx cache dir (%s) — building from source", exc)
+        return ort.InferenceSession(str(model_path), providers=providers)
+    try:
+        fresh = cached.is_file() and cached.stat().st_mtime >= model_path.stat().st_mtime
+    except OSError:
+        fresh = False
+
+    if fresh:
+        options = ort.SessionOptions()
+        # The graph on disk is already optimised; re-optimising it is the
+        # cost this exists to avoid.
+        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+        try:
+            return ort.InferenceSession(str(cached), options, providers=providers)
+        except Exception as exc:  # noqa: BLE001 — a stale/corrupt cache is recoverable
+            logger.warning("Kokoro: cached graph unusable (%s) — rebuilding", exc)
+
+    options = ort.SessionOptions()
+    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    try:
+        options.optimized_model_filepath = str(cached)
+    except Exception:  # noqa: BLE001 — writing the cache is best-effort
+        logger.debug("Kokoro: cannot stage optimised graph at %s", cached)
+    try:
+        return ort.InferenceSession(str(model_path), options, providers=providers)
+    except Exception:
+        # A read-only or full model dir fails the WRITE, not the build, so
+        # retry once without asking for the cache before giving up.
+        logger.warning("Kokoro: could not write optimised graph — building without cache")
+        plain = ort.SessionOptions()
+        plain.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        return ort.InferenceSession(str(model_path), plain, providers=providers)
 
 
 def _resolve_style(kokoro: Any, mix: Mapping[str, float]) -> Any:

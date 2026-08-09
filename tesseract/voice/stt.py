@@ -121,14 +121,19 @@ class STTEngine:
                 timeout=max(self.local_config.timeout_seconds, 60.0),
             )
         except asyncio.TimeoutError:
-            self.local_disabled_reason = (
-                f"local Whisper preload timed out after {max(self.local_config.timeout_seconds, 60.0):.1f}s"
+            # Deliberately does NOT latch local STT off. This lane's fallback
+            # is a PAID cloud provider, so latching on a timeout means one
+            # slow boot silently starts billing the operator for every
+            # utterance until they notice and reset it in Settings — over a
+            # preload that ran out of wall-clock, which says nothing about
+            # whether the model works. A real load failure still latches,
+            # through the handler below.
+            logger.warning(
+                "local Whisper preload timed out after %.1fs — leaving the "
+                "lane available; the first utterance will load it lazily",
+                max(self.local_config.timeout_seconds, 60.0),
             )
-            self._pending_fallback_notice = (
-                f"Local STT disabled ({self.local_disabled_reason}); "
-                "falling back to paid Gemini cloud STT until reset in Settings."
-            )
-            raise
+            return
         except Exception as exc:
             self.local_disabled_reason = str(exc)[:300]
             self._pending_fallback_notice = (

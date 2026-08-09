@@ -112,8 +112,19 @@ class TTSEngine:
                 timeout=timeout,
             )
         except asyncio.TimeoutError:
-            self.kokoro_disabled_reason = f"Kokoro preload timed out after {timeout:.1f}s"
-            raise
+            # Deliberately does NOT latch the lane off. A preload that ran out
+            # of wall-clock says nothing about whether the model works — on a
+            # busy boot the session had already loaded on CUDA and it was the
+            # warm SYNTHESIS that got cancelled. Latching there demoted the
+            # operator to the fallback voice for the whole session over a
+            # timing accident, and the only clue was a traceback in the log.
+            # A real failure still latches, via the handler below.
+            logger.warning(
+                "Kokoro preload timed out after %.1fs — leaving the lane "
+                "available; the first sentence will load it lazily",
+                timeout,
+            )
+            return
         except Exception as exc:
             self.kokoro_disabled_reason = str(exc)[:300]
             raise
@@ -125,14 +136,26 @@ class TTSEngine:
         the next reload through Settings clears the latch."""
         if self.piper_config is None:
             return
+        # From config, like Kokoro's. A fixed 60 here ignored the
+        # `timeout_seconds: 30` the shipped `roles.yaml` declares, so the
+        # lane's preload ran for twice the cap the operator had written.
+        timeout = float(self.piper_config.timeout_seconds)
         try:
             await asyncio.wait_for(
                 piper_tts_provider.warm_up(self.piper_config),
-                timeout=60.0,
+                timeout=timeout,
             )
         except asyncio.TimeoutError:
-            self.piper_disabled_reason = "Piper preload timed out after 60.0s"
-            raise
+            # Same reasoning as Kokoro above: a slow preload is not a broken
+            # lane, and Piper is the lane that still speaks when the heavier
+            # one cannot. Latching it off over a timing accident removes the
+            # fallback precisely on the machines most likely to need it.
+            logger.warning(
+                "Piper preload timed out after %.1fs — leaving the lane "
+                "available; the first sentence will load it lazily",
+                timeout,
+            )
+            return
         except Exception as exc:
             self.piper_disabled_reason = str(exc)[:300]
             raise
