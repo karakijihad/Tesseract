@@ -1,26 +1,12 @@
-# TARS Cockpit — UI-facing configuration.
+# The assistant Cockpit — UI-facing configuration.
 #
-# trio: the two persistent lanes the cockpit's "trio" card renders. Each
-# lane's model comes from roles.yaml (the single source of truth for model
-# wiring) via model_role — no model id is hardcoded here.
-trio:
-  lanes:
-    - name: coder/claude
-      role: coder
-      kind: claude
-      model_role: claude_cli
-      read_only: false
-    - name: auditor/codex
-      role: auditor
-      kind: codex
-      model_role: codex_cli
-      # Reviewer lane: reports findings, never edits. Opens with the CLI's
-      # read-only sandbox so the audit boundary holds by construction.
-      read_only: true
-  # Claude<->Codex verification relay.
-  relay:
-    max_rounds: 2                    # two refinement rounds; a third degrades rather than improves
-    verify_by_default: true          # route code-modifying delegations through the relay by default
+# # Tier-0 verification gate: runs a project's `verify` commands through the
+# bash policy path before any model reviews the work.
+verify:
+  step_timeout_s: 600              # per-command ceiling; must stay <= the bash tool's 600s max
+  output_head_lines: 40
+  output_tail_lines: 60
+  output_max_chars: 8000
 
 conductor:
   relay_poll_s: 0.5

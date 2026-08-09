@@ -11,7 +11,7 @@ full-trust assumption an MCP client does not carry (Doclog 2026-07-01
 §MCPVerbDispatcher).
 
 Effective posture = ``strictest(mcp.yaml verb posture, trust-tier cap)``. There
-is no source-side floor: ``mcp.yaml`` is the authority, and it is DENY to TARS
+is no source-side floor: ``mcp.yaml`` is the authority, and it is DENY to the assistant
 in ``permissions.yaml``. A verb absent from its allowlist is default-deny. ASK
 verbs
 are gated by an injectable ``ask_fn``; with none wired they return an async
@@ -101,7 +101,7 @@ class MCPVerbDispatcher:
         """Effective posture for a verb+client. Default-deny for an
         un-allowlisted verb; otherwise the stricter of the mcp.yaml posture and
         the client's trust-tier cap. There is no source-side floor — the yaml
-        is the authority, and it is DENY to TARS in `permissions.yaml`."""
+        is the authority, and it is DENY to the assistant in `permissions.yaml`."""
         mcp_posture = self._config.verbs.get(verb)
         if mcp_posture is None:
             return "deny"

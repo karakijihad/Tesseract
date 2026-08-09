@@ -181,6 +181,18 @@ async def reload_models(app: web.Application) -> None:
         if result.get("voice"):
             summary_parts.append("voice runtime reloaded")
             detail["voice"] = result["voice"]
+        # Keyed on presence, not truthiness: `reranker: None` is the valid
+        # "operator cleared the role" result, and reporting it by falsiness
+        # renders a real change as "no live changes". A failure has to reach
+        # `summary` too — `detail` alone is invisible in the toast, so an
+        # unapplied reload would read as a successful one.
+        if "reranker" in result:
+            ref = result["reranker"]
+            summary_parts.append(f"reranker → {ref}" if ref else "reranker disabled")
+            detail["reranker"] = ref
+        if result.get("reranker_error"):
+            summary_parts.append(f"reranker NOT reloaded: {result['reranker_error']}")
+            detail["reranker_error"] = result["reranker_error"]
     except Exception as exc:
         log.exception("config_watcher: providers/roles rebuild_adapters failed")
         await _emit_failed(app, "providers.yaml", str(exc))
@@ -195,7 +207,7 @@ async def reload_models(app: web.Application) -> None:
             log.exception("config_watcher: cost_ledger.reload failed")
             detail["cost_pricing_error"] = str(exc)
 
-    # TC-5 — bridge into the running TARS controller daemon (if any).
+    # TC-5 — bridge into the running agent controller daemon (if any).
     # Best-effort: a missing controller short-circuits in
     # ``notify_controller_reload`` without raising.
     await _notify_controller_if_alive(app, target="config", detail=detail, summary_parts=summary_parts)
@@ -356,14 +368,25 @@ async def reload_mirror(app: web.Application) -> None:
     M4 — without this, an external edit to that key has no effect until
     the operator opens Settings and saves the section, which contradicts
     the workstream's "external YAML edits reflect live" goal.
+
+    AS-2 — the `identity:` block joins it. The wake-word gate builds its
+    phrase from `identity.name` on every utterance, so a rename that only
+    landed at the next restart would leave the assistant answering to a name the
+    operator has already changed. Name, operator name and the wake-word
+    block are re-parsed together and swapped onto `app["config"]`.
     """
     detail: dict[str, Any] = {"requires_restart": True}
-    summary = "restart required for bind/CORS changes"
+    summary_parts: list[str] = []
     try:
         from tesseract.mirror.server.config import MIRROR_YAML
         import yaml as _yaml
 
         raw = _yaml.safe_load(MIRROR_YAML.read_text(encoding="utf-8")) or {}
+        # Parse the identity block BEFORE touching app state. It is the
+        # only part of this file that can refuse a malformed edit, and
+        # "a broken edit changes nothing" is only true if nothing has
+        # been applied by the time it raises.
+        identity = _parse_identity(raw)
         ui = (raw.get("ui") or {}) if isinstance(raw, dict) else {}
         if "show_config_reload_toasts" in ui:
             new_flag = bool(ui.get("show_config_reload_toasts", True))
@@ -371,13 +394,97 @@ async def reload_mirror(app: web.Application) -> None:
             app["config_reload_toasts_enabled"] = new_flag
             if new_flag != old_flag:
                 detail["show_config_reload_toasts"] = new_flag
-                summary = (
-                    f"toast toggle → {new_flag}; restart still required for bind/CORS"
-                )
-    except Exception:
+                summary_parts.append(f"toast toggle → {new_flag}")
+        _apply_identity(app, identity, detail, summary_parts)
+    except Exception as exc:
+        # A success toast here would be the worst outcome: the operator's
+        # edit did NOT take, the gate is still running the old name, and
+        # the only signal said "reloaded".
         log.exception("config_watcher: mirror.yaml refresh failed")
+        await _emit_failed(app, "mirror.yaml", str(exc))
+        return
 
-    await _emit_reloaded(app, "mirror.yaml", summary, detail)
+    summary_parts.append("restart required for bind/CORS changes")
+    await _emit_reloaded(app, "mirror.yaml", " · ".join(summary_parts), detail)
+
+
+def _parse_identity(raw: Any) -> tuple[str, str, Any] | None:
+    """Validate the `identity:` block. Raises on a malformed one, which is
+    what keeps `reload_mirror` from applying half a file."""
+    from tesseract.mirror.server.config import load_identity
+
+    if not isinstance(raw, dict):
+        return None
+    return load_identity(raw)
+
+
+def refresh_identity(app: web.Application, path: Path) -> dict[str, Any]:
+    """Re-read `path`'s identity block and swap it onto the live config now.
+
+    The identity write endpoint calls this instead of leaving the job to the
+    watcher: the debounce is ~250ms, and in that window the wake-word gate
+    still answers to the previous name and a client that re-reads
+    `/api/identity` right after saving gets the value it just changed away
+    from. Raises on a malformed block, same as the watcher — the caller has
+    just written the file, so a parse failure there is its own bug and must
+    not be swallowed into a success response.
+    """
+    import yaml as _yaml
+
+    raw = _yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    _apply_identity(app, _parse_identity(raw), {}, [])
+    config = app.get("config")
+    if config is None:
+        return {}
+    return {
+        "name": config.entity_name,
+        "operator_name": config.operator_name,
+        "wake_word": {
+            "enabled": config.wake_word.enabled,
+            "prefix": config.wake_word.prefix,
+        },
+    }
+
+
+def _apply_identity(
+    app: web.Application,
+    identity: tuple[str, str, Any] | None,
+    detail: dict[str, Any],
+    summary_parts: list[str],
+) -> None:
+    """Swap an already-validated identity onto the live `ServerConfig`.
+
+    `ServerConfig` is frozen, so this replaces the object rather than
+    mutating it. Every other field carries over **by reference** — the
+    same `PermissionPolicy` that `reload_permissions` mutates in place and
+    the same `models` dict `rebuild_adapters` refreshes — so neither
+    reloader loses its handle. Every consumer reads `app["config"].x` at
+    call time, which is what makes the swap safe.
+    """
+    from dataclasses import replace
+
+    config = app.get("config")
+    if config is None or identity is None:
+        return
+    entity_name, operator_name, wake_word = identity
+    if (
+        entity_name == config.entity_name
+        and operator_name == config.operator_name
+        and wake_word == config.wake_word
+    ):
+        return
+    app["config"] = replace(
+        config,
+        entity_name=entity_name,
+        operator_name=operator_name,
+        wake_word=wake_word,
+    )
+    detail["identity"] = {
+        "name": entity_name,
+        "operator_name": operator_name,
+        "wake_word_enabled": wake_word.enabled,
+    }
+    summary_parts.append(f"identity reloaded (name={entity_name})")
 
 
 # ── TC-5: controller reload bridge ───────────────────────────────────
@@ -399,7 +506,7 @@ async def _notify_controller_if_alive(
     if app.get("controller_reload_bridge_disabled"):
         return
     try:
-        from tesseract.orchestrator.tars_controller import (
+        from tesseract.orchestrator.agent_controller import (
             notify_controller_reload,
             port_file_path,
         )

@@ -2,7 +2,7 @@
 
 Grants the `bash` tool an AUTO carve-out for a small, config-defined set of
 read-only invocations (pytest, read-only git, the boot-smoke health probe)
-so TARS can self-verify without an operator ASK prompt in every security
+so the assistant can self-verify without an operator ASK prompt in every security
 mode — not only `headless`.
 
 This module is consulted from `PermissionPolicy.resolve_posture` only.

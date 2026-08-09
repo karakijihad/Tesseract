@@ -4,7 +4,7 @@ Both call sites build a ``ToolContext`` + ``ChatSession`` from mostly the
 same fields:
 
 - ``tesseract/mirror/server/session_factory.py::_build_chat_session``
-- ``tesseract/scripts/tars_controller.py::ControllerRuntime._build_chat_session``
+- ``tesseract/scripts/agent_controller.py::ControllerRuntime._build_chat_session``
 
 Each site keeps its own resolution logic (Mirror's fallback-adapter chain
 and channel prompt overlay; the controller's coder-filtered registry and

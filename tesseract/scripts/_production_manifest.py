@@ -45,6 +45,11 @@ EXCLUDE_PATHS = (
     # architecture (bash_security's check list, permissions model,
     # kernel-lockdown mechanics) — shipping them is information disclosure.
     # The rest is dev clutter with no runtime purpose.
+    # The project registry records real filesystem paths, git remotes and
+    # project names. It is gitignored, so nothing should reach the manifest —
+    # this is the belt to that braces, because a single accidental `git add -f`
+    # would ship the operator's directory layout.
+    "tesseract/projects",
     "CLAUDE.md",
     "AGENTS.md",
     ".github",
@@ -90,7 +95,7 @@ EXCLUDE_PATH_GLOBS = (
     # they map onto tesseract/workspace/*.md via
     # make_shipping_workspace.build_shipping_workspace instead.
     "tesseract/workspace/*.md",
-    # Task 17: memory-store/vault/tars-workshop ship ready with hand-authored
+    # Task 17: memory-store/vault/workshop ship ready with hand-authored
     # scaffold content (MEMORY.md+WHAT_NOT_TO_SAVE.md, CATALOG.md,
     # INDEX.md+README.md), same pattern as workspace above — templates live
     # under each dir's `_shipping/`, applied via
@@ -98,7 +103,7 @@ EXCLUDE_PATH_GLOBS = (
     # appear as a `_shipping/` subfolder in the raw tracked-file copy.
     "tesseract/memory-store/*.md",
     "tesseract/vault/*.md",
-    "tesseract/tars-workshop/*.md",
+    "tesseract/workshop/*.md",
 )
 
 # Nothing. The shipped tree is `app/` — sealed, replaced wholesale by every
@@ -106,7 +111,7 @@ EXCLUDE_PATH_GLOBS = (
 # `home/` and `runtime/` at boot instead, which is also the only place they
 # survive an update.
 #
-# memory-store/vault/tars-workshop were never here either: they ship real
+# memory-store/vault/workshop were never here either: they ship real
 # scaffold content (see EXCLUDE_PATH_GLOBS above + build_production_tree.build)
 # which phase 5's additive seeding copies into `home/`.
 EMPTY_DIRS: tuple[str, ...] = ()
@@ -116,5 +121,5 @@ EMPTY_DIRS: tuple[str, ...] = ()
 MUST_SHIP = (
     "tesseract/mirror/src/components/sessions",
     "tesseract/mirror/src/views/workspace",
-    "tesseract/orchestrator/tars_controller",
+    "tesseract/orchestrator/agent_controller",
 )

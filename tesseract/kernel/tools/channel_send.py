@@ -1,7 +1,7 @@
 """Outbound channel media tools (Session 2 2026-05-16).
 
 Three sibling tools — ``channel_send_voice`` / ``channel_send_photo`` /
-``channel_send_document`` — that TARS calls when replying with audio,
+``channel_send_document`` — that the assistant calls when replying with audio,
 images, or files on an external chat channel (Telegram today, future
 WhatsApp / Signal via the same protocol).
 
@@ -10,10 +10,10 @@ Each tool:
 2. Dispatches to the adapter's ``send_voice`` / ``send_photo`` /
    ``send_document`` methods (which handle TTS synthesis, WAV→OGG
    conversion, path-vs-bytes-vs-URL resolution, and outbound persistence).
-3. Returns a one-line summary of what was sent so TARS sees confirmation
+3. Returns a one-line summary of what was sent so the assistant sees confirmation
    in its tool transcript.
 
-``default_posture="auto"`` — TARS replying mid-conversation is the
+``default_posture="auto"`` — the assistant replying mid-conversation is the
 expected behavior, not a gated escalation. ``permissions.yaml`` can flip
 to ``ask`` per-tool if the operator wants a confirmation step.
 """

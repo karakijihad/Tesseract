@@ -40,7 +40,10 @@ class MemorySaveInput(BaseModel):
             "The memory content to save. Lead with the ACTION/directive, put "
             "backstory last: retrieval injects only the first ~300 chars of a "
             "recalled memory, so 'do X before Y' must come before 'on <date> we "
-            "learned…'. For feedback/lessons write the imperative first."
+            "learned…'. For feedback/lessons write the imperative first. "
+            "Refer to yourself in the first person ('I should…'), never by "
+            "name and never in the third person — a memory written with your "
+            "name in it stops being true the moment that name changes."
         )
     )
     importance: int = Field(default=5, ge=1, le=10, description="Importance 1-10")

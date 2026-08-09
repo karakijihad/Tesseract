@@ -51,8 +51,8 @@ export function handleCost(env: Envelope): void {
     const roleTripped =
       roleCap !== null && data.state.role_spent_usd >= roleCap;
     const msg = roleTripped
-      ? `Role budget exhausted for ${data.role} ($${data.state.role_spent_usd.toFixed(2)} / $${roleCap!.toFixed(2)}) — raise per_role cap in models.yaml, or use delegate_claude / delegate_codex.`
-      : `Daily budget exhausted ($${data.state.spent_usd.toFixed(2)} / $${data.state.cap_usd.toFixed(2)}) — use delegate_claude or delegate_codex to route through the CLI subscription, or raise the cap in models.yaml.`;
+      ? `Role budget exhausted for ${data.role} ($${data.state.role_spent_usd.toFixed(2)} / $${roleCap!.toFixed(2)}) — raise per_role cap in models.yaml, or use delegate_coder / delegate_auditor.`
+      : `Daily budget exhausted ($${data.state.spent_usd.toFixed(2)} / $${data.state.cap_usd.toFixed(2)}) — use delegate_coder or delegate_auditor to route through the CLI subscription, or raise the cap in models.yaml.`;
     useToastStore.getState().pushWith(msg, "error", { sticky: true });
     _costBlockedToastShown = true;
   } else if (!data.state.blocked && _costBlockedToastShown) {

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useEntityName } from '../../../hooks/useEntityName';
 import type { MemorySuggestionKind, MemoryTarget } from '../../../lib/types';
 import { useSuggestionsStore, type SuggestionEntry } from '../../../stores/suggestions';
 
@@ -19,6 +20,7 @@ function confidenceClass(c: number): string {
 }
 
 export function ObserverSuggestions() {
+  const entityName = useEntityName();
   const suggestions = useSuggestionsStore(s => s.suggestions);
   const dismiss = useSuggestionsStore(s => s.dismiss);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -26,7 +28,7 @@ export function ObserverSuggestions() {
   if (suggestions.length === 0) {
     return (
       <div className="t-caption right-section-empty">
-        No suggestions yet — TARS will see them as the observer runs.
+        No suggestions yet — {entityName} will see them as the observer runs.
       </div>
     );
   }
@@ -58,7 +60,7 @@ export function ObserverSuggestions() {
                 className="suggestion-dismiss t-meta"
                 onClick={() => dismiss(entry.observation_id)}
                 aria-label={`Dismiss ${entry.kind} suggestion`}
-                title="Dismiss this suggestion (TARS already saw it once on its turn after firing)"
+                title={`Dismiss this suggestion (${entityName} already saw it once on its turn after firing)`}
               >
                 ×
               </button>

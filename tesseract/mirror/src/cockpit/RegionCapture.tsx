@@ -1,4 +1,4 @@
-// Slice 2 — region capture → TARS vision. Floating trigger → drag a marquee
+// Slice 2 — region capture → the assistant vision. Floating trigger → drag a marquee
 // over the cockpit → capture the region → type an instruction → send through the
 // existing chat image-attachment path. Mounted once at App root (sibling of the
 // cockpit) so it overlays everything. (No enter hotkey — Ctrl+Shift+R is the
@@ -9,6 +9,7 @@ import { useEffect, useState, type PointerEvent as ReactPointerEvent } from 'rea
 import { useWebSocketStore } from '../stores/websocket';
 import { useConversationStore } from '../stores/conversation';
 import { useToastStore } from '../stores/toasts';
+import { useEntityName } from '../hooks/useEntityName';
 import { uploadChatAttachment } from '../lib/api';
 import { usePanelStore } from './panelStore';
 import {
@@ -33,6 +34,7 @@ function composePosition(rect: CaptureRect): { left: number; top: number } {
 }
 
 export function RegionCapture() {
+  const entityName = useEntityName();
   const mode = useRegionCaptureStore((s) => s.mode);
   const rect = useRegionCaptureStore((s) => s.rect);
   const preview = useRegionCaptureStore((s) => s.preview);
@@ -96,18 +98,18 @@ export function RegionCapture() {
     const file = useRegionCaptureStore.getState().file;
     if (!file) return;
     if (!sessionId) {
-      useToastStore.getState().push('Connect before sending to TARS', 'warning');
+      useToastStore.getState().push(`Connect before sending to ${entityName}`, 'warning');
       return;
     }
     setSending(true);
     try {
       const attachment = await uploadChatAttachment(sessionId, file);
       sendUserMessage(null, prompt.trim() || 'What is shown in this region?', [attachment]);
-      openPanel('chat'); // surface TARS's reply
+      openPanel('chat'); // surface the reply
       setPrompt('');
       cancel();
     } catch {
-      useToastStore.getState().push('Sending region to TARS failed', 'warning');
+      useToastStore.getState().push(`Sending region to ${entityName} failed`, 'warning');
     } finally {
       setSending(false);
     }
@@ -120,8 +122,8 @@ export function RegionCapture() {
           type="button"
           className="region-capture-trigger"
           onClick={enter}
-          aria-label="Capture a region for TARS"
-          title="Capture a region for TARS"
+          aria-label={`Capture a region for ${entityName}`}
+          title={`Capture a region for ${entityName}`}
         >
           ⛶
         </button>
@@ -153,7 +155,7 @@ export function RegionCapture() {
           <input
             className="region-capture-input"
             value={prompt}
-            placeholder="Tell TARS what to do…"
+            placeholder={`Tell ${entityName} what to do…`}
             autoFocus
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={(e) => {
@@ -165,7 +167,7 @@ export function RegionCapture() {
             type="button"
             className="region-capture-send"
             disabled={sending}
-            aria-label={sending ? 'Sending…' : 'Send region to TARS'}
+            aria-label={sending ? 'Sending…' : `Send region to ${entityName}`}
             onClick={() => void send()}
           >
             {sending ? '…' : 'Send'}

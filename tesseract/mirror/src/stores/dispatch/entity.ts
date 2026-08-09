@@ -50,7 +50,7 @@ export function handleEntity(env: Envelope, signals: Signals | null): void {
     return;
   }
   if (env.type === "orb_visibility") {
-    // TARS-driven show/hide (orb_visibility tool) — same store the HUD
+    // agent-driven show/hide (orb_visibility tool) — same store the HUD
     // toggle writes, so the two controls can't fight over divergent state.
     const data = env.data as { visible?: boolean } | undefined;
     if (typeof data?.visible === "boolean") {
@@ -59,7 +59,7 @@ export function handleEntity(env: Envelope, signals: Signals | null): void {
     return;
   }
   if (env.type === "chat_assistant_initiated") {
-    // TARS speaking first — no inbound operator turn preceded this. The
+    // The assistant speaking first — no inbound operator turn preceded this. The
     // backend `chat_initiate` tool pushed this envelope to every open
     // session so the chat tab renders the message as an entity-role
     // bubble. Reason rides through for filtering in future tooling.

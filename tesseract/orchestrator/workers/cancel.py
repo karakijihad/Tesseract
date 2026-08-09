@@ -51,9 +51,9 @@ class CancelOutcome:
 class WorkerCanceller(Protocol):
     """One canceller per ``WorkerKind``. Implementations:
 
-    - ``tars_self``: ``asyncio.Task.cancel()`` then ``await`` the task.
+    - ``agent_self``: ``asyncio.Task.cancel()`` then ``await`` the task.
     - ``markdown_agent``: ``ChatSession.cancel_turn()``.
-    - ``claude_cli`` / ``codex_cli`` / ``terminal``: no canceller is
+    - ``coder_seat`` / ``auditor_seat`` / ``terminal``: no canceller is
       registered for these kinds — a cancel request records intent
       (state still transitions to ``cancelled``) but the underlying
       process is not force-killed.

@@ -50,7 +50,7 @@ def home_dir() -> Path:
 
 
 def workspace_dir() -> Path:
-    """TARS's writable workspace (SOUL/DIARY/...). Call-time so updates
+    """the assistant's writable workspace (SOUL/DIARY/...). Call-time so updates
     replacing the code tree never touch it."""
     return _home_at_call_time() / "workspace"
 
@@ -112,6 +112,70 @@ _RUNTIME_LOG_DIRS = frozenset(
         "tokenjuice", "governor",
     }
 )
+
+
+# The state paths a tool-written artifact can land in. `file_write` anchors
+# every relative path at the state root, so a path the runtime hands back
+# ("Written to <home>/downloads/paper.pdf") names one of these; the read tools
+# follow them there when the code tree has no such entry.
+#
+# Deliberately NOT "every directory under home". `.env`, `config/` and the
+# runtime trees also live there, and read tools carry no `path_overrides` —
+# `permissions.yaml` scopes paths for `file_write` only. An unbounded second
+# anchor would make `file_read(".env")` resolve to the operator's API keys by
+# a bare relative path that resolves to nothing today.
+#
+# Prefixes, not bare directory names, because the write side is not uniform.
+# `permissions.yaml` grants `file_write` AUTO on `logs/sessions/` but on no
+# other part of `logs/`, and on `vault/raw/` but not the wiki; `workspace/`
+# carries thirteen DENY rules over the operator's own identity files. Matching
+# whole segments off a directory name would either miss the one writable log
+# surface — leaving exactly the write-then-read asymmetry this list exists to
+# remove — or hand the read tools paths the write side explicitly refuses.
+#
+# Two rules for adding an entry, both load-bearing:
+#   1. It must be somewhere `file_write` can legitimately land an artifact —
+#      AUTO for `workshop/`, `vault/raw/` and `logs/sessions/`; the default
+#      ASK posture for `downloads/` and `uploads/`, which are artifact sinks
+#      the operator is handed paths to.
+#   2. It must contain no path carrying a DENY or narrower override. This is
+#      why `workspace` is absent: `workspace/SOUL.md`, `IDENTITY.md`,
+#      `USER.md`, `VOICE.md` and nine more are DENY for write, and a read
+#      allowlist entry would reach every one of them.
+#
+# Kept as data here, beside the log-category split above, for the same reason:
+# a new state path is a decision made in this file rather than guessed at a
+# call site.
+# `memory-store` is deliberately ABSENT despite being an AUTO `file_write`
+# prefix. `memory_get` exists to be the read path for it — its docstring says
+# so in as many words ("instead of widening `file_read` to cover the memory
+# store") and it enforces markdown-only plus an identity-file block on
+# `MEMORY.md` / `WHAT_NOT_TO_SAVE.md`. Listing it here would hand the generic
+# read tools the access that tool was written to withhold, and `glob`/`grep`
+# would enumerate and search the same files. The write-then-read asymmetry
+# therefore stands for memory-store on purpose: the read half has an owner.
+READABLE_STATE_PREFIXES: tuple[str, ...] = (
+    "downloads",
+    "uploads",
+    "workshop",
+    "vault/raw",
+    "logs/sessions",
+)
+
+
+def readable_state_prefix(relative_posix: str) -> str | None:
+    """The `READABLE_STATE_PREFIXES` entry covering `relative_posix`, or None.
+
+    Case-insensitive: the target filesystem is NTFS, where `Downloads/x.md`
+    and `downloads/x.md` are the same file, so an exact-case membership test
+    would refuse a read of a path `file_write` had just accepted.
+    """
+    candidate = relative_posix.replace("\\", "/").casefold().strip("/")
+    for prefix in READABLE_STATE_PREFIXES:
+        folded = prefix.casefold()
+        if candidate == folded or candidate.startswith(folded + "/"):
+            return prefix
+    return None
 
 
 def home_logs_root() -> Path:

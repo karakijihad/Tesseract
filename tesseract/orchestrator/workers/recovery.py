@@ -7,7 +7,7 @@ registered handler to classify and persist.
 
 Per ``_shared/worker-record-schema.md §Recovery handler``:
 
-- ``tars_self``: never resumable (in-process asyncio state is lost).
+- ``agent_self``: never resumable (in-process asyncio state is lost).
   ``mark_interrupted`` always.
 - ``markdown_agent``: resumable if the agent's transcript is complete;
   else ``interrupted``. AU-3 S2 ships the conservative variant — every
@@ -130,20 +130,20 @@ def classify_recovery_reason(record: WorkerRecord) -> str:
     ``recovery/transitions.py`` already exports so the dashboard
     renderer renders them consistently across mission + worker rows.
 
-    TC-3 (2026-05-23) — CODEX_CLI was removed from the PTY set because
+    TC-3 (2026-05-23) — AUDITOR_SEAT was removed from the PTY set because
     codex never ran in a PTY; the worker routes through the controller
     dispatcher (``dispatch_to_controller``), not a backend-owned pane. A
     lost codex worker is REASON_WORKER_LOST, not REASON_PANE_LOST.
 
-    TC-4 (2026-05-23) — TARS_CONTROLLER never appears in the PTY set:
+    TC-4 (2026-05-23) — AGENT_CONTROLLER never appears in the PTY set:
     the controller runs as a sibling OS process speaking loopback TCP,
     not as a backend-owned PTY pane. The dedicated
-    ``_TarsControllerRecoveryHandler.can_recover`` gate runs FIRST in
+    ``_AgentControllerRecoveryHandler.can_recover`` gate runs FIRST in
     ``recover_worker``; only if that returns False do we fall through
     here, and the right reason is then REASON_WORKER_LOST."""
     if is_heartbeat_stale(record.id):
         return REASON_STALE_HEARTBEAT
-    pty_kinds = {WorkerKind.CLAUDE_CLI, WorkerKind.TERMINAL}
+    pty_kinds = {WorkerKind.CODER_SEAT, WorkerKind.TERMINAL}
     if record.kind in pty_kinds:
         return REASON_PANE_LOST
     return REASON_WORKER_LOST

@@ -1,12 +1,12 @@
 """SkillSuggestJob — Phase 4 (capability-growth) 4c, suggest-only.
 
-The judgment path for drafting skills is the `skill_create` tool (TARS decides,
+The judgment path for drafting skills is the `skill_create` tool (the assistant decides,
 like `agent_create`). This job is the *optional* detector layer chosen by the
 operator: it never drafts. It reads the recent daily digests
 (`memory-store/daily/*.md`, where chat_digest lands session summaries), lists
 the skills that already exist, and asks a model whether any repeated task shape
 appears with NO covering skill. Each suggestion becomes a `nudge` card — the
-operator (or TARS on its next turn) decides whether to `skill_create` it.
+operator (or the assistant on its next turn) decides whether to `skill_create` it.
 
 No auto-draft, ever. Disabled by default in ``schedule.yaml``. Never raises —
 handler contract returns ``JobResult(ok=False, ...)`` on failure.
@@ -35,7 +35,7 @@ _DEFAULT_TIMEOUT_S = 60.0
 _DIGEST_CHAR_CAP = 8000
 
 _PROMPT = (
-    "You review a TARS operator's recent work digests to spot REPEATED task "
+    "You review an assistant operator's recent work digests to spot REPEATED task "
     "shapes that have NO covering skill yet — a chore done the same way "
     "multiple times that a short markdown playbook (skill) would streamline. "
     "You are given the recent digests and the list of existing skills. "
@@ -162,7 +162,7 @@ async def _file_nudge(ctx: JobContext, store: Any, sug: dict[str, str]) -> bool:
 
     event = WorkspaceEvent.new(
         kind="nudge",
-        source="tars",
+        source="agent",
         title=f"Consider a skill: {sug['name']}",
         summary=sug["why"],
         payload={"suggested_skill": sug["name"], "why": sug["why"], "origin": "skill_suggest"},

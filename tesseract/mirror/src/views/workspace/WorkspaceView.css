@@ -306,7 +306,7 @@
 .workspace-comment--operator {
   border-left-color: var(--accent);
 }
-.workspace-comment--tars {
+.workspace-comment--agent {
   border-left-color: var(--warn);
 }
 .workspace-comment-head {
@@ -321,17 +321,17 @@
   line-height: 1.5;
   white-space: pre-wrap;
 }
-.workspace-comment--tars .workspace-comment-body {
+.workspace-comment--agent .workspace-comment-body {
   white-space: normal;
 }
-.workspace-comment--tars .workspace-comment-body p {
+.workspace-comment--agent .workspace-comment-body p {
   margin: 0 0 6px;
 }
-.workspace-comment--tars .workspace-comment-body p:last-child {
+.workspace-comment--agent .workspace-comment-body p:last-child {
   margin-bottom: 0;
 }
-.workspace-comment--tars .workspace-comment-body ul,
-.workspace-comment--tars .workspace-comment-body ol {
+.workspace-comment--agent .workspace-comment-body ul,
+.workspace-comment--agent .workspace-comment-body ol {
   margin: 4px 0;
   padding-left: 18px;
 }

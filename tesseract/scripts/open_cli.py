@@ -1,11 +1,11 @@
 """`python -m tesseract.scripts.open_cli <target>` — the terminal's `open`.
 
-A dedicated entry point rather than a flag on ``tars_cli``: that one is a
+A dedicated entry point rather than a flag on ``agent_cli``: that one is a
 client for attaching to the controller daemon, and this neither needs nor wants
 a daemon.
 
 It builds a four-tool registry and goes through ``execute_tool`` like every
-other caller, so the permission stack applies here exactly as it does to TARS
+other caller, so the permission stack applies here exactly as it does to the assistant
 and to MCP clients — a terminal invocation is not a way around ``os_launch``
 being ASK. Resolution is the shared resolver, so behaviour cannot drift from
 the other callers.
@@ -41,7 +41,7 @@ async def _prompt(tool: Tool, tool_input: object, context: ToolContext) -> bool:
     return answer.strip().lower() in {"y", "yes"}
 
 
-async def _run(target: str, view: str) -> int:
+async def _run(target: str, view: str, intent: str, destination: str) -> int:
     registry = _registry()
     context = ToolContext(tool_registry_provider=lambda: registry, ask_fn=_prompt)
 
@@ -56,7 +56,12 @@ async def _run(target: str, view: str) -> int:
     result = await execute_tool(
         registry,
         "open",
-        {"target": target, "view": view},
+        {
+            "target": target,
+            "view": view,
+            "intent": intent,
+            "destination": destination,
+        },
         context,
         ask_fn=_prompt,
         policy=policy,
@@ -80,10 +85,30 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("target", help="what to open")
     parser.add_argument(
-        "--view", default="tars", help="canvas view a cockpit card belongs to"
+        "--view", default="orb", help="canvas view a cockpit card belongs to"
+    )
+    parser.add_argument(
+        "--intent",
+        default="auto",
+        choices=("auto", "path", "url", "app", "search"),
+        help=(
+            "how to read the target. `auto` guesses, and an existing file wins "
+            "over every other reading — pass `search` to look a phrase up even "
+            "when something on disk shares its name"
+        ),
+    )
+    parser.add_argument(
+        "--os",
+        dest="destination",
+        action="store_const",
+        const="os",
+        default="auto",
+        help="skip the cockpit and open it in the application that owns it",
     )
     args = parser.parse_args(argv)
-    return asyncio.run(_run(args.target, args.view))
+    return asyncio.run(
+        _run(args.target, args.view, args.intent, args.destination)
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

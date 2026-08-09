@@ -21,5 +21,5 @@ audit_log: true
 #
 # Example:
 #   disabled_rules:
-#     bash_exec: ["bash_exec.git_log"]
+#     bash: ["bash.git_log"]
 disabled_rules: {}

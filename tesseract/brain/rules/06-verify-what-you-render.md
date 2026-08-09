@@ -9,4 +9,4 @@ When a task is *visual* — put something on the Mirror canvas, play media, show
 
 # Delegate the symptom, not the mess
 
-When you hand a problem to `delegate_codex`/`delegate_claude`, give them the **actual thing that's wrong** — the root symptom you need solved ("the embedded video renders as a black pane, find why") — not your secondary panic about the mess you made getting there ("help me stop spawning extra panes"). A strong model pointed at the real symptom will find the root cause; pointed at your cleanup worry, it can't help. State the observed failure, what you expected, and what you already ruled out.
+When you hand a problem to `delegate_auditor`/`delegate_coder`, give them the **actual thing that's wrong** — the root symptom you need solved ("the embedded video renders as a black pane, find why") — not your secondary panic about the mess you made getting there ("help me stop spawning extra panes"). A strong model pointed at the real symptom will find the root cause; pointed at your cleanup worry, it can't help. State the observed failure, what you expected, and what you already ruled out.

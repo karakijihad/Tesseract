@@ -20,7 +20,10 @@ from tesseract.mirror.server.mcp.verbs._base import (
     VerbContext,
     make_tool_verb,
 )
-from tesseract.orchestrator.tars_controller.sessions import SessionRegistry
+from tesseract.orchestrator.agent_controller.lanes.principals import (
+    OPERATOR_PRINCIPAL,
+)
+from tesseract.orchestrator.agent_controller.sessions import SessionRegistry
 
 # agent.assign → the start_controller_session kernel tool (fire-and-forget
 # dispatch; the session_id it returns is the handle for status/review).
@@ -32,6 +35,13 @@ _MAX_REVIEW_EVENTS = 500
 
 
 def _require_session(ctx: VerbContext, verb: str):
+    """Resolve the named session, and refuse one the caller does not own.
+
+    ``status`` and ``review`` read a controller session's record and its whole
+    transcript straight off disk. Both are AUTO, so without an owner check any
+    connected client could read back another's work by naming its session id —
+    and ``agent.assign`` hands those ids out. A record written before this
+    carries no owner and reads as the operator's."""
     session_id = str(ctx.params.get("session_id") or "").strip()
     if not session_id:
         raise MCPVerbError(400, f"{verb} requires 'session_id'")
@@ -43,6 +53,12 @@ def _require_session(ctx: VerbContext, verb: str):
         raise MCPVerbError(400, f"invalid session_id: {exc}")
     if record is None:
         raise MCPVerbError(404, f"unknown session: {session_id}")
+    caller = ctx.client.name
+    owner = getattr(record, "owner_principal", "") or OPERATOR_PRINCIPAL
+    if caller != OPERATOR_PRINCIPAL and caller != owner:
+        raise MCPVerbError(
+            403, f"session {session_id} belongs to {owner!r}"
+        )
     return session_id, record
 
 

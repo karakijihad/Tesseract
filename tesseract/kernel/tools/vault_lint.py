@@ -85,6 +85,20 @@ class VaultLintTool(Tool):
 
         summary = _format_report(report, dry_run=inp.dry_run)
         payload = _report_to_json(report)
+
+        # Backfill pass — hubs created after their sources were compiled
+        # gain backlinks (and the sources gain related_slugs) here, since
+        # nothing else revisits old pages when a hub appears.
+        if not inp.dry_run and self._librarian is not None:
+            try:
+                backfilled = await self._librarian.backfill_hub_backlinks()
+            except Exception as exc:
+                logger.warning("vault_lint: hub backfill failed: %s", exc)
+                backfilled = {}
+            if backfilled:
+                payload["hub_backfill"] = backfilled
+                summary += f"\n- Hub backlinks backfilled: {len(backfilled)} source page(s)"
+
         output = f"{summary}\n\n```json\n{json.dumps(payload, indent=2)}\n```"
         return ToolResult(output=output, metadata={"lint_report": payload})
 

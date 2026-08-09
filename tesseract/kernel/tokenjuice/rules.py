@@ -1,6 +1,6 @@
 """Rule model + loader + classifier.
 
-Schema is ported from vincentkoc/tokenjuice with TARS-specific reducer
+Schema is ported from vincentkoc/tokenjuice with agent-specific reducer
 kinds. Three-layer merge (builtin → user → project) is keyed by `id`;
 later layers override. Classification is priority-ordered (high → low),
 first match wins.

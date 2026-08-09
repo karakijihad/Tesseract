@@ -1,0 +1,292 @@
+/* === IDENTITY TAB PANELS (AS-5) === */
+/* The editable half of the Identity tab: names + wake phrase, the voice
+   picker, and the workspace document editor. The read-only SOUL.md cards
+   below them keep the `.identity-view-*` / `.soul-block-*` shell in
+   `soul.css`. Every hint here is `--text-meta` per the CLAUDE.md hint
+   token rule — `--text-dim` is for deep-background chrome, not text. */
+
+.identity-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-md);
+}
+
+.identity-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.identity-field-label {
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 10px;
+}
+.identity-field-hint {
+  line-height: 1.45;
+}
+.identity-field-hint code {
+  font-family: var(--font-mono);
+  background: rgba(0, 0, 0, 0.25);
+  padding: 0 3px;
+  border-radius: 2px;
+}
+
+.identity-input {
+  padding: 5px 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--panel-divider);
+  border-radius: var(--radius-xs);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  max-width: 320px;
+}
+.identity-input:focus {
+  outline: 1px solid var(--accent);
+  outline-offset: 0;
+}
+.identity-input:disabled {
+  opacity: 0.5;
+}
+.identity-input--short {
+  max-width: 120px;
+}
+
+.identity-wake-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.identity-facts {
+  margin: 0;
+}
+
+.identity-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+.identity-save {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 4px 12px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-card);
+  border: 1px solid var(--panel-border);
+  color: var(--text-meta);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.identity-save:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--accent-dim);
+}
+.identity-save:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ─── Voice picker ─────────────────────────────────────── */
+
+.voice-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.voice-picker-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: baseline;
+  gap: var(--space-sm);
+  width: 100%;
+  padding: 5px var(--space-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.voice-picker-row:hover:not(:disabled) {
+  border-color: var(--panel-divider);
+  color: var(--text-primary);
+}
+.voice-picker-row:disabled {
+  cursor: default;
+}
+/* A disabled-because-selected row is the *current* voice and must stay
+   fully legible; only a catalog-disabled row dims. */
+.voice-picker-row:disabled:not(.is-primary) {
+  opacity: 0.55;
+}
+.voice-picker-row.is-primary {
+  border-color: var(--accent-dim);
+  background: var(--accent-dim);
+  color: var(--text-primary);
+}
+.voice-picker-mark {
+  color: var(--accent);
+}
+.voice-picker-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.voice-picker-ref,
+.voice-picker-state {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* ─── Workspace document editor ────────────────────────── */
+
+.docs-editor {
+  display: grid;
+  grid-template-columns: minmax(140px, 200px) 1fr;
+  gap: var(--space-md);
+  align-items: start;
+}
+@media (max-width: 720px) {
+  .docs-editor {
+    grid-template-columns: 1fr;
+  }
+}
+
+.docs-editor-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.docs-editor-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  width: 100%;
+  padding: 4px var(--space-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.docs-editor-row:hover:not(:disabled) {
+  border-color: var(--panel-divider);
+  color: var(--text-primary);
+}
+.docs-editor-row:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.docs-editor-row.is-open {
+  border-color: var(--accent-dim);
+  background: var(--accent-dim);
+  color: var(--text-primary);
+}
+.docs-editor-size {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.docs-editor-pane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+.docs-editor-pane-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+.docs-editor-open-label {
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 10px;
+}
+.docs-editor-path {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  word-break: break-all;
+}
+.docs-editor-dirty {
+  color: var(--warn);
+  margin-left: auto;
+}
+.docs-editor-empty {
+  padding: var(--space-lg);
+  text-align: center;
+  font-style: italic;
+}
+
+.docs-editor-text {
+  width: 100%;
+  min-height: 280px;
+  resize: vertical;
+  padding: var(--space-sm);
+  background: var(--bg-elevated);
+  border: 1px solid var(--panel-divider);
+  border-radius: var(--radius-xs);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  tab-size: 2;
+}
+.docs-editor-text:focus {
+  outline: 1px solid var(--accent);
+  outline-offset: 0;
+}
+
+.docs-editor-conflict {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-xs);
+  background: rgba(255, 180, 84, 0.08);
+}
+.docs-editor-conflict-head {
+  color: var(--warn);
+  line-height: 1.45;
+}
+.docs-editor-diff {
+  margin: 0;
+  max-height: 200px;
+  overflow: auto;
+  padding: var(--space-xs);
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: var(--radius-xs);
+  color: var(--text-meta);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: pre;
+}
+
+.identity-soul-heading {
+  border-radius: var(--radius-xs);
+}

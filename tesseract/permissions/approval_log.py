@@ -1,7 +1,7 @@
 """Durable approval ledger — append-only JSONL of every permission decision.
 
 Audit-4 P1 fix: Mirror's `event_log.py` is an in-memory deque (cap 5000)
-and the REPL has no record at all. Once TARS commands terminals,
+and the REPL has no record at all. Once the assistant commands terminals,
 subprocesses, and delegated workers, ASK history must survive process
 restarts for forensics and ops review.
 

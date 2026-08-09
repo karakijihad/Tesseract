@@ -26,6 +26,15 @@ query:
   max_seed_slugs: 6
   max_expanded_slugs: 12
 
+  # What synthesis actually READS from that scoped set. max_pages covers the
+  # full seed+expanded ceiling; page_chars bounds one page's contribution so a
+  # single long page cannot crowd out the rest; char_budget bounds the
+  # assembled whole (and is the budget the librarian-less fallback renders
+  # raw pages under).
+  synthesis_max_pages: 18
+  synthesis_page_chars: 1200
+  synthesis_char_budget: 16000
+
 search:
   # vault_search hybrid BM25 + vector fusion. A bigger rrf_k flattens the
   # score curve so lower-ranked results still contribute (60 is the

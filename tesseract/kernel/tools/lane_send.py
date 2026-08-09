@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from tesseract.config.cockpit import load_conductor_relay
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
-from tesseract.orchestrator.tars_controller.lanes.tool_support import (
+from tesseract.orchestrator.agent_controller.lanes.tool_support import (
     maybe_await,
     resolve_lane_manager,
 )
@@ -25,9 +25,10 @@ class LaneSendInput(BaseModel):
     wait: bool = Field(
         default=False,
         description=(
-            "When true, block (non-busy-wait) until the lane emits turn_ended "
-            "before returning. Timing from cockpit.yaml conductor.relay_*. "
-            "Falls back to plain send if the manager has no send_and_await."
+            "When true, block (non-busy-wait) until THIS send's turn ends, "
+            "and return its reply — not just an acceptance. Timing from "
+            "cockpit.yaml conductor.relay_*. Falls back to plain send if the "
+            "manager has no send_and_await."
         ),
     )
 
@@ -35,6 +36,15 @@ class LaneSendInput(BaseModel):
 class LaneSendTool(Tool):
     default_posture = "ask"
     risk_class: ClassVar[str] = "operator_gate"
+
+    # A CLI's reply is whatever it read out of a repository, a web page, or
+    # a compromised model — untrusted by origin, however trusted the tool
+    # that fetched it. Set here so the foreground result and `spawn_await`'s
+    # retrieval get the same envelope the background completion delivery
+    # applies in `chat.py::_format_spawn_completion`; wrapping only the one
+    # path left the other two open.
+    untrusted_source: ClassVar[bool] = True
+
 
     @property
     def name(self) -> str:
@@ -45,7 +55,8 @@ class LaneSendTool(Tool):
         return (
             "Send a follow-up message into a running lane. Drives one "
             "CLI turn; events stream into the lane's events.jsonl. "
-            "Returns accepted/queue_depth — strict per-lane FIFO."
+            "Strict per-lane FIFO. Returns the accepted turn_id; with "
+            "wait=true, returns that turn's reply and whether it completed."
         )
 
     @property
@@ -97,13 +108,54 @@ class LaneSendTool(Tool):
                     "queue_depth": result.queue_depth,
                 },
             )
+        metadata = {
+            "lane_id": inp.lane_id,
+            "accepted": True,
+            "queue_depth": result.queue_depth,
+            "turn_id": result.turn_id,
+        }
+        outcome = result.outcome
+        if not inp.wait or outcome is None:
+            return ToolResult(
+                output=(
+                    f"accepted lane_id={inp.lane_id} turn_id={result.turn_id} "
+                    f"queue_depth={result.queue_depth}"
+                ),
+                metadata=metadata,
+            )
+
+        # `wait=True` asked a question; "accepted" is not an answer to it.
+        # The old return said `accepted lane_id=… queue_depth=…` whether the
+        # wait saw a completion or silently hit the stall deadline, so the
+        # model could not tell the difference and never got the reply.
+        metadata.update(
+            {
+                "turn_completed": outcome.completed,
+                "cursor": outcome.cursor,
+                "reply_text": outcome.reply_text,
+            }
+        )
+        if not outcome.completed:
+            return ToolResult(
+                output=(
+                    f"{outcome.reply_text}\n\n[turn not finished — no lane "
+                    f"activity within the relay timeout; partial reply above, "
+                    f"continue with lane_read cursor={outcome.cursor}]"
+                ).strip(),
+                is_error=False,
+                timed_out=True,
+                metadata=metadata,
+            )
+        if outcome.is_error:
+            return ToolResult(
+                output=(
+                    f"{outcome.reply_text}\n\n[lane turn failed: "
+                    f"{outcome.error or 'the CLI reported a failed turn'}]"
+                ).strip(),
+                is_error=True,
+                metadata=metadata,
+            )
         return ToolResult(
-            output=(
-                f"accepted lane_id={inp.lane_id} queue_depth={result.queue_depth}"
-            ),
-            metadata={
-                "lane_id": inp.lane_id,
-                "accepted": True,
-                "queue_depth": result.queue_depth,
-            },
+            output=outcome.reply_text or "(the turn completed with no reply)",
+            metadata=metadata,
         )

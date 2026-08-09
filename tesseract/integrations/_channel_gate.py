@@ -2,8 +2,8 @@
 
 Channel sessions have no operator at the cockpit. When a tool would ASK,
 the old behavior was ``_deny_ask`` → ``False`` → opaque "I can't do that"
-reply from TARS. This module replaces that with the *workspace nudge*
-pattern: emit a ``tars_post`` :class:`WorkspaceEvent` carrying the
+reply from the assistant. This module replaces that with the *workspace nudge*
+pattern: emit a ``agent_post`` :class:`WorkspaceEvent` carrying the
 conversation context + tool + args + reason, then return ``False`` (the
 tool stays denied this turn — operator handles asynchronously).
 
@@ -22,7 +22,7 @@ Two operator-side actions on the emitted event power the round-trip:
 - **Reject & message user** — operator picks a templated reply that the
   bridge sends as an outbound channel message; the event closes.
 
-Per-turn dedup: a session can only emit one ``tars_post`` per unique
+Per-turn dedup: a session can only emit one ``agent_post`` per unique
 ``(tool_name, args_hash)`` per turn. The state lives on the
 ``ServerSession`` via attached dicts (we don't add fields to the frozen
 dataclass to keep the change pure-addition).
@@ -207,10 +207,10 @@ def build_channel_ask_fn(
 
     1. **Approval already in hand** — consume the single-shot token and
        return ``True``; tool runs normally.
-    2. **Already gated this turn** — operator already saw a ``tars_post``
+    2. **Already gated this turn** — operator already saw a ``agent_post``
        for this ``(tool, args_hash)`` in the same turn; skip re-emit and
-       return ``False`` so TARS doesn't spam the inbox in tight loops.
-    3. **Fresh gate** — emit one ``tars_post`` carrying the conversation
+       return ``False`` so the assistant doesn't spam the inbox in tight loops.
+    3. **Fresh gate** — emit one ``agent_post`` carrying the conversation
        context + tool name + args + reason, return ``False``.
     """
 
@@ -261,7 +261,7 @@ def build_channel_ask_fn(
         )
         recent_user = _latest_user_body(transcript_tail)
 
-        title = f"Channel turn paused — TARS wanted to call {tool.name}"
+        title = f"Channel turn paused — the assistant wanted to call {tool.name}"
         summary = (
             f"{display_name} ({chat_id}): " + (recent_user[:140] if recent_user else "")
         ).rstrip()
@@ -280,8 +280,8 @@ def build_channel_ask_fn(
         }
 
         event = WorkspaceEvent.new(
-            kind="tars_post",
-            source="tars",
+            kind="agent_post",
+            source="agent",
             title=title,
             summary=summary,
             payload=payload,
@@ -308,7 +308,7 @@ def build_channel_ask_fn(
                 )
 
         log.info(
-            "channel gate: emitted tars_post %s for %s/%s tool=%s",
+            "channel gate: emitted agent_post %s for %s/%s tool=%s",
             event.event_id, channel, chat_id, tool.name,
         )
         return False

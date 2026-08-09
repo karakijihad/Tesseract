@@ -57,6 +57,10 @@ _TEMPORAL_HALF_LIFE_DAYS = 30
 _TEMPORAL_HIGH_IMPORTANCE_HALF_LIFE_DAYS = 60
 _HIGH_IMPORTANCE_THRESHOLD = 8
 _OVERLAP_BOOST = 0.15
+
+# Reranked scores live in (0, _RERANK_SCORE_CEIL] so exact_slug (1.0) and
+# exact_entity (0.9) hits always outrank any cross-encoder opinion.
+_RERANK_SCORE_CEIL = 0.85
 # Public: callers (e.g. auto_recall) need this to over-fetch candidates for
 # local dedup backfill, since retrieve()'s final cap is this constant, not
 # the caller's top_k.
@@ -133,6 +137,7 @@ class RetrievalPipeline:
         recall_log_path: Path | None = None,
         progress_cfg: dict | None = None,
         work_index: WorkIndex | None = None,
+        reranker: object | None = None,
     ) -> None:
         self._store = store
         self._index = index
@@ -143,6 +148,9 @@ class RetrievalPipeline:
         self._path_expander = path_expander
         self._recall_log_path = recall_log_path
         self._progress_cfg = progress_cfg or {}
+        # Cross-encoder precision stage over the merged pool (role-wired,
+        # best-effort). None → retrieval keeps pure RRF ordering.
+        self._reranker = reranker
         # CR-1 M3 — non-authoritative work-history retrieval. When set,
         # `retrieve(..., include_work_history=True)` augments the memory
         # packet with `session:` / `workshop:` chunks. Promotion to
@@ -379,7 +387,9 @@ class RetrievalPipeline:
         bm25_ranked: list[tuple[str, float]] = []
         if self._fts_index is not None:
             try:
-                bm25_ranked = self._fts_index.search(query, limit=top_k * 3)
+                bm25_ranked = self._fts_index.search(
+                    query, limit=top_k * 3, require_prefix="mem_"
+                )
             except Exception:
                 logger.warning("BM25 search failed, continuing with vector only")
 
@@ -396,26 +406,37 @@ class RetrievalPipeline:
                     # (audit 2026-07-18, MED). Runs per turn; the index lock is
                     # a threading.Lock, so a worker thread is safe.
                     vector_ranked = await asyncio.to_thread(
-                        self._embeddings.search_by_vector, query_vector, top_k=top_k * 3,
+                        lambda: self._embeddings.search_by_vector(
+                            query_vector, top_k=top_k * 3, require_prefix="mem_"
+                        )
                     )
                 except Exception:
                     logger.warning("Vector search failed, continuing with BM25 only")
             else:
                 try:
                     vector_ranked = await self._embeddings.search(
-                        query, top_k=top_k * 3,
+                        query, top_k=top_k * 3, require_prefix="mem_",
                     )
                 except Exception:
                     logger.warning("Vector search failed, continuing with BM25 only")
 
         # RRF merge: 1/(K + rank). Provenance tracks which routes contributed
         # to each id so the surfaced hit explains why it matched (spec §2).
+        # The indexes are SHARED with vault chunks (vault:*) and daily notes
+        # (daily_*). Those rows are not memory results — letting them into
+        # rrf_scores hands them top_k slots that get silently discarded at
+        # the read step, squeezing real memories out of the packet. Memory
+        # ids always start "mem_" (types.py validator).
         rrf_scores: dict[str, float] = {}
         provenance: dict[str, list[str]] = {}
         for rank, (mem_id, _) in enumerate(bm25_ranked):
+            if not mem_id.startswith("mem_"):
+                continue
             rrf_scores[mem_id] = rrf_scores.get(mem_id, 0) + 1 / (_RRF_K + rank)
             provenance.setdefault(mem_id, []).append("bm25")
         for rank, (mem_id, _) in enumerate(vector_ranked):
+            if not mem_id.startswith("mem_"):
+                continue
             rrf_scores[mem_id] = rrf_scores.get(mem_id, 0) + 1 / (_RRF_K + rank)
             provenance.setdefault(mem_id, []).append("vector")
 
@@ -436,6 +457,10 @@ class RetrievalPipeline:
                     fm, _ = read_result
                     candidate_map[mem_id] = fm
             if fm is None:
+                # Ghost id — indexed but no longer readable (deleted since).
+                # It can never fill a result slot, so it must not hold one.
+                del rrf_scores[mem_id]
+                provenance.pop(mem_id, None)
                 continue
             if fm.expiry_at is not None and fm.expiry_at <= now:
                 del rrf_scores[mem_id]
@@ -762,6 +787,11 @@ class RetrievalPipeline:
                 else:
                     results.append(zr)
 
+        # Stage R: cross-encoder precision pass over the merged pool.
+        results = await self._apply_reranker(query, results)
+        if any("reranked" in r.provenance for r in results):
+            stages_run.append("R")
+
         results.sort(key=lambda r: r.score, reverse=True)
         results = results[:MAX_FINAL_RESULTS]
 
@@ -789,6 +819,52 @@ class RetrievalPipeline:
             daily_notes=daily_notes,
             work_history=work_history,
         )
+
+    async def _apply_reranker(
+        self, query: str, results: list[RetrievalResult]
+    ) -> list[RetrievalResult]:
+        """Re-score the merged pool with the cross-encoder, if one is wired.
+
+        Exact_* hits are never rescored — a slug/entity match outranks any
+        model opinion — and reranked scores are capped at _RERANK_SCORE_CEIL
+        (then confidence-weighted, matching the other stages). Any failure
+        returns the input untouched.
+        """
+        if self._reranker is None or not results:
+            return results
+        pool = [
+            r for r in results
+            if not any(p.startswith("exact_") for p in r.provenance)
+        ]
+        if not pool:
+            return results
+        try:
+            scored = await self._reranker.rerank(
+                query, [(r.memory_id, f"{r.title}\n{r.body}") for r in pool]
+            )
+        except Exception:
+            logger.warning("reranker failed — keeping RRF order", exc_info=True)
+            return results
+        if not scored:
+            return results
+        score_map = dict(scored)
+        out: list[RetrievalResult] = []
+        for r in results:
+            cross = score_map.get(r.memory_id)
+            if cross is None:
+                out.append(r)
+                continue
+            out.append(RetrievalResult(
+                memory_id=r.memory_id,
+                title=r.title,
+                body=r.body,
+                score=_RERANK_SCORE_CEIL * cross * r.confidence,
+                mem_type=r.mem_type,
+                provenance=tuple(dict.fromkeys((*r.provenance, "reranked"))),
+                confidence=r.confidence,
+            ))
+        out.sort(key=lambda r: r.score, reverse=True)
+        return out
 
     def _fetch_work_history(
         self,

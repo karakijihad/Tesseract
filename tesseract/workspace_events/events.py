@@ -6,7 +6,7 @@ Append-only JSONL under ``tesseract/logs/workspace/``:
                         autonomous post). Status mutates in-place via
                         rewrite (the file is small enough — Phase 2 may
                         switch to a status-overlay JSONL if it grows).
-- ``comments.jsonl``  — one row per operator comment OR TARS reply.
+- ``comments.jsonl``  — one row per operator comment OR the assistant reply.
 - ``seen.json``       — ``{"inbox": iso_ts, "stream": iso_ts}`` last-seen
                         markers; persisted so badge counts survive backend
                         restart, not just browser reload.
@@ -48,7 +48,7 @@ EventKind = Literal[
     "mission_reflection_proposal",  # historical records only — mission engine deleted; kept so old workspace events still deserialize
     "reflection_proposal",       # session reflection — informational, writes already happened, Resolve only
     "nudge",                     # generic operator-attention request
-    "tars_post",                 # TARS chose to post (workspace_post)
+    "agent_post",                 # the assistant chose to post (workspace_post)
     "operator_post",             # operator-initiated thread (scratchpad, button, voice, hotkey)
     "daily_brief",               # MO-9-14 — newsletter card with per-pillar world section; reactions feed interests profile
     "yaml_change_proposal",      # MO-10-2 — knowledge-keeper proposes a catalog edit; apply path mutates the YAML on approve
@@ -67,17 +67,21 @@ EventSource = Literal[
     "feedback_consolidator",
     "feedback_sweep",
     "orchestrator",
-    "tars",
     "operator",
     "daily_brief",               # MO-9-14 — BriefRenderer write fan-out
     "knowledge_keeper",          # MO-10-1/2 — KB refresher + yaml_change_proposal emitter
     "recovery",                  # AU-2 — boot-time RecoveryManager
-    "agent",                     # AU-19 — agent-authored clarification questions and self-direction proposals
-    "strategist",                # AU-23 — weekly autonomy strategist (initiative curator)
+    # Anything the assistant itself emits: workspace posts, clarification
+    # questions, self-direction proposals, skill and soul drafts. This used
+    # to be two members — one named after the persona, one for AU-19's
+    # agent-authored items — but nothing ever discriminated between them,
+    # and both mean the same actor.
+    "agent",
+    "strategist",                # AU-23 — autonomy strategist (initiative curator)
     "security",                  # SU-1/SU-5 — runtime_lock_deny emissions from file_write + bash_security
 ]
 OperatorPostSource = Literal["button", "scratchpad", "voice", "hotkey", "telegram"]
-Author = Literal["operator", "tars"]
+Author = Literal["operator", "agent"]
 
 
 @dataclass(frozen=True)
@@ -96,7 +100,7 @@ class WorkspaceEvent:
     # Mark-once flag for events the chat-loop drains as one-shot turn
     # injections (Workstream D — `operator_post`). Harmless on other
     # kinds; only the drain helper reads it.
-    delivered_to_tars: bool = False
+    delivered_to_agent: bool = False
     # Identity of the human (or system) that authored this event. Today
     # "operator" or "system"; the multi-user substrate will resolve
     # external-channel senders to a stable slug (e.g. "telegram:<chat_id>")
@@ -124,7 +128,7 @@ class WorkspaceEvent:
             priority=self.priority,
             decided_at=datetime.now(timezone.utc).isoformat(),
             decided_reason=reason,
-            delivered_to_tars=self.delivered_to_tars,
+            delivered_to_agent=self.delivered_to_agent,
             author_id=self.author_id,
             author_display=self.author_display,
         )
@@ -142,7 +146,7 @@ class WorkspaceEvent:
             priority=self.priority,
             decided_at=self.decided_at,
             decided_reason=self.decided_reason,
-            delivered_to_tars=True,
+            delivered_to_agent=True,
             author_id=self.author_id,
             author_display=self.author_display,
         )
@@ -185,7 +189,7 @@ class WorkspaceComment:
     author: Author
     body: str
     reply_to: str | None = None
-    delivered_to_tars: bool = False  # operator → tars; flipped after drain
+    delivered_to_agent: bool = False  # operator → agent; flipped after drain
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -343,7 +347,7 @@ class EventStore:
 
         Codex-fix M2 (2026-05-23): the live `workspace_reply` broadcast
         now identifies the exact appended comment via its id instead of
-        scanning for "the latest TARS comment" — that heuristic raced
+        scanning for "the latest the assistant comment" — that heuristic raced
         under concurrent synthetic turns.
         """
         for c in reversed(self._read_comments()):
@@ -354,13 +358,13 @@ class EventStore:
     def list_undelivered_operator_comments(self) -> list[WorkspaceComment]:
         return [
             c for c in self._read_comments()
-            if c.author == "operator" and not c.delivered_to_tars
+            if c.author == "operator" and not c.delivered_to_agent
         ]
 
     def list_undelivered_operator_posts(self) -> list[WorkspaceEvent]:
         return [
             e for e in self._read_events()
-            if e.kind == "operator_post" and not e.delivered_to_tars
+            if e.kind == "operator_post" and not e.delivered_to_agent
         ]
 
     def mark_event_delivered(self, event_id: str) -> bool:
@@ -368,7 +372,7 @@ class EventStore:
             rows = self._read_events_unlocked()
             updated = False
             for idx, ev in enumerate(rows):
-                if ev.event_id == event_id and not ev.delivered_to_tars:
+                if ev.event_id == event_id and not ev.delivered_to_agent:
                     rows[idx] = ev.with_delivered()
                     updated = True
                     break
@@ -381,7 +385,7 @@ class EventStore:
             rows = self._read_comments_unlocked()
             updated = False
             for idx, c in enumerate(rows):
-                if c.comment_id == comment_id and not c.delivered_to_tars:
+                if c.comment_id == comment_id and not c.delivered_to_agent:
                     rows[idx] = WorkspaceComment(
                         comment_id=c.comment_id,
                         event_id=c.event_id,
@@ -389,7 +393,7 @@ class EventStore:
                         author=c.author,
                         body=c.body,
                         reply_to=c.reply_to,
-                        delivered_to_tars=True,
+                        delivered_to_agent=True,
                     )
                     updated = True
                     break
@@ -442,7 +446,7 @@ class EventStore:
                         priority=ev.priority,
                         decided_at=ev.decided_at,
                         decided_reason=ev.decided_reason,
-                        delivered_to_tars=ev.delivered_to_tars,
+                        delivered_to_agent=ev.delivered_to_agent,
                         author_id=ev.author_id,
                         author_display=ev.author_display,
                     )

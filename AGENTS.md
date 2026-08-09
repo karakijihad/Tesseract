@@ -8,7 +8,7 @@ so an edit made here is destroyed silently and reaches nobody. Read
 anything you like; write nothing.
 
 Write to the `home` directory beside this one instead: its
-`tars-workshop` folder for scratch work and drafts, its
+`workshop` folder for scratch work and drafts, its
 `downloads` folder for files you fetch.
 
 If the task genuinely requires changing this application, that work

@@ -34,12 +34,14 @@ class VaultSearchTool(Tool):
         fts_index: FTSIndex | None,
         vault_manager: VaultManager,
         vault_cfg: "VaultConfig",
+        reranker: object | None = None,
     ) -> None:
         self._embeddings = embeddings
         self._fts_index = fts_index
         self._manager = vault_manager
         self._rrf_k = vault_cfg.search_rrf_k
         self._default_top_k = vault_cfg.search_default_top_k
+        self._reranker = reranker
 
     @property
     def name(self) -> str:
@@ -68,9 +70,12 @@ class VaultSearchTool(Tool):
         top_k = inp.top_k if inp.top_k is not None else self._default_top_k
         scores: dict[str, float] = {}
 
-        # BM25 search via FTS5
+        # BM25 search via FTS5 — prefix-filtered SQL-side so memory rows in
+        # the shared table cannot crowd the fetch window.
         if self._fts_index is not None:
-            fts_results = self._fts_index.search(inp.query, limit=top_k * 3)
+            fts_results = self._fts_index.search(
+                inp.query, limit=top_k * 3, require_prefix="vault:"
+            )
             rank = 0
             for mem_id, _score in fts_results:
                 if not mem_id.startswith("vault:"):
@@ -92,7 +97,7 @@ class VaultSearchTool(Tool):
                 arr = np.array([vec], dtype=np.float32)
                 faiss.normalize_L2(arr)
                 vector_results = self._embeddings.search_by_vector(
-                    arr[0], top_k=top_k * 3,
+                    arr[0], top_k=top_k * 3, require_prefix="vault:",
                 )
                 rank = 0
                 for mem_id, _score in vector_results:
@@ -108,11 +113,32 @@ class VaultSearchTool(Tool):
         if not scores:
             return ToolResult(output="No vault results found.")
 
-        # Sort by RRF score, take top_k
-        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
+        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+
+        # Cross-encoder precision pass over the fused pool. Best-effort:
+        # any failure (or missing model) keeps the RRF order. Chunks whose
+        # text is unavailable keep their RRF position after the scored ones.
+        reranked = False
+        if self._reranker is not None:
+            pool = [
+                (cid, text)
+                for cid, _s in ranked
+                if (text := self._get_chunk_text(cid))
+            ]
+            try:
+                scored = await self._reranker.rerank(inp.query, pool)
+            except Exception:
+                scored = None
+            if scored:
+                scored_ids = {cid for cid, _s in scored}
+                ranked = scored + [(c, s) for c, s in ranked if c not in scored_ids]
+                reranked = True
+
+        ranked = ranked[:top_k]
 
         # Format results
-        parts: list[str] = [f"Found {len(ranked)} vault result(s):\n"]
+        header = f"Found {len(ranked)} vault result(s)"
+        parts: list[str] = [f"{header} (cross-encoder reranked):\n" if reranked else f"{header}:\n"]
         for chunk_id, score in ranked:
             # Parse vault_rel_path from chunk_id: "vault:{path}:chunk_{N}"
             stripped = chunk_id.removeprefix("vault:")
@@ -140,11 +166,4 @@ class VaultSearchTool(Tool):
         """Retrieve chunk text from FTS body column."""
         if self._fts_index is None:
             return ""
-        try:
-            cursor = self._fts_index._conn.execute(
-                "SELECT body FROM memories WHERE memory_id = ?", (chunk_id,)
-            )
-            row = cursor.fetchone()
-            return row[0] if row else ""
-        except Exception:
-            return ""
+        return self._fts_index.get_body(chunk_id) or ""

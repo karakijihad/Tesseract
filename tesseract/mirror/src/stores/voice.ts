@@ -31,14 +31,17 @@ export type VoiceUiState =
 
 /** Voice mode — global behaviour gate selected by the operator on the HUD.
  *
- * - `transcribe`: TARS is silent. Mic captures land in the chat input
+ * - `transcribe`: the assistant is silent. Mic captures land in the chat input
  *   for review/edit/send. Server-side TTS is suppressed even for typed
  *   messages.
  * - `command`: STT dispatches through chat_brain; assistant replies
  *   remain text/actions only.
  * - `speak`: STT + TTS. Mic captures dispatch through chat_brain;
- *   assistant replies are spoken. */
-export type VoiceMode = 'transcribe' | 'command' | 'speak';
+ *   assistant replies are spoken.
+ * - `terminal`: mic captures are typed into the focused Terminal pane
+ *   and never reach chat_brain. Silent, like `transcribe` — the
+ *   difference is only where the text lands. */
+export type VoiceMode = 'transcribe' | 'command' | 'speak' | 'terminal';
 
 interface VoiceStoreState {
   state: VoiceUiState;
@@ -51,10 +54,9 @@ interface VoiceStoreState {
    * "mic green = mic capturing right now". */
   micActive: boolean;
   lastError: string | null;
-  /** Latest `voice_instruction` from backend (`set_voice` tool result or
-   * the budget-gate fallback signal). `null` until the first instruction
-   * lands. The frontend keeps this for inspection / pulse rendering;
-   * actual TTS prosody is applied server-side. */
+  /** Latest `voice_instruction` from backend — the reason a reply went
+   * unspoken (budget gate, or every TTS lane down). `null` until the
+   * first instruction lands; kept for inspection / pulse rendering. */
   instruction: VoiceInstructionData | null;
   voiceMode: VoiceMode;
   /** When the operator commits in `transcribe` mode, the resulting
@@ -66,12 +68,6 @@ interface VoiceStoreState {
    * preview is active. NOT the canonical transcript — the backend's
    * `voice_final` supersedes this on commit. Cleared on speech-end. */
   partialTranscript: string;
-  /** Transcribe-mode fast path: when the browser partial is promoted
-   * directly into the chat input at speech-end, skip exactly one
-   * backend `voice_final` append for the same utterance. This makes
-   * the partial authoritative while preserving the backend path as a
-   * fallback on hosts without Web Speech support. */
-  suppressNextBackendDictation: boolean;
   setState: (state: VoiceUiState) => void;
   setMicActive: (active: boolean) => void;
   setAudioLevel: (rms: number) => void;
@@ -80,13 +76,12 @@ interface VoiceStoreState {
   setVoiceMode: (mode: VoiceMode) => void;
   setPendingDictation: (text: string | null) => void;
   setPartialTranscript: (text: string) => void;
-  setSuppressNextBackendDictation: (skip: boolean) => void;
   /** Map a backend `voice_state` envelope payload onto the UI state. */
   applyBackendState: (state: VoiceState) => void;
 }
 
 const VOICE_MODE_KEY = 'tesseract.mirror.voiceMode';
-const VALID_MODES: readonly VoiceMode[] = ['transcribe', 'command', 'speak'] as const;
+const VALID_MODES: readonly VoiceMode[] = ['transcribe', 'command', 'speak', 'terminal'] as const;
 
 const loadVoiceMode = (): VoiceMode => {
   try {
@@ -111,10 +106,9 @@ export const useVoiceStore = create<VoiceStoreState>((set) => ({
   micActive: false,
   lastError: null,
   instruction: null,
-  voiceMode: loadVoiceMode(),  // default transcribe — TARS silent until operator opts in
+  voiceMode: loadVoiceMode(),  // default transcribe — the assistant silent until operator opts in
   pendingDictation: null,
   partialTranscript: '',
-  suppressNextBackendDictation: false,
   setState: (state) => set({ state }),
   setMicActive: (micActive) => set({ micActive }),
   setAudioLevel: (audioLevel) => set({ audioLevel }),
@@ -126,7 +120,6 @@ export const useVoiceStore = create<VoiceStoreState>((set) => ({
   },
   setPendingDictation: (pendingDictation) => set({ pendingDictation }),
   setPartialTranscript: (partialTranscript) => set({ partialTranscript }),
-  setSuppressNextBackendDictation: (suppressNextBackendDictation) => set({ suppressNextBackendDictation }),
   applyBackendState: (state) => {
     if (state === 'transcribing' || state === 'idle' || state === 'speaking_back') {
       set({ state });

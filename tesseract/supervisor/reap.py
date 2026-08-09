@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 # NB: ``tesseract.supervisor`` is deliberately absent — we never kill another
 # supervisor, only leaked daemon/backend children.
 _ORPHAN_MARKERS: tuple[str, ...] = (
-    "tesseract.scripts.tars_controller",
+    "tesseract.scripts.agent_controller",
     "tesseract.mirror.server",
 )
 

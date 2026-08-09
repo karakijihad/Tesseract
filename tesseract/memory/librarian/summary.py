@@ -85,7 +85,7 @@ class SummaryMixin:
         lines.append("**Updated by:** librarian (manual via `/reflect`; auto via heartbeat when wired)")
         lines.append("")
         lines.append(
-            "Top-level curated synthesis — what TARS durably knows about the "
+            "Top-level curated synthesis — what the assistant durably knows about the "
             "operator, projects, tools, and concepts. The raw capture layer "
             "lives in `daily/YYYY-MM-DD.md`; canonical entries live in the "
             "per-type subdirs. This file surfaces what matters right now."

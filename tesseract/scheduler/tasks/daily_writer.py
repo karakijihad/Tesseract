@@ -11,6 +11,7 @@ Contract: `Docs/Plan/scheduler/_shared/daily-tag-vocabulary.md` Layer 1.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import date, datetime, time, timedelta, timezone
@@ -33,7 +34,11 @@ class DailyWriterJob(BaseJob):
     async def run(self, ctx: JobContext) -> JobResult:
         try:
             target_date = (ctx.fired_at - timedelta(days=1)).date()
-            rows = _load_rows_for(target_date, _resolve_schedule_log_dir(ctx))
+            # Off the loop: runs.jsonl accumulates one row per job run for
+            # the life of the install and is read whole every night.
+            rows = await asyncio.to_thread(
+                _load_rows_for, target_date, _resolve_schedule_log_dir(ctx)
+            )
             aggregates = _aggregate(rows)
             body = _build_body(target_date, aggregates, generated_at=ctx.fired_at)
             header = f"## [scheduler] Daily rollup {target_date.isoformat()}"

@@ -1,10 +1,10 @@
-"""conscience_status tool — TARS's self-check against the drift log.
+"""conscience_status tool — the assistant's self-check against the drift log.
 
 Read-only pull. Returns the latest `drift-*.jsonl` report as compact text
-that TARS can paraphrase ("my conscience shows 2 ok, 1 warn, 0 bad as of
+that the assistant can paraphrase ("my conscience shows 2 ok, 1 warn, 0 bad as of
 3h ago"). AUTO permission — no operator prompt. When the heartbeat
 hasn't fired yet (disabled cron or fresh install), returns a helpful
-empty-state string instead of an error so TARS can say so honestly.
+empty-state string instead of an error so the assistant can say so honestly.
 """
 
 from __future__ import annotations

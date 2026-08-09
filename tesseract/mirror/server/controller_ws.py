@@ -23,7 +23,7 @@ The ``data`` payload is the controller's typed event verbatim (kind +
 session_id + ts + origin + per-kind fields) — same payload the CLI
 observer receives. The Mirror frontend can render it without any
 controller-specific decoding because the typed event vocabulary is
-already documented in ``tars_controller/events.py``.
+already documented in ``agent_controller/events.py``.
 
 The handler is intentionally narrow: it forwards transcript events
 and nothing else. ``session_status`` / ``reload_complete`` / ``ack``
@@ -42,7 +42,7 @@ from aiohttp import WSMsgType, web
 
 from tesseract.mirror.server.cors import origin_is_allowed
 from tesseract.mirror.server.envelope import make_envelope
-from tesseract.orchestrator.tars_controller.ipc_client import (
+from tesseract.orchestrator.agent_controller.ipc_client import (
     ControllerClient,
     ControllerClientError,
 )

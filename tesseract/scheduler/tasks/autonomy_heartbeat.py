@@ -114,7 +114,11 @@ class AutonomyHeartbeatJob(BaseJob):
             now = ctx.fired_at
 
             event_rows = _collect_event_rows(ctx, since_iso=cursor.get("last_event_ts"))
-            memory_rows = _collect_memory_rows(ctx, since_iso=cursor.get("last_memory_ts"))
+            # Off the loop: writes.jsonl accumulates one row per memory
+            # write for the life of the install and is read whole here.
+            memory_rows = await asyncio.to_thread(
+                _collect_memory_rows, ctx, since_iso=cursor.get("last_memory_ts")
+            )
             presence = _resolve_presence(ctx.app)
 
             if not event_rows and not memory_rows:
@@ -326,7 +330,7 @@ def _build_prompt(
     presence: dict[str, Any] | None,
 ) -> str:
     parts: list[str] = [
-        "You are TARS's autonomy heartbeat — a periodic self-reflection pass.",
+        "You are the assistant's autonomy heartbeat — a periodic self-reflection pass.",
         "",
         "Below is recent activity since the last heartbeat. Your job is to",
         "spot at most 3 NOTABLE patterns that warrant a future agenda item",

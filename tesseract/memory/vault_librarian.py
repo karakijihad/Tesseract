@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
 import json
 import logging
 import re
@@ -55,6 +56,9 @@ class VaultWikiPage:
     date_added: str
     type: str = "Source"
     backlinks_from: list[str] = field(default_factory=list)
+    # sha256 of the raw source bytes at compile time — lets a changed
+    # source recompile instead of being skipped as already-compiled.
+    source_hash: str = ""
 
 
 _slugify = slugify  # legacy alias — call sites below predate the manager-level helper
@@ -73,6 +77,34 @@ def _parse_llm_json(raw: str) -> dict:
         return {}
 
 
+# A scalar safe to emit bare: no YAML indicator can start it and nothing in it
+# can open a nested structure. Anything else gets quoted rather than reshaped,
+# so the page still says what the model said.
+_PLAIN_FM_SCALAR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._/+()'-]*$")
+
+
+def _fm_scalar(value: str) -> str:
+    """One frontmatter scalar that cannot forge structure.
+
+    Every value below is model-authored JSON derived from a document the
+    operator did not write. Interpolated raw, a value carrying a newline plus
+    ``related_slugs:\\n  - ../../elsewhere`` emits a SECOND ``related_slugs``
+    key — and `yaml.safe_load` keeps the last duplicate, so the injected list
+    silently replaces the validated one the compiler wrote.
+
+    Newlines are collapsed first (a scalar is one line by construction), then
+    anything that is not an obviously-plain scalar is JSON-quoted. Quoting
+    rather than stripping matters: a title with a colon is ordinary, and
+    mangling it would be a data-loss bug of our own. JSON string syntax is a
+    subset of YAML's double-quoted scalar, so this needs no yaml round-trip.
+    `VaultManager._wiki_page_path` is the independent second gate.
+    """
+    collapsed = " ".join(str(value).split())
+    if _PLAIN_FM_SCALAR.match(collapsed):
+        return collapsed
+    return json.dumps(collapsed, ensure_ascii=False)
+
+
 def _build_wiki_page(page: VaultWikiPage) -> str:
     """Render a VaultWikiPage dataclass into a markdown file.
 
@@ -83,39 +115,33 @@ def _build_wiki_page(page: VaultWikiPage) -> str:
     """
     fm_lines = [
         "---",
-        f"title: {page.title}",
-        f"type: {page.type}",
-        f"slug: {page.slug}",
-        f"topic: {page.topic}",
-        f"source_path: {page.source_path}",
-        f"date_added: {page.date_added}",
+        f"title: {_fm_scalar(page.title)}",
+        f"type: {_fm_scalar(page.type)}",
+        # Kind tag so the vault graph's color groups fire (Obsidian keys
+        # tag:#source); mirrors the memory-store's _inject_kind_tag idiom.
+        "tags:",
+        f"  - {_fm_scalar(page.type.lower())}",
+        f"slug: {_fm_scalar(page.slug)}",
+        f"topic: {_fm_scalar(page.topic)}",
+        f"source_path: {_fm_scalar(page.source_path)}",
+        f"date_added: {_fm_scalar(page.date_added)}",
     ]
-    if page.entities:
-        fm_lines.append("entities:")
-        for e in page.entities:
-            fm_lines.append(f"  - {e}")
-    if page.concepts:
-        fm_lines.append("concepts:")
-        for c in page.concepts:
-            fm_lines.append(f"  - {c}")
-    if page.related_slugs:
-        fm_lines.append("related_slugs:")
-        for s in page.related_slugs:
-            fm_lines.append(f"  - {s}")
-    else:
-        fm_lines.append("related_slugs: []")
-    if page.open_questions:
-        fm_lines.append("open_questions:")
-        for q in page.open_questions:
-            fm_lines.append(f"  - {q}")
-    else:
-        fm_lines.append("open_questions: []")
-    if page.backlinks_from:
-        fm_lines.append("backlinks_from:")
-        for b in page.backlinks_from:
-            fm_lines.append(f"  - {b}")
-    else:
-        fm_lines.append("backlinks_from: []")
+    if page.source_hash:
+        fm_lines.append(f"source_hash: {_fm_scalar(page.source_hash)}")
+    for key, values in (
+        ("entities", page.entities),
+        ("concepts", page.concepts),
+        ("related_slugs", page.related_slugs),
+        ("open_questions", page.open_questions),
+        ("backlinks_from", page.backlinks_from),
+    ):
+        if values:
+            fm_lines.append(f"{key}:")
+            fm_lines.extend(f"  - {_fm_scalar(v)}" for v in values)
+        elif key != "entities" and key != "concepts":
+            # The three link/question fields are declared even when empty —
+            # readers anchor on them; entities/concepts are simply omitted.
+            fm_lines.append(f"{key}: []")
     fm_lines.append("---")
 
     parts = [
@@ -167,6 +193,11 @@ class VaultLibrarian:
         # `compile_source` calls. Without this, two ingests targeting the same
         # hub race and the second atomic swap clobbers the first's append.
         self._backlinks_lock = asyncio.Lock()
+        # Serializes whole compiles: slug reservation is check-then-write
+        # against the filesystem, so two concurrent same-stem compiles could
+        # both claim the base slug and the later write would clobber the
+        # first. Compiles are background work; serial is correct and cheap.
+        self._compile_lock = asyncio.Lock()
 
     def _get_agent(self) -> AgentDefinition:
         if self._agent is None:
@@ -184,7 +215,12 @@ class VaultLibrarian:
         return self._adapter, options
 
     async def compile_source(self, raw_rel_path: str) -> VaultWikiPage | None:
-        """Main pipeline: extract → LLM classify → write wiki page + index + log."""
+        """Main pipeline: extract → LLM classify → write wiki page + index + log.
+
+        Serialized end-to-end by `_compile_lock` — slug reservation is a
+        filesystem check-then-write, so concurrent compiles must not
+        interleave between the check and the page write.
+        """
         if self._breaker.is_tripped:
             logger.warning("VaultLibrarian circuit breaker tripped — skipping %s", raw_rel_path)
             return None
@@ -201,14 +237,26 @@ class VaultLibrarian:
             logger.warning("VaultLibrarian: raw file not found: %s", raw_rel_path)
             return None
 
+        async with self._compile_lock:
+            return await self._compile_source_locked(raw_rel_path, vault_abs)
+
+    async def _compile_source_locked(
+        self, raw_rel_path: str, vault_abs: Path
+    ) -> VaultWikiPage | None:
         # Derive slug and title from filename
         slug = _slugify(vault_abs.stem)
         title = vault_abs.stem.replace("-", " ").replace("_", " ").title()
+        source_hash = hashlib.sha256(vault_abs.read_bytes()).hexdigest()
 
-        # Skip if already compiled
-        if self._manager.wiki_page_exists(slug):
-            logger.info("VaultLibrarian: wiki page already exists for %s — skipping", slug)
+        # Skip only when the existing page belongs to THIS source at THIS
+        # content hash. Same source, changed bytes → recompile in place
+        # (existing backlinks_from survives). Different source_path is a
+        # filename collision — disambiguate rather than silently dropping
+        # the new source from the wiki.
+        resolution = self._resolve_slug_collision(slug, raw_rel_path, source_hash)
+        if resolution is None:
             return None
+        slug, preserved_backlinks = resolution
 
         # Extract text
         text = VaultIndexer.extract_text(vault_abs) or ""
@@ -273,6 +321,8 @@ class VaultLibrarian:
             related_slugs=related_slugs,
             source_path=raw_rel_path,
             date_added=date_str,
+            backlinks_from=preserved_backlinks,
+            source_hash=source_hash,
         )
 
         # Write wiki page
@@ -309,6 +359,51 @@ class VaultLibrarian:
             raw_rel_path, slug, page.topic, updated, skipped,
         )
         return page
+
+    def _resolve_slug_collision(
+        self, slug: str, raw_rel_path: str, source_hash: str
+    ) -> tuple[str, list[str]] | None:
+        """Return `(slug, preserved_backlinks)` for this source, or None when
+        it is already compiled at this content hash.
+
+        Same source_path + same hash → skip (idempotent). Same source_path,
+        different hash → recompile under the same slug, carrying the page's
+        existing backlinks_from forward. Different source_path → filename
+        collision: append the raw folder name, then a numeric suffix."""
+        def _own_page(candidate: str) -> tuple[str, list[str]] | None:
+            fm = self._manager.read_wiki_page_frontmatter(candidate)
+            if str(fm.get("source_path", "")) != raw_rel_path:
+                return None
+            if str(fm.get("source_hash", "")) == source_hash:
+                logger.info(
+                    "VaultLibrarian: wiki page for %s is current — skipping", candidate
+                )
+                return ("", [])  # sentinel: ours and unchanged
+            backlinks = [str(b) for b in (fm.get("backlinks_from") or [])]
+            logger.info(
+                "VaultLibrarian: source %s changed — recompiling %s", raw_rel_path, candidate
+            )
+            return (candidate, backlinks)
+
+        if not self._manager.wiki_page_exists(slug):
+            return (slug, [])
+        owned = _own_page(slug)
+        if owned is not None:
+            return None if owned[0] == "" else owned
+        parent = _slugify(Path(raw_rel_path).parent.name)
+        candidate = _slugify(f"{slug}-{parent}") if parent else slug
+        n = 2
+        while self._manager.wiki_page_exists(candidate):
+            owned = _own_page(candidate)
+            if owned is not None:
+                return None if owned[0] == "" else owned
+            candidate = _slugify(f"{slug}-{parent}-{n}")
+            n += 1
+        logger.info(
+            "VaultLibrarian: slug collision for %s — compiling %s as %s",
+            slug, raw_rel_path, candidate,
+        )
+        return (candidate, [])
 
     async def _append_backlinks(
         self, source_slug: str, target_slugs: list[str]
@@ -347,23 +442,97 @@ class VaultLibrarian:
                     missing.append(target)
         return updated, missing
 
+    async def backfill_hub_backlinks(self) -> dict[str, list[str]]:
+        """Re-link Source pages to hub pages created after they were compiled.
+
+        `compile_source` can only link to hubs that already exist, so a hub
+        the operator curates later never hears about earlier sources. For
+        every Source page, slugify its entities/concepts and, for each hub
+        that exists now: append the source to the hub's ``backlinks_from``
+        and the hub to the source's ``related_slugs`` (both frontmatter-only
+        merges — bodies are never touched). Idempotent; returns
+        ``{source_slug: [newly linked hubs]}`` for sources that changed.
+        """
+        async with self._compile_lock:
+            return await self._backfill_locked()
+
+    async def _backfill_locked(self) -> dict[str, list[str]]:
+        # Holding _compile_lock keeps a backfilled backlink from being
+        # overwritten by a concurrent recompile of the same source page
+        # (compile reads preserved backlinks and writes later under this
+        # same lock).
+        results: dict[str, list[str]] = {}
+        for slug in self._manager.list_wiki_slugs():
+            fm = self._manager.read_wiki_page_frontmatter(slug)
+            if str(fm.get("type", "")).lower() != "source":
+                continue
+            names = list(fm.get("entities") or []) + list(fm.get("concepts") or [])
+            hubs = {h for h in (_slugify(str(n)) for n in names) if h and h != slug}
+            already = set(str(s) for s in (fm.get("related_slugs") or []))
+            targets = sorted(
+                h for h in hubs - already if self._manager.wiki_page_exists(h)
+            )
+            if not targets:
+                continue
+            updated, _missing = await self._append_backlinks(slug, targets)
+            linked: list[str] = []
+            for hub in targets:
+                try:
+                    if self._manager.update_wiki_related_slugs(slug, [hub]):
+                        linked.append(hub)
+                except Exception as exc:
+                    logger.warning(
+                        "backfill: related_slugs update failed for %s → %s: %s",
+                        slug, hub, exc,
+                    )
+            if linked or updated:
+                results[slug] = sorted(set(linked) | set(updated))
+        return results
+
     async def synthesize_query(self, query: str, candidate_slugs: list[str]) -> str:
-        """Synthesize an answer from vault wiki pages for a query."""
+        """Synthesize an answer from vault wiki pages for a query.
+
+        Reads the whole scoped candidate set under the configured budgets, not
+        a fixed prefix of it. The prefix mattered: `_scope_candidates` returns
+        seeds first and expanded pages after them, so a fixed head slice cut
+        off exactly the compound-wiki traversal that pass 2 exists to perform.
+        """
         if not candidate_slugs:
             return "No relevant vault pages found for this query."
 
-        # Load wiki page content
+        budget = self._config.synthesis_char_budget
+        page_chars = self._config.synthesis_page_chars
         wiki_parts: list[str] = []
-        for slug in candidate_slugs[:5]:
+        used = 0
+        for slug in candidate_slugs[: self._config.synthesis_max_pages]:
+            if used >= budget:
+                break
             content = self._manager.read_wiki_page(slug)
-            if content:
-                wiki_parts.append(f"### {slug}\n{content[:800]}")
+            if not content:
+                continue
+            # The header and the join separator are part of what the model is
+            # sent, so they spend the budget too — counting only the excerpt
+            # let the assembled prompt run over the configured cap by roughly
+            # one header per page.
+            framing = len(f"### {slug}\n") + (2 if wiki_parts else 0)
+            room = budget - used - framing
+            if room <= 0:
+                break
+            excerpt = content[: min(page_chars, room)]
+            wiki_parts.append(f"### {slug}\n{excerpt}")
+            used += len(excerpt) + framing
 
         if not wiki_parts:
             return "No readable wiki pages found."
 
-        agent = self._get_agent()
-        prompt_template = agent.get_section("Query Prompt")
+        # Adapter first: with no adapter the answer is the concatenated pages
+        # either way, and `_get_adapter` short-circuits without loading the
+        # agent card that only the prompt path needs.
+        adapter, options = self._get_adapter()
+        if adapter is None:
+            return "\n\n".join(wiki_parts)
+
+        prompt_template = self._get_agent().get_section("Query Prompt")
         if not prompt_template:
             # Fallback: just concatenate summaries
             return "\n\n".join(wiki_parts)
@@ -372,10 +541,6 @@ class VaultLibrarian:
             query=query,
             wiki_content="\n\n".join(wiki_parts),
         )
-
-        adapter, options = self._get_adapter()
-        if adapter is None:
-            return "\n\n".join(wiki_parts)
 
         try:
             result = await adapter.generate(prompt, options)

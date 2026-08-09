@@ -19,11 +19,23 @@ import logging
 import os
 import re
 import secrets
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 from tesseract.memory.leaf_seals import Seal
 from tesseract.memory.leaves import _resolve_home
+
+# `append_seal` is read-check-replace: it reads the topic file, checks the
+# seal id is absent, then `os.replace`s a rebuilt body. That was safe only
+# while every caller ran to completion without yielding. `TopicRouteJob`
+# now runs its pass under `asyncio.to_thread`, and the scheduler has no
+# per-job running guard — `run_now` awaits `_run_job` directly and the
+# command handler spawns each request independently — so two passes can
+# read the same body and the later `os.replace` drops the earlier one's
+# section. Callers hold this across a whole pass, not per-append, so a
+# run's sections land together or not at all.
+TOPIC_TREE_LOCK = threading.RLock()
 
 log = logging.getLogger(__name__)
 
@@ -125,6 +137,7 @@ def append_seal(
 __all__ = [
     "TOPIC_ACTIVATION_THRESHOLD",
     "TOPIC_TREES_ROOT",
+    "TOPIC_TREE_LOCK",
     "activate_topic",
     "append_seal",
     "entity_slug",

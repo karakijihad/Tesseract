@@ -10,9 +10,9 @@ The output (speech-back) half is owned downstream and is deliberately NOT
 emitted here, so the two halves never race over the frontend's
 `voice.state`:
 
-  - RESPONDING — TARS is thinking. The orb's `thinking` state, driven by
+  - RESPONDING — the assistant is thinking. The orb's `thinking` state, driven by
     the chat stream, is the indicator. No `voice_state` for it.
-  - SPEAKING — TARS is talking. The frontend derives `speaking_back`
+  - SPEAKING — the assistant is talking. The frontend derives `speaking_back`
     from the `tts_chunk` envelopes it actually plays (`stores/dispatch.ts`),
     which is authoritative (tied to real audio) — re-emitting it here
     would only race that.
@@ -20,7 +20,7 @@ emitted here, so the two halves never race over the frontend's
 Fast partials are client-side: the browser Web Speech API surfaces an
 interim transcript (`lib/voice/stt-stream.ts`); the backend `voice_partial`
 envelope was removed in the Phase-16-S1 simplification and is not
-reintroduced. See `Docs/Plan/tars-cockpit/design/2026-06-18-voice-loop-spec.md`.
+reintroduced. See `Docs/Plan/cockpit/design/2026-06-18-voice-loop-spec.md`.
 
 The machine is pure + synchronous: each transition method mutates the
 state and returns the `voice_state` wire value to emit (or `None` when no
@@ -64,7 +64,7 @@ class VoiceLoop:
 
     def note_audio(self, *, turn_active: bool) -> str | None:
         """A PCM frame arrived. Enter LISTENING from IDLE only — and only
-        when no chat turn is in flight, so ambient mic audio during TARS's
+        when no chat turn is in flight, so ambient mic audio during the assistant's
         reply can't flip the mic UI out of `speaking_back`. Deduped: returns
         `None` once already listening (or when gated)."""
         if turn_active or self._state is not VoiceLoopState.IDLE:
@@ -85,7 +85,7 @@ class VoiceLoop:
         return VoiceLoopState.IDLE.value
 
     def barge_in(self) -> str | None:
-        """Operator started speaking over TARS — the input half is live
+        """Operator started speaking over the assistant — the input half is live
         again (TTS teardown is the caller's job). Deduped."""
         if self._state is VoiceLoopState.LISTENING:
             return None

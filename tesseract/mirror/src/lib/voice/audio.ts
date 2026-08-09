@@ -29,7 +29,7 @@ export interface AudioCaptureOptions {
 }
 
 const WORKLET_SOURCE = `
-class TarsCaptureProcessor extends AudioWorkletProcessor {
+class AgentCaptureProcessor extends AudioWorkletProcessor {
   constructor(opts) {
     super();
     this.targetRate = opts.processorOptions.targetRate;
@@ -66,7 +66,7 @@ class TarsCaptureProcessor extends AudioWorkletProcessor {
     return true;
   }
 }
-registerProcessor('tars-capture', TarsCaptureProcessor);
+registerProcessor('agent-capture', AgentCaptureProcessor);
 `;
 
 export class AudioCapture {
@@ -106,7 +106,7 @@ export class AudioCapture {
       URL.revokeObjectURL(workletUrl);
     }
 
-    this.worklet = new AudioWorkletNode(this.ctx, 'tars-capture', {
+    this.worklet = new AudioWorkletNode(this.ctx, 'agent-capture', {
       processorOptions: {
         targetRate: TARGET_SAMPLE_RATE,
         framesPerOutput: SAMPLES_PER_FRAME,

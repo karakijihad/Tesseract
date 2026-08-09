@@ -34,7 +34,7 @@ DEFAULT_MAX_DIGEST_CHARS = 6000
 DEFAULT_TIMEOUT_S = 60.0
 
 _SUMMARY_PROMPT = (
-    "You are summarizing one day of conversation between the operator and TARS. "
+    "You are summarizing one day of conversation between the operator and the assistant. "
     "Produce a 3-8 sentence digest covering: what was discussed, what was "
     "decided, what was learned, and anything explicitly deferred. Plain prose, "
     "no bullet list, no tool calls, no preamble. Output only the digest.\n\n"
@@ -51,7 +51,9 @@ class ChatDigestJob(BaseJob):
         try:
             target_date = (ctx.fired_at - timedelta(days=1)).date()
             session_dir = _resolve_session_dir(ctx)
-            sessions = _collect_sessions(target_date, session_dir)
+            # Off the loop: reads + fully parses every active session file
+            # (up to 10k) to find yesterday's.
+            sessions = await asyncio.to_thread(_collect_sessions, target_date, session_dir)
             if not sessions:
                 return JobResult(
                     job_name=ctx.job_name,

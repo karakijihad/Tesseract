@@ -1,6 +1,6 @@
 """``OperatorNudgeJob`` — periodic "still here, all is good" toast.
 
-2026-05-19. Built after a chat-channel confabulation incident where TARS
+2026-05-19. Built after a chat-channel confabulation incident where the assistant
 claimed "Done. Every 15 minutes I'll fire a toast" without invoking any
 tool. This job is the real path for that promise: schedule it via
 ``schedule_create`` at any cadence; it composes a deterministic status
@@ -23,6 +23,7 @@ NotificationsPane without affecting load-bearing alerts.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -223,7 +224,9 @@ class OperatorNudgeJob(BaseJob):
 
     async def run(self, ctx: JobContext) -> JobResult:
         t0 = time.monotonic()
-        snap = _capture_snapshot()
+        # Off the loop: several directory walks + per-file reads (drift
+        # logs, active agenda, active worker records, pause file).
+        snap = await asyncio.to_thread(_capture_snapshot)
         body = _compose_body(snap)
 
         notifier = self._resolve_notifier(ctx)

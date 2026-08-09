@@ -20,6 +20,7 @@ the cursor JSONL is the only source of truth for what has been ingested.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -108,6 +109,7 @@ class VaultRawWatchJob(BaseJob):
 
             vault_manager = _resolve_vault_manager(ctx)
             indexer = _resolve_vault_indexer(ctx)
+            librarian = _resolve_vault_librarian(ctx)
             cursor_path = _resolve_cursor_path(ctx)
             event_store = _resolve_event_store(ctx)
 
@@ -121,7 +123,12 @@ class VaultRawWatchJob(BaseJob):
 
             _log_nonconforming(nonconforming, cfg.nonconforming_folders)
 
-            candidates = _gather_candidates(folders, cfg.excluded_globs, seen)
+            # Off the loop: hashes every unseen file across every date
+            # folder (sha256 over the full file) before the per-tick cap
+            # is applied.
+            candidates = await asyncio.to_thread(
+                _gather_candidates, folders, cfg.excluded_globs, seen
+            )
             if not candidates:
                 _maybe_finalise_empty(report, event_store, cfg, ctx)
                 return JobResult(
@@ -146,7 +153,14 @@ class VaultRawWatchJob(BaseJob):
             now = ctx.fired_at.astimezone(timezone.utc)
             for cand in auto_batch:
                 try:
-                    await _ingest_one(cand, vault_manager, indexer, decision="auto", now=now)
+                    await _ingest_one(
+                        cand,
+                        vault_manager,
+                        indexer,
+                        librarian=librarian,
+                        decision="auto",
+                        now=now,
+                    )
                     _append_cursor(
                         cursor_path,
                         cand=cand,
@@ -186,6 +200,19 @@ class VaultRawWatchJob(BaseJob):
                 event_store.append_event(ev)
                 report.batch_event_id = ev.event_id
                 report.ask_queued = files_payload
+                # Mark each queued file as seen NOW — the cursor is the only
+                # dedup source, so without a row here every later tick
+                # re-proposed the same unapproved file as a fresh ASK batch.
+                # apply_ask_batch appends the terminal row on approve/deny.
+                for cand, reason in ask_batch:
+                    _append_cursor(
+                        cursor_path,
+                        cand=cand,
+                        ingest_status="queued",
+                        decision="ask",
+                        reason=reason,
+                        when=now,
+                    )
 
             if report.auto_ingested or report.auto_failed:
                 inform = _build_inform_event(report, when=now)
@@ -227,6 +254,7 @@ async def apply_ask_batch(
     indexer: VaultIndexer | None,
     cursor_path: Path,
     when: datetime | None = None,
+    librarian: Any | None = None,
 ) -> dict[str, Any]:
     """Apply operator decisions on a previously-queued ASK batch.
 
@@ -270,8 +298,34 @@ async def apply_ask_batch(
             )
             denied.append(relpath)
             continue
+        # The operator reviewed a specific version of the file. If it changed
+        # after the event was created, refuse this entry — the current bytes
+        # were never reviewed and the recorded provenance hash would be wrong.
+        # The new SHA is unseen, so the next tick re-proposes it fresh.
+        live_sha = _file_sha256(abs_path)
+        if live_sha != sha:
+            log.warning(
+                "raw_watch: %s changed since review (sha mismatch) — refusing", relpath
+            )
+            _append_cursor(
+                cursor_path,
+                cand=cand,
+                ingest_status="failed",
+                decision="ask",
+                reason="changed_since_review",
+                when=when,
+            )
+            failed.append((relpath, "changed_since_review"))
+            continue
         try:
-            await _ingest_one(cand, vault_manager, indexer, decision="ask", now=when)
+            await _ingest_one(
+                cand,
+                vault_manager,
+                indexer,
+                librarian=librarian,
+                decision="ask",
+                now=when,
+            )
         except Exception as exc:  # noqa: BLE001
             log.warning("raw_watch ask-ingest failed for %s: %s", relpath, exc)
             _append_cursor(
@@ -308,6 +362,7 @@ async def _ingest_one(
     vault_manager: VaultManager,
     indexer: VaultIndexer | None,
     *,
+    librarian: Any | None = None,
     decision: str,
     now: datetime,
 ) -> None:
@@ -325,11 +380,15 @@ async def _ingest_one(
     vault_rel = f"raw/{cand.relpath}"
     title = cand.abs_path.stem.replace("-", " ").replace("_", " ").title()
 
+    # Provenance records the bytes actually indexed, hashed NOW — the
+    # candidate's sha comes from discovery/review time and the file is
+    # operator-mutable in place.
+    live_sha = _file_sha256(cand.abs_path) or cand.sha256
     meta: dict[str, Any] = {
         "source_type": cand.abs_path.suffix.lstrip(".").lower(),
         "ingested_at": now.isoformat(),
         "ingest_decision": decision,
-        "content_hash": f"sha256:{cand.sha256}",
+        "content_hash": f"sha256:{live_sha}",
         "tags": [],
         "notes": "vault_raw_watch auto-ingest" if decision == "auto" else "vault_raw_watch ask-approved",
     }
@@ -342,6 +401,15 @@ async def _ingest_one(
 
     if indexer is not None:
         await indexer.index_vault_file(vault_rel, title, cand.abs_path)
+
+    # Wiki compile so the file reaches vault_query, not just vault_search.
+    # Best-effort — vault ingest is eventually-consistent and a down LLM
+    # must not fail the ingest (the sidecar + index above already landed).
+    if librarian is not None:
+        try:
+            await librarian.compile_source(vault_rel)
+        except Exception as exc:  # noqa: BLE001 — per-file isolation
+            log.warning("raw_watch wiki compile failed for %s: %s", vault_rel, exc)
 
 
 def _preview_for(cand: _Candidate, vault_manager: VaultManager, indexer: VaultIndexer | None) -> str:
@@ -528,7 +596,7 @@ def _build_ask_event(files: list[dict[str, Any]], *, when: datetime) -> Workspac
     folders = sorted({entry["folder"] for entry in files})
     return WorkspaceEvent.new(
         kind="vault_raw_ingest_batch",
-        source="tars",
+        source="agent",
         title=f"Vault inbox — {len(files)} file(s) await approval",
         summary=(
             f"{len(files)} file(s) in {', '.join(folders)} need operator approval "
@@ -552,7 +620,7 @@ def _build_inform_event(report: _TickReport, *, when: datetime) -> WorkspaceEven
     summary_bits.append(f"folders {', '.join(folders) or '(none)'}")
     return WorkspaceEvent.new(
         kind="nudge",
-        source="tars",
+        source="agent",
         title="Vault raw-watch — auto-ingest summary",
         summary=" · ".join(summary_bits),
         payload={
@@ -576,7 +644,7 @@ def _maybe_finalise_empty(
         return
     ev = WorkspaceEvent.new(
         kind="nudge",
-        source="tars",
+        source="agent",
         title="Vault raw-watch — empty tick",
         summary=(
             f"folders_scanned={report.folders_scanned}, "
@@ -653,6 +721,25 @@ def _resolve_vault_indexer(ctx: JobContext) -> VaultIndexer | None:
             indexer = getattr(tool, "_indexer", None)
             if isinstance(indexer, VaultIndexer):
                 return indexer
+    return None
+
+
+def _resolve_vault_librarian(ctx: JobContext) -> Any | None:
+    """Same resolution shape as the indexer: inline override first, then
+    the live librarian hanging off the registered `vault_ingest` tool."""
+    injected = _cfg_get(ctx, "vault_librarian")
+    if injected is not None:
+        return injected
+    if isinstance(ctx.config, dict) and "vault_librarian" in ctx.config:
+        return None
+    app = ctx.app
+    if app is not None and hasattr(app, "get"):
+        registry = app.get("tool_registry")
+        if registry is not None:
+            tool = getattr(registry, "get", lambda _name: None)("vault_ingest")
+            librarian = getattr(tool, "_librarian", None)
+            if librarian is not None:
+                return librarian
     return None
 
 

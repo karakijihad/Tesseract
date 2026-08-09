@@ -11,7 +11,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
-from tesseract.orchestrator.tars_controller.lanes.tool_support import (
+from tesseract.orchestrator.agent_controller.lanes.tool_support import (
     maybe_await,
     resolve_lane_manager,
 )
@@ -31,6 +31,14 @@ class LaneReadInput(BaseModel):
 class LaneReadTool(Tool):
     default_posture = "auto"
     risk_class: ClassVar[str] = "autonomous"
+
+    # A CLI's reply is whatever it read out of a repository, a web page, or
+    # a compromised model — untrusted by origin, however trusted the tool
+    # that fetched it. Set here so the foreground result and `spawn_await`'s
+    # retrieval get the same envelope the background completion delivery
+    # applies in `chat.py::_format_spawn_completion`; wrapping only the one
+    # path left the other two open.
+    untrusted_source: ClassVar[bool] = True
 
     @property
     def name(self) -> str:

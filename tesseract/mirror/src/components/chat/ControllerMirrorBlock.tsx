@@ -1,5 +1,6 @@
 import { useEffect, useRef, useReducer } from 'react';
 import { BACKEND_BASE } from '../../lib/endpoints';
+import { useEntityName } from '../../hooks/useEntityName';
 import './ControllerMirrorBlock.css';
 
 // ---------------------------------------------------------------------------
@@ -7,7 +8,7 @@ import './ControllerMirrorBlock.css';
 // ---------------------------------------------------------------------------
 
 // Real controller transcript event vocabulary — see:
-//   tesseract/orchestrator/tars_controller/events.py
+//   tesseract/orchestrator/agent_controller/events.py
 // Discriminator is `kind` (not `type`). Known kinds used by this renderer:
 //   assistant_text  – text: string, partial: bool (partial=false closes turn)
 //   tool_use        – tool: string, input: dict, tool_use_id: string
@@ -37,7 +38,7 @@ interface TranscriptLine {
 // Single controller session status, fetched once on WS close so a detached
 // session's outcome stays visible after a manual reload or real disconnect.
 // X-2 (2026-06-02) extended with `transcript_path` so the completion card
-// surfaces the on-disk path the operator can copy / open in `tars --session`.
+// surfaces the on-disk path the operator can copy / open in `agent --session`.
 export interface ControllerStatus {
   status: string;
   last_active_at?: string | null;
@@ -121,7 +122,7 @@ export function eventToLine(event: ControllerEvent, key: string): TranscriptLine
   return null;
 }
 
-// Sets thinking=true when TARS is actively producing output mid-turn.
+// Sets thinking=true when the assistant is actively producing output mid-turn.
 // assistant_text with partial=true → streaming; tool_use → executing a tool.
 // Exported for unit-testing.
 export function isThinkingEvent(event: ControllerEvent): boolean {
@@ -205,6 +206,7 @@ export interface ControllerMirrorBlockProps {
 // ---------------------------------------------------------------------------
 
 export function ControllerMirrorBlock({ session_id, ws_path }: ControllerMirrorBlockProps) {
+  const entityName = useEntityName();
   const [state, dispatch] = useReducer(reducer, initialState);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const keyRef = useRef(0);
@@ -293,14 +295,14 @@ export function ControllerMirrorBlock({ session_id, ws_path }: ControllerMirrorB
       <div className="controller-mirror__handoff">
         <span className="controller-mirror__handoff-label">launched terminal session</span>
         <span className="controller-mirror__session-id">{session_id}</span>
-        <span className="controller-mirror__hint">tars --session {session_id}</span>
+        <span className="controller-mirror__hint">agent --session {session_id}</span>
       </div>
 
       {/* Thinking indicator */}
       {state.thinking && (
         <div className="controller-mirror__thinking">
           <span className="controller-mirror__thinking-dot" />
-          TARS is working…
+          {entityName} is working…
         </div>
       )}
 

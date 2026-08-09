@@ -550,6 +550,20 @@
   color: var(--text-primary);
 }
 
+/* Provider / tier enable switches in Settings -> Capabilities. A disabled
+   box means its tier switch is off, not that the row is unavailable — the
+   pointer cue matters because the box still shows the stored value. */
+.provider-row__toggle {
+  accent-color: var(--accent);
+  vertical-align: baseline;
+  cursor: pointer;
+}
+
+.provider-row__toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .cost-row__input {
   background: var(--bg-deep);
   border: 1px solid var(--panel-border);
@@ -912,10 +926,17 @@
 }
 
 .voice-settings-preset__prompt {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.5;
   color: var(--text-primary);
+}
+
+.voice-settings-preset__knob code {
+  color: var(--text-meta);
 }
 
 .system-grid {

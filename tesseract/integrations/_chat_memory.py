@@ -13,7 +13,7 @@ Three layers sit on top of the existing 20-turn verbatim ``ChatSession.history``
    ``["channel", channel, f"chat:{chat_id}"]`` so the next day's first message
    surfaces it via the auto-recall path. Long-term continuity.
 3. **Auto recall** — :meth:`recall_for_inbound` queries the memory pipeline
-   scoped to this chat's tags before ``chat_brain`` runs, so TARS picks up
+   scoped to this chat's tags before ``chat_brain`` runs, so the assistant picks up
    yesterday's promises automatically rather than relying on a proactive
    ``memory_search`` call.
 
@@ -72,7 +72,7 @@ _REFLECTION_TAIL_TURNS = 40
 # ``RetrievalPipeline.retrieve``).
 _RECALL_TOP_K = 5
 # Log-fallback tail cap (2026-05-17). When memory + summary come back empty
-# we tail this many turns from the per-day log so TARS has *some* grounding.
+# we tail this many turns from the per-day log so the assistant has *some* grounding.
 # 30 ≈ 15 user/assistant pairs, enough to cover a short conversation that
 # happened before the reflection sweep had a chance to fire.
 _RECALL_LOG_TAIL_TURNS = 30
@@ -356,7 +356,7 @@ class ChatMemoryService:
         if not scoped_results:
             # 2026-05-17 — fallback: when memory has nothing for this
             # chat AND no rolling summary, tail the per-day conversation
-            # logs directly so TARS still has *some* context to ground
+            # logs directly so the assistant still has *some* context to ground
             # on instead of hallucinating. Caps the tail at
             # ``_RECALL_LOG_TAIL_TURNS`` (~30) so the prompt budget stays
             # reasonable. The reflection writer should usually populate
@@ -521,7 +521,7 @@ def _format_reflection_body(
     channel: str, chat_id: str, rows: list[dict[str, Any]]
 ) -> str:
     """Heuristic body — one bullet per turn. A future pass can replace this
-    with an LLM-driven thematic digest; v1 keeps the raw record so TARS can
+    with an LLM-driven thematic digest; v1 keeps the raw record so the assistant can
     quote it back exactly. Body is markdown; embeddings index the text body."""
     lines = [
         f"# Chat recap — {channel}:{chat_id}",

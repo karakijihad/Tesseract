@@ -39,6 +39,14 @@ first-run notice (DESIGN.md §5) — persisted via `POST /api/capabilities/
 dismiss` as a marker under `<TESSERACT_HOME>/runtime/`, so it survives a
 restart. It is independent of `roles`: the frontend self-suppresses the
 notice whenever no role is broken, regardless of this flag.
+
+`POST /api/capabilities/provider-enabled` writes the `enabled` bools this
+report reads — the tier switch (`<tier>.enabled`) or one provider's
+(`<tier>.<provider>.enabled`). It does not predict what a toggle breaks:
+`boot.py::build_adapter` already raises a message naming the exact flag
+that is false, and fallback chains already skip a disabled ref the way
+they skip a missing key. A pre-flight simulator would be a second source
+of truth for resolution that can drift from the resolver itself.
 """
 
 from __future__ import annotations
@@ -47,11 +55,12 @@ import json
 import os
 import shutil
 from datetime import datetime, timezone
+from typing import Any
 
 from aiohttp import web
 
-from tesseract.lib.yaml_io import atomic_write_text
-from tesseract.paths import home_dir, runtime_dir
+from tesseract.lib.yaml_io import atomic_write_text, round_trip_yaml
+from tesseract.paths import config_dir, home_dir, runtime_dir
 
 # Integrations that aren't a `providers.yaml` provider block but are still
 # optional, key-gated features (tool availability, channel bridges). Kept
@@ -64,6 +73,12 @@ _INTEGRATIONS = (
 )
 
 _RESERVED_TIER_KEYS = frozenset({"enabled"})
+
+# The three tier blocks in providers.yaml. Everything else at the top level
+# (`chain`, `cost_tracking`, `availability`) is not a tier and carries no
+# provider blocks — hence an explicit tuple rather than "every top-level
+# mapping". Providers *within* a tier are discovered, never listed.
+_TIERS = ("api", "cli", "local")
 
 
 def _key_present(name: str) -> bool:
@@ -112,7 +127,7 @@ def _provider_rows() -> list[dict]:
 
     providers_raw = load_bundle().providers_raw
     rows: list[dict] = []
-    for tier in ("api", "cli", "local"):
+    for tier in _TIERS:
         tier_block = providers_raw.get(tier) or {}
         tier_enabled = bool(tier_block.get("enabled", True))
         for name, block in tier_block.items():
@@ -145,6 +160,12 @@ def _provider_rows() -> list[dict]:
                 "tier": tier,
                 "provider": name,
                 "enabled": enabled,
+                # `enabled` above is the AND. The two flags are also reported
+                # separately because the toggles write them separately: a
+                # provider keeps its own `true` while its tier is off, and
+                # turning the tier back on must restore exactly that.
+                "tier_enabled": tier_enabled,
+                "provider_enabled": provider_enabled,
                 "key_name": key_name,
                 "key_present": key_present,
                 "status": status,
@@ -304,10 +325,98 @@ async def capabilities_dismiss(request: web.Request) -> web.Response:
     return web.json_response(_build_report())
 
 
+def _providers_yaml_path():
+    """Resolved at call time via `config_dir()` — the same resolution
+    `load_bundle()` reads through, so a write and the report that follows it
+    can never address different files (and tests can point both at a fixture
+    tree with `monkeypatch.setenv("TESSERACT_HOME", ...)`).
+    """
+    return config_dir() / "providers.yaml"
+
+
+def _set_enabled_flag(block: Any, enabled: bool) -> None:
+    """Write `enabled` into a tier or provider block.
+
+    Blocks that never carried the key explicitly (the readers all default it
+    to True) get it inserted at the top, where every hand-written block in
+    providers.yaml already keeps it, rather than appended below the models.
+    """
+    if "enabled" in block:
+        block["enabled"] = enabled
+    elif hasattr(block, "insert"):  # ruamel CommentedMap
+        block.insert(0, "enabled", enabled)
+    else:
+        block["enabled"] = enabled
+
+
+async def capabilities_set_provider_enabled(request: web.Request) -> web.Response:
+    """POST /api/capabilities/provider-enabled — flip a tier or provider switch.
+
+    Body: `{tier, provider, enabled}`. `provider: null` targets the tier
+    switch itself. Returns the same report shape as GET /api/capabilities,
+    which `load_bundle()` re-reads from disk, so the response already
+    reflects the write. The config watcher rebuilds adapters and the voice
+    runtime off the same file change — no restart.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"error": "body must be a JSON object"}, status=400)
+
+    tier = body.get("tier")
+    provider = body.get("provider")
+    enabled = body.get("enabled")
+
+    if tier not in _TIERS:
+        return web.json_response(
+            {"error": f"tier must be one of {', '.join(_TIERS)}"}, status=400
+        )
+    if not isinstance(enabled, bool):
+        return web.json_response({"error": "enabled must be a boolean"}, status=400)
+    if provider is not None and not isinstance(provider, str):
+        return web.json_response(
+            {"error": "provider must be a string or null"}, status=400
+        )
+    if provider in _RESERVED_TIER_KEYS:
+        return web.json_response(
+            {"error": f"'{provider}' is a reserved key, not a provider"}, status=400
+        )
+
+    path = _providers_yaml_path()
+    if not path.is_file():
+        return web.json_response({"error": f"{path} not found"}, status=500)
+
+    def _apply(doc: Any) -> None:
+        tier_block = doc.get(tier)
+        if not isinstance(tier_block, dict):
+            raise KeyError(tier)
+        if provider is None:
+            _set_enabled_flag(tier_block, enabled)
+            return
+        block = tier_block.get(provider)
+        if not isinstance(block, dict):
+            raise KeyError(f"{tier}.{provider}")
+        _set_enabled_flag(block, enabled)
+
+    try:
+        round_trip_yaml(path, _apply)
+    except KeyError as exc:
+        return web.json_response(
+            {"error": f"providers.yaml has no {exc}"}, status=404
+        )
+
+    return web.json_response(_build_report())
+
+
 def register(app: web.Application) -> None:
     app.router.add_get("/api/capabilities", capabilities_status)
     app.router.add_post("/api/capabilities/reverify", capabilities_reverify)
     app.router.add_post("/api/capabilities/dismiss", capabilities_dismiss)
+    app.router.add_post(
+        "/api/capabilities/provider-enabled", capabilities_set_provider_enabled
+    )
 
 
 __all__ = [
@@ -315,4 +424,5 @@ __all__ = [
     "capabilities_status",
     "capabilities_reverify",
     "capabilities_dismiss",
+    "capabilities_set_provider_enabled",
 ]

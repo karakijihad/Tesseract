@@ -14,7 +14,7 @@ import { useVoiceStore } from '../../stores/voice';
  * The partial preview comes from the Web Speech API (frontend-only) —
  * Gemini Flash audio on the backend yields one final, no streaming
  * partials. When the host browser lacks the API, the waveform alone
- * stands in for "TARS hears you" feedback.
+ * stands in for "the assistant hears you" feedback.
  */
 const BAR_COUNT = 8;
 

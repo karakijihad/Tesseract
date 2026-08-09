@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 def cleanup_session(app: web.Application, session: ServerSession) -> None:
     # Cancel EVERY chat's in-flight turn (active + any background/conductor
     # turns), not just the active chat's. Fires on both legitimate cases
-    # (operator closes the tab while TARS is mid-thought) and regressions
+    # (operator closes the tab while the assistant is mid-thought) and regressions
     # (Vite HMR drops the WS on a Python write — see vite.config.ts
     # watch.ignored + globals.css @source). Info-level so a stuck-on-restart
     # pattern is reconstructible from the log without spamming WARNING for
@@ -29,7 +29,7 @@ def cleanup_session(app: web.Application, session: ServerSession) -> None:
         )
         for task in running:
             task.cancel()
-    # parallel-tars P6: TTS state is per-turn — cancel each running turn's
+    # TTS state is per-turn — cancel each running turn's
     # synth chain via the session map, plus the legacy session field.
     for turn_state in list(session.turn_states_by_chat.values()):
         if turn_state.tts_synth_task and not turn_state.tts_synth_task.done():

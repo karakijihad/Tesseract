@@ -23,7 +23,7 @@ from tesseract.kernel.tools.base import CliSink, ToolResult
 class CliSinkStartPayload(TypedDict, total=False):
     """``cli_start`` payload — fires once before any stdout reads.
 
-    ``tool`` is the originating tool name (``delegate_claude`` etc.) so
+    ``tool`` is the originating tool name (``delegate_coder`` etc.) so
     sinks that fan out to multiple consumers can label the stream.
     """
 

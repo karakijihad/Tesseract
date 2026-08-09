@@ -81,15 +81,15 @@ class AdmissionResult:
 #
 # Defaults are conservative (fail-closed): CLI workers default to
 # ``propose`` (their actions land via tool calls that surface their own
-# ASKs) and ``markdown_agent`` / ``tars_self`` default to ``autonomous``
+# ASKs) and ``markdown_agent`` / ``agent_self`` default to ``autonomous``
 # (read-only research is the default profile). Operator overrides this
 # at agenda dispatch time per ``risk-class-taxonomy.md §Operator
 # override per agenda item``.
 _KIND_CEILING: dict[WorkerKind, RiskClass] = {
-    WorkerKind.TARS_SELF: RiskClass.PROPOSE,
+    WorkerKind.AGENT_SELF: RiskClass.PROPOSE,
     WorkerKind.MARKDOWN_AGENT: RiskClass.PROPOSE,
-    WorkerKind.CLAUDE_CLI: RiskClass.OPERATOR_GATE,
-    WorkerKind.CODEX_CLI: RiskClass.OPERATOR_GATE,
+    WorkerKind.CODER_SEAT: RiskClass.OPERATOR_GATE,
+    WorkerKind.AUDITOR_SEAT: RiskClass.OPERATOR_GATE,
     WorkerKind.TERMINAL: RiskClass.OPERATOR_GATE,
 }
 

@@ -1,12 +1,12 @@
 """Background-spawn registry for delegate_* / invoke_agent tools.
 
-Started as Phase 4 of the TARS reboot CLI-parity plan (2026-05-10). A
-delegated/agent task runs as an `asyncio.Task`; the operator/TARS can
+Started as Phase 4 of the assistant reboot CLI-parity plan (2026-05-10). A
+delegated/agent task runs as an `asyncio.Task`; the operator/the assistant can
 `spawn_check` for status, `spawn_await` to block on the result later, or
 `spawn_cancel` to terminate.
 
 Background (fire-and-track) is now the DEFAULT for the delegation verbs
-(`delegate_claude`, `delegate_codex`, `delegate_tars_controller`,
+(`delegate_coder`, `delegate_auditor`, `delegate_agent_controller`,
 `invoke_agent`, `lane_turn`); pass `background=false` to await inline.
 
 State lives in `SpawnRegistry`, attached to `ChatSession.spawns`. The
@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Coroutine, Optional
 
+from tesseract.brain import completion_store
 from tesseract.kernel.tools.base import (
     SpawnCapExceeded,
     SpawnDepthExceeded,
@@ -40,9 +41,17 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _delegate_provider(kind: str) -> str | None:
-    """Map a spawn ``kind`` (``delegate_claude`` / ``delegate_codex`` /
-    ``agent:<name>``) to the activity-registry ``provider`` field."""
+def _delegate_provider(kind: str, declared: str | None = None) -> str | None:
+    """The activity-registry ``provider`` for a spawn.
+
+    A caller that KNOWS which CLI it dispatched says so, and that wins. The
+    name-sniff below is the fallback for kinds that still carry a vendor in
+    the string — `lane_turn:coder/claude`, `agent:<name>` — and it is only a
+    fallback: a delegate seat is named for the job, so `delegate_coder` says
+    nothing about who ran, and a borrowed worker would be misreported by any
+    amount of string matching."""
+    if declared:
+        return declared
     if "claude" in kind:
         return "claude"
     if "codex" in kind:
@@ -81,7 +90,7 @@ def _spawn_record(
 
     # Task 6.1 — the Mirror renders `label` directly (ActivityMap /
     # RunningSpawnsChip never read `goal`), so a bare `handle.kind` left the
-    # operator seeing "delegate_claude" instead of what the spawn is doing.
+    # operator seeing "delegate_coder" instead of what the spawn is doing.
     # Fall back to `handle.kind` only when no goal text was supplied.
     goal_snippet = _bounded_one_line(handle.goal)
     return ActivityRecord(
@@ -90,7 +99,7 @@ def _spawn_record(
         label=goal_snippet or handle.kind,
         state=state,  # type: ignore[arg-type]
         durability="ephemeral",
-        provider=_delegate_provider(handle.kind),
+        provider=_delegate_provider(handle.kind, handle.provider),
         goal=goal_snippet,
         result=result,
         started_at=handle.started_at,
@@ -149,10 +158,19 @@ class SpawnHandle:
     surfaced via `await_result()` once it completes (or cancelled).
     """
     handle_id: str
-    kind: str            # 'delegate_claude' | 'delegate_codex' | 'agent:<name>' | future spawn kinds
+    kind: str            # 'delegate_coder' | 'delegate_auditor' | 'agent:<name>' | future spawn kinds
     started_at: str
     task: asyncio.Task[ToolResult] = field(repr=False)
     cancel_fn: Optional[Callable[[], None]] = field(default=None, repr=False)
+    # Steering channel. Present only on spawns that run a real turn loop and
+    # can therefore accept a course-correction between turns; a one-shot
+    # subprocess leaves it None and `work_send` refuses it for that reason.
+    # Takes the message; returns True when it was accepted.
+    steer_fn: Optional[Callable[[str], bool]] = field(default=None, repr=False)
+    # Set by the spawn when it is waiting on an answer from its parent
+    # (`agent_ask`). The parent surfaces it and replies through `steer_fn`,
+    # so the question and its answer travel the one channel.
+    question: Optional[str] = None
     finished_at: Optional[str] = None
     cancelled: bool = False
     # The intent the spawn was launched with (the delegate/agent task text),
@@ -164,9 +182,38 @@ class SpawnHandle:
     # the Mirror approvals pane. Set/cleared by the Mirror ask_fn via
     # ``mark_input_required``; projects as ActivityState "input_required".
     input_required: bool = False
+    # Who this spawn belongs to, stamped from the minting registry. Ownership
+    # has to live on the HANDLE: `find_handle` reaches across registries, so a
+    # check that read these off the *caller's* registry would always agree
+    # with itself and authorize everyone.
+    owner_principal: Optional[str] = None
+    owner_session_id: Optional[str] = None
+    # Which CLI this spawn actually dispatched to, when the caller knew.
+    # A delegate seat is named for the job, so the kind cannot be sniffed
+    # for it — and a borrowed worker would be misreported if it were.
+    provider: Optional[str] = None
 
     def is_running(self) -> bool:
         return not self.task.done()
+
+    def is_steerable(self) -> bool:
+        """True when this spawn can accept a mid-flight course-correction."""
+        return self.steer_fn is not None and not self.task.done()
+
+    def steer(self, message: str) -> bool:
+        """Deliver ``message`` into a running spawn. False when it cannot
+        take one — finished, or a substrate with no input channel."""
+        if not self.is_steerable():
+            return False
+        try:
+            accepted = bool(self.steer_fn(message))  # type: ignore[misc]
+        except Exception:  # noqa: BLE001 — a steer must never kill the caller
+            logger.exception("spawn steer_fn raised for %s", self.handle_id)
+            return False
+        # Deliberately does NOT clear question / input_required: steer_fn only
+        # QUEUES the message. The spawn is still parked until its loop applies
+        # the correction, and that is where the flags are cleared.
+        return accepted
 
     def status(self) -> str:
         if not self.task.done():
@@ -259,7 +306,7 @@ class SpawnRegistry:
         self._stalled: set[str] = set()
         # Push-on-completion hook, set by the owning ChatSession
         # (`ingest_spawn_completion`). Fired exactly once per spawn from the
-        # task done-callback so a finished background spawn reaches TARS's
+        # task done-callback so a finished background spawn reaches the assistant's
         # context at its next turn — SPAWN_DONE only ever reached the UI, so
         # the LLM never saw completions and "forgot" them (2026-06-30).
         self.completion_notifier: Optional[Callable[["SpawnHandle"], None]] = None
@@ -276,7 +323,18 @@ class SpawnRegistry:
         # sessions never carry a Mirror session_id). Set additively by
         # `ChatSession.__post_init__` from `tool_context.session_id`.
         self.session_id: Optional[str] = None
-        # parallel-tars P4 — OpenClaw-style numeric backstop against runaway
+        # The chat that owns this registry, and the key the durable completion
+        # store is written under (`brain/completion_store.py`). `None`
+        # (default) disables recording — a REPL / sub-agent / bare registry has
+        # no chat to replay a completion into, so a record there would never be
+        # claimed by anyone. Set by `spawn_wake.wire_chat`, the one place that
+        # knows both the registry and its chat_id.
+        self.chat_id: Optional[str] = None
+        # The MCP client principal the owning session acts for; empty for
+        # the assistant's own work. Carried onto each durable record so a completion is
+        # attributable after the handle is gone.
+        self.owner_principal: str = ""
+        # OpenClaw-style numeric backstop against runaway
         # fan-out. `None` (default) = uncapped (REPL / bare test registries);
         # Mirror sessions set it from
         # `runtime.yaml::max_concurrent_spawns_per_session` via ChatSession.
@@ -321,8 +379,10 @@ class SpawnRegistry:
         kind: str,
         coro: Coroutine[Any, Any, ToolResult],
         cancel_fn: Optional[Callable[[], None]] = None,
+        steer_fn: Optional[Callable[[str], bool]] = None,
         goal: Optional[str] = None,
         reservation: Optional[SpawnReservation] = None,
+        provider: Optional[str] = None,
     ) -> SpawnHandle:
         if reservation is not None and reservation.active:
             # Slot already admitted by reserve(); consume it (the new handle
@@ -347,7 +407,11 @@ class SpawnRegistry:
             started_at=started_at,
             task=task,
             cancel_fn=cancel_fn,
+            steer_fn=steer_fn,
             goal=goal,
+            provider=provider,
+            owner_principal=getattr(self, "owner_principal", None),
+            owner_session_id=getattr(self, "session_id", None),
         )
         self._handles[handle_id] = handle
         _ALL_HANDLES[handle_id] = handle
@@ -365,15 +429,26 @@ class SpawnRegistry:
                         "spawn journal terminal-write failed for %s", h.handle_id, exc_info=True
                     )
             # Skip operator-cancelled spawns: a cancel (via `/reset`'s
-            # cancel_all or an explicit spawn_cancel) is not a completion TARS
+            # cancel_all or an explicit spawn_cancel) is not a completion the assistant
             # needs to be nudged about. This also closes the reset race — a
             # deferred cancel's done-callback can't re-populate the deque that
-            # `reset()` just cleared (reviewer finding, 2026-06-30).
-            if (
-                self.completion_notifier is not None
-                and not h.cancelled
-                and not t.cancelled()
-            ):
+            # `reset()` just cleared, nor write a durable record that would
+            # resurrect the cancel at the next restart.
+            if h.cancelled or t.cancelled():
+                return
+            # Durable BEFORE the notifier: everything downstream of this call
+            # is in-memory, so a crash between the two would lose a result
+            # nothing knows to look for. `record` never raises.
+            if self.chat_id:
+                completion_store.record(
+                    self.chat_id,
+                    completion_store.record_from_handle(
+                        h,
+                        session_id=self.session_id or "",
+                        owner_principal=self.owner_principal,
+                    ),
+                )
+            if self.completion_notifier is not None:
                 try:
                     self.completion_notifier(h)
                 except Exception:

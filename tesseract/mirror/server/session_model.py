@@ -124,7 +124,7 @@ class ServerSession:
     # unchanged; conductor/background turns address other chats via the dict.
     current_turn_tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
     # Serializes the streaming body of ACTIVE-chat turns only (see
-    # `_run_chat_turn`). parallel-tars P6: TTS/stream-parser state is per-turn
+    # `_run_chat_turn`). TTS/stream-parser state is per-turn
     # now, so the lock's remaining job is audio ordering — a second active-chat
     # send waits for the first so the operator never hears two replies overlap.
     # Background chats stream lock-free; synthetic workspace turns do NOT take
@@ -172,14 +172,14 @@ class ServerSession:
     # downstream (orb `thinking` + frontend `speaking_back`). See
     # `tesseract/mirror/server/voice_loop.py`.
     voice_loop: VoiceLoop = field(default_factory=VoiceLoop)
-    # parallel-tars P6 — the running chat turns' TurnStates, keyed by chat_id
+    # the running chat turns' TurnStates, keyed by chat_id
     # (`""` for a legacy no-chat-id turn). Registered by `_run_turn` at turn
     # start, popped in its finally. Out-of-turn paths (chat switch, barge-in,
     # Stop, WS cleanup) reach each turn's per-turn TTS state through this map
     # since their tasks don't see the turn's ContextVar.
     turn_states_by_chat: dict[str, Any] = field(default_factory=dict)
     # Phase 16 S3 — per-turn TTS state.
-    # parallel-tars P6: MIGRATED to `TurnState` (turn_context.py); these
+    # MIGRATED to `TurnState` (turn_context.py); these
     # session fields remain as transitional fallbacks for direct-call test
     # paths (same contract as the Codex-fix M1 fields above). New code reads
     # `tts._tts_state(session)`.
@@ -187,31 +187,36 @@ class ServerSession:
     # at every sentence boundary. `tts_sequence`: monotonic per turn so the
     # frontend can detect drops and play in order. Reset at every turn start.
     tts_buffer: str = ""
-    # Last `<intent>`/`<answer>` kind appended to `tts_buffer`. Carried so
-    # the end-of-turn flush in `_flush_tts_terminator` can synthesize the
-    # tail with the correct preset (otherwise a buffered intent fragment
-    # would speak with the answer voicing). Reset at turn start.
+    # The surface kind that OPENED the current `tts_buffer` segment — pinned
+    # when the buffer was empty and deliberately not overwritten while it
+    # fills, so a long `<intent>` spanning several deltas keeps its own
+    # voicing. Carried so the end-of-turn flush in `_flush_tts_terminator`
+    # synthesizes the tail with that preset rather than whichever surface
+    # happened to arrive last. Note the buffer can therefore hold text from
+    # more than one surface when the opening one never hit a sentence
+    # boundary; see `Docs/Deferred.md`. Reset at turn start.
     tts_buffer_kind: str = "answer"
+    # Latched by the first `<spoken>` delta of the turn; mutes every later
+    # `<answer>` delta from TTS while it still streams to screen. Reset at
+    # turn start.
+    tts_spoken_seen: bool = False
     tts_sequence: int = 0
     # TTS synthesis is fired off as a chained background task so chat
-    # stream deltas keep flowing while Gemini Flash TTS is in flight
-    # (each sentence is ~200-600 ms). Each new task awaits the prior
-    # task before synthesizing, preserving on-the-wire envelope order.
+    # stream deltas keep flowing while synthesis is in flight (each
+    # sentence is ~200-600 ms). Each new task awaits the prior task
+    # before synthesizing, preserving on-the-wire envelope order.
     # `_flush_tts_terminator` awaits this chain before emitting the
     # is_final=True chunk so playback never cuts mid-sentence.
     tts_synth_task: asyncio.Task[None] | None = None
-    tts_voice_params: Any | None = None
     # Per-turn guard so a provider outage does not spam one toast per
     # sentence/chunk. Reset at turn start.
     tts_failure_notified: bool = False
-    # Operator-selected voice mode — the HUD pill cycles through
-    # `transcribe | command | speak` and pushes the value via the
-    # `voice_mode_set` envelope. `transcribe` keeps speech local (chat
-    # input only); `command` dispatches speech to TARS but suppresses
-    # TTS reply; `speak` is full STT + TTS. Both `transcribe` and
-    # `command` gate server-side TTS so TARS stays silent. Defaults to
-    # `transcribe` so a fresh session is silent until the operator
-    # opts in — TARS speaking unsolicited is the user's #1 friction.
+    # Operator-selected voice mode — the HUD pill cycles it and pushes the
+    # value via the `voice_mode_set` envelope. The legal values and which
+    # of them are silent live in `voice_modes.py`, shared with the handler
+    # that validates them and the TTS path that gates on them. Defaults to
+    # `transcribe` so a fresh session is silent until the operator opts in
+    # — the assistant speaking unsolicited is the user's #1 friction.
     voice_mode: str = "transcribe"
     # conversation-layer Task 4.2 (Q2) — per-chat FIFO queue of typed/voice
     # payloads that arrive while a turn is already running for that chat.
@@ -251,7 +256,7 @@ class ServerSession:
     # between two stream chunks; the state names which surface (if any) we
     # are currently inside.
     stream_status_buffer: str = ""
-    stream_tag_state: str = "outside"  # "outside" | "intent" | "answer"
+    stream_tag_state: str = "outside"  # "outside" | "intent" | "spoken" | "answer"
     # True once we have logged an "untagged text" warning for this turn —
     # one warning per turn, not one per delta. Reset at turn start.
     stream_untagged_warned: bool = False
@@ -266,7 +271,7 @@ class ServerSession:
     #      conversation store.
     # Cleared in `_run_turn`'s finally block.
     workspace_origin: dict[str, str] | None = None
-    # Codex audit 2026-05-06 M2: armed by `_handle_chunk` when TARS's
+    # Codex audit 2026-05-06 M2: armed by `_handle_chunk` when the assistant's
     # `workspace_reply` returns is_error=False during the current
     # `_run_turn`. The finally block reads this to decide whether to
     # confirm or rollback the deferred workspace delivery flags.

@@ -1,16 +1,16 @@
-"""set_state — TARS-driven orb state.
+"""set_state — agent-driven orb state.
 
-Lets TARS choose discrete affective states the Mirror orb renders with
+Lets the assistant choose discrete affective states the Mirror orb renders with
 visually distinct presets (`mirror/src/lib/entity/states.ts`). Pairs
 with `set_mood`: mood is continuous shading, state is a discrete mode.
 
 Allowed values: `happy`, `deep_focus`, `dreaming`, `idle`. Reactive
 states (`thinking`, `speaking`, `listening`, `error`, `spawning`) stay
-loop-driven — they fire often enough that a TARS-set value would be
+loop-driven — they fire often enough that a agent-set value would be
 overwritten within milliseconds, so this tool refuses them rather
-than letting TARS create noise.
+than letting the assistant create noise.
 
-State is sticky frontend-side until either TARS calls again or the
+State is sticky frontend-side until either the assistant calls again or the
 loop fires its own setState (e.g. `loop_start` → `thinking`). Boot
 default: `idle`.
 

@@ -3,7 +3,7 @@
 Background thinking — open agenda items (the AU-5 kernel's queue) and
 recent self-reflection observations (the ``autonomy_heartbeat`` scheduler
 job) — currently only reaches the operator through dashboard polling or a
-tool call TARS has to think to make. This module renders a compact digest
+tool call the assistant has to think to make. This module renders a compact digest
 of both into the "Right now" temporal block of the system prompt so that
 awareness reaches every turn for free.
 

@@ -6,17 +6,25 @@
 import { useEffect, useState } from 'react';
 
 import { decideMcpApproval, getMcpApprovals, type McpApproval } from '../lib/api';
+import { useWebSocketStore } from '../stores/websocket';
 
 const POLL_MS = 2500;
 
 export function McpApprovalsPane() {
   const [items, setItems] = useState<McpApproval[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
+  // The route is operator-session-gated, so no session means no poll rather
+  // than a poll that 401s every 2.5s.
+  const sessionId = useWebSocketStore((s) => s.sessionId);
 
   useEffect(() => {
+    if (!sessionId) {
+      setItems([]);
+      return;
+    }
     let alive = true;
     const tick = async () => {
-      const next = await getMcpApprovals();
+      const next = await getMcpApprovals(sessionId);
       if (alive) setItems(next);
     };
     void tick();
@@ -25,13 +33,13 @@ export function McpApprovalsPane() {
       alive = false;
       window.clearInterval(t);
     };
-  }, []);
+  }, [sessionId]);
 
   async function decide(approvalId: string, approved: boolean) {
-    if (busy) return;
+    if (busy || !sessionId) return;
     setBusy(approvalId);
     try {
-      await decideMcpApproval(approvalId, approved);
+      await decideMcpApproval(approvalId, approved, sessionId);
       setItems((prev) => prev.filter((x) => x.approval_id !== approvalId)); // optimistic; poll re-syncs
     } catch {
       // leave it in the list — the next poll reflects the true state

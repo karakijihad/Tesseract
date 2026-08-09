@@ -1,6 +1,6 @@
-"""Generic propose/commit primitives for TARS-initiated workspace changes.
+"""Generic propose/commit primitives for agent-initiated workspace changes.
 
-Mental model: TARS is a colleague sending change requests. Any mutation
+Mental model: the assistant is a colleague sending change requests. Any mutation
 of an operator-owned workspace `.md` file (SOUL.md, IDENTITY.md,
 FOUNDATION.md, etc.) routes through this module:
 
@@ -28,6 +28,8 @@ import hashlib
 import io
 import os
 import re
+import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -117,10 +119,58 @@ def resolve_proposable_path(target_path: str) -> Path:
 
 _NEXT_HEADING_RE = re.compile(r"^## ", re.MULTILINE)
 
+# Per-target write locks. `apply_change` is a read → hash-check → write
+# sequence, and every caller runs it on a worker thread
+# (`asyncio.to_thread`), so two commits against the same document can
+# genuinely interleave: both read the same `before`, both pass the drift
+# check against the same hash, and both write. The `expected_hash_before`
+# guard only settles a race where one write completes before the other
+# reads — which was every race until an operator could commit directly
+# (AS-5) alongside the approve path.
+#
+# A `threading.Lock` rather than an `asyncio.Lock` because this function is
+# sync and is entered from worker threads, and it lives here rather than in
+# a route so a caller cannot opt out by not knowing about it. Keyed on the
+# resolved filesystem path, so the same document reached through different
+# call sites contends. Never pruned — bounded by the PROPOSABLE_PATHS
+# allowlist, and dropping a lock with a waiter would re-open the race.
+_target_locks: dict[Path, threading.Lock] = {}
+_target_locks_guard = threading.Lock()
+
+
+def _lock_for(path: Path) -> threading.Lock:
+    with _target_locks_guard:
+        lock = _target_locks.get(path)
+        if lock is None:
+            lock = threading.Lock()
+            _target_locks[path] = lock
+        return lock
+
+
+def _atomic_replace(path: Path, text: str) -> None:
+    """Write `text` over `path` via a UNIQUE sibling tempfile.
+
+    The name has to be unique per call, not `<name>.tmp`: two writers
+    racing on one deterministic tempfile truncate each other mid-write, and
+    the bytes that land are whichever `replace` ran last — which is not
+    necessarily the content either caller was told it committed.
+    """
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
 
 class ProposeError(ValueError):
     """Raised when a propose request is malformed (bad path, action, or
-    section). Surfaced to TARS as a tool error so it can adjust."""
+    section). Surfaced to the assistant as a tool error so it can adjust."""
 
 
 class ConcurrentModificationError(RuntimeError):
@@ -240,10 +290,34 @@ def apply_change(
 ) -> ChangeApplied:
     """Atomically apply the change. Raises ConcurrentModificationError if
     the file changed since propose-time (when `expected_hash_before` is
-    given)."""
+    given).
+
+    The whole read → drift-check → write span holds a per-target lock, so
+    the loser of a race re-reads and raises rather than committing on top
+    of a hash it already lost. See `_target_locks`."""
     full_path = validate_target(repo_root, target_path)
     action = validate_action(target_path, action)
 
+    with _lock_for(full_path):
+        return _apply_change_locked(
+            full_path=full_path,
+            target_path=target_path,
+            action=action,
+            content=content,
+            section=section,
+            expected_hash_before=expected_hash_before,
+        )
+
+
+def _apply_change_locked(
+    *,
+    full_path: Path,
+    target_path: str,
+    action: ProposalAction,
+    content: str,
+    section: str | None,
+    expected_hash_before: str | None,
+) -> ChangeApplied:
     before = full_path.read_text(encoding="utf-8")
     actual_hash = hash_text(before)
     if expected_hash_before and expected_hash_before != actual_hash:
@@ -277,9 +351,7 @@ def apply_change(
             no_op_reason=reason,
         )
 
-    tmp = full_path.with_suffix(full_path.suffix + ".tmp")
-    tmp.write_text(after, encoding="utf-8")
-    tmp.replace(full_path)
+    _atomic_replace(full_path, after)
     return ChangeApplied(
         target_path=target_path,
         action=action,
@@ -520,6 +592,27 @@ def apply_yaml_change(
             reason=f"target file does not exist: {norm_target}",
         )
 
+    # Same read → drift-check → write span as `apply_change`, same lock.
+    with _lock_for(full):
+        return _apply_yaml_change_locked(
+            full=full,
+            norm_target=norm_target,
+            action=action,
+            yaml_path=yaml_path,
+            content=content,
+            expected_hash_before=expected_hash_before,
+        )
+
+
+def _apply_yaml_change_locked(
+    *,
+    full: Path,
+    norm_target: str,
+    action: YamlChangeAction,
+    yaml_path: str,
+    content: Any,
+    expected_hash_before: str,
+) -> YamlChangeResult:
     before_bytes = full.read_bytes()
     actual_hash = hashlib.sha256(before_bytes).hexdigest()
     if expected_hash_before and expected_hash_before != actual_hash:
@@ -583,16 +676,9 @@ def apply_yaml_change(
             )
 
     proposed_bytes = proposed_text.encode("utf-8")
-    tmp = full.with_suffix(full.suffix + ".tmp")
     try:
-        tmp.write_bytes(proposed_bytes)
-        os.replace(tmp, full)
+        _atomic_replace(full, proposed_text)
     except Exception as exc:  # noqa: BLE001
-        try:
-            if tmp.exists():
-                tmp.unlink()
-        except OSError:
-            pass
         return YamlChangeResult(
             ok=False, target_path=norm_target, action=action,
             hash_before=actual_hash, reason=f"write_failed: {exc}",

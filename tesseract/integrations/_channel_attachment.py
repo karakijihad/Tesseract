@@ -4,7 +4,7 @@ Every channel adapter — Telegram today, WhatsApp/Signal/email/webhook
 tomorrow — forwards every recognized input kind to the model, even when
 no decoder is wired. The bridge concatenates a synthetic XML
 ``<channel_attachment>`` block onto the user's textual body before
-passing it to ``_start_channel_turn``; TARS sees what was sent and can
+passing it to ``_start_channel_turn``; the assistant sees what was sent and can
 apologize, propose a tool, or file a workspace nudge.
 
 Authoritative shape: ``Docs/Plan/channels-redesign/_shared/channel-attachment-envelope.md``.
@@ -156,10 +156,10 @@ def _render_one(attachment: ChannelAttachment) -> str:
         attachment.status in ("extract_failed", "too_large", "denied")
         and attachment.error
     ):
-        # Surface the *why* for non-ready statuses so TARS can apologize
+        # Surface the *why* for non-ready statuses so the assistant can apologize
         # specifically ("voice was 700s, cap is 600s" beats "I couldn't
         # process that voice message"). Same body shape across the three
-        # failure modes — TARS reads them uniformly.
+        # failure modes — the assistant reads them uniformly.
         body_parts.append("<extracted><error>")
         body_parts.append(escape(attachment.error))
         body_parts.append("</error></extracted>")

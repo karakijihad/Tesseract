@@ -1,7 +1,7 @@
 """DelegateCodexExecTool — one-shot headless `codex exec` subprocess.
 
 AUTO posture, read-only by construction. Per phase-SU-3-delegation-daemon.md §2.2 row 1.
-Interactive delegations use delegate_codex / delegate_claude.
+Interactive delegations use delegate_auditor / delegate_coder.
 
 Phase 5 (2026-05-22): when ``ToolContext.cli_sink`` is wired (chat-direct
 call inside a Mirror session), the subprocess streams through
@@ -92,7 +92,7 @@ class DelegateCodexExecTool(Tool):
         executable = resolve_codex_executable()
         env = codex_subscription_env()
 
-        # trio W1 — wire the spawn to the MCP hub (best-effort; a failed
+        # Wire the spawn to the MCP hub (best-effort; a failed
         # provision must never block an audit/second-opinion run).
         from tesseract.kernel.tools._delegate_runner import provision_delegate_mcp
         from tesseract.orchestrator.seal_guard import safe_cwd

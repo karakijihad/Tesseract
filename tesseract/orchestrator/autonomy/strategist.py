@@ -404,11 +404,11 @@ def _collect_presence(app: Any) -> dict[str, Any] | None:
 
 def build_prompt(inputs: StrategistInputs) -> str:
     parts: list[str] = [
-        "You are TARS's autonomy strategist — a low-cadence portfolio curator.",
+        "You are the assistant's autonomy strategist — a low-cadence portfolio curator.",
         "",
         "Below is the activity that landed inside the lookback window shown",
         f"in the Window: header. Your job is to choose AT MOST {DEFAULT_MAX_INITIATIVES}",
-        "high-conviction initiatives TARS should pursue between now and the",
+        "high-conviction initiatives the assistant should pursue between now and the",
         "next scheduled tick. Initiatives are operator-attended — every one",
         "ships with an operator_review gate, so the operator decides whether",
         "to accept.",

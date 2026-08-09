@@ -1,13 +1,13 @@
 # Workshop
 
-Your working space is `tars-workshop/`. When the operator gives you a task that needs artifacts (drafts, notes, scripts, intermediate files, experiments), put them there — not at the repo root, not in `workspace/`, not wherever the topic happens to overlap with code.
+Your working space is `workshop/`. When the operator gives you a task that needs artifacts (drafts, notes, scripts, intermediate files, experiments), put them there — not at the repo root, not in `workspace/`, not wherever the topic happens to overlap with code.
 
-Writes inside `tars-workshop/` are AUTO (no approval prompt) — see `config/permissions.yaml` path overrides. Write paths are relative to your state root: `tars-workshop/…`, never `tesseract/tars-workshop/…`. The whole folder is gitignored; it's your space, not project code.
+Writes inside `workshop/` are AUTO (no approval prompt) — see `config/permissions.yaml` path overrides. Write paths are relative to your state root: `workshop/…`, never `tesseract/workshop/…`. The whole folder is gitignored; it's your space, not project code.
 
 ## Layout
 
 ```
-tars-workshop/
+workshop/
 ├── INDEX.md                       # living list of active tasks (newest first)
 ├── YYYY-MM-DD/                    # per-day folders
 │   └── <task-slug>/               # one folder per task
@@ -37,8 +37,8 @@ tars-workshop/
 **Don't put things here that belong elsewhere.**
 
 - Memories → `memory_save` (not a notes file)
-- Session logs → `Docs/Sessions/YYYY-MM-DD.md` (operator's canonical log)
-- Soul updates → `propose_change` (workspace docs are DENY to `file_write`)
+- Self-observations → `diary_append` (not a notes file)
+- Workspace document edits → `propose_change` (workspace docs are DENY to `file_write`)
 - Sub-agent drafts → `agent_create` tool, not a draft file
 
 Workshop is for _scratch work toward a task_, not for things that have their own home.
@@ -47,18 +47,18 @@ Workshop is for _scratch work toward a task_, not for things that have their own
 
 Operator asks: _"Draft a session plan for tomorrow."_
 
-1. `file_write` → `tars-workshop/YYYY-MM-DD/s11-plan/README.md` with the four sections (goal = "outline next session's priorities", status = active, etc.).
-2. `file_write` the plan itself → `tars-workshop/YYYY-MM-DD/s11-plan/plan.md`.
-3. `file_write` → `tars-workshop/INDEX.md` appending one line linking the task.
+1. `file_write` → `workshop/YYYY-MM-DD/s11-plan/README.md` with the four sections (goal = "outline next session's priorities", status = active, etc.).
+2. `file_write` the plan itself → `workshop/YYYY-MM-DD/s11-plan/plan.md`.
+3. `file_write` → `workshop/INDEX.md` appending one line linking the task.
 
 Operator asks: _"Try three hero copy variants for the Mirror landing."_
 
-1. `tars-workshop/YYYY-MM-DD/mirror-hero-copy/README.md` with goal.
-2. `tars-workshop/YYYY-MM-DD/mirror-hero-copy/variants.md` with the three drafts.
+1. `workshop/YYYY-MM-DD/mirror-hero-copy/README.md` with goal.
+2. `workshop/YYYY-MM-DD/mirror-hero-copy/variants.md` with the three drafts.
 3. Update `INDEX.md`.
 
 On completion (operator says "thanks, we'll go with variant 2"):
 
 - Append _Status: done_ + which variant was picked to `README.md`.
-- Move the whole folder to `tars-workshop/archive/YYYY-MM-DD/mirror-hero-copy/`.
+- Move the whole folder to `workshop/archive/YYYY-MM-DD/mirror-hero-copy/`.
 - Remove the `INDEX.md` line.

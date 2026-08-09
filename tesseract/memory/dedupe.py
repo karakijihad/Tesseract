@@ -47,7 +47,7 @@ async def check(
         return True, None
 
     try:
-        results = await embeddings.search(body, top_k=1)
+        results = await embeddings.search(body, top_k=1, require_prefix="mem_")
     except Exception as e:
         logger.warning("dedupe search failed (%s) — failing open", e)
         return True, None
@@ -134,7 +134,7 @@ async def check_with_title(
         return True, None, None
 
     try:
-        results = await embeddings.search(body, top_k=1)
+        results = await embeddings.search(body, top_k=1, require_prefix="mem_")
     except Exception as e:
         logger.warning("dedupe cosine search failed (%s) — failing open", e)
         return True, None, None

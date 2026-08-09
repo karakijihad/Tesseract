@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type KeyboardEvent } from 'react';
+import { useEntityName } from '../../hooks/useEntityName';
 import {
   useWorkspaceStore,
   type EventKind,
@@ -20,7 +21,7 @@ const KIND_LABEL: Record<EventKind, string> = {
   mission_reflection_proposal: 'Mission Reflection',
   reflection_proposal: 'Reflection',
   nudge: 'Nudge',
-  tars_post: 'Note',
+  agent_post: 'Note',
   operator_post: 'You',
   daily_brief: 'Brief',
   yaml_change_proposal: 'Catalog',
@@ -109,7 +110,7 @@ function filterEvents(
       return events.filter(
         (e) =>
           e.kind === 'nudge' ||
-          e.kind === 'tars_post' ||
+          e.kind === 'agent_post' ||
           e.kind === 'reflection_proposal' ||
           e.kind === 'daily_brief',
       );
@@ -137,6 +138,7 @@ function dateFilter(events: WorkspaceEvent[], from: string, to: string): Workspa
 }
 
 export function InboxPanel() {
+  const entityName = useEntityName();
   const events = useWorkspaceStore((s) => s.events);
   const history = useWorkspaceStore((s) => s.history);
   const seen = useWorkspaceStore((s) => s.seen);
@@ -419,15 +421,15 @@ export function InboxPanel() {
             // Approve/Reject only fires for kinds where the operator's
             // decision changes system state (change_proposal applies the
             // file write, etc). Informational kinds — operator_post,
-            // tars_post, nudge, session reflection — get a single Resolve
+            // agent_post, nudge, session reflection — get a single Resolve
             // verb that flips status without re-running an approval gate.
             const isActionable = ACTIONABLE_KINDS.has(ev.kind);
-            // CR-5 — tars_post events whose payload carries a `channel` were
+            // CR-5 — agent_post events whose payload carries a `channel` were
             // sourced by the channel gate. Surface "Approve next turn" +
             // "Reject & message user" instead of the generic Resolve verb so
             // the operator can drive the round-trip from one place.
             const gatePayload =
-              ev.kind === 'tars_post' &&
+              ev.kind === 'agent_post' &&
               typeof ev.payload === 'object' &&
               ev.payload !== null &&
               typeof (ev.payload as { channel?: unknown }).channel === 'string'
@@ -563,9 +565,9 @@ export function InboxPanel() {
                               // Same minimal surface as the channel gate:
                               // one prompt, optional text. The reason is
                               // archived beside the rejected agent and
-                              // delivered to TARS on its next turn.
+                              // delivered to the agent on its next turn.
                               const r = window.prompt(
-                                'Reason for rejection (optional — TARS sees it):',
+                                `Reason for rejection (optional — ${entityName} sees it):`,
                                 '',
                               );
                               if (r === null) return; // cancelled

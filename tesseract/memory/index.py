@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import threading
 import re
 from collections import Counter
 from datetime import datetime, timezone
@@ -35,6 +37,16 @@ class MemoryIndex:
         self._path = store_dir / "MEMORY.md"
         self._access_log_path = store_dir / "events" / "access.jsonl"
         self._line_cap = 200
+        # `MEMORY.md` and this dict are reachable from two threads: the
+        # memory tools mutate them on the event loop, while `dream_cycle`
+        # rewrites them from a worker thread. Unguarded, `_write` iterating
+        # `_entries` while `add` inserts raises "dictionary changed size
+        # during iteration", and two `write_text` calls interleave into a
+        # torn file. Reentrant because `add` holds it across
+        # `_evict_if_needed` and `_write`, which take it too.
+        #
+        # Same reasoning, and same shape, as `MemoryStore._fm_cache_lock`.
+        self._lock = threading.RLock()
         self._entries: dict[str, tuple[MemoryFrontmatter, str]] = {}
         self._access_counts: Counter[str] = Counter()
         self._last_access: dict[str, datetime] = {}
@@ -85,24 +97,36 @@ class MemoryIndex:
         rel_path = f"{subdir}/{fm.id}.md"
         summary = fm.summary or fm.title
         line = f"- [{fm.title}]({rel_path}) — {summary}"
-        self._entries[fm.id] = (fm, line)
-        self._evict_if_needed()
-        self._write()
-
-    def remove(self, memory_id: str) -> None:
-        if memory_id in self._entries:
-            del self._entries[memory_id]
+        with self._lock:
+            self._entries[fm.id] = (fm, line)
+            self._evict_if_needed()
             self._write()
 
+    def remove(self, memory_id: str) -> None:
+        with self._lock:
+            if memory_id in self._entries:
+                del self._entries[memory_id]
+                self._write()
+
     def load_ids(self) -> list[str]:
-        return list(self._entries.keys())
+        with self._lock:
+            return list(self._entries.keys())
 
     def load_raw(self) -> str:
-        if self._path.exists():
-            return self._path.read_text(encoding="utf-8")
-        return _HEADER
+        # Under the lock like the writers. On Windows `os.replace` fails
+        # outright — `PermissionError: Access is denied` — if the file it is
+        # replacing is open for reading, so an unsynchronised reader here
+        # does not merely see a stale file, it breaks the write.
+        with self._lock:
+            if self._path.exists():
+                return self._path.read_text(encoding="utf-8")
+            return _HEADER
 
     def rebuild(self) -> None:
+        with self._lock:
+            self._rebuild_locked()
+
+    def _rebuild_locked(self) -> None:
         self._entries.clear()
         subdirs = ["user", "feedback", "project", "reference", "conscience"]
         all_fms: list[MemoryFrontmatter] = []
@@ -184,8 +208,16 @@ class MemoryIndex:
             logger.info("Evicted %s from MEMORY.md (low composite score)", evict_id)
 
     def _write(self) -> None:
-        lines = [_HEADER, ""]
-        for _mem_id, (_fm, line) in self._entries.items():
-            lines.append(line)
-        text = "\n".join(lines) + "\n"
-        self._path.write_text(text, encoding="utf-8")
+        # Reentrant: every caller already holds the lock, but taking it here
+        # too means a future direct caller cannot reintroduce the race by
+        # forgetting to.
+        with self._lock:
+            lines = [_HEADER, ""]
+            for _mem_id, (_fm, line) in self._entries.items():
+                lines.append(line)
+            text = "\n".join(lines) + "\n"
+            # Sibling + replace, so a reader never sees a half-written file:
+            # `os.replace` is atomic on both POSIX and Windows.
+            tmp = self._path.with_suffix(self._path.suffix + ".tmp")
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, self._path)

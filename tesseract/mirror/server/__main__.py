@@ -17,7 +17,7 @@ from tesseract.config_seed import (
     ensure_config_seeded,
     ensure_env_seeded,
     ensure_memory_store_seeded,
-    ensure_tars_workshop_seeded,
+    ensure_workshop_seeded,
     ensure_vault_seeded,
     ensure_workspace_seeded,
 )
@@ -162,7 +162,7 @@ def main() -> None:
     ensure_env_seeded()
     ensure_memory_store_seeded()
     ensure_vault_seeded()
-    ensure_tars_workshop_seeded()
+    ensure_workshop_seeded()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     # Durable rotating file — the console handler above dies with the
     # supervisor's console; crash forensics need a file (logsetup.py).

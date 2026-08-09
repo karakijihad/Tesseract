@@ -18,7 +18,7 @@ from aiohttp import web
 from pydantic import BaseModel, ValidationError
 
 from tesseract.config.mcp import MCPClient
-from tesseract.kernel.tools.base import ToolContext
+from tesseract.kernel.tools.base import ToolContext, ToolResult
 from tesseract.permissions import decide
 
 
@@ -67,6 +67,24 @@ async def run_kernel_tool(
     *,
     ask_fn=None,
 ) -> str:
+    """Run a kernel tool through the permission pipeline and return its text.
+
+    Most tools say everything they have to say in ``output``. A tool whose
+    answer is a structured payload in ``metadata`` — ``schedule_list`` is the
+    one on this surface — must use :func:`run_kernel_tool_result` instead, or
+    the client receives the summary line and none of the data.
+    """
+    result = await run_kernel_tool_result(ctx, tool_name, tool_input, ask_fn=ask_fn)
+    return result.output
+
+
+async def run_kernel_tool_result(
+    ctx: VerbContext,
+    tool_name: str,
+    tool_input: BaseModel,
+    *,
+    ask_fn=None,
+) -> ToolResult:
     """Run a kernel tool through the full permission pipeline.
 
     ``ask_fn`` is forwarded to ``decide.evaluate`` — it enforces the tool's own
@@ -77,7 +95,7 @@ async def run_kernel_tool(
 
     Raises :class:`MCPPermissionDenied` on a policy/security denial and
     :class:`MCPVerbError` when the tool is unavailable or returns an error.
-    Returns the tool's text output on success.
+    Returns the whole :class:`ToolResult` on success.
     """
     registry = ctx.app.get("tool_registry")
     if registry is None or tool_name not in getattr(registry, "tools", {}):
@@ -102,7 +120,7 @@ async def run_kernel_tool(
     result = await tool.run(tool_input, context)
     if result.is_error:
         raise MCPVerbError(400, result.output)
-    return result.output
+    return result
 
 
 def _mcp_tool_context(ctx: VerbContext, ask_fn: Any) -> ToolContext:
@@ -111,12 +129,17 @@ def _mcp_tool_context(ctx: VerbContext, ask_fn: Any) -> ToolContext:
     (``session.py::_build_chat_session``) so lane/schedule verbs reach
     their live managers. Lane managers are the controller IPC proxies (fresh
     per call — no ``app`` slot), matching the chat wiring."""
-    from tesseract.orchestrator.tars_controller.lanes.ipc_proxy import (
+    from tesseract.orchestrator.agent_controller.lanes.ipc_proxy import (
         IpcLaneManager,
         IpcNamedLaneManager,
     )
 
     app = ctx.app
+    # The gateway resolved the bearer token to a client identity; the proxies
+    # are constructed with it so a kernel tool never sees a principal argument
+    # it could set. This is the only place the MCP identity becomes lane
+    # authority, which is why it is bound here rather than passed downward.
+    principal = ctx.client.name
     return ToolContext(
         workspace_root=str(app.get("repo_root") or "."),
         session_id=ctx.session_activity_id,
@@ -124,8 +147,11 @@ def _mcp_tool_context(ctx: VerbContext, ask_fn: Any) -> ToolContext:
         ask_fn=ask_fn,
         scheduler_provider=lambda: app.get("scheduler"),
         tool_registry_provider=lambda: app.get("tool_registry"),
-        lane_manager_provider=IpcLaneManager,
-        named_lane_manager_provider=IpcNamedLaneManager,
+        lane_manager_provider=lambda: IpcLaneManager(caller_principal=principal),
+        named_lane_manager_provider=lambda: IpcNamedLaneManager(
+            caller_principal=principal
+        ),
+        caller_principal=principal,
     )
 
 
@@ -154,5 +180,6 @@ __all__ = [
     "MCPVerbError",
     "MCPPermissionDenied",
     "run_kernel_tool",
+    "run_kernel_tool_result",
     "make_tool_verb",
 ]

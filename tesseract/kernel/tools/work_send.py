@@ -1,4 +1,4 @@
-"""work_send — one verb to steer any running, steerable work (trio W3).
+"""work_send — one verb to steer any running, steerable work.
 
 Resolves the target across the three steerable substrates and routes:
 
@@ -6,7 +6,7 @@ Resolves the target across the three steerable substrates and routes:
 * named lane or raw ``lane-*`` id → the ``lane_turn`` path (background turn,
   completion note carries the reply),
 * controller session id (``YYYY-MM-DD-xxxxxxxx``) → daemon ``user_input``
-  (fire-and-forget; attach with ``tars --session <id>`` to watch).
+  (fire-and-forget; attach with ``agent --session <id>`` to watch).
 
 One-shot spawn handles are REJECTED with guidance — a one-shot subprocess has
 no input channel by construction (SUBSTRATE §4): cancel + re-dispatch, or put
@@ -24,11 +24,11 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
-from tesseract.orchestrator.tars_controller.lanes.tool_support import (
+from tesseract.orchestrator.agent_controller.lanes.tool_support import (
     maybe_await,
     resolve_named_lane_manager,
 )
-from tesseract.orchestrator.tars_controller.paths import SESSION_ID_RE
+from tesseract.orchestrator.agent_controller.paths import SESSION_ID_RE
 
 
 class WorkSendInput(BaseModel):
@@ -40,6 +40,24 @@ class WorkSendInput(BaseModel):
         )
     )
     message: str = Field(description="Instruction / course-correction to send.")
+
+
+def _caller_owns(handle, context, spawns) -> bool:
+    """True when this caller may steer ``handle`` from outside its registry.
+
+    Ownership is read off the HANDLE, stamped by the registry that minted it —
+    never off the caller's own registry, which would only ever agree with
+    itself. Fails CLOSED: a handle with no recorded owner is not steerable
+    cross-registry, because an unattested caller and the real owner must never
+    resolve to the same answer.
+    """
+    caller_principal = getattr(context, "caller_principal", None)
+    owner_principal = getattr(handle, "owner_principal", None)
+    if owner_principal and caller_principal and owner_principal == caller_principal:
+        return True
+    owner_session = getattr(handle, "owner_session_id", None)
+    caller_session = getattr(context, "session_id", None)
+    return bool(owner_session and caller_session and owner_session == caller_session)
 
 
 class WorkSendTool(Tool):
@@ -67,20 +85,58 @@ class WorkSendTool(Tool):
         inp: WorkSendInput = tool_input  # type: ignore[assignment]
         target = inp.target.strip()
 
-        # 1) One-shot spawn handle → reject with guidance (checked first so
-        #    a spawn handle can never fall through to a lane/session guess).
+        # 1) Spawn handle. A sub-agent spawn runs a turn loop and carries a
+        #    steer channel; a one-shot subprocess has none by construction and
+        #    is refused. Checked first so a handle can never fall through to a
+        #    lane/session guess. Resolved process-wide, not per-registry: a
+        #    sub-agent's handle was minted by its parent's registry, so the
+        #    caller's own registry would miss it.
+        from tesseract.brain.spawns import find_handle
+
         spawns = getattr(context, "spawns", None)
-        if spawns is not None and spawns.get(target) is not None:
+        handle = spawns.get(target) if spawns is not None else None
+        if handle is None:
+            # Cross-registry reach exists for one legitimate case: a parent
+            # answering a child it spawned. Gate the process-global index on
+            # the caller owning the handle — `work_send` is AUTO posture, so
+            # an unchecked global lookup would let any session inject
+            # instructions into another session's background work.
+            candidate = find_handle(target)
+            if candidate is not None and _caller_owns(candidate, context, spawns):
+                handle = candidate
+        if handle is not None:
+            if handle.steer_fn is None:
+                return ToolResult(
+                    output=(
+                        f"{target} is a one-shot background spawn — it has no "
+                        "input channel and cannot be steered. spawn_cancel it "
+                        "and re-dispatch with the new instruction, or run "
+                        "steerable work on a lane (lane_turn) or an interactive "
+                        "session (session_open) next time."
+                    ),
+                    is_error=True,
+                    metadata={"reason": "unsteerable_one_shot", "target": target},
+                )
+            answered = handle.question
+            if not handle.steer(inp.message):
+                return ToolResult(
+                    output=(
+                        f"{target} is no longer running — nothing to steer. "
+                        "Use spawn_check for its result."
+                    ),
+                    is_error=True,
+                    metadata={"reason": "spawn_not_running", "target": target},
+                )
             return ToolResult(
                 output=(
-                    f"{target} is a one-shot background spawn — it has no "
-                    "input channel and cannot be steered. spawn_cancel it "
-                    "and re-dispatch with the new instruction, or run "
-                    "steerable work on a lane (lane_turn) or an interactive "
-                    "session (session_open) next time."
+                    f"delivered to {target}; it will apply this and continue."
+                    + (" This answers its pending question." if answered else "")
                 ),
-                is_error=True,
-                metadata={"reason": "unsteerable_one_shot", "target": target},
+                metadata={
+                    "target": target,
+                    "route": "spawn_steer",
+                    "answered_question": bool(answered),
+                },
             )
 
         # 2) Interactive session handle.
@@ -126,7 +182,7 @@ class WorkSendTool(Tool):
                 named_record = None
         if named_record is not None or target.startswith("lane-"):
             from tesseract.kernel.tools.lane_turn import LaneTurnInput, LaneTurnTool
-            from tesseract.orchestrator.tars_controller.lanes.tool_support import (
+            from tesseract.orchestrator.agent_controller.lanes.tool_support import (
                 resolve_lane_manager,
             )
 
@@ -151,7 +207,7 @@ class WorkSendTool(Tool):
             if interrupted and result.metadata is not None:
                 result.metadata["interrupted_prior_turn"] = True
             # 'not attached' self-heal now lives in lane_turn (M6), so it covers
-            # the trio's raw lane_turn path too — no duplicate retry here.
+            # the raw lane_turn path too — no duplicate retry here.
             return result
 
         return ToolResult(
@@ -167,7 +223,7 @@ class WorkSendTool(Tool):
     async def _steer_controller_session(
         self, session_id: str, message: str
     ) -> ToolResult:
-        from tesseract.orchestrator.tars_controller.ipc_client import (
+        from tesseract.orchestrator.agent_controller.ipc_client import (
             ControllerClient,
             ControllerClientError,
         )
@@ -198,7 +254,7 @@ class WorkSendTool(Tool):
         return ToolResult(
             output=(
                 f"sent into controller session {session_id}. Watch with "
-                f"`tars --session {session_id}` or agent_review."
+                f"`agent --session {session_id}` or agent_review."
             ),
             metadata={"target": session_id, "route": "controller_user_input"},
         )

@@ -74,6 +74,83 @@ _HEARTBEAT_MAX_FAILURES = 12
 # once, so "came up then went silent" still counts immediately.
 _HEARTBEAT_BOOT_GRACE_S = 120.0
 
+# Bound on the taskkill shell-out. It is the escalation path of a shutdown
+# already past its grace window; a taskkill that hangs must not hold the
+# supervisor open indefinitely on top of it.
+_TREE_KILL_TIMEOUT_S = 10.0
+
+
+def kill_process_tree(proc, label: str, *, own_pgid: int | None = None) -> None:
+    """Hard-kill ``proc`` **and its descendants**.
+
+    Escalation only — reached after the graceful stop grace window, never on the
+    normal path, so a process that stops when asked is unaffected.
+
+    ``Popen.kill()`` is ``TerminateProcess`` on Windows and ``SIGKILL`` on
+    POSIX, and both name a single pid. Everything the target had spawned — a
+    lane's claude/codex child, Chromium, Piper — outlived it and was left for
+    the next boot's janitor sweep. ``lib.rs::kill_process_tree`` already walked
+    the tree for this reason, but only on the Tauri 30s timeout, so a clean
+    shutdown never reached it.
+
+    Windows walks the tree with ``taskkill /T``. POSIX kills the process group:
+    both children spawn with ``start_new_session=True``, so each is its own
+    group leader and the group is exactly its subtree. ``own_pgid`` is the
+    caller's group, injected for test; a target sharing it means
+    ``start_new_session`` did not take effect, and killing that group would take
+    the supervisor down with it — so that case falls back to the single pid.
+    """
+    if proc.poll() is not None:
+        return
+    if sys.platform == "win32":
+        try:
+            completed = subprocess.run(  # noqa: S603, S607
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                capture_output=True,
+                timeout=_TREE_KILL_TIMEOUT_S,
+                check=False,
+            )
+            if completed.returncode == 0:
+                return
+            log.warning(
+                "supervisor: taskkill /T on %s exited %s — falling back to a "
+                "single-process kill; descendants may survive",
+                label,
+                completed.returncode,
+            )
+        except (OSError, subprocess.SubprocessError):
+            log.warning(
+                "supervisor: taskkill /T unavailable for %s — falling back to a "
+                "single-process kill; descendants may survive",
+                label,
+                exc_info=True,
+            )
+    else:
+        try:
+            pgid = os.getpgid(proc.pid)
+            mine = os.getpgid(0) if own_pgid is None else own_pgid
+            if pgid == mine:
+                log.warning(
+                    "supervisor: %s shares the supervisor's process group — "
+                    "killing the pid only, since killpg would take us with it",
+                    label,
+                )
+            else:
+                os.killpg(pgid, signal.SIGKILL)
+                return
+        except OSError:
+            log.warning(
+                "supervisor: killpg failed for %s — falling back to a "
+                "single-process kill; descendants may survive",
+                label,
+                exc_info=True,
+            )
+    try:
+        proc.kill()
+    except OSError:
+        log.debug("supervisor: %s kill() raised", label, exc_info=True)
+
+
 # Grace window after SIGTERM before SIGKILL — both for backend stop
 # and for the supervisor's own SIGINT-during-grace second-Ctrl-C path.
 _GRACEFUL_STOP_GRACE_S = 30.0
@@ -230,13 +307,13 @@ class Supervisor:
         except Exception:  # noqa: BLE001
             log.exception("supervisor: boot janitor sweep failed — continuing")
         # TC-4 dispatcher rollout (2026-05-24): controller daemon is now
-        # part of the standard supervisor stack so `tars` in any terminal
-        # attaches to it without manual `python -m tesseract.scripts.tars_controller`.
+        # part of the standard supervisor stack so `agent` in any terminal
+        # attaches to it without manual `python -m tesseract.scripts.agent_controller`.
         # Failure must NOT crash the supervisor — the controller daemon
         # is an independent failure surface. The dispatcher's
         # `ensure_daemon_running` is a safety net: if the supervisor's
         # spawn failed, the first
-        # `tars` invocation spawns one itself.
+        # `agent` invocation spawns one itself.
         if self.controller_daemon_enabled:
             try:
                 self._spawn_controller_daemon()
@@ -244,7 +321,7 @@ class Supervisor:
             except Exception:  # noqa: BLE001
                 log.exception(
                     "supervisor: controller daemon failed to start — "
-                    "continuing without it (tars CLI will self-bootstrap)"
+                    "continuing without it (agent CLI will self-bootstrap)"
                 )
                 self._controller_proc = None
         respawns = 0
@@ -323,10 +400,10 @@ class Supervisor:
                     self._shutdown_intent = "operator_quit"
                     log.info("supervisor: operator_quit honored")
                     try:
-                        from tesseract.orchestrator.tars_controller.shutdown import (
+                        from tesseract.orchestrator.agent_controller.shutdown import (
                             teardown_all_controller_sessions,
                         )
-                        from tesseract.orchestrator.tars_controller.sessions import SessionRegistry
+                        from tesseract.orchestrator.agent_controller.sessions import SessionRegistry
 
                         _reg = SessionRegistry()
                         teardown_all_controller_sessions(
@@ -402,7 +479,7 @@ class Supervisor:
     # -- TC-4: controller daemon sibling --------------------------------
 
     def _spawn_controller_daemon(self) -> None:
-        """Spawn the TARS controller daemon as a sibling process.
+        """Spawn the agent controller daemon as a sibling process.
 
         Token-on-disk before ``Popen`` so the daemon can read it on launch
         (Contract #10); CREATE_NEW_PROCESS_GROUP on Windows / start_new_session
@@ -413,7 +490,7 @@ class Supervisor:
         # Lazy import so the supervisor's hot startup path doesn't pull
         # the controller package's pydantic chain until controller mode
         # is actually enabled.
-        from tesseract.orchestrator.tars_controller import auth as _ctrl_auth
+        from tesseract.orchestrator.agent_controller import auth as _ctrl_auth
 
         token = _ctrl_auth.mint_token()
         env = os.environ.copy()
@@ -431,7 +508,7 @@ class Supervisor:
                 os.environ["TESSERACT_HOME"] = prior_home
 
         cmd = list(self.controller_daemon_cmd) if self.controller_daemon_cmd else [
-            sys.executable, "-m", "tesseract.scripts.tars_controller",
+            sys.executable, "-m", "tesseract.scripts.agent_controller",
         ]
         log.info("supervisor: spawning controller daemon cmd=%s", cmd)
         kwargs: dict = {
@@ -441,7 +518,7 @@ class Supervisor:
             "stdin": subprocess.DEVNULL,
         }
         controller_console = (
-            None if self.separate_console else self._console_writer("tars-controller")
+            None if self.separate_console else self._console_writer("agent-controller")
         )
         if controller_console is not None:
             kwargs.update(popen_capture_kwargs())
@@ -451,7 +528,7 @@ class Supervisor:
             kwargs["start_new_session"] = True
         proc = subprocess.Popen(cmd, **kwargs)  # noqa: S603
         if controller_console is not None:
-            start_drain(proc, controller_console, "tars-controller")
+            start_drain(proc, controller_console, "agent-controller")
         self._controller_proc = proc
         self.last_controller_pid = proc.pid
 
@@ -470,10 +547,13 @@ class Supervisor:
             try:
                 proc.wait(timeout=_GRACEFUL_STOP_GRACE_S)
             except subprocess.TimeoutExpired:
+                # The daemon owns LaneManager, so its subtree is every lane's
+                # claude/codex subprocess. A single-pid kill orphans all of them.
+                kill_process_tree(proc, "controller daemon")
                 try:
-                    proc.kill()
-                except Exception:  # noqa: BLE001
-                    log.debug("supervisor: controller daemon kill raised", exc_info=True)
+                    proc.wait(timeout=5.0)
+                except subprocess.TimeoutExpired:
+                    log.error("supervisor: controller daemon survived the tree kill")
         self._controller_proc = None
         t = self._controller_watchdog_thread
         if t is not None and t.is_alive():
@@ -539,7 +619,7 @@ class Supervisor:
                 self._controller_stop_event.wait(timeout=2.0)
 
         t = threading.Thread(
-            target=_loop, name="tars-controller-watchdog", daemon=True
+            target=_loop, name="agent-controller-watchdog", daemon=True
         )
         self._controller_watchdog_thread = t
         t.start()
@@ -662,15 +742,15 @@ class Supervisor:
         while proc.poll() is None and time.monotonic() < deadline:
             time.sleep(0.2)
         if proc.poll() is None:
-            log.warning("supervisor: backend ignored SIGTERM, escalating to SIGKILL")
-            try:
-                proc.kill()
-            except OSError:
-                log.exception("supervisor: kill() raised")
+            log.warning("supervisor: backend ignored SIGTERM, escalating to a tree kill")
+            # The backend's own on_shutdown is what closes PTYs, Chromium,
+            # owned Ollama and every session's spawns. It never ran, so those
+            # are still alive and still children — kill the subtree, not the pid.
+            kill_process_tree(proc, "backend")
             try:
                 proc.wait(timeout=5.0)
             except subprocess.TimeoutExpired:
-                log.error("supervisor: backend did not die after SIGKILL")
+                log.error("supervisor: backend did not die after the tree kill")
 
     def _wait_for_exit(self, backend: BackendProcess) -> int:
         """Block until backend exits OR supervisor was asked to stop."""

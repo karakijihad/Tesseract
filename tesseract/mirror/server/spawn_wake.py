@@ -1,10 +1,10 @@
 """Spawn push-on-completion Stage 2 — idle-wake autonomous turn.
 
-Stage 1 (floor) surfaces a finished background spawn at TARS's *next* turn:
+Stage 1 (floor) surfaces a finished background spawn at the assistant's *next* turn:
 the completion is queued by ``ChatSession.ingest_spawn_completion`` and drained
 into the turn's iteration-0 injection. This module adds the proactive half —
 when a spawn finishes while the owning chat is **idle** (no turn in flight),
-start a turn so TARS reads the completion and acts on its own, instead of
+start a turn so the assistant reads the completion and acts on its own, instead of
 waiting for the operator's next message.
 
 Design: ``Docs/Plan/mcp-control-plane/SPAWN-STAGE2-DESIGN.md`` (part A).
@@ -30,7 +30,7 @@ from tesseract.paths import TESSERACT_HOME, log_dir
 
 logger = logging.getLogger(__name__)
 
-# transient=False (a real chat turn) so TARS's proactive reaction is visible in
+# transient=False (a real chat turn) so the assistant's proactive reaction is visible in
 # the owning chat; the completion detail is already noted above via Stage 1.
 _WAKE_NUDGE = (
     "(A background task you started has finished — its result is noted above. "
@@ -219,6 +219,11 @@ async def _wake_turn(
     breaker = _get_wake_breaker()
     turn_error: str | None = None
     turn_cancelled = False
+    # Whether the turn actually delivered what it drained. A turn can end
+    # perfectly well and still not commit — an adapter error it recovered from
+    # means the retry no longer carried the block. That is the difference
+    # between "try again" and "trying again just repeats it".
+    delivery_committed = True
     try:
         if turn_driver is None:
             from tesseract.mirror.server.turn_runner import _run_chat_turn
@@ -227,12 +232,14 @@ async def _wake_turn(
             await _run_chat_turn(
                 app, session, wake_nudge_text(session, chat_id), chat_id=chat_id, outcome=outcome,
             )
+            delivery_committed = bool(outcome.get("committed", True))
             if outcome.get("cancelled"):
                 turn_cancelled = True
             elif outcome.get("ok") is False:
                 turn_error = "cockpit wake turn ended in a swallowed stream_error"
         else:
             turn_error = await turn_driver(app, session, chat_id)
+            delivery_committed = turn_error is None
     except Exception as exc:
         breaker.record_failure(str(exc))
         raise
@@ -243,7 +250,22 @@ async def _wake_turn(
     else:
         breaker.record_success()
 
-    if chat_idle(session, chat_id) and cs.has_pending_spawn_completions():
+    # This straggler re-schedule used to be unreachable after a failed turn —
+    # the drain consumed the note whatever the outcome, so nothing was left
+    # pending to re-wake on. The delivery cursor changed that: a turn that does
+    # not commit rolls the note back, and re-waking on the note this turn just
+    # failed to deliver is a loop, not a retry. Both gates are needed, and the
+    # breaker alone is not enough: a turn that errors and RECOVERS ends clean,
+    # so the breaker records a success and never trips while the delivery keeps
+    # rolling back. Re-wake only for a straggler that arrived during a turn
+    # which did deliver. Nothing is lost either way — the note survives in the
+    # queue for the operator's next turn, and in the store across a restart.
+    if (
+        chat_idle(session, chat_id)
+        and cs.has_pending_spawn_completions()
+        and delivery_committed
+        and not breaker.is_tripped
+    ):
         if chat_id not in session.spawn_wake_pending:
             session.spawn_wake_pending.add(chat_id)
             if turn_driver is None:
@@ -308,6 +330,14 @@ def wire_chat(
     if getattr(session, "kind", "cockpit") != "channel":
         from tesseract.mirror.server.spawn_ownership import register_owner
 
+        # The registry only learns which chat owns it here — and that is the
+        # key its completions are recorded under, so a result outlives the
+        # process (`brain/completion_store.py`). Skipped for channel sessions
+        # for the same reason ownership tracking is: a headless session mints
+        # a fresh `active_chat_id` on every rebuild and has no restore path to
+        # replay into, so a record written under one could only ever leak.
+        cs.spawns.chat_id = chat_id
+
         cs.spawns.on_register = lambda handle: register_owner(
             app, session, cs, chat_id, handle.handle_id,
         )
@@ -321,3 +351,63 @@ def install(app: Any, session: Any) -> None:
     """
     for chat_id, cs in session.chats.items():
         wire_chat(app, session, chat_id, cs)
+
+
+def _another_session_is_turning(app: Any, session: Any, chat_id: str) -> bool:
+    """True when some OTHER live session already has a turn in flight for this
+    chat.
+
+    Every WS connect builds a fresh ``ServerSession`` with empty
+    ``current_turn_tasks``, and the predecessor's cleanup is not ordered
+    against it — so on a fast reload the new session's idle check would say
+    "idle" while the old session's wake turn is still streaming, and both
+    would drive the same chat. Nothing is lost (the durable claim is chat-keyed
+    and idempotent) but it is a duplicate inference the operator pays for.
+    """
+    if app is None:
+        return False
+    try:
+        sessions = (app.get("server_sessions") or {}).values()
+    except Exception:  # noqa: BLE001 — a stub app is not a reason to skip
+        return False
+    for other in sessions:
+        if other is session:
+            continue
+        task = getattr(other, "current_turn_tasks", {}).get(chat_id)
+        if task is not None and not task.done():
+            return True
+    return False
+
+
+def reconcile_on_connect(app: Any, session: Any) -> int:
+    """Wake any chat that came back owing a result. Returns how many.
+
+    :func:`on_spawn_complete` covers the completion that lands while the
+    backend is up. This covers the other half: one that landed while it was
+    not. The durable record is replayed into the rebuilt chat at restore
+    (`ChatSession.replay_undelivered_completions`), and without this the
+    operator would have to speak before the assistant read a result he already has —
+    which is most of the value of making it durable at all.
+
+    Runs at connect, after :func:`install`, so the notifier is wired before a
+    wake turn can start. Same three gates as the live path: the chat must be
+    idle, must not already have a wake pending, and the shared breaker must be
+    closed. A tripped breaker skips the sweep entirely rather than per chat —
+    the failure it is counting is not chat-specific.
+    """
+    if _get_wake_breaker().is_tripped:
+        return 0
+    woken = 0
+    for chat_id, cs in list(session.chats.items()):
+        if not cs.has_pending_spawn_completions():
+            continue
+        if not chat_idle(session, chat_id):
+            continue
+        if chat_id in session.spawn_wake_pending:
+            continue
+        if _another_session_is_turning(app, session, chat_id):
+            continue
+        session.spawn_wake_pending.add(chat_id)
+        schedule_wake(app, session, chat_id)
+        woken += 1
+    return woken

@@ -472,7 +472,7 @@ async def post_item_comment(request: web.Request) -> web.Response:
         comment=payload,
     )
 
-    # Fire a background TARS reply so the operator's question gets answered
+    # Fire a background the assistant reply so the operator's question gets answered
     # in-thread (the workspace comment surface already auto-replies; this
     # closes the agenda gap). Fire-and-forget + a fresh controller session
     # per call → replies across items run in parallel and a slow/failed

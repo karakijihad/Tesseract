@@ -20,7 +20,12 @@ function tagsToSegments(content: string): {
   segments: AssistantStreamSegment[];
   joinedText: string;
 } {
-  const re = /<(intent|answer)>([\s\S]*?)<\/\1>/g;
+  // `spoken` is matched so its text is claimed by a segment rather than
+  // falling through to the untagged buckets below — left unmatched, the
+  // spoken line would be restored as a second answer bubble repeating the
+  // reply. It is kept out of `joined` for the same reason: `joinedText`
+  // becomes the message content, which is the answer alone.
+  const re = /<(intent|spoken|answer)>([\s\S]*?)<\/\1>/g;
   const segments: AssistantStreamSegment[] = [];
   const joined: string[] = [];
   let cursor = 0;
@@ -31,7 +36,7 @@ function tagsToSegments(content: string): {
       segments.push({ kind: 'answer', text: between });
       joined.push(between);
     }
-    const kind = match[1] === 'intent' ? 'intent' : 'answer';
+    const kind = match[1] as 'intent' | 'spoken' | 'answer';
     const text = match[2].trim();
     if (text) {
       segments.push({ kind, text });
@@ -41,8 +46,40 @@ function tagsToSegments(content: string): {
   }
   const tail = content.slice(cursor).trim();
   if (tail) {
-    segments.push({ kind: 'answer', text: tail });
-    joined.push(tail);
+    // A stream cut mid-block leaves an opener with no closing tag, which the
+    // closed-tag regex above cannot see. The live parser classifies it by
+    // state (`stream_parser.py::_parse_tagged_stream`); without the same
+    // handling here the raw `<spoken>` markup would be restored as ordinary
+    // answer text — protocol scaffolding rendered to the operator.
+    const unclosed = /^<(intent|spoken|answer)>([\s\S]*)$/.exec(tail);
+    if (unclosed) {
+      const kind = unclosed[1] as 'intent' | 'spoken' | 'answer';
+      const text = unclosed[2].trim();
+      if (text) {
+        segments.push({ kind, text });
+        if (kind === 'answer') joined.push(text);
+      }
+    } else {
+      segments.push({ kind: 'answer', text: tail });
+      joined.push(tail);
+    }
+  }
+  // Same rule the live store applies at the turn boundary
+  // (`conversation.ts::_promoteLoneSpoken`): a reply cut after `</spoken>`
+  // before any `<answer>` opened has the spoken block as its only content,
+  // and spoken renders nothing. Without this the message survives the turn
+  // but comes back empty on the next reload.
+  if (!joined.length && segments.some(segment => segment.kind === 'spoken')) {
+    const promoted = segments.map(segment =>
+      segment.kind === 'spoken' ? { ...segment, kind: 'answer' as const } : segment,
+    );
+    return {
+      segments: promoted,
+      joinedText: promoted
+        .filter(segment => segment.kind === 'answer')
+        .map(segment => segment.text)
+        .join('\n\n'),
+    };
   }
   return { segments, joinedText: joined.join('\n\n') };
 }

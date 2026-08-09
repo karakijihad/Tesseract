@@ -22,17 +22,17 @@ from pydantic import BaseModel, Field
 
 from tesseract.brain.agent_factory import AgentBuildError, build_agent_session
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
-from tesseract.orchestrator.tars_controller.interactive.agent_backend import (
+from tesseract.orchestrator.agent_controller.interactive.agent_backend import (
     AgentSessionBackend,
 )
-from tesseract.orchestrator.tars_controller.interactive.cli_adapter import (
+from tesseract.orchestrator.agent_controller.interactive.cli_adapter import (
     ClaudeStreamAdapter,
     CodexStreamAdapter,
 )
-from tesseract.orchestrator.tars_controller.interactive.cli_backend import (
+from tesseract.orchestrator.agent_controller.interactive.cli_backend import (
     CliSessionBackend,
 )
-from tesseract.orchestrator.tars_controller.interactive.types import TurnResult
+from tesseract.orchestrator.agent_controller.interactive.types import TurnResult
 
 logger = logging.getLogger(__name__)
 

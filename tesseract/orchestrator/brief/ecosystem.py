@@ -35,7 +35,7 @@ from typing import Any
 
 import yaml
 
-from tesseract.paths import CONFIG_DIR
+from tesseract.paths import config_dir
 
 log = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ MAX_PROVIDER_PREVIEW = 800
 # originally extracted from. AU-24 source-URL provenance lands through
 # this lookup (audit 2026-05-20 §M4) so the ecosystem-digester agent
 # can cite real sources instead of inventing URLs.
-_DEFAULT_WATCHLIST_PATH = CONFIG_DIR / "autonomy-watchlist.yaml"
+_WATCHLIST_FILENAME = "autonomy-watchlist.yaml"
 
 # Liberal URL match: http(s)://host[/...]. Stops at whitespace, parens,
 # angle brackets, and common trailing punctuation. Bounded so a 10k-byte
@@ -74,10 +74,11 @@ def collect_ecosystem_inputs(
     return as "drop the ecosystem section".
 
     ``watchlist_path`` overrides the default autonomy-watchlist.yaml
-    location for tests; when ``None``, the repo-relative path is used
-    so production runs pick up the same file the (now-retired) docs-watch
-    producer wrote snapshots for. The watchlist enriches docs-watch rows
-    with their canonical source URLs (audit 2026-05-20 §M4 provenance fix).
+    location for tests; when ``None``, it resolves under the config tree at
+    CALL time (``config_dir()``), so a relocated ``TESSERACT_HOME`` is honored
+    rather than whichever home was current when this module was imported. The
+    watchlist enriches docs-watch rows with their canonical source URLs
+    (audit 2026-05-20 §M4 provenance fix).
     """
     cutoff = datetime.combine(
         target_date - timedelta(days=since_days),
@@ -331,15 +332,12 @@ def _load_watchlist_urls(override: Path | None) -> dict[str, list[str]]:
     docs-watch rows just lose their canonical URL hint, which is the same
     state as before the AU-24 provenance fix.
     """
-    path = override
-    if path is None:
-        # Resolve relative to the tesseract package root so a launcher
-        # cwd anywhere on disk still finds the bundled watchlist.
-        try:
-            from tesseract.paths import CONFIG_DIR
-            path = (CONFIG_DIR / "autonomy-watchlist.yaml")
-        except Exception:  # noqa: BLE001
-            path = _DEFAULT_WATCHLIST_PATH
+    # Resolve against the config tree at CALL time, not against the
+    # `CONFIG_DIR` constant frozen at import: a launcher whose cwd is
+    # anywhere on disk still finds the bundled watchlist, and a
+    # `TESSERACT_HOME` set after this module was imported is honored
+    # rather than silently resolving to the home that no longer applies.
+    path = override if override is not None else config_dir() / _WATCHLIST_FILENAME
     if not path.exists():
         return {}
     try:

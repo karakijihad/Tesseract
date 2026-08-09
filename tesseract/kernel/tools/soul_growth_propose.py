@@ -7,9 +7,9 @@ or rejects in the workspace; the REST handler performs the commit
 through `apply_change()` (see `tesseract/kernel/workspace_changes.py`).
 
 Posture: `auto`. The chat ASK gate was removed when the workspace
-became the unified gate for any TARS-initiated mutation of operator-
+became the unified gate for any agent-initiated mutation of operator-
 owned workspace files (soul, identity, foundation, …). Operator's
-mental model: "TARS is a colleague sending change requests; I review
+mental model: "the assistant is a colleague sending change requests; I review
 in the workspace."
 
 Bullet ergonomics preserved from the previous direct-write tool:
@@ -133,7 +133,7 @@ class SoulGrowthProposeTool(Tool):
 
         event = WorkspaceEvent.new(
             kind="change_proposal",
-            source="tars",
+            source="agent",
             title=f"Soul growth bullet — {bullet[:80]}",
             summary=bullet,
             payload={

@@ -1,18 +1,23 @@
-"""Ollama readiness helper for Mirror startup.
+"""Ollama primitives shared by everything that talks to the local daemon.
 
-Probes the configured Ollama endpoint; on a localhost endpoint that's down,
-optionally spawns `ollama serve` detached and waits for it. Verifies the
-embedding model is present in `/api/tags` — never auto-pulls (gigabytes of
-download are not a silent side effect).
+Resolving the binary, probing the endpoint, spawning `ollama serve`
+detached, listing tags, and asking whether a model is among them. Mirror
+startup (`mirror/server/app.py`), the Settings supervisor
+(`mirror/server/ollama_supervisor.py`) and the installer script
+(`scripts/ensure_ollama.py`) each compose these differently — the policy
+of what to do about a missing daemon lives with them, not here.
 
-Fail-open contract: if Ollama is unreachable after all attempts, log WARN and
-return False. Callers continue without warm embeddings.
+Nothing in this module pulls a model. That is deliberate at runtime:
+gigabytes of download are not a silent side effect. `ensure_ollama` is the
+install-time counterpart, where the operator is watching a progress bar and
+expecting exactly that.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -24,6 +29,27 @@ import httpx
 from tesseract.brain.boot import ollama_up
 
 log = logging.getLogger(__name__)
+
+
+def ollama_exe() -> str | None:
+    """Resolve the ollama binary, including the default per-user install dir.
+
+    A freshly-run installer does not update THIS process's PATH, so a bare
+    `shutil.which` immediately after one reports "not installed" against a
+    binary sitting in `%LOCALAPPDATA%\\Programs\\Ollama`. Every caller that
+    can run after an in-process install — the installer script, the Settings
+    supervisor, the adapter builder — needs this form rather than `which`.
+    """
+    found = shutil.which("ollama")
+    if found:
+        return found
+    if sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            candidate = Path(local) / "Programs" / "Ollama" / "ollama.exe"
+            if candidate.exists():
+                return str(candidate)
+    return None
 
 
 async def _probe(base_url: str, timeout_s: float = 2.0) -> bool:
@@ -69,9 +95,12 @@ def _is_localhost(base_url: str) -> bool:
 
 
 def _spawn_ollama_serve_sync() -> bool:
-    exe = shutil.which("ollama")
+    # `ollama_exe`, not `shutil.which`: the install-time caller spawns this
+    # immediately after running the vendor installer, and that install has
+    # not touched this process's PATH.
+    exe = ollama_exe()
     if exe is None:
-        log.warning("ollama binary not on PATH — cannot auto-start")
+        log.warning("ollama binary not found — cannot auto-start")
         return False
     try:
         kwargs: dict = {
@@ -99,10 +128,6 @@ def _spawn_ollama_serve_sync() -> bool:
         return False
 
 
-async def _spawn_ollama_serve() -> bool:
-    return await asyncio.to_thread(_spawn_ollama_serve_sync)
-
-
 async def _wait_for_ollama(base_url: str, total_s: float = 10.0, poll_s: float = 0.5) -> bool:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + total_s
@@ -118,31 +143,3 @@ def _model_present(tags: list[str], model: str) -> bool:
         return False
     target = model.split(":", 1)[0]
     return any(tag == model or tag.split(":", 1)[0] == target for tag in tags)
-
-
-async def ensure_ollama_ready(base_url: str, model: str, auto_start: bool = True) -> bool:
-    """Probe Ollama, optionally auto-start on localhost, verify model present.
-
-    Returns True when Ollama is reachable and `model` is listed in /api/tags.
-    Never raises. Never auto-pulls missing models.
-    """
-    alive = await _probe(base_url, timeout_s=2.0)
-    if not alive:
-        if auto_start and _is_localhost(base_url):
-            if await _spawn_ollama_serve():
-                alive = await _wait_for_ollama(base_url, total_s=10.0, poll_s=0.5)
-        if not alive:
-            log.warning(
-                "Ollama not reachable at %s — dedupe + retrieval will fail open",
-                base_url,
-            )
-            return False
-
-    tags = await _fetch_tags(base_url)
-    if not _model_present(tags, model):
-        log.warning(
-            "embedding model %s not in Ollama tags — run `ollama pull %s`",
-            model, model,
-        )
-        return False
-    return True

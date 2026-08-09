@@ -16,6 +16,8 @@ from typing import Any
 
 import numpy as np
 
+from tesseract.voice.model_files import whisper_model_source
+
 logger = logging.getLogger(__name__)
 
 _PCM_SAMPLE_RATE_HZ = 16_000
@@ -101,7 +103,24 @@ def _default_factory(model: str, device: str, compute_type: str) -> Any:
         raise LocalWhisperError(
             "faster-whisper not installed - install `faster-whisper` for local STT"
         ) from exc
-    return WhisperModel(model, device=device, compute_type=compute_type)
+    # A bare checkpoint name makes faster-whisper download the snapshot from
+    # HuggingFace right here — unpinned, unverified, and paid for as a
+    # multi-minute stall the first time the operator speaks. Prefer the
+    # snapshot `scripts/fetch_whisper_model.py` installed during
+    # provisioning. Resolved inside the default factory rather than at the
+    # config layer so an injected test factory still receives the configured
+    # name, not a machine-specific path.
+    source = whisper_model_source(model)
+    if source != model:
+        logger.info("local Whisper loading pinned snapshot %s", source)
+    else:
+        logger.info(
+            "local Whisper has no fetched snapshot for %r — falling back to "
+            "faster-whisper's own download (run `python -m "
+            "tesseract.scripts.fetch_whisper_model` to pin it)",
+            model,
+        )
+    return WhisperModel(source, device=device, compute_type=compute_type)
 
 
 def _ensure_cuda_dll_dirs(device: str) -> None:

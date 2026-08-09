@@ -9,6 +9,8 @@ import type {
   StreamToolResultData,
 } from "../../lib/types";
 import { getController } from "../../lib/entity/registry";
+import { ENTITY_FALLBACK } from "../../hooks/useEntityName";
+import { useIdentityStore } from "../identity";
 import { useConversationStore } from "../conversation";
 import { useEntityStore } from "../entity";
 import { usePulseStore } from "../pulse";
@@ -73,7 +75,11 @@ export function handleLoop(env: Envelope, signals: Signals | null): void {
       chat.appendDelta(
         cid,
         data.delta,
-        data.kind === "status" || data.kind === "intent" ? "intent" : "answer",
+        data.kind === "status" || data.kind === "intent"
+          ? "intent"
+          : data.kind === "spoken"
+            ? "spoken"
+            : "answer",
       );
       // Coalesce orb-intensity impulses to one per frame — same idea as
       // the chat bubble's rAF flush. Otherwise short backend chunks
@@ -87,10 +93,10 @@ export function handleLoop(env: Envelope, signals: Signals | null): void {
       break;
     }
     case "stream_tool_call_start": {
-      // TARS-sticky states (deep_focus / dreaming / happy) are the operator-
+      // agent-sticky states (deep_focus / dreaming / happy) are the operator-
       // visible mood for the whole turn. Tool calls inside that turn must
       // not blink the orb back to `thinking` — that creates the "lasts one
-      // tool turn" flicker. `stream_text` still overrides (TARS speaking
+      // tool turn" flicker. `stream_text` still overrides (the assistant speaking
       // takes visual priority); next `loop_start` still resets to thinking.
       const live = useEntityStore.getState().state;
       if (live !== "deep_focus" && live !== "dreaming" && live !== "happy") {
@@ -293,13 +299,13 @@ export function handleLoop(env: Envelope, signals: Signals | null): void {
       if (data.severity === "soft") {
         // Tool-loop reset (chat.py: tool-iteration cap hit). The backend
         // doesn't break the turn — it zeroes the counter and keeps
-        // streaming. Surface a distinct note so the operator sees TARS
+        // streaming. Surface a distinct note so the operator sees the assistant
         // is still working past the cap, not a transient adapter hiccup.
         if (data.reason === "tool_cap_reset") {
           const n = typeof data.resets === "number" ? data.resets : 1;
           chat.addStreamNote(
             cid,
-            `Tool-loop cap reset (#${n}) — TARS is still working.`,
+            `Tool-loop cap reset (#${n}) — ${useIdentityStore.getState().name || ENTITY_FALLBACK} is still working.`,
           );
           break;
         }

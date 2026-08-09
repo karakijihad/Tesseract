@@ -10,6 +10,7 @@
 
 import {
   usePanelStore,
+  isKnownViewPanel,
   isRailKind,
   type DockSide,
   type PanelState,
@@ -45,9 +46,10 @@ function sanitizePanels(value: unknown): SavedPanel[] {
     if (!e || typeof e !== 'object') return false;
     const r = e as Record<string, unknown>;
     return (
-      typeof r.kind === 'string' &&
-      r.kind !== 'tars' &&
-      !isRailKind(r.kind) &&
+      // Against the registry, not just "a string that isn't a rail": a
+      // layout saved before a tab was renamed still names the old kind,
+      // and hydrating it would mount a panel with no view inside.
+      isKnownViewPanel(r.kind) &&
       typeof r.pinned === 'boolean' &&
       typeof r.minimized === 'boolean' &&
       typeof r.maximized === 'boolean' &&

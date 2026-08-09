@@ -14,6 +14,7 @@ from tesseract.config.loader import (
     ResolvedRef,
     load_config,
 )
+from tesseract.mirror.server.wake_word import WakeWordConfig, parse_wake_word_config
 from tesseract.paths import CONFIG_DIR, home_dir
 from tesseract.permissions.policy import PermissionPolicy, load_permission_policy
 
@@ -57,6 +58,7 @@ class ServerConfig:
     port: int
     entity_name: str
     operator_name: str
+    wake_word: WakeWordConfig
     cors_origins: tuple[str, ...]
     models: dict[str, Any]
     permissions: PermissionPolicy
@@ -73,6 +75,20 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     return raw
 
 
+def load_identity(mirror: dict[str, Any]) -> tuple[str, str, WakeWordConfig]:
+    """The three things the `identity:` block owns. Split out of
+    `load_server_config` because `config_watcher.reload_mirror` re-reads
+    exactly this much on an external edit — a rename has to reach the
+    wake-word gate without a restart, and duplicating the parse is how
+    the two copies drift."""
+    identity = mirror.get("identity") or {}
+    entity_name = str(identity.get("name") or "").strip()
+    if not entity_name:
+        raise RuntimeError(f"{MIRROR_YAML} missing required 'identity.name'")
+    operator_name = str(identity.get("operator_name") or "").strip() or "Operator"
+    return entity_name, operator_name, parse_wake_word_config(identity, MIRROR_YAML)
+
+
 def load_server_config() -> ServerConfig:
     mirror = _load_yaml(MIRROR_YAML)
     server = mirror.get("server")
@@ -81,11 +97,7 @@ def load_server_config() -> ServerConfig:
     host = server["host"]
     port = int(server["port"])
 
-    identity = mirror.get("identity") or {}
-    entity_name = str(identity.get("name") or "").strip()
-    if not entity_name:
-        raise RuntimeError(f"{MIRROR_YAML} missing required 'identity.name'")
-    operator_name = str(identity.get("operator_name") or "").strip() or "Operator"
+    entity_name, operator_name, wake_word = load_identity(mirror)
 
     cors = mirror.get("cors") or {}
     origins = tuple(cors.get("origins") or ())
@@ -105,6 +117,7 @@ def load_server_config() -> ServerConfig:
         port=port,
         entity_name=entity_name,
         operator_name=operator_name,
+        wake_word=wake_word,
         cors_origins=origins,
         models=models,
         permissions=permissions,
@@ -138,10 +151,7 @@ def _synthesize_voice_block(bundle: ConfigBundle) -> dict[str, Any]:
     voice = bundle.voice
     if voice is None:
         return {}
-    out: dict[str, Any] = {
-        "default_voice_id": voice.default_voice_id,
-        "default_tone_prompt": voice.default_tone_prompt,
-    }
+    out: dict[str, Any] = {}
 
     def _materialize(provider) -> dict[str, Any]:  # noqa: ANN001
         materialized = _ref_to_legacy_entry(provider.ref)

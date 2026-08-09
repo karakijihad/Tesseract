@@ -130,7 +130,7 @@ export function AlarmsPanel() {
       <div className="schedule-list">
         {alarms.length === 0 && !loading && (
           <div className="schedule-empty">
-            <span className="t-meta">No pending alarms — click + add, /alarm_set, or ask TARS.</span>
+            <span className="t-meta">No pending alarms — click + add, /alarm_set, or just ask.</span>
           </div>
         )}
         {alarms.map((alarm) => (

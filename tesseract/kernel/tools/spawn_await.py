@@ -1,6 +1,6 @@
 """spawn_await — block on a background spawn's result.
 
-Phase 4 of the TARS reboot CLI-parity plan. The "I'm done with other
+Phase 4 of the assistant reboot CLI-parity plan. The "I'm done with other
 work, give me the result" call. Returns whatever the foreground tool
 would have returned, or an error string on cancellation / timeout.
 """
@@ -37,6 +37,14 @@ class SpawnAwaitTool(Tool):
     default_posture: ClassVar[str] = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    # A CLI's reply is whatever it read out of a repository, a web page, or
+    # a compromised model — untrusted by origin, however trusted the tool
+    # that fetched it. Set here so the foreground result and `spawn_await`'s
+    # retrieval get the same envelope the background completion delivery
+    # applies in `chat.py::_format_spawn_completion`; wrapping only the one
+    # path left the other two open.
+    untrusted_source: ClassVar[bool] = True
     @property
     def name(self) -> str:
         return "spawn_await"
@@ -80,7 +88,7 @@ class SpawnAwaitTool(Tool):
             # M4-p2 — a reconnected chat's OWN registry starts empty; a spawn
             # that survived reconnect (still owned by the stale, orphaned
             # registry) resolves through the process-global, registry-
-            # independent index instead (same mechanism trio W4's ask_fn
+            # independent index instead (same mechanism the ask_fn
             # already relies on for cross-registry handle lookup).
             from tesseract.brain.spawns import find_handle
 
@@ -130,6 +138,6 @@ class SpawnAwaitTool(Tool):
                 is_error=True,
             )
         # Pass the original result through verbatim — output, is_error,
-        # metadata. TARS sees the same payload it would have seen from
+        # metadata. The assistant sees the same payload it would have seen from
         # a foreground call.
         return result

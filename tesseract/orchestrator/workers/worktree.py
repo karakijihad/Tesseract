@@ -74,7 +74,7 @@ def _branch_name(worker_id: str) -> str:
 # Worker kinds that may edit source. PROPOSE/OPERATOR_GATE items
 # dispatched to either of these get an isolated worktree.
 _CODE_EDITING_KINDS: frozenset[WorkerKind] = frozenset(
-    {WorkerKind.CLAUDE_CLI, WorkerKind.CODEX_CLI}
+    {WorkerKind.CODER_SEAT, WorkerKind.AUDITOR_SEAT}
 )
 
 # Risk classes that warrant isolation. AUTONOMOUS items don't edit
@@ -93,7 +93,7 @@ def requires_worktree(risk_class: RiskClass, kind: WorkerKind) -> bool:
 
     Decision matrix: a code-editing kind (claude_cli / codex_cli)
     dispatched at PROPOSE or OPERATOR_GATE risk. Read-only kinds
-    (markdown_agent / tars_self) never get a worktree; AUTONOMOUS
+    (markdown_agent / agent_self) never get a worktree; AUTONOMOUS
     items skip even if the kind edits code because the operator
     profile expects autonomous == observation, not mutation.
     """

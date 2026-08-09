@@ -1,4 +1,4 @@
-# Providers Catalog — tars-reboot shape
+# Providers Catalog
 #
 # Pure data: connection settings, named model entries, pricing. No role wiring
 # lives here — see `roles.yaml` for which model serves which slot. References
@@ -56,7 +56,7 @@ availability:
 # cooldown elapses the entry is tried again on the next turn; success
 # closes the breaker, failure restarts the cooldown. If every entry is
 # in cooldown the chain emits a clear "all entries cooling down" error
-# (TARS retries on the next turn). Disable by setting either knob ≤ 0.
+# (the assistant retries on the next turn). Disable by setting either knob ≤ 0.
 chain:
   transient_retries: 2          # retries per chain entry on transient errors
   transient_backoff_ms: 250     # initial; doubles each retry
@@ -147,8 +147,7 @@ api:
         cost_per_mtok_out: 2.50
         cost_per_mtok_cached_in: 0.075   # Gemini cached input ≈ 25% of base; verify against ai.google.dev/pricing if rates change
         # Image generation lives on `gemini-2.5-flash-image` (separate
-        # model); audio output lives on `gemini_flash_tts` below. The
-        # text-chat entry handles the input modalities only.
+        # model). The text-chat entry handles the input modalities only.
         capabilities:
           vision_input: true
           audio_input: true
@@ -156,14 +155,10 @@ api:
           pdf_input: true
           image_output: false
           audio_output: false
-      gemini_flash_audio:         # voice STT
+      gemini_flash_audio:         # voice STT — the only cloud voice lane left
         kind: audio_stt
         model: gemini-2.5-flash
         cost_per_audio_hour: 0.09  # 25 audio tokens/sec at $1/Mtok
-      gemini_flash_tts:           # voice TTS
-        kind: tts
-        model: gemini-2.5-flash-preview-tts
-        cost_per_million_chars: 10.00  # metered against char_count (text + tone_prompt)
 
   anthropic:
     # Enabled but not wired: no role names an anthropic ref by default.
@@ -353,8 +348,7 @@ api:
       flux1_dev:
         kind: image_generation
         model: black-forest-labs/flux.1-dev
-        base_url_override: 
-          https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-dev
+        base_url_override: https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-dev
         cost_per_image: 0.00
         # Text-to-image only. Its canny/depth `mode` is control-net (a t2i
         # variant via `control_image_attachment_id`), NOT general image-to-
@@ -375,8 +369,7 @@ api:
       flux2_klein_4b:
         kind: image_generation
         model: black-forest-labs/flux.2-klein-4b
-        base_url_override: 
-          https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b
+        base_url_override: https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b
         payload_profile: flux2
         cost_per_image: 0.00
         capabilities:
@@ -483,6 +476,24 @@ local:
     auto_start: true   # Mirror startup may spawn `ollama serve` on localhost; set false in CI/headless
     host: this_pc
     adapter: ollama
+    # Who is allowed to have signed OllamaSetup.exe before we run it
+    # (`scripts/ensure_ollama.py`). One RDN of the Authenticode certificate
+    # subject, written `<field>=<value>`. That field is parsed out and
+    # compared for equality, case-insensitively — NOT searched for in the
+    # subject string, which would also pass `O=Ollama Software Ltd` and
+    # `OU=O=Ollama, O=Attacker LLC`. Pinning one field rather than the whole
+    # distinguished name survives the reordering and reissue that certificate
+    # renewals bring; a vendor renaming itself is meant to stop and ask.
+    # Every other download in this repo is pinned by sha256; this one cannot
+    # be, because the URL is unversioned by design.
+    #
+    # Unlike that URL — which stays in source, since a yaml write there
+    # would choose what gets executed — this value only ever narrows what
+    # is accepted. Weakening it wins nothing on its own: the URL is still
+    # fixed, so an attacker would also have to be serving the binary.
+    # Removing the key does not skip the check; verification fails closed
+    # and the install is refused.
+    installer_signer: "O=Ollama"
     models:
       nomic_embed:
         kind: embedding
@@ -491,6 +502,38 @@ local:
         timeout_seconds: 30
         max_retries: 3
 
+  onnx_reranker:
+    enabled: true
+    adapter: onnx_reranker    # tesseract/memory/reranker.py - CPU, no VRAM
+    timeout_seconds: 10
+    max_retries: 1
+    host: this_pc
+    models:
+      # `model`/`tokenizer` are filenames under `<TESSERACT_HOME>/models/reranker/`.
+      # Absent files are a supported degraded mode (retrieval keeps RRF order);
+      # fetch them with: python -m tesseract.scripts.fetch_reranker_model
+      # (~23 MB int8 ONNX + tokenizer, sources under `download:` below; the
+      # fetch verifies the pinned sha256 before installing).
+      # Swapping this model is live — the config watcher's rebuild_adapters
+      # re-resolves this role and swaps it into both RetrievalPipeline and
+      # VaultSearchTool in place. No restart required.
+      msmarco_minilm_l6:
+        kind: reranker
+        model: ms-marco-MiniLM-L-6-v2.int8.onnx
+        tokenizer: tokenizer.json
+        max_seq_len: 512
+        candidate_cap: 30
+        download:
+          max_download_mb: 50
+          base_url: https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2/resolve/main
+          # Keyed by on-disk name. The model is published under a different
+          # path than it is loaded from, so it carries an explicit `source`.
+          files:
+            ms-marco-MiniLM-L-6-v2.int8.onnx:
+              sha256: e9d8ebf845c413e981c175bfe49a3bfa9b3dcce2a3ba54875ee5df5a58639fbe
+              source: onnx/model_quantized.onnx
+            tokenizer.json: d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66
+
   whisper:
     enabled: true
     adapter: local_whisper
@@ -498,23 +541,64 @@ local:
     max_retries: 1
     models:
       # Catalog id matches the cost-ledger key for back-compat (`local_whisper`).
-      # `model` carries the actual faster-whisper checkpoint name. `base` is the
-      # fresh-install default — small enough to run anywhere; raise it to
-      # `large-v3-turbo` for better accuracy if the machine can take it.
+      # `model` carries the actual faster-whisper checkpoint name, and must be
+      # one of the keys under `downloads:` below — anything else falls back to
+      # faster-whisper's own unpinned HuggingFace download at first use.
+      #
+      # `large-v3-turbo` is the fresh-install default. Speech is the primary
+      # input, and the wake gate matches `<prefix> <name>` against the
+      # transcript, so STT accuracy on an arbitrary proper noun is what decides
+      # whether the agent hears its own name. `base` mishears exactly that.
+      # Drop to `small` (or `base`) on a machine where CPU synthesis latency
+      # matters more than accuracy — the pins below cover all three, so the
+      # swap is this one line plus a re-run of the fetch script.
+      #
       # Leave `device: auto`: it probes this machine's CUDA device count AND
       # whether the cuBLAS runtime is actually loadable, then picks. Pinning
       # `cuda` by hand skips that probe, and a machine with an NVIDIA driver
       # but no CUDA runtime wheels then dies at first transcription with
       # "Library cublas64_12.dll is not found".
+      #
+      # `downloads:` is what stops the model arriving as an unpinned lazy pull
+      # mid-conversation. Each key is a checkpoint name; `base_url` carries the
+      # upstream revision, and every file is verified against its sha256 before
+      # it is installed. Fetch with:
+      #   python -m tesseract.scripts.fetch_whisper_model
       local_whisper:
         kind: stt
-        model: base
+        model: large-v3-turbo
         device: auto            # "auto" | "cuda" | "cpu" — auto probes CUDA + cuBLAS per machine
         compute_type: int8      # raised to int8_float16 when auto resolves to cuda
         beam_size: 1
         timeout_seconds: 180
         preload: true
         cost_per_audio_hour: 0.00
+        downloads:
+          base:
+            max_download_mb: 256
+            base_url: https://huggingface.co/Systran/faster-whisper-base/resolve/ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66
+            files:
+              config.json: 56a6d8110d311f19c8f0471e562832c7527f146b567275bfca59fcf7c184da9a
+              model.bin: d01c3014881c9c6f3133c182f3d2887eb6ca1c789a7538c5c007196857a0a6a9
+              tokenizer.json: fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab
+              vocabulary.txt: 34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913
+          small:
+            max_download_mb: 640
+            base_url: https://huggingface.co/Systran/faster-whisper-small/resolve/536b0662742c02347bc0e980a01041f333bce120
+            files:
+              config.json: b55496ac7940a7ae47d2c01eab40edfd8701feec1229d9cce3b40014383fb828
+              model.bin: 3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671
+              tokenizer.json: fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab
+              vocabulary.txt: 34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913
+          large-v3-turbo:
+            max_download_mb: 2048
+            base_url: https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2/resolve/4df90f75321148c3a29a9e2351b7ddf8f5b115a8
+            files:
+              config.json: b0253ea6c0d3bea6b1e19e91a02acfd3b53f4467362efcb5a3e6b16c9b3a9b7e
+              model.bin: e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da
+              preprocessor_config.json: 7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711
+              tokenizer.json: 297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd
+              vocabulary.json: c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1
 
   piper:
     enabled: true
@@ -523,20 +607,34 @@ local:
     max_retries: 1
     host: this_pc
     models:
-      # Catalog id matches the cost-ledger key (`piper_northern_english_male`).
-      # `model` is the ONNX filename under `tesseract/voice/models/piper/`.
-      # Download both files into that dir (~64 MB):
-      #   en_GB-northern_english_male-medium.onnx
-      #   en_GB-northern_english_male-medium.onnx.json
-      # Source: https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_GB/northern_english_male/medium
-      northern_english_male:
+      # `model` is the ONNX filename under `tesseract/voice/models/piper/`;
+      # each voice needs BOTH the `.onnx` and its `.onnx.json` sidecar in
+      # that directory. Fetch them with:
+      #   python -m tesseract.scripts.fetch_piper_voice
+      # Source: https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US
+      #
+      # Each voice's `download.base_url` is pinned to a specific upstream
+      # commit, never a branch: an upstream re-upload of the release-equivalent
+      # files must not silently change what a fresh install fetches. Bumping a
+      # pin is a deliberate, reviewed edit. Every file is verified against its
+      # sha256 before it is installed, and an existing file is never replaced.
+      #
+      # Two synthesis presets, picked by the TTS engine from the
+      # `<intent>`/`<answer>` tag contract. Intent = quicker,
+      # deterministic. Answer = natural pace, micro-variability for
+      # warmth. Edit these to change the voice's character.
+      hfc_female:
         kind: tts
-        model: en_GB-northern_english_male-medium.onnx
+        model: en_US-hfc_female-medium.onnx
+        label: "HFC female — US female"
+        gender: female
         sample_rate: 22050
-        # Two synthesis presets picked by the TTS engine based on the
-        # `<intent>`/`<answer>` tag contract. Intent = quicker,
-        # deterministic. Answer = natural pace, micro-variability for
-        # warmth. Edit these to change TARS's local voice character.
+        download:
+          max_download_mb: 128
+          base_url: https://huggingface.co/rhasspy/piper-voices/resolve/0d907f158acc877ddeebcbf827659ee13bea8bcd/en/en_US/hfc_female/medium
+          files:
+            en_US-hfc_female-medium.onnx: 914c473788fc1fa8b63ace1cdcdb44588f4ae523d3ab37df1536616835a140b7
+            en_US-hfc_female-medium.onnx.json: 03f1fa0622b80463283592d97aca9f6e89aec345a5c56b7257723e0093c58b6c
         synthesis_presets:
           intent:
             length_scale: 0.95
@@ -547,5 +645,100 @@ local:
             length_scale: 1.0
             noise_scale: 0.4
             noise_w: 0.5
+            sentence_silence: 0.2
+        cost_per_million_chars: 0.00
+      hfc_male:
+        kind: tts
+        model: en_US-hfc_male-medium.onnx
+        label: "HFC male — US male"
+        gender: male
+        sample_rate: 22050
+        download:
+          max_download_mb: 128
+          base_url: https://huggingface.co/rhasspy/piper-voices/resolve/0d907f158acc877ddeebcbf827659ee13bea8bcd/en/en_US/hfc_male/medium
+          files:
+            en_US-hfc_male-medium.onnx: d11e403a02bdf5a670c877b3dc56e0e1c8cece6fb30289586314dffdc0a78cb0
+            en_US-hfc_male-medium.onnx.json: f66847424aed0bf99ecbb5d7cfde47c0a906f426a0daf7c46f305e7d21afd886
+        synthesis_presets:
+          intent:
+            length_scale: 0.95
+            noise_scale: 0.0
+            noise_w: 0.0
+            sentence_silence: 0.2
+          answer:
+            length_scale: 1.0
+            noise_scale: 0.4
+            noise_w: 0.5
+            sentence_silence: 0.2
+        cost_per_million_chars: 0.00
+  kokoro:
+    enabled: true
+    adapter: kokoro         # tesseract/voice/providers/kokoro_tts.py
+    timeout_seconds: 60     # warm-up cap; per-ref override in roles.yaml::voice.tts.settings
+    max_retries: 1
+    host: this_pc
+    # The pin sits on the connection, not on each voice, because every
+    # Kokoro voice below is a `mix` over these same two files rather than a
+    # download of its own. Pinned to a release tag, never `latest`; each
+    # file is verified against its sha256 before it is installed. Fetch:
+    #   python -m tesseract.scripts.fetch_kokoro_voice
+    download:
+      max_download_mb: 512
+      base_url: https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0
+      files:
+        kokoro-v1.0.onnx: 7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5
+        voices-v1.0.bin: bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d
+    models:
+      # One 311 MB ONNX model holds every voice; a voice is a small style
+      # embedding inside `voices-v1.0.bin`. So each entry below is not a
+      # separate download — it is a `mix` over the same two files, fetched
+      # once from the `download:` pin above.
+      #
+      # `mix` is voice_id -> weight. Give it two or more weights and the
+      # style embeddings blend linearly — that is how a custom timbre is
+      # designed. `kokoro.get_voices()` lists all 54 ids.
+      #
+      # `speed` is Kokoro's only pacing knob; these values mirror Piper's
+      # intent/answer `length_scale` pair (0.95 shorter → 1.05 faster) so
+      # switching lanes doesn't change the delivery.
+      #
+      # `device: cuda` is safe on a CPU-only machine — onnxruntime falls
+      # back to CPUExecutionProvider and logs the downgrade.
+      af_heart:
+        kind: tts
+        model: kokoro-v1.0.onnx
+        voices_file: voices-v1.0.bin
+        label: "Heart — US female"
+        gender: female
+        lang: en-us
+        device: cuda
+        sample_rate: 24000
+        mix:
+          af_heart: 1.0
+        synthesis_presets:
+          intent:
+            speed: 1.05
+            sentence_silence: 0.2
+          answer:
+            speed: 1.0
+            sentence_silence: 0.2
+        cost_per_million_chars: 0.00
+      am_echo:
+        kind: tts
+        model: kokoro-v1.0.onnx
+        voices_file: voices-v1.0.bin
+        label: "Echo — US male"
+        gender: male
+        lang: en-us
+        device: cuda
+        sample_rate: 24000
+        mix:
+          am_echo: 1.0
+        synthesis_presets:
+          intent:
+            speed: 1.05
+            sentence_silence: 0.2
+          answer:
+            speed: 1.0
             sentence_silence: 0.2
         cost_per_million_chars: 0.00

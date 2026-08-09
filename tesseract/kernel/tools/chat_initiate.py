@@ -1,20 +1,20 @@
-"""chat_initiate — TARS speaks first in the Mirror chat tab.
+"""chat_initiate — the assistant speaks first in the Mirror chat tab.
 
 A turn normally starts with the operator typing into the chat tab. This
-tool inverts that: TARS pushes an entity-role message envelope to every
-open Mirror WS session so the chat tab renders a TARS-initiated turn
+tool inverts that: the assistant pushes an entity-role message envelope to every
+open Mirror WS session so the chat tab renders a agent-initiated turn
 without an inbound operator message.
 
 Use cases:
-- A long-running job TARS started finished — alert the operator.
+- A long-running job the assistant started finished — alert the operator.
 - A delegate worker returned with a result worth a one-liner.
-- TARS noticed something in conscience drift and wants to flag it now
+- The assistant noticed something in conscience drift and wants to flag it now
   rather than waiting for the next chat turn.
 
 Distinct from ``workspace_post`` (Slack-style inbox feed) and
 ``channel_notify`` (Telegram outbound). ``chat_initiate`` lights up the
 Mirror's chat tab specifically — the place the operator already watches
-TARS-side prose. AU-10 will layer rate-cap categories on top; for now
+agent-side prose. AU-10 will layer rate-cap categories on top; for now
 this is a primitive without backoff.
 
 ``default_posture="auto"`` matches sibling outbound tools.

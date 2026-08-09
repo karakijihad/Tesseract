@@ -2,19 +2,19 @@
 
 Translates a selected :class:`WorkerRecord` into a concrete tool call:
 
-- ``CLAUDE_CLI`` → ``delegate_claude(task=record.prompt, background=False)``
-- ``CODEX_CLI`` → ``delegate_codex(task=record.prompt, background=False)``
+- ``CODER_SEAT`` → ``delegate_coder(task=record.prompt, background=False)``
+- ``AUDITOR_SEAT`` → ``delegate_auditor(task=record.prompt, background=False)``
 - ``MARKDOWN_AGENT`` → ``invoke_agent(name=record.role, task=record.prompt)``
-- ``TARS_SELF`` → ``invoke_agent(name=record.role|default_agent,
-  task=record.prompt)``. Mission's ``TarsSelfWorker`` calls a SPECIFIC
+- ``AGENT_SELF`` → ``invoke_agent(name=record.role|default_agent,
+  task=record.prompt)``. Mission's ``AgentSelfWorker`` calls a SPECIFIC
   tool with operator-supplied inputs at plan time; autonomy doesn't
   know the tool, only the goal — so we route through a generic agent
   the same way ``MARKDOWN_AGENT`` does, falling back to
-  ``DEFAULT_TARS_SELF_AGENT`` when the agenda item didn't pin one.
+  ``DEFAULT_AGENT_SELF_AGENT`` when the agenda item didn't pin one.
 - ``TERMINAL`` → graceful FAILED with ``unsupported_kind``. PTY lease
   + terminal substrate is an operator-attended pattern; lifting it
   into autonomy needs a UX decision (where does the operator watch
-  TARS in a terminal?). Deferred.
+  The assistant in a terminal?). Deferred.
 
 Per GOVERNANCE §6 the durable record landed BEFORE this runner was
 called (in ``WorkerLane.admit`` / ``build_worker_record`` /
@@ -59,14 +59,14 @@ from tesseract.orchestrator.workers.record import (
 
 # Per-kind billing posture. CLI workers run under a flat-rate
 # subscription — no per-call cost surfaces; the UI shows a "sub" badge
-# instead of a misleading "$0.00". invoke_agent / tars_self hit the
+# instead of a misleading "$0.00". invoke_agent / agent_self hit the
 # metered Anthropic API via chat_brain so usage IS reportable. Anything
 # new must declare here or stay UNKNOWN.
 _BILLING_BY_KIND: dict[WorkerKind, Billing] = {
-    WorkerKind.CLAUDE_CLI: Billing.SUBSCRIPTION,
-    WorkerKind.CODEX_CLI: Billing.SUBSCRIPTION,
+    WorkerKind.CODER_SEAT: Billing.SUBSCRIPTION,
+    WorkerKind.AUDITOR_SEAT: Billing.SUBSCRIPTION,
     WorkerKind.MARKDOWN_AGENT: Billing.API,
-    WorkerKind.TARS_SELF: Billing.API,
+    WorkerKind.AGENT_SELF: Billing.API,
 }
 
 log = logging.getLogger(__name__)
@@ -74,9 +74,9 @@ log = logging.getLogger(__name__)
 
 _OUTPUT_SUMMARY_TAIL_CHARS = 500
 
-# Default agent slug for ``TARS_SELF`` when the agenda item didn't pin
+# Default agent slug for ``AGENT_SELF`` when the agenda item didn't pin
 # a real agent. Must match an actual entry under ``tesseract/agents/``.
-DEFAULT_TARS_SELF_AGENT = "tars-self"
+DEFAULT_AGENT_SELF_AGENT = "agent-self"
 
 # Default agent slug for ``MARKDOWN_AGENT`` when the agenda item didn't
 # pin a real agent. ``research-brief`` is the generic operator-visible
@@ -97,6 +97,8 @@ _KNOWN_MODEL_ROLE_NAMES: frozenset[str] = frozenset({
     "mission_planner",
     "claude_cli",
     "codex_cli",
+    "coder",
+    "auditor",
     "agents_default",
     "subagents_default",
     "channel_vision",
@@ -111,13 +113,14 @@ _KNOWN_MODEL_ROLE_NAMES: frozenset[str] = frozenset({
     "stt",
     "tts",
     "embeddings",
+    "reranker",
 })
 
 
 def _resolve_agent_slug(record_role: str | None, default: str) -> str:
     """Return the agent slug for this record, falling back to ``default``
     when the field is empty or holds a model-role name. A real agent slug
-    is hyphenated (e.g. ``tars-self``); the registry of model roles uses
+    is hyphenated (e.g. ``agent-self``); the registry of model roles uses
     underscores. Provider-ref shapes (``<tier>.<provider>.<model>``) are
     also rejected for the same reason."""
     value = (record_role or "").strip()
@@ -133,7 +136,7 @@ def _resolve_agent_slug(record_role: str | None, default: str) -> str:
 class KernelWorkerRunner:
     """Concrete :class:`WorkerRunner` backed by ``execute_tool``.
 
-    ``tool_registry`` MUST contain ``delegate_claude``, ``delegate_codex``,
+    ``tool_registry`` MUST contain ``delegate_coder``, ``delegate_auditor``,
     and ``invoke_agent`` — wired by ``brain.boot._register_kernel_tool``.
     Missing tools surface as ``FAILED`` with ``tool_unavailable``.
 
@@ -150,17 +153,15 @@ class KernelWorkerRunner:
         policy: Any | None = None,
         worker_timeouts: dict[WorkerKind, float] | None = None,
         timeout_notifier: Any | None = None,
-        named_lane_manager_provider: Callable[[], Any] | None = None,
     ) -> None:
         self._registry = registry
         self._workspace_root = str(workspace_root)
         self._policy = policy
-        self._named_lane_manager_provider = named_lane_manager_provider
         # Operator-tunable wallclock budgets per kind, loaded from
         # agenda.yaml::worker_timeouts. Anything not declared uses the
-        # underlying tool's own default (300s for delegate_claude). The
+        # underlying tool's own default (300s for delegate_coder). The
         # autonomy runner trusts the yaml — if the operator wants 1800s
-        # for claude_cli that's what gets passed downstream.
+        # for coder_seat that's what gets passed downstream.
         self._worker_timeouts: dict[WorkerKind, float] = dict(worker_timeouts or {})
         # Optional callback fired when a worker hits its wallclock limit.
         # Signature: ``await timeout_notifier(record)``. Wired by the
@@ -226,144 +227,6 @@ class KernelWorkerRunner:
         record.transition_to(terminal, reason=result["reason"])
         write_record(record)
 
-    async def _dispatch_via_named_lane(
-        self, record: WorkerRecord
-    ) -> dict[str, Any]:
-        """Route CLAUDE_CLI / CODEX_CLI through a NamedLane instead of
-        delegate_claude / delegate_codex. Called only when
-        self._named_lane_manager_provider is set.
-
-        Routing matrix (phase-X-5-persistent-lanes.md §5):
-          CLAUDE_CLI -> coder/claude (kind="claude")
-          CODEX_CLI  -> auditor/codex (kind="codex")
-
-        ensure is idempotent -- cold-start (no pre-opened lane) works
-        fine; the lane is opened on demand under the same name. The model
-        defaults are used only when opening a fresh lane; the binding
-        record's kind check prevents accidental kind swaps on an existing
-        lane."""
-        from tesseract.config import cockpit
-        from tesseract.orchestrator.tars_controller.lanes.named import NamedLaneError
-
-        # Routing matrix. Lane names/kinds are the trio contract
-        # (phase-X-5 §5); the model is resolved from cockpit.yaml ->
-        # roles.yaml -> providers.yaml at dispatch time (roles are pillars —
-        # a hardcoded id here previously pinned lanes to stale models).
-        _LANE_ROUTE: dict[WorkerKind, tuple[str, str]] = {
-            WorkerKind.CLAUDE_CLI: ("coder/claude", "claude"),
-            WorkerKind.CODEX_CLI: ("auditor/codex", "codex"),
-        }
-        lane_name, kind = _LANE_ROUTE[record.kind]
-        try:
-            default_model = cockpit.trio_lane(lane_name)["model"]
-        except Exception as exc:  # noqa: BLE001 — config error surfaces as worker failure
-            return {
-                "ok": False,
-                "summary": f"trio lane model resolution failed: {exc}"[
-                    :_OUTPUT_SUMMARY_TAIL_CHARS
-                ],
-                "reason": "tool_error",
-                "error_class": type(exc).__name__,
-                "error_message": str(exc)[:500],
-            }
-        prompt = (record.prompt or "").strip()
-        if not prompt:
-            return {
-                "ok": False,
-                "summary": f"worker {record.id} has empty prompt",
-                "reason": "unsupported_kind",
-                "error_class": "EmptyPromptError",
-                "error_message": "empty prompt",
-            }
-
-        mgr = self._named_lane_manager_provider()  # type: ignore[misc]
-        try:
-            binding = await mgr.ensure(
-                lane_name,
-                kind=kind,
-                model=default_model,
-                working_dir=self._execution_root(record),
-            )
-        except NamedLaneError as exc:
-            return {
-                "ok": False,
-                "summary": str(exc)[:_OUTPUT_SUMMARY_TAIL_CHARS],
-                "reason": "tool_error",
-                "error_class": type(exc).__name__,
-                "error_message": str(exc)[:500],
-            }
-        except Exception as exc:  # noqa: BLE001
-            return {
-                "ok": False,
-                "summary": f"named lane ensure failed: {exc}"[:_OUTPUT_SUMMARY_TAIL_CHARS],
-                "reason": "tool_error",
-                "error_class": type(exc).__name__,
-                "error_message": str(exc)[:500],
-            }
-
-        # A bare `send` acks "queued", never "completed" — returning ok on that
-        # ack would mark the worker DONE and let the agenda reconcile before the
-        # turn had run. Capture the tail first so an earlier queued turn's
-        # `turn_ended` cannot satisfy this wait, then await our own.
-        _, cursor = mgr.lane_manager.read(binding.lane_id, None)
-        poll_s, relay_timeout_s = load_conductor_relay()
-        timeout = float(self._worker_timeouts.get(record.kind, relay_timeout_s))
-        try:
-            send_result = await mgr.lane_manager.send_and_await(
-                binding.lane_id, prompt, timeout=timeout, poll_s=poll_s
-            )
-        except Exception as exc:  # noqa: BLE001
-            return {
-                "ok": False,
-                "summary": f"named lane send failed: {exc}"[:_OUTPUT_SUMMARY_TAIL_CHARS],
-                "reason": "tool_error",
-                "error_class": type(exc).__name__,
-                "error_message": str(exc)[:500],
-            }
-
-        if not send_result.accepted:
-            reason = getattr(send_result, "reason", "lane_rejected")
-            return {
-                "ok": False,
-                "summary": f"lane {lane_name} rejected message: {reason}",
-                "reason": "tool_error",
-                "error_class": "LaneSendRejected",
-                "error_message": str(reason)[:500],
-            }
-
-        # Attribution is only exact when this turn was the sole one queued.
-        # `turn_id` is minted after the turn takes the lane lock, so `send`
-        # cannot hand one back to match against; with turns queued ahead, the
-        # first `turn_ended` past our cursor may belong to one of them.
-        # Closing that needs `send` to mint and return the id — a change to
-        # the shared lane API and its IPC twin, not to this caller.
-        events, _ = mgr.lane_manager.read(binding.lane_id, cursor)
-        ended = next((e for e in events if e.kind == "turn_ended"), None)
-        if ended is None:
-            # `send_and_await` bounds silence, not turn duration, so this is a
-            # stalled lane rather than a slow one. BLOCKED, not FAILED.
-            return {
-                "ok": False,
-                "summary": f"lane {lane_name} stalled with no turn_ended",
-                "reason": "timeout",
-                "error_class": "LaneStalled",
-                "error_message": f"no turn_ended within {timeout}s of silence",
-            }
-        if ended.payload.get("is_error"):
-            error = str(ended.payload.get("error") or "lane turn failed")
-            return {
-                "ok": False,
-                "summary": error[:_OUTPUT_SUMMARY_TAIL_CHARS],
-                "reason": "tool_error",
-                "error_class": "LaneTurnError",
-                "error_message": error[:500],
-            }
-        return {
-            "ok": True,
-            "summary": f"lane {lane_name} ({binding.lane_id}) completed the turn",
-            "reason": "ok",
-        }
-
     async def _fire_timeout_notification(self, record: WorkerRecord) -> None:
         if self._timeout_notifier is None:
             return
@@ -375,16 +238,6 @@ class KernelWorkerRunner:
             )
 
     async def _dispatch(self, record: WorkerRecord) -> dict[str, Any]:
-        # Named-lane fast path: when a NamedLaneManager is wired and the
-        # worker kind maps to a named lane, route through the lane directly
-        # (NamedLaneManager.ensure + LaneManager.send) instead of the
-        # delegate_claude / delegate_codex execute_tool path.
-        if self._named_lane_manager_provider is not None and record.kind in (
-            WorkerKind.CLAUDE_CLI,
-            WorkerKind.CODEX_CLI,
-        ):
-            return await self._dispatch_via_named_lane(record)
-
         tool_name, tool_args = _route_for_kind(record)
         if tool_name is None:
             return {
@@ -416,16 +269,32 @@ class KernelWorkerRunner:
             }
 
         # Apply operator-configured timeout if the kind has one.
-        # delegate_claude / delegate_codex accept a ``timeout`` arg
+        # delegate_coder / delegate_auditor accept a ``timeout`` arg
         # (range 10–1800); invoke_agent ignores unknown kwargs.
         timeout = self._worker_timeouts.get(record.kind)
-        if timeout is not None and tool_name in ("delegate_claude", "delegate_codex"):
+        if timeout is not None and tool_name in ("delegate_coder", "delegate_auditor"):
             tool_args = {**tool_args, "timeout": float(timeout)}
+
+        from tesseract.orchestrator.agent_controller.lanes.ipc_proxy import (
+            IpcLaneManager,
+        )
+        from tesseract.orchestrator.agent_controller.lanes.principals import (
+            OPERATOR_PRINCIPAL,
+        )
 
         ctx = ToolContext(
             workspace_root=self._execution_root(record),
             session_id="autonomy",
             current_call_id=record.id,
+            # Autonomy dispatches delegate_coder / delegate_auditor, and a
+            # delegation runs on a lane. The daemon is the only host of a real
+            # LaneManager, so the proxy is what an out-of-Mirror caller uses.
+            # Autonomy is the runtime acting on the operator's behalf; there
+            # is no MCP client to attribute it to, and the daemon refuses a
+            # lane message that names nobody.
+            lane_manager_provider=lambda: IpcLaneManager(
+                caller_principal=OPERATOR_PRINCIPAL
+            ),
         )
         result = await execute_tool(
             self._registry,
@@ -441,7 +310,7 @@ class KernelWorkerRunner:
             # Distinguish wallclock timeout from generic tool errors so
             # the caller can transition to BLOCKED instead of FAILED.
             # Primary signal is the structured ``ToolResult.timed_out``
-            # flag (set by delegate_claude / delegate_codex in their
+            # flag (set by delegate_coder / delegate_auditor in their
             # timeout branches). The output-string sniff is a
             # belt-and-braces fallback for any tool that hasn't migrated
             # to the structured field yet.
@@ -472,29 +341,29 @@ def _route_for_kind(record: WorkerRecord) -> tuple[str | None, Any]:
     if not prompt:
         return None, f"worker {record.id} has empty prompt"
 
-    if record.kind is WorkerKind.CLAUDE_CLI:
-        return "delegate_claude", {"task": prompt, "background": False}
-    if record.kind is WorkerKind.CODEX_CLI:
-        return "delegate_codex", {"task": prompt, "background": False}
+    if record.kind is WorkerKind.CODER_SEAT:
+        return "delegate_coder", {"task": prompt, "background": False}
+    if record.kind is WorkerKind.AUDITOR_SEAT:
+        return "delegate_auditor", {"task": prompt, "background": False}
     if record.kind is WorkerKind.MARKDOWN_AGENT:
         # ``record.role`` is an optional agent slug pin. When empty OR
         # holding a model-role name (legacy / mis-pinned), fall back to
         # the generic research agent — better than failing the dispatch.
         agent_name = _resolve_agent_slug(record.role, DEFAULT_MARKDOWN_AGENT)
         return "invoke_agent", {"name": agent_name, "task": prompt, "background": False}
-    if record.kind is WorkerKind.TARS_SELF:
+    if record.kind is WorkerKind.AGENT_SELF:
         # Autonomy doesn't know which tool to call at plan time, so
         # route through invoke_agent. Slug resolution defends against
         # the prior model-role-as-slug bug (codex audit P0 #1).
-        agent_name = _resolve_agent_slug(record.role, DEFAULT_TARS_SELF_AGENT)
+        agent_name = _resolve_agent_slug(record.role, DEFAULT_AGENT_SELF_AGENT)
         return "invoke_agent", {"name": agent_name, "task": prompt, "background": False}
-    if record.kind is WorkerKind.TARS_CONTROLLER:
+    if record.kind is WorkerKind.AGENT_CONTROLLER:
         # 2026-05-24 — accepted OPERATOR_GATE items now flow into a
         # fresh controller session whose chat brain orchestrates
         # claude / codex / agents. The dispatcher's
         # ``ensure_daemon_running`` is a safety net if the supervisor's
         # controller spawn failed.
-        return "delegate_tars_controller", {
+        return "delegate_agent_controller", {
             "task": prompt,
             "title": (record.summary or "")[:80] or None,
             # Same rationale as delegate_*: the kernel's wrapping task IS

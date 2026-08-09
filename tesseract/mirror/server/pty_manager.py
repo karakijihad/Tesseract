@@ -1,6 +1,6 @@
 """PTY channel for the Mirror Terminal tab.
 
-PTY is operator-direct: TARS's permission engine does NOT gate terminal I/O.
+PTY is operator-direct: the assistant's permission engine does NOT gate terminal I/O.
 Keystrokes go straight into the PTY and its output streams back verbatim.
 Terminal messages bypass the Envelope wrapper — they are emitted as flat
 top-level JSON, matching the client-side `useTerminalStore.handleRawMessage`
@@ -315,7 +315,7 @@ class PTYManager:
         """Entry point for the dual-use "open" verb.
 
         This is the agent-facing counterpart to `dispatch` (which
-        serves the operator's keyboard). TARS-driven verbs (typing
+        serves the operator's keyboard). agent-driven verbs (typing
         into panes, reading their screen, closing them) were retired
         in the P4 PTY prune — ``open`` is the only survivor because it
         also serves the operator-visible viewer path:
@@ -394,7 +394,7 @@ class PTYManager:
           char count terms so a delta-read round-trip is exact.
 
         Returns ``{ok, pane_id, text, next_token, truncated, alive}`` —
-        an opaque protocol; the kernel tool reshapes it for TARS.
+        an opaque protocol; the kernel tool reshapes it for the assistant.
         """
         entry = self._ptys.get(pane_id)
         if entry is None:
@@ -468,7 +468,7 @@ class PTYManager:
         while True:
             # Dead-pane short-circuit. A crashed subprocess stops
             # updating last_output_at, so the quiescence check would
-            # eventually return status='idle' and trick TARS into
+            # eventually return status='idle' and trick the assistant into
             # proceeding as if the CLI was simply done. Surface 'closed'
             # so the caller knows to re-spawn / report failure.
             if not entry.proc.isalive():
@@ -528,7 +528,7 @@ class PTYManager:
         so failures are logged, never raised into the spawn path."""
         try:
             from tesseract.config.mcp import load_mcp_config
-            from tesseract.orchestrator.tars_controller.lanes import (
+            from tesseract.orchestrator.agent_controller.lanes import (
                 mcp_provision,
             )
 
@@ -572,7 +572,7 @@ class PTYManager:
 
         Callers pass only ``name`` + ``command`` (+ optional ``cwd``):
         `start_controller_session.py` (``launch_terminal=True``) and
-        boot-time `reattach_operator_panes` both spawn a `tars --session
+        boot-time `reattach_operator_panes` both spawn a `agent --session
         <id>` viewer pane through this path.
         """
         command = payload.get("command")
@@ -625,7 +625,7 @@ class PTYManager:
                 shell=str(name),
                 proc=proc,
                 ws=ws,
-                owner="entity",  # TARS/viewer-spawned — no operator handoff needed
+                owner="entity",  # the assistant/viewer-spawned — no operator handoff needed
             )
             entry.reader_task = self._spawn_tracked(
                 self._reader_loop(entry),
@@ -703,7 +703,7 @@ class PTYManager:
         # Phase 6 — observer always-on. Per operator (2026-05-16): "remove
         # the observer asking if he can see the terminal." When the
         # global observer is armed, every new pane is auto-consented so
-        # TARS sees terminal activity without an extra confirmation.
+        # The assistant sees terminal activity without an extra confirmation.
         # Operator can still toggle the whole observer off via the
         # right-panel arm/disarm control — that path clears all consents.
         self._maybe_auto_grant_consent(pane_id)
@@ -1137,7 +1137,7 @@ class PTYManager:
 
                 # Phase 2 — feed the per-pane ring buffer + quiescence
                 # clock. Done before any WS work so a slow operator
-                # browser can't starve TARS's reads of recent output.
+                # browser can't starve the assistant's reads of recent output.
                 self._append_to_buffer(entry, chunk)
 
                 # Per-chunk side-effects fire BEFORE coalescing so

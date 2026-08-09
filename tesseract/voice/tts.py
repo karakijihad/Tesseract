@@ -1,23 +1,26 @@
-"""TTSEngine — Piper-primary local TTS, Gemini fallback.
+"""TTSEngine — synthesis over the ordered lane chain named in config.
 
-Default chain (set in `roles.yaml`): Piper (local, $0) →
-Gemini Flash TTS (cloud fallback) → Kokoro. The engine
-preflights `cost_ledger.voice_check_preflight("tts", ...)` before any
-network call and debits `record_voice("tts", provider, TtsUsage(...))`
-after a successful synthesis. Local Piper synth still debits the ledger
-at $0 so the rollup table includes it as a zero-row.
+The chain comes from `roles.yaml::voice.tts` (primary + fallbacks); the
+engine holds one config slot per adapter and tries them in that order.
+Two adapters ship by default, both local (`voice/providers/`), so a
+fresh install speaks with no key and no bill. Adding another is a
+provider module plus a slot here — the chain shape doesn't change.
 
-Style/character is **preset-driven** across all providers (2026-05-04):
+When every configured lane is down the engine raises and the caller
+degrades the reply to text.
+
+Style/character is **preset-driven**, per provider:
 
 - The chunked-text emitter labels each segment `intent` or `answer`.
-- Each provider carries its own per-surface `synthesis_presets`:
-  Piper/Kokoro → length_scale / noise_scale / sentence_silence,
-  Gemini → a Director's-Notes `style_prompt` (e.g. "Read aloud as
-  Jarvis from Iron Man — composed, helpful, lightly wry"). Gemini
-  prepends the prompt to the transcript with a colon separator so the
-  model interprets it as instruction, not transcript.
+- Each catalog entry carries its own per-surface `synthesis_presets`,
+  in whatever knobs its provider exposes.
 - Tone is fixed per-surface — no per-turn variation, no agent-side
-  mutation surface. Operator edits `roles.yaml` to retune.
+  mutation surface. The operator retunes by editing the catalog.
+
+A lane that raises latches a `disabled_reason` and is skipped until it
+is unloaded from Settings; the sentence falls to the next lane in the
+chain. Local synthesis still debits the ledger at $0 so the spend rollup
+lists it as a zero-row.
 
 Sentence chunking is *not* applied here; callers (Mirror's WS handler)
 chunk before calling so envelopes stream in order.
@@ -31,52 +34,36 @@ from dataclasses import dataclass
 
 from tesseract.brain.cost import CostLedger, TtsUsage
 from tesseract.voice.providers import (
-    gemini_tts as gemini_tts_provider,
     kokoro_tts as kokoro_tts_provider,
     piper_tts as piper_tts_provider,
 )
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_PRESET = "answer"
 
-@dataclass(frozen=True)
-class VoiceParams:
-    """TARS-controlled voice settings, read off `VoiceState` per call.
 
-    - `voice_id`: prebuilt voice name (Charon / Algieba / …). Picks
-      timbre only on the Gemini path; Piper ignores it (the ONNX file
-      IS the voice).
-    - `preset`: `intent` / `answer` segment label from the chunked
-      text emitter. Drives per-surface preset selection across every
-      provider (Piper/Kokoro length_scale, Gemini style_prompt).
-
-    `tone_prompt` is retained as a vestigial field for one release —
-    the synth path no longer reads it. `speaking_rate` and
-    `pitch_semitones` are deprecated SSML prosody knobs Gemini ignores;
-    both are dropped in G3."""
-
-    voice_id: str
-    tone_prompt: str = ""            # vestigial — no longer threaded
-    preset: str = "answer"
-    speaking_rate: float = 1.0       # deprecated — Gemini TTS ignores
-    pitch_semitones: float = 0.0     # deprecated — Gemini TTS ignores
+class NoTTSLaneAvailable(RuntimeError):
+    """Every configured lane is unconfigured or latched off. The caller
+    degrades to text rather than retrying — a lane only clears on an
+    operator unload."""
 
 
 @dataclass
 class TTSEngine:
-    """Provider-selectable TTS synthesis. `provider_key` selects the
-    primary lane (Piper / Gemini); the corresponding `*_config` slot
-    must be populated. Other slots stay seeded for a future fallback
-    engine."""
+    """TTS with an ordered fallback chain.
 
-    cloud_config: gemini_tts_provider.GeminiTTSConfig | None
+    `provider_key` is the primary lane's catalog id; the remaining
+    configured lanes are tried behind it. A lane is present only when
+    `_build_voice_runtime` found its entry in the chain, so a `*_config`
+    of `None` means "not in the operator's chain", not "failed"."""
+
     cost_ledger: CostLedger | None
     piper_config: piper_tts_provider.PiperTTSConfig | None = None
     kokoro_config: kokoro_tts_provider.KokoroTTSConfig | None = None
-    provider_key: str = "gemini_flash_tts"
-    cloud_provider_key: str = "gemini_flash_tts"
-    piper_provider_key: str = "piper_northern_english_male"
-    kokoro_provider_key: str = "charon"
+    provider_key: str = ""
+    piper_provider_key: str = ""
+    kokoro_provider_key: str = ""
     piper_disabled_reason: str = ""
     kokoro_disabled_reason: str = ""
 
@@ -115,7 +102,7 @@ class TTSEngine:
         """Eager-load the Kokoro model + blend on boot so the first
         sentence doesn't pay the ONNX init latency. On failure the engine
         latches a `disabled_reason` and the chain falls through to the
-        next provider — the next reload through Settings clears the latch."""
+        next lane — the next reload through Settings clears the latch."""
         if self.kokoro_config is None:
             return
         timeout = float(self.kokoro_config.timeout_seconds)
@@ -134,7 +121,7 @@ class TTSEngine:
     async def warm_up_piper(self) -> None:
         """Eager-load the Piper voice on boot so the first sentence
         doesn't pay the ONNX init latency. On failure the engine latches
-        a `disabled_reason` and the cloud fallback (Gemini) takes over —
+        a `disabled_reason` and the chain falls through to the next lane —
         the next reload through Settings clears the latch."""
         if self.piper_config is None:
             return
@@ -150,147 +137,83 @@ class TTSEngine:
             self.piper_disabled_reason = str(exc)[:300]
             raise
 
+    def _lane_order(self) -> list[str]:
+        """Primary first, then every other configured lane. Dedup keeps a
+        lane from being tried twice when it *is* the primary."""
+        order: list[str] = []
+        for key in (self.provider_key, self.kokoro_provider_key, self.piper_provider_key):
+            if key and key not in order:
+                order.append(key)
+        return order
+
+    def _lane_ready(self, lane: str) -> bool:
+        if lane == self.kokoro_provider_key:
+            return self.kokoro_config is not None and not self.kokoro_disabled_reason
+        if lane == self.piper_provider_key:
+            return self.piper_config is not None and not self.piper_disabled_reason
+        return False
+
+    async def _synthesize_on(self, lane: str, text: str, preset: str) -> bytes:
+        if lane == self.kokoro_provider_key:
+            return await kokoro_tts_provider.synthesize(
+                text, self.kokoro_config, preset=preset,
+            )
+        return await piper_tts_provider.synthesize(
+            text, self.piper_config, preset=preset,
+        )
+
+    def _latch_disabled(self, lane: str, exc: Exception) -> None:
+        reason = str(exc)[:300]
+        if lane == self.kokoro_provider_key:
+            self.kokoro_disabled_reason = reason
+        elif lane == self.piper_provider_key:
+            self.piper_disabled_reason = reason
+
     async def synthesize(
         self,
         text: str,
-        params: VoiceParams,
+        *,
+        preset: str = _DEFAULT_PRESET,
     ) -> tuple[bytes, str]:
         """Render `text` to audio. Returns `(audio_bytes, provider_key)`.
-        Empty / whitespace text → empty bytes, no ledger debit."""
+
+        Walks the lane chain until one succeeds. Empty / whitespace text
+        → empty bytes, no ledger debit. `BudgetExhausted` from a lane's
+        preflight propagates rather than falling through: a cap is the
+        operator's decision, not a fault to route around.
+
+        Raises `NoTTSLaneAvailable` when the chain is exhausted."""
         if not text.strip():
             return b"", ""
 
-        # Char count covers transcript only — style prompts come from
-        # config and add a constant per call we don't track per-debit.
-        # Piper/Kokoro bill $0; the field is recorded for the rollup.
+        # Char count covers the transcript only. Local lanes bill $0; the
+        # field is recorded so the rollup can show them as zero-rows.
         char_count = len(text)
 
-        provider_key = self.provider_key
-        if self.cost_ledger is not None:
-            self.cost_ledger.voice_check_preflight("tts", provider_key)
-
-        if params.speaking_rate != 1.0 or params.pitch_semitones != 0.0:
-            logger.warning(
-                "TTSEngine: speaking_rate/pitch_semitones are deprecated — "
-                "Gemini TTS ignores SSML prosody. Edit "
-                "`voice.tts.settings.<ref>.synthesis_presets` in roles.yaml "
-                "to shape pacing/character per surface."
-            )
-
-        if provider_key == self.kokoro_provider_key:
-            if self.kokoro_config is None:
-                raise RuntimeError("Kokoro TTS selected but no config was loaded")
-            if not self.kokoro_disabled_reason:
-                try:
-                    audio = await kokoro_tts_provider.synthesize(
-                        text,
-                        self.kokoro_config,
-                        preset=params.preset,
-                    )
-                    if self.cost_ledger is not None:
-                        self.cost_ledger.record_voice(
-                            "tts",
-                            provider_key,
-                            TtsUsage(char_count=char_count),
-                        )
-                    return audio, provider_key
-                except Exception as exc:
-                    self.kokoro_disabled_reason = str(exc)[:300]
-                    logger.exception(
-                        "local Kokoro TTS failed and is disabled until unload/restart; "
-                        "falling back to next provider"
-                    )
-            # Kokoro latched off — fall through to Piper (if configured) then cloud.
-            if self.piper_config is not None and not self.piper_disabled_reason:
-                try:
-                    audio = await piper_tts_provider.synthesize(
-                        text,
-                        self.piper_config,
-                        preset=params.preset,
-                    )
-                    if self.cost_ledger is not None:
-                        self.cost_ledger.record_voice(
-                            "tts",
-                            self.piper_provider_key,
-                            TtsUsage(char_count=char_count),
-                        )
-                    return audio, self.piper_provider_key
-                except Exception as exc:
-                    self.piper_disabled_reason = str(exc)[:300]
-                    logger.exception(
-                        "Piper fallback failed after Kokoro; falling through to cloud"
-                    )
-            if self.cloud_config is None:
-                raise RuntimeError("Kokoro TTS disabled and no Gemini fallback configured")
+        for lane in self._lane_order():
+            if not self._lane_ready(lane):
+                continue
             if self.cost_ledger is not None:
-                self.cost_ledger.voice_check_preflight("tts", self.cloud_provider_key)
-            audio = await gemini_tts_provider.synthesize(
-                text,
-                self.cloud_config,
-                voice_id=params.voice_id,
-                preset=params.preset,
-            )
+                self.cost_ledger.voice_check_preflight("tts", lane)
+            try:
+                audio = await self._synthesize_on(lane, text, preset)
+            except Exception as exc:
+                self._latch_disabled(lane, exc)
+                logger.exception(
+                    "local TTS lane %s failed and is disabled until unload/restart; "
+                    "trying the next lane",
+                    lane,
+                )
+                continue
             if self.cost_ledger is not None:
                 self.cost_ledger.record_voice(
-                    "tts",
-                    self.cloud_provider_key,
-                    TtsUsage(char_count=char_count),
+                    "tts", lane, TtsUsage(char_count=char_count),
                 )
-            return audio, self.cloud_provider_key
-        elif provider_key == self.piper_provider_key:
-            if self.piper_config is None:
-                raise RuntimeError("Piper TTS selected but no config was loaded")
-            if not self.piper_disabled_reason:
-                try:
-                    audio = await piper_tts_provider.synthesize(
-                        text,
-                        self.piper_config,
-                        preset=params.preset,
-                    )
-                    if self.cost_ledger is not None:
-                        self.cost_ledger.record_voice(
-                            "tts",
-                            provider_key,
-                            TtsUsage(char_count=char_count),
-                        )
-                    return audio, provider_key
-                except Exception as exc:
-                    self.piper_disabled_reason = str(exc)[:300]
-                    logger.exception(
-                        "local Piper TTS failed and is disabled until unload/restart; "
-                        "falling back to Gemini cloud TTS"
-                    )
-            # Piper latched off — fall through to the cloud fallback.
-            if self.cloud_config is None:
-                raise RuntimeError("Piper TTS disabled and no Gemini fallback configured")
-            if self.cost_ledger is not None:
-                self.cost_ledger.voice_check_preflight("tts", self.cloud_provider_key)
-            audio = await gemini_tts_provider.synthesize(
-                text,
-                self.cloud_config,
-                voice_id=params.voice_id,
-                preset=params.preset,
-            )
-            if self.cost_ledger is not None:
-                self.cost_ledger.record_voice(
-                    "tts",
-                    self.cloud_provider_key,
-                    TtsUsage(char_count=char_count),
-                )
-            return audio, self.cloud_provider_key
-        else:
-            if self.cloud_config is None:
-                raise RuntimeError("Gemini TTS selected but no config was loaded")
-            audio = await gemini_tts_provider.synthesize(
-                text,
-                self.cloud_config,
-                voice_id=params.voice_id,
-                preset=params.preset,
-            )
-        if self.cost_ledger is not None:
-            self.cost_ledger.record_voice(
-                "tts",
-                provider_key,
-                TtsUsage(char_count=char_count),
-            )
-        return audio, provider_key
+            return audio, lane
+
+        raise NoTTSLaneAvailable(
+            "no TTS lane available — configured lanes: "
+            f"{self._lane_order() or ['(none)']}; "
+            f"kokoro={self.kokoro_disabled_reason or 'ok'}, "
+            f"piper={self.piper_disabled_reason or 'ok'}"
+        )

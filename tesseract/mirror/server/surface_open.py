@@ -16,7 +16,7 @@ separately.
 
 The gate is `os_launch`'s own. Nothing here approves anything: `execute_tool`
 runs the full permission pipeline, and the ask_fn is the same one the chat
-turn uses, so the prompt looks identical whether TARS asked to launch a file
+turn uses, so the prompt looks identical whether the assistant asked to launch a file
 or the operator clicked it.
 """
 
@@ -59,7 +59,7 @@ async def handle_surface_open(
     app: web.Application, session: ServerSession, data: dict
 ) -> None:
     target = str(data.get("target") or "").strip()
-    view = str(data.get("view") or "tars").strip() or "tars"
+    view = str(data.get("view") or "orb").strip() or "orb"
     if not target:
         return
 

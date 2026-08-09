@@ -99,7 +99,7 @@ export function ActivityMap({ onClose }: ActivityMapProps) {
       }
     >
       <div className="activity-map__bar" onPointerDown={onDragStart}>
-        <span className="activity-map__title">TARS routing</span>
+        <span className="activity-map__title">Routing</span>
         <div className="activity-map__actions">
           <button
             type="button"

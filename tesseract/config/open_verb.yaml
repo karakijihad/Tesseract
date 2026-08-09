@@ -28,10 +28,43 @@ blocked_networks:
 # from this map is never launched, whatever it resolves to on PATH.
 apps: {}
 
-# Extensions the OS launch path may hand to ShellExecute. Documents and media
-# only. Executable, script and indirection types are refused in code regardless
-# of what appears here, so a mis-edited list cannot enable them.
+# Extensions the OS launch path may hand to ShellExecute: documents, media,
+# and the data/markup/config the cockpit also renders as text. Executable,
+# script and indirection types are refused in code regardless of what appears
+# here, so a mis-edited list cannot enable them.
+#
+# The text formats are here so `open(..., destination="os")` on one of them
+# reaches the program that owns it rather than dying on this allowlist. What
+# the cockpit renders and what the OS may open had drifted apart, which is
+# what `test_every_text_surface_can_also_be_handed_to_the_os` now pins.
+#
+# Deliberately NOT here: `.sh` (executes under an installed Git Bash) and
+# `.ts` / `.tsx` / `.jsx` (execute under an installed JS runtime). Those are
+# source files a machine may well be configured to RUN on double-click, which
+# is the line this list exists to hold. `.py` / `.js` / `.rb` are refused in
+# code regardless — see FORBIDDEN_LAUNCH_EXTENSIONS.
 launch_extensions:
+  - .html
+  - .htm
+  - .tsv
+  - .log
+  - .json
+  - .xml
+  - .yaml
+  - .yml
+  - .toml
+  - .ini
+  - .cfg
+  - .css
+  - .sql
+  - .rs
+  - .go
+  - .java
+  - .c
+  - .h
+  - .cpp
+  - .hpp
+  - .cs
   - .pdf
   - .doc
   - .docx
@@ -45,6 +78,7 @@ launch_extensions:
   - .txt
   - .csv
   - .md
+  - .markdown
   - .png
   - .jpg
   - .jpeg

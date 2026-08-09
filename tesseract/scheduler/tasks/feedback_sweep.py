@@ -38,7 +38,7 @@ DEFAULT_TIMEOUT_S = 60.0
 ENVELOPE_KIND = "feedback_proposals"
 
 _DIRECTIVE_PROMPT = (
-    "You are scanning yesterday's transcripts between the operator and TARS for "
+    "You are scanning yesterday's transcripts between the operator and the assistant for "
     "directive-shaped operator statements that should be preserved as feedback "
     "memories across sessions. Look for patterns like 'always', 'never', 'from "
     "now on', 'don't', 'stop X-ing', 'remember to', 'when X happens, do Y'.\n\n"
@@ -66,7 +66,9 @@ class FeedbackSweepJob(BaseJob):
         try:
             target_date = (ctx.fired_at - timedelta(days=1)).date()
             session_dir = _resolve_session_dir(ctx)
-            sessions = _collect_sessions(target_date, session_dir)
+            # Off the loop: reads + fully parses every active session file
+            # (up to 10k) to find yesterday's.
+            sessions = await asyncio.to_thread(_collect_sessions, target_date, session_dir)
             if not sessions:
                 return _ok(ctx, t0, target_date, 0, 0, "no sessions to sweep")
 

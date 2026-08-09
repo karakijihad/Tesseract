@@ -1,6 +1,6 @@
 /* MP-2 ambient observer — chatbot-widget surface in the HUD.
    Hidden entirely on the chat tab; on every other tab the operator sees a
-   collapsed "Ask TARS" toggle that expands into a slide-up panel with
+   collapsed "Ask the assistant" toggle that expands into a slide-up panel with
    scrollback + composer. Same conversation store, same WS session, same
    attachments as the chat tab — just a different surface.
    Hint-token rule: helper text uses var(--text-meta), never var(--text-dim). */

@@ -36,6 +36,7 @@ The `Librarian` class composes the three mixins and owns `run_pass`.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
@@ -97,10 +98,33 @@ class Librarian(PromotionMixin, DistillationMixin, SummaryMixin):
         """
         promoted, deduped, merged, skipped = await self._promote_daily()
 
-        counts = self._count_by_type()
-        recent = self._recent_entries(days=RECENT_WINDOW_DAYS, limit=RECENT_PROMOTIONS_COUNT)
-        top, filtered = self._top_by_importance(limit=TOP_RETRIEVALS_COUNT)
+        # Three independent read-only scans of the store — each calls
+        # `MemoryStore.list_all`, which already serialises through
+        # `_fm_cache_lock`, so parallelising them is provably safe: no
+        # shared mutable state outside that lock. Not wrapped with
+        # `return_exceptions=True` — a scan failure here has always
+        # aborted the whole pass (caught by `librarian_heartbeat`'s own
+        # try/except), and swallowing one would silently ship a MEMORY.md
+        # missing a section instead of surfacing the failure.
+        counts, recent, (top, filtered) = await asyncio.gather(
+            asyncio.to_thread(self._count_by_type),
+            asyncio.to_thread(
+                self._recent_entries, RECENT_WINDOW_DAYS, RECENT_PROMOTIONS_COUNT
+            ),
+            asyncio.to_thread(self._top_by_importance, TOP_RETRIEVALS_COUNT),
+        )
 
+        # `_write_memory_index` stays on the loop. It writes the same
+        # `MEMORY.md` path `MemoryIndex._write()` owns under its own
+        # `RLock` (`tesseract/memory/index.py`) — but this call bypasses
+        # that lock entirely, a pre-existing gap between the two writers
+        # that predates this pass. Moving this call to a thread would not
+        # add a new race (the file already has no cross-writer
+        # coordination, on or off the loop), but it would not close the
+        # existing one either, so it stays here rather than being wrapped
+        # under a false sense of having fixed it. Needs its own pass:
+        # either `Librarian` writes through the shared `MemoryIndex`
+        # instance, or the two summary formats are reconciled into one.
         self._write_memory_index(top=top, recent=recent, counts=counts)
 
         logger.info(

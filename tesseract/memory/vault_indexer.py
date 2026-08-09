@@ -43,14 +43,20 @@ _CHUNK_OVERLAP = 80
 _CSV_MAX_ROWS = 51
 _JSON_MAX_CHARS = 5000
 
+# Chunk-id namespace inside the shared FTS/FAISS structures. Anything that
+# rebuilds those structures from the memory store must preserve this prefix.
+VAULT_ID_PREFIX = "vault:"
+
 
 class VaultIndexer:
     def __init__(
         self,
-        embeddings: EmbeddingIndex,
+        embeddings: EmbeddingIndex | None,
         fts_index: FTSIndex | None = None,
         log_dir: Path | None = None,
     ) -> None:
+        # embeddings=None is the documented BM25-only degraded mode: FTS
+        # chunks still land; vector indexing catches up on re-ingest.
         self._embeddings = embeddings
         self._fts_index = fts_index
         self._breaker = CircuitBreaker(
@@ -171,7 +177,7 @@ class VaultIndexer:
     @staticmethod
     def chunk_id(vault_rel_path: str, index: int) -> str:
         """Build a chunk ID from vault-relative path and chunk index."""
-        return f"vault:{vault_rel_path}:chunk_{index}"
+        return f"{VAULT_ID_PREFIX}{vault_rel_path}:chunk_{index}"
 
     async def index_vault_file(
         self,
@@ -201,7 +207,7 @@ class VaultIndexer:
                 except Exception:
                     logger.warning("FTS add failed for %s", cid)
 
-            if not self._breaker.is_tripped:
+            if self._embeddings is not None and not self._breaker.is_tripped:
                 try:
                     await self._embeddings.add(cid, chunk_text)
                 except Exception as e:
@@ -215,7 +221,7 @@ class VaultIndexer:
 
     async def remove_vault_file(self, vault_rel_path: str) -> int:
         """Remove all chunks for a vault file from FTS and FAISS."""
-        prefix = f"vault:{vault_rel_path}:chunk_"
+        prefix = f"{VAULT_ID_PREFIX}{vault_rel_path}:chunk_"
         removed = 0
 
         if self._fts_index is not None:
@@ -228,11 +234,12 @@ class VaultIndexer:
         # Remove from FAISS — scan id_map for matching keys. Use the
         # public `snapshot_ids()` so the lookup acquires the embeddings
         # lock instead of reaching into private `_id_to_pos` (audit-fix M5).
-        try:
-            for mem_id in self._embeddings.snapshot_ids():
-                if mem_id.startswith(prefix):
-                    self._embeddings.remove(mem_id)
-        except Exception:
-            logger.warning("FAISS removal failed for %s", vault_rel_path)
+        if self._embeddings is not None:
+            try:
+                for mem_id in self._embeddings.snapshot_ids():
+                    if mem_id.startswith(prefix):
+                        self._embeddings.remove(mem_id)
+            except Exception:
+                logger.warning("FAISS removal failed for %s", vault_rel_path)
 
         return removed

@@ -4,7 +4,7 @@ Renders text against a `.onnx` voice model + its sibling `.onnx.json`
 config. Two operator-locked synthesis presets feed in via `cfg.presets`,
 keyed by the `<intent>`/`<answer>` tag the chunked text emitter labels
 each segment with: intent → quick + deterministic, answer → natural
-pace + micro-variability. TARS itself never picks a preset — the kind
+pace + micro-variability. The assistant itself never picks a preset — the kind
 flows through the rendering pipeline.
 
 The PiperVoice handle is loaded lazily and cached per ONNX path so the
@@ -95,7 +95,7 @@ async def warm_up(cfg: PiperTTSConfig) -> None:
 
     Mirror startup invokes this so the first spoken sentence doesn't pay
     the ~200 ms ONNX init latency. Failures bubble up so the engine can
-    latch a `disabled_reason` and fall back to Gemini cloud."""
+    latch a `disabled_reason` and move to the next lane in the chain."""
     voice = await asyncio.to_thread(_load_voice, cfg.model_path, cfg.config_path)
     preset = _resolve_preset(cfg, _DEFAULT_PRESET)
     await asyncio.to_thread(_synthesize_blocking, voice, "ok", preset, cfg.sample_rate)
@@ -121,11 +121,15 @@ def _load_voice(model_path: Path, config_path: Path) -> Any:
     if cached is not None:
         return cached
     if not model_path.exists():
+        # Name the file the catalog actually asked for. A hardcoded voice
+        # here sends the operator to fetch the wrong model the moment the
+        # `local.piper.*` entry names a different one.
         raise PiperTTSError(
-            f"Piper model not found at {model_path}. Download "
-            "en_GB-northern_english_male-medium.onnx + .onnx.json from "
-            "https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_GB/northern_english_male/medium "
-            f"and place both files in {model_path.parent}/"
+            f"Piper model not found at {model_path}. Fetch it with "
+            "`python -m tesseract.scripts.fetch_piper_voice`, or download "
+            f"{model_path.name} + {config_path.name} from "
+            "https://huggingface.co/rhasspy/piper-voices and place both "
+            f"files in {model_path.parent}/"
         )
     if not config_path.exists():
         raise PiperTTSError(
@@ -148,7 +152,7 @@ def _load_voice(model_path: Path, config_path: Path) -> Any:
 
 
 def _sanitize_for_tts(text: str) -> str:
-    """Same sanitisation contract as gemini_tts — strip bracketed style cues
+    """Same sanitisation contract as kokoro_tts — strip bracketed style cues
     (`[whispers]`) and markdown emphasis (`*`, `**`) so they don't surface as
     spoken artefacts. Whitespace from removed tokens collapses to one space."""
     cleaned = _STYLE_CUE_RE.sub("", text)

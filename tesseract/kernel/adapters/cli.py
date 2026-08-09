@@ -1,6 +1,6 @@
 """CLIAdapter — subprocess-backed chat_brain for ``codex`` (and later ``claude``).
 
-The delegate tools (``delegate_codex``, ``delegate_claude``) already spawn
+The delegate tools (``delegate_auditor``, ``delegate_coder``) already spawn
 these CLIs as one-shot subprocesses for tool calls. This adapter takes the
 same subprocess machinery and wires it into the ``ModelAdapter.stream()``
 contract so a CLI can serve as the primary chat_brain — every turn streams
@@ -14,7 +14,7 @@ Scope
   events. ``claude`` falls back to plain-text mode.
 * **No tool-call passthrough.** When codex internally invokes a command
   (file read, web search, MCP tool), we surface it as ``StreamChunk(TEXT)``
-  for visibility; we do NOT route it back through TARS's tool registry.
+  for visibility; we do NOT route it back through the assistant's tool registry.
   Codex has its own toolbox; bridging the two is stage-3 work.
 * **Heuristic token counting.** Codex doesn't expose a tokenizer; we
   approximate by character count. Cost ledger attribution still lands
@@ -152,7 +152,7 @@ _DATA_URL_PREFIX = "data:"
 def _extract_image_blocks(messages: list[dict[str, Any]]) -> list[tuple[bytes, str]]:
     """Walk every content block and return raw image bytes + media_type.
 
-    Recognises the three shapes that land in TARS today:
+    Recognises the three shapes that land in the assistant today:
       * OpenAI / Responses: ``{"type": "image_url", "image_url": {"url": "data:..."}}``
         or ``{"type": "input_image", "image_url": "data:..."}``
       * Anthropic: ``{"type": "image", "source": {"type": "base64",
@@ -281,7 +281,7 @@ class CLIAdapter(ModelAdapter):
         if tools:
             log.warning(
                 "CLIAdapter (%s) is chat_brain but %d tool definitions were dropped — "
-                "this CLI cannot call TARS tools. Memory, vault, and delegation will not work "
+                "this CLI cannot call the assistant tools. Memory, vault, and delegation will not work "
                 "until tool-call passthrough is implemented.",
                 self.command,
                 len(tools),
@@ -289,7 +289,7 @@ class CLIAdapter(ModelAdapter):
             yield StreamChunk(
                 type=ChunkType.TEXT,
                 text=(
-                    f"[note: chat_brain is `{self.command}` CLI; TARS tools "
+                    f"[note: chat_brain is `{self.command}` CLI; the assistant tools "
                     "(memory_save, vault_search, delegate_*) are unavailable this turn]\n"
                 ),
             )
@@ -303,7 +303,7 @@ class CLIAdapter(ModelAdapter):
         if self.command == "codex":
             images = _extract_image_blocks(messages)
             if images:
-                image_dir = tempfile.TemporaryDirectory(prefix="tars_cli_imgs_")
+                image_dir = tempfile.TemporaryDirectory(prefix="agent_cli_imgs_")
                 base = Path(image_dir.name)
                 for idx, (data, media) in enumerate(images):
                     path = base / f"img_{idx:02d}{_media_extension(media)}"

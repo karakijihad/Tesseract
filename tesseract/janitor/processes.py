@@ -45,7 +45,7 @@ def _controller_claim(cfg: JanitorConfig) -> set[int]:
 
     env = os.environ.get("TESSERACT_HOME")
     home = Path(env).resolve() if env else TESSERACT_HOME
-    meta_path = runtime_dir() / "tars_controller" / "controller.json"
+    meta_path = runtime_dir() / "agent_controller" / "controller.json"
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         pid = int(meta["pid"])

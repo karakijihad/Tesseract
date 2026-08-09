@@ -1,18 +1,18 @@
-"""StartControllerSessionTool — chat-side hand-off to a TARS controller.
+"""StartControllerSessionTool — chat-side hand-off to a agent controller.
 
 When a Mirror chat turn decides that the work is heavier than the
 in-backend chat brain wants to run inline — long code edit, multi-step
 audit, anything where the operator should be able to attach with
-``tars --session <id>`` later and watch — the chat brain calls this
+``agent --session <id>`` later and watch — the chat brain calls this
 tool. The dispatcher mints a fresh controller session, fires the
 initial prompt, and returns the ``session_id`` immediately (fire-and-
 forget). The chat brain then writes a ``child_transcript_ref`` envelope
 into its own transcript so the operator sees a "→ ctrl-... started"
-row and can ``tars --session <id>`` to follow along.
+row and can ``agent --session <id>`` to follow along.
 
-Compared to :class:`DelegateTarsControllerTool`:
+Compared to :class:`DelegateAgentControllerTool`:
 
-* ``delegate_tars_controller`` — backgrounds by default (fire-and-track):
+* ``delegate_agent_controller`` — backgrounds by default (fire-and-track):
   returns a spawn_handle; pass ``background=false`` to wait for
   ``assistant_text`` and return the reply inline.
 * ``start_controller_session`` — fire-and-forget; the chat keeps going,
@@ -36,7 +36,7 @@ from tesseract.kernel.tools.base import (
     ToolContext,
     ToolResult,
 )
-from tesseract.orchestrator.tars_controller.dispatcher import (
+from tesseract.orchestrator.agent_controller.dispatcher import (
     DispatcherError,
     dispatch_to_controller,
 )
@@ -68,19 +68,20 @@ class StartControllerSessionInput(BaseModel):
     launch_terminal: bool = Field(
         default=False,
         description=(
-            "When True, after minting the session, open a `tars --session "
+            "When True, after minting the session, open a `agent --session "
             "<id>` viewer PTY so the Mirror Terminal tab shows the live "
             "session. Use for mirror/** edits and any work the operator "
             "should watch."
         ),
     )
-    preferred_coder: Literal["claude", "codex"] | None = Field(
+    preferred_seat: str | None = Field(
         default=None,
         description=(
-            "Hard coder constraint for the spawned controller session: "
-            "'claude' or 'codex'. When set, the opposing delegate_* tool "
-            "is removed from the session and a directive is added. Leave "
-            "unset to use the configured default."
+            "Hard seat constraint for the spawned controller session — a "
+            "delegation seat name ('coder' or 'auditor'). When set, the "
+            "other seats' delegate tools are removed from the session and a "
+            "directive is added. Which provider fills the seat is roles.yaml. "
+            "Leave unset to keep every seat available."
         ),
     )
 
@@ -96,9 +97,9 @@ class StartControllerSessionTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Spawn a fresh TARS controller session in the background and "
+            "Spawn a fresh agent controller session in the background and "
             "fire an initial prompt. Returns the session_id so the "
-            "operator can attach with `tars --session <id>`. Use for "
+            "operator can attach with `agent --session <id>`. Use for "
             "heavy lifts the chat brain wants the operator to be able "
             "to watch live."
         )
@@ -139,8 +140,9 @@ class StartControllerSessionTool(Tool):
                 origin="mirror",
                 title=tool_input.title,
                 mode=tool_input.mode,  # type: ignore[arg-type]
-                preferred_coder=tool_input.preferred_coder,
+                preferred_seat=tool_input.preferred_seat,
                 wait_for_completion=False,
+                owner_principal=context.caller_principal or "operator",
             )
         except DispatcherError as exc:
             if reservation is not None:
@@ -159,7 +161,7 @@ class StartControllerSessionTool(Tool):
         # the session_id format; a malformed id (test fakes, unexpected
         # dispatcher output) drops the path field but keeps the
         # session_id + ws_path so the operator can still navigate.
-        from tesseract.orchestrator.tars_controller.paths import (
+        from tesseract.orchestrator.agent_controller.paths import (
             transcript_path,
         )
 
@@ -181,9 +183,9 @@ class StartControllerSessionTool(Tool):
                 result.session_id,
             )
 
-        # trio W3 (Deferred §P6) — detached controller sessions previously
+        # Detached controller sessions previously
         # had NO SpawnRegistry handle, so their completion never idle-woke
-        # TARS (unlike delegate_tars_controller background). Register a
+        # The assistant (unlike delegate_agent_controller background). Register a
         # best-effort tail: reattach + await the session's first closed
         # assistant_text; the completion note then wakes the chat. A cap
         # hit only skips the tail — the session itself is already running.
@@ -218,7 +220,7 @@ class StartControllerSessionTool(Tool):
                     "open",
                     {
                         "name": f"ctrl-{result.session_id}",
-                        "command": ["tars", "--session", result.session_id],
+                        "command": ["agent", "--session", result.session_id],
                     },
                 )
                 metadata["terminal_launched"] = True
@@ -229,7 +231,7 @@ class StartControllerSessionTool(Tool):
         return ToolResult(
             output=(
                 f"started controller session {result.session_id} "
-                f"({tool_input.mode}). Attach with: tars --session "
+                f"({tool_input.mode}). Attach with: agent --session "
                 f"{result.session_id}"
             ),
             metadata=metadata,
@@ -241,8 +243,8 @@ async def _tail_controller_session(
 ) -> ToolResult:
     """Spawn-tracked tail for a detached controller session — reattaches and
     waits for the first closed assistant_text so the spawn's completion note
-    idle-wakes TARS with the session's reply."""
-    from tesseract.orchestrator.tars_controller.dispatcher import (
+    idle-wakes the assistant with the session's reply."""
+    from tesseract.orchestrator.agent_controller.dispatcher import (
         reattach_to_controller,
     )
 

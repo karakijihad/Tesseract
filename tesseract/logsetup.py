@@ -1,6 +1,6 @@
 """Shared file-logging pipeline for TESSERACT's long-lived processes.
 
-The supervisor spawns the Mirror backend and the TARS controller with
+The supervisor spawns the Mirror backend and the agent controller with
 inherited console streams (deliberate — CTRL_BREAK shutdown semantics,
 see ``supervisor/daemon.py``), so ``logging.basicConfig`` output vanishes
 with the console and a crash-respawn eats the evidence. This module gives

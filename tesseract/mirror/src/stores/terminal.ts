@@ -156,6 +156,12 @@ interface TerminalState {
   handleRawMessage(msg: Record<string, unknown>): void;
   sendStart(paneId: string, shell?: string, opts?: { record?: boolean }): void;
   sendKeystroke(paneId: string, data: string): void;
+  /** AS-2 terminal mic mode — type a transcript into whichever pane has
+   * focus. `typed` is false when there was no live pane, so the caller can
+   * tell the operator rather than dropping their words; `sanitized` is true
+   * when control characters were stripped, so a rewritten line is reported
+   * rather than silently typed. */
+  typeIntoFocusedPane(text: string): { typed: boolean; sanitized: boolean };
   sendResize(paneId: string, cols: number, rows: number): void;
   sendStop(paneId: string): void;
   sendObserverToggle(paneId: string, enabled: boolean): void;
@@ -657,7 +663,7 @@ export const useTerminalStore = create<TerminalState>()(persist((set, get) => ({
             const tab: TerminalTab = { id: nextId('tab'), label, root: leaf };
             // 2026-05-16 — don't yank operator focus. Pre-fix this set
             // `activeTabId: tab.id`, so the operator's current tab
-            // visibly "disappeared" the moment TARS opened a delegate
+            // visibly "disappeared" the moment the assistant opened a delegate
             // pane. The pane is still appended + accessible; the
             // operator clicks to inspect. Only adopt the new tab when
             // there are no tabs at all (first-ever pane).
@@ -731,6 +737,55 @@ export const useTerminalStore = create<TerminalState>()(persist((set, get) => ({
     // reach the shell's stdin.
     if (get()._replayingPanes.has(paneId)) return;
     _send({ type: 'terminal_keystroke', pane_id: paneId, bytes: data });
+  },
+
+  typeIntoFocusedPane(text: string) {
+    // An STT transcript is untrusted text on its way to a live shell's
+    // stdin. `.trim()` alone guards only the trailing edge — an EMBEDDED
+    // CR or LF is submitted by the pty's line discipline, so a transcript
+    // like "ls\nrm -rf ~" executes the first half no matter how careful
+    // the no-trailing-newline rule is. Strip every C0/C1 control (which
+    // also covers ESC, i.e. terminal escape sequences), fold the
+    // line-breaking ones to a space so words don't fuse, and collapse.
+    const trimmed = (text ?? '')
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\r\n\t\v\f\u0085\u2028\u2029]+/g, ' ')
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\u0000-\u001F\u007F-\u009F]/g, '')
+      // Bidi overrides and zero-width formatting. Stripping C0/C1 alone
+      // leaves these, and they defeat the safeguard the whole mode rests
+      // on: the operator READS the line before pressing Enter, so a
+      // U+202E makes the line they approve differ from the line that runs.
+      .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    // The operator said something this does not say — two sentences fused
+    // into one command line reads as a typo they made, not a rewrite we
+    // performed, unless we say so.
+    const sanitized = trimmed !== (text ?? '').trim();
+    if (!trimmed) return { typed: false, sanitized: false };
+    const { focusedPaneId, tabs, activeTabId } = get();
+    // Fall back to the active tab's first leaf: `focusedPaneId` is null
+    // until something has been clicked, and an operator who just opened
+    // the terminal and started talking still means "that one".
+    const activeTab = tabs.find((tab) => tab.id === activeTabId);
+    const focused =
+      focusedPaneId && activeTab ? findLeaf(activeTab.root, focusedPaneId) : null;
+    const leaf = focused ?? (activeTab ? (collectLeaves(activeTab.root)[0] ?? null) : null);
+    // A pane whose pty is stopped/errored accepts the keystroke envelope and
+    // drops it — so without this check the caller is told the words landed
+    // and the operator watches them vanish. Returning false is what buys
+    // them the "no open pane" toast.
+    if (!leaf || (leaf.ptyStatus !== 'running' && leaf.ptyStatus !== 'starting')) {
+      return { typed: false, sanitized };
+    }
+    const paneId = leaf.id;
+    // No trailing newline, ever. This types the command and leaves the
+    // cursor on it; a mis-transcribed word should cost a backspace, not
+    // an executed command. The operator presses Enter.
+    get().sendKeystroke(paneId, trimmed);
+    get()._terms.get(paneId)?.focus();
+    return { typed: true, sanitized };
   },
 
   sendResize(paneId: string, cols: number, rows: number) {

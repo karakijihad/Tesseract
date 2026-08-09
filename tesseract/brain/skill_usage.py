@@ -1,13 +1,13 @@
 """Skill usage telemetry — one JSONL line per skill load + outcome.
 
-Phase 4 (capability-growth) 4a. When TARS `file_read`s a
+Phase 4 (capability-growth) 4a. When the assistant `file_read`s a
 `workspace/skills/<name>/SKILL.md` body, that consultation is logged to
 `<TESSERACT_HOME>/logs/skills/usage.jsonl` so the refinement job
 (`scheduler/tasks/skill_refinement.py`) can flag skills that keep failing.
 
 Outcome vocabulary (Agent-Skills-agnostic):
 - ``ok``          — the skill body read cleanly (the common case).
-- ``error``       — TARS was pointed at the skill but the read failed
+- ``error``       — the assistant was pointed at the skill but the read failed
                     (missing / oversize / unreadable): a genuinely broken skill.
 - ``correction``  — reserved: an operator correction attributed to a skill.
                     No cheap production producer is wired yet; the refinement
@@ -93,7 +93,7 @@ def maybe_log_skill_load(path: str | Path, session_id: str, *, is_error: bool) -
     """Log a skill load iff `path` is an active skill body. `file_read` hook.
 
     `is_error` maps the read result to the outcome: a failed read of a skill
-    TARS was pointed at is an ``error`` outcome (broken skill); a clean read
+    The assistant was pointed at is an ``error`` outcome (broken skill); a clean read
     is ``ok``.
     """
     name = skill_name_for_path(path)

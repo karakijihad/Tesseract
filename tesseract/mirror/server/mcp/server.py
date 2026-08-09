@@ -6,8 +6,10 @@ One spec-compliant endpoint, ``/mcp``:
     ``tools/call`` / ``ping`` / notifications). The server replies with a single
     ``application/json`` JSON-RPC response (SSE responses are a server MAY we
     don't need — request/response suffices for the verb surface).
-  * ``GET``  — the optional server→client SSE stream. We push no
-    server-initiated messages in this initiative → ``405`` (spec-compliant).
+  * ``GET``  — the server→client SSE stream: the ``activity.watch``
+    subscription. Every activity transition the caller owns is pushed as a
+    JSON-RPC notification, resumable by ``Last-Event-ID``. See ``stream.py``
+    for the contract.
   * ``DELETE`` — terminate the session named by ``Mcp-Session-Id``.
 
 Every request is bearer-authenticated against ``mcp.yaml::clients`` (default-
@@ -34,13 +36,26 @@ from aiohttp import web
 
 from tesseract.config.mcp import MCPConfig
 from tesseract.mirror.server.mcp import protocol
+from tesseract.mirror.server.mcp.approvals import MCPApprovalTimeout
+from tesseract.mirror.server.mcp.audit import append_mcp_audit_row
 from tesseract.mirror.server.mcp.auth import authenticate
 from tesseract.mirror.server.mcp.dispatcher import MCPAskFn, MCPVerbDispatcher
 from tesseract.mirror.server.mcp.session import MCPSessionRegistry
+from tesseract.mirror.server.mcp.stream import (
+    SSE_MIME,
+    ActivityStreamHub,
+    serve_activity_stream,
+)
+from tesseract.mirror.server.mcp.verbs import STREAM_VERB
+from tesseract.orchestrator.activity.events import (
+    subscribe_activity,
+    unsubscribe_activity,
+)
 
 log = logging.getLogger(__name__)
 
 _SESSION_HEADER = "Mcp-Session-Id"
+_LAST_EVENT_HEADER = "Last-Event-ID"
 _PARSE_ERROR = -32700
 
 
@@ -66,7 +81,15 @@ class MCPServer:
         # MCP-verb operator-approval callback. None → ASK verbs return the async
         # awaiting_operator handle; wired in app.py to the Mirror approval route.
         self._verb_ask_fn = verb_ask_fn
-        self._sessions = MCPSessionRegistry(clock=clock)
+        self._stream = ActivityStreamHub(
+            replay_buffer=config.stream.replay_buffer,
+            client_queue=config.stream.client_queue,
+            max_streams_total=config.stream.max_streams_total,
+            max_streams_per_session=config.stream.max_streams_per_session,
+        )
+        self._sessions = MCPSessionRegistry(
+            clock=clock, on_close=self._stream.close_session
+        )
         self._sweep_task: asyncio.Task[None] | None = None
 
     # ── lifecycle ────────────────────────────────────────────────────────
@@ -77,16 +100,19 @@ class MCPServer:
             len(self._config.clients),
             self._config.server.max_connections,
         )
+        subscribe_activity(self._stream.publish)
         self._sweep_task = asyncio.create_task(self._sweep_loop())
 
     async def stop(self, app: web.Application) -> None:
-        """Cancel the idle sweep, then close every live session + its Activity
-        record on shutdown."""
+        """Cancel the idle sweep, detach from the activity feed, then close
+        every live stream and session + its Activity record on shutdown."""
         if self._sweep_task is not None:
             self._sweep_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._sweep_task
             self._sweep_task = None
+        unsubscribe_activity(self._stream.publish)
+        self._stream.close_all()
         self._sessions.close_all()
 
     async def _sweep_loop(self) -> None:
@@ -129,6 +155,12 @@ async def _post_handler(request: web.Request) -> web.Response:
         return _rpc_error(400, _PARSE_ERROR, "request body must be JSON")
 
     session = server._sessions.get(request.headers.get(_SESSION_HEADER))
+    # A session id is a bearer capability. GET has always checked that the
+    # presenting client owns it; POST did not, so a second configured client
+    # holding its own valid token could call verbs against — and be billed and
+    # audited under — someone else's session.
+    if session is not None and session.client.name != client.name:
+        return _rpc_error(403, protocol._SERVER_ERROR, "session belongs to another client")
     if session is not None:
         server._sessions.touch(session.session_id)
     handled = await protocol.handle(
@@ -142,28 +174,110 @@ async def _post_handler(request: web.Request) -> web.Response:
     return resp
 
 
-async def _get_handler(request: web.Request) -> web.Response:
-    """Server→client SSE stream. Unused in this initiative (no server-initiated
-    messages) → 405 per the Streamable-HTTP spec."""
+async def _get_handler(request: web.Request) -> web.StreamResponse:
+    """Server→client SSE stream — the ``activity.watch`` subscription.
+
+    Session-bound like every other non-``initialize`` request, and bound to the
+    session's OWN client: the session id is a bearer capability, so a second
+    configured client presenting its own valid token must still not ride it."""
     server = _server(request)
     if server is None:
         return _rpc_error(503, protocol._SERVER_ERROR, "mcp server not ready")
-    if authenticate(server._config, request.headers.get("Authorization")) is None:
+    client = authenticate(server._config, request.headers.get("Authorization"))
+    if client is None:
         return _rpc_error(401, protocol._SERVER_ERROR, "unauthorized: valid bearer token required")
-    return web.Response(status=405, headers={"Allow": "POST, DELETE"})
+    if SSE_MIME not in (request.headers.get("Accept") or ""):
+        return _rpc_error(
+            406, protocol._SERVER_ERROR, f"GET /mcp requires 'Accept: {SSE_MIME}'"
+        )
+    session = server._sessions.get(request.headers.get(_SESSION_HEADER))
+    if session is None:
+        return _rpc_error(
+            400, protocol._INVALID_REQUEST,
+            "invalid or missing Mcp-Session-Id; call initialize first",
+        )
+    if session.client.name != client.name:
+        return _rpc_error(403, protocol._SERVER_ERROR, "session belongs to another client")
+
+    posture = server._dispatcher.resolve_posture(STREAM_VERB, client)
+    if posture == "deny":
+        await _audit_stream(client, posture, "deny")
+        return _rpc_error(403, protocol._SERVER_ERROR, f"verb denied by policy: {STREAM_VERB}")
+    # Claimed before the ASK prompt and released only after the pump returns,
+    # so the slot bounds the whole connection — and so a flood of opens is
+    # refused at the cap rather than turned into a flood of operator prompts.
+    if not server._stream.reserve(session.session_id):
+        await _audit_stream(client, posture, "at_capacity")
+        return _rpc_error(
+            429,
+            protocol._SERVER_ERROR,
+            "activity stream capacity reached; close an existing stream or retry",
+        )
+    try:
+        if posture == "ask" and not await _stream_approved(server, client):
+            await _audit_stream(client, posture, "declined")
+            return _rpc_error(
+                403, protocol._SERVER_ERROR, f"operator declined verb: {STREAM_VERB}"
+            )
+
+        server._sessions.touch(session.session_id)
+        await _audit_stream(client, posture, "ok", summary="stream opened")
+        return await serve_activity_stream(
+            request,
+            hub=server._stream,
+            session_id=session.session_id,
+            caller=client.name,
+            heartbeat_s=server._config.stream.heartbeat_s,
+            last_event_id=request.headers.get(_LAST_EVENT_HEADER),
+            session_is_live=lambda: server._sessions.get(session.session_id) is not None,
+            on_activity=lambda: server._sessions.touch(session.session_id),
+        )
+    finally:
+        server._stream.release(session.session_id)
+
+
+async def _stream_approved(server: MCPServer, client) -> bool:
+    """An ASK posture on the stream verb. Unlike a ``tools/call``, there is no
+    202 handle to degrade to — a stream is open or it is not — so an undecided
+    subscription is a refused one."""
+    if server._verb_ask_fn is None:
+        return False
+    try:
+        return await server._verb_ask_fn(STREAM_VERB, {}, client)
+    except MCPApprovalTimeout:
+        return False
+
+
+async def _audit_stream(client, posture: str, decision: str, summary: str = "") -> None:
+    await append_mcp_audit_row(
+        verb=STREAM_VERB,
+        client=client.name,
+        trust_tier=client.trust_tier,
+        posture=posture,
+        decision=decision,
+        result_summary=summary,
+    )
 
 
 async def _delete_handler(request: web.Request) -> web.Response:
-    """Terminate the session named by ``Mcp-Session-Id``."""
+    """Terminate the session named by ``Mcp-Session-Id`` — the caller's own.
+
+    Ownership is checked here for the same reason GET checks it: the session id
+    is a bearer capability, and closing someone else's session kills their
+    streams and flips their ``mcp_session`` Activity record to closed."""
     server = _server(request)
     if server is None:
         return _rpc_error(503, protocol._SERVER_ERROR, "mcp server not ready")
-    if authenticate(server._config, request.headers.get("Authorization")) is None:
+    client = authenticate(server._config, request.headers.get("Authorization"))
+    if client is None:
         return _rpc_error(401, protocol._SERVER_ERROR, "unauthorized: valid bearer token required")
-    session_id = request.headers.get(_SESSION_HEADER) or ""
-    if server._sessions.close(session_id):
-        return web.Response(status=200)
-    return _rpc_error(404, protocol._SERVER_ERROR, "unknown session")
+    session = server._sessions.get(request.headers.get(_SESSION_HEADER))
+    if session is None:
+        return _rpc_error(404, protocol._SERVER_ERROR, "unknown session")
+    if session.client.name != client.name:
+        return _rpc_error(403, protocol._SERVER_ERROR, "session belongs to another client")
+    server._sessions.close(session.session_id)
+    return web.Response(status=200)
 
 
 __all__ = ["MCPServer"]

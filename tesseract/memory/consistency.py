@@ -23,6 +23,10 @@ from tesseract.memory.store import MemoryStore
 
 logger = logging.getLogger(__name__)
 
+# FTS-only rows for daily notes (`daily_YYYY-MM-DD`), not backed by the
+# canonical store. Rebuilds of the shared FTS table must preserve them.
+DAILY_FTS_PREFIX = "daily_"
+
 
 @dataclass
 class ConsistencyReport:
@@ -102,7 +106,7 @@ class ConsistencyChecker:
                 report.missing_fts.append(mem_id)
 
             for mem_id in fts_ids - store_ids:
-                if mem_id.startswith("daily_"):
+                if mem_id.startswith(DAILY_FTS_PREFIX):
                     continue  # Daily note FTS entries are not backed by store
                 if mem_id.startswith("vault:"):
                     if not self._vault_chunk_source_exists(mem_id):
@@ -197,7 +201,7 @@ class ConsistencyChecker:
             current_fts_ids = set(self._fts_index.all_ids())
             for note_path in self._store.list_daily_notes():
                 date_str = note_path.stem  # YYYY-MM-DD
-                fts_id = f"daily_{date_str}"
+                fts_id = f"{DAILY_FTS_PREFIX}{date_str}"
                 if fts_id not in current_fts_ids:
                     content = note_path.read_text(encoding="utf-8")
                     self._fts_index.add(fts_id, date_str, content)

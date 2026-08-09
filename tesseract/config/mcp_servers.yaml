@@ -1,6 +1,6 @@
 # Curated MCP server allowlist — OUTBOUND client.
 #
-# Each entry is an operator-approved external MCP server. TARS never adds
+# Each entry is an operator-approved external MCP server. The assistant never adds
 # entries and never connects to a server that isn't listed here. Adding a
 # server is a manual, deliberate edit.
 #

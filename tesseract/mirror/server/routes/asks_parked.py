@@ -27,7 +27,7 @@ from tesseract.mirror.server.approvals_parse import (
     ApprovalDecisionError,
     parse_approved,
 )
-from tesseract.orchestrator.tars_controller.ipc_client import ControllerClientError
+from tesseract.orchestrator.agent_controller.ipc_client import ControllerClientError
 
 
 async def list_parked(request: web.Request) -> web.Response:

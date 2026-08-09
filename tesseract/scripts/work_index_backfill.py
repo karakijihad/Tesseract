@@ -1,6 +1,6 @@
 """One-shot backfill for the CR-1 work-history index + session-metadata.
 
-Walks ``tesseract/sessions/*.json`` and ``tesseract/tars-workshop/**/*.md``,
+Walks ``tesseract/sessions/*.json`` and ``tesseract/workshop/**/*.md``,
 indexing every chunk into ``<TESSERACT_HOME>/work_index.sqlite``.
 Also rebuilds ``<TESSERACT_HOME>/session_metadata.sqlite`` from the
 same session corpus (active + ``archive/YYYY-MM/`` subtree).
@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--workshop", type=Path, default=None,
-        help="Override workshop dir (default: <TESSERACT_HOME>/tars-workshop).",
+        help="Override workshop dir (default: <TESSERACT_HOME>/workshop).",
     )
     parser.add_argument(
         "--db", type=Path, default=None,
@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
 
     home = _default_home()
     sessions = args.sessions or (home / "sessions")
-    workshop = args.workshop or (home / "tars-workshop")
+    workshop = args.workshop or (home / "workshop")
     db_path = args.db or (home / "work_index.sqlite")
 
     print(f"work_index_backfill:")

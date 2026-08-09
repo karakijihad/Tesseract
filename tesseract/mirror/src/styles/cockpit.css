@@ -1,12 +1,12 @@
 /* === SPATIAL COCKPIT — SC-1 ===
-   The fixed orb stage. The TARS orb is the full-screen WebGL singleton
+   The fixed orb stage. The assistant orb is the full-screen WebGL singleton
    (`GlobalCanvas`, z-index 0) behind the cockpit chrome (`.cockpit-shell`,
    z-index 1). Depth is static layering — orb far (behind), frosted panels
    forward — so the orb reads through every summoned panel. No cursor
    parallax (operator-rejected); the stage is fixed.
 
    Atmosphere + palette are inherited verbatim from `tokens.css` +
-   `canvas.css` via the permanent `data-view="tars"` mode on the shell.
+   `canvas.css` via the permanent `data-view="orb"` mode on the shell.
    The grid frame (`.cockpit-shell` / `.cockpit-body` / `.cockpit-hud`)
    still lives in globals.css + canvas.css and is reused as-is — this file
    only adds the new center stage + the panel-host slot. */
@@ -244,7 +244,7 @@
   }
 }
 
-/* Ambient orb captions — TARS's latest line as a fading subtitle centered in
+/* Ambient orb captions — the assistant's latest line as a fading subtitle centered in
    the lower third of the stage (under the orb). Pointer-transparent so it never
    blocks the orb or panels; sits below the panel layer. Fades via opacity. */
 .orb-captions {

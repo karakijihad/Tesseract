@@ -69,7 +69,7 @@ class Billing(str, Enum):
     a fake ``$0.00`` so the operator isn't misled.
 
     ``api`` is for workers backed by the metered API (``invoke_agent``,
-    ``tars_self`` — both hit the chat_brain via the Anthropic SDK).
+    ``agent_self`` — both hit the chat_brain via the Anthropic SDK).
     Per-call usage IS reportable; the runner copies it into the record.
 
     ``unknown`` is the cautious default when the kind hasn't declared a
@@ -174,7 +174,7 @@ class WorkerRecord(BaseModel):
     artifacts: list[ArtifactRef] = Field(default_factory=list)
     transcript_path: str | None = None
 
-    # TC-4 — controller-attested workers (TARS_CONTROLLER kind). All
+    # TC-4 — controller-attested workers (AGENT_CONTROLLER kind). All
     # nullable; existing kinds keep their semantics untouched. The
     # controller fills these on dispatch so recovery can REATTACH:
     # `controller_pid` alive + `controller_hb_path` fresh → reattach.

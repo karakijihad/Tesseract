@@ -91,7 +91,7 @@ export const useSessionStore = create<SessionStore>()(
       },
     }),
     {
-      name: 'tars-mirror-session',
+      name: 'tesseract-mirror-session',
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({ saveName: state.saveName }),
     },

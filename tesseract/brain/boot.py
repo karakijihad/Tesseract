@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import dataclasses
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -49,11 +50,12 @@ from tesseract.kernel.tools.skill_refine import SkillRefineTool
 from tesseract.kernel.tools.bash_tool import BashTool
 from tesseract.kernel.tools.conscience import ConscienceStatusTool
 from tesseract.kernel.tools.context7 import Context7LookupTool
-from tesseract.kernel.tools.delegate_claude import DelegateClaudeTool
-from tesseract.kernel.tools.delegate_codex import DelegateCodexTool
+from tesseract.kernel.tools.delegate_coder import DelegateCoderTool
+from tesseract.kernel.tools.delegate_auditor import DelegateAuditorTool
+from tesseract.kernel.tools.agent_ask import AgentAskTool
 from tesseract.kernel.tools.delegate_codex_exec import DelegateCodexExecTool
-from tesseract.kernel.tools.delegate_tars_controller import (
-    DelegateTarsControllerTool,
+from tesseract.kernel.tools.delegate_agent_controller import (
+    DelegateAgentControllerTool,
 )
 from tesseract.kernel.tools.start_controller_session import (
     StartControllerSessionTool,
@@ -108,6 +110,10 @@ from tesseract.kernel.tools.memory_get import MemoryGetTool
 from tesseract.kernel.tools.brief_read import BriefReadTool
 from tesseract.kernel.tools.brief_render import BriefRenderTool
 from tesseract.kernel.tools.ask_clarification import AskClarificationTool
+from tesseract.kernel.tools.project_link import ProjectLinkTool
+from tesseract.kernel.tools.project_list import ProjectListTool
+from tesseract.kernel.tools.project_new import ProjectNewTool
+from tesseract.kernel.tools.project_open import ProjectOpenTool
 from tesseract.kernel.tools.schedule_create import ScheduleCreateTool
 from tesseract.kernel.tools.schedule_list import ScheduleListTool
 from tesseract.kernel.tools.schedule_remove import ScheduleRemoveTool
@@ -120,7 +126,6 @@ from tesseract.kernel.tools.lane_named_ensure import LaneNamedEnsureTool
 from tesseract.kernel.tools.lane_named_get import LaneNamedGetTool
 from tesseract.kernel.tools.lane_named_list import LaneNamedListTool
 from tesseract.kernel.tools.lane_open import LaneOpenTool
-from tesseract.kernel.tools.doodle_open import DoodleOpenTool
 from tesseract.kernel.tools.lane_read import LaneReadTool
 from tesseract.kernel.tools.surface_bind_session import SurfaceBindSessionTool
 from tesseract.kernel.tools.surface_close import SurfaceCloseTool
@@ -138,7 +143,6 @@ from tesseract.kernel.tools.work_send import WorkSendTool
 from tesseract.kernel.tools.lane_status import LaneStatusTool
 from tesseract.kernel.tools.set_mood import SetMoodTool
 from tesseract.kernel.tools.set_state import EntityAffect, SetStateTool
-from tesseract.kernel.tools.set_voice import SetVoiceTool, VoiceState
 from tesseract.kernel.tools.propose_change import ProposeChangeTool
 from tesseract.kernel.tools.soul_growth_propose import SoulGrowthProposeTool
 from tesseract.kernel.tools.workspace_post import WorkspacePostTool
@@ -197,8 +201,8 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "memory_save", "memory_get", "memory_search",
     "memory_update", "memory_promote", "memory_forget",
     # delegate
-    "delegate_claude", "delegate_codex", "delegate_codex_exec",
-    "delegate_tars_controller",
+    "delegate_coder", "delegate_auditor", "delegate_codex_exec",
+    "delegate_agent_controller",
     # lane
     "lane_open", "lane_send", "lane_turn", "lane_read", "lane_status",
     "lane_attach", "lane_close", "lane_list", "lane_named_ensure",
@@ -221,17 +225,17 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "channel_notify",
     # surface — two distinct jobs, both core. `open` SHOWS something that
     # already exists (a url, a file, a folder) and resolves the type itself, so
-    # nothing is guessed. `surface_create` AUTHORS a card from content TARS
+    # nothing is guessed. `surface_create` AUTHORS a card from content the assistant
     # generated — a live html app, a chart, a document it wrote — which `open`
     # cannot do, because there is no target to resolve.
     "open", "surface_create", "surface_update", "surface_list", "surface_close",
-    # browser — TARS's own headless-Playwright eyes. The read-only observe
+    # browser — the assistant's own headless-Playwright eyes. The read-only observe
     # verbs are core so "look at what I just rendered" is a reflex, not a
     # tool_search away. (click/fill/close stay extended.)
     "browser_navigate", "browser_snapshot", "browser_screenshot",
     # vault
     "vault_query", "vault_search",
-    # 2026-07-12 operator directive ("give TARS all the access"): every tool
+    # 2026-07-12 operator directive ("give the assistant all the access"): every tool
     # an always-inlined rule card instructs is core — the prompt must never
     # name a tool the model can't see. The long tail (channel_send_*, vault
     # admin, browser extras) stays extended behind tool_search.
@@ -243,7 +247,7 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset({
     # agenda comment auto-reply (Option-B durability, mirrors workspace_reply)
     "agenda_comment",
     # identity / state (13-state.md) + reflection write-backs
-    "set_mood", "set_state", "set_voice",
+    "set_mood", "set_state",
     "diary_append", "soul_growth_propose",
     # tasks (04-tasks.md)
     "tasks_set", "tasks_update",
@@ -716,19 +720,47 @@ def _summarize_chat_brain_failure(failures: list[str]) -> str:
     env_path = home_dir() / ".env"
     if no_key and not disabled:
         return (
-            f"TARS can't answer yet — no API key is set for any configured "
-            f"chat provider. Add one to {env_path}, then restart TARS."
+            f"No chat provider can answer yet — no API key is set for any "
+            f"configured provider. Add one to {env_path}, then restart TESSERACT."
         )
     if disabled and not no_key:
+        # No restart in this branch: the `enabled` switches are hot-reloaded
+        # by the config watcher, so turning one back on takes effect on the
+        # next turn. Only the .env branches below need a restart.
         return (
-            "TARS can't answer yet — every configured chat provider is "
-            "switched off in providers.yaml. Enable one, then restart TARS."
+            "No chat provider can answer yet — every configured provider is "
+            "switched off in providers.yaml. Switch one back on in "
+            "Settings -> Capabilities."
         )
     return (
-        f"TARS can't answer yet — no chat provider is available (no API "
-        f"key set, or a provider switched off in providers.yaml). Add a "
-        f"key to {env_path}, then restart TARS."
+        f"No chat provider can answer yet — none is available (no API key set, "
+        f"or a provider switched off in providers.yaml). Add a key to "
+        f"{env_path}, then restart TESSERACT."
     )
+
+
+_CHAIN_RESOLVE_MAX_WORKERS = 4
+
+
+def _resolve_chain_candidate(
+    idx: int, cfg: ChatBrainConfig,
+) -> tuple[ChatBrainConfig, ModelAdapter | None, AdapterOptions | None, str | None]:
+    """Build one chat_brain chain candidate. Failure is returned, not raised —
+    `resolve_chat_brain_runtime` may run this across threads via
+    `ThreadPoolExecutor.map`, which re-raises on `next()`; a raised
+    `RuntimeError` there would abort the whole map instead of letting
+    sibling candidates finish.
+    """
+    try:
+        adapter = build_chat_brain_adapter(cfg)
+    except RuntimeError as exc:
+        logger.info(
+            "chat_brain chain idx=%d (%s/%s) unavailable: %s",
+            idx, cfg.provider, cfg.model, exc,
+        )
+        return cfg, None, None, f"{cfg.provider} ({cfg.model}): {exc}"
+    options = adapter_options_from_chat_brain(cfg)
+    return cfg, adapter, options, None
 
 
 def resolve_chat_brain_runtime() -> tuple[
@@ -748,21 +780,30 @@ def resolve_chat_brain_runtime() -> tuple[
     carrying both the full technical breakdown (for the log) and a short
     plain-language `summary` (for the caller — `_build_chat_infra` — to hand
     to a degraded placeholder adapter instead of leaving chat silently dead).
+
+    Candidates are independent (each builds its own SDK client from its own
+    config) — building them in parallel measurably cuts boot latency, since
+    SDK client construction spends real wall time on I/O the GIL releases
+    (TLS context / system trust-store setup), not pure CPU. Serial when the
+    chain is a single entry — a thread pool buys nothing there.
     """
     chain_cfgs = load_chat_brain_chain()
+    indices = range(len(chain_cfgs))
+    if len(chain_cfgs) > 1:
+        # Capped rather than one worker per chain entry: the pool exists to
+        # overlap I/O waits, and the worker count is otherwise a YAML value
+        # spawning threads on every boot and every live config save.
+        workers = min(len(chain_cfgs), _CHAIN_RESOLVE_MAX_WORKERS)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(_resolve_chain_candidate, indices, chain_cfgs))
+    else:
+        results = [_resolve_chain_candidate(idx, cfg) for idx, cfg in zip(indices, chain_cfgs)]
     built_chain: list[tuple[ChatBrainConfig, ModelAdapter, AdapterOptions]] = []
     failures: list[str] = []
-    for idx, cfg in enumerate(chain_cfgs):
-        try:
-            adapter = build_chat_brain_adapter(cfg)
-        except RuntimeError as exc:
-            logger.info(
-                "chat_brain chain idx=%d (%s/%s) unavailable: %s",
-                idx, cfg.provider, cfg.model, exc,
-            )
-            failures.append(f"{cfg.provider} ({cfg.model}): {exc}")
+    for cfg, adapter, options, failure in results:
+        if failure is not None:
+            failures.append(failure)
             continue
-        options = adapter_options_from_chat_brain(cfg)
         built_chain.append((cfg, adapter, options))
     if not built_chain:
         detail = "no chat provider available — " + "; ".join(failures)
@@ -824,6 +865,9 @@ class VaultConfig:
     contradiction_pair_limit: int
     max_seed_slugs: int
     max_expanded_slugs: int
+    synthesis_max_pages: int
+    synthesis_page_chars: int
+    synthesis_char_budget: int
     search_rrf_k: int
     search_default_top_k: int
 
@@ -835,6 +879,13 @@ def load_vault_config() -> VaultConfig:
     lint = _require(raw, "lint", "vault.yaml")
     query = _require(raw, "query", "vault.yaml")
     search = _require(raw, "search", "vault.yaml")
+    # The three synthesis budgets fail SILENTLY when non-positive: the walk
+    # breaks on its first iteration and vault_query answers "No readable wiki
+    # pages found" over a vault full of pages. A wrong answer that looks like
+    # an empty vault is worse than a boot error, so they are range-checked.
+    for key in ("synthesis_max_pages", "synthesis_page_chars", "synthesis_char_budget"):
+        if int(_require(query, key, "vault.yaml query")) <= 0:
+            raise RuntimeError(f"vault.yaml query.{key} must be positive")
     return VaultConfig(
         max_extract_chars=int(_require(ingest, "max_extract_chars", "vault.yaml ingest")),
         scale_split_threshold=int(_require(lint, "scale_split_threshold", "vault.yaml lint")),
@@ -842,6 +893,9 @@ def load_vault_config() -> VaultConfig:
         contradiction_pair_limit=int(_require(lint, "contradiction_pair_limit", "vault.yaml lint")),
         max_seed_slugs=int(_require(query, "max_seed_slugs", "vault.yaml query")),
         max_expanded_slugs=int(_require(query, "max_expanded_slugs", "vault.yaml query")),
+        synthesis_max_pages=int(_require(query, "synthesis_max_pages", "vault.yaml query")),
+        synthesis_page_chars=int(_require(query, "synthesis_page_chars", "vault.yaml query")),
+        synthesis_char_budget=int(_require(query, "synthesis_char_budget", "vault.yaml query")),
         search_rrf_k=int(_require(search, "rrf_k", "vault.yaml search")),
         search_default_top_k=int(_require(search, "default_top_k", "vault.yaml search")),
     )
@@ -879,6 +933,109 @@ def load_embeddings_cfg() -> dict:
         "auto_start_ollama": bool(conn.extra.get("auto_start", False)),
     }
     return cfg
+
+
+def ollama_slots() -> list[tuple[str, ResolvedRef]]:
+    """Every config slot that points at a model served by local Ollama,
+    paired with a human label for the slot that reached it first.
+
+    Ordered as config reads — embeddings first, because that is the slot
+    whose absence degrades in silence — then the reranker, then each active
+    role's primary and fallbacks, then the voice lanes. Deduped by ref, so
+    a ref named twice is labelled by its earliest mention.
+
+    Fallbacks are included on purpose: a fallback nobody pulled is a
+    fallback that fails at the one moment it is reached.
+
+    Disabled tier or provider yields an empty list, matching the way every
+    other consumer treats a switched-off provider.
+    """
+    bundle = load_bundle()
+    out: list[tuple[str, ResolvedRef]] = []
+    seen: set[str] = set()
+
+    def _add(slot: str, ref: ResolvedRef | None) -> None:
+        if ref is None:
+            return
+        conn = ref.connection
+        if conn.tier != "local" or conn.name != "ollama":
+            return
+        if not conn.tier_enabled or not conn.enabled:
+            return
+        if ref.ref in seen:
+            return
+        seen.add(ref.ref)
+        out.append((slot, ref))
+
+    _add("embeddings", bundle.embeddings)
+    _add("reranker", bundle.reranker)
+    for role in bundle.roles.values():
+        if role.mode != "active":
+            continue
+        _add(f"role {role.name}", role.primary)
+        for fallback in role.fallbacks:
+            _add(f"role {role.name} (fallback)", fallback)
+    if bundle.voice is not None:
+        for lane_name, lane in (("stt", bundle.voice.stt), ("tts", bundle.voice.tts)):
+            if lane is None or lane.mode != "active":
+                continue
+            for entry in lane.chain():
+                _add(f"voice {lane_name}", entry.ref)
+    return out
+
+
+def ollama_refs() -> list[ResolvedRef]:
+    """The refs from :func:`ollama_slots`, without the slot labels."""
+    return [ref for _slot, ref in ollama_slots()]
+
+
+def load_reranker_cfg(bundle: ConfigBundle | None = None) -> dict:
+    """Read reranker settings — derived from the providers catalog entry
+    that ``roles.yaml::reranker.primary`` points at.
+
+    Returns ``{}`` when the role is absent or its tier/provider is disabled
+    (retrieval keeps pure RRF order). Otherwise: ``model_path``,
+    ``tokenizer_path`` (under ``<TESSERACT_HOME>/models/reranker/``),
+    ``max_seq_len``, ``candidate_cap``, ``download`` (fetch-script URLs).
+
+    ``bundle`` lets a caller that already holds a freshly-loaded
+    :class:`ConfigBundle` (e.g. `rebuild_adapters`, which also needs
+    `bundle.reranker` for its own reporting) skip a second on-disk read;
+    defaults to a fresh :func:`load_bundle` call otherwise.
+    """
+    bundle = bundle if bundle is not None else load_bundle()
+    ref = bundle.reranker
+    if ref is None:
+        return {}
+    conn = ref.connection
+    if not conn.tier_enabled or not conn.enabled:
+        logger.info(
+            "reranker: ref=%s disabled (tier_enabled=%s, enabled=%s) — skipping",
+            ref.ref, conn.tier_enabled, conn.enabled,
+        )
+        return {}
+    return _reranker_cfg_from_ref(ref)
+
+
+def _reranker_cfg_from_ref(ref) -> dict:
+    """Catalog entry → reranker settings. Missing keys raise loudly —
+    config is the single source of truth, no silent Python defaults."""
+    from tesseract.config.loader import ConfigError
+
+    fields = ref.model.fields
+    where = f"providers.yaml entry for {ref.ref}"
+    for key in ("tokenizer", "max_seq_len", "candidate_cap"):
+        if key not in fields:
+            raise ConfigError(f"{where} missing required key '{key}'")
+    models_dir = TESSERACT_HOME / "models" / "reranker"
+    return {
+        "model_path": models_dir / str(ref.model.model),
+        "tokenizer_path": models_dir / str(fields["tokenizer"]),
+        "max_seq_len": int(fields["max_seq_len"]),
+        "candidate_cap": int(fields["candidate_cap"]),
+        # Only the fetch script consumes this; it reports absence itself.
+        "download": dict(fields.get("download") or {}),
+    }
 
 
 # ── Adapter + observer builders ──────────────────────────
@@ -962,6 +1119,42 @@ def build_adapter(ref: ResolvedRef) -> ModelAdapter:
             model_id=ref.model.model,
             timeout=conn.timeout_seconds,
             stream_json=conn.stream_json_capable,
+        )
+    if adapter == "ollama":
+        # Ollama serves an OpenAI-compatible surface at `<base_url>/v1`, so
+        # the existing adapter drives it — streaming, tool-calls, usage
+        # accounting and the chain's error taxonomy all already work. The
+        # bare `base_url` stays what it is because the embedding path hits
+        # `/api/embeddings` on it; only this branch appends `/v1`.
+        if not conn.base_url:
+            raise RuntimeError(
+                f"local provider '{conn.tier}.{conn.name}' missing 'base_url' in providers.yaml"
+            )
+        # Mirror the cli branch's binary gate: absent Ollama makes the chain
+        # skip this entry rather than hold an adapter that dies at first
+        # stream(). `ollama_exe`, not `shutil.which` — an install from the
+        # Settings panel completes inside this process and never updates its
+        # PATH. Imported here, not at module scope: `ollama_boot` imports
+        # `ollama_up` from this module.
+        from tesseract.memory.ollama_boot import ollama_exe
+        if ollama_exe() is None:
+            raise RuntimeError(
+                f"ollama is not installed — '{ref.ref}' unavailable "
+                f"(install it from Settings → Local models)"
+            )
+        return OpenAIAdapter(
+            # The daemon ignores auth entirely; the SDK requires a non-empty
+            # string. No `api_key_env` exists on a local-tier provider.
+            api_key="ollama",
+            base_url=f"{conn.base_url.rstrip('/')}/v1",
+            timeout=conn.timeout_seconds,
+            max_retries=conn.max_retries,
+            # Not a knob: the compat surface has no `prompt_cache_key` param.
+            supports_prompt_cache_key=False,
+            # This one IS a knob — older Ollama builds reject `stream_options`,
+            # and `supports_stream_usage: false` in providers.yaml is the fix.
+            supports_stream_usage=conn.supports_stream_usage,
+            cache_routing_header=None,
         )
     raise RuntimeError(f"no adapter wired for adapter='{adapter}' (ref={ref.ref})")
 
@@ -1047,6 +1240,7 @@ class MemoryBundle:
     pipeline: RetrievalPipeline | None = None
     dreaming: DreamingEngine | None = None
     recall_log_path: Path | None = None
+    reranker: object | None = None
 
 
 def build_memory_bundle(
@@ -1074,10 +1268,15 @@ def build_memory_bundle(
     # the unified palette on first launch. Idempotent — operator edits
     # to `.obsidian/graph.json` survive future boots.
     try:
-        from tesseract.memory.obsidian_config import ensure_obsidian_config
+        from tesseract.memory.obsidian_config import (
+            VAULT_COLOR_GROUPS,
+            ensure_obsidian_config,
+        )
 
         ensure_obsidian_config(store_dir)
-        ensure_obsidian_config(TESSERACT_HOME / "vault")
+        ensure_obsidian_config(
+            TESSERACT_HOME / "vault", color_groups=VAULT_COLOR_GROUPS
+        )
     except Exception:
         logger.exception("obsidian_config: seeding failed (non-fatal)")
 
@@ -1119,6 +1318,21 @@ def build_memory_bundle(
         logger.exception("memory_bundle: work_index init failed; merge disabled")
         work_index = None
 
+    # Cross-encoder reranker — role-wired, best-effort. Constructed even
+    # when the model files are absent; it degrades to a no-op and logs the
+    # fetch hint once.
+    reranker = None
+    reranker_cfg = load_reranker_cfg()
+    if reranker_cfg:
+        from tesseract.memory.reranker import CrossEncoderReranker
+
+        reranker = CrossEncoderReranker(
+            model_path=reranker_cfg["model_path"],
+            tokenizer_path=reranker_cfg["tokenizer_path"],
+            max_seq_len=reranker_cfg["max_seq_len"],
+            candidate_cap=reranker_cfg["candidate_cap"],
+        )
+
     pipeline = RetrievalPipeline(
         store=store,
         index=index,
@@ -1126,6 +1340,7 @@ def build_memory_bundle(
         fts_index=fts_index,
         recall_log_path=recall_log_path,
         work_index=work_index,
+        reranker=reranker,
     )
 
     librarian = Librarian(
@@ -1154,6 +1369,7 @@ def build_memory_bundle(
         pipeline=pipeline,
         dreaming=dreaming,
         recall_log_path=recall_log_path,
+        reranker=reranker,
     )
 
 
@@ -1254,8 +1470,6 @@ def load_voice_config() -> dict:
     Shape returned (2026-05-01 — primary+fallbacks):
 
         {
-          "default_voice_id": "Charon",
-          "default_tone_prompt": "...",
           "stt": {
             "mode": "active",
             "chain": [
@@ -1278,10 +1492,7 @@ def load_voice_config() -> dict:
         return {}
 
     voice = bundle.voice
-    out: dict = {
-        "default_voice_id": voice.default_voice_id,
-        "default_tone_prompt": voice.default_tone_prompt,
-    }
+    out: dict = {}
 
     def _materialize_provider(provider) -> dict:  # noqa: ANN001
         conn = provider.ref.connection
@@ -1363,6 +1574,15 @@ def rebuild_adapters(app: Any) -> dict[str, Any]:
     field is a plain dict; mutating in place keeps every REST surface
     that reads `request.app["config"].models` (e.g. `/api/identity`,
     `/api/voice/providers`) consistent with the on-disk YAML.
+
+    The `roles.yaml::reranker` role is re-resolved and swapped the same
+    way: both `app["memory_bundle"].pipeline._reranker` and the live
+    `VaultSearchTool._reranker` (reached via `app["tool_registry"]`) are
+    updated in place, so an edit lands on the next retrieval call rather
+    than requiring a restart. An in-flight retrieval already holds its
+    own reference to the old reranker at the point it awaits `rerank()`,
+    so the swap does not affect it mid-call — same argument as the
+    `ChatSession` case above.
     """
     summary: dict[str, Any] = {}
 
@@ -1475,6 +1695,66 @@ def rebuild_adapters(app: Any) -> dict[str, Any]:
         except Exception:
             logger.exception("rebuild_adapters: live session swap failed")
 
+    # Reranker — role-wired cross-encoder (roles.yaml top-level `reranker:`).
+    # Re-resolved from the freshly-edited providers.yaml/roles.yaml and
+    # swapped into both live consumers that hold the old handle:
+    # `RetrievalPipeline._reranker` (memory_search) and
+    # `VaultSearchTool._reranker` (vault_search). Construction is cheap
+    # (path/int fields only — `CrossEncoderReranker` lazy-loads the ONNX
+    # session + tokenizer off the loop on first `rerank()` call, see
+    # `reranker.py::_ensure_loaded`), so this runs inline rather than via
+    # `asyncio.to_thread`, matching how `build_memory_bundle` constructs it
+    # at boot. A resolution failure is contained the same way the config
+    # refresh above is — logged + recorded in the summary — and neither
+    # consumer is touched, so retrieval keeps its previous handle instead
+    # of one consumer swapping while the other doesn't.
+    try:
+        bundle_cfg = load_bundle()
+        reranker_ref = bundle_cfg.reranker
+        reranker_cfg = load_reranker_cfg(bundle_cfg)
+        new_reranker = None
+        if reranker_cfg:
+            from tesseract.memory.reranker import CrossEncoderReranker
+
+            new_reranker = CrossEncoderReranker(
+                model_path=reranker_cfg["model_path"],
+                tokenizer_path=reranker_cfg["tokenizer_path"],
+                max_seq_len=reranker_cfg["max_seq_len"],
+                candidate_cap=reranker_cfg["candidate_cap"],
+            )
+    except Exception as exc:
+        logger.exception("rebuild_adapters: reranker resolution failed")
+        summary["reranker_error"] = str(exc)
+    else:
+        swapped: list[str] = []
+        memory_bundle = app.get("memory_bundle")
+        pipeline = getattr(memory_bundle, "pipeline", None)
+        if pipeline is not None:
+            pipeline._reranker = new_reranker
+            swapped.append("memory_search")
+        live_registry = app.get("tool_registry")
+        vault_search_tool = (
+            live_registry.get("vault_search") if live_registry is not None else None
+        )
+        if vault_search_tool is not None:
+            vault_search_tool._reranker = new_reranker
+            swapped.append("vault_search")
+        if memory_bundle is not None:
+            memory_bundle.reranker = new_reranker
+        # Report what actually moved, not what was resolved. A boot that
+        # never built a memory bundle or never registered `vault_search`
+        # leaves nothing holding the new handle, and a toast claiming the
+        # swap landed would be the one case where the operator trusts a
+        # reload that did not happen.
+        if not swapped:
+            summary["reranker_error"] = (
+                "resolved but not applied — no live consumer "
+                "(memory bundle / vault_search) present"
+            )
+        else:
+            summary["reranker"] = reranker_ref.ref if new_reranker is not None else None
+            summary["reranker_consumers"] = swapped
+
     # Observer
     cost_ledger = app.get("cost_ledger")
     try:
@@ -1541,23 +1821,6 @@ def rebuild_adapters(app: Any) -> dict[str, Any]:
         except Exception:
             logger.exception("rebuild_adapters: voice runtime rebuild failed")
 
-    # Phase 18 audit M1 — refresh the live VoiceState used by ws.py
-    # `_synth_one_sentence` and `routes/voice.py::post_test`. Without
-    # this, a Settings → Voice save updates roles.yaml + the engines'
-    # GeminiTTSConfig but the per-utterance VoiceParams still pull
-    # `voice_id` / `tone_prompt` from the boot-time VoiceState.
-    voice_state = app.get("voice_state")
-    if voice_state is not None:
-        try:
-            voice_cfg = load_voice_config()
-            new_voice_id = str(voice_cfg.get("default_voice_id") or voice_state.voice_id)
-            new_tone = str(voice_cfg.get("default_tone_prompt") or "").strip()
-            voice_state.voice_id = new_voice_id
-            voice_state.tone_prompt = new_tone
-            summary["voice_state_refreshed"] = True
-        except Exception:
-            logger.exception("rebuild_adapters: voice_state refresh failed")
-
     return summary
 
 
@@ -1608,10 +1871,10 @@ def build_tool_registry(
     alarm_registry: AlarmRegistry | None = None,
     policy: "PermissionPolicy | None" = None,
     app: Any = None,
-) -> tuple[ToolRegistry, MoodState, VoiceState, MemoryBundle, AlarmRegistry]:
+) -> tuple[ToolRegistry, MoodState, MemoryBundle, AlarmRegistry]:
     """Register every tool the runtime knows how to execute.
 
-    Returns the registry, MoodState, VoiceState, MemoryBundle, and the
+    Returns the registry, MoodState, MemoryBundle, and the
     shared AlarmRegistry. The alarm registry is constructed here (with
     YAML persistence) unless the caller injects one — tests pass a fresh
     instance to isolate state.
@@ -1631,14 +1894,9 @@ def build_tool_registry(
     app_provider = (lambda: app) if app is not None else None
     registry = ToolRegistry()
     mood = MoodState()
-    voice_cfg = load_voice_config()
-    default_voice_id = str(voice_cfg.get("default_voice_id", "Charon"))
-    default_tone_prompt = str(voice_cfg.get("default_tone_prompt") or "").strip()
-    voice_state = VoiceState(voice_id=default_voice_id, tone_prompt=default_tone_prompt)
     registry.register(SetMoodTool(mood_state=mood))
-    registry.register(SetVoiceTool(voice_state=voice_state))
     registry.register(SetStateTool(affect=EntityAffect()))
-    # home_dir() (not TESSERACT_DIR): diary entries are operator/TARS
+    # home_dir() (not TESSERACT_DIR): diary entries are operator/the assistant
     # state, not code — an app update that replaces the code tree must
     # not wipe them (distributable-app Phase 1, Task 5 exit-gate finding).
     # Call-time resolved, matching Tasks 1-4's idiom (`workspace_dir()` /
@@ -1675,7 +1933,7 @@ def build_tool_registry(
         # to be) so a relocated TESSERACT_HOME takes effect (distributable-app
         # pre-installer blocker, Docs/Deferred.md). The one-time legacy-state
         # migration is a separate, explicit `ensure_alarms_state_migrated()`
-        # call at the real entry points (mirror/supervisor/tars_controller
+        # call at the real entry points (mirror/supervisor/agent_controller
         # main()), not here — this function is exercised by unit tests too
         # often to carry a destructive migration side effect safely.
         alarm_registry = AlarmRegistry(state_file=alarms_state_path())
@@ -1683,6 +1941,16 @@ def build_tool_registry(
     registry.register(AlarmListTool(alarm_registry=alarm_registry))
     registry.register(AlarmCancelTool(alarm_registry=alarm_registry))
     registry.register(AlarmSnoozeTool(alarm_registry=alarm_registry))
+
+    # Project registry — what "the thing we are working on" is. `project_open`
+    # moves the active root, which the prompt block renders and new lanes
+    # default their cwd to.
+    registry.register(ProjectListTool())
+    registry.register(ProjectLinkTool())
+    registry.register(ProjectOpenTool())
+    registry.register(
+        ProjectNewTool(store=workspace_store, app_provider=app_provider)
+    )
 
     registry.register(ScheduleCreateTool())
     registry.register(ScheduleListTool())
@@ -1708,7 +1976,7 @@ def build_tool_registry(
     registry.register(LaneListTool())
 
     # X-5 — name→lane_id binding layer over LaneManager. tmux Agent Teams
-    # pattern: TARS holds two stable persistent lanes (coder/claude +
+    # pattern: the assistant holds two stable persistent lanes (coder/claude +
     # auditor/codex) the autonomy paths route through.
     registry.register(LaneNamedGetTool())
     registry.register(LaneNamedListTool())
@@ -1737,7 +2005,6 @@ def build_tool_registry(
     registry.register(OsLaunchTool())
     registry.register(OpenTool())
     registry.register(SurfaceBindSessionTool())
-    registry.register(DoodleOpenTool())
 
     # P4-2 — browser_* cockpit tools (headless Playwright, pc_audit sink).
     registry.register(BrowserNavigateTool())
@@ -1761,14 +2028,15 @@ def build_tool_registry(
 
     registry.register(BashTool())
 
-    registry.register(DelegateClaudeTool())
-    registry.register(DelegateCodexTool())
+    registry.register(DelegateCoderTool())
+    registry.register(DelegateAuditorTool())
     registry.register(DelegateCodexExecTool())
+    registry.register(AgentAskTool())
     # 2026-05-24 — controller-as-orchestrator dispatch. The autonomy
-    # runner picks this up via `_route_for_kind(TARS_CONTROLLER)`;
+    # runner picks this up via `_route_for_kind(AGENT_CONTROLLER)`;
     # chat-side surfaces (start_controller_session) and any future
     # caller route through the same tool so behaviour stays uniform.
-    registry.register(DelegateTarsControllerTool())
+    registry.register(DelegateAgentControllerTool())
     registry.register(StartControllerSessionTool())
 
     # Text-to-image via the configured `image_generator` role (primary set
@@ -1778,7 +2046,7 @@ def build_tool_registry(
     # ToolResult(is_error=True) with a clean message instead of crashing.
     registry.register(ImageGenerateTool())
 
-    # Outbound channel media (Session 2 2026-05-16) — TARS calls these to
+    # Outbound channel media (Session 2 2026-05-16) — the assistant calls these to
     # reply with audio / images / files on external channels (Telegram
     # today, future WhatsApp / Signal). Each resolves the live adapter
     # via `integrations.get_channel` and dispatches to its `send_*`
@@ -1876,12 +2144,14 @@ def build_tool_registry(
         fts_index=bundle.fts_index,
         vault_manager=vault_manager,
         vault_cfg=vault_cfg,
+        reranker=bundle.reranker,
     ))
 
-    vault_indexer = (
-        VaultIndexer(embeddings=bundle.embeddings, fts_index=bundle.fts_index)
-        if bundle.embeddings is not None
-        else None
+    # Always constructed — embeddings=None is the BM25-only degraded mode;
+    # gating the whole indexer on embeddings used to silently drop vault
+    # FTS chunks whenever Ollama was down.
+    vault_indexer = VaultIndexer(
+        embeddings=bundle.embeddings, fts_index=bundle.fts_index
     )
 
     vault_librarian = VaultLibrarian(
@@ -1928,12 +2198,12 @@ def build_tool_registry(
         )
     else:
         # Not cosmetic: with these two absent, every autonomy dispatch of a
-        # MARKDOWN_AGENT / TARS_SELF worker dies on "unknown tool:
+        # MARKDOWN_AGENT / AGENT_SELF worker dies on "unknown tool:
         # invoke_agent" (live install, 2026-07-30). Name the consequence so
         # a boot-time credential blip is diagnosable from the log alone.
         logger.warning(
             "chat_brain adapter unavailable — invoke_agent + session_open are "
-            "NOT registered; autonomy markdown_agent/tars_self dispatch will "
+            "NOT registered; autonomy markdown_agent/agent_self dispatch will "
             "fail until the chain resolves (config edit → rebuild_adapters, "
             "or restart)"
         )
@@ -1985,7 +2255,7 @@ def build_tool_registry(
     # Daily-brief uses this for auto-promote of world cards.
     registry.vault_librarian = vault_librarian  # type: ignore[attr-defined]
 
-    return registry, mood, voice_state, bundle, alarm_registry
+    return registry, mood, bundle, alarm_registry
 
 
 def _apply_tool_tiers(registry: ToolRegistry) -> None:
@@ -2120,14 +2390,14 @@ def _wire_tool_defaults(
         # entries via round_trip_yaml (preserves comments + key order).
         # Operator overrides already in yaml are never touched. Settings
         # view re-reads yaml on its next request and renders the new state.
-        # Disable auto-write with TARS_NO_AUTOSYNC=1.
+        # Disable auto-write with TESSERACT_NO_AUTOSYNC=1.
         logger.error(
             "permissions.yaml drift: %d tool(s) registered but absent from "
             "tools: %s", len(using_class_default), ", ".join(using_class_default),
         )
-        if os.getenv("TARS_NO_AUTOSYNC") == "1":
+        if os.getenv("TESSERACT_NO_AUTOSYNC") == "1":
             logger.error(
-                "TARS_NO_AUTOSYNC=1 — leaving yaml unmodified; class defaults "
+                "TESSERACT_NO_AUTOSYNC=1 — leaving yaml unmodified; class defaults "
                 "still serve at runtime",
             )
         else:

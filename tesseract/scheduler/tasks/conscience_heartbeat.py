@@ -19,6 +19,7 @@ schedule view once they want the tab populated.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -55,7 +56,10 @@ class ConscienceHeartbeatJob(BaseJob):
             breakers_dir = log_dir("circuit-breakers")
             conscience_dir = _resolve_conscience_dir(ctx)
             enabled_job_count = _count_enabled_jobs(ctx.app)
-            report = evaluate_drift(
+            # Off the loop: reads runs.jsonl (grows one row per job run for
+            # the life of the install) plus the circuit-breaker log tree.
+            report = await asyncio.to_thread(
+                evaluate_drift,
                 schedule_log_dir=schedule_log_dir,
                 breakers_dir=breakers_dir,
                 thresholds=cfg.thresholds,
@@ -285,7 +289,7 @@ async def _broadcast_transition(app: Any, transition: dict) -> int:
 
     1. Per-session `ChatSession.ingest_conscience_transition` — queues a
        synthetic `[conscience_drift]` note for next-turn injection so
-       TARS himself becomes aware. Happens for every session whether or
+       The assistant itself becomes aware. Happens for every session whether or
        not a WS is attached.
     2. `conscience_drift` envelope broadcast to every live WS — the
        Mirror frontend dispatches to a toast so the operator is alerted
@@ -391,7 +395,7 @@ def _persist_drift_memory(
 
 _MOOD_NUDGES: dict[tuple[Status, Status], tuple[float, float]] = {
     # (from, to): (valence_delta, intensity_delta).
-    # Escalation — TARS gets darker + a touch more agitated.
+    # Escalation — the assistant gets darker + a touch more agitated.
     ("ok", "warn"): (-0.15, +0.05),
     ("ok", "bad"): (-0.30, +0.10),
     ("warn", "bad"): (-0.20, +0.10),

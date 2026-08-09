@@ -86,7 +86,7 @@ export default defineConfig(async () => ({
     hmr: false,
     watch: {
       // Vite only needs to watch the Mirror frontend (src/, public/).
-      // Everything else under tesseract/ is Python runtime state — when TARS
+      // Everything else under tesseract/ is Python runtime state — when the assistant
       // (or the operator, or a delegated CLI) writes there, an HMR fire
       // would drop the WebSocket and `cleanup_session` would cancel any
       // in-flight turn. So exclude all Python source and runtime dirs.

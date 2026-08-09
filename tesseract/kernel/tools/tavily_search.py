@@ -15,15 +15,18 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import ClassVar
 
-import httpx
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.web_providers import fetch_json
+from tesseract.kernel.tools.web_providers.tavily import TavilySearchProvider
 
-_ENDPOINT = "https://api.tavily.com/search"
 _TIMEOUT = 15.0
 _MAX_RESULTS = 10
+
+_PROVIDER = TavilySearchProvider()
 
 
 class TavilySearchInput(BaseModel):
@@ -68,71 +71,32 @@ class TavilySearchTool(Tool):
     async def run(self, tool_input: BaseModel, context: ToolContext) -> ToolResult:
         inp = tool_input if isinstance(tool_input, TavilySearchInput) else TavilySearchInput(**tool_input.model_dump())
 
-        api_key = os.environ.get("TAVILY_API_KEY")
+        api_key = os.environ.get(_PROVIDER.api_key_env)
         if not api_key:
-            return ToolResult(
-                output="TAVILY_API_KEY not set in .env. Get a free key (1K/mo) at https://tavily.com and add TAVILY_API_KEY=... to tesseract/.env",
-                is_error=True,
-            )
+            return ToolResult(output=_PROVIDER.missing_key_message(), is_error=True)
 
         if inp.search_depth not in ("basic", "advanced"):
             return ToolResult(output=f"search_depth must be 'basic' or 'advanced', got {inp.search_depth!r}", is_error=True)
         if inp.topic not in ("general", "news"):
             return ToolResult(output=f"topic must be 'general' or 'news', got {inp.topic!r}", is_error=True)
 
-        payload: dict[str, object] = {
-            "query": inp.query,
-            "max_results": inp.max_results,
-            "search_depth": inp.search_depth,
-            "topic": inp.topic,
-            "include_answer": inp.include_answer,
-        }
-        if inp.include_domains:
-            payload["include_domains"] = inp.include_domains
-        if inp.exclude_domains:
-            payload["exclude_domains"] = inp.exclude_domains
+        outcome = await fetch_json(
+            _PROVIDER,
+            api_key=api_key,
+            request=_PROVIDER.build_request(inp),
+            timeout=_TIMEOUT,
+            note_tripwire=_note_tavily_tripwire,
+        )
+        if outcome.error is not None:
+            return outcome.error
 
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-
-        try:
-            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-                r = await client.post(_ENDPOINT, headers=headers, json=payload)
-        except httpx.TimeoutException:
-            _note_tavily_tripwire("latency_spike", {"timeout_seconds": _TIMEOUT})
-            return ToolResult(output=f"Tavily search timed out after {_TIMEOUT}s", is_error=True)
-        except httpx.HTTPError as e:
-            _note_tavily_tripwire("http_error", {"exception": repr(e)})
-            return ToolResult(output=f"Tavily search request failed: {e}", is_error=True)
-
-        if r.status_code == 401:
-            _note_tavily_tripwire("unavailable", {"status_code": 401})
-            return ToolResult(output="Tavily 401 — API key rejected. Check TAVILY_API_KEY.", is_error=True)
-        if r.status_code == 429:
-            _note_tavily_tripwire("http_error", {"status_code": 429, "reason": "rate limit"})
-            return ToolResult(output="Tavily 429 — rate limit exceeded (1K/mo on the free tier).", is_error=True)
-        if r.status_code >= 400:
-            _note_tavily_tripwire(
-                "http_error",
-                {"status_code": r.status_code, "body": r.text[:200]},
-            )
-            return ToolResult(output=f"Tavily {r.status_code}: {r.text[:200]}", is_error=True)
-
-        try:
-            data = r.json()
-        except ValueError:
-            _note_tavily_tripwire("shape_mismatch", {"reason": "non-JSON response"})
-            return ToolResult(output="Tavily returned non-JSON", is_error=True)
-
-        results = data.get("results") or []
-        if not results and not data.get("answer"):
+        results, answer = _PROVIDER.parse_results(outcome.data or {})
+        if not results and not answer:
             return ToolResult(output=f"No results for '{inp.query}'")
 
         lines: list[str] = [f"Tavily: {inp.query}  ({len(results)} results)"]
-        if inp.include_answer and data.get("answer"):
-            lines.append(f"\nAnswer: {data['answer']}")
+        if inp.include_answer and answer:
+            lines.append(f"\nAnswer: {answer}")
         for i, hit in enumerate(results, 1):
             title = (hit.get("title") or "").strip()
             url = (hit.get("url") or "").strip()
@@ -151,7 +115,7 @@ def _note_tavily_tripwire(drift_kind: str, evidence: dict) -> None:
     """AU-14 14b production tripwire — best-effort JSONL row write."""
     try:
         from tesseract.orchestrator.provider_health import note_production_tripwire
-        note_production_tripwire("tavily_search", "api.tavily.search", drift_kind, evidence)
+        note_production_tripwire("tavily_search", _PROVIDER.tripwire_source, drift_kind, evidence)
     except Exception:  # noqa: BLE001
         logging.getLogger(__name__).debug(
             "tavily_search: tripwire write failed", exc_info=True

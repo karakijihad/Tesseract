@@ -19,11 +19,6 @@
  * implementation detail, not design surface, and are excluded to avoid
  * false positives.
  *
- * public/doodle.html is excluded entirely: a standalone scratch canvas tool
- * with its own bespoke blue/cyan palette, unrelated to the Mirror app's
- * design system — none of its colors have (or should have) a tokens.css
- * equivalent, so there's nothing for this audit to check there.
- *
  * Exits 1 if any hex/ms violation is found outside src/styles/tokens.css.
  *
  * Run: node scripts/audit-hardcoded-tokens.mjs
@@ -38,7 +33,6 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SRC_DIR = join(__dirname, '..', 'src');
 const PUBLIC_DIR = join(__dirname, '..', 'public');
 const TOKENS_FILE = join(SRC_DIR, 'styles', 'tokens.css');
-const DOODLE_FILE = join(PUBLIC_DIR, 'doodle.html');
 
 // Patterns
 const HEX_RE = /#[0-9a-fA-F]{3,8}\b/g;
@@ -139,7 +133,7 @@ function scanFile(filePath) {
 
 const files = [
   ...collectFiles(SRC_DIR, /\.(ts|tsx|css)$/, [TOKENS_FILE]),
-  ...collectFiles(PUBLIC_DIR, /\.html$/, [DOODLE_FILE]),
+  ...collectFiles(PUBLIC_DIR, /\.html$/, []),
 ];
 const allViolations = [];
 

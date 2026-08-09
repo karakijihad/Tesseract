@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -25,7 +24,13 @@ from typing import Any
 import httpx
 
 from tesseract.brain.boot import ollama_up
-from tesseract.memory.ollama_boot import _fetch_tags, _is_localhost, _wait_for_ollama
+from tesseract.memory.ollama_boot import (
+    _fetch_tags,
+    _is_localhost,
+    _wait_for_ollama,
+)
+from tesseract.memory.ollama_boot import ollama_exe as _ollama_exe
+from tesseract.scripts.ensure_ollama import ensure_ollama
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +52,14 @@ class OllamaStatus:
     tags: list[str]
     embedding_present: bool
     owned_by_mirror: bool
+    # Whether the binary exists at all. Without it the panel cannot tell
+    # "stopped" from "never installed", and those need different offers: one
+    # is a start toggle, the other is a download the operator must choose.
+    binary_present: bool
+    # An install is a long download, so it runs detached and reports here
+    # rather than through the request that started it.
+    installing: bool = False
+    install_error: str | None = None
 
 
 class OllamaSupervisor:
@@ -56,6 +69,8 @@ class OllamaSupervisor:
         self.base_url = base_url
         self.embedding_model = embedding_model
         self._proc: subprocess.Popen | None = None
+        self._install_task: asyncio.Task | None = None
+        self._install_error: str | None = None
         # Default 5s per-request timeout — defensive belt against a future
         # caller that uses the shared client without passing an explicit
         # `timeout=` per request. A hung Ollama (rare but possible during
@@ -69,6 +84,12 @@ class OllamaSupervisor:
         """Close the keepalive client. Called from Mirror shutdown so the
         TCP sockets to localhost:11434 unwind cleanly instead of being
         reaped by Python's GC at process exit."""
+        # A detached install would otherwise outlive the app as a pending task
+        # and log a "task was destroyed" warning on the way down. Cancelling
+        # only drops OUR wait — `ensure_ollama` runs in a thread and the vendor
+        # installer is its own process, so neither is interrupted mid-write.
+        if self._install_task is not None and not self._install_task.done():
+            self._install_task.cancel()
         try:
             await self._client.aclose()
         except Exception:
@@ -85,8 +106,65 @@ class OllamaSupervisor:
             base_url=self.base_url,
             embedding_model=self.embedding_model,
             tags=tags,
-            embedding_present=_model_present(tags, self.embedding_model),
+            # No tracked model means Ollama is not the one serving embeddings,
+            # so there is nothing here to be missing. Reporting False would
+            # light the panel's "embedding model missing" warning over a
+            # model that lives somewhere else entirely.
+            embedding_present=(
+                _model_present(tags, self.embedding_model)
+                if self.embedding_model
+                else True
+            ),
             owned_by_mirror=owned,
+            binary_present=await asyncio.to_thread(_ollama_exe) is not None,
+            installing=self._installing(),
+            install_error=self._install_error,
+        )
+
+    def _installing(self) -> bool:
+        return self._install_task is not None and not self._install_task.done()
+
+    async def install(self) -> tuple[bool, str]:
+        """Start installing Ollama + the configured embedding model.
+
+        Returns as soon as the work is *scheduled*, not when it finishes.
+        `ensure_ollama`'s own budgets run to ~45 minutes for a single model
+        (300s download + 600s install + 1800s pull) and the pull budget is
+        per model, so a catalog wiring several costs more again. Awaiting
+        that inside the request would hold
+        the HTTP connection open for all of it — any client or proxy timeout
+        would then report a failure while the install ran happily to
+        completion behind it. The panel already polls status every 30s, so
+        `installing` / `install_error` are where the outcome belongs.
+
+        The one path the per-launch retry deliberately will not take. That
+        retry runs `ensure_ollama --no-install` because re-downloading a
+        vendor installer on every launch — on a machine where the install was
+        blocked by UAC, antivirus or the operator declining — costs hundreds of
+        megabytes to fail the same way each time. So the recovery is an
+        operator-initiated act instead, which is also what the runtime already
+        says about this class of work: `ollama_boot` refuses to auto-pull
+        because "gigabytes of download are not a silent side effect".
+
+        """
+        if not _is_localhost(self.base_url):
+            return False, f"refuse to install: {self.base_url} is not localhost"
+        if self._installing():
+            return True, "install already in progress"
+        self._install_error = None
+        self._install_task = asyncio.create_task(self._run_install())
+        return True, "installing — downloading Ollama and the embedding model"
+
+    async def _run_install(self) -> None:
+        try:
+            ok = await asyncio.to_thread(ensure_ollama, allow_install=True)
+        except Exception as exc:  # noqa: BLE001 — surfaced via status, never raised into a task
+            log.exception("ollama install failed")
+            self._install_error = str(exc)
+            return
+        self._install_error = None if ok else (
+            "install did not complete — the vendor installer may have been "
+            "blocked or declined. See the backend log for the failing step."
         )
 
     async def start(self) -> tuple[bool, str]:
@@ -98,9 +176,13 @@ class OllamaSupervisor:
             return True, "already running"
         if not _is_localhost(self.base_url):
             return False, f"refuse to start: {self.base_url} is not localhost"
-        exe = shutil.which("ollama")
+        # `_ollama_exe`, not a bare `shutil.which`: a just-completed install
+        # does not update THIS process's PATH, so the start immediately after
+        # one would have reported "not on PATH" against a binary sitting in
+        # the default per-user install dir.
+        exe = _ollama_exe()
         if exe is None:
-            return False, "ollama binary not on PATH"
+            return False, "ollama is not installed"
 
         def _spawn() -> subprocess.Popen | None:
             kwargs: dict[str, Any] = {

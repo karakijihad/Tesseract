@@ -1,7 +1,7 @@
 """Shared helpers for subprocess-backed CLI adapters and delegate tools.
 
-Extracted from `delegate_codex.py` so `kernel/adapters/cli.py` (the
-chat_brain adapter) and `kernel/tools/delegate_codex.py` (the tool) both
+Extracted from `delegate_auditor.py` so `kernel/adapters/cli.py` (the
+chat_brain adapter) and `kernel/tools/delegate_auditor.py` (the tool) both
 import from one place. Underscore-prefixed names live here to avoid
 adapters reaching into a tool's internals.
 """
@@ -33,6 +33,52 @@ def claude_subscription_env() -> dict[str, str]:
     env = os.environ.copy()
     env.pop("ANTHROPIC_API_KEY", None)
     env.pop("ANTHROPIC_AUTH_TOKEN", None)
+    return env
+
+
+class MCPTokenScopeError(RuntimeError):
+    """The spawned process's hub identity could not be established."""
+
+
+def scope_mcp_token(env: dict[str, str], client_name: str) -> dict[str, str]:
+    """Leave the spawned CLI holding its own hub bearer token and no other.
+
+    The backend's environment carries every configured client's token — the
+    operator's included — and a child process inherits the lot. Ownership on
+    the lane surface is keyed on the MCP client identity the bearer resolves
+    to, so a process holding four tokens picks which principal to be and the
+    owner check on the other end decides nothing.
+
+    Deliberately NOT folded into the `*_subscription_env` builders above.
+    Those serve every CLI-backed role (`kernel/adapters/cli.py::_build_env`),
+    a scheduled job, and a non-lane delegate — none of which are lanes, and
+    all of which are the runtime acting as the operator. Narrowing them would
+    have demoted the assistant's own brain to a lane identity.
+
+    Fails CLOSED. An unreadable `mcp.yaml` used to leave the environment
+    untouched, which is the leak this function exists to close, arriving
+    silently at the moment config is broken. A lane that cannot be given one
+    identity must not be given all of them.
+    """
+    from tesseract.config.mcp import load_mcp_config
+
+    try:
+        clients = load_mcp_config().clients
+    except Exception as exc:  # noqa: BLE001 — reported, never swallowed
+        raise MCPTokenScopeError(
+            f"cannot scope the MCP token for {client_name!r}: mcp.yaml is "
+            f"unreadable ({exc}). Refusing to spawn a process holding every "
+            f"configured client's bearer token."
+        ) from exc
+    own = next((c.token_env for c in clients if c.name == client_name), None)
+    if own is None:
+        raise MCPTokenScopeError(
+            f"mcp.yaml has no client named {client_name!r}; refusing to spawn "
+            f"a process with an unresolvable hub identity"
+        )
+    for client in clients:
+        if client.token_env != own:
+            env.pop(client.token_env, None)
     return env
 
 

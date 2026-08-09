@@ -24,7 +24,7 @@
   --ink-55:  rgba(234,234,248,0.55);        /* meta */
   --ink-38:  rgba(234,234,248,0.38);        /* disabled */
 
-  /* Accent — TARS violet (operator-preferred). Single source for UI *and*
+  /* Accent — the assistant violet (operator-preferred). Single source for UI *and*
      the WebGL orb: GlobalCanvas reads --accent-hsl at boot and pushes it
      through the entity store, so this block recolors both. Atmosphere,
      synapse glows, and frosted surfaces all key off --accent-hsl too. */

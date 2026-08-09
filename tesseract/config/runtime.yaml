@@ -31,8 +31,14 @@ max_spawn_depth: 3
 # auto-flipped to a background spawn instead.
 max_foreground_delegate_timeout_s: 180
 
+# How long a sub-agent that called `agent_ask` waits for its caller's
+# answer before giving up. The wait is otherwise unbounded and holds a
+# spawn slot; on expiry the sub-agent is told to state its assumption
+# and continue rather than being killed.
+agent_question_timeout_s: 900
+
 # A background spawn still running past this many seconds is flagged
-# stalled and surfaced to TARS at the next turn. Generous on purpose — most
+# stalled and surfaced to the assistant at the next turn. Generous on purpose — most
 # hung subprocesses are already killed by their own shorter timeout.
 spawn_stall_seconds: 900
 

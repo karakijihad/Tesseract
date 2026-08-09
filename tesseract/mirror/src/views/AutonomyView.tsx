@@ -3,7 +3,7 @@
 // Single screen that lets the operator answer the six GOVERNANCE §15
 // questions without tab clicks:
 //
-//   Q1 (what is TARS doing right now?) → AgendaPane + WorkersPane
+//   Q1 (what is the assistant doing right now?) → AgendaPane + WorkersPane
 //   Q2 (why?)                          → AgendaPane + DetailModal rationale
 //   Q3 (what can it do without me?)    → AgendaPane (risk_class chip)
 //   Q4 (what needs my approval?)       → ApprovalsPane

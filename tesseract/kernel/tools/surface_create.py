@@ -28,7 +28,7 @@ class SurfaceCreateInput(BaseModel):
             "render as a JSON-dump fallback card."
         )
     )
-    view: str = Field(description="Canvas view the surface belongs to (e.g. 'tars').")
+    view: str = Field(description="Canvas view the surface belongs to (e.g. 'orb').")
     props: dict[str, Any] = Field(
         default_factory=dict,
         description=(

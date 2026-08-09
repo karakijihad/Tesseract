@@ -1,7 +1,7 @@
-"""controller_session_list — list TARS controller sessions on disk.
+"""controller_session_list — list agent controller sessions on disk.
 
 The chat brain spawns controller sessions via start_controller_session /
-delegate_tars_controller. Those live in the controller registry (separate
+delegate_agent_controller. Those live in the controller registry (separate
 from brain.session_store). This tool reads them so the brain can poll a
 detached session's status. Read-only — AUTO tier.
 """
@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
 
-# Mirror of `tars_controller.sessions.SessionStatus`, declared inline so the
+# Mirror of `agent_controller.sessions.SessionStatus`, declared inline so the
 # tool schema does not pull the heavy orchestrator package at registration —
 # the runtime call still imports SessionRegistry lazily inside `run`.
 ControllerSessionStatus = Literal["active", "idle", "detached", "closed"]
@@ -38,8 +38,8 @@ class ControllerSessionListTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "List TARS controller sessions (the ones started via "
-            "start_controller_session / delegate_tars_controller), newest "
+            "List agent controller sessions (the ones started via "
+            "start_controller_session / delegate_agent_controller), newest "
             "first. Returns session_id, title, mode, origin, status, "
             "last_active_at. Use to check whether a detached session finished."
         )
@@ -55,7 +55,7 @@ class ControllerSessionListTool(Tool):
         return True
 
     async def run(self, tool_input: BaseModel, context: ToolContext) -> ToolResult:
-        from tesseract.orchestrator.tars_controller.sessions import SessionRegistry
+        from tesseract.orchestrator.agent_controller.sessions import SessionRegistry
 
         inp: ControllerSessionListInput = tool_input  # type: ignore[assignment]
         records = SessionRegistry().list_sessions(status=inp.status)

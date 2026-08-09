@@ -1,15 +1,15 @@
 """Workspace comment / operator-post auto-reply via controller session.
 
 When an operator posts a comment on a workspace event, or creates a new
-operator_post thread, this module dispatches a fresh TARS controller
+operator_post thread, this module dispatches a fresh agent controller
 session (the same ``dispatch_to_controller`` primitive every autonomy
 surface uses — survives a backend restart, no Mirror-session dependency,
 no daemon cold-fork from a web request).
 
 The controller calls the ``workspace_reply`` tool directly, which writes
-the ``WorkspaceComment(author="tars")`` to the shared ``EventStore``
+the ``WorkspaceComment(author="agent")`` to the shared ``EventStore``
 (cross-process file-locked). After dispatch completes the backend reads
-the newly-written tars comment(s) on the thread (via ``list_comments`` +
+the newly-written agent comment(s) on the thread (via ``list_comments`` +
 timestamp gate) and broadcasts ``workspace_comment_appended`` so the
 open thread renders the reply live.
 
@@ -33,7 +33,7 @@ from typing import Any
 
 import yaml
 
-from tesseract.orchestrator.tars_controller.dispatcher import (
+from tesseract.orchestrator.agent_controller.dispatcher import (
     DispatcherError,
     dispatch_to_controller,
 )
@@ -104,7 +104,7 @@ def build_workspace_reply_prompt(
 ) -> str:
     """Assemble the controller directive prompt.
 
-    Instructs TARS to call ``workspace_reply`` with the exact
+    Instructs the assistant to call ``workspace_reply`` with the exact
     ``event_id`` + ``comment_id`` rather than returning prose —
     the reply is durable only when the controller writes it via the
     tool. ``kind`` is ``"comment"`` (operator comment on existing event)
@@ -136,7 +136,7 @@ def build_workspace_reply_prompt(
     if existing_thread:
         lines.append("Thread so far (oldest first):")
         for c in existing_thread:
-            who = "Operator" if c.author == "operator" else "TARS"
+            who = "Operator" if c.author == "operator" else "the assistant"
             lines.append(f"  [{who}] {c.body[:300]}")
         lines.append("")
     lines.append(f"Latest operator message: {comment_text}")
@@ -167,7 +167,7 @@ async def dispatch_workspace_reply(
 
     The controller calls ``workspace_reply`` (durable — writes before
     this function returns). The backend then reads the newly-written
-    tars comment and broadcasts it for live frontend update. Never
+    agent comment and broadcasts it for live frontend update. Never
     writes the reply itself (no double-write). Never raises.
 
     Parameters
@@ -207,7 +207,7 @@ async def dispatch_workspace_reply(
     try:
         before_ids: set[str] = {
             c.comment_id for c in store.list_comments(event_id)
-            if c.author == "tars"
+            if c.author == "agent"
         }
     except Exception:
         log.exception("workspace reply: pre-dispatch list_comments failed for %s", event_id)
@@ -239,7 +239,7 @@ async def dispatch_workspace_reply(
         return None
 
     # Find the comment(s) the controller just wrote for this event.
-    # New tars comments are those NOT in the pre-dispatch snapshot.
+    # New agent comments are those NOT in the pre-dispatch snapshot.
     # In the normal case exactly one comment is written; if the
     # controller called the tool more than once we broadcast all of
     # them in order (sorted ascending by ts as returned by list_comments).
@@ -249,21 +249,21 @@ async def dispatch_workspace_reply(
         log.exception("workspace reply: list_comments failed for %s", event_id)
         return None
 
-    new_tars = [
+    new_agent = [
         c for c in all_comments
-        if c.author == "tars" and c.comment_id not in before_ids
+        if c.author == "agent" and c.comment_id not in before_ids
     ]
 
-    if not new_tars:
+    if not new_agent:
         log.info(
             "workspace reply: controller did not write a comment for %s "
-            "(no new tars comments after dispatch)",
+            "(no new agent comments after dispatch)",
             event_id,
         )
         return None
 
     last: WorkspaceComment | None = None
-    for c in new_tars:
+    for c in new_agent:
         try:
             await broadcast_comment_appended(app, c)
             last = c

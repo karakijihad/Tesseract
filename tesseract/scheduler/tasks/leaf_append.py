@@ -6,12 +6,13 @@ matching ``LeafBuffer``. Transitions the leaf to ``BUFFERED``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from pathlib import Path
 
 from tesseract.memory.leaf_buffers import LeafBuffer, buffers_root
-from tesseract.memory.leaves import LeafState, LeafStore
+from tesseract.memory.leaves import LEAF_PIPELINE_LOCK, LeafState, LeafStore
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.scheduler.types import JobContext, JobResult
 
@@ -39,25 +40,35 @@ class AppendBufferJob(BaseJob):
         store = LeafStore(root=Path(store_root) if store_root else None)
         buf_root = Path(buf_root_cfg).resolve() if buf_root_cfg else buffers_root()
 
-        processed = 0
-        appended = 0
-        errors = 0
+        def _process() -> tuple[int, int, int]:
+            processed = 0
+            appended = 0
+            errors = 0
+            # Held for the whole pass — see `LEAF_PIPELINE_LOCK`'s
+            # docstring. Must not interleave with `SealJob` reading this
+            # same buffer + clearing it: an id appended here has to be
+            # visible together with its leaf's BUFFERED transition, or
+            # a seal landing in between can clear the id before the
+            # transition lands and orphan the leaf.
+            with LEAF_PIPELINE_LOCK:
+                for leaf in store.list_in_state(LeafState.ADMITTED):
+                    if processed >= max_per_tick:
+                        break
+                    processed += 1
+                    try:
+                        buffer = LeafBuffer(leaf.source, root=buf_root)
+                        buffer.append(leaf.id)
+                        store.transition(leaf, LeafState.BUFFERED, reason="appended")
+                        appended += 1
+                    except Exception:
+                        log.exception(
+                            "append_buffer: leaf %s raised — leaving in admitted",
+                            leaf.id,
+                        )
+                        errors += 1
+            return processed, appended, errors
 
-        for leaf in store.list_in_state(LeafState.ADMITTED):
-            if processed >= max_per_tick:
-                break
-            processed += 1
-            try:
-                buffer = LeafBuffer(leaf.source, root=buf_root)
-                buffer.append(leaf.id)
-                store.transition(leaf, LeafState.BUFFERED, reason="appended")
-                appended += 1
-            except Exception:
-                log.exception(
-                    "append_buffer: leaf %s raised — leaving in admitted",
-                    leaf.id,
-                )
-                errors += 1
+        processed, appended, errors = await asyncio.to_thread(_process)
 
         return JobResult(
             job_name=ctx.job_name,

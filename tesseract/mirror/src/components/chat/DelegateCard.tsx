@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useConversationStore } from '../../stores/conversation';
+import { useEntityName } from '../../hooks/useEntityName';
 
 interface Props {
   call_id: string;
@@ -8,6 +9,7 @@ interface Props {
 const VISIBLE_LINES = 50;
 
 export function DelegateCard({ call_id }: Props) {
+  const entityName = useEntityName();
   const stream = useConversationStore(state => state.getActiveSlice()?.cliStreams.get(call_id));
   const isBackground = useConversationStore(state => state.getActiveSlice()?.backgroundCalls.has(call_id) ?? false);
   const outputRef = useRef<HTMLPreElement | null>(null);
@@ -29,7 +31,7 @@ export function DelegateCard({ call_id }: Props) {
       <div className="delegate-card-header">
         <span className="delegate-card-tool">{stream.tool}</span>
         {isBackground && (
-          <span className="delegate-card-bg-badge" title="Dispatched in background — TARS can keep working in parallel">
+          <span className="delegate-card-bg-badge" title={`Dispatched in background — ${entityName} can keep working in parallel`}>
             ↻ background
           </span>
         )}

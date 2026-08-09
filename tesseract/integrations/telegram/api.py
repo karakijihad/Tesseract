@@ -29,7 +29,7 @@ class TelegramMessage:
     text: str
     date: int
     # Visibility-first envelope (CR-1): every recognized non-text part
-    # surfaces as a ``ChannelAttachment`` so TARS sees what was sent
+    # surfaces as a ``ChannelAttachment`` so the assistant sees what was sent
     # even when no decoder is wired yet (status="no_handler").
     attachments: tuple[ChannelAttachment, ...] = field(default_factory=tuple)
 
@@ -659,7 +659,7 @@ def parse_message_update(update: dict[str, Any]) -> TelegramMessage | None:
     the update is structurally unusable (missing ``update_id``/``chat``
     or non-private chat with no recognized parts); a chat-targeted
     update with no parseable kind still yields a ``TelegramMessage``
-    with one ``kind="unknown"`` attachment so TARS never silently
+    with one ``kind="unknown"`` attachment so the assistant never silently
     misses an addressed message.
     """
 
@@ -711,7 +711,7 @@ def _extract_attachments(
 
     All emitted attachments carry ``status="no_handler"`` — CR-1 only
     surfaces visibility; CR-2 fills in concrete decoders. The caption is
-    attached to the first non-text part so TARS sees ``user typed X
+    attached to the first non-text part so the assistant sees ``user typed X
     alongside the photo`` in one place.
     """
     parts: list[ChannelAttachment] = []
@@ -748,7 +748,7 @@ def _extract_attachments(
         # Sticker (and any future kind that pre-populates ``caption``
         # with machine-generated metadata) keeps its descriptor; the
         # user-supplied message caption appends after a separator so
-        # TARS sees both signals without one clobbering the other.
+        # The assistant sees both signals without one clobbering the other.
         merged_caption = (
             f"{head.caption}; {caption}" if head.caption else caption
         )

@@ -219,6 +219,173 @@ def _live_chat_attr(app: web.Application, attr: str, fallback: float | None, cas
     return cast(fallback) if fallback is not None else cast(0)
 
 
+# ── Identity write ──────────────────────────────────────────────────
+
+# Long enough for a two-word name, short enough that the value stays
+# usable as a cockpit header and as half of a spoken wake phrase.
+_MAX_IDENTITY_LEN = 40
+
+
+def _clean_identity_value(raw: object, field: str) -> str:
+    """Collapse to a single-line, single-spaced name or reject it.
+
+    Whitespace is collapsed rather than merely stripped because every
+    consumer is a one-line surface: the cockpit header, a chat bubble, and
+    the wake phrase, which tokenizes `<prefix> <name>` and would silently
+    fold an embedded newline into the match window.
+    """
+    if not isinstance(raw, str):
+        raise ValueError(f"{field} must be a string")
+    value = " ".join(raw.split())
+    if not value:
+        raise ValueError(f"{field} must not be blank")
+    if len(value) > _MAX_IDENTITY_LEN:
+        raise ValueError(f"{field} must be at most {_MAX_IDENTITY_LEN} characters")
+    return value
+
+
+def _clean_wake_word(raw: object) -> dict[str, object]:
+    if not isinstance(raw, dict):
+        raise ValueError("wake_word must be an object")
+    updates: dict[str, object] = {}
+    if "enabled" in raw:
+        if not isinstance(raw["enabled"], bool):
+            raise ValueError("wake_word.enabled must be a boolean")
+        updates["enabled"] = raw["enabled"]
+    if "prefix" in raw:
+        updates["prefix"] = _clean_identity_value(raw["prefix"], "wake_word.prefix")
+    if not updates:
+        raise ValueError("wake_word must carry 'enabled' or 'prefix'")
+    return updates
+
+
+def _clean_gender(raw: object) -> str:
+    """Validate against the derivation table rather than a literal list here.
+
+    Pronouns are derived from this value, so a gender nothing can map is not
+    a preference to store — it is a write that would leave the agent
+    describing itself one way and referred to another.
+    """
+    from tesseract.config_seed import PRONOUNS
+
+    value = str(raw or "").strip().lower()
+    if value not in PRONOUNS:
+        raise ValueError(f"gender must be one of: {', '.join(sorted(PRONOUNS))}")
+    return value
+
+
+async def set_identity(request: web.Request) -> web.Response:
+    """POST /api/identity — rename the agent, the operator, or the wake phrase.
+
+    `mirror.yaml` stays in `file_write`'s `_LOCKED_CONFIG_FILES`, so a tool
+    cannot reach these keys; this operator-attended route is the sanctioned
+    writer. Every field is optional and only the ones present are written —
+    the Identity tab saves one control at a time.
+
+    Workspace documents the operator or the assistant has EDITED are never
+    rewritten by a rename: that prose is theirs, and editing it under them
+    is the thing this route has always refused to do.
+
+    A document still byte-identical to what was seeded is not authored prose,
+    and `config_seed.refresh_seeded_docs` re-renders those with the new values
+    on the next boot — so a rename or a gender change does reach an untouched
+    IDENTITY.md. The protection is against overwriting authorship, not against
+    the documents ever being correct.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"error": "body must be an object"}, status=400)
+
+    try:
+        updates = {
+            key: _clean_identity_value(body[key], key)
+            for key in ("name", "operator_name")
+            if key in body
+        }
+        if "gender" in body:
+            updates["gender"] = _clean_gender(body["gender"])
+        wake = _clean_wake_word(body["wake_word"]) if "wake_word" in body else {}
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+
+    if not updates and not wake:
+        return web.json_response(
+            {
+                "error": "nothing to update: send 'name', 'operator_name', "
+                "'gender' or 'wake_word'"
+            },
+            status=400,
+        )
+
+    return await apply_identity_updates(request.app, updates, wake)
+
+
+async def apply_identity_updates(
+    app: web.Application,
+    updates: dict[str, object],
+    wake: dict[str, object],
+) -> web.Response:
+    """Persist already-validated identity keys, reload, broadcast.
+
+    Shared with the Voice settings panel's wake-word toggle so there is one
+    writer for `mirror.yaml::identity` rather than two that drift.
+    """
+    from tesseract.lib.yaml_io import round_trip_yaml
+    from tesseract.mirror.server.config_watcher import refresh_identity
+    from tesseract.mirror.server.routes.settings import mirror_yaml_path
+
+    def _apply(doc: object) -> None:
+        identity = doc.get("identity")  # type: ignore[union-attr]
+        if identity is None:
+            raise KeyError("identity")
+        identity.update(updates)
+        if wake:
+            # Write into the existing block rather than creating one: the
+            # threshold beside it is a required key, and a half-block here
+            # is refused by `load_identity` at the next read.
+            block = identity.get("wake_word")
+            if block is None:
+                raise KeyError("identity.wake_word")
+            block.update(wake)
+
+    path = mirror_yaml_path(app)
+    try:
+        round_trip_yaml(path, _apply)
+    except KeyError as exc:
+        return web.json_response({"error": f"mirror.yaml missing key: {exc}"}, status=500)
+    except (OSError, ValueError) as exc:
+        return web.json_response({"error": f"failed to write mirror.yaml: {exc}"}, status=500)
+
+    try:
+        applied = refresh_identity(app, path)
+    except Exception as exc:
+        # The file is written but the live config still holds the old value.
+        # Saying so beats a success the running process does not honour.
+        log.exception("set_identity: live reload failed after writing %s", path)
+        return web.json_response(
+            {"error": f"saved, but the live reload failed: {exc}"}, status=500
+        )
+
+    log.info("identity: %s", applied)
+    await _broadcast_identity_changed(app, applied)
+    return web.json_response(applied)
+
+
+async def _broadcast_identity_changed(
+    app: web.Application, applied: dict[str, object]
+) -> None:
+    sessions = app.get("sessions") or {}
+    for session_id, ws in list(sessions.items()):
+        envelope = make_envelope("identity_changed", "routing", session_id, applied)
+        try:
+            await ws.send_json(envelope)
+        except Exception:
+            log.debug("identity_changed broadcast skipped for %s (likely closed)", session_id)
+
+
 async def set_mode(request: web.Request) -> web.Response:
     try:
         body = await request.json()

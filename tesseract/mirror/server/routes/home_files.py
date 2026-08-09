@@ -21,13 +21,13 @@ from pathlib import Path
 
 from aiohttp import web
 
-_SERVED_TREES = frozenset({"downloads", "vault", "tars-workshop"})
+_SERVED_TREES = frozenset({"downloads", "vault", "workshop"})
 _SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9_.\-][A-Za-z0-9_.\- ]{0,127}$")
 _DEFAULT_TYPE = "application/octet-stream"
 
 # Only these render inline. Everything else downloads.
 #
-# `downloads/` holds files TARS fetched from the web, so its contents are not
+# `downloads/` holds files the assistant fetched from the web, so its contents are not
 # trusted input. Serving an .html or .svg inline would run its script on the
 # Mirror's own origin, with same-origin reach into every other API on this
 # port — the tree exists to show the operator a PDF, not to host active

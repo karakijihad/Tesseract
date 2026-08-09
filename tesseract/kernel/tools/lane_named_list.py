@@ -12,7 +12,7 @@ from typing import ClassVar
 from pydantic import BaseModel
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
-from tesseract.orchestrator.tars_controller.lanes.tool_support import (
+from tesseract.orchestrator.agent_controller.lanes.tool_support import (
     maybe_await,
     resolve_named_lane_manager,
 )

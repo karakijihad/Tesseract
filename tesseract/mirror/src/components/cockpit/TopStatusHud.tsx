@@ -1,5 +1,5 @@
 // Slice 2 — floating top-centre status pill for the cockpit. A glass HUD
-// carrying TARS's identity at a glance (name · mode · model · state · last
+// carrying the assistant's identity at a glance (name · mode · model · state · last
 // reflected), so the operator reads status without the right rail expanded.
 // Mounted by CockpitStage (SC-1) — always-on in the immersive cockpit.
 //
@@ -78,7 +78,7 @@ export function TopStatusHud() {
           className={`top-status-hud__led ${ledClass}`}
           aria-hidden="true"
         />
-        <span className="top-status-hud__name">{name || "TARS"}</span>
+        <span className="top-status-hud__name">{name}</span>
         {securityMode ? (
           <span className="top-status-hud__mode">{securityMode}</span>
         ) : null}
@@ -111,7 +111,7 @@ export function TopStatusHud() {
             disabled={updateApplying}
             aria-label={
               updateApplying
-                ? "Applying update — TARS will restart shortly"
+                ? "Applying update — TESSERACT will restart shortly"
                 : `Update available, ${updateBehind} commit${updateBehind === 1 ? "" : "s"} behind — click to apply`
             }
             onClick={() => void applyUpdate()}
@@ -148,7 +148,7 @@ export function TopStatusHud() {
             onClick={() => void applyUpdate()}
           >
             {manualRestart
-              ? "update failed — restart TARS"
+              ? "update failed — restart TESSERACT"
               : "update failed — retry"}
           </button>
         )}

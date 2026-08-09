@@ -1,13 +1,12 @@
 // SC-4 — command / VOX dispatch. Parses a line of command (or committed voice)
-// text and routes it to ONE of three cockpit actions, returning `true` when it
+// text and routes it to ONE of two cockpit actions, returning `true` when it
 // consumed the text so the caller skips the chat-brain send:
 //
 //   1. open a whole view as a glass panel        ("show me schedule")
-//   2. spawn the CV-1 trio (two lanes + routing)  ("spawn trio")
-//   3. spawn a Surface-Protocol content surface   ("open https://…", "youtube …",
+//   2. spawn a Surface-Protocol content surface   ("open https://…", "youtube …",
 //      "create html …", "open folder …", "open file …")
 //
-// Unrecognized text returns `false` → the caller hands it to TARS as normal
+// Unrecognized text returns `false` → the caller hands it to the assistant as normal
 // chat. Recognition is intentionally conservative (explicit verb + known
 // target, or a bare exact view name) so ordinary prose like "what's on my
 // schedule" is NOT hijacked into opening a panel.
@@ -19,21 +18,20 @@
 import { BACKEND_BASE } from '../lib/endpoints';
 import type { View } from '../stores/ui';
 import { usePanelStore } from './panelStore';
-import { spawnTrio } from '../canvas/triorenderer';
 
-// The cockpit hosts every spawned surface on the canonical `tars` view (the orb
-// home); `SurfaceLayer view="tars"` renders them over the orb.
-const COCKPIT_VIEW = 'tars';
+// The cockpit hosts every spawned surface on the canonical `orb` view (the orb
+// home); `SurfaceLayer view="orb"` renders them over the orb.
+const COCKPIT_VIEW = 'orb';
 
-// Views the operator can summon by name. `tars` is excluded — it is the orb
+// Views the operator can summon by name. `orb` is excluded — it is the orb
 // home, reached by closing panels, not opening one (openPanel routes it to
-// resetAll anyway, but naming it here would let "tars" masquerade as a panel).
-const VIEW_NAMES: Exclude<View, 'tars'>[] = [
+// resetAll anyway, but naming it here would let "orb" masquerade as a panel).
+const VIEW_NAMES: Exclude<View, 'orb'>[] = [
   'autonomy',
   'chat',
   'terminal',
   'pulse',
-  'soul',
+  'identity',
   'schedule',
   'agents',
   'conscience',
@@ -43,7 +41,7 @@ const VIEW_NAMES: Exclude<View, 'tars'>[] = [
 ];
 
 // A handful of natural aliases → canonical view.
-const VIEW_ALIASES: Record<string, Exclude<View, 'tars'>> = {
+const VIEW_ALIASES: Record<string, Exclude<View, 'orb'>> = {
   logs: 'pulse',
   feed: 'pulse',
   events: 'pulse',
@@ -54,6 +52,10 @@ const VIEW_ALIASES: Record<string, Exclude<View, 'tars'>> = {
   shell: 'terminal',
   console: 'terminal',
   inbox: 'workspace',
+  // The Identity tab still renders SOUL.md and now owns the voice picker,
+  // so both stay usable as spoken targets after the AS-5 rename.
+  soul: 'identity',
+  voice: 'identity',
 };
 
 // Leading command verbs we strip before matching a view target. Longest first
@@ -69,13 +71,11 @@ interface SurfaceSpawn {
 
 export interface CommandDeps {
   openPanel: (view: View) => void;
-  spawnTrio: (view: string) => Promise<unknown>;
   spawnSurface: (view: string, spawn: SurfaceSpawn) => Promise<void>;
 }
 
 const defaultDeps: CommandDeps = {
   openPanel: (view) => usePanelStore.getState().openPanel(view),
-  spawnTrio,
   spawnSurface: postSurface,
 };
 
@@ -143,7 +143,7 @@ function parseSurfaceCommand(text: string): SurfaceSpawn | null {
   }
 
   // Folder — anchored "(open|show) folder <path>". The verb is mandatory so a
-  // bare chat line like "folder: my notes" is left for TARS, not hijacked.
+  // bare chat line like "folder: my notes" is left for the assistant, not hijacked.
   const folder = text.match(/^(?:open|show)\s+folder[:\s]+(.+)$/i);
   if (folder) {
     const root = folder[1].trim();
@@ -182,20 +182,11 @@ function parseViewCommand(lower: string): View | null {
   return null;
 }
 
-function isTrioCommand(lower: string): boolean {
-  return /\btrio\b/.test(lower) && /\b(spawn|launch|open|start|show|summon)\b/.test(lower);
-}
-
 // Route a command line. Returns true when consumed (caller skips chat send).
 export function dispatchCommand(raw: string, deps: CommandDeps = defaultDeps): boolean {
   const text = raw.trim();
   if (!text) return false;
   const lower = text.toLowerCase();
-
-  if (isTrioCommand(lower)) {
-    void deps.spawnTrio(COCKPIT_VIEW);
-    return true;
-  }
 
   const surface = parseSurfaceCommand(text);
   if (surface) {
@@ -213,4 +204,4 @@ export function dispatchCommand(raw: string, deps: CommandDeps = defaultDeps): b
 }
 
 // Exposed for tests.
-export const _internal = { parseSurfaceCommand, parseViewCommand, isTrioCommand };
+export const _internal = { parseSurfaceCommand, parseViewCommand };

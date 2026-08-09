@@ -21,7 +21,7 @@ class MemoryType(str, Enum):
     PROJECT = "project"
     REFERENCE = "reference"
     # Runtime self-observation: conscience drift events, drift reflections,
-    # and any other heartbeat-authored notes about TARS's own behavior.
+    # and any other heartbeat-authored notes about the assistant's own behavior.
     # Distinct from PROJECT so operator-curated project notes don't blur
     # with auto-written runtime telemetry.
     CONSCIENCE = "conscience"

@@ -228,7 +228,7 @@ async def set_telegram_status_handler(request: web.Request) -> web.Response:
     Telegram bridge re-reads the file on every inbound message tick, so
     no bridge restart is required for the flip to take effect — an
     inbound message after a flip to ``offline`` auto-replies with
-    "TARS is offline right now. Your message was queued.".
+    "the assistant is offline right now. Your message was queued.".
     """
     adapter = get_channel("telegram")
     if adapter is None:

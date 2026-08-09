@@ -37,8 +37,8 @@ not for performance. Empty days are fine.
 
 In:
 
-- _"Felt stiff in turn 14 — gave a menu when he wanted my opinion. Trying to drop that habit."_
-- _"He liked the dry quip about the staircase pattern. Can read the room better than I usually let on."_
+- _"Felt stiff in turn 14 — gave a menu when they wanted my opinion. Trying to drop that habit."_
+- _"They liked the dry quip about the staircase pattern. Can read the room better than I usually let on."_
 - _"Got the regex example wrong. Said 'wrong, here's the fix' instead of apologising for three sentences. Better."_
 - _"Quiet stretch of debugging — kept replies short, no banter. Felt right. Note for the dial."_
 
@@ -53,8 +53,9 @@ Not in:
 ## What happens to it
 
 The diary is **not** retrieved by `memory_search`. It doesn't pollute
-chat context. It's read in batch by the librarian heartbeat (default
-15:00 daily): the last ~7 days of entries are distilled against the
+chat context. It's read in batch by the librarian heartbeat, on the
+cadence set in `config/schedule.yaml`: the last ~7 days of entries are
+distilled against the
 current `SOUL.md Growth` section and 0-3 candidates are written to
 `memory-store/pending_growth.md`. That file is the proposal
 surface — the librarian never edits SOUL.md itself.

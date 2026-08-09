@@ -2,7 +2,7 @@
 //
 // Live + recently-transitioned workers under workers/active/. Active
 // statuses are listed first (running, awaiting_io, spawning, queued),
-// then recent terminals. Answers §15 Q1 (what is TARS doing) by
+// then recent terminals. Answers §15 Q1 (what is the assistant doing) by
 // showing the actual process surface, not just the agenda intent.
 
 import React from 'react';

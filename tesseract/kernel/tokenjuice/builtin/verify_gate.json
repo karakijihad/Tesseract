@@ -1,0 +1,28 @@
+[
+  {
+    "id": "verify_gate.steps",
+    "family": "verify.gate",
+    "description": "Verification-gate brief — drop test-runner chrome, keep the summary head and the failing assertion at the tail.",
+    "priority": 80,
+    "match": {
+      "tool_names": ["verify_gate"]
+    },
+    "transforms": ["strip_ansi", "dedup_adjacent", "trim_empty_edges"],
+    "reducers": [
+      {
+        "kind": "drop_regex",
+        "patterns": [
+          "^\\s*platform \\w+ -- Python",
+          "^\\s*rootdir: ",
+          "^\\s*plugins: ",
+          "^\\s*configfile: ",
+          "^\\s*cachedir: ",
+          "^\\s*collecting \\.\\.\\.",
+          "^\\s*$"
+        ]
+      },
+      {"kind": "head_tail", "head": 60, "tail": 80}
+    ],
+    "passthrough_when": {"max_chars": 1200}
+  }
+]

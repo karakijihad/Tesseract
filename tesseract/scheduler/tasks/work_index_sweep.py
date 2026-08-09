@@ -22,6 +22,7 @@ raising"; every error path returns ``JobResult(ok=False, …)``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -41,6 +42,28 @@ def _home() -> Path:
     return Path(os.environ.get("TESSERACT_HOME") or _DEFAULT_HOME)
 
 
+def _prune_session_metadata_sync(home: Path) -> int:
+    """Open, prune, and close in one thread — sqlite3 connections are
+    bound to the thread that created them."""
+    from tesseract.memory.session_metadata import SessionMetadataIndex
+
+    sm = SessionMetadataIndex(home / "session_metadata.sqlite")
+    try:
+        return sm.prune_orphans()
+    finally:
+        sm.close()
+
+
+def _prune_work_index_sync(home: Path) -> int:
+    from tesseract.memory.work_index import WorkIndex
+
+    wi = WorkIndex(home / "work_index.sqlite")
+    try:
+        return wi.prune_orphans()
+    finally:
+        wi.close()
+
+
 class WorkIndexSweepJob(BaseJob):
     """Prune orphan rows from the two CR-1 derived indexes."""
 
@@ -50,29 +73,25 @@ class WorkIndexSweepJob(BaseJob):
         wi_pruned = 0
         errors: list[str] = []
 
-        try:
-            from tesseract.memory.session_metadata import SessionMetadataIndex
-            home = _home()
-            sm = SessionMetadataIndex(home / "session_metadata.sqlite")
-            try:
-                sm_pruned = sm.prune_orphans()
-            finally:
-                sm.close()
-        except Exception as exc:  # noqa: BLE001
-            log.exception("work_index_sweep: session_metadata prune failed")
-            errors.append(f"session_metadata: {exc!r}")
+        home = _home()
+        # Both prunes are a sqlite scan + a per-row filesystem stat — off
+        # the loop, and independent of each other.
+        sm_result, wi_result = await asyncio.gather(
+            asyncio.to_thread(_prune_session_metadata_sync, home),
+            asyncio.to_thread(_prune_work_index_sync, home),
+            return_exceptions=True,
+        )
+        if isinstance(sm_result, BaseException):
+            log.error("work_index_sweep: session_metadata prune failed", exc_info=sm_result)
+            errors.append(f"session_metadata: {sm_result!r}")
+        else:
+            sm_pruned = sm_result
 
-        try:
-            from tesseract.memory.work_index import WorkIndex
-            home = _home()
-            wi = WorkIndex(home / "work_index.sqlite")
-            try:
-                wi_pruned = wi.prune_orphans()
-            finally:
-                wi.close()
-        except Exception as exc:  # noqa: BLE001
-            log.exception("work_index_sweep: work_index prune failed")
-            errors.append(f"work_index: {exc!r}")
+        if isinstance(wi_result, BaseException):
+            log.error("work_index_sweep: work_index prune failed", exc_info=wi_result)
+            errors.append(f"work_index: {wi_result!r}")
+        else:
+            wi_pruned = wi_result
 
         ok = not errors
         detail_parts = [

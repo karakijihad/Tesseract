@@ -1,7 +1,7 @@
 import { BreakersSection } from './right/BreakersSection';
 import { ObserverSection } from './right/ObserverSection';
 
-// The TARS identity header (name / mode / model / state / last-reflected)
+// The assistant identity header (name / mode / model / state / last-reflected)
 // moved to the floating top status pill (CockpitShell::TopStatusHud), so the
 // right rail is now just its Breakers / Observer sections — no duplicated
 // stat block. (Lifeline section removed — prune wave 1, Batch 3.)

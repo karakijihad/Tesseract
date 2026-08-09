@@ -1,4 +1,4 @@
-"""agenda_comment — TARS replies to an operator comment on an agenda item.
+"""agenda_comment — the assistant replies to an operator comment on an agenda item.
 
 When an operator leaves a comment on an agenda item's thread, the
 controller is dispatched with a directive to answer via this tool
@@ -6,7 +6,7 @@ rather than returning prose. Mirrors ``workspace_reply``: the write is
 durable the moment this tool returns; the backend
 (``agenda_reply.dispatch_agenda_reply``) then detects the newly-written
 comment and broadcasts it for live UI update. No reasoning fragility —
-the tool takes ``item_id`` directly so we never pattern-match TARS's
+the tool takes ``item_id`` directly so we never pattern-match the assistant's
 prose for which item the reply belongs to.
 """
 
@@ -23,7 +23,7 @@ from tesseract.orchestrator.autonomy.agenda_store import AgendaStore
 
 logger = logging.getLogger(__name__)
 
-_AGENT_BY = "tars"
+_AGENT_BY = "agent"
 
 
 class AgendaCommentInput(BaseModel):

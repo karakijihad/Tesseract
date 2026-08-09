@@ -56,7 +56,7 @@ class BriefReadTool(Tool):
             "Return the daily brief for a given ISO date (defaults to "
             "today UTC) as plain markdown body, frontmatter stripped. "
             "Voice-friendly. Use when the operator asks to hear, read, or "
-            "summarise the daily brief — TARS reads the returned text "
+            "summarise the daily brief — the assistant reads the returned text "
             "verbatim back to the operator through the normal TTS lane."
         )
 

@@ -79,7 +79,7 @@ def render_summary(roles_doc: dict[str, Any], providers_doc: dict[str, Any]) -> 
     buf.write(f"generated_at: {now}\n")
     buf.write("source: tesseract/config/roles.yaml + providers.yaml\n")
     buf.write("---\n\n")
-    buf.write("# TARS roles — current wiring\n\n")
+    buf.write("# the assistant roles — current wiring\n\n")
     buf.write(
         "Auto-regenerated on Mirror boot and on every approved "
         "`yaml_change_proposal`. Hand-edits will be overwritten.\n\n"

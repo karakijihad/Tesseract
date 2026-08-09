@@ -32,7 +32,7 @@ async def _default_launcher():
     from playwright.async_api import async_playwright
     pw = await async_playwright().start()
     browser = await pw.chromium.launch(headless=True)
-    browser._tars_pw = pw  # type: ignore[attr-defined]
+    browser._playwright = pw  # type: ignore[attr-defined]
     return browser
 
 
@@ -175,7 +175,7 @@ class BrowserManager:
         if self._browser is not None:
             try:
                 await self._browser.close()
-                pw = getattr(self._browser, "_tars_pw", None)
+                pw = getattr(self._browser, "_playwright", None)
                 if pw is not None:
                     await pw.stop()
             except Exception:  # noqa: BLE001
@@ -190,7 +190,7 @@ class BrowserManager:
         host = urlparse(url).netloc or url
         if create or not c.surface_id:
             sid = self._safe_surface(lambda s: s.create(
-                type="image", view="tars",
+                type="image", view="orb",
                 props={"context_id": cid, "url": asset},
                 title=f"Browser — {host}", mode="embedded",
             ))

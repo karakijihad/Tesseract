@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useTerminalStore } from '../stores/terminal';
+import { useEntityName } from '../hooks/useEntityName';
 import { useWebSocketStore } from '../stores/websocket';
 import { useObserverStore } from '../stores/observer';
 import type { PaneLeaf, PaneNode } from '../lib/types';
@@ -34,6 +35,7 @@ function firstLeaf(node: PaneNode): PaneLeaf {
 // manager will host this same component unchanged inside a glass panel. The
 // one-shot PTY bootstrap below fires once per mount.
 export function TerminalPanes() {
+  const entityName = useEntityName();
   const tabs = useTerminalStore((s) => s.tabs);
   const activeTabId = useTerminalStore((s) => s.activeTabId);
   const focusedPaneId = useTerminalStore((s) => s.focusedPaneId);
@@ -181,7 +183,7 @@ export function TerminalPanes() {
   // per-pane toggle below is the secondary opt-in: once the operator
   // arms the master, individual panes can opt in. With the master off,
   // pane-level enabling is meaningless — disable the toggle and stop
-  // claiming "TARS observing" so the two surfaces stay coherent.
+  // claiming "the assistant observing" so the two surfaces stay coherent.
   const observerEnabled = focusedLeaf?.observerEnabled ?? false;
   const masterOn = observerState !== 'off';
   const effectivelyObserving = masterOn && observerEnabled;
@@ -281,14 +283,14 @@ export function TerminalPanes() {
             onClick={toggleObserver}
             title={
               observerEnabled
-                ? 'Disable TARS observer for this pane (master stays armed)'
-                : 'Enable TARS observer for this pane'
+                ? `Disable the ${entityName} observer for this pane (master stays armed)`
+                : `Enable the ${entityName} observer for this pane`
             }
           >
             {effectivelyObserving ? '◉ this pane' : '○ this pane'}
           </button>
         )}
-        {effectivelyObserving && <span className="wt-observer-dot" title="TARS is observing">● TARS observing</span>}
+        {effectivelyObserving && <span className="wt-observer-dot" title={`${entityName} is observing`}>● observing</span>}
         <span className="wt-statusbar-meta">
           {tabs.length} tab{tabs.length !== 1 ? 's' : ''}
         </span>

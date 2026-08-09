@@ -67,11 +67,20 @@ def build_chain_for_role(
         return []
     role = bundle.role(role_name)
     chain: AdapterChain = []
+    failures: list[str] = []
     for ref in (role.primary, *role.fallbacks):
+        if ref is None:
+            # `RoleConfig.primary` is None for `mode: inactive` and the
+            # dataclass makes gating the consumer's job. Without this the
+            # except below dereferences `ref.ref` on None and the
+            # AttributeError escapes uncaught.
+            failures.append("role is inactive (no primary wired)")
+            continue
         try:
             adapter = build_adapter(ref)
         except Exception as exc:  # noqa: BLE001
             log.info("%s: cannot build %s — %s", log_label, ref.ref, exc)
+            failures.append(f"{ref.ref}: {exc}")
             continue
         opts = AdapterOptions(
             provider=ref.connection.name,
@@ -81,6 +90,16 @@ def build_chain_for_role(
             context_window=ref.model.fields.get("context_window"),
         )
         chain.append((adapter, opts))
+    if not chain:
+        # Per-ref misses stay at INFO — one dead fallback is normal. A chain
+        # with nothing left is not: the job silently does no work, so the
+        # reason each ref failed (a disabled switch names itself) has to be
+        # readable without turning on INFO logging first.
+        log.warning(
+            "%s: no usable provider — %s",
+            log_label,
+            "; ".join(failures) or "role has no primary or fallbacks",
+        )
     return meter_chain(chain, cost_ledger)
 
 

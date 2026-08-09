@@ -1,13 +1,13 @@
 """memory_get tool — read-only path-scoped fetch from ``memory-store/``.
 
-Audit-4 §M3 ask: TARS needs an inspectable, narrow read for memory
+Audit-4 §M3 ask: the assistant needs an inspectable, narrow read for memory
 files (path + line range) instead of widening ``file_read`` to cover
 the memory store. ``memory_get`` enforces three rules:
 
 1. The resolved path must live under ``TESSERACT_HOME/memory-store/``.
 2. The path must end in ``.md`` (memory store is markdown-only).
 3. Identity files (``MEMORY.md``, ``WHAT_NOT_TO_SAVE.md``) are off-
-   limits — they encode TARS's promoted memory and exclusion policy
+   limits — they encode the assistant's promoted memory and exclusion policy
    respectively; reflection-driven workflows must not introspect them.
 
 Returns the requested line slice (1-based, inclusive) with a header

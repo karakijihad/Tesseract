@@ -15,6 +15,7 @@ idempotent (returns the existing path).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections import Counter
@@ -25,6 +26,7 @@ from tesseract.memory.leaf_seals import Seal, iter_seals
 from tesseract.memory.leaves import LeafStore, MemoryLeaf
 from tesseract.memory.trees.topic_tree import (
     TOPIC_ACTIVATION_THRESHOLD,
+    TOPIC_TREE_LOCK,
     activate_topic,
     append_seal,
     is_topic_active,
@@ -51,26 +53,21 @@ def _resolve_leaf_entities(
     return out
 
 
-class TopicRouteJob(BaseJob):
-    """Per-tick topic-tree maintenance.
+def _run_topic_route(
+    threshold: int, store: LeafStore,
+) -> tuple[int, Counter, list[str], int, int]:
+    """Every seal ever written is read on every tick — same
+    cost-grows-with-corpus shape as ``leaf_digest_daily``.
 
-    Configuration via ``ctx.config``:
-
-    - ``threshold``: occurrence floor for topic activation
-      (default ``TOPIC_ACTIVATION_THRESHOLD``).
-    - ``store_root``: optional ``LeafStore`` root override.
-    """
-
-    uses_llm = False
-
-    async def run(self, ctx: JobContext) -> JobResult:
-        t0 = time.monotonic()
-        threshold = int(ctx.config.get("threshold", TOPIC_ACTIVATION_THRESHOLD))
-        store_root = ctx.config.get("store_root")
-        store = LeafStore(root=Path(store_root) if store_root else None)
-
+    Held under ``TOPIC_TREE_LOCK`` for the whole pass. The per-append
+    idempotence check inside ``append_seal`` is read-check-replace, which
+    only ever held because this body could not be preempted; running it
+    under ``asyncio.to_thread`` means two passes — an over-long run
+    overlapping its next firing, or repeated ``run_now`` requests, which
+    the scheduler does not guard against — can read the same topic file
+    and have the later ``os.replace`` drop the earlier one's section."""
+    with TOPIC_TREE_LOCK:
         seals = list(iter_seals())
-        # Lifetime entity counter — used to decide which topics to activate.
         entity_counter: Counter[str] = Counter()
         per_seal_entities: list[tuple[Seal, dict[str, list[str]]]] = []
 
@@ -110,17 +107,42 @@ class TopicRouteJob(BaseJob):
                         entity,
                     )
 
+        return len(seals), entity_counter, activated, sections_written, sections_skipped
+
+
+class TopicRouteJob(BaseJob):
+    """Per-tick topic-tree maintenance.
+
+    Configuration via ``ctx.config``:
+
+    - ``threshold``: occurrence floor for topic activation
+      (default ``TOPIC_ACTIVATION_THRESHOLD``).
+    - ``store_root``: optional ``LeafStore`` root override.
+    """
+
+    uses_llm = False
+
+    async def run(self, ctx: JobContext) -> JobResult:
+        t0 = time.monotonic()
+        threshold = int(ctx.config.get("threshold", TOPIC_ACTIVATION_THRESHOLD))
+        store_root = ctx.config.get("store_root")
+        store = LeafStore(root=Path(store_root) if store_root else None)
+
+        seals_scanned, entity_counter, activated, sections_written, sections_skipped = (
+            await asyncio.to_thread(_run_topic_route, threshold, store)
+        )
+
         return JobResult(
             job_name=ctx.job_name,
             run_id=ctx.run_id,
             ok=True,
             detail=(
-                f"seals_scanned={len(seals)} entities={len(entity_counter)} "
+                f"seals_scanned={seals_scanned} entities={len(entity_counter)} "
                 f"activated={len(activated)} sections_written={sections_written} "
                 f"sections_skipped={sections_skipped}"
             ),
             payload={
-                "seals_scanned": len(seals),
+                "seals_scanned": seals_scanned,
                 "entities": len(entity_counter),
                 "activated": activated,
                 "sections_written": sections_written,

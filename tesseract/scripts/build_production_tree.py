@@ -199,11 +199,11 @@ def build(src_root: Path, out_root: Path, files: Iterable[str] | None = None) ->
     # session note.
     _write_state_dir_gitignore(out_workspace)
 
-    # Memory store / vault / tars-workshop: same templating shape as
+    # Memory store / vault / workshop: same templating shape as
     # workspace above — ship ready with hand-authored scaffold content
     # instead of an empty directory (Task 17). REQUIRED, same reasoning as
     # workspace above — build_shipping_workspace raises per-`rel` if absent.
-    for rel in ("tesseract/memory-store", "tesseract/vault", "tesseract/tars-workshop"):
+    for rel in ("tesseract/memory-store", "tesseract/vault", "tesseract/workshop"):
         src_shipping = src_root / rel / "_shipping"
         out_dir = out_root / rel
         build_shipping_workspace(src_shipping, out_dir)
@@ -262,7 +262,7 @@ def _write_seal_notices(src_root: Path, out_root: Path) -> None:
             "so an edit made here is destroyed silently and reaches nobody. Read\n"
             "anything you like; write nothing.\n\n"
             "Write to the `home` directory beside this one instead: its\n"
-            "`tars-workshop` folder for scratch work and drafts, its\n"
+            "`workshop` folder for scratch work and drafts, its\n"
             "`downloads` folder for files you fetch.\n\n"
             "If the task genuinely requires changing this application, that work\n"
             "belongs in its development repository, not in the installed copy.\n"

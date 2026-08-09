@@ -154,10 +154,11 @@ async def _start_channel_turn(
             _elapsed_pump(),
             name=f"channel_turn_elapsed:{session.session_id}",
         )
+    turn_cancelled = False
     try:
         await turn_task
     except asyncio.CancelledError:
-        return None
+        turn_cancelled = True
     finally:
         session.current_turn_task = None
         if elapsed_task is not None and not elapsed_task.done():
@@ -166,6 +167,19 @@ async def _start_channel_turn(
                 await elapsed_task
             except (asyncio.CancelledError, Exception):
                 pass
+        # The channel's own commit gate — this path never goes through
+        # `turn_runner._run_turn`, so without it a spawn completion drained
+        # into a channel turn that then died would be gone. Cancelled or
+        # errored puts the notes back for the next turn.
+        try:
+            if turn_cancelled or error_holder:
+                session.chat_session.rollback_spawn_delivery()
+            else:
+                session.chat_session.confirm_spawn_delivery()
+        except Exception:
+            log.exception("channel turn: spawn delivery commit/rollback failed")
+    if turn_cancelled:
+        return None
 
     raw = "".join(reply_holder)
     reply = _extract_channel_reply(raw).strip()

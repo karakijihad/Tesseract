@@ -1,4 +1,4 @@
-"""Temporal helpers for TARS's system prompt — time-of-day bucketing, age
+"""Temporal helpers for the assistant's system prompt — time-of-day bucketing, age
 computation, identity-config loading, and the conscience drift snippet.
 
 Split out of `tesseract/brain/prompt.py` (module-size cleanup, Task 7.5).

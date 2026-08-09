@@ -64,7 +64,7 @@ function TerminalPane({ pane }: { pane: PaneLeaf }) {
   let ownerLabel: string;
   let ownerTone: string;
   if (pane.owner === 'entity') {
-    ownerLabel = 'tars-owned';
+    ownerLabel = 'agent-owned';
     ownerTone = 'is-owner_entity';
   } else {
     ownerLabel = 'operator-owned';

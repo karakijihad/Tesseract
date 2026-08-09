@@ -3,7 +3,7 @@
 P4 prune (2026-07-04): the end-of-turn detector state machines
 (``ClaudeStreamJsonDetector`` / ``CodexPromptIdleDetector`` /
 ``ClaudePromptIdleDetector`` / ``PermissionPromptWatcher``) were removed
-with the TARS-drives-PTY tools (``pty_open`` / ``pty_collect_result`` /
+with the agent-drives-PTY tools (``pty_open`` / ``pty_collect_result`` /
 the ``_PtyLaneAdapter`` lane transport) — nothing drives a PTY pane
 autonomously anymore, so nothing needs to detect a turn's end.
 ``strip_ansi`` survives: `mirror/server/pty_manager.py` uses it to decode

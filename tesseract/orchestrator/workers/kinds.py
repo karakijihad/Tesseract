@@ -1,8 +1,9 @@
 """Shared worker-kind vocabulary for the autonomy worker-lifecycle package.
 
-Extracted from the (now-deleted) mission orchestrator's domain models —
-this enum is stored on-disk in worker/activity records, so member names
-and values are byte-identical to the original.
+Values are config keys: `agenda.yaml::worker_timeouts` and the
+`mirror.yaml` worker-lane block are keyed by them. They name a delegation
+seat, never a provider — which CLI or API model fills a seat is roles.yaml,
+so a seat survives the operator repointing it.
 """
 
 from __future__ import annotations
@@ -11,9 +12,9 @@ from enum import Enum
 
 
 class WorkerKind(str, Enum):
-    TARS_SELF = "tars_self"
-    CLAUDE_CLI = "claude_cli"
-    CODEX_CLI = "codex_cli"
+    AGENT_SELF = "agent_self"
+    CODER_SEAT = "coder_seat"
+    AUDITOR_SEAT = "auditor_seat"
     MARKDOWN_AGENT = "markdown_agent"
     TERMINAL = "terminal"
-    TARS_CONTROLLER = "tars_controller"
+    AGENT_CONTROLLER = "agent_controller"

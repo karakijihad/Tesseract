@@ -1,6 +1,6 @@
 """Deterministic read-only command router for Telegram (audit fix m2).
 
-Natural-language requests work end-to-end through TARS, but on a phone
+Natural-language requests work end-to-end through the assistant, but on a phone
 operators want a small, predictable command surface: ``/queue``
 returns the workspace inbox depth whether or not chat_brain decides to
 call the right tool. Read-only commands only — mutating actions
@@ -11,7 +11,7 @@ Each handler is a coroutine that returns a Telegram-ready text body. The
 router runs *before* the chat-turn dispatch; on a match the bridge sends
 the reply and short-circuits the turn. Unknown ``/foo`` commands fall
 through to the normal chat path (so "/foo what should I do today?" still
-reaches TARS).
+reaches the assistant).
 
 Tier policy: when the chat is on ``friend`` tier, only ``/status`` and
 ``/help`` are served. The rest report "not available on this tier" so a
@@ -77,10 +77,10 @@ async def _handle_help(ctx: TelegramCommandContext) -> str:
         "/queue — workspace inbox depth\n"
         "/brief — latest daily brief summary\n"
         "/clear — clear this thread (asks YES/NO first)\n"
-        "/voice_on — TARS replies with voice notes\n"
+        "/voice_on — the assistant replies with voice notes\n"
         "/voice_off — back to text replies\n"
         "/help — this list\n\n"
-        "Anything else routes to TARS as normal chat."
+        "Anything else routes to the assistant as normal chat."
     )
 
 
@@ -93,7 +93,7 @@ async def _handle_queue(ctx: TelegramCommandContext) -> str:
     if event_store is None:
         return "Workspace event store not attached."
     try:
-        events = event_store.list_events(kinds=("tars_post",), limit=200)
+        events = event_store.list_events(kinds=("agent_post",), limit=200)
     except Exception:
         log.exception("commands: list workspace events failed")
         return "Queue lookup failed — see backend log."
@@ -163,7 +163,7 @@ async def _handle_clear(ctx: TelegramCommandContext) -> str:
 async def _handle_voice_on(ctx: TelegramCommandContext) -> str:
     """Flip the per-chat ``reply_voice`` flag on (Session 3 2026-05-16).
 
-    Subsequent TARS replies in this chat synthesise via local Piper TTS
+    Subsequent the assistant replies in this chat synthesise via local Piper TTS
     and ship as voice notes instead of plain text. Operator-only — friend
     tier hits ``_FRIEND_ALLOWED`` deny in the dispatcher.
     """
@@ -194,14 +194,14 @@ async def _handle_voice_off(ctx: TelegramCommandContext) -> str:
 
 async def _handle_status(ctx: TelegramCommandContext) -> str:
     if ctx.offline:
-        return "TARS status: offline"
+        return "the assistant status: offline"
     session = getattr(ctx.bridge, "_sessions", {}).get(ctx.chat_id)
     busy = (
         session is not None
         and getattr(session, "current_turn_task", None) is not None
         and not session.current_turn_task.done()
     )
-    return "TARS status: busy" if busy else "TARS status: online"
+    return "the assistant status: busy" if busy else "the assistant status: online"
 
 
 _HANDLERS: dict[str, CommandHandler] = {
@@ -245,7 +245,7 @@ def _command_head(text: str) -> str:
     if not head:
         return ""
     first = head[0].lower()
-    # Allow `@botname` suffix per Telegram convention: ``/status@TarsBot``.
+    # Allow `@botname` suffix per Telegram convention: ``/status@ExampleBot``.
     if "@" in first:
         first = first.split("@", 1)[0]
     return first

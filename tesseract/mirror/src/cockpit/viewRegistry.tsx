@@ -1,8 +1,8 @@
 // SC-2 — maps a cockpit tab `kind` to the REAL view component (unchanged from
-// SC-0) that the panel manager summons into a GlassPanel. `tars` is absent on
+// SC-0) that the panel manager summons into a GlassPanel. `orb` is absent on
 // purpose: it is the orb home (the bare GlobalCanvas), not a panel — reached by
 // closing the active panel, not by opening one (see panelStore.closePanel /
-// resetAll). There is no dedicated "TARS" tab; the orb is always on-canvas.
+// resetAll). There is no dedicated "the assistant" tab; the orb is always on-canvas.
 
 import type { ReactNode } from 'react';
 
@@ -16,7 +16,7 @@ import { TerminalView } from '../views/TerminalView';
 import { ScheduleView } from '../views/ScheduleView';
 import { AgentsView } from '../views/AgentsView';
 import { ChannelsView } from '../views/ChannelsView';
-import { SoulView } from '../views/SoulView';
+import { IdentityView } from '../views/IdentityView';
 import { ConscienceView } from '../views/ConscienceView';
 import { WorkspaceView } from '../views/WorkspaceView';
 import { SettingsView } from '../views/SettingsView';
@@ -29,7 +29,7 @@ export const VIEW_REGISTRY: Record<PanelKind, () => ReactNode> = {
   schedule: () => <ScheduleView />,
   agents: () => <AgentsView />,
   channels: () => <ChannelsView />,
-  soul: () => <SoulView />,
+  identity: () => <IdentityView />,
   conscience: () => <ConscienceView />,
   workspace: () => <WorkspaceView />,
   settings: () => <SettingsView />,
@@ -47,7 +47,7 @@ export const VIEW_LABELS: Record<PanelKind, string> = {
   schedule: 'Schedule',
   agents: 'Agents',
   channels: 'Channels',
-  soul: 'Soul',
+  identity: 'Identity',
   conscience: 'Conscience',
   workspace: 'Workspace',
   settings: 'Settings',

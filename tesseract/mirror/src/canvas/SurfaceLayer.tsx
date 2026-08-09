@@ -1,4 +1,4 @@
-// Y-2 — the Surface Protocol overlay. Renders TARS-spawned surface cards
+// Y-2 — the Surface Protocol overlay. Renders agent-spawned surface cards
 // above the tldraw canvas, independent of tldraw's shape tree (the two
 // layers are deliberately separate — _shared/surface-protocol.md). The
 // layer itself is pointer-transparent; only the cards capture input, so the
@@ -61,52 +61,10 @@ export function SurfaceLayer({ view }: SurfaceLayerProps) {
       className="surface-layer"
       data-testid={`surface-layer-${view}`}
     >
-      <TrioWires cards={cards} />
       {cards.map((d) => (
         <SurfaceCard key={d.id} view={view} descriptor={d} bounds={bounds} />
       ))}
     </div>
-  );
-}
-
-// CV-1 — the trio "wire flow": thin animated connectors from the central
-// `trio-routing` (TARS) card to each bound lane card, visualising TARS wired
-// to both lanes. Pointer-transparent SVG beneath the cards; the dash
-// animation reads as signal flowing along the wire.
-function TrioWires({ cards }: { cards: SurfaceDescriptor[] }) {
-  const hub = cards.find((c) => c.type === "trio-routing");
-  if (!hub) return null;
-  const boundIds = new Set(
-    ((hub.props?.lanes as Array<{ lane_id?: string }> | undefined) ?? [])
-      .map((l) => l?.lane_id)
-      .filter(Boolean) as string[],
-  );
-  const lanes = cards.filter(
-    (c) => c.type === "lane" && boundIds.has(String(c.props?.lane_id ?? "")),
-  );
-  if (lanes.length === 0) return null;
-
-  const center = (d: SurfaceDescriptor) => ({
-    x: d.position.x + d.size.w / 2,
-    y: d.position.y + d.size.h / 2,
-  });
-  const h = center(hub);
-
-  return (
-    <svg className="trio-wires" aria-hidden="true">
-      {lanes.map((lane) => {
-        const p = center(lane);
-        // Cubic curve bowing toward the hub's vertical for an organic wire.
-        const midX = (h.x + p.x) / 2;
-        const d = `M ${h.x} ${h.y} C ${midX} ${h.y}, ${midX} ${p.y}, ${p.x} ${p.y}`;
-        return (
-          <g key={lane.id} className="trio-wire">
-            <path className="trio-wire__line" d={d} />
-            <path className="trio-wire__flow" d={d} />
-          </g>
-        );
-      })}
-    </svg>
   );
 }
 
@@ -173,8 +131,8 @@ function SurfaceCard({ view, descriptor, bounds }: SurfaceCardProps) {
   const Renderer = getRenderer(descriptor.type);
 
   // Geometry reads straight from the (live) store — during a drag/resize we
-  // push live positions to the store so the trio wires follow in real time,
-  // then commit (emit + persist) on pointer-up.
+  // push live positions to the store for a responsive card, then commit
+  // (emit + persist) on pointer-up.
   const x = descriptor.position.x;
   const y = descriptor.position.y;
   const w = descriptor.size.w;

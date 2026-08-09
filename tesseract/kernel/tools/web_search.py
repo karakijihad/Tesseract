@@ -15,14 +15,16 @@ import logging
 import os
 from typing import ClassVar
 
-import httpx
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.web_providers import fetch_json
+from tesseract.kernel.tools.web_providers.brave import BraveProvider
 
-_BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 _DEFAULT_TIMEOUT = 10.0
 _MAX_RESULTS = 10
+
+_PROVIDER = BraveProvider()
 
 
 class WebSearchInput(BaseModel):
@@ -67,54 +69,21 @@ class WebSearchTool(Tool):
     async def run(self, tool_input: BaseModel, context: ToolContext) -> ToolResult:
         inp = tool_input if isinstance(tool_input, WebSearchInput) else WebSearchInput(**tool_input.model_dump())
 
-        api_key = os.environ.get("BRAVE_SEARCH_API_KEY")
+        api_key = os.environ.get(_PROVIDER.api_key_env)
         if not api_key:
-            return ToolResult(
-                output="BRAVE_SEARCH_API_KEY not set in .env. Get a free key at https://brave.com/search/api/ and add BRAVE_SEARCH_API_KEY=... to tesseract/.env",
-                is_error=True,
-            )
+            return ToolResult(output=_PROVIDER.missing_key_message(), is_error=True)
 
-        headers = {
-            "X-Subscription-Token": api_key,
-            "Accept": "application/json",
-        }
-        params: dict[str, str | int] = {"q": inp.query, "count": inp.count}
-        if inp.country:
-            params["country"] = inp.country
+        outcome = await fetch_json(
+            _PROVIDER,
+            api_key=api_key,
+            request=_PROVIDER.build_request(inp),
+            timeout=_DEFAULT_TIMEOUT,
+            note_tripwire=_note_brave_tripwire,
+        )
+        if outcome.error is not None:
+            return outcome.error
 
-        try:
-            async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
-                r = await client.get(_BRAVE_ENDPOINT, headers=headers, params=params)
-        except httpx.TimeoutException:
-            _note_brave_tripwire("latency_spike", {"timeout_seconds": _DEFAULT_TIMEOUT})
-            return ToolResult(
-                output=f"Brave Search timed out after {_DEFAULT_TIMEOUT}s",
-                is_error=True,
-            )
-        except httpx.HTTPError as e:
-            _note_brave_tripwire("http_error", {"exception": repr(e)})
-            return ToolResult(output=f"Brave Search request failed: {e}", is_error=True)
-
-        if r.status_code == 401:
-            _note_brave_tripwire("unavailable", {"status_code": 401})
-            return ToolResult(output="Brave Search 401 — API key rejected. Check BRAVE_SEARCH_API_KEY.", is_error=True)
-        if r.status_code == 429:
-            _note_brave_tripwire("http_error", {"status_code": 429, "reason": "rate limit"})
-            return ToolResult(output="Brave Search 429 — rate limit exceeded (2K/mo on the free tier).", is_error=True)
-        if r.status_code >= 400:
-            _note_brave_tripwire(
-                "http_error",
-                {"status_code": r.status_code, "body": r.text[:200]},
-            )
-            return ToolResult(output=f"Brave Search {r.status_code}: {r.text[:200]}", is_error=True)
-
-        try:
-            data = r.json()
-        except ValueError:
-            _note_brave_tripwire("shape_mismatch", {"reason": "non-JSON response"})
-            return ToolResult(output="Brave Search returned non-JSON", is_error=True)
-
-        results = (data.get("web") or {}).get("results") or []
+        results = _PROVIDER.parse_results(outcome.data or {})
         if not results:
             return ToolResult(output=f"No results for '{inp.query}'")
 
@@ -135,7 +104,7 @@ def _note_brave_tripwire(drift_kind: str, evidence: dict) -> None:
     """AU-14 14b production tripwire — best-effort JSONL row write."""
     try:
         from tesseract.orchestrator.provider_health import note_production_tripwire
-        note_production_tripwire("web_search", "api.brave.search", drift_kind, evidence)
+        note_production_tripwire("web_search", _PROVIDER.tripwire_source, drift_kind, evidence)
     except Exception:  # noqa: BLE001
         logging.getLogger(__name__).debug(
             "web_search: tripwire write failed", exc_info=True

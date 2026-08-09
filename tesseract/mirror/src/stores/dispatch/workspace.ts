@@ -16,7 +16,7 @@ export function handleWorkspace(env: Envelope): void {
           author: string;
           body: string;
           reply_to: string | null;
-          delivered_to_tars: boolean;
+          delivered_to_agent: boolean;
         }>
       | undefined;
     if (
@@ -36,10 +36,10 @@ export function handleWorkspace(env: Envelope): void {
       comment_id: raw.comment_id,
       event_id: raw.event_id,
       ts: raw.ts ?? new Date().toISOString(),
-      author: raw.author as "operator" | "tars",
+      author: raw.author as "operator" | "agent",
       body: raw.body,
       reply_to: raw.reply_to ?? null,
-      delivered_to_tars: raw.delivered_to_tars ?? false,
+      delivered_to_agent: raw.delivered_to_agent ?? false,
     });
     return;
   }

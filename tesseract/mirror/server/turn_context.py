@@ -60,9 +60,9 @@ class TurnState:
     # Per-turn ownership keeps each turn's partial ``<intent>``/``<answer>`` tag,
     # tag state, and one-shot untagged warning from clobbering another's.
     stream_status_buffer: str = ""
-    stream_tag_state: str = "outside"  # "outside" | "intent" | "answer"
+    stream_tag_state: str = "outside"  # "outside" | "intent" | "spoken" | "answer"
     stream_untagged_warned: bool = False
-    # parallel-tars P6: per-turn TTS state, migrated off ServerSession (the
+    # per-turn TTS state, migrated off ServerSession (the
     # deferred "Per-chat TTS state" item). One turn per chat, so per-turn
     # ownership == per-chat ownership: two concurrently-streaming chats each
     # accumulate/sequence/chain their own audio and a mid-switch flush can't
@@ -71,9 +71,11 @@ class TurnState:
     # ``ServerSession.turn_states_by_chat``.
     tts_buffer: str = ""
     tts_buffer_kind: str = "answer"
+    # Latched by the first `<spoken>` delta of the turn; mutes every later
+    # `<answer>` delta from TTS while it still streams to screen.
+    tts_spoken_seen: bool = False
     tts_sequence: int = 0
     tts_synth_task: asyncio.Task | None = None
-    tts_voice_params: Any = None
     tts_failure_notified: bool = False
 
 

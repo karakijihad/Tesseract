@@ -62,7 +62,6 @@ export const KNOWN_SURFACE_TYPES = [
   'table',
   // CV-1 runtime objects.
   'lane',
-  'trio-routing',
   // Y-3 views-as-canvases applets.
   'pulse-stream',
   'pulse-filters',

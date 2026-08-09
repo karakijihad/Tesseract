@@ -1,6 +1,6 @@
 """In-memory mood state for the entity.
 
-Holds two scalars TARS controls via `set_mood`:
+Holds two scalars the assistant controls via `set_mood`:
 
 - `intensity` (0..1) — affective energy
 - `valence`   (-1..+1) — cool→warm tone

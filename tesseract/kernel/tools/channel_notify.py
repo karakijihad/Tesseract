@@ -1,20 +1,20 @@
-"""channel_notify — TARS-initiated outbound text on an external channel.
+"""channel_notify — agent-initiated outbound text on an external channel.
 
 Distinct from ``channel_send_*`` (which is the in-session reply path):
-``channel_notify`` is for TARS to *start* a conversation. The operator may
-be away from the keyboard; TARS pings them on Telegram with a finished
+``channel_notify`` is for the assistant to *start* a conversation. The operator may
+be away from the keyboard; the assistant pings them on Telegram with a finished
 thought, a result, an alert, or a check-in. Lands in the operator's
 Telegram thread with no inbound message required.
 
 Two modes:
 
 1. ``chat_ref`` provided → send to that specific chat_id only (e.g. a
-   group chat TARS already knows).
+   group chat the assistant already knows).
 2. ``chat_ref`` omitted → fan to every operator-tier chat_id in the
    adapter's allowlist (reuses :func:`send_to_operators` from the daily-
    brief push so the tier filter / blocked / pending semantics match).
 
-``default_posture="auto"`` — TARS choosing to ping the operator is part
+``default_posture="auto"`` — the assistant choosing to ping the operator is part
 of the autonomy story (AU-10 will layer rate caps + categories on top).
 The tool itself enforces a hard per-call length cap as a guardrail.
 """

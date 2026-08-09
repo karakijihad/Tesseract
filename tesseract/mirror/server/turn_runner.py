@@ -15,6 +15,7 @@ from typing import Any
 from aiohttp import web
 
 from tesseract.brain.session_ops import auto_compact_if_needed
+from tesseract.kernel.adapters.base import ChunkType
 from tesseract.memory.log_notes import append_log_entry
 from tesseract.paths import TESSERACT_HOME, log_dir
 from tesseract.mirror.server.chunk_handler import _handle_chunk
@@ -82,7 +83,7 @@ async def _run_turn(
         turn_id = f"syn:{workspace_origin['event_id']}:{uuid.uuid4().hex[:8]}"
     else:
         turn_id = uuid.uuid4().hex
-    # parallel-tars P6: TTS state now lives on the per-turn TurnState
+    # TTS state now lives on the per-turn TurnState
     # (constructed fresh below), so no session-level reset is needed — a
     # stale tail from a cancelled prior turn dies with that turn's state,
     # and two concurrently-streaming chats each own their buffer/sequence/
@@ -98,6 +99,24 @@ async def _run_turn(
     # fallbacks (untouched by the new path).
     stream_ok = False
     turn_cancelled = False
+    # `stream_ok` only says the generator ran to exhaustion, and exhaustion is
+    # not success: `ChatSession.send` yields an ERROR chunk and then plainly
+    # returns when the adapter-error breaker trips or the budget refuses the
+    # turn. Two different questions hang off that, and they have different
+    # answers on a turn that errored and then recovered:
+    #
+    #   `saw_error`     — did the model definitely READ what this turn carried?
+    #                     No, if any ERROR was emitted: the one-shot injection
+    #                     is cleared after the first request is built
+    #                     (`chat.py::send`), so the retry that recovers no
+    #                     longer contains the completion block. Committing on
+    #                     that STOP would claim a result nobody was ever shown.
+    #   `last_terminal` — did this turn END badly? Only if the final terminal
+    #                     chunk was the ERROR. A recovered turn ended fine, and
+    #                     telling the wake breaker otherwise would trip it on
+    #                     turns that worked.
+    saw_error = False
+    last_terminal: ChunkType | None = None
     # Everything from the ContextVar `.set()` calls onward lives inside the
     # `try` so the `finally` ALWAYS runs — it emits `loop_end` and resets the
     # four ContextVars. Previously the pre-stream block (sets + loop_start +
@@ -117,7 +136,7 @@ async def _run_turn(
         # the active chat the moment the operator switches (D8).
         resolved_cid = cid if cid is not None else (session.active_chat_id or None)
         chat_id_token = current_chat_id.set(resolved_cid)
-        # parallel-tars P6 — expose this CHAT turn's TurnState to out-of-turn
+        # expose this CHAT turn's TurnState to out-of-turn
         # cancel paths (chat switch, barge-in, Stop, WS cleanup). Synthetic
         # workspace turns are excluded: they never emit TTS and may run
         # concurrently with the chat turn on the same chat_id, so registering
@@ -137,7 +156,7 @@ async def _run_turn(
             "stream_start", "loop", session.session_id, {"turn_id": turn_id},
         ))
         # Workstream M2 (Codex 2026-05-06): set by `_handle_chunk` when
-        # TARS's `workspace_reply` returns success during this turn. The
+        # the assistant's `workspace_reply` returns success during this turn. The
         # finally block uses it to commit / rollback the deferred delivery
         # flags that `chat.py::_drain_pending_suggestions` stashed.
         # Codex-fix M1 (2026-05-23): now lives on the per-turn TurnState
@@ -157,6 +176,10 @@ async def _run_turn(
             view_snapshot=view_snapshot,
         ):
             await _handle_chunk(app, session, chunk)
+            if chunk.type in (ChunkType.STOP, ChunkType.ERROR):
+                last_terminal = chunk.type
+                if chunk.type is ChunkType.ERROR:
+                    saw_error = True
         stream_ok = True
     except asyncio.CancelledError:
         turn_cancelled = True
@@ -178,9 +201,24 @@ async def _run_turn(
         # Fix pass 2 (2026-07-06) — `cancelled` distinguishes an operator-
         # cancelled turn from a genuine swallowed failure so the spawn-wake
         # breaker can treat a Stop-button cancel as neutral, not a failure.
+        # `stream_ok` alone would report a turn whose adapter-error breaker
+        # tripped as a success: it yields an ERROR chunk and then plainly
+        # returns, exhausting the generator without raising. That matters
+        # twice over now. The spawn-delivery gate below rolls such a turn back,
+        # which re-queues the note — and `spawn_wake._wake_turn`'s straggler
+        # check re-schedules a wake whenever a completion is still pending. If
+        # the wake breaker also counted the failed turn as a success it would
+        # never trip, and a persistently failing adapter would wake the chat
+        # forever. One signal for both, so they cannot disagree.
+        # `ended_clean` is the turn-level outcome (the wake breaker, and the
+        # auto-compact below); `turn_committed` is the stricter delivery
+        # question. They differ by exactly one case: the recovered turn.
+        ended_clean = stream_ok and last_terminal is not ChunkType.ERROR
+        turn_committed = stream_ok and not saw_error
         if outcome is not None:
-            outcome["ok"] = stream_ok
+            outcome["ok"] = ended_clean
             outcome["cancelled"] = turn_cancelled
+            outcome["committed"] = turn_committed
         loop_end_payload: dict[str, Any] = {"turn": turn, "tokens_used": 0}
         if workspace_origin:
             loop_end_payload["workspace_origin"] = dict(workspace_origin)
@@ -188,7 +226,7 @@ async def _run_turn(
             "loop_end", "loop", session.session_id, loop_end_payload,
         ))
         await _ws._emit_entity_signals(app, session)
-        # Auto-decay mood to neutral. Mood is per-turn — TARS calls set_mood
+        # Auto-decay mood to neutral. Mood is per-turn — the assistant calls set_mood
         # for the current turn and it resets here, so it can't bleed into the
         # next prompt. Voice is decoupled from mood (synthesis reads per-surface
         # presets from roles.yaml), so this only affects the orb on the next turn.
@@ -201,7 +239,7 @@ async def _run_turn(
         # tool name attribution is naturally scoped — no shared-state
         # clear that could wipe another concurrent turn's pending entries.
         await _flush_tts_terminator(app, session, succeeded=stream_ok)
-        # parallel-tars P6 — drop this turn's TurnState registration.
+        # drop this turn's TurnState registration.
         # Identity-guarded so a successor turn's entry (same chat) is never
         # popped by a stale finally.
         if (
@@ -218,6 +256,20 @@ async def _run_turn(
         current_workspace_origin.reset(wo_token)
         current_turn_id.reset(turn_id_token)
         current_chat_id.reset(chat_id_token)
+        # The spawn-delivery commit gate, on EVERY turn rather than only
+        # synthetic ones: a completion is drained into iteration 0 of whatever
+        # turn runs next, so the turn that read it is the turn that owes it a
+        # commit. A clean stream means the model actually saw the block;
+        # anything else puts the notes back at the front of the queue and
+        # leaves the durable record outstanding, so the result is redelivered
+        # rather than lost. No-op for a chat that drained nothing.
+        try:
+            if turn_committed:
+                cs.confirm_spawn_delivery()
+            else:
+                cs.rollback_spawn_delivery()
+        except Exception:
+            log.exception("spawn delivery commit/rollback failed")
         # M2 commit gate: only mark workspace items delivered when the
         # synthetic turn produced a successful workspace_reply. Any
         # other outcome (cancel, adapter error, model ignored the
@@ -254,7 +306,7 @@ async def _run_turn(
     # own entry in `session.synthetic_turn_tasks`.
     if is_synthetic:
         return
-    if stream_ok:
+    if ended_clean:
         await _maybe_auto_compact(app, session, cs)
     await emit_stats(app, session, cs)
     # Free THIS chat's task slot (active or background) so a background

@@ -12,7 +12,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
-from tesseract.orchestrator.tars_controller.lanes.tool_support import (
+from tesseract.orchestrator.agent_controller.lanes.tool_support import (
     resolve_lane_manager,
     validate_lane_model,
 )
@@ -28,7 +28,7 @@ class LaneOpenInput(BaseModel):
     model: str = Field(
         description=(
             "Model id the lane should target. Use the config-resolved model "
-            "(roles.yaml primary via the trio definition) — never invent one. "
+            "(the seat's roles.yaml primary) — never invent one. "
             "Recorded in `lane.json` and passed as --model when the CLI spawns."
         )
     )
@@ -37,6 +37,16 @@ class LaneOpenInput(BaseModel):
             "Working directory the CLI runs in. Tools and file paths "
             "the lane emits resolve relative to this."
         )
+    )
+    shared_with: list[str] = Field(
+        default_factory=list,
+        description=(
+            "MCP client identities allowed to operate on this lane alongside "
+            "the one opening it (e.g. ['lane-codex']). Empty means the lane "
+            "answers only to its owner and the operator. Naming a "
+            "collaborator here is the deliberate way two workers share a "
+            "lane; it is never inferred."
+        ),
     )
 
 
@@ -77,6 +87,7 @@ class LaneOpenTool(Tool):
                 kind=inp.kind,  # type: ignore[arg-type]
                 model=inp.model,
                 working_dir=inp.working_dir,
+                shared_with=inp.shared_with,
             )
         except Exception as exc:  # noqa: BLE001 — surface as clean tool error
             return ToolResult(

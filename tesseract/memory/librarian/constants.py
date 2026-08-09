@@ -16,8 +16,8 @@ _DISTILL_DIARY_CHAR_BUDGET = 12_000
 _DISTILL_BULLET_MAX_CHARS = 240
 _DISTILL_TIMEOUT_S = 20.0
 _DISTILL_PROMPT = """\
-You are reading TARS's private diary entries from the last few days, plus
-the current `## Growth` section of his SOUL.md (the curated, durable
+You are reading the assistant's private diary entries from the last few days, plus
+the current `## Growth` section of its SOUL.md (the curated, durable
 self-observations).
 
 Your job: surface 0-{max_candidates} *candidate* one-line observations

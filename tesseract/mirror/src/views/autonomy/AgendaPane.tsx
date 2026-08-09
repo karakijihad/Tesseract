@@ -1,7 +1,7 @@
 // AU-7 — AgendaPane.
 //
 // Surfaces every non-terminal agenda item, ranked desc by priority_score.
-// Answers GOVERNANCE §15 Q1 (what is TARS doing) + Q2 (why) + Q3 (what
+// Answers GOVERNANCE §15 Q1 (what is the assistant doing) + Q2 (why) + Q3 (what
 // can it do without approval). Score breakdown is rendered inline so the
 // operator can audit the deterministic weights without opening a modal.
 //
@@ -92,7 +92,7 @@ export function AgendaPane({ items, status, error }: AgendaPaneProps): React.Rea
       </div>
 
       {active.length === 0 ? (
-        <p className="t-meta">No active items — TARS is idle. New work lands here as mappers fire.</p>
+        <p className="t-meta">No active items — nothing running. New work lands here as mappers fire.</p>
       ) : (
         <ul className="autonomy-list">
           {active.slice(0, 10).map((item) => {

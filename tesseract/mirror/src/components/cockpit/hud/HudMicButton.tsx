@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Hint } from '../../ui/Hint';
 import { useEntityStore } from '../../../stores/entity';
-import { useConversationStore } from '../../../stores/conversation';
+import { useIdentityStore } from '../../../stores/identity';
 import { useVoiceStore, type VoiceMode } from '../../../stores/voice';
 import { useWebSocketStore } from '../../../stores/websocket';
 import {
@@ -10,44 +10,59 @@ import {
   type SttStream,
 } from '../../../lib/voice/stt-stream';
 import { getTtsPlayer } from '../../../lib/voice/tts-player';
-import { dispatchCommand } from '../../../cockpit/commandDispatch';
 
 // Pipeline-stage labels — what the backend / TTS player is doing
 // right now. Distinct from the operator's mic-on/off intent: the mic
-// stays hot regardless of which stage TARS is in.
+// stays hot regardless of which stage the assistant is in.
 const STAGE_LABEL: Record<string, string> = {
   idle: 'Idle',
   listening: 'Listening',
   speaking_in: 'Hearing you',
   transcribing: 'Transcribing…',
-  speaking_back: 'TARS replying',
+  speaking_back: 'Replying',
 };
 
-const MODE_PILL: Record<VoiceMode, string> = {
+export const MODE_PILL: Record<VoiceMode, string> = {
   transcribe: 'Transcribe',
   command: 'Command',
   speak: 'Speak',
+  terminal: 'Terminal',
 };
 
-const MODE_HINT: Record<VoiceMode, string> = {
-  transcribe: 'Transcribe — speech fills the chat input. TARS stays silent.',
-  command: 'Command — speech goes to TARS. Replies stay text/actions only.',
-  speak: 'Speak — speech goes to TARS. TARS replies in voice.',
-};
-
-/** Map `voiceMode` → STT routing for `voice_commit`. `transcribe` keeps
- * the transcript local; `command` and `speak` both dispatch into
- * chat_brain (the difference is whether the reply is spoken). */
-function micRoutingFor(mode: VoiceMode): 'chat' | 'transcribe' {
-  return mode === 'transcribe' ? 'transcribe' : 'chat';
+/** Hints name the entity rather than hardcoding one — AS-4 makes the name
+ * operator-settable, and a caption that still said "the assistant" after a rename
+ * would be the most visible place the rename didn't take. */
+export function modeHint(mode: VoiceMode, name: string): string {
+  const who = name || 'the assistant';
+  switch (mode) {
+    case 'transcribe':
+      return `Transcribe — speech fills the chat input. ${who} stays silent.`;
+    case 'command':
+      return `Command — speech goes to ${who}. Replies stay text/actions only.`;
+    case 'speak':
+      return `Speak — speech goes to ${who}. ${who} replies in voice.`;
+    case 'terminal':
+      return `Terminal — speech is typed into the focused terminal pane. ${who} neither answers nor speaks.`;
+  }
 }
 
-/** Cycle: `transcribe → command → speak → transcribe`. Default is
- * `transcribe` (silent) so a fresh session never speaks unsolicited;
- * `command` adds STT-to-TARS without TTS reply; `speak` is full STT+TTS. */
-function nextMode(mode: VoiceMode): VoiceMode {
+/** Map `voiceMode` → STT routing for `voice_commit`. `transcribe` and
+ * `terminal` both keep the transcript out of chat_brain — the backend
+ * resolves them to the same contract and only the destination differs;
+ * `command` and `speak` dispatch (the difference is whether the reply is
+ * spoken). */
+function micRoutingFor(mode: VoiceMode): 'chat' | 'transcribe' {
+  return mode === 'transcribe' || mode === 'terminal' ? 'transcribe' : 'chat';
+}
+
+/** Cycle: `transcribe → command → speak → terminal → transcribe`. Default
+ * is `transcribe` (silent) so a fresh session never speaks unsolicited;
+ * `command` adds STT-to-the assistant without TTS reply; `speak` is full STT+TTS;
+ * `terminal` routes speech to the PTY instead of the brain. */
+export function nextMode(mode: VoiceMode): VoiceMode {
   if (mode === 'transcribe') return 'command';
   if (mode === 'command') return 'speak';
+  if (mode === 'speak') return 'terminal';
   return 'transcribe';
 }
 
@@ -56,14 +71,13 @@ export function HudMicButton() {
   const micActive = useVoiceStore((s) => s.micActive);
   const audioLevel = useVoiceStore((s) => s.audioLevel);
   const voiceMode = useVoiceStore((s) => s.voiceMode);
+  const entityName = useIdentityStore((s) => s.name);
   const setState = useVoiceStore((s) => s.setState);
   const setMicActive = useVoiceStore((s) => s.setMicActive);
   const setAudioLevel = useVoiceStore((s) => s.setAudioLevel);
   const setError = useVoiceStore((s) => s.setError);
   const setVoiceMode = useVoiceStore((s) => s.setVoiceMode);
   const setPartialTranscript = useVoiceStore((s) => s.setPartialTranscript);
-  const setPendingDictation = useVoiceStore((s) => s.setPendingDictation);
-  const setSuppressNextBackendDictation = useVoiceStore((s) => s.setSuppressNextBackendDictation);
 
   const streamRef = useRef<SttStream | null>(null);
 
@@ -88,7 +102,7 @@ export function HudMicButton() {
           // AND tell the backend to drop the in-flight chat_brain turn
           // + TTS chain by returning true (SttStream then sends
           // `voice_cancel reason='barge_in'`). Matches OpenClaw Talk
-          // mode: when the operator speaks, TARS shuts up *and* stops
+          // mode: when the operator speaks, the assistant shuts up *and* stops
           // thinking. Compute is no longer wasted on a turn the
           // operator already overrode.
           //
@@ -118,7 +132,7 @@ export function HudMicButton() {
             // (mic error, page unload, AudioCapture failure) so the
             // indicator never lies about mic-hot status.
             setMicActive(false);
-            // Don't stomp on TARS's reactive states — `thinking` and
+            // Don't stomp on the assistant's reactive states — `thinking` and
             // `speaking` are owned by the chat loop / TTS player.
             if (entity.state === 'listening') entity.setState('idle');
           } else if (next === 'listening') {
@@ -132,37 +146,17 @@ export function HudMicButton() {
         onLevel: (rms) => setAudioLevel(rms),
         onError: (msg) => setError(msg),
         onPartial: (text) => setPartialTranscript(text),
-        onPartialCommit: (text, mode) => {
-          if (mode === 'transcribe') {
-            setPendingDictation(text);
-            setSuppressNextBackendDictation(true);
-            return;
-          }
-          // SC-4 — VOX command/speak: a recognized cockpit command (open a
-          // view, spawn the trio, spawn a content surface) is executed by the
-          // panel manager and never dispatched to TARS chat. Still record the
-          // spoken words in the transcript so the operator sees their utterance
-          // landed as a command rather than vanishing into silence.
-          if (dispatchCommand(text)) {
-            useConversationStore.getState().appendUserMessage(null, text);
-            return;
-          }
-          const ws = useWebSocketStore.getState();
-          ws.sendMessage('voice_mode_set', { mode: useVoiceStore.getState().voiceMode });
-          useConversationStore.getState().appendUserMessage(null, text);
-          ws.sendMessage('chat_message', { text });
-        },
       },
     );
     return () => {
       // Singleton survives across remounts; only reset on full app teardown.
     };
-  }, [setState, setMicActive, setAudioLevel, setError, setPartialTranscript, setPendingDictation, setSuppressNextBackendDictation]);
+  }, [setState, setMicActive, setAudioLevel, setError, setPartialTranscript]);
 
   // Mic on/off is tied STRICTLY to operator intent (`micActive`),
   // never to backend pipeline state. Privacy contract: when the
   // operator clicks the mic on, it stays on until they click it off
-  // — TARS replying, transcribing, or going `idle` from a backend
+  // — the assistant replying, transcribing, or going `idle` from a backend
   // signal must not flip the indicator off.
   const isOn = micActive;
   const isHot = micActive && (state === 'listening' || state === 'speaking_in');
@@ -196,7 +190,7 @@ export function HudMicButton() {
 
   return (
     <div className="hud-mic-group">
-      <Hint label={MODE_HINT[voiceMode]} position="top" maxWidth={260}>
+      <Hint label={modeHint(voiceMode, entityName)} position="top" maxWidth={260}>
         <button
           type="button"
           className={`hud-voice-mode is-${voiceMode}`}

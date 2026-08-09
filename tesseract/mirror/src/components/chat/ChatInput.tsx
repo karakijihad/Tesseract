@@ -348,7 +348,7 @@ export function ChatInput({ variant }: Props) {
     if (wsStatus !== 'connected') return;
     const entity = useEntityStore.getState();
     // Flip to listening from any non-active (non-loop-driven) state.
-    // Includes TARS-sticky states (deep_focus / dreaming / happy) so the
+    // Includes agent-sticky states (deep_focus / dreaming / happy) so the
     // operator engaging the input always pulls the orb into listening —
     // otherwise a sticky deep_focus from the previous turn would block
     // the listening cue until the next loop_start fires.

@@ -1,23 +1,25 @@
 # TESSERACT
 
-TESSERACT is a personal assistant that runs on your own Windows machine. It remembers what you tell it, keeps a research library it can search, and you can talk to it — all without sending anything to the cloud unless you choose to turn a cloud feature on.
+TESSERACT is a personal assistant that runs on your own Windows machine. You name it, you talk to it, and it remembers — across days, not just within a conversation.
 
 ## What it is
 
-Most AI assistants forget you between sessions and can't safely do anything. TESSERACT is the layer that fixes both.
+Most AI assistants forget you between sessions and can't safely do anything on your behalf. TESSERACT is the layer that fixes both.
 
-It's a local-first AI runtime. It gives an assistant:
+It is a runtime that gives an assistant:
 
 - **Long-term memory that consolidates rather than hoards** — it decays and merges what it knows instead of accumulating everything forever.
 - **An append-only research vault** it can search and synthesize from, kept separate from memory so research never contaminates recall.
 - **A tool registry with a real permission model** — every file write, shell command, and outbound call is gated by policy, and the default posture asks you first.
 - **An orchestration kernel** that runs background and scheduled work with durable state and crash recovery, so a job survives a restart instead of vanishing with the process.
 
-It's **model-agnostic by design**. API providers, subscription CLIs, and local models all plug into the same role wiring, so swapping the brain is a config change, not a rewrite — see [You aren't tied to Anthropic](#you-arent-tied-to-anthropic) below.
+It is **model-agnostic by design**. API providers, subscription CLIs, and local models all plug into the same role wiring, so swapping the brain is a config change, not a rewrite — see [You aren't tied to OpenAI](#you-arent-tied-to-openai).
 
 The interface is a desktop app: voice-first, with a visual HUD.
 
 Everything it remembers is plain files on your disk — Markdown you can open, read, and edit. Nothing is locked in a database.
+
+**On what leaves your machine:** hearing you, speaking, memory, and search all run locally and cost nothing. The language model it thinks with is whichever one you point it at — the shipped default is OpenAI, so by default your conversation does go to a provider. Point it at a local model instead and it doesn't. That choice is yours and it is one config field.
 
 ## Install
 
@@ -36,23 +38,44 @@ TESSERACT appears in your Start Menu — just search for it. Opening it a second
 
 ### A note while the project is private
 
-Right now the TESSERACT source repository is private, and the app downloads its own source code from that repository the first time it runs. That means, until it's made public, you also need a GitHub account with access to the repository and a personal access token, which the person who gave you the installer will need to give you. If the first-run setup screen can't download the source because the repository is private, it will ask you to paste that token right there — no need to create any folders or files yourself. Paste it, and setup continues on its own. If you don't have a token, ask whoever gave you the installer; this section will stop applying once the repository goes public.
+Right now the TESSERACT source repository is private, and the app downloads its own source code from that repository the first time it runs. Until it's made public you also need a GitHub account with access and a personal access token, which the person who gave you the installer will need to give you. If first-run setup can't download the source because the repository is private, it asks you to paste that token right there — no need to create any folders or files yourself. Paste it and setup continues on its own. This section stops applying once the repository goes public.
 
 ## First run
 
-The first time you open TESSERACT, it sets itself up: it downloads a Python runtime, installs its dependencies, downloads a browser engine it uses for web tasks, and downloads the local voice it speaks with. You'll see a progress screen with messages like "Downloading Python…" and "Downloading dependencies…".
+The first time you open TESSERACT, a setup screen walks you through two things before anything else happens.
 
-This takes several minutes — roughly five to ten, depending on your internet connection. That's normal. Don't force-quit it; just let it finish. After this first-run setup, every later launch is fast.
+**It asks what to call it.** The assistant ships without a name — deliberately. A shipped stand-in name would be indistinguishable from one you chose, so an install whose setup quietly failed would look configured instead of looking unnamed. You give it a name here, and you tell it what to call you. The name is not cosmetic: it's what the assistant calls itself, what shows in the header, and what the wake phrase is built from.
+
+You can change all of it later in the **Identity** tab. Nothing is locked in by answering now.
+
+**Then it asks before it downloads.** Setup fetches a Python runtime, its dependencies, a browser engine for web tasks, and the local voice it speaks with — several hundred megabytes in total. It tells you that and waits for you rather than starting on its own.
+
+Once you say go, expect roughly five to ten minutes depending on your connection. That's normal. Don't force-quit it; just let it finish. Every later launch is fast.
+
+## Naming, voice, and who it becomes
+
+The **Identity** tab is where the assistant is configured, and it holds four things:
+
+| | |
+| --- | --- |
+| **Names** | What it's called and what it calls you. Changing the name updates every surface live — no restart, and a second window follows too. |
+| **Wake phrase** | Built from the name (`<prefix> <name>`), so it changes when the name does. Optional; off unless you turn it on. |
+| **Voice** | Which voice it speaks in, picked from the local voices. |
+| **Its documents** | The files describing who it is, how it behaves, and what it knows about you — editable in place. |
+
+Below those sits **SOUL.md**, which is the assistant's own living identity document. It rewrites that itself as it works with you; when it does, the app surfaces the change rather than editing silently.
+
+Gender is optional and set alongside the name. It only drives pronouns and how the assistant refers to itself. Left unset, it uses they/them and doesn't infer one from the name or the voice.
 
 ## One thing to add before you can talk to it
 
-Nothing is _required_ to install and start TESSERACT — it will open, set itself up, and run. But to actually hold a conversation it needs a language model, and out of the box it's set up to use OpenAI. So add one key:
+Nothing is _required_ to install and start TESSERACT — it will open, set itself up, and run. But to hold a conversation it needs a language model, and out of the box it's wired to OpenAI. So add one key:
 
 1. Get an API key from [platform.openai.com](https://platform.openai.com/signup).
 2. Open the `.env` file in your data folder (see below) — it's already there, with every key listed and commented.
 3. Paste your key after `OPENAI_API_KEY=`, save, and **restart TESSERACT**. It only reads that file at startup.
 
-Until you do, TESSERACT still opens and works — but when you send a message it will tell you it has no chat provider yet, rather than sitting silent.
+Until you do, TESSERACT still opens and works — but when you send a message it tells you it has no chat provider yet, rather than sitting silent.
 
 ### One more key, free, worth adding
 
@@ -64,11 +87,11 @@ Get a key at [build.nvidia.com](https://build.nvidia.com/) and paste it after `B
 
 OpenAI is only the shipped default. TESSERACT can use any of these, and can mix them — one model for conversation, a different one for background work, a local one for anything you'd rather keep on your machine:
 
-|                            |                                                                                          |
+| | |
 | -------------------------- | ---------------------------------------------------------------------------------------- |
-| **Paid APIs**              | OpenAI (GPT) · Anthropic (Claude) · Google (Gemini) · xAI (Grok) · NVIDIA NIM (free tier) |
-| **Subscription CLIs**      | Claude Code · Codex — use a subscription you already pay for, no separate API bill       |
-| **Local, on your machine** | Ollama for chat and embeddings · Whisper for hearing you · Piper and Kokoro for speaking |
+| **Paid APIs** | OpenAI (GPT) · Anthropic (Claude) · Google (Gemini) · xAI (Grok) · NVIDIA NIM (free tier) |
+| **Subscription CLIs** | Claude Code · Codex — use a subscription you already pay for, no separate API bill |
+| **Local, on your machine** | Ollama for chat and embeddings · Whisper for hearing you · Kokoro and Piper for speaking |
 
 Each needs its own key in `.env` (except the local ones, which need nothing). Which model handles which job is set in `config/roles.yaml`, or under **Settings → Model roles**, and you can change it while TESSERACT is running — it picks up the change without a restart. [SETUP.md](SETUP.md) walks through swapping a provider and adding one that isn't listed.
 
@@ -77,7 +100,7 @@ Beyond a chat model, everything else is genuinely optional: web search, image ge
 ## What works without any key
 
 - **Talking to it** — speech recognition runs locally on your machine.
-- **Spoken replies** — the voice is downloaded during first-run setup. If that download can't complete, TESSERACT replies in text and quietly retries on every later launch, so a spotty connection delays spoken replies rather than losing them.
+- **Spoken replies** — two local voices are set up during first-run setup: Kokoro, which leads on naturalness, and Piper behind it, which is several times faster than realtime on a CPU so a slow machine still speaks. If the download can't complete, TESSERACT replies in text and quietly retries on every later launch, so a spotty connection delays spoken replies rather than losing them.
 - **Memory** — it remembers what you tell it, in plain files you can read.
 - **Its research library** — documents you add are indexed and searchable.
 
@@ -87,14 +110,14 @@ These all need a language model to be _useful_ in conversation, but they run on 
 
 Nothing fails at startup. TESSERACT starts with whatever you've given it and tells you at the moment you ask for something it can't do. The full table is in [SETUP.md](SETUP.md); the short version:
 
-| Missing               | What you lose                                     | What you still have                                    |
+| Missing | What you lose | What you still have |
 | --------------------- | ------------------------------------------------- | ------------------------------------------------------ |
-| Chat key              | Conversation                                       | Everything else — it just can't reply                   |
-| `BUILD_NVIDIA_KEY`    | Free background work                               | The same work, billed to your chat key instead          |
-| `BRAVE_SEARCH_API_KEY`| The `web_search` tool                              | Memory, vault, and the model's own knowledge            |
-| `TAVILY_API_KEY`      | `tavily_search` / pulling a web page into the vault| The same — these two are separate from Brave, not a fallback for it |
-| Ollama                | Meaning-based search of memory and the vault       | Keyword search over both, automatically                 |
-| Telegram token        | The Telegram bridge                                | Everything else; the bridge just stays off              |
+| Chat key | Conversation | Everything else — it just can't reply |
+| `BUILD_NVIDIA_KEY` | Free background work | The same work, billed to your chat key instead |
+| `BRAVE_SEARCH_API_KEY` | The `web_search` tool | Memory, vault, and the model's own knowledge |
+| `TAVILY_API_KEY` | `tavily_search` / pulling a web page into the vault | The same — these two are separate from Brave, not a fallback for it |
+| Ollama | Meaning-based search of memory and the vault | Keyword search over both, automatically |
+| Telegram token | The Telegram bridge | Everything else; the bridge just stays off |
 
 Web search is the one people trip over: **Brave and Tavily are two different tools, not alternatives.** Brave backs `web_search`; Tavily backs `tavily_search` and `tavily_extract`. Neither key covers the other's tools, so if you want the web fully available, add both. Both have free tiers.
 
@@ -110,14 +133,14 @@ Everything TESSERACT remembers lives in one folder:
 
 Inside it, the parts worth knowing about:
 
-| Folder           | What's in it                                                                      |
+| Folder | What's in it |
 | ---------------- | --------------------------------------------------------------------------------- |
-| `.env`           | Your API keys. Commented, explaining what each one unlocks.                       |
-| `memory-store/`  | What TESSERACT remembers — plain Markdown you can read and edit.                  |
-| `vault/`         | Your research library. Drop documents in and they become searchable.              |
-| `workspace/`     | How it understands itself and you — including notes it keeps on your preferences. |
-| `config/`        | Settings. Editable, but the defaults are sensible.                                |
-| `tars-workshop/` | Scratch space for longer pieces of work.                                          |
+| `.env` | Your API keys. Commented, explaining what each one unlocks. |
+| `memory-store/` | What TESSERACT remembers — plain Markdown you can read and edit. |
+| `vault/` | Your research library. Drop documents in and they become searchable. |
+| `workspace/` | How it understands itself and you — including notes it keeps on your preferences. |
+| `config/` | Settings. Editable, but the defaults are sensible. |
+| `workshop/` | Scratch space for longer pieces of work. |
 
 Each of these arrives with a short explainer file inside it. They're ordinary files — nothing is hidden in a database.
 

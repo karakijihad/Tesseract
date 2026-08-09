@@ -17,11 +17,18 @@ from aiohttp import web
 
 from tesseract.brain.cost import BudgetExhausted
 from tesseract.mirror.server.envelope import (
+    make_voice_discarded,
     make_voice_final,
     make_voice_instruction,
     make_voice_state,
 )
 from tesseract.mirror.server.session import send_envelope
+from tesseract.mirror.server.voice_modes import (
+    VOICE_MODES,
+    destination_for,
+    normalize_voice_mode,
+)
+from tesseract.mirror.server.wake_word import evaluate_wake_gate
 
 if TYPE_CHECKING:
     from tesseract.mirror.server.session import ServerSession
@@ -44,7 +51,7 @@ async def _emit_voice_state(session: "ServerSession", wire: str | None) -> None:
 async def note_voice_audio(session: "ServerSession", *, turn_active: bool) -> None:
     """SC-5 — drive the voice loop on an inbound PCM frame (binary WS path).
     Emits ``listening`` exactly once per utterance (idle → listening),
-    turn-gated so ambient mic audio during TARS's reply can't flip the mic
+    turn-gated so ambient mic audio during the assistant's reply can't flip the mic
     UI out of ``speaking_back``."""
     await _emit_voice_state(session, session.voice_loop.note_audio(turn_active=turn_active))
 
@@ -54,11 +61,11 @@ def _handle_voice_mode_set(session: "ServerSession", data: dict) -> None:
     pill toggle and on (re)connect so the server gates TTS synthesis
     even for typed messages. On malformed input, KEEP the current mode
     rather than reverting to a default — flipping silent → speak on a
-    bad envelope would be the worst possible failure mode (TARS speaks
+    bad envelope would be the worst possible failure mode (the assistant speaks
     when the operator opted into silence)."""
     raw = (data or {}).get("mode")
     mode = raw.strip().lower() if isinstance(raw, str) else session.voice_mode
-    if mode not in ("transcribe", "command", "speak"):
+    if mode not in VOICE_MODES:
         mode = session.voice_mode
     if mode != session.voice_mode:
         log.info("voice_mode: %s -> %s for %s", session.voice_mode, mode, session.session_id)
@@ -93,7 +100,15 @@ async def _handle_voice_commit(
       typed-chat path so chat_brain runs with no new wiring.
     - ``mode="transcribe"``: emit only ``voice_final``; the frontend
       routes the text into the chat input for the operator to
-      review/edit/send.
+      review/edit/send. The session's ``terminal`` mode resolves here
+      too — same server contract, different frontend destination.
+
+    AS-2 — in ``chat`` mode the transcript passes the wake-word gate
+    before it becomes a turn. A refusal emits ``voice_discarded``
+    *instead of* ``voice_final``, because a final in a dispatching mode
+    is what puts the operator's words on screen as a chat bubble; a
+    discarded utterance must leave no bubble waiting for a reply that
+    will never come.
 
     STT is local Whisper primary with a Gemini Flash audio fallback
     (``roles.yaml::voice.stt``). A ``BudgetExhausted`` is surfaced as a
@@ -104,17 +119,36 @@ async def _handle_voice_commit(
     through ``session.voice_loop`` so the speech-in half of the loop has a
     single explicit definition.
     """
+    session_mode = normalize_voice_mode(session.voice_mode)
+    # Resolved once, before the transcription await, and carried on every
+    # exit — including the empty ones, since a final without it would fall
+    # back to the frontend value the field exists to stop trusting.
+    #
+    # `mode` is derived FROM `destination`, not computed beside it. They
+    # were once resolved from different sources — the session for one, the
+    # envelope's `mode` field for the other — and could therefore disagree:
+    # a `speak` session receiving a stale `transcribe` payload emitted a
+    # chat-destination final while skipping the dispatch, so the operator
+    # saw their words become a chat bubble that the assistant never answered.
+    destination = destination_for(session_mode)
+    mode = "chat" if destination == "chat" else "transcribe"
     raw_mode = (data or {}).get("mode")
     msg_mode = raw_mode.strip().lower() if isinstance(raw_mode, str) else None
-    session_mode = (session.voice_mode or "speak").strip().lower()
-    if session_mode == "transcribe":
-        mode = "transcribe"
-    elif session_mode == "command":
-        mode = "chat"
-    elif msg_mode in ("chat", "transcribe"):
-        mode = msg_mode
-    else:
-        mode = "chat"
+    if msg_mode is not None and msg_mode != mode:
+        # The session is authoritative — it is set on mount, on every mode
+        # change and on reconnect. A disagreeing payload is a stale client,
+        # and honouring it is what let the two halves diverge.
+        # Both values named explicitly: `msg_mode` is a routing hint and
+        # `session_mode` is a mic mode, so printing them side by side
+        # without the resolution in between reads as a mismatch between
+        # two things that were never the same kind.
+        log.info(
+            "voice_commit: envelope says mode=%s, but session mode=%s "
+            "resolves to %s — using the session",
+            msg_mode,
+            session_mode,
+            mode,
+        )
     audio = bytes(session.voice_pcm_buffer or b"")
     session.voice_pcm_buffer = None
     log.info("voice_commit: %d bytes (~%.2fs) mode=%s", len(audio), len(audio) / 32_000, mode)
@@ -122,12 +156,18 @@ async def _handle_voice_commit(
     engine = app.get("stt_engine")
     if engine is None:
         log.warning("voice_commit: stt_engine unavailable — emitting empty final")
-        await send_envelope(session, make_voice_final(session.session_id, ""))
+        await send_envelope(
+            session,
+            make_voice_final(session.session_id, "", destination=destination),
+        )
         await _emit_voice_state(session, session.voice_loop.finish())
         return
 
     if not audio:
-        await send_envelope(session, make_voice_final(session.session_id, ""))
+        await send_envelope(
+            session,
+            make_voice_final(session.session_id, "", destination=destination),
+        )
         await _emit_voice_state(session, session.voice_loop.finish())
         return
 
@@ -147,7 +187,10 @@ async def _handle_voice_commit(
         log.warning("voice_commit: budget exhausted (%s)", exc)
         from tesseract.mirror.server.tts import _emit_voice_overage_ask
         await _emit_voice_overage_ask(app, session, exc)
-        await send_envelope(session, make_voice_final(session.session_id, ""))
+        await send_envelope(
+            session,
+            make_voice_final(session.session_id, "", destination=destination),
+        )
         await _emit_voice_state(session, session.voice_loop.finish())
         return
     except Exception:
@@ -167,14 +210,35 @@ async def _handle_voice_commit(
             session,
             make_voice_instruction(session.session_id, instruction=notice),
         )
-    await send_envelope(session, make_voice_final(session.session_id, text))
+
+    if text and mode == "chat":
+        decision = evaluate_wake_gate(app, text)
+        if not decision.matched:
+            log.info(
+                "voice_commit: wake-word gate discarded utterance (score=%.3f)",
+                decision.score,
+            )
+            await send_envelope(
+                session,
+                make_voice_discarded(
+                    session.session_id, text=text, score=decision.score
+                ),
+            )
+            await _emit_voice_state(session, session.voice_loop.finish())
+            return
+        text = decision.text
+
+    await send_envelope(
+        session,
+        make_voice_final(session.session_id, text, destination=destination),
+    )
     await _emit_voice_state(session, session.voice_loop.finish())
     if text and mode == "chat":
         # Voice follows the same queueing contract as typed input
         # (2026-05-01). `_start_turn` appends a fresh transcript onto
         # `chat_queues[active_chat_id]` when a turn is already running and
         # `_run_turn`'s finally clause drains the queue at the next
-        # gap — so the operator can speak while TARS is working
+        # gap — so the operator can speak while the assistant is working
         # without aborting the live turn. SDD Task 1.2: `_start_turn`
         # now lives in `turn_intake.py`. Lazy import: avoids a hard
         # circular dependency at module-load time.
@@ -208,7 +272,7 @@ async def _handle_voice_cancel(
     reason = (data or {}).get("reason") if isinstance(data, dict) else None
     is_barge_in = reason == "barge_in"
 
-    # parallel-tars P6: TTS state is per-turn — sweep every running turn's
+    # TTS state is per-turn — sweep every running turn's
     # state (plus the legacy session fields) since barge-in / stop must
     # silence whichever chat is audible.
     states = list(getattr(session, "turn_states_by_chat", {}).values())
@@ -225,7 +289,7 @@ async def _handle_voice_cancel(
                 pass
 
     if is_barge_in:
-        # The operator is speaking over TARS — the input half is live again.
+        # The operator is speaking over the assistant — the input half is live again.
         # The chat turn keeps running; the new transcript queues via the
         # next voice_commit onto `chat_queues[active_chat_id]`.
         await _emit_voice_state(session, session.voice_loop.barge_in())

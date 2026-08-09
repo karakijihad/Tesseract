@@ -127,7 +127,7 @@ async def broadcast_thread_pending(
 async def broadcast_comment_appended(app: Any, comment: WorkspaceComment) -> None:
     """Fan a ``workspace_comment_appended`` envelope out to every Mirror WS.
 
-    Operator comments fire from the REST `post_comment` handler; TARS
+    Operator comments fire from the REST `post_comment` handler; the assistant
     replies fire from the post-tool-call hook in `ws.py` (which observes
     workspace_reply TOOL_RESULT). Same fail-soft semantics as
     `broadcast_workspace_event` — never raise, no-op when no app/session.

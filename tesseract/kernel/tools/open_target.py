@@ -2,7 +2,13 @@
 
 A URL, a file, a folder, an application, or a search phrase. It renders in the
 cockpit when it can and goes to the application that owns it when it can't, and
-the caller never picks which. The result says which way it went.
+the result says which way it went.
+
+By default the caller does not pick: the target is classified on its shape and
+on what is actually on disk. `intent` and `destination` exist for the caller
+that already knows — a scripted one, mostly, since the same string can change
+meaning when a file appears or disappears beside it. Neither can widen what
+`open` will do; refusals are decided before either is consulted.
 
 AUTO posture, and it gates nothing itself: it resolves, then dispatches to
 `surface_create` (auto), `os_open_url` (auto) or `os_launch` (ask) through the
@@ -11,12 +17,13 @@ normal permission gateway. The gate lives on the primitive, where the risk is.
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
 from tesseract.config.open_verb import load_open_config
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.orchestrator.open_verb.classify import Intent
 from tesseract.orchestrator.open_verb.execute import ExecutionUnavailable, execute
 from tesseract.orchestrator.open_verb.resolve import (
     AmbiguousTarget,
@@ -34,8 +41,27 @@ class OpenInput(BaseModel):
             "opens in the application that owns it."
         )
     )
+    intent: Literal["auto", "path", "url", "app", "search"] = Field(
+        default="auto",
+        description=(
+            "How to read `target`, when you already know. `auto` guesses, and "
+            "an existing file outranks every other reading — so a phrase that "
+            "happens to name a file on disk opens the file. Pin `search` to "
+            "search for it anyway, `path` / `url` / `app` to say which of "
+            "those it is. Cannot open anything `auto` would refuse."
+        ),
+    )
+    destination: Literal["auto", "os"] = Field(
+        default="auto",
+        description=(
+            "`auto` renders in the cockpit whenever there is a renderer for "
+            "it, and hands the rest to the OS. `os` skips the cockpit and "
+            "opens it in the application that owns it. There is no `cockpit` "
+            "value: rendering is a capability, not a preference."
+        ),
+    )
     view: str = Field(
-        default="tars", description="Canvas view a cockpit card belongs to."
+        default="orb", description="Canvas view a cockpit card belongs to."
     )
 
 
@@ -63,7 +89,12 @@ class OpenTool(Tool):
         inp: OpenInput = tool_input  # type: ignore[assignment]
         try:
             config = load_open_config()
-            resolution = await resolve(inp.target, config=config)
+            resolution = await resolve(
+            inp.target,
+            config=config,
+            intent=Intent(inp.intent),
+            destination=inp.destination,
+        )
             outcome = await execute(resolution, context, view=inp.view)
         except (AmbiguousTarget, RefusedTarget) as exc:
             return ToolResult(output=str(exc), is_error=True)

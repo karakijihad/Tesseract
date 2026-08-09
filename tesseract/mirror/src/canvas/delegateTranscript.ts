@@ -1,14 +1,14 @@
 // Y-3 / D-6 / SC-4 — open a delegate transcript as a Surface-Protocol card.
 // Replaces the old single-slot SpawnDrawer overlay: clicking a running-spawn
 // chip spawns (or reveals) a `delegate-transcript` surface on the cockpit's
-// `tars` view, which `SurfaceLayer` renders over the orb regardless of which
+// `orb` view, which `SurfaceLayer` renders over the orb regardless of which
 // panel is focused (SC-4 re-homed the surface layer into `CockpitStage`), so no
 // forced navigation is needed. Idempotent — a card already bound to the same
 // call_id is not duplicated.
 
 import { BACKEND_BASE } from '../lib/endpoints';
 
-const TRANSCRIPT_VIEW = 'tars';
+const TRANSCRIPT_VIEW = 'orb';
 
 export async function openDelegateTranscript(callId: string, toolName: string): Promise<void> {
   if (!callId) return;

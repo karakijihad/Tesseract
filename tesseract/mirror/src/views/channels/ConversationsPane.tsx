@@ -14,6 +14,7 @@
  * and the visible slice is capped at `CONV_DISPLAY_CAP` (mirrors the
  * retention cap surfaced in the hint line). */
 import { useEffect, useMemo } from 'react';
+import { useEntityName } from '../../hooks/useEntityName';
 import { linkifyText } from '../../lib/linkify';
 import {
   useChannelsStore,
@@ -40,7 +41,7 @@ const CONV_POLL_MS = 5000;
 
 // Hard cap on rows rendered in the pane. Mirrors the retention window
 // (`channels.yaml::telegram.max_turns_in_context`, default 20) so the
-// operator sees exactly the slice TARS still has in his context —
+// operator sees exactly the slice the assistant still has in its context —
 // older rows persist in the JSONL but aren't rendered here. Bumping
 // this cap risks a long-scroll list that obscures recent replies.
 const CONV_DISPLAY_CAP = 20;
@@ -59,8 +60,9 @@ function _fmtTs(iso: string): string {
 function RetentionHint({ count, cap }: RetentionHintProps) {
   return (
     <div className="channel-conv-retention t-meta" data-testid="channel-conv-retention">
-      Last {Math.min(count, cap)} turn{cap === 1 ? '' : 's'} retained in TARS&apos;s
-      context (max: {cap}); older messages persist here but are out of his prompt.
+      Last {Math.min(count, cap)} turn{cap === 1 ? '' : 's'} retained in the
+      agent&apos;s context (max: {cap}); older messages persist here but are out
+      of its prompt.
     </div>
   );
 }
@@ -168,6 +170,7 @@ export function ConversationsPane({ channel }: ConversationsPaneProps) {
 }
 
 function ConversationList({ rows }: { rows: readonly ConversationRow[] }) {
+  const entityName = useEntityName();
   // 2026-05-16: render newest-first and cap at ``CONV_DISPLAY_CAP`` so
   // the freshest reply is always at the top of the pane and old rows
   // beyond the retention window stop competing for visual space. The
@@ -188,7 +191,7 @@ function ConversationList({ rows }: { rows: readonly ConversationRow[] }) {
           <div className="channel-conv-row-meta">
             <span className="channel-conv-row-ts t-meta">{_fmtTs(row.ts)}</span>
             <span className="channel-conv-row-direction t-meta">
-              {row.direction === 'inbound' ? '→ tars' : '← tars'}
+              {row.direction === 'inbound' ? `→ ${entityName}` : `← ${entityName}`}
             </span>
           </div>
           <span className="channel-conv-row-body">{linkifyText(row.body)}</span>

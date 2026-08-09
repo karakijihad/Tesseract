@@ -9,18 +9,21 @@ Requires `TAVILY_API_KEY` in .env. 1K req/mo free at tavily.com.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import ClassVar
 
-import httpx
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.web_providers import fetch_json
+from tesseract.kernel.tools.web_providers.tavily import TavilyExtractProvider
 
-_ENDPOINT = "https://api.tavily.com/extract"
 _TIMEOUT = 30.0  # extract is slower than search
 _MAX_URLS = 20
 _MAX_OUTPUT_CHARS = 30_000
+
+_PROVIDER = TavilyExtractProvider()
 
 
 class TavilyExtractInput(BaseModel):
@@ -63,47 +66,24 @@ class TavilyExtractTool(Tool):
     async def run(self, tool_input: BaseModel, context: ToolContext) -> ToolResult:
         inp = tool_input if isinstance(tool_input, TavilyExtractInput) else TavilyExtractInput(**tool_input.model_dump())
 
-        api_key = os.environ.get("TAVILY_API_KEY")
+        api_key = os.environ.get(_PROVIDER.api_key_env)
         if not api_key:
-            return ToolResult(
-                output="TAVILY_API_KEY not set in .env. Get a free key (1K/mo) at https://tavily.com and add TAVILY_API_KEY=... to tesseract/.env",
-                is_error=True,
-            )
+            return ToolResult(output=_PROVIDER.missing_key_message(), is_error=True)
 
         if inp.extract_depth not in ("basic", "advanced"):
             return ToolResult(output=f"extract_depth must be 'basic' or 'advanced', got {inp.extract_depth!r}", is_error=True)
 
-        payload = {
-            "urls": inp.urls,
-            "extract_depth": inp.extract_depth,
-        }
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
+        outcome = await fetch_json(
+            _PROVIDER,
+            api_key=api_key,
+            request=_PROVIDER.build_request(inp),
+            timeout=_TIMEOUT,
+            note_tripwire=_note_tavily_extract_tripwire,
+        )
+        if outcome.error is not None:
+            return outcome.error
 
-        try:
-            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-                r = await client.post(_ENDPOINT, headers=headers, json=payload)
-        except httpx.TimeoutException:
-            return ToolResult(output=f"Tavily extract timed out after {_TIMEOUT}s", is_error=True)
-        except httpx.HTTPError as e:
-            return ToolResult(output=f"Tavily extract request failed: {e}", is_error=True)
-
-        if r.status_code == 401:
-            return ToolResult(output="Tavily 401 — API key rejected. Check TAVILY_API_KEY.", is_error=True)
-        if r.status_code == 429:
-            return ToolResult(output="Tavily 429 — rate limit exceeded (1K/mo on the free tier).", is_error=True)
-        if r.status_code >= 400:
-            return ToolResult(output=f"Tavily {r.status_code}: {r.text[:200]}", is_error=True)
-
-        try:
-            data = r.json()
-        except ValueError:
-            return ToolResult(output="Tavily returned non-JSON", is_error=True)
-
-        results = data.get("results") or []
-        failed = data.get("failed_results") or []
+        results, failed = _PROVIDER.parse_results(outcome.data or {})
 
         if not results:
             msg = "Tavily extract: no URLs succeeded."
@@ -136,4 +116,15 @@ class TavilyExtractTool(Tool):
         return ToolResult(
             output=output,
             metadata={"succeeded": len(results), "failed": len(failed), "depth": inp.extract_depth},
+        )
+
+
+def _note_tavily_extract_tripwire(drift_kind: str, evidence: dict) -> None:
+    """Production tripwire — best-effort JSONL row write."""
+    try:
+        from tesseract.orchestrator.provider_health import note_production_tripwire
+        note_production_tripwire("tavily_extract", _PROVIDER.tripwire_source, drift_kind, evidence)
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).debug(
+            "tavily_extract: tripwire write failed", exc_info=True
         )

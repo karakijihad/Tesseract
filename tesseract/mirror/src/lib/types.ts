@@ -94,8 +94,12 @@ export interface ToolResult {
 // the live result is looked up from `currentToolResults` (streaming) or
 // `toolResults` (frozen) at render time so we don't duplicate state.
 // `text` stays optional/empty for the tool_call kind.
+// `spoken` segments are the abbreviated spoken form of a long reply. They
+// ride the timeline so the captions surface can prefer them, but they are
+// NOT rendered in the transcript — the `answer` right after says the same
+// thing at length, and printing both reads as a stutter.
 export interface AssistantStreamSegment {
-  kind: "intent" | "answer" | "tool_call" | "system_note";
+  kind: "intent" | "spoken" | "answer" | "tool_call" | "system_note";
   text: string;
   call_id?: string;
   name?: string;
@@ -330,7 +334,7 @@ export interface LoopEndData {
 
 export interface StreamTextData {
   delta: string;
-  kind?: "intent" | "status" | "answer" | "thinking";
+  kind?: "intent" | "status" | "spoken" | "answer" | "thinking";
 }
 
 export interface StreamToolCallStartData {
@@ -435,6 +439,26 @@ export interface ModeChangedData {
   to: string;
 }
 
+export interface IdentityWakeWord {
+  enabled: boolean;
+  prefix: string;
+}
+
+// Broadcast after `POST /api/identity` lands, and also the route's own
+// response body — the values as the live config now holds them, not as
+// they were requested.
+export interface IdentityChangedData {
+  name: string;
+  operator_name: string;
+  wake_word: IdentityWakeWord;
+}
+
+export interface IdentitySavePatch {
+  name?: string;
+  operator_name?: string;
+  wake_word?: Partial<IdentityWakeWord>;
+}
+
 export interface SoulUpdatedData {
   content: string;
   source?: string;
@@ -447,7 +471,7 @@ export interface SoulUpdatedData {
   no_op_reason?: "duplicate" | "unchanged" | null;
 }
 
-// category: 'entity' — body-of-TARS signals. Mirrors EntitySignalsPayload in
+// category: 'entity' — body-of-the assistant signals. Mirrors EntitySignalsPayload in
 // IntensitySignals.ts. Fields go stale at 3000ms; backend pumps every 2000ms
 // + on loop_start / loop_end / set_mood result.
 export interface EntitySignalsData {
@@ -533,33 +557,57 @@ export interface VoiceStateData {
   state: VoiceState;
 }
 
+// `chat` dispatches a turn; `input` hands the text back to the chat
+// input; `terminal` types it into the focused pane. Mirrors
+// `mirror/server/voice_modes.py::VOICE_DESTINATIONS`.
+export type VoiceDestination = "chat" | "input" | "terminal";
+
 export interface VoiceFinalData {
   text: string;
+  // Where the SERVER decided this transcript goes, resolved before it
+  // began transcribing. Route on this, never on the store's current mode:
+  // STT is not instant, so the operator can cycle the HUD pill
+  // mid-utterance, and the live value would send a transcript somewhere
+  // the backend never agreed to — including typing a chat-bound utterance
+  // into a shell. It is the resolved target rather than the raw mic mode
+  // so the mapping lives in one place; both ends deriving it is how a
+  // fifth mode ends up routed differently by each half. Required: every
+  // exit in `_handle_voice_commit` stamps it.
+  destination: VoiceDestination;
+}
+
+// `voice_discarded` — an utterance the wake-word gate refused. Arrives
+// INSTEAD of `voice_final`, so the words never become a chat bubble, a
+// turn, or speech. `score` is how close the utterance came to the wake
+// phrase, which is what tells the operator whether to retune the
+// threshold in mirror.yaml or simply speak up.
+export interface VoiceDiscardedData {
+  text: string;
+  score: number;
+  reason: "wake_word";
 }
 
 // S3 stubs — declared now so dispatch handlers don't need a types churn
 // when S3 lands; backend doesn't emit these yet.
 
 export interface TtsChunkData {
-  audio_b64: string; // base64 WAV chunk (Gemini Flash TTS — 24 kHz PCM)
-  provider: string; // "gemini_flash_tts"
+  audio_b64: string; // base64 WAV chunk, sample rate per provider
+  provider: string; // catalog model id of the lane that synthesized it
   sequence: number; // monotonic per turn
   is_final: boolean; // last chunk for this utterance
 }
 
-// `voice_instruction` envelope — TARS-authored voice control. Two
-// sources: (a) the `set_voice` tool (voice_id only) and (b) the WS
-// budget gate when cloud TTS is exhausted (instruction-only toast).
-// Frontend stores the latest instruction; backend reads VoiceState
-// directly before synthesis. Style/character is config-only — see
-// `roles.yaml::voice.tts.settings.…synthesis_presets`.
+// `voice_instruction` envelope — why the reply is not being spoken.
+// Raised by the WS gate when a lane's budget is exhausted or every TTS
+// lane is down. Voice and character are config
+// (`roles.yaml::voice.tts` + that entry's `synthesis_presets`), so
+// nothing on the wire selects them.
 export interface VoiceInstructionData {
   instruction?: string;
-  voice_id?: string;
 }
 
-// `entity_state_set` envelope — TARS-authored discrete orb state
-// (`set_state` tool). Sticky frontend-side until either TARS calls
+// `entity_state_set` envelope — agent-authored discrete orb state
+// (`set_state` tool). Sticky frontend-side until either the assistant calls
 // again or a loop event fires its own setState (loop_start →
 // thinking, etc.). Backend allows: happy / deep_focus / dreaming /
 // idle. Reactive states are loop-driven and not settable here.

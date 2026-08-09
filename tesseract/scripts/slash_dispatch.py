@@ -20,7 +20,7 @@ even when the operator is the caller. ASK returned directly from
 ``check_permissions`` (rare; no existing tool does this) is treated as
 allow under operator slash.
 
-**Security: TARS must not reach this dispatcher.** Because ``run_slash``
+**Security: the assistant must not reach this dispatcher.** Because ``run_slash``
 skips policy posture, any Tool that wrapped it would let the LLM bypass
 ``permissions.yaml``. Two structural defenses guard this:
 
@@ -30,7 +30,7 @@ skips policy posture, any Tool that wrapped it would let the LLM bypass
      import it to drive the dispatcher in unit tests. Any *other* import
      of ``_OPERATOR_TOKEN`` (especially from a Tool subclass) is a hard
      review block.
-  2. Kernel lockdown (CLAUDE.md) prevents TARS from writing source, so it
+  2. Kernel lockdown (CLAUDE.md) prevents the assistant from writing source, so it
      cannot author a Tool that calls this module in the first place.
 
 ``print_slash_help(registry)`` renders the dynamic ``/help`` output.
@@ -83,7 +83,7 @@ _COMMAND_ALIASES: dict[str, str] = {
 NOT_SLASH_CALLABLE: dict[str, str] = {
     "open": (
         "`open` dispatches through the permission stack, which the slash "
-        "console deliberately bypasses. Use the cockpit, ask TARS, or run "
+        "console deliberately bypasses. Use the cockpit, ask the assistant, or run "
         "`python -m tesseract.scripts.open_cli <target>` from a terminal."
     ),
 }

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from tesseract.kernel.tools._path_anchor import anchor_read_path
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
 
 
@@ -84,9 +85,7 @@ class GrepTool(Tool):
                 is_error=True,
             )
 
-        search_path = Path(inp.path)
-        if not search_path.is_absolute():
-            search_path = Path(context.workspace_root) / search_path
+        search_path = anchor_read_path(inp.path, context.workspace_root)
         if not search_path.exists():
             return ToolResult(output=f"Path not found: {search_path}", is_error=True)
 

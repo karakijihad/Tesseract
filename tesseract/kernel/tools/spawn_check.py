@@ -1,8 +1,8 @@
 """spawn_check — read-only status of a background spawn handle.
 
-Phase 4 of the TARS reboot CLI-parity plan. Companion to
-`delegate_claude(background=true)` and (in a follow-up pass)
-`delegate_codex` / `invoke_agent`. Returns running / done / failed /
+Phase 4 of the assistant reboot CLI-parity plan. Companion to
+`delegate_coder(background=true)` and (in a follow-up pass)
+`delegate_auditor` / `invoke_agent`. Returns running / done / failed /
 cancelled — does NOT return the full output (use `spawn_await` for
 that) so a polling-style check stays cheap.
 """

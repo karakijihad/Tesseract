@@ -1,6 +1,6 @@
 """FileCopyTool / FileMoveTool — copy or move a single file.
 
-File management previously had no dedicated tool, so TARS routed
+File management previously had no dedicated tool, so the assistant routed
 copies through bash (`copy /Y`, `shutil` one-liners) — a needless trip
 through the shell security layer for a pure file operation (live
 incident: session 2026-07-12-1818). These tools share `file_write`'s
@@ -84,7 +84,7 @@ class _FileTransferTool(Tool):
             reason = _check_runtime_lockdown(resolved)
             if reason is not None:
                 msg = (
-                    f"{reason} — TARS cannot grant himself permissions or "
+                    f"{reason} — the assistant cannot grant itself permissions or "
                     "reconfigure the Mirror server. The operator edits these "
                     "these files by hand or in Settings."
                 )

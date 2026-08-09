@@ -11,6 +11,7 @@ Derived artifact — delete and rebuild from canonical .md files.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import threading
@@ -38,6 +39,15 @@ REBUILD_MAX_CONSECUTIVE_FAILURES = 3
 # (SKILL_MD_MAX_BYTES idiom).
 RELOAD_CHECK_MIN_INTERVAL_S = 2.0
 
+# In-flight embed HTTP calls per rebuild batch. Pipelines request latency
+# without flooding Ollama (which serializes GPU work server-side anyway).
+# Code-level bound, not a config key (SKILL_MD_MAX_BYTES idiom).
+_REBUILD_EMBED_CONCURRENCY = 4
+
+
+def _text_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
 
 class EmbeddingIndex:
     def __init__(
@@ -62,6 +72,9 @@ class EmbeddingIndex:
         self._map_path = derived_dir / "id_map.json"
         self._id_to_pos: dict[str, int] = {}
         self._pos_to_id: dict[int, str] = {}
+        # Content hash per indexed id — lets rebuild_from_store reuse the
+        # live vector for unchanged text instead of re-embedding everything.
+        self._text_hashes: dict[str, str] = {}
         self._index: faiss.IndexFlatIP = faiss.IndexFlatIP(self._dimensions)
         # WP-1 blocker §B fix: serialize FAISS in-memory state + id_map
         # mutations across concurrent async tasks (chat turn vs synthetic
@@ -135,6 +148,7 @@ class EmbeddingIndex:
             self._pos_to_id = {
                 int(k): v for k, v in data.get("pos_to_id", {}).items()
             }
+            self._text_hashes = data.get("text_hashes", {})
             self._loaded_mtime_ns = disk_mtime_ns
         logger.info(
             "Reloaded FAISS index from disk (cross-process change, %d vectors)",
@@ -146,6 +160,7 @@ class EmbeddingIndex:
             data = json.loads(self._map_path.read_text(encoding="utf-8"))
             self._id_to_pos = data.get("id_to_pos", {})
             self._pos_to_id = {int(k): v for k, v in data.get("pos_to_id", {}).items()}
+            self._text_hashes = data.get("text_hashes", {})
 
     def _save(self) -> None:
         self._derived_dir.mkdir(parents=True, exist_ok=True)
@@ -159,6 +174,7 @@ class EmbeddingIndex:
         data = {
             "id_to_pos": self._id_to_pos,
             "pos_to_id": {str(k): v for k, v in self._pos_to_id.items()},
+            "text_hashes": self._text_hashes,
         }
         self._map_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -201,6 +217,7 @@ class EmbeddingIndex:
                 raise
             self._id_to_pos[memory_id] = pos
             self._pos_to_id[pos] = memory_id
+            self._text_hashes[memory_id] = _text_hash(text)
             self._save()
             # Snapshot the compaction-trigger inputs inside the lock so a
             # concurrent remove() between unlock and check can't make the
@@ -218,6 +235,7 @@ class EmbeddingIndex:
         if memory_id in self._id_to_pos:
             del self._pos_to_id[self._id_to_pos[memory_id]]
             del self._id_to_pos[memory_id]
+            self._text_hashes.pop(memory_id, None)
             self._save_id_map()
             # id_map.json changed on disk — refresh the marker so our own
             # remove doesn't read as a cross-process change (review finding
@@ -274,6 +292,10 @@ class EmbeddingIndex:
             for i, (mid, _pos) in enumerate(live_positions):
                 self._id_to_pos[mid] = i
                 self._pos_to_id[i] = mid
+            live = set(self._id_to_pos)
+            self._text_hashes = {
+                k: v for k, v in self._text_hashes.items() if k in live
+            }
 
             self._save()
             logger.info("Compacted FAISS index: %d live vectors", len(live_positions))
@@ -308,8 +330,14 @@ class EmbeddingIndex:
         vector: np.ndarray,
         top_k: int = 5,
         candidate_ids: list[str] | None = None,
+        require_prefix: str | None = None,
     ) -> list[tuple[str, float]]:
-        """Search using a pre-embedded, L2-normalized vector."""
+        """Search using a pre-embedded, L2-normalized vector.
+
+        `require_prefix` keeps only matching ids. The index is shared
+        between memory records and vault chunks; when a prefix is set the
+        search window expands (bounded by ntotal) until top_k matching
+        hits are found, so foreign vectors cannot crowd the window."""
         self._maybe_reload_from_disk()
         with self._lock:
             if self._index.ntotal == 0:
@@ -317,18 +345,29 @@ class EmbeddingIndex:
 
             arr = vector.reshape(1, -1).astype(np.float32)
             search_k = min(top_k * 3, self._index.ntotal)
-            scores, indices = self._index.search(arr, search_k)
+            while True:
+                scores, indices = self._index.search(arr, search_k)
 
-            results: list[tuple[str, float]] = []
-            for score, idx in zip(scores[0], indices[0]):
-                if idx == -1:
-                    continue
-                mem_id = self._pos_to_id.get(int(idx))
-                if mem_id is None:
-                    continue
-                if candidate_ids is not None and mem_id not in candidate_ids:
-                    continue
-                results.append((mem_id, float(score)))
+                results: list[tuple[str, float]] = []
+                for score, idx in zip(scores[0], indices[0]):
+                    if idx == -1:
+                        continue
+                    mem_id = self._pos_to_id.get(int(idx))
+                    if mem_id is None:
+                        continue
+                    if require_prefix and not mem_id.startswith(require_prefix):
+                        continue
+                    if candidate_ids is not None and mem_id not in candidate_ids:
+                        continue
+                    results.append((mem_id, float(score)))
+
+                if (
+                    (not require_prefix and candidate_ids is None)
+                    or len(results) >= top_k
+                    or search_k >= self._index.ntotal
+                ):
+                    break
+                search_k = min(search_k * 4, self._index.ntotal)
 
             results.sort(key=lambda x: x[1], reverse=True)
             return results[:top_k]
@@ -338,6 +377,7 @@ class EmbeddingIndex:
         query: str,
         top_k: int = 5,
         candidate_ids: list[str] | None = None,
+        require_prefix: str | None = None,
     ) -> list[tuple[str, float]]:
         self._maybe_reload_from_disk()
         if self._index.ntotal == 0:
@@ -349,27 +389,12 @@ class EmbeddingIndex:
 
         arr = np.array([vec], dtype=np.float32)
         faiss.normalize_L2(arr)
-
-        with self._lock:
-            if self._index.ntotal == 0:
-                return []
-            search_k = min(top_k * 3, self._index.ntotal)
-            scores, indices = self._index.search(arr, search_k)
-            pos_to_id_snapshot = dict(self._pos_to_id)
-
-        results: list[tuple[str, float]] = []
-        for score, idx in zip(scores[0], indices[0]):
-            if idx == -1:
-                continue
-            mem_id = pos_to_id_snapshot.get(int(idx))
-            if mem_id is None:
-                continue
-            if candidate_ids is not None and mem_id not in candidate_ids:
-                continue
-            results.append((mem_id, float(score)))
-
-        results.sort(key=lambda x: x[1], reverse=True)
-        return results[:top_k]
+        return self.search_by_vector(
+            arr[0],
+            top_k=top_k,
+            candidate_ids=candidate_ids,
+            require_prefix=require_prefix,
+        )
 
     async def rebuild(self, memories: list[tuple[str, str]]) -> int:
         """Atomic rebuild — builds a fresh index into local state, then swaps.
@@ -381,6 +406,7 @@ class EmbeddingIndex:
         new_id_to_pos: dict[str, int] = {}
         new_pos_to_id: dict[int, str] = {}
 
+        new_hashes: dict[str, str] = {}
         count = 0
         for memory_id, text in memories:
             vec = await self.embed_text(text)
@@ -392,21 +418,29 @@ class EmbeddingIndex:
             new_index.add(arr)
             new_id_to_pos[memory_id] = pos
             new_pos_to_id[pos] = memory_id
+            new_hashes[memory_id] = _text_hash(text)
             count += 1
 
         with self._lock:
             self._index = new_index
             self._id_to_pos = new_id_to_pos
             self._pos_to_id = new_pos_to_id
+            self._text_hashes = new_hashes
             self._save()
         logger.info("Rebuilt FAISS index with %d vectors", count)
         return count
 
-    async def rebuild_from_store(self, chunks: list) -> int:
+    async def rebuild_from_store(
+        self, chunks: list, preserve_prefixes: tuple[str, ...] = ()
+    ) -> int:
         """Atomically rebuild the FAISS index from a list of (id, text) chunk pairs.
 
         Accepts any iterable of objects with .memory_id and .body attributes,
         or plain (str, str) tuples. Replaces self._index atomically on success.
+
+        The index is shared with vectors the caller cannot re-feed (vault
+        chunks); ids matching `preserve_prefixes` are carried over from the
+        live index verbatim — no re-embedding — before the swap.
 
         # Periodic rebuild hook: register this as a nightly maintenance task
         # in DreamingScheduler or HeartbeatScheduler to clear orphaned vectors.
@@ -422,53 +456,103 @@ class EmbeddingIndex:
         new_index = faiss.IndexFlatIP(self._dimensions)
         new_id_to_pos: dict[str, int] = {}
         new_pos_to_id: dict[int, str] = {}
+        new_hashes: dict[str, str] = {}
 
-        count = 0
+        def _add_vector(memory_id: str, h: str, arr: np.ndarray) -> None:
+            pos = new_index.ntotal
+            new_index.add(arr)
+            new_id_to_pos[memory_id] = pos
+            new_pos_to_id[pos] = memory_id
+            new_hashes[memory_id] = h
+
+        normalized: list[tuple[str, str, str]] = []
+        for chunk in chunks:
+            if isinstance(chunk, tuple):
+                memory_id, text = chunk
+            else:
+                memory_id = chunk.memory_id
+                text = chunk.body
+            normalized.append((memory_id, _text_hash(text), text))
+
+        # Reuse pass — unchanged text keeps its live vector; only changed or
+        # new chunks pay an embed round-trip. FAISS reconstructs run off the
+        # loop so a large store can't stall health/WS/heartbeats.
+        to_embed: list[tuple[str, str, str]] = []
+        reused = 0
+
+        def _reuse_pass() -> None:
+            nonlocal reused
+            with self._lock:
+                for memory_id, h, text in normalized:
+                    pos = self._id_to_pos.get(memory_id)
+                    if pos is not None and self._text_hashes.get(memory_id) == h:
+                        try:
+                            vec = self._index.reconstruct(pos)
+                        except Exception:
+                            to_embed.append((memory_id, h, text))
+                            continue
+                        _add_vector(
+                            memory_id, h, vec.reshape(1, -1).astype(np.float32)
+                        )
+                        reused += 1
+                    else:
+                        to_embed.append((memory_id, h, text))
+
+        await asyncio.to_thread(_reuse_pass)
+
+        count = reused
+        embedded_ok = 0
         failures = 0
         consecutive_failures = 0
         try:
-            for chunk in chunks:
-                if isinstance(chunk, tuple):
-                    memory_id, text = chunk
-                else:
-                    memory_id = chunk.memory_id
-                    text = chunk.body
-
-                vec = await self.embed_text(text)
-                if vec is None:
-                    failures += 1
-                    consecutive_failures += 1
-                    # Breaker: while nothing has embedded yet, a run of
-                    # failures means the backend is down/evicted — abort now
-                    # rather than grind every remaining chunk on the loop.
-                    # Leave the live index untouched (the empty new_index is
-                    # discarded on return).
-                    if count == 0 and consecutive_failures >= REBUILD_MAX_CONSECUTIVE_FAILURES:
-                        logger.warning(
-                            "rebuild_from_store: embedding backend unavailable "
-                            "(%d consecutive failures) — aborting, index left intact",
-                            consecutive_failures,
-                        )
-                        if bus is not None:
-                            bus.publish(
-                                "faiss_rebuild_finished",
-                                {"status": "aborted", "vector_count": 0},
+            for start in range(0, len(to_embed), _REBUILD_EMBED_CONCURRENCY):
+                batch = to_embed[start:start + _REBUILD_EMBED_CONCURRENCY]
+                vecs = await asyncio.gather(
+                    *(self.embed_text(text) for _mid, _h, text in batch),
+                    return_exceptions=True,
+                )
+                for (memory_id, h, _text), vec in zip(batch, vecs):
+                    if isinstance(vec, BaseException) or vec is None:
+                        failures += 1
+                        consecutive_failures += 1
+                        # Breaker: while nothing has embedded yet, a run of
+                        # failures means the backend is down/evicted — abort
+                        # rather than grind every remaining chunk. The live
+                        # index stays untouched (new_index is discarded), so
+                        # unchanged vectors lose nothing.
+                        if (
+                            embedded_ok == 0
+                            and consecutive_failures >= REBUILD_MAX_CONSECUTIVE_FAILURES
+                        ):
+                            logger.warning(
+                                "rebuild_from_store: embedding backend unavailable "
+                                "(%d consecutive failures) — aborting, index left intact",
+                                consecutive_failures,
                             )
-                        return 0
-                    continue
-
-                consecutive_failures = 0
-                arr = np.array([vec], dtype=np.float32)
-                faiss.normalize_L2(arr)
-                pos = new_index.ntotal
-                new_index.add(arr)
-                new_id_to_pos[memory_id] = pos
-                new_pos_to_id[pos] = memory_id
-                count += 1
-                if count % 50 == 0:
-                    # Yield so health/WS/heartbeat stay serviced during a
-                    # large rebuild (supervisor SIGKILLs a silent backend).
-                    await asyncio.sleep(0)
+                            if bus is not None:
+                                bus.publish(
+                                    "faiss_rebuild_finished",
+                                    {"status": "aborted", "vector_count": 0},
+                                )
+                            return 0
+                        # Stale fallback: a changed chunk whose re-embed failed
+                        # keeps its previous vector — stale beats absent. The
+                        # old hash is kept so the next rebuild retries the embed.
+                        stale = self.get_vector(memory_id)
+                        if stale is not None:
+                            _add_vector(
+                                memory_id,
+                                self._text_hashes.get(memory_id, ""),
+                                stale.reshape(1, -1).astype(np.float32),
+                            )
+                            count += 1
+                        continue
+                    consecutive_failures = 0
+                    arr = np.array([vec], dtype=np.float32)
+                    faiss.normalize_L2(arr)
+                    _add_vector(memory_id, h, arr)
+                    embedded_ok += 1
+                    count += 1
 
             # Never swap an empty index over live vectors: if every embed
             # failed (breaker didn't trip because failures interleaved with a
@@ -485,12 +569,36 @@ class EmbeddingIndex:
                     )
                 return 0
 
-            with self._lock:
-                self._index = new_index
-                self._id_to_pos = new_id_to_pos
-                self._pos_to_id = new_pos_to_id
-                self._save()
-            logger.info("rebuild_from_store: %d vectors indexed", count)
+            def _swap() -> int:
+                with self._lock:
+                    preserved = 0
+                    if preserve_prefixes:
+                        for mid, pos in self._id_to_pos.items():
+                            if mid in new_id_to_pos or not mid.startswith(preserve_prefixes):
+                                continue
+                            try:
+                                vec = self._index.reconstruct(pos)
+                            except Exception:
+                                continue
+                            _add_vector(
+                                mid,
+                                self._text_hashes.get(mid, ""),
+                                vec.reshape(1, -1).astype(np.float32),
+                            )
+                            preserved += 1
+                    self._index = new_index
+                    self._id_to_pos = new_id_to_pos
+                    self._pos_to_id = new_pos_to_id
+                    self._text_hashes = new_hashes
+                    self._save()
+                    return preserved
+
+            preserved = await asyncio.to_thread(_swap)
+            logger.info(
+                "rebuild_from_store: %d vectors indexed (%d reused, %d embedded), "
+                "%d preserved",
+                count, reused, embedded_ok, preserved,
+            )
             if bus is not None:
                 bus.publish(
                     "faiss_rebuild_finished",

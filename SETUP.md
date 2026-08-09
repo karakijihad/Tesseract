@@ -12,6 +12,26 @@ Paste that into File Explorer's address bar. Nothing outside it is touched.
 
 ---
 
+## 0. The four questions on first run
+
+Before it downloads anything, TESSERACT asks four things. They're all changeable later — this is just so the first run fetches what you actually want.
+
+| Question | What it decides |
+| --- | --- |
+| **What should it call you?** | How it addresses you. |
+| **What do you want to call it?** | Its name — used everywhere it refers to itself, and in the wake phrase (`hey <name>`) if you turn that on. |
+| **Voice** | Female or male. Only filters the list; every voice stays selectable afterwards. |
+| **Speech** | **Natural** (~340 MB, better voice, wants a reasonably quick machine) · **Light** (~65 MB, plainer but several times faster than real time) · **Off** (text replies, nothing downloaded). |
+| **Listening** | On downloads ~1.6 GB of speech recognition so talking to it works the first time you try. Off downloads nothing. |
+
+Answering "Off" genuinely downloads nothing — the answers are written into your config, and the download step reads that config rather than a separate switch.
+
+**Changed your mind?** Turn the lane back on in **Settings → Capabilities**, then use the **Download** button that appears in **Settings → Local models**. Its model files aren't on disk yet, so that panel says so and offers to fetch them.
+
+Names and voice live in the **Identity** tab.
+
+---
+
 ## 1. The keys
 
 Open `.env` in that folder. It arrives commented, with a signup link next to every key. Add what you want, save, and **restart** — `.env` is read once at startup and is the only file that needs a restart.
@@ -78,6 +98,7 @@ Nothing fails at startup. TESSERACT starts with whatever you've given it, degrad
 | `TAVILY_API_KEY`       | `tavily_search` / `tavily_extract` return the signup link.      |
 | Ollama                 | Memory and vault search fall back from meaning-based to keyword (BM25) matching. Both still work; results are less forgiving of paraphrase. |
 | The local voice        | Replies come back as text. Setup retries the download on every later launch, so a bad connection delays spoken replies rather than losing them. |
+| The speech recognition model | Talking to it still works, but the first thing you say stalls for a minute or two while the model downloads itself. The retry above usually gets there first. |
 | Telegram token         | The bridge stays off. No crash, no error.                       |
 
 **Settings → Capabilities** shows all of this live: what's on, what's off, and whether it's off because a key is missing or because it's disabled in config.
@@ -150,7 +171,7 @@ A provider with its *own* protocol (not OpenAI-compatible) needs code, not confi
 
 ### Editing config from inside TESSERACT
 
-**Settings → Raw config** opens `providers.yaml`, `roles.yaml`, and six other files for direct editing in the app. You can also just ask TARS to make a change — it can edit these files, and will show you what it's about to write first.
+**Settings → Raw config** opens `providers.yaml`, `roles.yaml`, and six other files for direct editing in the app. You can also just ask the assistant to make a change — it can edit these files, and will show you what it's about to write first.
 
 If a config file ends up malformed, TESSERACT reports the problem and keeps running on the previous settings rather than falling over.
 
@@ -165,7 +186,7 @@ If a config file ends up malformed, TESSERACT reports the problem and keeps runn
 | `vault/`         | Your research library. Drop documents in; they become searchable.                 |
 | `workspace/`     | How it understands itself and you, including notes on your preferences.           |
 | `config/`        | Settings.                                                                          |
-| `tars-workshop/` | Scratch space for longer pieces of work.                                          |
+| `workshop/` | Scratch space for longer pieces of work.                                          |
 
 Each arrives with a short explainer inside it. These are ordinary files — nothing is hidden in a database, and you can back the folder up by copying it.
 
@@ -179,8 +200,10 @@ Each arrives with a short explainer inside it. These are ordinary files — noth
 
 **Search of memory or the vault feels literal.** Ollama probably isn't running, so search fell back to keyword matching. Check **Settings → Capabilities**.
 
-**Replies are text when you expected speech.** The voice download didn't complete. It retries on every launch — reopening TESSERACT on a good connection is usually the whole fix.
+**Replies are text when you expected speech.** The voice download didn't complete. It retries on every launch — reopening TESSERACT on a good connection is usually the whole fix. **Settings → Local models** says outright when a lane's files are missing, and has a Download button.
+
+**It doesn't hear me.** Same check, same place: if speech recognition was declined at setup or its download failed, that panel says so.
 
 **A model change did nothing.** Model changes apply on save. Key changes don't — those need a restart.
 
-**First run is taking a long time.** Five to ten minutes is normal: it's downloading a Python runtime, dependencies, a browser engine, and the local voice. Don't force-quit it. Later launches are fast.
+**First run is taking a long time.** Ten to twenty minutes is normal if you asked for speech and listening: it's downloading a Python runtime, dependencies, a browser engine, a voice, and a ~1.6 GB speech recognition model. Don't force-quit it. Later launches are fast. Answering "Off" to both makes first run considerably shorter.

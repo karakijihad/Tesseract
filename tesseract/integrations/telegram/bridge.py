@@ -342,7 +342,7 @@ class TelegramBridge:
         # Drain inbound handlers spawned by ``_spawn_handler``. Cap at 10s
         # so a wedged delegate can't block bridge restart. After the cap,
         # ``t.cancel()`` propagates ``CancelledError`` up the await chain
-        # — for an in-flight ``delegate_claude`` this unwinds the brain
+        # — for an in-flight ``delegate_coder`` this unwinds the brain
         # turn but does NOT actively kill the spawned ``claude`` CLI
         # subprocess (``race_communicate`` only kills on its internal
         # ``cancel_event``, which we don't set here). The subprocess
@@ -608,11 +608,11 @@ class TelegramBridge:
         # ``no_handler`` attachment runs through :meth:`_decode_attachment`
         # which fetches bytes and dispatches on ``kind`` — promoting the
         # envelope to ``status="ready"`` with an ``<extracted>`` body, or
-        # to ``too_large`` / ``extract_failed`` so TARS gets a specific
+        # to ``too_large`` / ``extract_failed`` so the assistant gets a specific
         # signal instead of silently dropping the content. Unhandled
         # kinds keep ``no_handler``; CR-2 deliberately leaves video /
         # sticker / location / contact / poll / dice at that level so
-        # TARS can apologize or propose a tool.
+        # The assistant can apologize or propose a tool.
         decoded = await self._decode_attachments(message.attachments, message)
         envelope = render_envelope(decoded)
         if envelope:
@@ -671,8 +671,8 @@ class TelegramBridge:
             await self._safe_send(
                 chat_id=message.chat_id,
                 text=(
-                    "TARS is offline right now. Your message is saved and "
-                    f"will be processed when TARS is back online{tail}."
+                    "the assistant is offline right now. Your message is saved and "
+                    f"will be processed when the assistant is back online{tail}."
                 ),
             )
             return
@@ -685,7 +685,7 @@ class TelegramBridge:
         session = self._session_for(message.chat_id, reset=False)
         # CR-5 — clear the per-turn gate-dedup set before the loop runs so
         # the first call to a previously gated tool can re-emit a fresh
-        # ``tars_post`` if the operator is still away.
+        # ``agent_post`` if the operator is still away.
         reset_per_turn_state(session)
 
         # Session 3 (2026-05-16) — instant "saw it" reaction. Telegram
@@ -703,7 +703,7 @@ class TelegramBridge:
         # Session 3 (2026-05-16) — typing-action keepalive. Telegram's
         # typing dot times out after ~5s, so a single firing at turn-start
         # makes long turns look dead. The background task re-fires every
-        # 4s until cancelled so TARS visibly "stays at the keyboard" for
+        # 4s until cancelled so the assistant visibly "stays at the keyboard" for
         # multi-second tool runs. Cancellation happens on every exit
         # branch (success, exception, gated, no-reply) so we never leak
         # a typing task.
@@ -736,16 +736,16 @@ class TelegramBridge:
         # conversation store (clean operator transcript) nor into the
         # chat session's history (would compound across turns). The
         # rolling summary + chat-tagged prior memories surface here so
-        # TARS picks up where yesterday left off automatically.
+        # The assistant picks up where yesterday left off automatically.
         # ``getattr`` guards fixture-only tests that bypass ``__init__``.
         turn_body = model_body
         chat_memory = getattr(self, "_chat_memory", None)
 
         # Session 3 (2026-05-16) — URL auto-extract. When the operator
-        # shares a link, fetch its content via Tavily so TARS sees the
+        # shares a link, fetch its content via Tavily so the assistant sees the
         # actual page rather than just the URL string. Best-effort:
         # missing TAVILY_API_KEY / network failure degrades to no
-        # extraction; the URLs still appear in the user body for TARS
+        # extraction; the URLs still appear in the user body for the assistant
         # to comment on as text. Runs concurrently with the recall
         # query so the slower of the two bounds the wait.
         urls = find_urls(message.text)
@@ -769,7 +769,7 @@ class TelegramBridge:
                 recall_ctx = ""
 
             # Fold URL content into the recall context block — same
-            # wrapping so TARS sees one unified "what to consider"
+            # wrapping so the assistant sees one unified "what to consider"
             # preamble per turn.
             if url_task is not None:
                 try:
@@ -840,7 +840,7 @@ class TelegramBridge:
 
         # A1 — workspace-gate visibility. Any forced-ASK posture (the 5
         # forced-ASK bash_security checks, file_write, agent_promote,
-        # etc.) emits a ``tars_post`` workspace event via the channel
+        # etc.) emits a ``agent_post`` workspace event via the channel
         # gate and returns False on the same turn. Without surfacing
         # that to the remote user, replies look like opaque refusals
         # ("I can't do that"). The per-turn emitted set holds one hash
@@ -1007,7 +1007,7 @@ class TelegramBridge:
             await self._safe_send(
                 chat_id=cid,
                 text=(
-                    f"TARS is back online. Replaying {len(queue)} message"
+                    f"the assistant is back online. Replaying {len(queue)} message"
                     f"{'s' if len(queue) != 1 else ''}…"
                 ),
             )
@@ -1058,7 +1058,7 @@ class TelegramBridge:
                 decoded.append(await self._decode_attachment(att, message))
             except Exception:
                 # Decoder bug — preserve visibility by surfacing an
-                # ``extract_failed`` so TARS still sees something instead
+                # ``extract_failed`` so the assistant still sees something instead
                 # of silently dropping the kind. Stack trace goes to the
                 # backend log; the ``<error>`` body stays short.
                 log.exception(
@@ -1085,7 +1085,7 @@ class TelegramBridge:
             return await self._decode_document(att, message)
         # Session 1 (2026-05-16) — kinds without a text extractor still get
         # persisted when they carry a file_id, so operators can re-open
-        # the video / audio / sticker / animation later and TARS sees a
+        # the video / audio / sticker / animation later and the assistant sees a
         # ``storage_path`` it can reference in a future turn (e.g. "edit
         # the GIF you sent yesterday"). Status stays ``no_handler`` — we
         # deliberately do not promote to ``ready`` because no text was
@@ -1578,7 +1578,7 @@ class TelegramBridge:
 
         ``emoji=None`` clears any prior reaction. Used both for the
         instant-ack pulse on inbound (💭) and by the public
-        :meth:`react_to_message` surface which TARS calls via the
+        :meth:`react_to_message` surface which the assistant calls via the
         ``channel_react`` kernel tool.
         """
         if self._api is None:
@@ -1736,7 +1736,7 @@ class TelegramBridge:
         )
 
         # CR-5 — install the channel-aware ASK gate. ``gate_policy.on_ask``
-        # picks between ``workspace_nudge`` (emit a ``tars_post`` so the
+        # picks between ``workspace_nudge`` (emit a ``agent_post`` so the
         # operator returns to a queue of "please approve" notes) and
         # ``deny`` (legacy ``_deny_ask`` semantics for any channel that
         # explicitly opts back in).
@@ -1809,7 +1809,7 @@ class TelegramBridge:
                 )
             payload = getattr(event, "payload", None) or {}
             kind = getattr(event, "kind", "")
-            if kind != "tars_post" or payload.get("channel") != channel:
+            if kind != "agent_post" or payload.get("channel") != channel:
                 return
             try:
                 await self._send_approval_prompt(event)
@@ -1849,7 +1849,7 @@ class TelegramBridge:
         # `g:<event_id>:a` fits comfortably (~20 bytes).
         cb_approve = f"g:{event_id}:a"
         cb_reject = f"g:{event_id}:r"
-        body = f"TARS asks to call `{tool_name}`."
+        body = f"the assistant asks to call `{tool_name}`."
         if reason:
             body += f"\n_Reason:_ {reason[:200]}"
         body += "\n\nTap to decide:"
@@ -1964,7 +1964,7 @@ class TelegramBridge:
             if message_id is not None:
                 await self._safe_strip_keyboard(
                     chat_id, int(message_id),
-                    suffix=f"\n\n✓ Approved — TARS will retry `{pending['tool_name']}` next turn.",
+                    suffix=f"\n\n✓ Approved — the assistant will retry `{pending['tool_name']}` next turn.",
                 )
             await self._safe_answer_callback(cb_id, "Approved.")
         else:  # reject
@@ -2013,7 +2013,7 @@ class TelegramBridge:
             return None
         if event is None:
             return None
-        if getattr(event, "kind", "") != "tars_post":
+        if getattr(event, "kind", "") != "agent_post":
             return None
         if getattr(event, "status", "") != "pending":
             return None
@@ -2221,7 +2221,7 @@ class TelegramBridge:
     async def _run_clear_reflection(
         self, message: TelegramMessage, chat_key: str,
     ) -> None:
-        """Run one synthetic turn asking TARS to reflect before clear.
+        """Run one synthetic turn asking the assistant to reflect before clear.
 
         Reuses ``_start_channel_turn`` so the reflection flows through
         the same channel-prompt / persistence machinery as a normal
@@ -2335,7 +2335,7 @@ class TelegramBridge:
 
     async def _reply_status(self, chat_id: int, *, offline: bool) -> None:
         if offline:
-            text = "TARS status: offline"
+            text = "the assistant status: offline"
         else:
             session = self._sessions.get(chat_id)
             busy = (
@@ -2343,7 +2343,7 @@ class TelegramBridge:
                 and session.current_turn_task is not None
                 and not session.current_turn_task.done()
             )
-            text = "TARS status: busy" if busy else "TARS status: online"
+            text = "the assistant status: busy" if busy else "the assistant status: online"
         await self._safe_send(chat_id=chat_id, text=text)
 
     async def _safe_send(self, *, chat_id: int, text: str) -> None:
@@ -2393,12 +2393,8 @@ class TelegramBridge:
             if engine is None:
                 raise RuntimeError("send_voice: no tts_engine available in app context")
             from tesseract.voice.encode import wav_bytes_to_ogg_opus
-            from tesseract.voice.tts import VoiceParams
 
-            voice_id = _resolve_voice_id(self._app)
-            wav_bytes, _provider = await engine.synthesize(
-                text, VoiceParams(voice_id=voice_id, preset="answer"),
-            )
+            wav_bytes, _provider = await engine.synthesize(text, preset="answer")
             if not wav_bytes:
                 raise RuntimeError("send_voice: TTS returned empty audio")
             ogg_bytes = await wav_bytes_to_ogg_opus(wav_bytes)
@@ -2880,7 +2876,7 @@ class TelegramBridge:
     def _record_outbound_text_event(self, chat_id: int, body_text: str) -> None:
         """Append a synthetic outbound conversation row for non-file
         outbounds (location/poll/dice/file_id-sticker) so the chat
-        history shows TARS sent something. Stamps the rolling 24h
+        history shows the assistant sent something. Stamps the rolling 24h
         counters too.
         """
         chat_key = str(chat_id)
@@ -3106,23 +3102,6 @@ async def _cancel_task(task: asyncio.Task | None) -> None:
         pass
     except Exception:
         log.debug("telegram: background task error during cancel", exc_info=True)
-
-
-def _resolve_voice_id(app) -> str:
-    """Pick the voice_id for outbound TTS.
-
-    Reads ``app['voice_state']`` if present (the operator-set voice on
-    the cockpit Voice tab — same source the Mirror voice surface uses
-    so the phone sounds identical to the cockpit). Falls back to
-    ``"charon"`` — the documented default in roles.yaml. Piper ignores
-    voice_id (the ONNX model IS the voice), so this only matters for
-    Kokoro / Gemini fallback paths.
-    """
-    state = app.get("voice_state") if hasattr(app, "get") else None
-    voice = getattr(state, "voice_id", None) if state is not None else None
-    if isinstance(voice, str) and voice.strip():
-        return voice
-    return "charon"
 
 
 def _strip_html_tags(text: str) -> str:

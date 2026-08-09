@@ -4,7 +4,7 @@ Inbound Telegram (and future WhatsApp / Signal) photos, voice notes,
 documents, etc. were fetched, extracted (transcribed / described /
 text-decoded), then discarded — only the extracted text reached the
 conversation store. Operators couldn't go back to the original photo
-TARS saw, and TARS itself couldn't re-open a file the next day.
+The assistant saw, and the assistant itself couldn't re-open a file the next day.
 
 This module saves the bytes alongside the existing extracted text. The
 tree is channel-keyed, not session-keyed: Telegram sessions are

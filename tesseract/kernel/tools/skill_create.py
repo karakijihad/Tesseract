@@ -1,6 +1,6 @@
 """skill_create tool — draft a new markdown skill under workspace/skills/.
 
-Phase 4 (capability-growth), mirror of `agent_create` (Stage 10). TARS (or a
+Phase 4 (capability-growth), mirror of `agent_create` (Stage 10). The assistant (or a
 delegate) drafts a prose skill for a repeated chore. Attended sessions ASK
 before the write; unattended, the executor's quarantine-write carve-out
 (`headless_quarantine_write` ClassVar, honored by `permissions/decide.py` from
@@ -67,7 +67,7 @@ class SkillCreateInput(BaseModel):
         )
     )
     instructions: str = Field(
-        description="The SKILL.md body — the markdown playbook TARS reads on demand."
+        description="The SKILL.md body — the markdown playbook the assistant reads on demand."
     )
     rationale: str = Field(
         description="Why this skill is needed — shown to the operator at approval time."
@@ -229,7 +229,7 @@ class SkillCreateTool(Tool):
         if self._event_store is not None:
             event = WorkspaceEvent.new(
                 kind="skill_approval",
-                source="tars",
+                source="agent",
                 title=f"Skill proposal: {inp.name}",
                 summary=inp.rationale,
                 payload={

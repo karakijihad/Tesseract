@@ -12,9 +12,11 @@ day, useful when backfilling after a long downtime.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 from tesseract.memory.leaf_seals import Seal, iter_seals
 from tesseract.memory.trees.global_tree import write_daily_digest
@@ -22,6 +24,18 @@ from tesseract.scheduler.base_job import BaseJob
 from tesseract.scheduler.types import JobContext, JobResult
 
 log = logging.getLogger(__name__)
+
+
+def _collect_and_write(target: date) -> tuple[list[Seal], Path]:
+    """Every seal ever written is read to find the ones sealed on
+    ``target`` — cost grows with the seal corpus, same shape as
+    ``index_rebuild``'s FTS rebuild."""
+    seals_today = [
+        seal for seal in iter_seals()
+        if seal.sealed_at.astimezone(timezone.utc).date() == target
+    ]
+    path = write_daily_digest(target, seals_today)
+    return seals_today, path
 
 
 class DigestDailyJob(BaseJob):
@@ -52,12 +66,7 @@ class DigestDailyJob(BaseJob):
                 duration_ms=(time.monotonic() - t0) * 1000.0,
             )
 
-        seals_today: list[Seal] = []
-        for seal in iter_seals():
-            if seal.sealed_at.astimezone(timezone.utc).date() == target:
-                seals_today.append(seal)
-
-        path = write_daily_digest(target, seals_today)
+        seals_today, path = await asyncio.to_thread(_collect_and_write, target)
 
         return JobResult(
             job_name=ctx.job_name,

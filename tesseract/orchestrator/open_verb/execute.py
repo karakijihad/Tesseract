@@ -91,7 +91,7 @@ async def execute(
     resolution: Resolution,
     context: ToolContext,
     *,
-    view: str = "tars",
+    view: str = "orb",
 ) -> OpenOutcome:
     if context.tool_registry_provider is None:
         raise ExecutionUnavailable("no tool registry on this context")

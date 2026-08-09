@@ -70,30 +70,60 @@ GRAPH_JSON_DEFAULT: dict = {
     "close": False,
 }
 
+# Vault palette — same three-band scheme, keyed to what vault pages actually
+# carry: operator-curated entity hubs are typed (Concept/Person/...), compiled
+# Source pages carry the generated `source` tag, bookkeeping pages match by
+# filename. The memory-store tag groups above never fire on vault pages,
+# which used to leave the whole vault graph default-grey.
+VAULT_COLOR_GROUPS: list[dict] = [
+    # Hubs — red #e0524f
+    {"query": '["type":Concept]', "color": {"a": 1, "rgb": 14701135}},
+    {"query": '["type":Person]', "color": {"a": 1, "rgb": 14701135}},
+    {"query": '["type":Project]', "color": {"a": 1, "rgb": 14701135}},
+    {"query": '["type":Tool]', "color": {"a": 1, "rgb": 14701135}},
+    {"query": '["type":Organization]', "color": {"a": 1, "rgb": 14701135}},
+    # Compiled sources — yellow #e8a02c
+    {"query": "tag:#source", "color": {"a": 1, "rgb": 15245356}},
+    {"query": '["type":Source]', "color": {"a": 1, "rgb": 15245356}},
+    # Bookkeeping — orange #d97757
+    {"query": "file:INDEX", "color": {"a": 1, "rgb": 14251863}},
+    {"query": "file:TAXONOMY", "color": {"a": 1, "rgb": 14251863}},
+    {"query": "file:LINT-REPORT", "color": {"a": 1, "rgb": 14251863}},
+    {"query": "file:ingest-log", "color": {"a": 1, "rgb": 14251863}},
+]
+
 
 def graph_json_path(root: Path) -> Path:
     return root / ".obsidian" / "graph.json"
 
 
-def ensure_obsidian_config(root: Path) -> Path:
-    """Write ``GRAPH_JSON_DEFAULT`` at ``<root>/.obsidian/graph.json``.
+def ensure_obsidian_config(root: Path, color_groups: list[dict] | None = None) -> Path:
+    """Write the graph config at ``<root>/.obsidian/graph.json``.
 
-    Three cases:
+    ``color_groups`` selects the palette (default: the memory-store groups).
+    Four cases:
 
     - **Missing file** — write the full default. Fresh-checkout case.
     - **Empty stub** — Obsidian writes a ``colorGroups: []`` stub the
       first time the operator opens the vault. Without intervention
       the operator would never see colours because the file *exists*
       but carries no palette. We detect the empty-stub shape and merge
-      our default groups in, preserving every other field Obsidian
-      set (showTags, scale, layout, etc.).
-    - **Operator-customised** (``colorGroups`` non-empty) — leave it
-      alone. Genuine customisation survives every boot.
+      our groups in, preserving every other field Obsidian set
+      (showTags, scale, layout, etc.).
+    - **Shipped-default palette** — the file carries exactly a palette we
+      shipped (e.g. the vault received the memory-store groups verbatim
+      before it had its own). That is our artifact, not operator
+      customisation — upgrade it to the requested palette in place.
+    - **Operator-customised** (any other non-empty ``colorGroups``) —
+      leave it alone. Genuine customisation survives every boot.
     """
+    groups = color_groups if color_groups is not None else GRAPH_JSON_DEFAULT["colorGroups"]
     target = graph_json_path(root)
     if not target.exists():
+        doc = dict(GRAPH_JSON_DEFAULT)
+        doc["colorGroups"] = groups
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(GRAPH_JSON_DEFAULT, indent=2), encoding="utf-8")
+        target.write_text(json.dumps(doc, indent=2), encoding="utf-8")
         log.info("obsidian config seeded at %s", target)
         return target
     try:
@@ -103,13 +133,26 @@ def ensure_obsidian_config(root: Path) -> Path:
         return target
     if not isinstance(existing, dict):
         return target
-    if existing.get("colorGroups"):
+    current = existing.get("colorGroups")
+    shipped_palettes = (GRAPH_JSON_DEFAULT["colorGroups"], VAULT_COLOR_GROUPS)
+    if current and current != groups and current in shipped_palettes:
+        upgraded = dict(existing)
+        upgraded["colorGroups"] = groups
+        target.write_text(json.dumps(upgraded, indent=2), encoding="utf-8")
+        log.info("obsidian config palette upgraded at %s", target)
+        return target
+    if current:
         return target  # operator customised — do not touch
     merged = dict(existing)
-    merged["colorGroups"] = GRAPH_JSON_DEFAULT["colorGroups"]
+    merged["colorGroups"] = groups
     target.write_text(json.dumps(merged, indent=2), encoding="utf-8")
     log.info("obsidian config color groups merged into %s", target)
     return target
 
 
-__all__ = ["GRAPH_JSON_DEFAULT", "ensure_obsidian_config", "graph_json_path"]
+__all__ = [
+    "GRAPH_JSON_DEFAULT",
+    "VAULT_COLOR_GROUPS",
+    "ensure_obsidian_config",
+    "graph_json_path",
+]

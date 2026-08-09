@@ -2,8 +2,8 @@
 
 Extracted from ``ws.py`` 2026-05-23 (codex audit m2 follow-up). These are
 the pure(-ish) state-machine helpers that consume the LLM's tagged stream
-contract (``<intent>``/``<answer>`` from ``prompt.py``) and split prose
-into TTS-eligible segments.
+contract (``<intent>``/``<spoken>``/``<answer>`` from ``prompt.py``) and
+split prose into TTS-eligible segments.
 
 The only non-pure entry is :func:`_split_text_for_surfaces`, which reads
 + writes carry-state fields (``stream_status_buffer``, ``stream_tag_state``,
@@ -48,25 +48,39 @@ _TTS_FORCE_FLUSH_CHARS = 200
 
 # Structured-tag contract — the model is instructed in `prompt.py` to wrap
 # every text emission in `<intent>...</intent>` (status before/between
-# tools) or `<answer>...</answer>` (final reply). The classifier below is
-# a streaming state machine over that contract — no heuristics, no regex
-# on free prose. Untagged text degrades to "answer" with a logged warning.
+# tools), `<spoken>...</spoken>` (the abbreviated spoken form of a long
+# reply) or `<answer>...</answer>` (the reply as written). The classifier
+# below is a streaming state machine over that contract — no heuristics, no
+# regex on free prose. Untagged text degrades to "answer" with a logged
+# warning.
+#
+# Tag order is load-bearing: `<spoken>` always precedes `<answer>`, so the
+# TTS gate in `tts.py` knows whether to mute the answer by the time answer
+# deltas arrive. No lookahead, no buffering, no added speech latency.
 _TAG_OPEN_INTENT = "<intent>"
 _TAG_CLOSE_INTENT = "</intent>"
+_TAG_OPEN_SPOKEN = "<spoken>"
+_TAG_CLOSE_SPOKEN = "</spoken>"
 _TAG_OPEN_ANSWER = "<answer>"
 _TAG_CLOSE_ANSWER = "</answer>"
 _TAG_TOKENS = (
-    _TAG_OPEN_INTENT, _TAG_CLOSE_INTENT, _TAG_OPEN_ANSWER, _TAG_CLOSE_ANSWER,
+    _TAG_OPEN_INTENT, _TAG_CLOSE_INTENT,
+    _TAG_OPEN_SPOKEN, _TAG_CLOSE_SPOKEN,
+    _TAG_OPEN_ANSWER, _TAG_CLOSE_ANSWER,
 )
 
-_KNOWN_CHANNEL_TAGS = ("intent", "answer")
+# States that name a surface directly (anything else is a contract violation
+# and degrades to `_untagged`).
+_SURFACE_STATES = ("intent", "spoken", "answer")
+
+_KNOWN_CHANNEL_TAGS = ("intent", "spoken", "answer")
 
 
 def _split_text_for_surfaces(
     session: "ServerSession", carry: _ParserCarry, delta: str
 ) -> list[tuple[str, str]]:
     """Split an assistant text delta into (kind, text) pieces using the
-    `<intent>`/`<answer>` tag contract from `prompt.py`.
+    `<intent>`/`<spoken>`/`<answer>` tag contract from `prompt.py`.
 
     Streams safely: a partial tag straddling a delta boundary is held in
     `carry.stream_status_buffer` (the per-turn ``TurnState``) and prepended on
@@ -75,7 +89,7 @@ def _split_text_for_surfaces(
     per turn.
 
     Channel sessions (Telegram, etc.) have no tag contract — the channel
-    overlay explicitly instructs TARS to skip `<intent>` / `<answer>`. We
+    overlay explicitly instructs the assistant to skip `<intent>` / `<answer>`. We
     short-circuit them as a single ``answer`` piece so a mis-emitted tag
     on a channel can't strand text in ``stream_status_buffer`` or surface
     a contract-violation warning. Channel adapters use
@@ -120,15 +134,15 @@ def _split_text_for_surfaces(
 
 
 def _extract_channel_reply(raw: str) -> str:
-    """Strip the `<intent>`/`<answer>` scaffold from a full model reply.
+    """Strip the `<intent>`/`<spoken>`/`<answer>` scaffold from a full reply.
 
     Channel adapters (Telegram, etc.) concatenate raw text chunks. The
     Mirror UI parses tags via the streaming `_parse_tagged_stream`; channels
     need a one-shot post-process to surface only the operator-visible
     `<answer>` text.
 
-    The channel overlay tells TARS not to emit tags here, but the base
-    prompt still teaches the contract and TARS sometimes emits them
+    The channel overlay tells the assistant not to emit tags here, but the base
+    prompt still teaches the contract and the assistant sometimes emits them
     anyway. Worse, a tool-iteration-cap hit can cut the stream after
     ``<intent>...</intent>`` and before any ``<answer>`` opens — the
     pre-fix code path returned the raw text in that case, leaking
@@ -136,31 +150,41 @@ def _extract_channel_reply(raw: str) -> str:
 
     1. Concatenated ``<answer>`` content (the contracted-on payload).
     2. Untagged text (``_untagged``) — operator wrote freely; respect it.
-    3. Stripped ``<intent>`` content — model only emitted intent because
+    3. Concatenated ``<spoken>`` content — the abbreviated spoken form. A
+       channel is a reading surface, so the full answer always wins; spoken
+       only surfaces when the stream was cut before any answer opened. It
+       still beats the intent because it is reply content, not a status.
+    4. Stripped ``<intent>`` content — model only emitted intent because
        the stream was truncated. Surface the intent text without tags so
        the user sees "Checking the vault for that." instead of
        ``<intent>Checking the vault for that.</intent>``.
-    4. As a last resort, the raw input with bare ``<intent>``/``<answer>``
-       tags stripped so a malformed-tag edge case (e.g. mismatched close)
-       at least renders without raw markup.
+    5. As a last resort, the raw input with bare tags stripped so a
+       malformed-tag edge case (e.g. mismatched close) at least renders
+       without raw markup.
+
+    A tier must carry actual content to win, not merely exist — the
+    whitespace between two tagged blocks lands in ``_untagged``, and
+    treating that as a hit made tiers 3 and 4 unreachable in the ordinary
+    case where the model formats its blocks across lines.
     """
     pieces, _state, _carry = _parse_tagged_stream(raw, "outside")
-    answers = [text for kind, text in pieces if kind == "answer"]
-    if answers:
-        return "".join(answers)
-    untagged = [text for kind, text in pieces if kind == "_untagged"]
-    if untagged:
-        return "".join(untagged)
-    intents = [text for kind, text in pieces if kind == "intent"]
-    if intents:
-        return "".join(intents)
+    # Each tier must carry actual content to win. The whitespace BETWEEN two
+    # tagged blocks parses as `_untagged` — a single newline after
+    # `</intent>` is enough — so testing "is this bucket non-empty" handed
+    # back that newline and never reached the tiers holding the real reply.
+    # The joined text is returned unstripped; only the decision is stripped.
+    for wanted in ("answer", "_untagged", "spoken", "intent"):
+        joined = "".join(text for kind, text in pieces if kind == wanted)
+        if joined.strip():
+            return joined
     return _strip_known_tags(raw)
 
 
 def _strip_known_tags(text: str) -> str:
-    """Drop literal ``<intent>`` / ``</intent>`` / ``<answer>`` / ``</answer>``
-    occurrences from ``text``. Last-resort fallback when the parser found
-    nothing classifiable — never leak tag text to the phone."""
+    """Drop literal open/close occurrences of every known surface tag
+    (``intent``, ``spoken``, ``answer``) from ``text``. Last-resort fallback
+    when the parser found nothing classifiable — never leak tag text to the
+    phone."""
     pattern = re.compile(
         r"</?(?:" + "|".join(_KNOWN_CHANNEL_TAGS) + r")\s*>",
         re.IGNORECASE,
@@ -172,10 +196,11 @@ def _parse_tagged_stream(buffer: str, state: str) -> tuple[list[tuple[str, str]]
     """Pure-function state machine over the tagged stream.
 
     Returns `(pieces, new_state, carry)`:
-    - `pieces` — list of `(kind, text)`. `kind` ∈ {"intent", "answer", "_untagged"}.
-      `_untagged` is content emitted while state was "outside" (contract
-      violation); the caller surfaces it under "answer".
-    - `new_state` — state at end of input, one of {"outside", "intent", "answer"}.
+    - `pieces` — list of `(kind, text)`. `kind` ∈ {"intent", "spoken",
+      "answer", "_untagged"}. `_untagged` is content emitted while state was
+      "outside" (contract violation); the caller surfaces it under "answer".
+    - `new_state` — state at end of input, one of {"outside", "intent",
+      "spoken", "answer"}.
     - `carry` — tail of `buffer` that may be the start of an incomplete tag;
       held back so it can be re-evaluated when the next delta arrives.
     """
@@ -197,20 +222,22 @@ def _parse_tagged_stream(buffer: str, state: str) -> tuple[list[tuple[str, str]]
             content = tail[: len(tail) - partial] if partial else tail
             new_carry = tail[len(tail) - partial:] if partial else ""
             if content:
-                kind = state if state in ("intent", "answer") else "_untagged"
+                kind = state if state in _SURFACE_STATES else "_untagged"
                 pieces.append((kind, content))
             return pieces, state, new_carry
 
         before = buffer[pos:next_idx]
         if before:
-            kind = state if state in ("intent", "answer") else "_untagged"
+            kind = state if state in _SURFACE_STATES else "_untagged"
             pieces.append((kind, before))
 
         if next_token == _TAG_OPEN_INTENT:
             state = "intent"
+        elif next_token == _TAG_OPEN_SPOKEN:
+            state = "spoken"
         elif next_token == _TAG_OPEN_ANSWER:
             state = "answer"
-        elif next_token in (_TAG_CLOSE_INTENT, _TAG_CLOSE_ANSWER):
+        elif next_token in (_TAG_CLOSE_INTENT, _TAG_CLOSE_SPOKEN, _TAG_CLOSE_ANSWER):
             state = "outside"
 
         pos = next_idx + len(next_token)

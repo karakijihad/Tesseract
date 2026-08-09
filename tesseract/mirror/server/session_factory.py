@@ -24,22 +24,30 @@ from tesseract.mirror.server.ask_gate import (
 from tesseract.mirror.server.chat_restore import _restore_persisted_chats
 from tesseract.mirror.server.event_log import EventLog
 from tesseract.mirror.server.session_model import ParkedAsk, ServerSession, SessionKind
-from tesseract.orchestrator.tars_controller.lanes.ipc_proxy import (
+from tesseract.orchestrator.agent_controller.lanes.ipc_proxy import (
     IpcLaneManager,
     IpcNamedLaneManager,
+)
+from tesseract.orchestrator.agent_controller.lanes.principals import (
+    OPERATOR_PRINCIPAL,
 )
 
 log = logging.getLogger(__name__)
 
 
 def _lane_manager_provider() -> IpcLaneManager:
-    """Mirror chat brain drives controller-owned lanes over IPC (conductor)."""
-    return IpcLaneManager()
+    """Mirror chat brain drives controller-owned lanes over IPC (conductor).
+
+    the assistant's own turn IS the operator's work — there is no MCP client between
+    them — so it names the operator principal outright. Naming it rather than
+    letting it default is the point: the daemon refuses an unattested lane
+    message, so every real caller has to say who it is."""
+    return IpcLaneManager(caller_principal=OPERATOR_PRINCIPAL)
 
 
 def _named_lane_manager_provider() -> IpcNamedLaneManager:
     """Mirror chat brain drives controller-owned named lanes over IPC (conductor)."""
-    return IpcNamedLaneManager()
+    return IpcNamedLaneManager(caller_principal=OPERATOR_PRINCIPAL)
 
 
 def create_server_session(app: web.Application, ws: web.WebSocketResponse) -> ServerSession:

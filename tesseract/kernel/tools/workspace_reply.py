@@ -1,12 +1,12 @@
-"""workspace_reply — TARS replies to an operator comment thread.
+"""workspace_reply — the assistant replies to an operator comment thread.
 
 When the operator leaves a comment on a Workspace event, the comment is
-injected on TARS's next turn as ``[workspace_comment_on_<event_id>]``.
-TARS calls this tool to attach a reply back to the thread; the Mirror
+injected on the assistant's next turn as ``[workspace_comment_on_<event_id>]``.
+The assistant calls this tool to attach a reply back to the thread; the Mirror
 renders it under the operator's comment.
 
 No reasoning fragility: the tool takes ``event_id`` and ``comment_id``
-directly so we never have to pattern-match TARS's prose for which thread
+directly so we never have to pattern-match the assistant's prose for which thread
 the reply belongs to.
 """
 
@@ -90,7 +90,7 @@ class WorkspaceReplyTool(Tool):
 
         reply = WorkspaceComment.new(
             event_id=event_id,
-            author="tars",
+            author="agent",
             body=body,
             reply_to=comment_id,
         )

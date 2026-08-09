@@ -82,7 +82,7 @@ def format_progress_line(event: ProgressEvent) -> str:
     """Render a one-line progress string for a chat edit.
 
     Lines are <60 chars so they fit comfortably in a Telegram bubble
-    and read as "TARS is working" rather than as content. The final
+    and read as "the assistant is working" rather than as content. The final
     answer replaces them entirely when the turn lands; these strings
     are scaffolding, not transcript.
     """

@@ -15,7 +15,6 @@ from tesseract.brain.cost.ledger import SttUsage
 from tesseract.mirror.server.envelope import (
     make_envelope,
     make_tts_chunk,
-    make_voice_final,
     make_voice_state,
 )
 from tesseract.mirror.server.approvals_parse import (
@@ -391,7 +390,6 @@ from tesseract.mirror.server.chunk_handler import (  # noqa: E402
     _broadcast_workspace_reply,
     _emit_entity_state_from_affect,
     _emit_posture_event,
-    _emit_voice_instruction_from_state,
     _handle_chunk,
     _set_orb_state,
 )

@@ -14,7 +14,7 @@ import shutil
 import stat
 import unicodedata
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePath
 
 import yaml
 
@@ -192,24 +192,54 @@ class VaultManager:
             return ""
         return index.read_text(encoding="utf-8")
 
+    def _wiki_page_path(self, slug: str) -> Path | None:
+        """Resolve ``slug`` to a path inside ``wiki_dir``, or None if it escapes.
+
+        Slugs are not all self-minted. `vault_query`'s expand pass walks
+        `related_slugs:` / `backlinks_from:` straight out of page frontmatter,
+        and a page's frontmatter is written from a model's JSON over document
+        text the operator did not author — so a slug reaching here can be
+        attacker-influenced. `wiki_dir / f"{slug}.md"` on `../../secrets` or an
+        absolute path silently leaves the vault, and `vault_query` then reads
+        the result into an answer.
+
+        Two gates rather than one. First the slug must be a bare filename:
+        `PurePath(slug).name == slug` rejects every separator form at once —
+        `../x`, `a/b`, `/abs`, `C:\\x` — without a charset rule that would also
+        reject the legitimately uppercase bookkeeping pages (`INDEX`). Then the
+        resolved path must still sit under `wiki_dir`, which catches symlinks
+        and anything the first gate would ever be loosened to admit.
+        """
+        if not slug or slug.startswith(".") or PurePath(slug).name != slug:
+            return None
+        page = (self.wiki_dir / f"{slug}.md").resolve()
+        try:
+            page.relative_to(self.wiki_dir.resolve())
+        except ValueError:
+            return None
+        return page
+
     def write_wiki_page(self, slug: str, content: str) -> Path:
         """Write a wiki page to vault/wiki/{slug}.md. Overwrites if exists."""
         self.wiki_dir.mkdir(parents=True, exist_ok=True)
-        page = self.wiki_dir / f"{slug}.md"
+        page = self._wiki_page_path(slug)
+        if page is None:
+            raise ValueError(f"refusing to write wiki page outside the vault: {slug!r}")
         tmp = page.with_suffix(".tmp")
         tmp.write_text(content, encoding="utf-8")
         tmp.replace(page)
         return page
 
     def read_wiki_page(self, slug: str) -> str | None:
-        """Read a wiki page by slug. Returns None if missing."""
-        page = self.wiki_dir / f"{slug}.md"
-        if not page.exists():
+        """Read a wiki page by slug. Returns None if missing or out of bounds."""
+        page = self._wiki_page_path(slug)
+        if page is None or not page.exists():
             return None
         return page.read_text(encoding="utf-8")
 
     def wiki_page_exists(self, slug: str) -> bool:
-        return (self.wiki_dir / f"{slug}.md").exists()
+        page = self._wiki_page_path(slug)
+        return page is not None and page.exists()
 
     def read_wiki_page_frontmatter(self, slug: str) -> dict:
         """Return YAML frontmatter as a dict, or {} if missing/malformed."""
@@ -226,14 +256,25 @@ class VaultManager:
         return parsed if isinstance(parsed, dict) else {}
 
     def update_wiki_backlinks(self, slug: str, new_backlinks: list[str]) -> bool:
-        """Rewrite only the ``backlinks_from:`` region of a wiki page.
+        """Merge entries into the ``backlinks_from:`` region of a wiki page."""
+        return self._update_wiki_list_field(slug, "backlinks_from", new_backlinks)
+
+    def update_wiki_related_slugs(self, slug: str, new_slugs: list[str]) -> bool:
+        """Merge entries into the ``related_slugs:`` region of a wiki page."""
+        return self._update_wiki_list_field(slug, "related_slugs", new_slugs)
+
+    def _update_wiki_list_field(
+        self, slug: str, field: str, new_items: list[str]
+    ) -> bool:
+        """Rewrite only one list-valued frontmatter region of a wiki page.
 
         Merges with any existing entries, deduping while preserving order.
         Every other field + the body are preserved byte-for-byte. Returns
-        ``False`` if the page is missing or lacks a well-formed frontmatter.
+        ``False`` if the page is missing, lacks a well-formed frontmatter,
+        or has no ``{field}:`` header to anchor on.
         """
-        page = self.wiki_dir / f"{slug}.md"
-        if not page.exists():
+        page = self._wiki_page_path(slug)
+        if page is None or not page.exists():
             return False
 
         lines = page.read_text(encoding="utf-8").split("\n")
@@ -250,7 +291,7 @@ class VaultManager:
 
         header_idx = None
         for idx in range(1, end):
-            if lines[idx].startswith("backlinks_from:"):
+            if lines[idx].startswith(f"{field}:"):
                 header_idx = idx
                 break
         if header_idx is None:
@@ -258,7 +299,7 @@ class VaultManager:
 
         header_line = lines[header_idx]
         existing: list[str] = []
-        if header_line.strip() == "backlinks_from:":
+        if header_line.strip() == f"{field}:":
             region_end = header_idx + 1
             while region_end < end and lines[region_end].startswith("  - "):
                 existing.append(lines[region_end][4:].strip())
@@ -270,20 +311,32 @@ class VaultManager:
             region_end = header_idx + 1
 
         merged: list[str] = list(existing)
-        for item in new_backlinks:
+        for item in new_items:
             if item not in merged:
                 merged.append(item)
 
         if merged:
-            new_region = ["backlinks_from:"] + [f"  - {s}" for s in merged]
+            new_region = [f"{field}:"] + [f"  - {s}" for s in merged]
         else:
-            new_region = ["backlinks_from: []"]
+            new_region = [f"{field}: []"]
 
         new_content = "\n".join(lines[:header_idx] + new_region + lines[region_end:])
         tmp = page.with_suffix(".tmp")
         tmp.write_text(new_content, encoding="utf-8")
         tmp.replace(page)
         return True
+
+    _WIKI_BOOKKEEPING = frozenset({"INDEX", "TAXONOMY", "LINT-REPORT", "ingest-log"})
+
+    def list_wiki_slugs(self) -> list[str]:
+        """Slugs of every content wiki page (bookkeeping pages excluded)."""
+        if not self.wiki_dir.exists():
+            return []
+        return sorted(
+            p.stem
+            for p in self.wiki_dir.glob("*.md")
+            if p.stem not in self._WIKI_BOOKKEEPING
+        )
 
     def update_lint_flags(self, slug: str, new_flags: list[dict]) -> bool:
         """Merge lint findings into a wiki page's ``lint_flags:`` frontmatter region.
@@ -295,8 +348,8 @@ class VaultManager:
         only ``lint_flags:``. Returns ``False`` if the page is missing or the
         existing frontmatter is malformed (no closing ``---``).
         """
-        page = self.wiki_dir / f"{slug}.md"
-        if not page.exists():
+        page = self._wiki_page_path(slug)
+        if page is None or not page.exists():
             return False
 
         content = page.read_text(encoding="utf-8")

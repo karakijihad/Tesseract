@@ -1,4 +1,4 @@
-"""Batched vet-prompt builder — TARS's proposal quality gate."""
+"""Batched vet-prompt builder — the assistant's proposal quality gate."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ def build_vet_prompt(items: list[dict[str, Any]]) -> str:
     """Build the batched vet prompt for ``items`` (each
     ``{id, source, goal, rationale}``). Returns a single prompt string."""
     parts: list[str] = [
-        "You are TARS's proposal quality gate.",
+        "You are the assistant's proposal quality gate.",
         "",
         "For each candidate agenda item below, decide exactly one verdict:",
         "- promote: clearly useful and actionable — worth the operator's time.",

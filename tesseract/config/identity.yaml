@@ -1,9 +1,9 @@
-# TARS's identity anchor facts. Loaded fresh on every prompt build — no
+# the assistant's identity anchor facts. Loaded fresh on every prompt build — no
 # restart needed after an edit.
 
 # Instance birth timestamp, ISO-8601 with a UTC offset (e.g.
 # "2026-01-01T00:00:00+00:00"). Used to compute a "day N" age line in the
-# prompt's temporal context. Left blank on a fresh install — TARS runs fine
+# prompt's temporal context. Left blank on a fresh install — the assistant runs fine
 # without it (the age line is simply omitted); set it once, whenever you
 # like, and it sticks.
 born_at: ""

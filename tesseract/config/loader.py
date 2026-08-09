@@ -218,8 +218,6 @@ class VoiceChain:
 
 @dataclass(frozen=True)
 class VoiceConfig:
-    default_voice_id: str
-    default_tone_prompt: str
     stt: VoiceChain | None
     tts: VoiceChain | None
 
@@ -235,6 +233,9 @@ class ConfigBundle:
     embeddings: ResolvedRef
     roles: Mapping[str, RoleConfig]
     voice: VoiceConfig | None
+    # Optional local cross-encoder role (roles.yaml top-level `reranker:`).
+    # None when the block is absent — retrieval then keeps pure RRF order.
+    reranker: ResolvedRef | None = None
 
     def role(self, name: str) -> RoleConfig:
         if name not in self.roles:
@@ -492,12 +493,7 @@ def _build_voice(block: Mapping[str, Any] | None, providers_raw: Mapping[str, An
         return None
     stt_chain = _build_voice_chain("stt", block.get("stt") or {}, providers_raw)
     tts_chain = _build_voice_chain("tts", block.get("tts") or {}, providers_raw)
-    return VoiceConfig(
-        default_voice_id=str(block.get("default_voice_id", "")),
-        default_tone_prompt=str(block.get("default_tone_prompt", "")),
-        stt=stt_chain,
-        tts=tts_chain,
-    )
+    return VoiceConfig(stt=stt_chain, tts=tts_chain)
 
 
 # ── Public entry point ───────────────────────────────────
@@ -527,6 +523,12 @@ def load_config(
     embeddings_ref = str(_require(embeddings_block, "primary", "roles.yaml embeddings"))
     embeddings_resolved = _resolve_ref(embeddings_ref, providers_raw)
 
+    reranker_block = roles_raw.get("reranker") or {}
+    reranker_ref = reranker_block.get("primary")
+    reranker_resolved = (
+        _resolve_ref(str(reranker_ref), providers_raw) if reranker_ref else None
+    )
+
     roles_block = roles_raw.get("roles") or {}
     if not roles_block:
         raise ConfigError("roles.yaml has no `roles:` section")
@@ -547,6 +549,7 @@ def load_config(
         embeddings=embeddings_resolved,
         roles=roles,
         voice=voice,
+        reranker=reranker_resolved,
     )
 
 

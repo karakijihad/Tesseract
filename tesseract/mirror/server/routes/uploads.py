@@ -160,7 +160,7 @@ async def promote_chat_attachment_to_vault(request: web.Request) -> web.Response
         return web.json_response({"error": "not_found"}, status=404)
 
     try:
-        result = await _promote_to_vault(att, file_path)
+        result = await _promote_to_vault(att, file_path, request.app)
     except Exception as exc:
         return web.json_response({"ok": False, "error": str(exc)}, status=500)
 
@@ -169,25 +169,31 @@ async def promote_chat_attachment_to_vault(request: web.Request) -> web.Response
     return web.json_response(result, status=500)
 
 
-async def _promote_to_vault(att: StoredAttachment, file_path) -> dict:
-    from pathlib import Path
-    from tesseract.memory.vault_manager import VaultManager
-    from tesseract.memory.vault_indexer import VaultIndexer
+async def _promote_to_vault(att: StoredAttachment, file_path, app) -> dict:
+    import logging
+
     from tesseract.kernel.tools.vault_ingest import VaultIngestTool, VaultIngestInput
     from tesseract.kernel.tools.base import ToolContext
-    from tesseract.paths import TESSERACT_HOME
 
-    vault_root = TESSERACT_HOME / "vault"
-    manager = VaultManager(vault_root=vault_root)
+    # The registered tool carries the live shared indexer + librarian, so a
+    # promoted attachment lands in vault_search AND the wiki — a locally
+    # constructed tool would silently skip both.
+    registry = app.get("tool_registry") if app is not None else None
+    tool = registry.get("vault_ingest") if registry is not None else None
+    if tool is not None:
+        manager = tool._manager  # noqa: SLF001 — same-package wiring
+    else:
+        from tesseract.memory.vault_manager import VaultManager
+        from tesseract.paths import TESSERACT_HOME
+
+        logging.getLogger(__name__).warning(
+            "promote_to_vault: vault_ingest tool not registered — "
+            "ingesting without search indexing or wiki compile"
+        )
+        manager = VaultManager(vault_root=TESSERACT_HOME / "vault")
+        tool = VaultIngestTool(vault_manager=manager)
+
     vault_rel_path = manager.suggest_raw_filing_path(att.filename)
-
-    indexer: VaultIndexer | None = None
-    try:
-        indexer = VaultIndexer(vault_root=vault_root)
-    except Exception:
-        pass
-
-    tool = VaultIngestTool(vault_manager=manager, vault_indexer=indexer)
 
     # Operator clicked "promote to vault" explicitly — skip the two-phase
     # suggest/confirm loop by passing confirmed_path directly. No LLM approval

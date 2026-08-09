@@ -1,4 +1,4 @@
-"""TARS chat session — message history + streaming + tool-call loop.
+"""the assistant chat session — message history + streaming + tool-call loop.
 
 Holds conversation state and delegates token generation to the model
 adapter. When the model emits tool calls, they are executed via the
@@ -33,10 +33,11 @@ from typing import Any, AsyncGenerator, Awaitable, Callable
 
 from tesseract.brain.auto_recall import auto_recall, format_recall_block, load_auto_recall_config
 from tesseract.brain.compaction import RUNNING_SUMMARY_PREFIX, compact_history
+from tesseract.brain.completion_store import CompletionRecord, record_from_handle
 from tesseract.brain.cost import BudgetExhausted, CostLedger, CostUsage
 from tesseract.brain.memory_suggestion import MemorySuggestion, format_for_injection
 from tesseract.brain.spawns import SpawnRegistry
-from tesseract.orchestrator.tars_controller.interactive.registry import InteractiveSessionRegistry
+from tesseract.orchestrator.agent_controller.interactive.registry import InteractiveSessionRegistry
 from tesseract.brain.tools import AskFn, ToolRegistry, execute_tool
 from tesseract.kernel.adapters.base import (
     AdapterOptions,
@@ -68,10 +69,18 @@ DEFAULT_ACTIVE_WINDOW_TOKENS: int | None = None
 DEFAULT_SUMMARY_CHAR_BUDGET = 8_000
 PENDING_SUGGESTION_CAP = 8
 PENDING_CONSCIENCE_CAP = 4
-# Bounded queue of finished-background-spawn notices awaiting next-turn
-# injection. Small — if many spawns finish before TARS next acts, the oldest
-# notices drop (the Activity registry + spawn_check still hold full state).
-PENDING_SPAWN_COMPLETION_CAP = 8
+# Finished-background-spawn results awaiting next-turn delivery. UNBOUNDED in
+# count on purpose: this was a `deque(maxlen=8)` whose own comment admitted
+# "if many spawns finish before the assistant next acts, the oldest notices drop" —
+# which is the "run N lanes and it all goes to garbage" report, in a constant.
+# N dispatches deliver N results. Pressure is answered by compressing what is
+# delivered (and saying so), never by discarding a result nothing will
+# mention again. Each entry is already TokenJuice-compressed, the list drains
+# every turn, and the per-session spawn cap bounds how many can be in flight.
+SPAWN_COMPLETION_DELIVERY_BUDGET_CHARS = 24_000
+# Floor per result when the budget forces a trim, so a large fan-out still
+# leaves every finding legible rather than a page of ellipses.
+SPAWN_COMPLETION_MIN_CHARS = 400
 
 # 2026-05-17 — hard cap on the assembled prompt sent to ANY adapter in
 # the chain. Codex CLI errors at 1_048_576 chars (`input_too_large`);
@@ -182,7 +191,7 @@ def _trim_summary_to_budget(summary: str, budget_chars: int) -> str:
 
 
 # Chat-turn promise audit (codex audit-2 follow-up, 2026-05-19).
-# Built after a Telegram confabulation incident where TARS replied
+# Built after a Telegram confabulation incident where the assistant replied
 # "Done. Every 15 minutes I'll fire a toast with a brief status summary"
 # without invoking schedule_update. The model bump (gpt54_mini →
 # gpt_oss_120b) is the primary defense; this audit is a backstop.
@@ -417,7 +426,7 @@ def _drain_workspace_comments(target_comment_id: str | None = None) -> tuple[lis
 
     Format: ``[workspace_comment_on_<event_id>] (cmt_<id>) {body}`` —
     the bracketed tag mirrors observer/conscience injection shape and
-    gives TARS the comment_id it needs to call ``workspace_reply``.
+    gives the assistant the comment_id it needs to call ``workspace_reply``.
 
     Codex audit 2026-05-07 M1: when ``target_comment_id`` is supplied,
     return only the matching undelivered comment. The caller is
@@ -466,7 +475,7 @@ def _drain_workspace_comments(target_comment_id: str | None = None) -> tuple[lis
 def _drain_operator_posts(target_event_id: str | None = None) -> tuple[list[str], list[str]]:
     """Read undelivered ``operator_post`` events and return ``(blocks, event_ids)``.
 
-    Format: ``[workspace_post_on_<event_id>] {title} — {body}``. TARS is
+    Format: ``[workspace_post_on_<event_id>] {title} — {body}``. The assistant is
     expected to reply via ``workspace_reply`` (with ``comment_id`` left
     as the originating event_id, since there's no comment yet — the
     workspace_reply directive in `prompt.py` covers both shapes).
@@ -538,11 +547,11 @@ def _format_conscience_transition(transition: dict[str, Any]) -> str:
     Keeps the same `[tag] body` shape observer suggestions use so the
     model recognises it as a system-originated aside, not a real user
     turn. Short by design — don't spam the prompt with a full signal
-    dump; TARS can call `conscience_status` for detail.
+    dump; the assistant can call `conscience_status` for detail.
 
     When the heartbeat enriched the transition with a `recurrence_days`
     map (counts in 30/90/365-day windows) the note surfaces those
-    counts so TARS feels temporal patterns ("3rd time this month")
+    counts so the assistant feels temporal patterns ("3rd time this month")
     rather than treating each drift as a one-off. A short reflection
     prompt invites him to call `memory_save` with one line on *why* —
     structured record + natural-language reason together is what makes
@@ -637,10 +646,14 @@ def _format_view_snapshot(snapshot: dict[str, Any]) -> str:
 
 
 def _summarize_spawn(handle: Any) -> str:
-    """Phase 4: short human-readable line for a completed background
-    spawn. Read from the asyncio.Task — failure exception type if any,
-    otherwise the first line of the foreground result. Bounded so the
-    envelope stays narrow."""
+    """Short human-readable line for a completed background spawn, for the
+    UI's SPAWN_DONE chunk. Read from the asyncio.Task — failure exception
+    type if any, otherwise the first line of the result.
+
+    This is a LABEL, not a delivery. What reaches the model is
+    `_format_spawn_completion`, which carries the result itself; a first
+    line capped at 160 chars is what left the assistant holding a handle and no
+    finding."""
     try:
         if handle.task.cancelled() or handle.cancelled:
             return "cancelled"
@@ -657,21 +670,129 @@ def _summarize_spawn(handle: Any) -> str:
         return "(unsummarizable)"
 
 
-def _format_spawn_completion(handle: Any) -> str:
-    """Render a finished background spawn as a one-shot injection block.
+def _spawn_rule_name(kind: str) -> str:
+    """The TokenJuice rule family a spawn's output should be compressed by.
 
-    SPAWN_DONE is UI-only — the LLM never saw a completed spawn and so
-    "forgot" to act on background work. This block is queued by
-    ``ChatSession.ingest_spawn_completion`` and surfaced on the next turn's
-    iteration 0 (same one-shot semantics as conscience notes), so TARS
-    notices the result on its own and can ``spawn_await`` for full output.
+    Spawn kinds carry a target suffix (`lane_turn:coder/claude`,
+    `agent:vault_librarian`); rules match on bare tool names."""
+    return (kind or "").split(":", 1)[0]
+
+
+def _format_completion_record(record: CompletionRecord) -> str:
+    """Render a finished background spawn as a one-shot injection block —
+    carrying the RESULT, not a pointer to it.
+
+    The old block delivered the first line of the output capped at 160
+    characters plus the handle, so the assistant learned only that something had
+    finished and had to remember an opaque id, decide to fetch, and spend a
+    second tool call to learn what. Models are bad at all three. The result
+    now travels in the block, compressed through the same TokenJuice rules
+    the tool path uses — which for lane and delegate output is head+tail,
+    preserving an auditor's verdict at the tail. `spawn_await` is now the
+    exception, for genuinely huge output.
+
+    Takes the durable record rather than the handle so a completion replayed
+    after a restart — when the handle is long gone — renders byte-identically
+    to one delivered live. Queued by ``ChatSession.ingest_spawn_completion``
+    or ``replay_undelivered_completions`` and surfaced on the next turn's
+    iteration 0 (same one-shot semantics as conscience notes).
     """
-    summary = _summarize_spawn(handle)
-    return (
-        f"[spawn_completed] handle={handle.handle_id} kind={handle.kind} "
-        f"status={handle.status()} — {summary} "
-        f"(call spawn_await with this handle if you need the full output)"
+    from tesseract.brain.tools import compress_for_delivery
+
+    status = record.status
+    kind = record.kind
+    body, compressed = compress_for_delivery(
+        record.output, _spawn_rule_name(kind)
     )
+    # A delegate's output is whatever a CLI read out of a repository, a web
+    # page, or a compromised model — and this block is injected as a
+    # role=user message, not a tool result, so it misses the wrapping
+    # `_run_pending_calls` does for untrusted tools. Delivering the whole
+    # result rather than a 160-char line is what makes that matter: one
+    # truncated line is a poor injection vector, kilobytes of attacker-shaped
+    # text is not.
+    body = _wrap_untrusted(tool=kind or "spawn", output=body)
+    handle_id = record.handle_id
+    header = f"[spawn_completed] handle={handle_id} kind={kind} status={status}"
+    footer = f"[end of {handle_id}]"
+    if compressed:
+        footer = (
+            f"[end of {handle_id} — shortened; spawn_await this handle "
+            f"for the untrimmed output]"
+        )
+    return f"{header}\n{body}\n{footer}"
+
+
+def _format_spawn_completion(handle: Any) -> str:
+    """Snapshot a live handle and render its delivery block."""
+    return _format_completion_record(record_from_handle(handle))
+
+
+def _head_tail(block: str, budget: int) -> str:
+    """Keep the opening and closing lines of `block` within `budget` chars.
+
+    Whole lines, like the TokenJuice `head_tail` reducer this sits beside —
+    slicing at raw character offsets cuts mid-word and reads as corruption
+    rather than as elision."""
+    lines = block.splitlines()
+    if not lines:
+        return block
+    # The first line carries the handle id and status. Keep it whatever the
+    # budget says — a trimmed block nobody can attribute to a dispatch is
+    # the drop this whole path exists to prevent, wearing an ellipsis.
+    head: list[str] = [lines[0]]
+    tail: list[str] = []
+    used = len(lines[0]) + 1
+    front, back = 1, len(lines) - 1
+    while front <= back:
+        # Alternate ends so the header and the verdict both survive.
+        nxt = lines[front] if len(head) <= len(tail) else lines[back]
+        if used + len(nxt) + 1 > budget:
+            break
+        if len(head) <= len(tail):
+            head.append(nxt)
+            front += 1
+        else:
+            tail.insert(0, nxt)
+            back -= 1
+        used += len(nxt) + 1
+    if front > back:
+        return block
+    return "\n".join([*head, "…", *tail])
+
+
+def _fit_spawn_completions(blocks: list[str]) -> list[str]:
+    """Fit N delivered results into the delivery budget without losing one.
+
+    Over budget, every block is trimmed head+tail to an equal share (never
+    below `SPAWN_COMPLETION_MIN_CHARS`) and each says it was shortened. The
+    one thing this never does is return fewer blocks than it was given: a
+    result that is never mentioned is a result the assistant cannot know to go and
+    fetch, and that is the failure mode the whole change exists to remove."""
+    if not blocks:
+        return []
+    total = sum(len(b) for b in blocks)
+    if total <= SPAWN_COMPLETION_DELIVERY_BUDGET_CHARS:
+        return blocks
+    share = max(
+        SPAWN_COMPLETION_MIN_CHARS,
+        SPAWN_COMPLETION_DELIVERY_BUDGET_CHARS // len(blocks),
+    )
+    trimmed = 0
+    out: list[str] = []
+    for block in blocks:
+        if len(block) <= share:
+            out.append(block)
+            continue
+        trimmed += 1
+        out.append(_head_tail(block, share))
+    if trimmed:
+        out.append(
+            f"[{trimmed} of {len(blocks)} completed dispatches were shortened "
+            f"to fit this turn — every one is above, and spawn_await on a "
+            f"handle returns its untrimmed output]"
+        )
+    return out
 
 
 def _format_spawn_stall(handle: Any) -> str:
@@ -679,7 +800,7 @@ def _format_spawn_stall(handle: Any) -> str:
 
     Queued by ``ChatSession.ingest_spawn_stall`` when the halt-watchdog
     (``SpawnRegistry.sweep_stalled``) flags a spawn still ``running`` past the
-    configured bound. Surfaced like ``[spawn_completed]`` so TARS can decide to
+    configured bound. Surfaced like ``[spawn_completed]`` so the assistant can decide to
     ``spawn_cancel`` (and retry) or ``spawn_await`` if it wants to keep waiting.
     """
     return (
@@ -762,7 +883,7 @@ class ChatSession:
     # watchdog (REPL / sub-agent / test sessions). Sourced from
     # `runtime.yaml::spawn_stall_seconds` via `_build_chat_session`.
     spawn_stall_seconds: float | None = None
-    # parallel-tars P4 — per-session cap on simultaneously-running background
+    # per-session cap on simultaneously-running background
     # spawns. None disables the cap (REPL / sub-agent / test sessions).
     # Sourced from `runtime.yaml::max_concurrent_spawns_per_session` via
     # `_build_chat_session`; pushed onto the registry in `__post_init__`.
@@ -786,9 +907,23 @@ class ChatSession:
         repr=False,
     )
     _pending_spawn_completions: deque[str] = field(
-        default_factory=lambda: deque(maxlen=PENDING_SPAWN_COMPLETION_CAP),
+        default_factory=deque,
         repr=False,
     )
+    # Handle ids of the queued spawn COMPLETIONS above (stalls and lost-spawn
+    # notes have no durable record, so they never appear here). Claimed in the
+    # completion store when the turn that drained them COMMITS, which is what
+    # stops a restart from replaying a result the model has already read —
+    # and, on any other outcome, what stops a dead turn from eating one.
+    _queued_completion_ids: list[str] = field(default_factory=list, repr=False)
+    # Drained into the current turn but not yet committed. The blocks are kept
+    # verbatim (pre-fit) so a rollback re-queues the originals and a later
+    # redelivery re-fits them against whatever else has since arrived. Caller
+    # (`turn_runner._run_turn`) invokes `confirm_spawn_delivery` on a clean
+    # stream and `rollback_spawn_delivery` on cancel / error — the same shape
+    # workspace comments already use one method over.
+    _delivering_spawn_blocks: list[str] = field(default_factory=list, repr=False)
+    _delivering_completion_ids: list[str] = field(default_factory=list, repr=False)
     _observed_ids: deque[str] = field(
         default_factory=lambda: deque(maxlen=500), repr=False
     )
@@ -839,7 +974,7 @@ class ChatSession:
     # frontend "queued" badge.
     pending_injected_messages: list[dict[str, Any]] = field(default_factory=list, repr=False)
     # Phase 4 (CLI parity): background-spawn registry. Tools that take
-    # `await=False` (currently only delegate_claude — delegate_codex
+    # `await=False` (currently only delegate_coder — delegate_auditor
     # and invoke_agent follow in a separate pass) register an
     # asyncio.Task here and return immediately with the handle id.
     # `spawn_check` / `spawn_await` / `spawn_cancel` tools query this
@@ -847,7 +982,7 @@ class ChatSession:
     # `reset()` cancels every running spawn so `/reset` doesn't leave
     # orphaned subprocesses.
     spawns: SpawnRegistry = field(default_factory=SpawnRegistry, repr=False)
-    # A7 — interactive PTY sessions (tars_controller). Cross-linked into
+    # A7 — interactive PTY sessions (agent_controller). Cross-linked into
     # tool_context in __post_init__. `reset()` closes all open sessions.
     interactive_sessions: InteractiveSessionRegistry = field(
         default_factory=InteractiveSessionRegistry, repr=False
@@ -876,7 +1011,7 @@ class ChatSession:
         self.tool_context.interactive_sessions = self.interactive_sessions
         self.tool_context.enabled_extended_tools = self._enabled_extended_tools
         # Push-on-completion: a finished background spawn queues a next-turn
-        # notice so TARS sees it instead of relying on a poll it may never make.
+        # notice so the assistant sees it instead of relying on a poll it may never make.
         self.spawns.completion_notifier = self.ingest_spawn_completion
         # P6 Task 3 §G5 — thread the Mirror session_id (if any) into the spawn
         # registry so it can journal start/terminal events for resume-time
@@ -884,6 +1019,9 @@ class ChatSession:
         # `""` (REPL / sub-agent sessions never set it), which leaves
         # `spawns.session_id` `None` and journaling disabled there.
         self.spawns.session_id = self.tool_context.session_id or None
+        # Durable completion records are attributed to the principal this
+        # session acts for; empty means the assistant's own work (the operator).
+        self.spawns.owner_principal = self.tool_context.caller_principal
         self.spawns.max_concurrent = self.spawn_max_concurrent
         # M5 — publish the concurrent cap onto the context so sub-agent
         # sessions built from a copy of it (agent_factory) inherit the same
@@ -985,6 +1123,10 @@ class ChatSession:
             pty_dispatcher=parent_ctx.pty_dispatcher,
             scheduler_provider=parent_ctx.scheduler_provider,
             tool_registry_provider=parent_ctx.tool_registry_provider,
+            # A synthetic turn delegates like any other, and delegation runs
+            # on a lane — without these the fork would have no lane path.
+            lane_manager_provider=parent_ctx.lane_manager_provider,
+            named_lane_manager_provider=parent_ctx.named_lane_manager_provider,
             ask_fn=parent_ctx.ask_fn,
             status_emit=parent_ctx.status_emit,
             cancel_event=asyncio.Event(),
@@ -1051,7 +1193,7 @@ class ChatSession:
         Same one-shot semantics as memory suggestions — surfaces as an
         extra user message visible on iteration 0 of the next turn, then
         drops (never persisted to `self.history`). Fired by
-        `ConscienceHeartbeatJob` on worst-status band transition so TARS
+        `ConscienceHeartbeatJob` on worst-status band transition so the assistant
         feels drift instead of only being able to query it via
         `conscience_status`.
         """
@@ -1064,10 +1206,83 @@ class ChatSession:
         fired once per spawn from its task done-callback. Same one-shot
         semantics as conscience notes: surfaces as an extra user message on
         iteration 0 of the next turn, then drops (never persisted to history).
-        This is the fix for "TARS forgets to check background spawns" — the
+        This is the fix for "the assistant forgets to check background spawns" — the
         completion now reaches the LLM rather than only the UI's SPAWN_DONE.
+
+        The handle id is tracked alongside the note so the durable record
+        `SpawnRegistry` wrote before calling here can be claimed once the note
+        actually enters a turn.
         """
-        self._pending_spawn_completions.append(_format_spawn_completion(handle))
+        record = record_from_handle(handle)
+        self._pending_spawn_completions.append(_format_completion_record(record))
+        if record.handle_id:
+            self._queued_completion_ids.append(record.handle_id)
+
+    def replay_undelivered_completions(self, chat_id: str) -> int:
+        """Re-queue every recorded completion this chat was never actually told
+        about, and return how many. Returns 0 for an unknown/empty chat.
+
+        Called at restore alongside ``mark_vanished_spawns``, with the chat's
+        OWN id (not the prior session's) — the store is chat-keyed precisely so
+        a result outlives the session it was produced under. Anything already
+        queued in this rebuilt session is skipped: the reconnect path folds a
+        dead-window completion in by hand before this runs, and it must not
+        arrive twice.
+        """
+        from tesseract.brain import completion_store
+
+        try:
+            outstanding = completion_store.pending(chat_id)
+        except Exception:  # noqa: BLE001 — a restore never fails on this
+            logger.warning(
+                "completion replay failed for chat %s", chat_id, exc_info=True
+            )
+            return 0
+        already = set(self._queued_completion_ids)
+        replayed = 0
+        for record in outstanding:
+            if record.handle_id in already:
+                continue
+            self._pending_spawn_completions.append(_format_completion_record(record))
+            self._queued_completion_ids.append(record.handle_id)
+            replayed += 1
+        return replayed
+
+    def confirm_spawn_delivery(self) -> None:
+        """Advance the delivery cursor for the completions this turn drained.
+
+        Called by the Mirror turn runner once the turn's stream has completed —
+        the point at which the model has actually read the block. Idempotent: a
+        second call after the stash is empty is a no-op.
+        """
+        ids = self._delivering_completion_ids
+        self._delivering_spawn_blocks = []
+        self._delivering_completion_ids = []
+        chat_id = self.spawns.chat_id
+        if not ids or not chat_id:
+            return
+        from tesseract.brain import completion_store
+
+        completion_store.mark_delivered(chat_id, ids)
+
+    def rollback_spawn_delivery(self) -> None:
+        """Put the drained notes back and leave the cursor where it was.
+
+        Called when a turn ends without committing — cancelled, adapter error,
+        the process taken down mid-stream. The notes go back to the FRONT of
+        the queue: they are older than anything that landed while the turn was
+        running, and the delivery order the operator sees should say so. The
+        durable records were never claimed, so the same results also survive a
+        restart that happens before the retry.
+        """
+        blocks = self._delivering_spawn_blocks
+        ids = self._delivering_completion_ids
+        self._delivering_spawn_blocks = []
+        self._delivering_completion_ids = []
+        if blocks:
+            self._pending_spawn_completions.extendleft(reversed(blocks))
+        if ids:
+            self._queued_completion_ids[:0] = ids
 
     def ingest_spawn_stall(self, handle: Any) -> None:
         """Queue a one-shot `[spawn_stalled]` note for a wedged background spawn.
@@ -1264,8 +1479,31 @@ class ChatSession:
             blocks.append(format_for_injection(self._pending_suggestions.popleft()))
         while self._pending_conscience:
             blocks.append(self._pending_conscience.popleft())
+        spawn_blocks: list[str] = []
         while self._pending_spawn_completions:
-            blocks.append(self._pending_spawn_completions.popleft())
+            spawn_blocks.append(self._pending_spawn_completions.popleft())
+        if spawn_blocks:
+            # A second drain with a batch still uncommitted means this session
+            # is driven by something with no commit gate wired. Release the
+            # earlier batch rather than accumulating it forever — but release
+            # is not a claim: the durable ids are dropped WITHOUT marking them
+            # delivered, so the record stays outstanding and a restart
+            # redelivers. Confirming here would advance the cursor for a turn
+            # that never committed, which is the one thing this must not do.
+            if self._delivering_spawn_blocks or self._delivering_completion_ids:
+                logger.warning(
+                    "spawn completions drained twice without a commit — this "
+                    "session's driver has no delivery gate; %d record(s) left "
+                    "outstanding, recoverable only by a restart (nothing in a "
+                    "running session re-queues a released batch)",
+                    len(self._delivering_completion_ids),
+                )
+                self._delivering_spawn_blocks = []
+                self._delivering_completion_ids = []
+            self._delivering_spawn_blocks = list(spawn_blocks)
+            self._delivering_completion_ids = self._queued_completion_ids
+            self._queued_completion_ids = []
+        blocks.extend(_fit_spawn_completions(spawn_blocks))
         blocks.extend(workspace_comment_blocks)
         blocks.extend(workspace_post_blocks)
         return "\n\n".join(blocks)
@@ -1320,7 +1558,7 @@ class ChatSession:
         any assistant output are NOT persisted to ``self.history``, so the
         synthetic turn does not pollute the chat conversation. Drain still
         runs (operator's workspace comments are delivered) and tools still
-        execute (TARS calls workspace_reply). The caller is responsible for
+        execute (the assistant calls workspace_reply). The caller is responsible for
         suppressing chat-text envelopes downstream.
 
         ``workspace_origin`` (dict | None) opts the turn into the workspace
@@ -1581,7 +1819,7 @@ class ChatSession:
                             # red bubble, then drop out of the inner stream
                             # so the outer loop can decide whether to
                             # retry or give up. The previous behaviour
-                            # (`yield chunk; return`) left TARS unable to
+                            # (`yield chunk; return`) left the assistant unable to
                             # see or recover from the error — Layer 2 fix
                             # 2026-05-05.
                             yield chunk
@@ -1616,7 +1854,7 @@ class ChatSession:
 
                 if adapter_error_seen:
                     # Persist any partial assistant text so the chat log
-                    # shows what TARS started saying before the adapter
+                    # shows what the assistant started saying before the adapter
                     # died. Pending tool calls are dropped — they were
                     # never executed and re-emitting them on the retry
                     # would mismatch tool_call_ids.
@@ -1655,7 +1893,7 @@ class ChatSession:
                         # operator will likely send a follow-up turn.
                         self._consecutive_adapter_errors = 0
                         return
-                    # Inject a synthetic system message so TARS sees the
+                    # Inject a synthetic system message so the assistant sees the
                     # error on the next iteration and can self-correct
                     # (Layer 2 + Layer 3 directive in prompt.py).
                     self.history.append({
@@ -1721,7 +1959,7 @@ class ChatSession:
                 # between iterations. The chunk carries handle id +
                 # kind + status + summary so the frontend can clear
                 # the "running" badge on the corresponding DelegateCard
-                # and TARS sees the completion in chat (it can then
+                # and the assistant sees the completion in chat (it can then
                 # call spawn_await if it actually needs the output).
                 for handle in self.spawns.drain_completed():
                     summary = _summarize_spawn(handle)
@@ -1969,7 +2207,7 @@ class ChatSession:
         #
         # Each task gets its OWN ToolContext clone so the mutable
         # `current_call_id` field doesn't race across tasks
-        # (`delegate_claude` / `delegate_codex` and `ask_fn` read it
+        # (`delegate_coder` / `delegate_auditor` and `ask_fn` read it
         # mid-execution). `dataclasses.replace` is a shallow copy —
         # cli_sink / pty_dispatcher / ask_fn references are preserved.
         #
@@ -2193,7 +2431,28 @@ class ChatSession:
         self._observer_last_index = 0
         self._pending_suggestions.clear()
         self._pending_conscience.clear()
+        # Mark every tracked spawn cancelled BEFORE the queues are cleared and
+        # the store discarded, not when the scheduled `cancel_all` below finally
+        # reaches it. `cancel_handle` leaves a task that already finished
+        # untouched, so without this a spawn completing inside that window sees
+        # `cancelled is False` in its done-callback and writes both a note into
+        # the just-cleared queue and a durable record into the just-discarded
+        # store — resurrecting, at the next restore, work the operator wiped.
+        for handle in self.spawns.list_handles():
+            handle.cancelled = True
         self._pending_spawn_completions.clear()
+        # `/reset` is an explicit wipe, so the durable records go with the
+        # queue — left outstanding they would be replayed into the reset chat
+        # at the next restore, undoing the operator. An in-flight turn's
+        # uncommitted delivery goes too, so its rollback cannot put the wiped
+        # notes back.
+        self._queued_completion_ids = []
+        self._delivering_spawn_blocks = []
+        self._delivering_completion_ids = []
+        if self.spawns.chat_id:
+            from tesseract.brain import completion_store
+
+            completion_store.discard(self.spawns.chat_id)
         self._observed_ids.clear()
         self._turn_injection = ""
         self._consecutive_adapter_errors = 0

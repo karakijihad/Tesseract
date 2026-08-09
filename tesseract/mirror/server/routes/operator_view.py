@@ -41,17 +41,21 @@ from tesseract.orchestrator.autonomy.publishers import publish_to_bus
 log = logging.getLogger(__name__)
 
 
-# Mirror's ``ui.ts::View`` union — kept in sync manually; ``ALLOWED_VIEWS``
-# is the server's authoritative gate (unknown views are dropped before
-# touching cache or bus).
+# Mirror's ``ui.ts::View`` union. ``ALLOWED_VIEWS`` is the server's
+# authoritative gate: an unknown view is dropped before it reaches the
+# cache or the bus, and only at debug level — so a view the frontend can
+# send but this set omits loses its snapshots with nothing to show for it.
+# Parity is enforced by ``tests/mcp_config_drift/test_allowed_views_parity.py``,
+# because this set carried ``soul`` for a while after the tab became
+# ``identity`` and every Identity snapshot was silently discarded.
 ALLOWED_VIEWS: frozenset[str] = frozenset(
     {
         "autonomy",
-        "tars",
+        "orb",
         "chat",
         "terminal",
         "pulse",
-        "soul",
+        "identity",
         "schedule",
         "agents",
         "conscience",

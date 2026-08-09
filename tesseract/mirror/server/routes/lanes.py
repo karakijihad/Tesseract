@@ -8,7 +8,6 @@ connect per request, mirroring ``controller_ws.py``. This lets the canvas
 
 Endpoints (all return 503 ``controller_offline`` when the daemon is down):
 
-- ``GET  /api/lanes/trio``                 — the trio definition (config).
 - ``GET  /api/lanes/named``                — list named-lane bindings.
 - ``POST /api/lanes/named/ensure``         — ensure a named lane (spawn).
 - ``GET  /api/lanes/{lane_id}/status``     — fast status probe.
@@ -27,13 +26,14 @@ from typing import Any, Awaitable, Callable
 
 from aiohttp import web
 
-from tesseract.config.cockpit import load_trio_lanes
+from tesseract.orchestrator.agent_controller.lanes.principals import (
+    OPERATOR_PRINCIPAL,
+)
 from tesseract.mirror.server.controller_ws import APP_FACTORY_KEY
-from tesseract.orchestrator.tars_controller.ipc_client import (
+from tesseract.orchestrator.agent_controller.ipc_client import (
     ControllerClient,
     ControllerClientError,
 )
-from tesseract.paths import TESSERACT_DIR
 
 log = logging.getLogger(__name__)
 
@@ -67,18 +67,9 @@ async def _with_client(
             log.debug("lanes: client close failed", exc_info=True)
 
 
-async def get_trio(request: web.Request) -> web.Response:
-    try:
-        return web.json_response({"lanes": load_trio_lanes()})
-    except (OSError, KeyError, ValueError) as exc:
-        return web.json_response(
-            {"error": "trio_config_invalid", "detail": str(exc)}, status=500
-        )
-
-
 async def list_named(request: web.Request) -> web.Response:
     async def _run(client: Any) -> web.Response:
-        records = await client.lane_named_list()
+        records = await client.lane_named_list(caller_principal=OPERATOR_PRINCIPAL)
         return web.json_response({"named": records})
 
     return await _with_client(request, _run)
@@ -94,11 +85,24 @@ async def ensure_named(request: web.Request) -> web.Response:
     model = body.get("model")
     if not isinstance(name, str) or kind not in ("claude", "codex") or not isinstance(model, str):
         return web.json_response({"error": "invalid_request"}, status=400)
-    working_dir = body.get("working_dir") or str(TESSERACT_DIR)
+    # None, not the package dir: the daemon resolves an omitted working_dir to
+    # the active project's root. Substituting TESSERACT_DIR here would defeat
+    # that for every caller — and on a packaged install it names a directory
+    # inside the sealed app/ tree, which `LaneManager.open` refuses outright.
+    #
+    # Absent means "use the default"; present-but-unusable means the caller got
+    # it wrong. Collapsing the two would silently relocate a lane a client
+    # believed it had placed.
+    working_dir = body.get("working_dir")
+    if working_dir is not None and (
+        not isinstance(working_dir, str) or not working_dir.strip()
+    ):
+        return web.json_response({"error": "invalid_working_dir"}, status=400)
 
     async def _run(client: Any) -> web.Response:
         record = await client.lane_named_ensure(
-            name=name, kind=kind, model=model, working_dir=working_dir
+            name=name, kind=kind, model=model, working_dir=working_dir,
+            caller_principal=OPERATOR_PRINCIPAL,
         )
         return web.json_response({"record": record})
 
@@ -109,7 +113,9 @@ async def lane_status(request: web.Request) -> web.Response:
     lane_id = request.match_info["lane_id"]
 
     async def _run(client: Any) -> web.Response:
-        return web.json_response(await client.lane_status(lane_id))
+        return web.json_response(
+            await client.lane_status(lane_id, caller_principal=OPERATOR_PRINCIPAL)
+        )
 
     return await _with_client(request, _run)
 
@@ -119,7 +125,11 @@ async def lane_read(request: web.Request) -> web.Response:
     cursor = request.query.get("cursor") or None
 
     async def _run(client: Any) -> web.Response:
-        return web.json_response(await client.lane_read(lane_id, cursor))
+        return web.json_response(
+            await client.lane_read(
+                lane_id, cursor, caller_principal=OPERATOR_PRINCIPAL
+            )
+        )
 
     return await _with_client(request, _run)
 
@@ -135,7 +145,11 @@ async def lane_send(request: web.Request) -> web.Response:
         return web.json_response({"error": "empty_message"}, status=400)
 
     async def _run(client: Any) -> web.Response:
-        return web.json_response(await client.lane_send(lane_id, message))
+        return web.json_response(
+            await client.lane_send(
+                lane_id, message, caller_principal=OPERATOR_PRINCIPAL
+            )
+        )
 
     return await _with_client(request, _run)
 
@@ -144,7 +158,9 @@ async def lane_attach(request: web.Request) -> web.Response:
     lane_id = request.match_info["lane_id"]
 
     async def _run(client: Any) -> web.Response:
-        return web.json_response(await client.lane_attach(lane_id))
+        return web.json_response(
+            await client.lane_attach(lane_id, caller_principal=OPERATOR_PRINCIPAL)
+        )
 
     return await _with_client(request, _run)
 
@@ -160,13 +176,16 @@ async def lane_close(request: web.Request) -> web.Response:
     reason = body.get("reason", "operator_close") if isinstance(body, dict) else "operator_close"
 
     async def _run(client: Any) -> web.Response:
-        return web.json_response(await client.lane_close(lane_id, reason))
+        return web.json_response(
+            await client.lane_close(
+                lane_id, reason, caller_principal=OPERATOR_PRINCIPAL
+            )
+        )
 
     return await _with_client(request, _run)
 
 
 def register(app: web.Application) -> None:
-    app.router.add_get("/api/lanes/trio", get_trio)
     app.router.add_get("/api/lanes/named", list_named)
     app.router.add_post("/api/lanes/named/ensure", ensure_named)
     app.router.add_get("/api/lanes/{lane_id}/status", lane_status)

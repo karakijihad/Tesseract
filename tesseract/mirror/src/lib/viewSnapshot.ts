@@ -116,7 +116,7 @@ function _workspaceState(): Record<string, unknown> {
   };
 }
 
-function _soulState(): Record<string, unknown> {
+function _identityState(): Record<string, unknown> {
   const s = useSoulStore.getState();
   return { last_reflected_at: s.lastReflectedAt };
 }
@@ -125,17 +125,17 @@ function _pulseState(): Record<string, unknown> {
   return {};
 }
 
-function _tarsState(): Record<string, unknown> {
+function _orbState(): Record<string, unknown> {
   return {};
 }
 
 const _STATE_BUILDERS: Record<View, () => Record<string, unknown>> = {
   autonomy: _autonomyState,
-  tars: _tarsState,
+  orb: _orbState,
   chat: _chatState,
   terminal: _terminalState,
   pulse: _pulseState,
-  soul: _soulState,
+  identity: _identityState,
   schedule: _scheduleState,
   agents: _agentsState,
   conscience: _conscienceState,

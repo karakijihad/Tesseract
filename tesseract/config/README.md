@@ -26,7 +26,7 @@ Acceptable code-side references:
 | File               | Purpose                                                                                                                                                                                                                               | Loaded by                                                 | Hot-reloadable                                                             |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------- |
 | `providers.yaml`   | **Catalog.** Connection settings + named model entries (per-model pricing, context window, adapter hints, env-var refs). Tiers: `api`, `cli`, `local`. Plus `availability.max_consecutive_failures` and `cost_tracking` global knobs. | `tesseract/config/loader.py::load_config`                 | yes (Mirror config watcher → `boot.rebuild_adapters` + cost-ledger reload) |
-| `roles.yaml`       | **Wiring.** Each role names a `primary` + `fallbacks` list of catalog references. Plus `embeddings.primary` (local-only) and the `voice:` subsystem (STT/TTS lanes pointing at catalog entries, default voice ID and tone prompt).    | `tesseract/config/loader.py::load_config`                 | yes (same reloader as `providers.yaml`)                                    |
+| `roles.yaml`       | **Wiring.** Each role names a `primary` + `fallbacks` list of catalog references. Plus `embeddings.primary` (local-only) and the `voice:` subsystem (STT/TTS lanes pointing at catalog entries, per-provider settings).    | `tesseract/config/loader.py::load_config`                 | yes (same reloader as `providers.yaml`)                                    |
 | `permissions.yaml` | `security_mode` (max/standard/headless) + per-tool AUTO/ASK/DENY defaults + `modes.overrides` + `path_overrides`.                                                                                                                     | `tesseract/permissions/policy.py::load_permission_policy` | yes (`policy.reload`); `/mode` toggles in-memory                           |
 | `mirror.yaml`      | host/port, identity, CORS origins, `session.resume_policy`, `ui.show_config_reload_toasts`, terminal block (shell profiles, max tabs/panes).                                                                                          | `tesseract/mirror/server/config.py::load_server_config`   | partially (toast toggle hot; bind/CORS requires restart)                   |
 | `terminal.yaml`    | Terminal-specific overrides for the Mirror PTY manager.                                                                                                                                                                               | `tesseract/mirror/server/pty_manager.py`                  | n/a                                                                        |
@@ -148,10 +148,13 @@ can't afford a LAN round-trip for 768-dim vectors. No fallback chain.
 
 ### `voice:`
 
-Voice subsystem block: `default_voice_id`, `default_tone_prompt`,
-`stt:` and `tts:` lanes. Each lane carries a `provider_ref:` pointing
-at a catalog entry plus lane-specific knobs (`voice_id`,
-`timeout_seconds`, `daily_budget_usd`). Voice is decoupled from
+Voice subsystem block: the `stt:` and `tts:` lanes. Each lane has the same
+shape as a cognition role — `mode`, a `primary` catalog reference, an
+ordered `fallbacks` list, and a `settings:` map keyed by catalog reference
+carrying that provider's own knobs (`voice_id`, `timeout_seconds`,
+`daily_budget_usd`, `synthesis_presets`). There is no global timbre or tone
+prompt — a local voice IS its model file, and the cloud fallback names its
+own `voice_id` under its `settings:` entry. Voice is decoupled from
 MoodState — `set_mood` drives the orb only.
 
 ### Role-level overrides

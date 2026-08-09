@@ -10,7 +10,7 @@ import { useEntityStore } from '../../stores/entity';
 
 // SC-1 — the spatial cockpit shows the orb full-screen as the fixed
 // centerpiece at all times (the orb stays clamped between the viewport top and
-// the `.cockpit-hud` bar exactly as it was on the immersive TarsView). The old
+// the `.cockpit-hud` bar exactly as it was on the immersive OrbView). The old
 // per-view corner-dock is retired with the ViewRouter. The corner-mode
 // positioning below is dead while this returns 'full'; kept until SC-3 settles
 // the rails so a revert stays cheap.

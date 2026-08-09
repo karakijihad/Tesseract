@@ -81,7 +81,7 @@ class ConversationStore:
 
         2026-05-17: rotated from one monolithic ``conversations.jsonl`` per
         chat to ``conversations/YYYY-MM-DD.jsonl`` so the per-chat tree
-        stays bounded and TARS can read a specific day cheaply via
+        stays bounded and the assistant can read a specific day cheaply via
         :meth:`day_rows`. The legacy file still exists for chats not yet
         migrated; :meth:`tail` and :meth:`day_rows` both fall back to it
         when no per-day files are present.

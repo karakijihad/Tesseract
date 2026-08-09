@@ -33,7 +33,7 @@ export function TodosCard() {
   const hiddenCount = showCompleted ? 0 : completed.length;
 
   return (
-    <div className="todos-card" role="list" aria-label="TARS task checklist">
+    <div className="todos-card" role="list" aria-label="Task checklist">
       {visible.map(item => (
         <div
           key={item.id}

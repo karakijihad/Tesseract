@@ -117,14 +117,176 @@
         opacity: 0.6;
         cursor: default;
       }
+
+      /* ── First-run setup form ─────────────────────────────── */
+      .box.setup {
+        max-width: 400px;
+        text-align: left;
+      }
+      #setup-form {
+        text-align: left;
+      }
+      .field {
+        margin-bottom: 14px;
+      }
+      .field > label {
+        display: block;
+        font-size: 12px;
+        font-weight: 600;
+        margin-bottom: 5px;
+      }
+      .field .hint {
+        font-size: 11px;
+        line-height: 1.45;
+        color: var(--text-meta);
+        margin: 4px 0 0;
+      }
+      .field input[type="text"] {
+        width: 100%;
+        box-sizing: border-box;
+        background: var(--bg-card);
+        color: var(--text-primary);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-size: 13px;
+      }
+      /* Segmented pickers: a radio group styled as buttons. Real radios so
+         the group stays keyboard-navigable and screen-reader-legible. */
+      .choices {
+        display: flex;
+        gap: 6px;
+      }
+      .choices input {
+        position: absolute;
+        opacity: 0;
+        pointer-events: none;
+      }
+      .choices label {
+        flex: 1;
+        text-align: center;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 7px 6px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .choices label:hover {
+        border-color: var(--hover-border);
+      }
+      .choices input:checked + label {
+        border-color: var(--text-primary);
+      }
+      .choices input:focus-visible + label {
+        outline: 2px solid var(--text-primary);
+        outline-offset: 2px;
+      }
+      #setup-submit {
+        width: 100%;
+        background: var(--border);
+        color: var(--text-primary);
+        border: 1px solid var(--border-visible);
+        border-radius: 8px;
+        padding: 9px 10px;
+        font-size: 13px;
+        cursor: pointer;
+        margin-top: 4px;
+      }
+      #setup-submit:hover {
+        border-color: var(--hover-border);
+      }
     </style>
   </head>
   <body>
-    <div class="box">
+    <div class="box" id="box">
       <div class="spin" id="spinner"></div>
       <h1 id="heading">Setting up TESSERACT</h1>
       <div id="msg">Preparing first-run setup…</div>
       <div id="fatal" style="display: none"></div>
+
+      <!-- Shown first, before anything is downloaded: these answers decide
+           what gets fetched, so declining speech has to happen here rather
+           than after the models are already on disk. -->
+      <form id="setup-form" style="display: none">
+        <div class="field">
+          <label for="operator-name">What should it call you?</label>
+          <input
+            type="text"
+            id="operator-name"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Your name"
+          />
+        </div>
+
+        <div class="field">
+          <label for="agent-name">What do you want to call it?</label>
+          <input
+            type="text"
+            id="agent-name"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="A name"
+          />
+          <p class="hint">
+            Used everywhere it refers to itself. You can change it later.
+          </p>
+        </div>
+
+        <div class="field">
+          <label for="wake-prefix">And how do you call it?</label>
+          <input
+            type="text"
+            id="wake-prefix"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="hey"
+          />
+          <p class="hint">
+            The wake phrase is always two words — this one and the name above,
+            so “hey Ada” or “ciao Sara”. Only used if you turn the wake word
+            on. Left blank it stays “hey”.
+          </p>
+        </div>
+
+        <div class="field">
+          <label>Voice</label>
+          <div class="choices">
+            <input type="radio" name="gender" id="gender-female" value="female" checked />
+            <label for="gender-female">Female</label>
+            <input type="radio" name="gender" id="gender-male" value="male" />
+            <label for="gender-male">Male</label>
+          </div>
+          <p class="hint">Filters the voice list. Every voice is selectable later.</p>
+        </div>
+
+        <div class="field">
+          <label>Speech</label>
+          <div class="choices">
+            <input type="radio" name="tts" id="tts-kokoro" value="kokoro" checked />
+            <label for="tts-kokoro">Natural</label>
+            <input type="radio" name="tts" id="tts-piper" value="piper" />
+            <label for="tts-piper">Light</label>
+            <input type="radio" name="tts" id="tts-none" value="none" />
+            <label for="tts-none">Off</label>
+          </div>
+          <p class="hint" id="tts-hint"></p>
+        </div>
+
+        <div class="field">
+          <label>Listening</label>
+          <div class="choices">
+            <input type="radio" name="stt" id="stt-yes" value="yes" checked />
+            <label for="stt-yes">On</label>
+            <input type="radio" name="stt" id="stt-no" value="no" />
+            <label for="stt-no">Off</label>
+          </div>
+          <p class="hint" id="stt-hint"></p>
+        </div>
+
+        <button type="submit" id="setup-submit">Start setup</button>
+      </form>
 
       <div id="token-form" style="display: none">
         <p class="hint">
@@ -149,6 +311,7 @@
       const { listen } = window.__TAURI__.event;
       const { invoke } = window.__TAURI__.core;
 
+      const boxEl = document.getElementById("box");
       const spinEl = document.getElementById("spinner");
       const msgEl = document.getElementById("msg");
       const headingEl = document.getElementById("heading");
@@ -157,14 +320,80 @@
       const inputEl = document.getElementById("token-input");
       const errorEl = document.getElementById("token-error");
       const submitEl = document.getElementById("token-submit");
+      const setupEl = document.getElementById("setup-form");
+
+      // ── First-run setup form ──────────────────────────────────
+      // Nothing is downloaded until this is submitted: the answers decide
+      // what gets fetched, so the form is the whole first screen.
+
+      const checked = (name) =>
+        document.querySelector(`input[name="${name}"]:checked`).value;
+
+      // The size numbers are the honest ones — a first run that says
+      // "downloads a model" and then takes twenty minutes is how someone
+      // decides the app is broken and force-quits it mid-provision.
+      const TTS_HINTS = {
+        kokoro:
+          "The better voice. Downloads ~340 MB, and needs a reasonably quick machine to keep up in conversation.",
+        piper:
+          "A lighter voice — plainer, but several times faster than real time even on a slow machine. Downloads ~65 MB.",
+        none: "Replies come back as text only. Nothing is downloaded.",
+      };
+      const STT_HINTS = {
+        yes: "Lets you talk to it. Downloads ~1.6 GB of speech recognition during setup, so it works the first time you speak instead of stalling.",
+        no: "Type only. Nothing is downloaded.",
+      };
+
+      function refreshHints() {
+        document.getElementById("tts-hint").textContent = TTS_HINTS[checked("tts")];
+        document.getElementById("stt-hint").textContent = STT_HINTS[checked("stt")];
+      }
+      for (const input of setupEl.querySelectorAll('input[type="radio"]')) {
+        input.addEventListener("change", refreshHints);
+      }
+      refreshHints();
+
+      function showSetupForm() {
+        boxEl.classList.add("setup");
+        spinEl.style.display = "none";
+        msgEl.style.display = "none";
+        headingEl.textContent = "Let's set up TESSERACT";
+        setupEl.style.display = "block";
+        document.getElementById("operator-name").focus();
+      }
+
+      setupEl.addEventListener("submit", (e) => {
+        e.preventDefault();
+        // Hand back to the normal progress view immediately: provisioning
+        // takes minutes, and a form that stays on screen after the button
+        // is pressed reads as a click that did nothing.
+        boxEl.classList.remove("setup");
+        setupEl.style.display = "none";
+        headingEl.textContent = "Setting up TESSERACT";
+        spinEl.style.display = "";
+        msgEl.style.display = "";
+        msgEl.textContent = "Starting…";
+        invoke("submit_first_run_setup", {
+          answers: {
+            operator_name: document.getElementById("operator-name").value.trim(),
+            agent_name: document.getElementById("agent-name").value.trim(),
+            wake_prefix: document.getElementById("wake-prefix").value.trim(),
+            gender: checked("gender"),
+            tts: checked("tts"),
+            stt: checked("stt") === "yes",
+          },
+        });
+      });
 
       // Terminal state: the shell could not start the backend. Nothing here
       // is retryable from this window, so every other control is removed
       // rather than left looking actionable.
       function showFatal(message) {
+        boxEl.classList.remove("setup");
         spinEl.style.display = "none";
         msgEl.style.display = "none";
         formEl.style.display = "none";
+        setupEl.style.display = "none";
         headingEl.textContent = "TESSERACT couldn't start";
         fatalEl.textContent = message;
         fatalEl.style.display = "block";
@@ -209,9 +438,15 @@
       // opens this window with the message in the query string instead —
       // rendered synchronously here, with no listener-registration race to
       // lose the event to.
+      //
+      // That window is this same file, so the setup form is only opened when
+      // there is no fatal message: an install that already exists and then
+      // failed to start must not be asked to name its agent again.
       const fatalParam = new URLSearchParams(location.search).get("fatal");
       if (fatalParam) {
         showFatal(fatalParam);
+      } else {
+        showSetupForm();
       }
 
       submitEl.addEventListener("click", () => {

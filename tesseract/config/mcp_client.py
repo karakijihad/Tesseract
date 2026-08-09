@@ -1,6 +1,6 @@
 """Outbound MCP client config (``mcp_servers.yaml``).
 
-The curated allowlist of external MCP servers TARS may connect OUT to. This is
+The curated allowlist of external MCP servers the assistant may connect OUT to. This is
 the inverse of ``config/mcp.py`` (which configures the inbound MCP *server*).
 
 Config-as-authority (CLAUDE.md hard rule): every key is required — the loader

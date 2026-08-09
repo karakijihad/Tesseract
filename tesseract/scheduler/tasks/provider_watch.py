@@ -215,12 +215,25 @@ class ProviderWatchJob(BaseJob):
 
 
 def _resolve_workspace_root(ctx: JobContext) -> Path:
-    app = ctx.app
-    if app is not None and hasattr(app, "get"):
-        tdir = app.get("tesseract_dir")
-        if tdir is not None:
-            return Path(tdir).parent
-    return TESSERACT_HOME.parent
+    """The root relative tool paths resolve against: the operator's home.
+
+    `home_dir()`, not the parent of the code tree. Under the three-sibling
+    layout `TESSERACT_HOME.parent` is the INSTALL root — the directory that
+    also holds the sealed `app/` — so a relative path from a tool running
+    here could resolve into code. On a dev checkout the two happen to
+    coincide, which is why this went unnoticed.
+
+    It also matches what actually adjudicates those paths:
+    `load_permission_policy` is built with `workspace_root=str(home_dir())`
+    (`mirror/server/config.py`, `scripts/agent_controller.py`). A context
+    rooted anywhere else disagrees with the policy deciding its writes.
+
+    Resolved per call rather than captured at import, like its `paths.py`
+    siblings, so a relocated home is honoured without a restart.
+    """
+    from tesseract.paths import home_dir
+
+    return home_dir()
 
 
 def _digest_path(ctx: JobContext, target_date) -> Path:
@@ -248,7 +261,7 @@ def _load_agent_role_section() -> str:
     except FileNotFoundError:
         log.warning("provider_watch: provider-watcher agent missing; using baked baseline")
         return (
-            "You are TARS's provider/model watcher. Produce a tight markdown "
+            "You are the assistant's provider/model watcher. Produce a tight markdown "
             "digest of new models, pricing changes, context-window changes, "
             "and deprecations from the brief below. One bullet per item, "
             "URL at the end. Skip providers with no new info. No preamble."

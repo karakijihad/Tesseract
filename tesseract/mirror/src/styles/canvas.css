@@ -1,15 +1,15 @@
 /* Y-1 — canvas substrate base styles.
  *
  * `.canvas-shell` fills its view slot and hosts tldraw. The tldraw
- * background is forced transparent so the TARS orb (GlobalCanvas, a
+ * background is forced transparent so the assistant orb (GlobalCanvas, a
  * fixed full-screen WebGL field at z=0 behind the cockpit) shows through
- * the canvas on TarsView. tldraw owns all pointer input; the orb is
+ * the canvas on the orb view. tldraw owns all pointer input; the orb is
  * `pointer-events: none`, so there is no input contention.
  */
 
 .canvas-shell {
   position: relative;
-  /* Stretch to fill the centered `.tars-view` flex slot (globals.css
+  /* Stretch to fill the centered `.orb-view` flex slot (globals.css
      centers its children; flex-grow + align-self override that so the
      canvas fills the box instead of collapsing to content size). */
   flex: 1 1 auto;
@@ -27,15 +27,15 @@
    position:FIXED (full viewport) — not absolute — so it is NOT bounded to the
    centre column; a column-bounded layer made the canvas-shell rectangle read
    as a "panel" behind the orb. Pointer-transparent; keyed off --accent-hsl.
-   Scoped to data-view="tars" so the Y-3 canvas views (pulse / terminal)
+   Scoped to data-view="orb" so the Y-3 canvas views (pulse / terminal)
    keep their solid view-pane background instead of the nebula.
-   SC-1: the spatial cockpit (`.cockpit-shell`, permanently data-view="tars")
+   SC-1: the spatial cockpit (`.cockpit-shell`, permanently data-view="orb")
    is now the primary consumer — the orb is no longer wrapped in a
    `.canvas-shell`, so the atmosphere is scoped to both. The pseudo MUST stay
    on `.cockpit-shell` (no transform) — `.cockpit-stage`'s `perspective` would
    trap the position:fixed layer to its box instead of the viewport. */
-.canvas-shell[data-view="tars"]::before,
-.cockpit-shell[data-view="tars"]::before {
+.canvas-shell[data-view="orb"]::before,
+.cockpit-shell[data-view="orb"]::before {
   content: "";
   position: fixed;
   inset: 0;
@@ -48,8 +48,8 @@
     radial-gradient(140% 130% at 50% 50%, transparent 46%, rgba(0, 0, 0, 0.5) 100%);
   animation: cockpit-neb 26s ease-in-out infinite alternate;
 }
-.canvas-shell[data-view="tars"]::after,
-.cockpit-shell[data-view="tars"]::after {
+.canvas-shell[data-view="orb"]::after,
+.cockpit-shell[data-view="orb"]::after {
   content: "";
   position: fixed;
   inset: 0;
@@ -66,8 +66,8 @@
   to { filter: hue-rotate(6deg) brightness(1.06); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .canvas-shell[data-view="tars"]::before,
-  .cockpit-shell[data-view="tars"]::before { animation: none; }
+  .canvas-shell[data-view="orb"]::before,
+  .cockpit-shell[data-view="orb"]::before { animation: none; }
 }
 
 /* Let the orb read through tldraw's canvas + paper layers. Without this,
@@ -78,21 +78,21 @@
   background: transparent !important;
 }
 
-/* TarsView immersion: drop the rail + center panel fills so the orb +
+/* the orb view immersion: drop the rail + center panel fills so the orb +
    atmosphere read through the whole cockpit (operator-requested). Scoped to
-   data-view="tars" so the other views keep their solid panels. The rail
+   data-view="orb" so the other views keep their solid panels. The rail
    content (kernel tree, lifeline) sits at the edges where the orb is dim, so
    legibility holds; a faint backdrop-blur keeps text crisp over bright spots. */
-.cockpit-shell[data-view="tars"] .cockpit-left,
-.cockpit-shell[data-view="tars"] .cockpit-right,
-.cockpit-shell[data-view="tars"] .cockpit-center,
-.cockpit-shell[data-view="tars"] .left-panel-inner,
-.cockpit-shell[data-view="tars"] .right-panel-inner {
+.cockpit-shell[data-view="orb"] .cockpit-left,
+.cockpit-shell[data-view="orb"] .cockpit-right,
+.cockpit-shell[data-view="orb"] .cockpit-center,
+.cockpit-shell[data-view="orb"] .left-panel-inner,
+.cockpit-shell[data-view="orb"] .right-panel-inner {
   background: transparent;
   border-color: transparent;
 }
-.cockpit-shell[data-view="tars"] .left-panel-inner,
-.cockpit-shell[data-view="tars"] .right-panel-inner {
+.cockpit-shell[data-view="orb"] .left-panel-inner,
+.cockpit-shell[data-view="orb"] .right-panel-inner {
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
 }
@@ -151,7 +151,7 @@
   user-select: none;
 }
 
-/* Top status pill (slice 2) — floating glass HUD, TARS identity at a glance. */
+/* Top status pill (slice 2) — floating glass HUD, the assistant identity at a glance. */
 .top-status-hud {
   position: absolute;
   top: 14px;
@@ -270,8 +270,8 @@
   border-width: 2px;
 }
 
-/* Bottom HUD goes glass on TarsView (keeps tabs + costs + voice). */
-.cockpit-shell[data-view="tars"] .cockpit-hud {
+/* Bottom HUD goes glass on the orb view (keeps tabs + costs + voice). */
+.cockpit-shell[data-view="orb"] .cockpit-hud {
   background: hsl(248 30% 10% / 0.55);
   border-color: hsl(var(--accent-hsl) / 0.18);
   box-shadow: 0 14px 44px -14px rgba(0, 0, 0, 0.6);

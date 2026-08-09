@@ -12,7 +12,7 @@ export type EventKind =
   | 'mission_reflection_proposal'
   | 'reflection_proposal'
   | 'nudge'
-  | 'tars_post'
+  | 'agent_post'
   | 'operator_post'
   | 'daily_brief'
   | 'yaml_change_proposal'
@@ -22,7 +22,7 @@ export type EventKind =
 export type OperatorPostSource = 'button' | 'scratchpad' | 'voice' | 'hotkey' | 'telegram';
 
 export type EventStatus = 'pending' | 'approved' | 'rejected' | 'resolved' | 'applied' | 'deleted';
-export type Author = 'operator' | 'tars';
+export type Author = 'operator' | 'agent';
 
 export interface WorkspaceComment {
   comment_id: string;
@@ -31,7 +31,7 @@ export interface WorkspaceComment {
   author: Author;
   body: string;
   reply_to: string | null;
-  delivered_to_tars: boolean;
+  delivered_to_agent: boolean;
 }
 
 export interface WorkspaceEvent {
@@ -203,10 +203,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const ev = events[idx];
     if (ev.comments.some((c) => c.comment_id === comment.comment_id)) return;
     events[idx] = { ...ev, comments: [...ev.comments, comment] };
-    // Belt-and-suspenders: a TARS reply landing on the thread also clears
+    // Belt-and-suspenders: an assistant reply landing on the thread also clears
     // the `thinking…` indicator. Server fires `cleared` in `_run_turn`'s
     // finally, but a dropped envelope shouldn't leave the row spinning.
-    if (comment.author === 'tars') {
+    if (comment.author === 'agent') {
       const pt = { ...get().pendingThreads };
       if (pt[comment.event_id]) {
         delete pt[comment.event_id];

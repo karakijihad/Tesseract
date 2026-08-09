@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   fetchCapabilities,
+  postProviderEnabled,
   postRuntimeRestart,
   type CapabilitiesResponse,
+  type CapabilityProvider,
   type CapabilityProviderStatus,
 } from "../../lib/api";
 import { isTauri } from "../../lib/endpoints";
@@ -36,11 +38,44 @@ function statusLabel(status: CapabilityProviderStatus): string {
   return "off";
 }
 
+interface TierGroup {
+  tier: string;
+  tierEnabled: boolean;
+  providers: CapabilityProvider[];
+}
+
+// Tiers come from the report's own row order, and providers within a tier are
+// whatever the backend discovered in providers.yaml — adding a provider to the
+// YAML makes it appear here with no frontend change.
+function groupByTier(providers: CapabilityProvider[]): TierGroup[] {
+  const order: string[] = [];
+  const byTier = new Map<string, CapabilityProvider[]>();
+  for (const p of providers) {
+    const rows = byTier.get(p.tier);
+    if (rows) {
+      rows.push(p);
+    } else {
+      byTier.set(p.tier, [p]);
+      order.push(p.tier);
+    }
+  }
+  return order.map((tier) => {
+    const rows = byTier.get(tier) as CapabilityProvider[];
+    return { tier, tierEnabled: rows[0].tier_enabled, providers: rows };
+  });
+}
+
 export function CapabilitiesSection() {
   const [caps, setCaps] = useState<CapabilitiesResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [restarting, setRestarting] = useState(false);
   const [restartNote, setRestartNote] = useState<string | null>(null);
+  const [savingKey, setSavingKey] = useState<string | null>(null);
+
+  const tierGroups = useMemo(
+    () => (caps ? groupByTier(caps.providers) : []),
+    [caps],
+  );
 
   const refresh = () =>
     fetchCapabilities()
@@ -59,6 +94,27 @@ export function CapabilitiesSection() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wsGeneration, retryTick]);
 
+  // `provider: null` targets the tier switch. The POST returns the refreshed
+  // report, so there's no follow-up GET and no optimistic local state to
+  // reconcile — what renders next is what landed on disk.
+  const onToggle = async (
+    tier: string,
+    provider: string | null,
+    next: boolean,
+  ) => {
+    setSavingKey(provider ? `${tier}.${provider}` : tier);
+    setError(null);
+    try {
+      setCaps(await postProviderEnabled(tier, provider, next));
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "provider toggle failed",
+      );
+    } finally {
+      setSavingKey(null);
+    }
+  };
+
   const onRestart = async () => {
     setRestarting(true);
     setRestartNote(null);
@@ -66,7 +122,7 @@ export function CapabilitiesSection() {
       await postRuntimeRestart(
         "operator restarted from Settings → Capabilities",
       );
-      setRestartNote("Restarting TARS — this takes a few seconds.");
+      setRestartNote("Restarting TESSERACT — this takes a few seconds.");
     } catch (err) {
       setRestartNote(err instanceof Error ? err.message : String(err));
     } finally {
@@ -120,21 +176,72 @@ export function CapabilitiesSection() {
         <span className="t-meta" />
         <span className="cost-row__spend t-meta" />
       </div>
-      {caps.providers.map((p) => (
-        <div className="cost-row" key={`${p.tier}.${p.provider}`}>
-          <label className="cost-row__label">
-            {"  "}
-            {p.tier}.{p.provider}
-          </label>
-          <span className="t-meta">
-            {statusDot(p.status)} {statusLabel(p.status)} ·{" "}
-            {p.key_name ?? "no key required"}
-          </span>
-          <span className="cost-row__spend t-meta">
-            {p.reason ?? "verified working"}
-          </span>
-        </div>
-      ))}
+      <div className="settings-hint t-meta">
+        Switching one off writes <code>enabled: false</code> to providers.yaml
+        and reloads without a restart. Nothing warns you first &mdash; if a role
+        still points at it, the failure names the flag that is off.
+      </div>
+      {tierGroups.map((g) => {
+        const onCount = g.providers.filter((p) => p.provider_enabled).length;
+        return (
+          <div key={g.tier}>
+            <div className="cost-row">
+              <label className="cost-row__label">
+                <input
+                  type="checkbox"
+                  className="provider-row__toggle"
+                  checked={g.tierEnabled}
+                  disabled={savingKey !== null}
+                  onChange={(e) => void onToggle(g.tier, null, e.target.checked)}
+                  aria-label={`${g.tier} tier enabled`}
+                />{" "}
+                {g.tier}
+              </label>
+              <span className="t-meta">
+                {g.tierEnabled ? "tier on" : "tier off"}
+              </span>
+              <span className="cost-row__spend t-meta">
+                {g.tierEnabled
+                  ? `${onCount} of ${g.providers.length} on`
+                  : "gates every provider below"}
+              </span>
+            </div>
+            {g.providers.map((p) => (
+              <div className="cost-row" key={`${p.tier}.${p.provider}`}>
+                <label className="cost-row__label">
+                  {"    "}
+                  <input
+                    type="checkbox"
+                    className="provider-row__toggle"
+                    checked={p.provider_enabled}
+                    // The tier switch already gates this provider, so editing
+                    // its own flag would change nothing visible. It keeps its
+                    // stored value for when the tier comes back on.
+                    disabled={!g.tierEnabled || savingKey !== null}
+                    title={
+                      g.tierEnabled
+                        ? undefined
+                        : `the ${g.tier} tier switch is off — turn it on to use this provider`
+                    }
+                    onChange={(e) =>
+                      void onToggle(p.tier, p.provider, e.target.checked)
+                    }
+                    aria-label={`${p.tier}.${p.provider} enabled`}
+                  />{" "}
+                  {p.provider}
+                </label>
+                <span className="t-meta">
+                  {statusDot(p.status)} {statusLabel(p.status)} ·{" "}
+                  {p.key_name ?? "no key required"}
+                </span>
+                <span className="cost-row__spend t-meta">
+                  {p.reason ?? "verified working"}
+                </span>
+              </div>
+            ))}
+          </div>
+        );
+      })}
 
       <div className="cost-row" style={{ marginTop: "0.75rem" }}>
         <label className="cost-row__label">Integrations</label>
@@ -176,7 +283,7 @@ export function CapabilitiesSection() {
         </div>
       )}
       <div className="settings-hint t-meta">
-        .env is read once at boot — restart TARS after editing it for changes to
+        .env is read once at boot — restart TESSERACT after editing it for changes to
         take effect.
       </div>
       <div className="cost-row cost-row--actions">
@@ -186,7 +293,7 @@ export function CapabilitiesSection() {
           onClick={() => void onRestart()}
           disabled={restarting}
         >
-          {restarting ? "Restarting…" : "Restart TARS"}
+          {restarting ? "Restarting…" : "Restart TESSERACT"}
         </button>
         <button
           type="button"

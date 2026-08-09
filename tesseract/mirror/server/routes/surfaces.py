@@ -2,7 +2,7 @@
 
 - ``GET  /api/surfaces/{view}`` — list the view's surface descriptors
   (hydrated from the canvas-state file on first touch). The frontend store
-  calls this on canvas mount to render TARS-spawned surfaces that predate
+  calls this on canvas mount to render agent-spawned surfaces that predate
   the live WS connection.
 - ``POST /api/surfaces/{view}`` — create a surface (operator/frontend half
   of ``surface.create``; the same store path the ``surface_create`` kernel

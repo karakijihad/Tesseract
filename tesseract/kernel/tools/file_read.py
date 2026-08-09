@@ -11,6 +11,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
+from tesseract.kernel.tools._path_anchor import anchor_read_path
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
 
 
@@ -63,9 +64,7 @@ class FileReadTool(Tool):
         if context.cancel_event.is_set():
             raise asyncio.CancelledError
         inp = tool_input if isinstance(tool_input, FileReadInput) else FileReadInput(**tool_input.model_dump())
-        path = Path(inp.file_path)
-        if not path.is_absolute():
-            path = Path(context.workspace_root) / path
+        path = anchor_read_path(inp.file_path, context.workspace_root)
 
         if not path.exists():
             _log_skill_read(path, context.session_id, is_error=True)

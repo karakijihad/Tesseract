@@ -1,4 +1,4 @@
-"""schedule_create tool — TARS-authored runtime schedule jobs.
+"""schedule_create tool — agent-authored runtime schedule jobs.
 
 Phase 18 Task B. ASK-gated by default (operator-visible config edit).
 Calls `SchedulerEngine.add_job_runtime` which persists to `schedule.yaml`

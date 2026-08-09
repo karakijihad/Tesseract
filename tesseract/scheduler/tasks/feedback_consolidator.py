@@ -44,7 +44,7 @@ DEFAULT_MIN_RECORDS = 3
 ENVELOPE_KIND = "feedback_proposals"
 
 _PROMPT = (
-    "You are reviewing the active operator-feedback memories that TARS "
+    "You are reviewing the active operator-feedback memories that the assistant "
     "uses to keep its behavior aligned. Your job is to keep this set "
     "*sharp, not big*: identify duplicates that should merge, patterns "
     "that have hardened into identity (and belong in SOUL.md Growth), "

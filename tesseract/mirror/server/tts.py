@@ -31,6 +31,10 @@ from tesseract.mirror.server.stream_parser import (
     _split_speak_segments,
 )
 from tesseract.mirror.server.turn_context import get_turn_state, tts_suppressed
+from tesseract.mirror.server.voice_modes import (
+    SILENT_VOICE_MODES,
+    normalize_voice_mode,
+)
 
 if TYPE_CHECKING:
     from tesseract.mirror.server.session import ServerSession
@@ -43,10 +47,20 @@ log = logging.getLogger(__name__)
 _TTS_SINGLE_SHOT_CHAR_CAP = 3000
 
 
+def _preset_for_kind(kind: str) -> str:
+    """Map a surface label to a synthesis preset.
+
+    ``spoken`` carries reply content, so it takes the ``answer`` voicing —
+    inheriting the clipped ``intent`` preset just because the line is short
+    would make the spoken reply sound like a status announcement.
+    """
+    return "answer" if kind == "spoken" else kind
+
+
 def _tts_state(session: "ServerSession"):
     """Resolve the owner of the 6 tts_* fields for the running task.
 
-    parallel-tars P6: inside a turn (streaming emit, chained synth tasks,
+    inside a turn (streaming emit, chained synth tasks,
     the finally-flush) the per-turn ``TurnState`` owns TTS state — two
     concurrently-streaming chats can't clobber each other. Outside a turn
     (legacy tests driving the emit helpers directly) fall back to the
@@ -73,6 +87,15 @@ def _cancel_tts_output(session: "ServerSession") -> None:
         state.tts_synth_task = None
         if synth_task is not None and not synth_task.done():
             synth_task.cancel()
+    # The spoken latch is deliberately NOT swept off the per-turn states
+    # above: a chat switch cancels audio but does not end the turn, and
+    # `tts_suppressed` un-suppresses that same turn if the operator switches
+    # back — clearing the latch here would let the rest of an already-muted
+    # answer speak aloud, which is the exact outcome the contract exists to
+    # prevent. Each turn clears its own latch at its terminator flush. Only
+    # the session-level fallback needs sweeping, because that object outlives
+    # turns and a cancelled turn may never reach a flush to clear it.
+    session.tts_spoken_seen = False
 
 
 async def _maybe_emit_tts_sentences(
@@ -87,19 +110,36 @@ async def _maybe_emit_tts_sentences(
     Only natural assistant text reaches this path. Tool-call and
     tool-result envelopes bypass it, while short action narration and
     final answer sentences both speak in source order. ``kind`` is the
-    ``<intent>``/``<answer>`` label from ``_split_text_for_surfaces``
-    and rides through to the provider as a preset hint (Piper picks a
-    different voicing per kind; Gemini ignores it).
+    ``<intent>``/``<spoken>``/``<answer>`` label from
+    ``_split_text_for_surfaces`` and rides through to the provider as a
+    preset hint (Piper picks a different voicing per kind).
+
+    ``spoken`` is the abbreviated spoken form of a long reply. Seeing one
+    latches the turn: every later ``answer`` delta still streams to screen
+    but is muted from audio, so the operator hears the short version and
+    reads the long one. The contract emits spoken BEFORE answer, so the
+    latch is always set in time — no lookahead, no buffering, no added
+    speech latency. A reply with no spoken tag is spoken verbatim exactly
+    as before; a missing tag is never a failure.
     """
+    state = _tts_state(session)
+    # Latch BEFORE any gate below. The latch records what the model emitted,
+    # not what was audible: `tts_suppressed` is dynamic, so a turn whose
+    # `<spoken>` streamed while its chat sat in the background would
+    # otherwise never latch, and the answer would speak in full the moment
+    # the operator switched back to it mid-turn.
+    if kind == "spoken":
+        state.tts_spoken_seen = True
     engine = app.get("tts_engine")
     if engine is None:
         return
-    mode = (getattr(session, "voice_mode", "speak") or "speak")
+    mode = normalize_voice_mode(getattr(session, "voice_mode", None))
     # mirror-multi-chat inc.C — a background (non-active) chat turn streams text
     # to its slice but stays silent (D8).
-    if tts_suppressed(session) or mode in {"transcribe", "command"}:
+    if tts_suppressed(session) or mode in SILENT_VOICE_MODES:
         return
-    state = _tts_state(session)
+    if kind == "answer" and getattr(state, "tts_spoken_seen", False):
+        return
     # Pin the buffer kind from whichever delta opens a fresh buffer
     # segment. If a long `<intent>` text spans multiple deltas without
     # a sentence boundary, a follow-up `<answer>` delta would otherwise
@@ -215,7 +255,7 @@ async def _emit_voice_overage_ask(
     if ledger is None:
         await send_envelope(session, make_voice_instruction(
             session.session_id,
-            instruction="Voice budget reached for today; TARS is silent until midnight.",
+            instruction="Voice budget reached for today; the assistant is silent until midnight.",
         ))
         return
     scope_key = exc.scope_key()
@@ -288,7 +328,7 @@ async def _emit_tts_failure_instruction(
         return
     state.tts_failure_notified = True
     if exc is None:
-        instruction = "TTS provider failed; TARS cannot speak this reply. Check pulse → errors."
+        instruction = "TTS provider failed; the assistant cannot speak this reply. Check pulse → errors."
     else:
         detail = str(exc)
         if len(detail) > 220:
@@ -298,15 +338,6 @@ async def _emit_tts_failure_instruction(
         session.session_id,
         instruction=instruction,
     ))
-
-
-def _snapshot_tts_voice_params(app: web.Application):
-    from tesseract.voice import VoiceParams
-
-    voice_state = app.get("voice_state")
-    if voice_state is None:
-        return VoiceParams(voice_id="Charon")
-    return VoiceParams(voice_id=voice_state.voice_id)
 
 
 async def _synthesize_sentence_audio(
@@ -321,8 +352,8 @@ async def _synthesize_sentence_audio(
     sentences can synth concurrently while the chained-emit step still
     fires ``tts_chunk`` envelopes in source order. Raises
     ``BudgetExhausted`` on cap; caller surfaces via ``voice_instruction``.
-    ``kind`` is forwarded to the engine as a preset hint (Piper varies
-    voicing intent vs answer).
+    ``kind`` selects the per-surface synthesis preset the provider was
+    configured with (intent vs answer).
     """
     from tesseract.voice.text_for_speech import to_spoken_text
 
@@ -333,14 +364,9 @@ async def _synthesize_sentence_audio(
         # transcribe-mode short-circuit, so the wire stays clean.
         return None
     engine = app["tts_engine"]
-    state = _tts_state(session)
-    # Lazily pin the voice params on first synth of the turn so every
-    # sentence in one reply uses one voice even if the operator flips the
-    # voice mid-stream (same semantics as the old per-turn snapshot reset).
-    base = getattr(state, "tts_voice_params", None) or _snapshot_tts_voice_params(app)
-    state.tts_voice_params = base
-    params = replace(base, preset=kind)
-    audio_bytes, provider = await engine.synthesize(spoken, params)
+    audio_bytes, provider = await engine.synthesize(
+        spoken, preset=_preset_for_kind(kind),
+    )
     return audio_bytes, provider
 
 
@@ -381,7 +407,9 @@ async def _synthesize_and_emit_sentence(
     for end-of-turn synth (the whole reply in ``speak`` mode, or each
     sentence when the reply exceeds the single-shot char cap).
     """
-    if tts_suppressed(session) or (getattr(session, "voice_mode", "speak") or "speak") in {"transcribe", "command"}:
+    if tts_suppressed(session) or normalize_voice_mode(
+        getattr(session, "voice_mode", None)
+    ) in SILENT_VOICE_MODES:
         return
 
     try:
@@ -419,17 +447,23 @@ async def _flush_tts_terminator(
         # Voice subsystem is off; no consumers to notify.
         state.tts_buffer = ""
         state.tts_sequence = 0
+        state.tts_spoken_seen = False
         return
-    # parallel-tars P6: TTS state is per-turn now, so a suppressed
+    # TTS state is per-turn now, so a suppressed
     # (background-chat) turn flushing its OWN state can't clobber the
     # active turn's audio. It still exits early — it never accumulated
     # anything (the emit gate returns early) and must not emit the
     # is_final terminator over the active chat's stream.
     if tts_suppressed(session):
+        # This IS the turn's own flush, so its latch dies with it even though
+        # nothing was audible — the emit path now latches before the
+        # suppression gate, so a background turn can reach here holding one.
+        state.tts_spoken_seen = False
         return
-    if (getattr(session, "voice_mode", "speak") or "speak") in {"transcribe", "command"}:
+    if normalize_voice_mode(getattr(session, "voice_mode", None)) in SILENT_VOICE_MODES:
         state.tts_buffer = ""
         state.tts_sequence = 0
+        state.tts_spoken_seen = False
         state.tts_synth_task = None
         return
 
@@ -459,6 +493,11 @@ async def _flush_tts_terminator(
                 await _synthesize_and_emit_sentence(app, session, sentence, is_final=False, kind=kind)
     seq = state.tts_sequence
     state.tts_sequence = 0
+    # Clear the spoken latch at the turn boundary. Production turns get a
+    # fresh `TurnState` so this is structural there, but the legacy
+    # session-level fallback in `_tts_state` persists across turns — left
+    # set, one `<spoken>` reply would mute every answer that followed it.
+    state.tts_spoken_seen = False
     await send_envelope(session, make_tts_chunk(
         session.session_id,
         audio_b64="",

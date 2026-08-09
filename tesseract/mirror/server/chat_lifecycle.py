@@ -268,6 +268,10 @@ async def _handle_chat_restore(app: web.Application, session: ServerSession, dat
         # notifying the orphaned pre-archive ChatSession forever.
         from tesseract.mirror.server.spawn_ownership import rebind_chat
         rebind_chat(app, session, cs, chat_id)
+        # Same ordering rule as `chat_restore._restore_persisted_chats`: the
+        # rebind's dead-window delivery goes first, then anything recorded
+        # under a previous process that nothing in memory remembers.
+        cs.replay_undelivered_completions(chat_id)
     # Best-effort like the persist below — the in-memory restore already
     # succeeded; a disk-write failure here must not propagate through _dispatch
     # and drop the WS. Worst case the chat re-archives on the next reload.

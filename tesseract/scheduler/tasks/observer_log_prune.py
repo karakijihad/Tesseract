@@ -13,6 +13,7 @@ so a fresh checkout doesn't show a fake failure on first heartbeat.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import date, timedelta
@@ -30,7 +31,7 @@ class ObserverLogPruneJob(BaseJob):
         retention_days = int(ctx.config.get("retention_days", 14))
         log_dir = _resolve_log_dir(ctx)
         try:
-            deleted = _prune_old_logs(log_dir, retention_days)
+            deleted = await asyncio.to_thread(_prune_old_logs, log_dir, retention_days)
             return JobResult(
                 job_name=ctx.job_name,
                 run_id=ctx.run_id,

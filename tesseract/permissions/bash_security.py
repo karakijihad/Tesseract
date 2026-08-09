@@ -166,7 +166,7 @@ def _check_11(cmd: str) -> tuple[int, str] | None:
 # Contexts that actually decode \xNN / \NNN escapes into bytes: printf,
 # echo -e (any flag cluster containing `e`), and ANSI-C $'...' quoting.
 # Outside these, a backslash escape is inert text — which matters on
-# Windows, where `tars-workshop\2026-07-12` matches the octal pattern
+# Windows, where `workshop\2026-07-12` matches the octal pattern
 # (live incident, session 2026-07-12-1818) and `build\x64` the hex one.
 _ESCAPE_DECODER_RE = re.compile(r"\bprintf\b|\becho\s+-\w*e")
 
@@ -403,7 +403,7 @@ def _check_25(cmd: str) -> tuple[int, str] | None:
 
 
 # Sealed trees, as a path token opens a segment: `app/…`, `./app/…`,
-# `runtime/…`. Deliberately NOT matched when nested (`tars-workshop/app/x`) —
+# `runtime/…`. Deliberately NOT matched when nested (`workshop/app/x`) —
 # that is the operator's own directory that happens to share a name, and the
 # seal is about the install's `app/`, not about the word.
 _SEALED_SEGMENT_RE = re.compile(r"""(?:^|[\s"'=(;|&])(?:\./)?(app|runtime)/""")
@@ -723,7 +723,7 @@ def _check_26(cmd: str) -> tuple[int, str] | None:
     The write boundary in `path_validator` covers the file tools, but `bash`
     never reaches it, and neither do the CLIs an agent can launch through it.
     Reads are deliberately untouched — `app/` is read-only, which means
-    readable: TARS can inspect his own source, just not edit it.
+    readable: the assistant can inspect its own source, just not edit it.
 
     Path-shaped and therefore approximate by construction. It catches the three
     forms an agent actually produces — a relative path from the install root, a

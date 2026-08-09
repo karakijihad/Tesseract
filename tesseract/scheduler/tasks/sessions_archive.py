@@ -16,6 +16,7 @@ archive_old_sessions` so the REPL and Mirror can share the helper.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from pathlib import Path
@@ -33,7 +34,11 @@ class SessionsArchiveJob(BaseJob):
         retention_days = int(ctx.config.get("retention_days", ARCHIVE_AGE_DAYS))
         sessions_dir = _resolve_sessions_dir(ctx)
         try:
-            moved = archive_old_sessions(sessions_dir, days=retention_days)
+            # Off the loop: globs the sessions dir and moves every file
+            # past the retention window.
+            moved = await asyncio.to_thread(
+                archive_old_sessions, sessions_dir, days=retention_days
+            )
             return JobResult(
                 job_name=ctx.job_name,
                 run_id=ctx.run_id,

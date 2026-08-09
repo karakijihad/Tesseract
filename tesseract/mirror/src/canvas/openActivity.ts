@@ -1,4 +1,4 @@
-// AS-2 — open a running activity's own surface on the cockpit `tars` view.
+// AS-2 — open a running activity's own surface on the cockpit `orb` view.
 // Shared by the activity map rows and the chat running-work chip, so "jump
 // to the work" behaves identically from either entry point. Idempotent:
 // a card already bound to the same id is revealed, not duplicated.
@@ -7,7 +7,7 @@ import { BACKEND_BASE } from '../lib/endpoints';
 import { openDelegateTranscript } from './delegateTranscript';
 import type { ActivityRecord } from '../stores/activity';
 
-const VIEW = 'tars';
+const VIEW = 'orb';
 
 // Kinds this module can put on the canvas — the single source of truth for
 // "openable vs. detail-only" (Task 6.2: ActivityMap + the chat activity

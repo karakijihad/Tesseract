@@ -47,7 +47,7 @@ SECTION_HEADERS: tuple[str, ...] = (
 )
 
 
-_FRESH_SYSTEM_PROMPT = """You are summarizing a conversation slice between TARS (a personal AI assistant) and the operator (a human builder).
+_FRESH_SYSTEM_PROMPT = """You are summarizing a conversation slice between the assistant (a personal AI assistant) and the operator (a human builder).
 
 Produce a STRUCTURED summary with EXACTLY these section headers, in this order:
 
@@ -66,7 +66,7 @@ Rules:
 """
 
 
-_APPEND_SYSTEM_PROMPT = """You are extending a running summary of a conversation between TARS (a personal AI assistant) and the operator (a human builder).
+_APPEND_SYSTEM_PROMPT = """You are extending a running summary of a conversation between the assistant (a personal AI assistant) and the operator (a human builder).
 
 A PRIOR SUMMARY already exists covering earlier turns of the conversation. It is verbatim and complete for those turns. The system will append your output AFTER the prior summary; you MUST NOT rewrite, restate, or compress prior slice content.
 

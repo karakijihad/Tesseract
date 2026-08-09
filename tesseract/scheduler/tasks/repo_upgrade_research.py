@@ -6,7 +6,7 @@ Each run, for every configured target ``{path, focus}``:
      — mirrors ``delegate_codex_exec``'s headless fallback shape; scheduled
      jobs do not go through the kernel Tool layer) asking Codex to report
      outdated dependencies, upstream releases, and applicable improvements —
-     including, when the target is one of TARS's own agent-card/rule dirs,
+     including, when the target is one of the assistant's own agent-card/rule dirs,
      concrete self-improvement proposals.
   2. Distill the output into one agenda proposal payload and publish it via
      ``publish_to_bus(AgendaSource.REPO_UPGRADE, ...)`` with an id stable per
@@ -138,7 +138,7 @@ def _build_prompt(target: dict[str, str]) -> str:
         "Report, concisely:",
         "- outdated dependencies and available upstream releases",
         "- applicable improvements grounded in what you find",
-        "- if the target is one of TARS's own agent cards or rule files, "
+        "- if the target is one of the assistant's own agent cards or rule files, "
         "propose concrete updates to those cards/rules (name the file and "
         "the change)",
         "- a proposal MAY take the shape of a draft skill "

@@ -44,6 +44,7 @@ from typing import Any
 from aiohttp import web
 
 from tesseract.kernel.workspace_changes import (
+    PROPOSABLE_PATHS,
     ConcurrentModificationError,
     ProposeError,
     apply_change,
@@ -67,7 +68,7 @@ log = logging.getLogger(__name__)
 
 
 # `resolve` is the soft-close verb for informational events — threads
-# that record something that already happened (TARS post, dream-cycle
+# that record something that already happened (the assistant post, dream-cycle
 # nudge, operator-initiated thread) or where the system has nothing
 # left to gate (session reflection: writes already committed during
 # the reflect turn).
@@ -78,7 +79,7 @@ log = logging.getLogger(__name__)
 # is recorded; allowing `resolve` on those would erase the gate.
 _RESOLVABLE_KINDS = {
     "operator_post",
-    "tars_post",
+    "agent_post",
     "nudge",
     "reflection_proposal",  # session reflection — informational
     "daily_brief",          # MO-9-14 — newsletter card; reactions feed the interests profile, Resolve dismisses the row
@@ -317,7 +318,7 @@ async def _commit_agent_approval(
     failure). Reject archives the file to `agents/rejected/` with the
     operator's reason sidecar, then leaves the reason as an operator
     comment on the thread — the undelivered-comment rail carries it to
-    TARS on its next turn, and the reply dispatch (best-effort, same as
+    The assistant on its next turn, and the reply dispatch (best-effort, same as
     `post_comment`) prompts an acknowledgment.
     """
     name = str((ev.payload or {}).get("name") or "")
@@ -394,7 +395,7 @@ async def _commit_skill_approval(
     `_commit_agent_approval`). Approve runs the promotion core shared with the
     `skill_promote` chat tool (validate → pending→active dir move). Reject
     archives the draft to `skills/rejected/` with the operator's reason
-    sidecar, then leaves the reason as an operator comment carried to TARS."""
+    sidecar, then leaves the reason as an operator comment carried to the assistant."""
     name = str((ev.payload or {}).get("name") or "")
     if not name:
         return None, ({"error": "skill_approval_missing_name"}, 400)
@@ -452,7 +453,7 @@ async def _commit_skill_refinement(
             return None, ({"error": "refine_failed", "detail": err}, 409)
         return {"refined": name}, None
 
-    # Reject — skill untouched; record the reason for TARS.
+    # Reject — skill untouched; record the reason for the assistant.
     store = _store(request)
     comment_body = f"Refinement rejected: {reason}" if reason else "Refinement rejected (no reason given)."
     comment = WorkspaceComment.new(event_id=ev.event_id, author="operator", body=comment_body)
@@ -510,7 +511,7 @@ def _spawn_reject_reply(
     comment: WorkspaceComment,
     comment_body: str,
 ) -> None:
-    """Best-effort next-turn TARS reply after a reject/refinement decision
+    """Best-effort next-turn the assistant reply after a reject/refinement decision
     (shared by the skill card handlers; mirrors `_commit_agent_approval`)."""
     try:
         from tesseract.mirror.server.ws import _spawn_tracked
@@ -731,7 +732,7 @@ async def _commit_vault_raw_ingest_batch(
                 decisions[relpath] = "denied"
 
     app = request.app if request is not None else None
-    vault_manager, indexer = _resolve_vault_dependencies(app)
+    vault_manager, indexer, librarian = _resolve_vault_dependencies(app)
     home_override = os.environ.get("TESSERACT_HOME") if request is not None else None
     home = Path(home_override).resolve() if home_override else TESSERACT_HOME
     cursor_path = home / "autonomy" / "vault-raw-cursors.jsonl"
@@ -743,6 +744,7 @@ async def _commit_vault_raw_ingest_batch(
             vault_manager=vault_manager,
             indexer=indexer,
             cursor_path=cursor_path,
+            librarian=librarian,
         )
     except Exception as exc:  # noqa: BLE001
         log.exception("vault_raw_ingest_batch apply crashed")
@@ -751,11 +753,11 @@ async def _commit_vault_raw_ingest_batch(
     return summary, None
 
 
-def _resolve_vault_dependencies(app: Any) -> tuple[Any, Any]:
-    """Pull live VaultManager + VaultIndexer off the Mirror tool registry
-    so the approve handler reuses the same indexer the runtime configured
-    (FAISS + FTS handles). Falls back to fresh instances when the registry
-    is not wired (CLI / test harness)."""
+def _resolve_vault_dependencies(app: Any) -> tuple[Any, Any, Any]:
+    """Pull live VaultManager + VaultIndexer + VaultLibrarian off the Mirror
+    tool registry so the approve handler reuses the same handles the runtime
+    configured (FAISS + FTS + wiki compile). Falls back to fresh instances
+    when the registry is not wired (CLI / test harness)."""
     from tesseract.memory.vault_indexer import VaultIndexer
     from tesseract.memory.vault_manager import VaultManager
     from tesseract.paths import TESSERACT_HOME
@@ -767,11 +769,16 @@ def _resolve_vault_dependencies(app: Any) -> tuple[Any, Any]:
             if tool is not None:
                 vm = getattr(tool, "_manager", None)
                 idx = getattr(tool, "_indexer", None)
+                librarian = getattr(tool, "_librarian", None)
                 if isinstance(vm, VaultManager):
-                    return vm, idx if isinstance(idx, VaultIndexer) else None
+                    return (
+                        vm,
+                        idx if isinstance(idx, VaultIndexer) else None,
+                        librarian,
+                    )
     home_override = os.environ.get("TESSERACT_HOME")
     home = Path(home_override).resolve() if home_override else TESSERACT_HOME
-    return VaultManager(vault_root=home / "vault"), None
+    return VaultManager(vault_root=home / "vault"), None, None
 
 
 def _event_dict(ev: WorkspaceEvent, comments: list[WorkspaceComment]) -> dict[str, Any]:
@@ -1002,7 +1009,7 @@ async def post_comment(request: web.Request) -> web.Response:
     except Exception:
         log.exception("workspace: broadcast_comment_appended failed")
 
-    # Dispatch a controller session to write the TARS reply directly into
+    # Dispatch a controller session to write the assistant reply directly into
     # the workspace thread (durable — controller calls workspace_reply tool
     # before this returns). Backend reads + broadcasts the controller-written
     # comment; never writes the reply itself. spawn_if_missing=False so no
@@ -1045,7 +1052,7 @@ async def post_operator_post(request: web.Request) -> web.Response:
 
     Body: ``{title, body, source}``. Optional query ``?await_reply=false``
     suppresses the synthetic turn (default fires it so the operator gets
-    a TARS reply within seconds without manually leaving a comment).
+    an assistant reply within seconds without manually leaving a comment).
     """
     store = _store(request)
     try:
@@ -1124,11 +1131,11 @@ _REJECT_TEMPLATE = (
 
 
 async def post_channel_gate_decision(request: web.Request) -> web.Response:
-    """CR-5 — operator-side handler for ``tars_post`` events sourced by the
+    """CR-5 — operator-side handler for ``agent_post`` events sourced by the
     channel gate.
 
     Body: ``{action: "approve_next_turn" | "reject_and_message",
-    reply?: string}``. The event must be ``kind == "tars_post"`` and its
+    reply?: string}``. The event must be ``kind == "agent_post"`` and its
     payload must carry ``channel`` + ``chat_id`` (otherwise it wasn't
     sourced by ``channel_gate``).
 
@@ -1155,9 +1162,9 @@ async def post_channel_gate_decision(request: web.Request) -> web.Response:
     ev = store.get_event(event_id)
     if ev is None:
         return web.json_response({"error": "not_found"}, status=404)
-    if ev.kind != "tars_post":
+    if ev.kind != "agent_post":
         return web.json_response(
-            {"error": "channel_gate decisions only valid for tars_post events"},
+            {"error": "channel_gate decisions only valid for agent_post events"},
             status=400,
         )
     payload = ev.payload or {}
@@ -1323,5 +1330,189 @@ async def post_seen(request: web.Request) -> web.Response:
         return web.json_response({"error": "last_seen_at required"}, status=400)
     store.set_seen(panel, ts)
     return web.json_response({"ok": True, "panel": panel, "last_seen_at": ts})
+
+
+# ── Operator direct editing of the workspace documents (AS-5) ────────
+#
+# The assistant proposes; the operator writes. Both land through the same
+# `apply_change` — the operator path skips only the proposal card, not the
+# hash check or the atomic commit, so a direct save racing a pending
+# proposal settles the same way a second Approve would: whoever wrote
+# first wins and the loser re-reviews against fresh bytes.
+#
+# Reachable only from the Mirror (local-only, no auth) and only for the
+# `PROPOSABLE_PATHS` allowlist. `file_write` still cannot touch these
+# files, so this does not widen what a tool can reach.
+
+
+def _doc_row(target_path: str, spec: dict[str, object]) -> dict[str, Any]:
+    path = resolve_proposable_path(target_path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {
+            "path": target_path,
+            "label": str(spec.get("label") or ""),
+            "exists": False,
+            "bytes": 0,
+            "lines": 0,
+            "hash": "",
+            "modified_at": None,
+        }
+    try:
+        modified_at = path.stat().st_mtime
+    except OSError:
+        modified_at = None
+    return {
+        "path": target_path,
+        "label": str(spec.get("label") or ""),
+        "exists": True,
+        "bytes": len(text.encode("utf-8")),
+        "lines": text.count("\n") + (0 if text.endswith("\n") or not text else 1),
+        "hash": hash_text(text),
+        "modified_at": modified_at,
+    }
+
+
+async def list_docs(request: web.Request) -> web.Response:
+    """GET /api/workspace/docs — the editable workspace documents.
+
+    One row per `PROPOSABLE_PATHS` entry, present or not: a doc missing
+    from the operator's workspace is a fact the tab should show, not a
+    row it should silently drop.
+    """
+    rows = await asyncio.to_thread(
+        lambda: [_doc_row(path, spec) for path, spec in PROPOSABLE_PATHS.items()]
+    )
+    return web.json_response({"docs": rows, "count": len(rows)})
+
+
+async def get_doc(request: web.Request) -> web.Response:
+    """GET /api/workspace/doc?path=tesseract/workspace/SOUL.md — read one.
+
+    `hash` is the concurrency token the save must echo back.
+    """
+    target_path = (request.query.get("path") or "").strip().replace("\\", "/")
+    if target_path not in PROPOSABLE_PATHS:
+        return web.json_response(
+            {"error": "not_editable", "detail": f"path {target_path!r} is not an editable workspace document"},
+            status=400,
+        )
+    path = resolve_proposable_path(target_path)
+    try:
+        content = await asyncio.to_thread(path.read_text, encoding="utf-8")
+    except OSError as exc:
+        return web.json_response(
+            {"error": "read_failed", "detail": str(exc)}, status=404,
+        )
+    return web.json_response({
+        "path": target_path,
+        "label": str(PROPOSABLE_PATHS[target_path].get("label") or ""),
+        "content": content,
+        "hash": hash_text(content),
+    })
+
+
+async def save_doc(request: web.Request) -> web.Response:
+    """POST /api/workspace/doc — operator-authored replacement of one doc.
+
+    Body: ``{path, content, expected_hash}``. `expected_hash` is the
+    `hash` from the read that seeded the editor; a mismatch means the file
+    moved underneath the operator (the assistant's proposal was approved,
+    an external editor saved) and returns 409 with the current bytes so
+    they re-review rather than clobber.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"error": "body must be an object"}, status=400)
+
+    target_path = str(body.get("path") or "").strip().replace("\\", "/")
+    if target_path not in PROPOSABLE_PATHS:
+        return web.json_response(
+            {"error": "not_editable", "detail": f"path {target_path!r} is not an editable workspace document"},
+            status=400,
+        )
+    content = body.get("content")
+    if not isinstance(content, str):
+        return web.json_response({"error": "content must be a string"}, status=400)
+    expected_hash = body.get("expected_hash")
+    if not isinstance(expected_hash, str) or not expected_hash:
+        return web.json_response(
+            {"error": "expected_hash is required — re-open the document to get one"},
+            status=400,
+        )
+
+    try:
+        applied = await asyncio.to_thread(
+            apply_change,
+            repo_root=workspace_dir(),
+            target_path=target_path,
+            action="replace",
+            content=content,
+            expected_hash_before=expected_hash,
+        )
+    except ConcurrentModificationError as exc:
+        try:
+            current = resolve_proposable_path(target_path).read_text(encoding="utf-8")
+        except OSError:
+            current = ""
+        return web.json_response({
+            "error": "concurrent_modification",
+            "detail": str(exc),
+            "expected_hash_before": exc.expected,
+            "actual_hash": exc.actual,
+            "current_content": current,
+            "diff": compute_diff(
+                current, content,
+                target_label=str(PROPOSABLE_PATHS[target_path].get("label") or "file"),
+            ),
+        }, status=409)
+    except ProposeError as exc:
+        return web.json_response({"error": "invalid_edit", "detail": str(exc)}, status=400)
+    except OSError as exc:
+        log.exception("workspace doc save failed")
+        return web.json_response({"error": "save_failed", "detail": str(exc)}, status=500)
+
+    label = str(PROPOSABLE_PATHS[target_path].get("label") or "")
+    await _broadcast_envelope(
+        request.app,
+        "soul_updated" if target_path == _SOUL_REL else "workspace_file_updated",
+        {
+            "path": target_path,
+            "label": label,
+            "content": content,
+            "source": "operator_edit",
+            "hash_after": applied.hash_after,
+            "no_op_reason": applied.no_op_reason,
+        },
+    )
+
+    try:
+        await record_ask(
+            session_id="workspace",
+            call_id=applied.hash_after,
+            tool_name="workspace_doc_save",
+            input_summary={
+                "target_path": target_path,
+                "bytes_before": applied.bytes_before,
+                "bytes_after": applied.bytes_after,
+            },
+            posture_source="operator_edit",
+            result="allow_once",
+            actor="operator",
+        )
+    except Exception:
+        log.exception("workspace: doc-save ledger record failed")
+
+    return web.json_response({
+        "path": target_path,
+        "label": label,
+        "hash": applied.hash_after,
+        "bytes": applied.bytes_after,
+        "no_op_reason": applied.no_op_reason,
+    })
 
 

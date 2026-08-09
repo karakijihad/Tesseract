@@ -35,7 +35,7 @@ MAX_CONSECUTIVE_FAILURES = _default_max_failures()
 TICK_SECONDS = 60
 ALARM_TICK_SECONDS = 10
 
-# Phase 18 Task B — handler whitelist. TARS-authored or REST-authored
+# Phase 18 Task B — handler whitelist. agent-authored or REST-authored
 # `schedule_create` calls must reference a class under one of these
 # module prefixes; arbitrary import paths are refused. Operators can
 # extend the whitelist by editing this constant or by adding a new

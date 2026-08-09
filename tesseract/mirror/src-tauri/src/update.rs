@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::Serialize;
 use tauri::State;
 
+use crate::app_swap;
 use crate::provision;
 use crate::{
     lock_or_recover, repo, request_supervisor_stop, shell_log, spawn_supervisor, SupervisorProc,
@@ -294,17 +295,25 @@ fn apply_update_with(
     respawn: &dyn Fn() -> Result<(), String>,
     invalidate: &dyn Fn(),
 ) -> Result<String, String> {
-    // Captured before anything moves; `None` means rollback is impossible
-    // and the marker-invalidation path is the only remaining recovery.
+    // Rollback no longer depends on this: the previous tree survives as
+    // `app.old` until the update is known good. Kept only for the message,
+    // so a failure can still name the revision the user came from.
     let previous = repo::head_oid(dir).ok();
 
     match diff_and_reinstall_with(dir, advance, reinstall) {
-        Ok(sha) => match respawn() {
-            Ok(()) => Ok(sha),
-            Err(e) => Err(format!(
-                "updated to {sha}, but restarting the app failed ({e}) — restart TESSERACT manually"
-            )),
-        },
+        Ok(sha) => {
+            // Dependencies installed against the new tree, so the previous
+            // one is no longer needed. Dropped before respawning: a running
+            // supervisor holding handles under `app.old` would block the
+            // delete on Windows.
+            app_swap::commit_swap(dir);
+            match respawn() {
+                Ok(()) => Ok(sha),
+                Err(e) => Err(format!(
+                    "updated to {sha}, but restarting the app failed ({e}) — restart TESSERACT manually"
+                )),
+            }
+        }
 
         // The repo never moved — bring the previous version back up.
         Err(ApplyStageError::FastForward(e)) => Err(match respawn() {
@@ -316,14 +325,16 @@ fn apply_update_with(
         }),
 
         // Code moved to `sha`; dependencies did not follow.
+        //
+        // Rolling back is a rename now, not a `reset_hard`. `app.old` is the
+        // tree the currently-installed dependencies were built against, so
+        // restoring it restores a matched pair — no reinstall, and nothing to
+        // half-apply. `previous` is only used to name the revision.
         Err(ApplyStageError::Reinstall { sha, err }) => {
-            let rollback = match previous.as_deref() {
-                Some(oid) => repo::reset_hard(dir, oid),
-                None => Err("the pre-update revision was never recorded".to_string()),
-            };
-            Err(match rollback {
+            let _ = previous;
+            Err(match app_swap::rollback_swap(dir) {
                 Ok(()) => {
-                    shell_log::log("update: rolled back to the pre-update revision");
+                    shell_log::log("update: rolled back to the pre-update app tree");
                     match respawn() {
                         Ok(()) => format!(
                             "update to {sha} failed ({err}); TESSERACT was rolled back to the \
@@ -336,9 +347,9 @@ fn apply_update_with(
                     }
                 }
                 Err(rb) => {
-                    // Neither forward nor back: the tree is at `sha` with the
-                    // previous dependencies. Dropping the marker is what stops
-                    // this from repeating on every launch.
+                    // Both renames failed, which means the filesystem is
+                    // refusing to cooperate at all. Dropping the marker is
+                    // what stops a mismatched pair repeating on every launch.
                     invalidate();
                     match respawn() {
                         Ok(()) => format!(
@@ -364,7 +375,13 @@ fn apply_update(
     respawn: &dyn Fn() -> Result<(), String>,
     invalidate: &dyn Fn(),
 ) -> Result<String, String> {
-    apply_update_with(dir, repo::fast_forward, reinstall, respawn, invalidate)
+    apply_update_with(
+        dir,
+        |d| app_swap::advance_by_swap(d, repo::fast_forward),
+        reinstall,
+        respawn,
+        invalidate,
+    )
 }
 
 /// The explicit force path: `advance` is `repo::reset_to_remote`, which
@@ -378,7 +395,13 @@ fn force_apply_update(
     respawn: &dyn Fn() -> Result<(), String>,
     invalidate: &dyn Fn(),
 ) -> Result<String, String> {
-    apply_update_with(dir, repo::reset_to_remote, reinstall, respawn, invalidate)
+    apply_update_with(
+        dir,
+        |d| app_swap::advance_by_swap(d, repo::reset_to_remote),
+        reinstall,
+        respawn,
+        invalidate,
+    )
 }
 
 #[tauri::command]
@@ -890,7 +913,61 @@ mod tests {
         let result = apply_update(
             &dest,
             &|| {
+                // Destroying `.git` in the updated tree used to make rollback
+                // impossible, because rollback was `reset_hard`. It no longer
+                // is: the previous tree is parked as `app.old` and coming
+                // back is a rename, which does not care about git state.
                 std::fs::remove_dir_all(dest.join(".git")).unwrap();
+                Err("pip install boom".to_string())
+            },
+            &|| {
+                respawn_calls.set(respawn_calls.get() + 1);
+                Ok(())
+            },
+            &|| invalidate_calls.set(invalidate_calls.get() + 1),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            invalidate_calls.get(),
+            0,
+            "a wrecked .git in the updated tree is now fully recoverable — the marker \
+             must not be invalidated"
+        );
+        assert!(
+            dest.join(".git").exists(),
+            "rollback restored the previous tree, git directory and all"
+        );
+        assert_eq!(respawn_calls.get(), 1);
+    }
+
+    #[test]
+    fn apply_update_invalidates_the_marker_when_rollback_is_impossible() {
+        let base = TempDir::new("rollback-impossible");
+        let (origin_path, dest) = make_origin_and_synced_clone(&base);
+
+        {
+            let origin = Repository::open(&origin_path).unwrap();
+            write_commit(
+                &origin,
+                "tesseract/pyproject.toml",
+                "[project]\nname=\"tesseract\"\nversion=\"4\"\n",
+                "c2 bumps pyproject",
+            );
+        }
+        repo::check_behind(&dest, None).expect("fetch before apply");
+
+        let respawn_calls = Cell::new(0u32);
+        let invalidate_calls = Cell::new(0u32);
+
+        let result = apply_update(
+            &dest,
+            &|| {
+                // The one thing that makes the rename-back impossible: the
+                // parked tree is gone. Nothing in normal operation removes
+                // it, which is the point — this branch is now genuinely hard
+                // to reach rather than one bad `reset_hard` away.
+                let _ = provision::remove_tree(&app_swap::previous_dir(&dest));
                 Err("pip install boom".to_string())
             },
             &|| {

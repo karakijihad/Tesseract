@@ -11,6 +11,8 @@ and are imported here to minimise churn.
 
 from __future__ import annotations
 
+import dataclasses
+
 import copy
 from pathlib import Path
 from typing import Any
@@ -45,8 +47,14 @@ def build_agent_session(
     policy: PermissionPolicy | None,
     ask_fn: AskFn | None,
     cost_ledger: CostLedger | None = None,
+    model_role: str | None = None,
 ) -> ChatSession:
     """Load an agent definition and construct (but do not start) a ChatSession.
+
+    ``model_role`` overrides the card's declared role for this run only — a
+    roles.yaml role name or a bare provider ref. The card stays the default;
+    nothing is written back. CLI roles are refused the same way either
+    source names one, since a CLI subscription has no in-process adapter.
 
     Raises ``AgentBuildError`` when the agent is unknown, disabled, or declares
     a CLI-role model. The caller is responsible for sending the first message.
@@ -61,6 +69,8 @@ def build_agent_session(
 
     try:
         agent: AgentDefinition = load_agent(name, agents_dir=agents_dir)
+        if model_role and model_role.strip():
+            agent = dataclasses.replace(agent, model_role=model_role.strip())
     except FileNotFoundError:
         available = ", ".join(list_agents(agents_dir)) or "(none)"
         raise AgentBuildError(
@@ -78,7 +88,7 @@ def build_agent_session(
         raise AgentBuildError(
             f"Agent {name!r} wants model_role={agent.model_role!r} "
             "(a CLI subscription model). invoke_agent only drives the API-side "
-            "chat model today. Use delegate_claude / delegate_codex with the "
+            "chat model today. Use delegate_coder / delegate_auditor with the "
             "agent's Role/Rules prepended to the task prompt instead."
         )
 

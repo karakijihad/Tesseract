@@ -10,7 +10,7 @@ the operating system already opens perfectly well.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
@@ -18,7 +18,7 @@ from urllib.parse import quote
 from tesseract.config.open_verb import OpenConfig
 from tesseract.orchestrator.open_verb.asset_token import sign
 from tesseract.orchestrator.open_verb import suffixes
-from tesseract.orchestrator.open_verb.classify import TargetKind, classify
+from tesseract.orchestrator.open_verb.classify import Intent, TargetKind, classify
 from tesseract.orchestrator.open_verb.probe import _redacted, probe_path, probe_url
 from tesseract.paths import home_dir, install_root
 from tesseract.permissions.path_validator import validate_path
@@ -82,9 +82,34 @@ def asset_href(path: str) -> str:
     return f"/api/asset?path={quote(target, safe='')}&sig={sign(target)}"
 
 
-async def resolve(target: str, *, config: OpenConfig) -> Resolution:
+async def resolve(
+    target: str,
+    *,
+    config: OpenConfig,
+    intent: Intent = Intent.AUTO,
+    destination: str = "auto",
+) -> Resolution:
+    """Decide what opening `target` means, and where it should end up.
+
+    `intent` pins how the string is read (see `classify.Intent`).
+
+    `destination` is a much narrower knob, and deliberately has no `canvas`
+    value: where something lands is a capability, not a preference. The
+    cockpit is already preferred wherever a renderer exists, and no request
+    can conjure one for a `.exe`. The only choice a caller actually has is
+    the opposite one — `"os"` means hand this to the program that owns it
+    rather than rendering it, which is how you get a PDF into Acrobat.
+
+    The override is applied to a fully resolved result, never in place of
+    resolving. Everything that refuses — a secret file, a blocked network, a
+    UNC path — raises before it is reached, so asking for `"os"` cannot open
+    something that `"auto"` would have declined.
+    """
     classification = classify(
-        target, apps=config.apps, launch_extensions=config.launch_extensions
+        target,
+        apps=config.apps,
+        launch_extensions=config.launch_extensions,
+        intent=intent,
     )
     kind = classification.kind
 
@@ -118,9 +143,33 @@ async def resolve(target: str, *, config: OpenConfig) -> Resolution:
         )
 
     if kind is TargetKind.PATH:
-        return _resolve_path(Path(classification.canonical), str(kind))
+        resolved = _resolve_path(Path(classification.canonical), str(kind))
+    else:
+        resolved = await _resolve_url(classification.canonical, str(kind), config)
+    return _to_os(resolved) if destination == "os" else resolved
 
-    return await _resolve_url(classification.canonical, str(kind), config)
+
+def _to_os(resolved: Resolution) -> Resolution:
+    """Send an already-resolved target out to the OS instead of the canvas.
+
+    The canvas-only fields are dropped rather than carried: a `surface_type`
+    or a `text_from` on an `os` result would describe a card nobody is going
+    to build, and `execute` dispatches on `handler` alone.
+    """
+    if resolved.destination == "os":
+        return resolved
+    launching = resolved.resolved_kind == str(TargetKind.PATH)
+    name = Path(resolved.canonical_target).name if launching else resolved.canonical_target
+    return replace(
+        resolved,
+        destination="os",
+        handler="launch" if launching else "url",
+        reason=f"opened {name} outside the cockpit, as asked",
+        surface_type=None,
+        props={},
+        text_from=None,
+        list_dir=None,
+    )
 
 
 def _resolve_path(path: Path, kind: str) -> Resolution:
@@ -133,7 +182,7 @@ def _resolve_path(path: Path, kind: str) -> Resolution:
     # Credentials only. Memory, sessions and the journal are the operator's own
     # and they are the only person at the Mirror — refusing to show them their
     # own state would be paternalism, not security. A secret is different: it
-    # would land in a persisted card AND in TARS's context.
+    # would land in a persisted card AND in the assistant's context.
     if suffixes.is_secret(name):
         raise RefusedTarget(
             f"{name} holds credentials — it is not rendered and not opened"

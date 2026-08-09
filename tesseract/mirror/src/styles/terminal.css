@@ -315,7 +315,7 @@
   border-color: var(--bad);
 }
 
-/* MO-4 — pane ownership header. Sits above .wt-canvas, shows operator/tars/worker. */
+/* MO-4 — pane ownership header. Sits above .wt-canvas, shows operator/agent/worker. */
 .wt-pane-header {
   flex: 0 0 auto;
   font-family: var(--font-mono);

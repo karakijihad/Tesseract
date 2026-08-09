@@ -743,8 +743,8 @@ def _apply_voice_cost_providers(
     stt: dict[str, dict[str, float]],
 ) -> None:
     """Write per-model unit pricing to providers.yaml. The `model_id` keys
-    in the request match catalog entry names (e.g. `gemini_flash_tts`,
-    `gemini_flash_audio`, `elevenlabs_flash_tts`)."""
+    in the request match catalog entry names (e.g. `af_heart`,
+    `gemini_flash_audio`)."""
     for kind_in, parsed, rate_key in (
         ("tts", tts, "cost_per_million_chars"),
         ("stt", stt, "cost_per_audio_hour"),
@@ -765,7 +765,7 @@ def _apply_voice_cost_roles(
 ) -> None:
     """Write per-ref daily caps under roles.yaml::voice.{tts,stt}.settings.<ref>.
 
-    The request is keyed by catalog model id (e.g. ``gemini_flash_tts``);
+    The request is keyed by catalog model id (e.g. ``af_heart``);
     we resolve each model id back to its catalog ref by scanning the lane's
     chain (`primary` + `fallbacks`), then write `daily_budget_usd` into the
     `settings:` map keyed by that ref. The block is created on demand so an
@@ -1232,98 +1232,124 @@ def _sync_in_memory_role_models(
         log.exception("set_role_models: in-memory sync of split-file shape failed")
 
 
-# ── Phase 18 Task C — Voice section ─────────────────────────────────
+# ── Voice section ───────────────────────────────────────────────────
 
-
-_VALID_VOICE_IDS = frozenset({
-    # Gemini Flash TTS canonical voices. The list here is intentionally
-    # narrow — set_voice tool already accepts arbitrary IDs at runtime,
-    # but the Settings UI dropdown ships with the operator-blessed ones.
-    "Charon", "Puck", "Kore", "Fenrir", "Aoede", "Leda", "Orus", "Zephyr",
-})
 
 async def set_voice(request: web.Request) -> web.Response:
-    """POST /api/settings/voice — write roles.yaml voice defaults.
+    """POST /api/settings/voice — write the operator's voice settings.
 
-    Body: voice_id, default_rate (each optional). Triggers Task A's
-    watcher so the voice runtime rebuilds and the next TARS speech
-    reflects the new timbre. Style/character is config-only (edit
-    `synthesis_presets` in `roles.yaml`); not exposed via this route.
+    Body: `wake_word_enabled`, written to `mirror.yaml::identity.wake_word`
+    where it sits beside the name its phrase is built from.
+
+    The write itself belongs to the identity route (AS-4) — this panel is
+    one of two surfaces onto the same key, and two writers would mean two
+    reload paths to keep in step. AS-5 moves the control to the Identity
+    tab; this stays until it does, so the toggle is never homeless.
+
+    There is no timbre knob — a local voice IS its model file, named per
+    provider in providers.yaml. `default_rate` was removed rather than
+    kept: nothing read it (`VoiceConfig` carries only the stt/tts lanes),
+    so the route persisted a value that changed no speech while reporting
+    success for it.
     """
+    from tesseract.mirror.server.routes.system import apply_identity_updates
+
     try:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid_json"}, status=400)
 
-    voice_id = body.get("voice_id")
-    default_rate = body.get("default_rate")
+    wake_word_enabled = body.get("wake_word_enabled")
 
-    if voice_id is not None:
-        if not isinstance(voice_id, str) or voice_id not in _VALID_VOICE_IDS:
-            return web.json_response(
-                {"error": f"voice_id must be one of {sorted(_VALID_VOICE_IDS)}"},
-                status=400,
-            )
-    if default_rate is not None:
-        try:
-            default_rate = float(default_rate)
-        except (TypeError, ValueError):
-            return web.json_response({"error": "default_rate must be a number"}, status=400)
-        if not (0.5 <= default_rate <= 2.0):
-            return web.json_response(
-                {"error": "default_rate must be between 0.5 and 2.0"}, status=400
-            )
-
-    if voice_id is None and default_rate is None:
+    if wake_word_enabled is None:
         return web.json_response(
-            {"error": "at least one of voice_id/default_rate is required"},
-            status=400,
+            {"error": "wake_word_enabled is required"}, status=400
+        )
+    if not isinstance(wake_word_enabled, bool):
+        return web.json_response(
+            {"error": "wake_word_enabled must be a boolean"}, status=400
         )
 
-    def _apply(doc: Any) -> None:
-        voice = doc.setdefault("voice", {})
-        if voice_id is not None:
-            voice["default_voice_id"] = voice_id
-        if default_rate is not None:
-            voice["default_rate"] = default_rate
-
-    try:
-        _round_trip_yaml(_roles_yaml_path(request.app), _apply)
-    except KeyError as exc:
-        return web.json_response({"error": f"roles.yaml missing key: {exc}"}, status=500)
-
-    return web.json_response({
-        "voice_id": voice_id,
-        "default_rate": default_rate,
-    })
+    response = await apply_identity_updates(
+        request.app, {}, {"enabled": wake_word_enabled}
+    )
+    if response.status != 200:
+        return response
+    return web.json_response({"wake_word_enabled": wake_word_enabled})
 
 
 async def get_voice(request: web.Request) -> web.Response:
-    """GET /api/settings/voice — read current voice defaults from roles.yaml.
+    """GET /api/settings/voice — the operator-facing voice settings.
 
-    Per-surface style prompts (Gemini-TTS Director's Notes) are surfaced
-    read-only so the operator can see what character the cloud fallback
-    will render. Edits flow through `roles.yaml` directly (config_watcher
-    rebuilds the runtime on save)."""
+    Per-surface synthesis presets are surfaced read-only so the operator
+    can see what character each surface renders; editing them is a
+    providers.yaml/roles.yaml edit that the config watcher picks up.
+
+    The wake-word threshold rides along read-only too — the toggle is a
+    UI control, but the number that decides how forgiving the match is
+    stays a config edit.
+
+    Wake-word values are read from **mirror.yaml, not `app["config"]`**.
+    The panel saves and immediately re-reads, while the live config only
+    catches up when the watcher's debounce fires ~250ms later — reading
+    the in-memory copy would hand the operator back the value they just
+    changed away from and visibly flip their checkbox back."""
     import yaml
 
     try:
         raw = yaml.safe_load(_roles_yaml_path(request.app).read_text(encoding="utf-8")) or {}
+        mirror_raw = yaml.safe_load(
+            mirror_yaml_path(request.app).read_text(encoding="utf-8")
+        ) or {}
     except (OSError, yaml.YAMLError) as exc:
-        return web.json_response({"error": f"failed to read roles.yaml: {exc}"}, status=500)
+        return web.json_response({"error": f"failed to read config: {exc}"}, status=500)
     voice_block = raw.get("voice") or {}
-    tts_settings = (((voice_block.get("tts") or {}).get("settings")) or {})
-    gemini_settings = tts_settings.get("api.google.gemini_flash_tts") or {}
-    presets = gemini_settings.get("synthesis_presets") or {}
-    style_presets = [
-        {"surface": str(name), "style_prompt": str((spec or {}).get("style_prompt") or "")}
-        for name, spec in presets.items()
-    ]
+    tts_block = voice_block.get("tts") or {}
+    tts_settings = (tts_block.get("settings")) or {}
+
+    # Presets live on the catalog entry — a voice's character travels with
+    # the voice, not with the lane wiring. A per-ref block in roles.yaml
+    # may override individual surfaces, so the catalog is read first and
+    # the override laid on top; reading only one of the two showed the
+    # operator a character the engine wasn't using.
+    try:
+        providers_raw = yaml.safe_load(
+            _providers_yaml_path(request.app).read_text(encoding="utf-8")
+        ) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        return web.json_response({"error": f"failed to read catalog: {exc}"}, status=500)
+
+    refs: list[str] = []
+    primary = tts_block.get("primary")
+    if isinstance(primary, str):
+        refs.append(primary)
+    for fb in tts_block.get("fallbacks") or []:
+        if isinstance(fb, str):
+            refs.append(fb)
+
+    style_presets = []
+    for ref in refs:
+        entry = _find_provider_model(providers_raw, ref.rsplit(".", 1)[-1]) or {}
+        merged = dict((entry.get("synthesis_presets") or {}))
+        override = ((tts_settings.get(ref) or {}).get("synthesis_presets")) or {}
+        merged.update(override)
+        for surface, spec in merged.items():
+            style_presets.append({
+                "ref": str(ref),
+                "surface": str(surface),
+                # Whatever knobs this provider exposes — no shape is
+                # assumed, so a new provider's presets render unchanged.
+                "settings": {str(k): v for k, v in (spec or {}).items()},
+            })
+
+    identity = (mirror_raw.get("identity") or {}) if isinstance(mirror_raw, dict) else {}
+    wake = identity.get("wake_word") or {}
     return web.json_response({
-        "voice_id": str(voice_block.get("default_voice_id") or ""),
-        "default_rate": voice_block.get("default_rate"),
-        "available_voice_ids": sorted(_VALID_VOICE_IDS),
-        "gemini_style_presets": style_presets,
+        "style_presets": style_presets,
+        "wake_word_enabled": wake.get("enabled") is True,
+        "wake_word_prefix": str(wake.get("prefix") or ""),
+        "wake_word_threshold": wake.get("match_threshold"),
+        "entity_name": str(identity.get("name") or ""),
     })
 
 
@@ -1364,7 +1390,7 @@ async def get_system(request: web.Request) -> web.Response:
 _VALID_RESUME_POLICIES = frozenset({"today_only", "today_plus_yesterday", "n_days", "always"})
 
 
-def _mirror_yaml_path(app: web.Application) -> Path:
+def mirror_yaml_path(app: web.Application) -> Path:
     return app["tesseract_dir"] / "config" / "mirror.yaml"
 
 
@@ -1373,7 +1399,7 @@ async def get_session_policy(request: web.Request) -> web.Response:
     import yaml
 
     try:
-        raw = yaml.safe_load(_mirror_yaml_path(request.app).read_text(encoding="utf-8")) or {}
+        raw = yaml.safe_load(mirror_yaml_path(request.app).read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError) as exc:
         return web.json_response({"error": f"failed to read mirror.yaml: {exc}"}, status=500)
     session_block = raw.get("session") or {}
@@ -1430,7 +1456,7 @@ async def set_session_policy(request: web.Request) -> web.Response:
             ui["show_config_reload_toasts"] = show_toasts
 
     try:
-        _round_trip_yaml(_mirror_yaml_path(request.app), _apply)
+        _round_trip_yaml(mirror_yaml_path(request.app), _apply)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
 

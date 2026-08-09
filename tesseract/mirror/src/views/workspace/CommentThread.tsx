@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useEntityName } from '../../hooks/useEntityName';
 import type { WorkspaceComment } from '../../stores/workspace';
 import { useWorkspaceStore } from '../../stores/workspace';
 import { linkifyText } from '../../lib/linkify';
@@ -24,6 +25,7 @@ function formatTs(ts: string): string {
 }
 
 export function CommentThread({ event_id, comments }: Props) {
+  const entityName = useEntityName();
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,9 +50,9 @@ export function CommentThread({ event_id, comments }: Props) {
 
   const indicatorLabel =
     pending?.state === 'thinking'
-      ? 'TARS is thinking…'
+      ? `${entityName} is thinking…`
       : pending?.state === 'queued'
-        ? 'TARS queued — waiting for current turn to finish…'
+        ? `${entityName} queued — waiting for current turn to finish…`
         : null;
 
   return (
@@ -69,17 +71,17 @@ export function CommentThread({ event_id, comments }: Props) {
                 <span className="workspace-comment-ts t-meta">{formatTs(c.ts)}</span>
               </div>
               <div className="workspace-comment-body">
-                {c.author === 'tars' ? <ChatMarkdown>{c.body}</ChatMarkdown> : linkifyText(c.body)}
+                {c.author === 'agent' ? <ChatMarkdown>{c.body}</ChatMarkdown> : linkifyText(c.body)}
               </div>
             </li>
           ))}
           {indicatorLabel && (
             <li
-              className={`workspace-comment workspace-comment--tars workspace-comment--pending workspace-comment--pending-${pending?.state}`}
+              className={`workspace-comment workspace-comment--agent workspace-comment--pending workspace-comment--pending-${pending?.state}`}
               aria-live="polite"
             >
               <div className="workspace-comment-head">
-                <span className="workspace-comment-author t-meta">tars</span>
+                <span className="workspace-comment-author t-meta">{entityName}</span>
                 <span className="workspace-comment-ts t-meta workspace-thread-pending-dots">
                   <span /><span /><span />
                 </span>
@@ -93,7 +95,7 @@ export function CommentThread({ event_id, comments }: Props) {
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          placeholder="Comment — TARS will see this on the next turn"
+          placeholder={`Comment — ${entityName} will see this on the next turn`}
           rows={2}
           disabled={busy}
         />

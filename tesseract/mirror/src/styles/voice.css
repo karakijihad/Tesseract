@@ -30,19 +30,28 @@
   border-color: color-mix(in srgb, var(--accent) 35%, var(--panel-divider));
 }
 
-/* Speak — TARS speaks back. Default tone, accent-tinted. */
+/* Speak — the assistant speaks back. Default tone, accent-tinted. */
 .hud-voice-mode.is-speak {
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 45%, var(--panel-divider));
   background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
 
-/* Transcribe — TARS silent. Cooler, more neutral cue so the operator
+/* Transcribe — the assistant silent. Cooler, more neutral cue so the operator
    reads "no audio reply" at a glance. */
 .hud-voice-mode.is-transcribe {
   color: var(--text);
   border-color: var(--panel-divider);
   background: color-mix(in srgb, var(--text-meta) 8%, transparent);
+}
+
+/* Terminal — speech goes to the PTY, not the brain. Warned-yellow: this
+   is the one mode where an utterance lands somewhere that can execute,
+   so it should never look like the neutral silent mode. */
+.hud-voice-mode.is-terminal {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--panel-divider));
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
 }
 
 /* Mic ON — saturated green so the operator reads "live capture" at a

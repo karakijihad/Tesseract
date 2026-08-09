@@ -26,7 +26,7 @@ class ChunkType(str, Enum):
     THINKING = "thinking"  # streamed reasoning text delta (`thinking` field) — emitted as its own `thinking` stream kind, never appended to history
     REASONING_ITEM = "reasoning_item"  # OpenAI Responses API — encrypted reasoning blob for stateless reuse
     USER_INJECT = "user_inject"  # ChatSession-synthesized: operator typed a follow-up mid-turn; surfaced once injected into history at next tool boundary
-    SPAWN_DONE = "spawn_done"  # ChatSession-synthesized: a background spawn (delegate_* / invoke_agent with background=true) completed; surfaced once at next tool boundary so the UI clears the "running" indicator and TARS can spawn_await if it wants the result
+    SPAWN_DONE = "spawn_done"  # ChatSession-synthesized: a background spawn (delegate_* / invoke_agent with background=true) completed; surfaced once at next tool boundary so the UI clears the "running" indicator and the assistant can spawn_await if it wants the result
 
 
 class ErrorKind(str, Enum):

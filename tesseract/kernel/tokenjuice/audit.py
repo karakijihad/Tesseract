@@ -7,16 +7,13 @@ from the production logs tree (CLAUDE.md hard rule §logs).
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
-from tesseract.paths import TESSERACT_HOME, log_dir
+from tesseract.paths import log_dir
 
 
 def audit_dir() -> Path:
-    override = os.environ.get("TESSERACT_HOME")
-    base = Path(override).resolve() if override else TESSERACT_HOME
     return log_dir("tokenjuice")
 
 

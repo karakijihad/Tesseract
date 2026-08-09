@@ -16,6 +16,24 @@ server:
   ask_hold_timeout_s: 120               # seconds an ASK-gated verb can hold before degrading to async
   idle_timeout_s: 600                   # idle sessions are swept after this many seconds
 
+# Server→client push on the GET SSE stream (the `activity.watch` subscription).
+# These numbers are the memory ceiling of the whole subscription: the shared
+# replay log holds `replay_buffer` events, each connected client holds at most
+# `client_queue`, and `max_streams_*` bound how many such clients can exist at
+# once — without that last pair the ceiling is per-connection, not total. A
+# client resuming from a cursor older than the retained window is told it lost
+# events rather than handed a partial history.
+stream:
+  heartbeat_s: 20                       # idle keepalive; also keeps a watch-only session off the idle sweep
+  replay_buffer: 500                    # events retained for Last-Event-ID resume
+  client_queue: 200                     # per-connection backlog before the slow-consumer drop
+  # How many subscriptions may exist at once. server.max_connections gates
+  # session CREATION only — without these, one client could hold one session
+  # and stack unbounded streams (each with its own client_queue) behind it.
+  # A refused open is a 429; the slot is released when the stream ends.
+  max_streams_total: 16                 # across every session
+  max_streams_per_session: 2            # one live + one reconnect mid-handover
+
 # Per-client identities. Default-deny: a bearer token matching no client
 # below is rejected. Each client's trust_tier is a ceiling layered on top of
 # the per-verb posture (see trust_tiers/verbs below). The operator client's
@@ -48,8 +66,8 @@ trust_tiers:
 # denied. This file is the sole authority — there are no source-side floors,
 # and _KNOWN_VERBS in config/mcp.py is a typo net, not a floor. The posture set
 # here is the whole decision, capped only by the client's trust tier above.
-# That is why config/mcp.yaml is DENY to TARS in permissions.yaml: with no
-# floor beneath it, a write here would widen his own reach.
+# That is why config/mcp.yaml is DENY to the assistant in permissions.yaml: with no
+# floor beneath it, a write here would widen its own reach.
 verbs:
   activity.list: "auto"
   activity.watch: "auto"
@@ -77,6 +95,9 @@ verbs:
   schedule.update: "ask"
   schedule.run: "ask"
   schedule.remove: "ask"
+  # Read-only, and the only way to learn the job ids the four verbs above
+  # take as arguments.
+  schedule.list: "auto"
   surface.open: "auto"
   surface.spawn: "auto"
   surface.update: "auto"
@@ -88,3 +109,21 @@ verbs:
   agent.assign: "ask"
   agent.status: "auto"
   agent.review: "auto"
+
+  # P4 — the shared base. Whoever does the work, the store, the vault and the
+  # operator-visible thread all see it. The record and the read-back run
+  # unattended: a thread nobody can post to is the thing being fixed. Curation
+  # does not — forget deletes, and promote rewrites what the assistant believes.
+  workspace.post: "auto"
+  workspace.reply: "auto"
+  # The read-back half. `read` is the thread a client may already write
+  # to; `ask` posts a question card and is only useful because `read`
+  # exists to collect the answer.
+  workspace.read: "auto"
+  workspace.ask: "auto"
+  memory.recall: "auto"
+  memory.get: "auto"
+  memory.promote: "ask"
+  memory.forget: "ask"
+  diary.append: "auto"
+  feedback.propose: "auto"

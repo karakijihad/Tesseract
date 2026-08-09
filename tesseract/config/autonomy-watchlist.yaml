@@ -1,4 +1,4 @@
-# Autonomy watchlist — sources TARS watches for ecosystem awareness (docs
+# Autonomy watchlist — sources the assistant watches for ecosystem awareness (docs
 # sites, RSS feeds, saved search queries). Empty by default; add your own.
 #
 # Consumed by orchestrator/brief/ecosystem.py, which reads each `kind: docs`

@@ -4,7 +4,7 @@ Detects (does not repair):
 
   - Body wikilinks `[[mem_xxx]]` that don't resolve to a real memory file.
   - Path-style wikilinks `[[some/path.md]]` that don't resolve under the
-    store or under the project root (vault / tars-workshop pointers).
+    store or under the project root (vault / workshop pointers).
   - Frontmatter `auto_links` / `links` IDs referencing missing memories.
   - Stale `source_path` values pointing at files that no longer exist.
   - Zero-byte stub files (Obsidian artifacts from following bogus links).
@@ -39,7 +39,7 @@ _LINK_FIELDS = ("auto_links", "links")
 # inside them must not be flagged as broken on machines that don't have
 # the operator's workspace synced — see CLAUDE.md "Workspace files are
 # gitignored — operator-private per-machine."
-_WORKSPACE_PREFIXES = ("tars-workshop", "workspace")
+_WORKSPACE_PREFIXES = ("workshop", "workspace")
 
 
 @dataclass(frozen=True)
@@ -89,11 +89,11 @@ class MemoryLinter:
     wikilinks that live outside the store:
 
       - ``project_root`` — TESSERACT_HOME equivalent (parent of
-        `memory-store/`). Catches `tars-workshop/...` and `vault/...`
+        `memory-store/`). Catches `workshop/...` and `vault/...`
         references that are written rooted at TESSERACT_HOME.
       - ``repo_root`` — repo checkout root. Catches `tesseract/...`-
         prefixed paths the model writes when copying from the prompt's
-        workshop layout (e.g. `tesseract/tars-workshop/2026-05-04/...`).
+        workshop layout (e.g. `tesseract/workshop/2026-05-04/...`).
 
     Falling back across both lets a single store survive both
     conventions without false positives. Default ``repo_root`` is
@@ -227,7 +227,7 @@ class MemoryLinter:
         # Operator-private workspace directories aren't synced across
         # machines. Don't flag a missing file inside one as broken — the
         # operator can verify locally if needed. Match a workspace
-        # segment ANYWHERE in the path so `tesseract/tars-workshop/...`
+        # segment ANYWHERE in the path so `tesseract/workshop/...`
         # is bypassed too.
         if any(seg in _WORKSPACE_PREFIXES for seg in cleaned.split("/")):
             return True

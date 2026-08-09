@@ -94,7 +94,7 @@ def _make_reflect_callbacks(
                 event_id=event_id,
                 ts=datetime.now(timezone.utc).isoformat(),
                 kind="reflection_proposal",
-                source="tars",
+                source="agent",
                 title=f"Session reflection ({label})",
                 summary=summary,
                 payload={
@@ -128,7 +128,7 @@ def _make_reflect_callbacks(
                 event_id=event_id,
                 ts=datetime.now(timezone.utc).isoformat(),
                 kind="reflection_proposal",
-                source="tars",
+                source="agent",
                 title=f"Session reflection failed ({label})",
                 summary=f"Reflection raised {type(exc).__name__}: {exc}"[:1200],
                 priority=7,
@@ -239,7 +239,7 @@ async def cmd_observe(app: web.Application, session: ServerSession, arg: str | N
 
 async def cmd_soul_show(session: ServerSession) -> None:
     """Display-only — reads SOUL.md and emits `soul_updated` so the Mirror
-    FromTarsSection refreshes. Does NOT trigger reflection. Formerly
+    the From-agent section refreshes. Does NOT trigger reflection. Formerly
     `/reflect` (renamed 2026-04-20 F1); the misnamed command is why the
     operator could not trigger real reflection from the Mirror.
     """

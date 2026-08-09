@@ -57,7 +57,7 @@ def _controller_alive(controller_dir: Path, max_heartbeat_age_s: int) -> bool:
 def sweep_sessions(cfg: JanitorConfig, *, dry_run: bool) -> list[Finding]:
     from tesseract.paths import runtime_dir
 
-    controller_dir = runtime_dir() / "tars_controller"
+    controller_dir = runtime_dir() / "agent_controller"
     sessions_dir = controller_dir / "sessions"
     if not sessions_dir.is_dir():
         return []

@@ -79,10 +79,10 @@
    is speaking. Reads as "what I'm about to send"; canonical bubble
    replaces it once `voice_final` lands. Italic + dimmed color sets it
    apart from a committed user message without breaking layout. */
-/* Queued user bubble — the operator typed while TARS was mid-turn; the
+/* Queued user bubble — the operator typed while the assistant was mid-turn; the
    backend single-slot queue (`pending_user_text`) parks the text and
    drains it on natural turn completion. Pill + dim border tells the
-   operator: "I see this, TARS hasn't picked it up yet." Flips to
+   operator: "I see this, the assistant hasn't picked it up yet." Flips to
    committed style on the next `loop_start`. */
 .message-row.user.is-queued .message-bubble.user {
   opacity: 0.78;
@@ -1214,7 +1214,7 @@
 
 /* Inline media render for any tool whose result is a downloads URL.
  * Renders below the pill regardless of expanded state — the operator
- * shouldn't have to click to see what TARS just produced. */
+ * shouldn't have to click to see what the assistant just produced. */
 .tool-pill-download {
   padding: 8px 10px 10px;
   background: var(--bg-deep);

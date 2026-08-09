@@ -74,11 +74,11 @@ class AutoLinker:
             vec = self._embeddings.get_vector(memory_id)
             if vec is not None:
                 results = self._embeddings.search_by_vector(
-                    vec, top_k=_MAX_AUTO_LINKS * 3 + 1,
+                    vec, top_k=_MAX_AUTO_LINKS * 3 + 1, require_prefix="mem_",
                 )
             else:
                 results = await self._embeddings.search(
-                    body, top_k=_MAX_AUTO_LINKS * 3 + 1,
+                    body, top_k=_MAX_AUTO_LINKS * 3 + 1, require_prefix="mem_",
                 )
         except Exception:
             logger.warning("Auto-linker: embeddings failed, skipping for %s", memory_id)

@@ -1,13 +1,13 @@
-"""workspace_post — TARS posts a self-initiated note into the Workspace.
+"""workspace_post — the assistant posts a self-initiated note into the Workspace.
 
-Used when TARS wants to surface something to the operator without
+Used when the assistant wants to surface something to the operator without
 blocking the chat: an observation worth noting, a decision it made
 autonomously, an heads-up. Lands in the Workspace Inbox as a
-``tars_post`` event.
+``agent_post`` event.
 
 The Layer B/C scheduler jobs do NOT use this tool — they write events
 directly via ``EventStore.append_event`` from job code. This tool is the
-LLM-side surface so TARS can post during a normal turn.
+LLM-side surface so the assistant can post during a normal turn.
 """
 
 from __future__ import annotations
@@ -42,10 +42,10 @@ class WorkspacePostInput(BaseModel):
             "before continuing. Don't inflate."
         ),
     )
-    kind: Literal["tars_post", "nudge"] = Field(
-        default="tars_post",
+    kind: Literal["agent_post", "nudge"] = Field(
+        default="agent_post",
         description=(
-            "tars_post: 'leaving a note' (default). "
+            "agent_post: 'leaving a note' (default). "
             "nudge: 'please look at this' — operator-attention request."
         ),
     )
@@ -102,7 +102,7 @@ class WorkspacePostTool(Tool):
 
         event = WorkspaceEvent.new(
             kind=inp.kind,
-            source="tars",
+            source="agent",
             title=title,
             summary=summary,
             payload={"session_id": context.session_id},

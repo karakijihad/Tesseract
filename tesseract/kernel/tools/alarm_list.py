@@ -1,4 +1,4 @@
-"""alarm_list tool — TARS-readable view of pending alarms.
+"""alarm_list tool — agent-readable view of pending alarms.
 
 Returns id, label, run_at, message, recurrence for every pending alarm.
 Pure read — AUTO tier.

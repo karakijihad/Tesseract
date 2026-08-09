@@ -40,7 +40,7 @@ _NEGATIVE_OUTCOMES = frozenset({"error", "correction"})
 _DEFAULT_TIMEOUT_S = 60.0
 
 _PROMPT = (
-    "You are refining a TARS skill (a markdown playbook) that has been "
+    "You are refining an assistant skill (a markdown playbook) that has been "
     "underperforming — it was consulted but the work that followed failed or "
     "was corrected more often than it should. Read the current SKILL.md below "
     "and propose a REVISED, complete SKILL.md that fixes the likely cause "
@@ -64,7 +64,10 @@ class SkillRefinementJob(BaseJob):
             ratio_threshold = float(cfg.get("ratio_threshold", 0.34))
             max_cards = int(cfg.get("max_cards", 3))
 
-            rows = _rows_in_window(read_usage(), ctx.fired_at, window_days)
+            # Off the loop: usage.jsonl accumulates one row per skill load
+            # for the life of the install and is read whole here.
+            usage_rows = await asyncio.to_thread(read_usage)
+            rows = _rows_in_window(usage_rows, ctx.fired_at, window_days)
             stats = _aggregate(rows)
             skills_dir = _resolve_skills_dir(ctx)
             active = set(list_skills_names(skills_dir))
@@ -129,7 +132,7 @@ class SkillRefinementJob(BaseJob):
         )
         event = WorkspaceEvent.new(
             kind="skill_refinement",
-            source="tars",
+            source="agent",
             title=f"Skill needs refinement: {name}",
             summary=summary,
             payload={

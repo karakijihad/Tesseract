@@ -65,10 +65,10 @@ class BudgetExhausted(Exception):
     """Raised by `CostLedger.check_preflight` when a cap is hit.
 
     Used for both role budgets (chat / observer) and per-provider voice
-    budgets. `scope` is `"role"`, `"global"`, or `"voice"`. After the
-    voice G2 cutover (2026-04-26) both lanes are cloud-only Gemini, so
-    a voice exhaustion surfaces directly to the WS handler which emits
-    a `voice_instruction` toast — there is no local fallback target.
+    budgets. `scope` is `"role"`, `"global"`, or `"voice"`. A voice
+    exhaustion surfaces directly to the WS handler, which emits a
+    `voice_instruction` toast: the engine deliberately does not route
+    around a cap, because a cap is a decision rather than a fault.
     """
 
     def __init__(self, role: str, spent_usd: float, cap_usd: float, scope: str) -> None:
@@ -190,7 +190,7 @@ def _voice_pricing_from_bundle(
     Pricing (rate per million chars / per audio hour) lives on the providers
     catalog model entry. Per-lane daily caps live on
     ``roles.yaml::voice.{stt,tts}.<lane>.daily_budget_usd``. We key both maps
-    by the catalog model id (``gemini_flash_tts``, ``flash_v25``,
+    by the catalog model id (``af_heart``, ``hfc_female``,
     ``large_v3_turbo``, ``gemini_flash_audio``) so existing callers that pass
     the engine name unchanged continue to work.
     """
@@ -835,9 +835,9 @@ class CostLedger:
         """Raise `BudgetExhausted(scope="voice")` if the provider's daily
         voice cap is hit, or if the global daily cap is hit.
 
-        Both lanes are cloud-only Gemini after the G2 cutover
-        (2026-04-26); the WS handler catches this and emits a
-        `voice_instruction` toast — there is no fallback target.
+        The WS handler catches this and emits a `voice_instruction`
+        toast. The TTS chain does not fall through to the next lane on a
+        cap — only on a fault.
 
         `kind` must be `"tts"` or `"stt"`. A `None` cap (provider missing
         from yaml) is a config error, not an unbounded permit; we raise

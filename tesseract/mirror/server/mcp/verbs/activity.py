@@ -1,9 +1,10 @@
 """activity.* MCP verbs.
 
-``activity.list`` returns the current registry snapshot. ``activity.watch`` is
-the (deferred) server→client streaming surface, not a callable tool.
-``activity.cancel`` (ASK) stops a running unit of work, dispatching to the
-substrate by kind.
+``activity.list`` returns the current registry snapshot — the hydration path.
+``activity.watch`` is the server→client subscription and is not a callable
+tool: it is served on the GET SSE stream (``mcp/stream.py``), because a
+subscription is a transport, not a request/response.  ``activity.cancel``
+(ASK) stops a running unit of work, dispatching to the substrate by kind.
 """
 
 from __future__ import annotations
@@ -17,11 +18,40 @@ from tesseract.mirror.server.mcp.verbs._base import (
     run_kernel_tool,
 )
 from tesseract.orchestrator.activity import get_activity_registry
+from tesseract.orchestrator.agent_controller.lanes.principals import may_reach
+
+
+def _may_see(ctx: VerbContext, record: Any) -> bool:
+    """Whether the calling client may see this activity record.
+
+    An empty owner is the runtime's own work — routines, autonomy, the assistant's own
+    sessions — which belongs to the operator, so only the operator sees it. A
+    client sees its own and whatever was deliberately shared with it; the
+    operator sees everything, which is the cross-scope administration this
+    phase keeps on purpose.
+
+    Collaborators count here for the same reason they count on the lane
+    itself: a work scope that grants access but hides the lane from the
+    principal it was granted to is a scope nobody can use.
+
+    This is the lane rule applied to the record's projection of it, and it is
+    deliberately the same function — the snapshot and the push stream must not
+    be able to disagree about who may see what."""
+    return may_reach(
+        caller=ctx.client.name,
+        owner=getattr(record, "owner_principal", "") or "",
+        shared_with=getattr(record, "shared_with", ()) or (),
+    )
 
 
 async def activity_list(ctx: VerbContext) -> list[dict[str, Any]]:
+    """The caller's own work only.
+
+    This is the enumeration path: a lane id in the snapshot is an argument to
+    every lane verb, so handing out another principal's ids is handing over
+    what the lane's owner check exists to withhold."""
     snapshot = get_activity_registry().snapshot()
-    return [r.model_dump() for r in snapshot]
+    return [r.model_dump() for r in snapshot if _may_see(ctx, r)]
 
 
 async def activity_cancel(ctx: VerbContext) -> str:
@@ -30,6 +60,11 @@ async def activity_cancel(ctx: VerbContext) -> str:
         raise MCPVerbError(400, "activity.cancel requires 'activity_id'")
     record = get_activity_registry().get(activity_id)
     if record is None:
+        raise MCPVerbError(404, f"unknown activity: {activity_id}")
+    if not _may_see(ctx, record):
+        # Reported as unknown rather than forbidden: the listing already hides
+        # it, so confirming the id exists would give back the enumeration the
+        # filter just took away.
         raise MCPVerbError(404, f"unknown activity: {activity_id}")
 
     if record.kind == "delegate":

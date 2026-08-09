@@ -84,7 +84,7 @@ def ensure_alarms_state_migrated() -> None:
     reached via `build_tool_registry()`, which ordinary unit tests call
     constantly, and it must stay pure path resolution with no file I/O.
     Call this only from the real entry points (`mirror/server/
-    __main__.py`, `supervisor/__main__.py`, `scripts/tars_controller.py`),
+    __main__.py`, `supervisor/__main__.py`, `scripts/agent_controller.py`),
     the same call site as `config_seed.py`'s `ensure_*_seeded()` —
     explicit call only, matching that module's "no import-time or
     incidental file I/O" contract.

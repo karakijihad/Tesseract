@@ -7,10 +7,13 @@ import {
   fetchPiperStatus,
   fetchWhisperStatus,
   postKokoroAction,
+  postModelDownload,
   postOllamaAction,
   postPiperAction,
   postWhisperAction,
   type KokoroStatusResponse,
+  type ModelFilesStatus,
+  type ModelLane,
   type OllamaStatusResponse,
   type PiperStatusResponse,
   type WhisperStatusResponse,
@@ -28,6 +31,47 @@ function whisperDevice(whisper: WhisperStatusResponse): string {
   const loaded = whisper.cached[0];
   if (loaded) return `${loaded.device}/${loaded.compute_type}`;
   return `${whisper.device}/${whisper.compute_type}`;
+}
+
+// The state first-run setup can leave behind: a lane the operator declined,
+// then re-enabled in Settings → Capabilities. The lane is configured and the
+// engine is installed, but its model files were never fetched, so it latches
+// on first use. Saying so — and offering the download — is the difference
+// between a fixable state and a mystery.
+function ModelFilesRow({
+  files,
+  lane,
+  label,
+  size,
+  onDownload,
+}: {
+  files: ModelFilesStatus | null | undefined;
+  lane: ModelLane;
+  label: string;
+  size: string;
+  onDownload: (lane: ModelLane) => void;
+}) {
+  // `null` means the lane isn't configured at all — nothing is missing, so
+  // there is nothing to offer.
+  if (!files || files.files_present !== false) return null;
+  return (
+    <div className="cost-row cost-row--actions">
+      <span className="t-meta">
+        {files.download_error
+          ? files.download_error
+          : `${label} files are not downloaded — this lane stays silent until they are (${size}).`}
+      </span>
+      <button
+        type="button"
+        className="cost-row__save"
+        onClick={() => onDownload(lane)}
+        disabled={files.downloading}
+        style={{ marginLeft: '0.5rem' }}
+      >
+        {files.downloading ? 'Downloading…' : 'Download'}
+      </button>
+    </div>
+  );
 }
 
 export function LocalModelsSection() {
@@ -108,12 +152,11 @@ export function LocalModelsSection() {
     };
   }, [refresh]);
 
-  const onToggle = async () => {
+  const onOllamaAction = async (action: 'start' | 'stop' | 'install') => {
     if (!status || busy) return;
     setBusy(true);
     setError(null);
     try {
-      const action = status.running ? 'stop' : 'start';
       const res = await postOllamaAction(action);
       setStatus((prev) =>
         prev
@@ -122,6 +165,9 @@ export function LocalModelsSection() {
               running: res.running,
               embedding_present: res.embedding_present,
               owned_by_mirror: res.owned_by_mirror,
+              binary_present: res.binary_present,
+              installing: res.installing,
+              install_error: res.install_error,
             }
           : prev,
       );
@@ -171,6 +217,19 @@ export function LocalModelsSection() {
     }
   };
 
+  const onDownload = async (lane: ModelLane) => {
+    setError(null);
+    try {
+      await postModelDownload(lane);
+      // The POST returns once the fetch is SCHEDULED — a 1.6 GB snapshot
+      // would outlive any request timeout. Refresh so the row flips to
+      // "Downloading…" now, and let the poll carry it to done.
+      void refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `${lane} download failed`);
+    }
+  };
+
   const onKokoroAction = async (action: 'unload' | 'warm') => {
     if (!kokoro || kokoroBusy) return;
     setKokoroBusy(true);
@@ -195,24 +254,37 @@ export function LocalModelsSection() {
     );
   }
 
-  const stateLabel = status.running
-    ? status.embedding_present
-      ? 'running · embedding model loaded'
-      : 'running · embedding model missing (run `ollama pull`)'
-    : 'stopped';
-
-  const ownedHint = status.owned_by_mirror
-    ? 'started by Mirror — stop will terminate it'
+  // Absent binary is its own state, not a kind of "stopped": a start toggle
+  // cannot fix it, and semantic search stays off until something installs it.
+  const stateLabel = status.installing
+    ? 'installing — downloading Ollama and the embedding model…'
+    : status.install_error
+      ? `install failed: ${status.install_error}`
+      : !status.binary_present
+    ? 'not installed — semantic search is off (keyword search still works)'
     : status.running
-      ? 'started outside Mirror — stop refused (manual stop required)'
-      : 'will spawn `ollama serve` on start';
+      ? !status.embedding_model
+        ? 'running'
+        : status.embedding_present
+          ? 'running · embedding model loaded'
+          : 'running · embedding model missing'
+      : 'stopped';
+
+  const ownedHint = !status.binary_present
+    ? 'Install downloads Ollama and pulls the embedding model'
+    : status.owned_by_mirror
+      ? 'started by Mirror — stop will terminate it'
+      : status.running
+        ? 'started outside Mirror — stop refused (manual stop required)'
+        : 'will spawn `ollama serve` on start';
 
   return (
     <section className="settings-section">
       <h3 className="settings-section__title">Local models — Ollama</h3>
       <div className="t-meta" style={{ marginBottom: '0.5rem' }}>
-        Embedding model {status.embedding_model} runs on Ollama at {status.base_url}.
-        Required for memory dedupe + retrieval. Toggle to start or stop.
+        {status.embedding_model
+          ? `Embedding model ${status.embedding_model} runs on Ollama at ${status.base_url}. Required for memory dedupe + retrieval. Toggle to start or stop.`
+          : `Ollama runs at ${status.base_url}. Toggle to start or stop.`}
       </div>
       <div className="cost-row">
         <label className="cost-row__label">Status</label>
@@ -228,14 +300,39 @@ export function LocalModelsSection() {
         </span>
       </div>
       <div className="cost-row cost-row--actions">
-        <button
-          type="button"
-          className="cost-row__save"
-          onClick={onToggle}
-          disabled={busy}
-        >
-          {busy ? '…' : status.running ? 'Stop' : 'Start'}
-        </button>
+        {status.binary_present ? (
+          <button
+            type="button"
+            className="cost-row__save"
+            onClick={() => void onOllamaAction(status.running ? 'stop' : 'start')}
+            disabled={busy}
+          >
+            {busy ? '…' : status.running ? 'Stop' : 'Start'}
+          </button>
+        ) : (
+          // The recovery path for a first run whose silent install was blocked
+          // or declined. The per-launch retry runs `--no-install` on purpose,
+          // so without this button the only way back was a typed command.
+          <button
+            type="button"
+            className="cost-row__save"
+            onClick={() => void onOllamaAction('install')}
+            disabled={busy || status.installing}
+          >
+            {status.installing ? 'Installing…' : 'Install Ollama'}
+          </button>
+        )}
+        {status.running && !status.embedding_present && (
+          <button
+            type="button"
+            className="cost-row__save"
+            onClick={() => void onOllamaAction('install')}
+            disabled={busy || status.installing}
+            style={{ marginLeft: '0.5rem' }}
+          >
+            {status.installing ? 'Pulling…' : 'Pull embedding model'}
+          </button>
+        )}
         <button
           type="button"
           className="cost-row__save"
@@ -274,6 +371,13 @@ export function LocalModelsSection() {
           {whisperBusy ? '…' : whisper?.disabled ? 'Reset Whisper' : 'Unload Whisper'}
         </button>
       </div>
+      <ModelFilesRow
+        files={whisper}
+        lane="whisper"
+        label="Speech recognition model"
+        size="~1.6 GB"
+        onDownload={onDownload}
+      />
       <div className="cost-row" style={{ marginTop: '0.75rem' }}>
         <label className="cost-row__label">Piper TTS</label>
         <span className="t-meta">
@@ -305,6 +409,13 @@ export function LocalModelsSection() {
                 : 'Load Piper'}
         </button>
       </div>
+      <ModelFilesRow
+        files={piper}
+        lane="piper"
+        label="Piper voice"
+        size="~65 MB"
+        onDownload={onDownload}
+      />
       <div className="cost-row" style={{ marginTop: '0.75rem' }}>
         <label className="cost-row__label">Kokoro TTS</label>
         <span className="t-meta">
@@ -342,6 +453,13 @@ export function LocalModelsSection() {
                 : 'Load Kokoro'}
         </button>
       </div>
+      <ModelFilesRow
+        files={kokoro}
+        lane="kokoro"
+        label="Kokoro voice"
+        size="~340 MB"
+        onDownload={onDownload}
+      />
     </section>
   );
 }

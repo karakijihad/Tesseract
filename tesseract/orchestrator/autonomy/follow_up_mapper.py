@@ -1,6 +1,6 @@
 """TC-7 — auto follow-up mapper.
 
-When a ``CLAUDE_CLI`` / ``TARS_CONTROLLER`` advisor finishes with a
+When a ``CODER_SEAT`` / ``AGENT_CONTROLLER`` advisor finishes with a
 non-trivial ``record.summary`` and zero artifacts, the advisor produced
 *advice*, not *work*. The kernel emits an ``advice_only`` row to the
 operator journal, but there is no implicit next step — the operator
@@ -18,8 +18,8 @@ forget. TC-7 closes that loop:
 4. A ``follow_up_draft`` row goes into the operator journal so the
    operator sees the linkage between the parent advisor and the new
    draft in the journal pane.
-5. Accepting the gate routes the draft to ``TARS_CONTROLLER`` (if the
-   controller daemon is live) or ``CLAUDE_CLI`` via the kernel's
+5. Accepting the gate routes the draft to ``AGENT_CONTROLLER`` (if the
+   controller daemon is live) or ``CODER_SEAT`` via the kernel's
    existing ``_kind_for_item`` helper. Either path allocates a worktree
    at dispatch time because the draft carries ``OPERATOR_GATE``
    risk_class (see ``worktree.requires_worktree``).

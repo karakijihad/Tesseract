@@ -13,7 +13,7 @@ The denylist is conservative on purpose. We forbid any tool that can
 mutate the host (terminal, source-edit, agent/tool promotion) or that
 spends operator resources unattended (mission orchestration, delegation
 to subscription CLIs). Read-only memory, vault, and chat surfaces stay
-allowed so a friend can have a useful conversation with TARS.
+allowed so a friend can have a useful conversation with the assistant.
 
 Wiring: :func:`build_tiered_ask_fn` wraps the channel ask_fn returned by
 :func:`build_channel_ask_fn` so the gate is never reached for a denied
@@ -49,8 +49,8 @@ FRIEND_DENIED_TOOLS: frozenset[str] = frozenset(
         "bash",
         "process_start",
         # delegation — burns operator-subscribed CLI quota
-        "delegate_claude",
-        "delegate_codex",
+        "delegate_coder",
+        "delegate_auditor",
         "spawn_await",
         "invoke_agent",
         # source-edit + promotion — kernel lockdown perimeter

@@ -27,6 +27,7 @@ from typing import Any
 
 from aiohttp import web
 
+from tesseract.mirror.server.routes._localhost import is_localhost_request
 from tesseract.mirror.server.routes.autonomy import filter_live_attention
 from tesseract.paths import TESSERACT_HOME
 from tesseract.supervisor.breaker import crash_storm_path
@@ -204,20 +205,6 @@ async def post_shutdown(request: web.Request) -> web.Response:
     })
 
 
-_LOCALHOST_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
-
-
-def _is_localhost_request(request: web.Request) -> bool:
-    """True when the request originated from the same machine.
-
-    Mirror binds 127.0.0.1 only (``tesseract/config/mirror.yaml::host``)
-    so any inbound connection IS already local. Belt-and-braces: re-check
-    ``remote`` so a hypothetical future bind-change can't accidentally
-    expose this endpoint without an auth review."""
-    remote = (request.remote or "").strip()
-    return remote in _LOCALHOST_HOSTS
-
-
 async def post_restart_for_code_drift(request: web.Request) -> web.Response:
     """Operator-clicked restart in response to a `code_drift_detected`
     toast. Writes ``intent.json {restart_upgrade}`` so the supervisor
@@ -245,7 +232,7 @@ async def post_restart_for_code_drift(request: web.Request) -> web.Response:
             # Stale or unknown session_id — fall through to the localhost
             # gate rather than 401-ing, so a cold-boot frontend that
             # still holds an old session_id can recover via restart.
-            if not _is_localhost_request(request):
+            if not is_localhost_request(request):
                 return web.json_response(
                     {"error": f"operator session {session_id!r} not connected"},
                     status=401,
@@ -254,7 +241,7 @@ async def post_restart_for_code_drift(request: web.Request) -> web.Response:
         else:
             auth_path = "operator_session"
     else:
-        if not _is_localhost_request(request):
+        if not is_localhost_request(request):
             return web.json_response(
                 {"error": "operator session required (remote caller)"},
                 status=401,

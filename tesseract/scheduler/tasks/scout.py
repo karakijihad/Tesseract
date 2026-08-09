@@ -6,7 +6,7 @@ Domain-unbounded curiosity with a budget, not a feed reader. Each run:
      operator-terminal state (accepted/dispatched vs cancelled/rejected)
      and haven't been fed back yet each get one source-tagged memory, so
      the next run's recent-memory reader sees how past proposals landed.
-  2. Query gen — ONE LLM call. TARS derives search queries from its own
+  2. Query gen — ONE LLM call. The assistant derives search queries from its own
      identity (SOUL.md/IDENTITY.md), the open agenda, recent memory, and
      that same accept/reject history. ``seed_topics`` (config) are hints,
      never an allowlist — the prompt says so explicitly.
@@ -121,7 +121,12 @@ class ScoutJob(BaseJob):
             topics, feed_urls = _normalize_seed_topics(cfg.get("seed_topics"))
 
             store = _resolve_agenda_store(ctx)
-            history_items = _scan_terminal_scout_items(store)
+            # Off the loop: walks every archived agenda item ever written
+            # to find SCOUT's terminal ones — same shape as
+            # governor.py::_collect_archive_items_in_window, already
+            # fixed for the identical reason (read-only against archive,
+            # a thread is the whole fix).
+            history_items = await asyncio.to_thread(_scan_terminal_scout_items, store)
             fedback_path = _resolve_fedback_path(ctx)
             fed_back = _run_feedback_scan(ctx, history_items, fedback_path, when=now)
 
@@ -131,7 +136,9 @@ class ScoutJob(BaseJob):
 
             identity = _read_identity_snippet()
             agenda_snapshot = _summarize_agenda(store)
-            memory_snapshot = _collect_recent_memory(ctx)
+            # Off the loop: writes.jsonl accumulates one row per memory
+            # write for the life of the install and is read whole here.
+            memory_snapshot = await asyncio.to_thread(_collect_recent_memory, ctx)
             history_lines = _summarize_history(history_items)
 
             query_prompt = _build_query_prompt(
@@ -477,11 +484,11 @@ def _build_query_prompt(
     topics: list[str], max_queries: int,
 ) -> str:
     parts: list[str] = [
-        "You are TARS, deriving web-search queries for autonomous discovery.",
+        "You are the assistant, deriving web-search queries for autonomous discovery.",
         "",
         "Discovery is domain-unbounded: gaming, science, fashion, tech,",
-        "models, medicine — anything that could genuinely matter to TARS or",
-        "the operator. Draw on who TARS is, what TARS is working on right",
+        "models, medicine — anything that could genuinely matter to the assistant or",
+        "the operator. Draw on who the assistant is, what the assistant is working on right",
         "now, what has landed well or poorly before, to decide where",
         "curiosity should point today.",
         "",
@@ -512,12 +519,12 @@ def _build_query_prompt(
 
 def _build_eval_prompt(fresh: list[dict[str, Any]], *, identity: str, max_proposals: int) -> str:
     parts: list[str] = [
-        "You are TARS, deciding which discoveries are worth OUR time.",
+        "You are the assistant, deciding which discoveries are worth OUR time.",
         "",
         f"Pick AT MOST {max_proposals} candidates below that a curious,",
         "resource-aware assistant would actually bring to the operator. For",
         "each pick, give an explicit \"why us / why now\" line — why this",
-        "matters to TARS specifically and why surfacing it now, grounded",
+        "matters to the assistant specifically and why surfacing it now, grounded",
         "only in the evidence given below. If a pick proposes swapping a",
         "model or provider, put the exact providers.yaml / roles.yaml diff",
         "as TEXT in diff_text — never apply it yourself.",

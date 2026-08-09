@@ -8,7 +8,7 @@ Runs at boot in BOTH processes that hold an Activity registry:
   ``update_lane_state`` transitions are dropped and named lanes show under their
   bare id until the next ``ensure``.
 Seeded from the canonical on-disk files (``lane.json`` / ``named-lanes/*.json`` /
-``tars_controller/sessions/*.json``) with ``publish=False``. Live
+``agent_controller/sessions/*.json``) with ``publish=False``. Live
 ``running``/``idle`` transitions then layer on (and, Mirror-side, arrive via the
 controller→Mirror push subscriber).
 
@@ -16,7 +16,7 @@ Ephemeral delegates are deliberately NOT rebuilt: they died with the
 process that spawned them, so re-indexing them would resurrect ghosts.
 
 Kept OUT of ``registry.py`` so the registry stays substrate-agnostic (no
-``tars_controller`` import) and there is no import-direction coupling.
+``agent_controller`` import) and there is no import-direction coupling.
 Every disk read is best-effort per item — one unreadable record never
 aborts the rest of the rebuild.
 """
@@ -59,10 +59,10 @@ def rebuild_from_disk(registry: ActivityRegistry | None = None) -> int:
 
 def _rebuild_named_lanes(reg: ActivityRegistry) -> int:
     try:
-        from tesseract.orchestrator.tars_controller.lanes.named import (
+        from tesseract.orchestrator.agent_controller.lanes.named import (
             list_named_lanes,
         )
-        from tesseract.orchestrator.tars_controller.lanes.store import read_lane
+        from tesseract.orchestrator.agent_controller.lanes.store import read_lane
     except Exception:  # noqa: BLE001
         log.warning("activity rebuild: named-lane imports failed", exc_info=True)
         return 0
@@ -84,6 +84,8 @@ def _rebuild_named_lanes(reg: ActivityRegistry) -> int:
                     durability="persistent",
                     provider=record.kind,
                     transcript_ref=f"controller/lanes/{record.lane_id}/transcript.txt",
+                    owner_principal=lane.owner_principal,
+                    shared_with=tuple(lane.shared_with),
                 ),
                 publish=False,
             )
@@ -99,7 +101,7 @@ def _rebuild_bare_lanes(reg: ActivityRegistry) -> int:
     """Lanes opened directly (not via a named binding). Skips any id a named
     binding already registered so the named label/provider is not clobbered."""
     try:
-        from tesseract.orchestrator.tars_controller.lanes.store import (
+        from tesseract.orchestrator.agent_controller.lanes.store import (
             list_lane_ids,
             read_lane,
         )
@@ -126,6 +128,8 @@ def _rebuild_bare_lanes(reg: ActivityRegistry) -> int:
                     durability="persistent",
                     provider=lane.kind,
                     transcript_ref=f"controller/lanes/{lane_id}/transcript.txt",
+                    owner_principal=lane.owner_principal,
+                    shared_with=tuple(lane.shared_with),
                 ),
                 publish=False,
             )
@@ -173,7 +177,7 @@ def _session_is_stale(record: object, cutoff: "datetime | None") -> bool:
 
 def _rebuild_sessions(reg: ActivityRegistry) -> int:
     try:
-        from tesseract.orchestrator.tars_controller.sessions import SessionRegistry
+        from tesseract.orchestrator.agent_controller.sessions import SessionRegistry
     except Exception:  # noqa: BLE001
         log.warning("activity rebuild: session imports failed", exc_info=True)
         return 0
@@ -203,6 +207,7 @@ def _rebuild_sessions(reg: ActivityRegistry) -> int:
                     state=SESSION_STATE.get(record.status, "idle"),  # type: ignore[arg-type]
                     durability="persistent",
                     transcript_ref=record.transcript_path,
+                    owner_principal=record.owner_principal,
                 ),
                 publish=False,
             )

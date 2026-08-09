@@ -10,7 +10,7 @@ tool call and break the turn.
 
 2026-05-01: voice is decoupled from mood. `set_mood` drives the orb only.
 Mood auto-decays to neutral at the end of every turn (`ws._run_turn`), so
-TARS sets the mood for the current turn — no carryover between prompts.
+The assistant sets the mood for the current turn — no carryover between prompts.
 
 Low-risk (no file I/O, no network, no state outside session MoodState).
 No ask.rules entry → permission engine auto-approves via PASSTHROUGH.

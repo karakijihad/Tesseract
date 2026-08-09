@@ -29,8 +29,8 @@ _RUNTIME_LOCK_PREFIXES: tuple[str, ...] = (
     "supervisor",
 )
 
-# The config files TARS must never write, whatever `permissions.yaml` says.
-# `providers.yaml` and `roles.yaml` left this set when the trio was given
+# The config files the assistant must never write, whatever `permissions.yaml` says.
+# `providers.yaml` and `roles.yaml` left this set when delegates were given
 # ASK-level edit rights over them.
 #
 # `mcp.yaml` joined it when the MCP verb floors moved out of source: it became
@@ -153,7 +153,7 @@ class FileWriteTool(Tool):
         reason = _check_runtime_lockdown(resolved)
         if reason is not None:
             msg = (
-                f"{reason} — TARS cannot grant himself permissions or "
+                f"{reason} — the assistant cannot grant itself permissions or "
                 "reconfigure the Mirror server. The operator edits these two "
                 "files by hand or in Settings; every other file under config/ "
                 "is writable at ASK."
@@ -183,8 +183,8 @@ class FileWriteTool(Tool):
         except OSError as e:
             return ToolResult(output=f"Error writing file: {e}", is_error=True)
 
-        # CR-1 (2026-05-22) — fire-and-forget workshop indexing. When TARS
-        # writes any markdown / text under `tars-workshop/`, the resulting
+        # CR-1 (2026-05-22) — fire-and-forget workshop indexing. When the assistant
+        # writes any markdown / text under `workshop/`, the resulting
         # artifact becomes recallable via `recall_history` within seconds.
         # Best-effort: failure does not surface to the caller (the write
         # already succeeded). Resolved against the path-validator output
@@ -196,7 +196,7 @@ class FileWriteTool(Tool):
 
 def _maybe_index_workshop_write(path: Path) -> None:
     """Index ``path`` into the work-history index if it lives under
-    ``tars-workshop/`` and looks like a text artifact.
+    ``workshop/`` and looks like a text artifact.
 
     Synchronous: one MD/TXT file is microseconds of FTS5 inserts —
     not worth executor scheduling overhead. Matches the parallel
@@ -207,7 +207,7 @@ def _maybe_index_workshop_write(path: Path) -> None:
     if path.suffix.lower() not in (".md", ".txt"):
         return
     try:
-        if "tars-workshop" not in path.as_posix():
+        if "workshop" not in path.as_posix():
             return
     except Exception:
         return

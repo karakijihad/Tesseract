@@ -1,5 +1,5 @@
 """Autonomy digest — agenda + self-reflection + failures cross-feed section
-of TARS's system prompt (lean-agent-os P1 Task 4 / P6 Task 3 §G4).
+of the assistant's system prompt (lean-agent-os P1 Task 4 / P6 Task 3 §G4).
 
 Split out of `tesseract/brain/prompt.py` (module-size cleanup, Task 7.5).
 """
@@ -24,7 +24,7 @@ from tesseract.brain.prompt_content import _section
 logger = logging.getLogger("tesseract.brain.prompt")
 
 # Autonomy digest (lean-agent-os P1 Task 4) — open agenda statuses that
-# count as "on TARS's plate". Excludes UNVETTED (hasn't cleared the
+# count as "on the assistant's plate". Excludes UNVETTED (hasn't cleared the
 # vetter gate — not yet an actionable item; surfaced instead as a single
 # `unvetted: N awaiting vetter` count line, see `_count_unvetted_agenda_items`)
 # and the four terminal statuses (`TERMINAL_STATUSES` in
@@ -36,7 +36,7 @@ OPEN_AGENDA_STATUSES = frozenset({
 UNVETTED_AGENDA_STATUS = "unvetted"
 
 # Fix A2 (lean-agent-os P1 follow-up, Q4) — a bare "# Autonomy digest"
-# header didn't read as TARS's own commitments in a live test ("what's
+# header didn't read as the assistant's own commitments in a live test ("what's
 # on your plate?" ignored it). This one-line lead makes the ownership
 # explicit without touching the per-item line format.
 AUTONOMY_DIGEST_LEAD = (

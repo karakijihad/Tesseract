@@ -18,12 +18,12 @@ import { ActivityDetail } from "../activity/ActivityDetail";
  * autonomy, mcp_session). Replaces `RunningSpawnsChip`, which only read
  * `cliStreams` (CLI delegate subprocesses) plus a lane/controller_session
  * subset of the activity registry — invoke_agent spawns register in the
- * activity registry under the same `delegate` kind as delegate_claude/codex
+ * activity registry under the same `delegate` kind as delegate_coder/auditor
  * but never got a cliStream entry (no subprocess), so they never appeared.
  *
  * Reading `useActivityStore.records()` directly avoids that gap and avoids
  * double-counting: `delegate` kind already covers every background spawn
- * (delegate_claude/codex, invoke_agent, delegate_tars_controller, lane_turn),
+ * (delegate_coder/auditor, invoke_agent, delegate_agent_controller, lane_turn),
  * so there's no second cliStreams-based list to reconcile against it.
  */
 export function ActivityTaskbar() {

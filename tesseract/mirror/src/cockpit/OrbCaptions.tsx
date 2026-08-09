@@ -1,12 +1,12 @@
-// Ambient orb captions — TARS's latest line as a fading subtitle under the orb,
+// Ambient orb captions — the assistant's latest line as a fading subtitle under the orb,
 // so you see the conversation without opening the Chat tab. Voice-first: it
-// reads like TARS speaking on screen. Live during a turn (streamingText), then
-// the finalized reply; fades out after a hold once the turn ends. TARS-only —
+// reads like the assistant speaking on screen. Live during a turn (streamingText), then
+// the finalized reply; fades out after a hold once the turn ends. agent-only —
 // the operator's own messages are not echoed. Dismissable (HUD toggle).
 
 import { useEffect, useRef, useState } from 'react';
 
-import type { ChatMessage } from '../lib/types';
+import type { AssistantStreamSegment, ChatMessage } from '../lib/types';
 import { useCaptionsStore } from '../stores/captions';
 import { useConversationStore } from '../stores/conversation';
 
@@ -18,18 +18,42 @@ const MAX_CHARS = 220;
 interface LineSource {
   isStreaming: boolean;
   streamingText: string;
+  streamingSegments?: AssistantStreamSegment[];
   messages: ChatMessage[];
 }
 
-/** The current TARS line to caption: the live answer while streaming, else the
- * most recent finalized assistant message. Empty when TARS hasn't spoken or no
- * chat slice is active yet. */
-export function currentTarsLine(s: LineSource | null): string {
+/** Concatenated `spoken` text from a segment timeline, or '' when the reply
+ * carried no spoken form. */
+function spokenFrom(segments: AssistantStreamSegment[] | undefined): string {
+  if (!segments) return '';
+  return segments
+    .filter(seg => seg.kind === 'spoken')
+    .map(seg => seg.text)
+    .join('')
+    .trim();
+}
+
+/** The current the assistant line to caption: the live reply while streaming, else the
+ * most recent finalized assistant message. Empty when the assistant hasn't spoken or no
+ * chat slice is active yet.
+ *
+ * A reply carrying a `<spoken>` block captions THAT, not the answer — spoken
+ * is what the operator actually hears, and captions that disagree with the
+ * audio are worse than no captions. Replies without one caption the answer,
+ * exactly as before. */
+export function currentAgentLine(s: LineSource | null): string {
   if (!s) return '';
-  if (s.isStreaming && s.streamingText.trim()) return s.streamingText.trim();
+  if (s.isStreaming) {
+    const spoken = spokenFrom(s.streamingSegments);
+    if (spoken) return spoken;
+    if (s.streamingText.trim()) return s.streamingText.trim();
+  }
   for (let i = s.messages.length - 1; i >= 0; i--) {
     const m = s.messages[i];
-    if (m.role === 'assistant' && m.content.trim()) return m.content.trim();
+    if (m.role !== 'assistant') continue;
+    const spoken = spokenFrom(m.segments);
+    if (spoken) return spoken;
+    if (m.content.trim()) return m.content.trim();
   }
   return '';
 }
@@ -47,7 +71,7 @@ export function tail(line: string): string {
 
 export function OrbCaptions() {
   const enabled = useCaptionsStore((s) => s.enabled);
-  const line = useConversationStore((s) => currentTarsLine(s.getActiveSlice()));
+  const line = useConversationStore((s) => currentAgentLine(s.getActiveSlice()));
   const isStreaming = useConversationStore((s) => s.getActiveSlice()?.isStreaming ?? false);
   const [visible, setVisible] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -59,7 +83,7 @@ export function OrbCaptions() {
       return;
     }
     setVisible(true);
-    // Hold visible while TARS is still speaking; fade out a while after the
+    // Hold visible while the assistant is still speaking; fade out a while after the
     // turn settles.
     if (!isStreaming) {
       timer.current = setTimeout(() => setVisible(false), HOLD_MS);

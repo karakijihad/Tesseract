@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from tesseract.kernel.adapters.base import ChunkType, StreamChunk
+from tesseract.mirror.server.voice_modes import VOICE_DESTINATIONS
 
 if TYPE_CHECKING:
     from tesseract.brain.cost.ledger import BudgetState, CostEvent
@@ -129,7 +130,7 @@ def make_entity_state_set(session_id: str, *, state: str) -> dict[str, Any]:
     """Discrete orb-state command. Fired by ws.py after `set_state`
     TOOL_RESULT lands. Frontend dispatch routes `data.state` directly
     into `useEntityStore.setState(state)`. Sticky frontend-side until
-    either TARS calls again or the loop fires its own setState."""
+    either the assistant calls again or the loop fires its own setState."""
     return make_envelope("entity_state_set", "entity", session_id, {"state": state})
 
 
@@ -144,7 +145,7 @@ def make_cost_delta(
     """Per-turn cost envelope. Fired by `CostLedger.record()` subscriber after
     every chat/observer turn. `data.state` is a flat snapshot so the frontend
     store can render meters without another roundtrip. `blocked=True` drives
-    the sticky "budget exhausted — use delegate_claude/delegate_codex" toast.
+    the sticky "budget exhausted — use delegate_coder/delegate_auditor" toast.
 
     Voice usage rides the same envelope. `record_voice` synthesizes a
     CostEvent with `role="voice_tts"` or `role="voice_stt"` (and `model=
@@ -251,15 +252,68 @@ def make_cost_state(session_id: str, snapshot: dict[str, Any]) -> dict[str, Any]
 _VOICE_STATES = frozenset({"idle", "listening", "transcribing", "speaking_back"})
 
 
-def make_voice_final(session_id: str, text: str) -> dict[str, Any]:
+def make_voice_final(
+    session_id: str,
+    text: str,
+    *,
+    destination: str,
+) -> dict[str, Any]:
     """`voice_final` envelope — emitted after `STTEngine.transcribe_stream`
     returns. Frontend dispatch.ts forwards the text into the typed-chat path
-    so chat_brain consumes it through `ChatSession.send`."""
+    so chat_brain consumes it through `ChatSession.send`.
+
+    ``destination`` is the routing target the server resolved **before**
+    it started transcribing — one of ``chat`` / ``input`` / ``terminal``
+    (``voice_modes.VOICE_DESTINATIONS``) — and it is what the frontend
+    routes on. Two reasons it is the resolved target rather than the raw
+    mic mode. STT is not instant, so the operator can cycle the HUD pill
+    mid-utterance, and routing on the frontend's current mode would send a
+    transcript somewhere the backend never agreed to — including typing a
+    chat-bound utterance into a live shell. And a raw mode would leave
+    both ends re-deriving the same mapping, so a mode added to one side
+    and missed by the other routes speech nowhere either intended.
+
+    Required, and refused rather than defaulted. The frontend declares it
+    required and routes solely on it, so a caller that omitted it would
+    ship an envelope the wire contract says cannot exist — and the three
+    early-return call sites in ``_handle_voice_commit`` were each added
+    one at a time, which is exactly how the fourth gets forgotten. An
+    unknown value is refused here rather than at the far end, because a
+    frontend falling back to `input` would hide a dispatched turn that
+    never drew its bubble.
+    """
+    if destination not in VOICE_DESTINATIONS:
+        raise ValueError(
+            f"voice_final destination must be one of {sorted(VOICE_DESTINATIONS)}, "
+            f"got {destination!r}"
+        )
     return make_envelope(
         "voice_final",
         "voice",
         session_id,
-        {"text": text},
+        {"text": text, "destination": destination},
+    )
+
+
+def make_voice_discarded(
+    session_id: str,
+    *,
+    text: str,
+    score: float,
+) -> dict[str, Any]:
+    """`voice_discarded` envelope — an utterance the wake-word gate
+    refused. Sent *instead of* `voice_final`: the transcript never
+    becomes a chat bubble, a turn, or speech. It exists so a discard is
+    observable in the pulse feed rather than looking like a dead mic.
+
+    `score` is how close the utterance came to the wake phrase, which is
+    what tells the operator whether to retune the threshold or just
+    speak up."""
+    return make_envelope(
+        "voice_discarded",
+        "voice",
+        session_id,
+        {"text": text, "score": round(float(score), 3), "reason": "wake_word"},
     )
 
 
@@ -290,7 +344,8 @@ def make_tts_chunk(
     """`tts_chunk` envelope — base64-encoded audio for one sentence (or the
     final empty terminator chunk). Frontend decodes via `AudioContext.
     decodeAudioData` and queues onto a single playback timeline.
-    `provider` carries the engine key (`gemini_flash_tts` after G2);
+    `provider` carries the engine key (the catalog model id of the
+    lane that synthesized this chunk);
     `sequence` is monotonic per turn so the client can detect drops.
     `is_final=True` on the last chunk signals the turn is closed and the
     `speaking_back` state can flip back to idle once the queue drains.
@@ -573,18 +628,14 @@ def make_voice_instruction(
     session_id: str,
     *,
     instruction: str | None = None,
-    voice_id: str | None = None,
 ) -> dict[str, Any]:
-    """`voice_instruction` envelope — TARS-authored voice control. Two
-    sources: (a) the `set_voice` tool (voice_id only) and (b) the WS
-    budget gate when cloud TTS is exhausted (instruction-only toast).
-    Style/character is config-only (`roles.yaml synthesis_presets`).
-    Only set fields are emitted so the wire stays narrow."""
+    """`voice_instruction` envelope — why the reply is not being spoken.
+    Raised by the WS gate when a lane's budget is exhausted or every TTS
+    lane is down; the operator gets the reason instead of silence. Voice
+    and character are config, so nothing here selects them."""
     data: dict[str, Any] = {}
     if instruction is not None:
         data["instruction"] = instruction
-    if voice_id is not None:
-        data["voice_id"] = voice_id
     return make_envelope("voice_instruction", "voice", session_id, data)
 
 

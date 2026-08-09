@@ -26,7 +26,10 @@ from tesseract.orchestrator.activity import (
     get_activity_registry,
 )
 from tesseract.orchestrator.activity.registry import ActivityRegistry
-from tesseract.orchestrator.tars_controller.ipc_client import (
+from tesseract.orchestrator.agent_controller.lanes.principals import (
+    OPERATOR_PRINCIPAL,
+)
+from tesseract.orchestrator.agent_controller.ipc_client import (
     ControllerClient,
     ControllerClientError,
 )
@@ -111,7 +114,12 @@ class ActivitySubscriber:
                 # gap-a — reconcile the full controller set BEFORE streaming
                 # deltas, so a lane/session mid-flight at connect time shows its
                 # real state immediately instead of stale disk-seeded state.
-                await client.request_snapshot()
+                # The cockpit's own subscriber IS the operator; it says so
+                # rather than relying on a default, because the daemon refuses
+                # an activity_snapshot that names nobody.
+                await client.request_snapshot(
+                    caller_principal=OPERATOR_PRINCIPAL
+                )
                 try:
                     # Best-effort: an older/stub client without this method
                     # (or a transient send failure) must not abort activity

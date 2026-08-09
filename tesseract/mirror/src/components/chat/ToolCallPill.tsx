@@ -12,7 +12,7 @@ interface Props {
 }
 
 const RESULT_TRUNCATE_AT = 500;
-const DELEGATE_TOOLS = new Set(["delegate_claude", "delegate_codex"]);
+const DELEGATE_TOOLS = new Set(["delegate_coder", "delegate_auditor"]);
 
 const STATUS_CLASS: Record<ToolCallStatus, string> = {
   auto: "tool-pill-badge--ok",

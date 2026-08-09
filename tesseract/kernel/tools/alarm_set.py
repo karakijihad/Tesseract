@@ -1,7 +1,7 @@
-"""alarm_set tool — TARS-controlled alarm queueing.
+"""alarm_set tool — agent-controlled alarm queueing.
 
 Same backing store as the operator's `/alarm-set` slash command
-(`app["alarm_registry"]`). When TARS sets an alarm mid-conversation, it
+(`app["alarm_registry"]`). When the assistant sets an alarm mid-conversation, it
 persists to YAML and fires through the Mirror toast just like the operator
 did it. No file I/O, no network — AUTO tier (passthrough like `set_mood`).
 """

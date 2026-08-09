@@ -18,6 +18,7 @@ Does not overlap with:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -59,7 +60,8 @@ class MemoryLintJob(BaseJob):
                 project_root=TESSERACT_HOME,
                 repo_root=ROOT,
             )
-            report = linter.lint()
+            # Off the loop: a full memory-store integrity scan.
+            report = await asyncio.to_thread(linter.lint)
 
             detail = (
                 f"wikilinks={len(report.broken_wikilinks)} "

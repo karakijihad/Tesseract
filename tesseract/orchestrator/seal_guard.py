@@ -1,6 +1,6 @@
 """Refuse to start a subprocess whose working directory is inside the seal.
 
-`decide.evaluate` governs TARS's own tools. It does not govern a `claude` or
+`decide.evaluate` governs the assistant's own tools. It does not govern a `claude` or
 `codex` process: those are spawned directly, run for minutes, and edit whatever
 their cwd contains. Started inside `app/`, such a process will happily "fix the
 bug" in the installed application — an edit that is not in git, that the next
@@ -42,7 +42,7 @@ def safe_cwd(preferred: str | Path) -> Path:
     `assert_cwd_outside_seal` and surface the refusal instead — silently
     relocating someone who typed a path is worse than telling them.
 
-    The fallback is `tars-workshop/`, not the state root: a CLI dropped at the
+    The fallback is `workshop/`, not the state root: a CLI dropped at the
     top of `home/` sits directly above `memory-store/`, `vault/` and `config/`,
     and "work in the current directory" is a normal thing for it to be asked to
     do. The workshop is the one directory that exists to be written in.
@@ -53,7 +53,7 @@ def safe_cwd(preferred: str | Path) -> Path:
     except SealViolation:
         from tesseract.paths import home_dir
 
-        fallback = home_dir() / "tars-workshop"
+        fallback = home_dir() / "workshop"
         try:
             fallback.mkdir(parents=True, exist_ok=True)
         except OSError:  # pragma: no cover — fall back to the state root
@@ -88,7 +88,7 @@ def assert_cwd_outside_seal(cwd: str | Path) -> None:
                 f"refusing to start a process inside the sealed {label}/ tree "
                 f"({resolved}). That tree is replaced wholesale by every update, "
                 f"so any edit made there is destroyed silently. Start in the "
-                f"home tree instead — its tars-workshop/ folder for scratch "
+                f"home tree instead — its workshop/ folder for scratch "
                 f"work — or in the development repository if the application "
                 f"itself needs changing."
             )

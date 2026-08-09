@@ -1,9 +1,9 @@
-"""``channel_history_read`` — TARS-facing log reader (2026-05-17).
+"""``channel_history_read`` — agent-facing log reader (2026-05-17).
 
 When the operator asks "what did we discuss yesterday about X" and the
 memory pipeline + rolling summary return nothing (because the
 reflection writer never fired before a bridge restart, or the topic
-falls outside the recent verbatim window), this tool lets TARS read
+falls outside the recent verbatim window), this tool lets the assistant read
 the per-day conversation log directly instead of confabulating.
 
 Three lookup modes (mutually exclusive):

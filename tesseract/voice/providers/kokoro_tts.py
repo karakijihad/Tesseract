@@ -352,7 +352,7 @@ def _resolve_style(kokoro: Any, mix: Mapping[str, float]) -> Any:
 
 
 def _sanitize_for_tts(text: str) -> str:
-    """Same sanitisation contract as piper_tts / gemini_tts — strip
+    """Same sanitisation contract as piper_tts — strip
     bracketed style cues (`[whispers]`) and markdown emphasis (`*`,
     `**`) so they don't surface as spoken artefacts."""
     cleaned = _STYLE_CUE_RE.sub("", text)

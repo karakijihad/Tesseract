@@ -1,6 +1,6 @@
 [project]
 name = "tesseract"
-version = "1.0.10"
+version = "1.1.0"
 description = "TESSERACT kernel — local-first AI entity runtime"
 requires-python = ">=3.12"
 dependencies = [
@@ -11,9 +11,9 @@ dependencies = [
 
     # AI adapters — Claude CLI + Codex CLI via delegate_* tools, plus the
     # Anthropic SDK for direct API calls (cost-tracked role fallbacks).
-    # `google-genai` covers chat_brain Gemini fallback, voice STT
-    # (Gemini Flash audio), and voice TTS (Gemini Flash TTS) on a single
-    # GOOGLE_API_KEY — no OAuth2 / ADC anywhere in the runtime.
+    # `google-genai` covers the chat_brain Gemini fallback and voice STT
+    # (Gemini Flash audio) on a single GOOGLE_API_KEY — no OAuth2 / ADC
+    # anywhere in the runtime. TTS is local; there is no cloud lane.
     "openai>=1.40.0",
     "anthropic>=0.88.0",
     "google-genai>=1.0.0",
@@ -22,6 +22,10 @@ dependencies = [
     # Memory
     "faiss-cpu>=1.8.0",
     "numpy>=1.26.0",
+    # Reranker tokenization (~7 MB Rust wheel). The ONNX runtime itself comes
+    # transitively via piper-tts; model files are fetched separately
+    # (scripts/fetch_reranker_model.py) and absent files degrade cleanly.
+    "tokenizers>=0.20",
 
     # Config
     "pyyaml>=6.0",
@@ -48,7 +52,7 @@ dependencies = [
     # without a restart.
     "watchdog>=4.0",
 
-    # 2026-05-24 — Textual TUI for the ``tars`` CLI. Replaces the bare
+    # 2026-05-24 — Textual TUI for the ``agent`` CLI. Replaces the bare
     # ANSI renderer with a real interactive app: scrollable transcript,
     # collapsible tool blocks, status bar, real input field with line
     # editing + history. Headless fallback path (``--legacy``) keeps the
@@ -70,13 +74,19 @@ dependencies = [
     # storm on a fresh install). Linux/Mac use stdlib `pty`.
     "pywinpty>=2.0.13; sys_platform == 'win32'",
 
-    # Local TTS runtime — Piper is the DEFAULT voice (baked-in
-    # northern_english_male; the provisioner downloads the model on first
-    # run) and TARS is voice-first, so the engine must be core: as an
-    # extra it was never installed on packaged apps and every install was
-    # silent (found live 2026-07-30). CPU onnxruntime comes transitively;
-    # GPU acceleration + Kokoro stay in the opt-in [voice-local] extra.
+    # Local TTS runtime — both shipped engines must be core, because the
+    # provisioner installs bare `-e` with no extras: an engine parked in an
+    # extra is never installed on a packaged app, and the failure is silent
+    # (the lane just latches disabled). That is how Piper shipped mute
+    # once already, found live 2026-07-30.
+    #
+    # Kokoro is the default voice (`roles.yaml::voice.tts.primary`), Piper
+    # the fallback; both download their model files on first run. CPU
+    # onnxruntime arrives transitively via either. GPU acceleration stays
+    # in the opt-in [voice-local] extra — it is a speedup, not a
+    # requirement, and Kokoro falls back to CPU cleanly without it.
     "piper-tts>=1.2.0",
+    "kokoro-onnx>=0.5.0",
 ]
 
 [project.optional-dependencies]
@@ -92,15 +102,13 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "pytest-httpx>=0.30.0",
 ]
-# GPU/optional TTS — Kokoro (style-embedding blend; needs onnxruntime +
-# the CUDA 12 wheels on Windows so the CUDAExecutionProvider can resolve
-# its DLLs). Piper itself is a core dependency (see above); this extra
-# adds Kokoro + GPU acceleration only. Voice models are downloaded into
+# GPU acceleration for the local TTS engines — opt-in only. Both engines
+# themselves are core dependencies (see above) and run on CPU without any
+# of this; the CUDA 12 wheels are here so Kokoro's CUDAExecutionProvider
+# can resolve its DLLs on Windows. Voice models are downloaded into
 # `tesseract/voice/models/{piper,kokoro}/`; pip only ships the runtime.
 voice-local = [
-    "kokoro-onnx>=0.5.0",
     "onnxruntime-gpu>=1.20; platform_system == 'Windows'",
-    "onnxruntime>=1.20; platform_system != 'Windows'",
     "nvidia-cuda-runtime-cu12; platform_system == 'Windows'",
     "nvidia-cuda-nvrtc-cu12; platform_system == 'Windows'",
     "nvidia-cufft-cu12; platform_system == 'Windows'",
@@ -109,10 +117,10 @@ voice-local = [
     "nvidia-cusolver-cu12; platform_system == 'Windows'",
 ]
 
-# TC-6 — `tars` console script. Operator types `tars` in any shell and
+# TC-6 — `agent` console script. Operator types `agent` in any shell and
 # the TUI client attaches to the running controller daemon.
 [project.scripts]
-tars = "tesseract.scripts.tars_cli:main"
+agent = "tesseract.scripts.agent_cli:main"
 
 [build-system]
 requires = ["setuptools>=75.0"]
@@ -136,5 +144,5 @@ include = ["tesseract*"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
-    "live: opt-in live-LLM smoke tests; requires TARS_RUN_LIVE_LLM=1",
+    "live: opt-in live-LLM smoke tests; requires TESSERACT_RUN_LIVE_LLM=1",
 ]

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
-from pathlib import Path
+from tesseract.kernel.tools._path_anchor import anchor_read_path
 
 from pydantic import BaseModel, Field
 
@@ -45,9 +45,7 @@ class GlobTool(Tool):
         if context.cancel_event.is_set():
             raise asyncio.CancelledError
         inp = tool_input if isinstance(tool_input, GlobInput) else GlobInput(**tool_input.model_dump())
-        search_dir = Path(inp.path)
-        if not search_dir.is_absolute():
-            search_dir = Path(context.workspace_root) / search_dir
+        search_dir = anchor_read_path(inp.path, context.workspace_root)
 
         if not search_dir.exists():
             return ToolResult(output=f"Directory not found: {search_dir}", is_error=True)

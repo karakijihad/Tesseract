@@ -1,13 +1,13 @@
-"""diary_append tool — TARS's first-person reflection log.
+"""diary_append tool — the assistant's first-person reflection log.
 
 Different from `memory_save`. Memory captures *facts about the world*
 (operator preferences, project state, references). The diary captures
-*facts about TARS* — what he noticed about himself in a session, what
+*facts about the assistant* — what it noticed about itself in a session, what
 landed, what felt off, what he'd do differently.
 
 Storage: `tesseract/memory-store/diary/YYYY-MM-DD.md`, one file per day,
 append-only. The librarian reads recent entries during heartbeat and
-drafts candidate `SOUL.md Growth` bullets; TARS decides on `/reflect`
+drafts candidate `SOUL.md Growth` bullets; the assistant decides on `/reflect`
 which candidates stay.
 
 Not retrieved by `memory_search` — the diary is intentionally walled off
@@ -48,7 +48,7 @@ class DiaryAppendTool(Tool):
     risk_class: ClassVar[str] = "autonomous"
     """Append a first-person reflection entry to today's diary file.
 
-    AUTO permission — this is TARS's own file. No operator approval
+    AUTO permission — this is the assistant's own file. No operator approval
     needed. Writes to `<repo_root>/tesseract/memory-store/diary/<date>.md`.
     """
 

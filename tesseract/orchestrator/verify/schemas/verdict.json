@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "properties": {
+    "verdict": {"type": "string", "enum": ["CLEAN", "ISSUES"]},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "file": {"type": "string"},
+          "line": {"type": "integer"},
+          "severity": {"type": "string", "enum": ["critical", "major", "minor"]},
+          "claim": {"type": "string"},
+          "failure_scenario": {"type": "string"},
+          "confidence": {"type": "number"}
+        },
+        "required": ["file", "line", "severity", "claim", "failure_scenario"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["verdict", "findings"],
+  "additionalProperties": false
+}

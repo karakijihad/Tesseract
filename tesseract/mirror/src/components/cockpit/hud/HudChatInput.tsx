@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useEntityName } from '../../../hooks/useEntityName';
 import { useConversationStore, EMPTY_MESSAGES, EMPTY_APPROVALS } from '../../../stores/conversation';
 import { useUIStore } from '../../../stores/ui';
 import { usePanelStore } from '../../../cockpit/panelStore';
@@ -44,6 +45,7 @@ function isRenderable(m: ChatMessage): boolean {
 }
 
 export function HudChatInput() {
+  const entityName = useEntityName();
   const view = useUIStore((s) => s.view);
   const sendUserMessage = useConversationStore((s) => s.sendUserMessage);
   const sessionId = useWebSocketStore((s) => s.sessionId);
@@ -214,7 +216,7 @@ export function HudChatInput() {
     const text = draft.trim();
     if (!text && pendingAttachments.length === 0) return;
     // SC-4 — a recognized cockpit command (open a view, spawn the trio, spawn a
-    // content surface) is consumed here and never reaches TARS chat. Only when
+    // content surface) is consumed here and never reaches the assistant chat. Only when
     // there are no attachments: a message carrying files is always a chat turn.
     if (text && pendingAttachments.length === 0 && dispatchCommand(text)) {
       setDraft('');
@@ -259,7 +261,7 @@ export function HudChatInput() {
 
   const toggleButton = (
     <Hint
-      label={isOpen ? 'Close (Esc)' : 'Ask TARS (Ctrl+/)'}
+      label={isOpen ? 'Close (Esc)' : `Ask ${entityName} (Ctrl+/)`}
       position="top"
       maxWidth={160}
     >
@@ -304,9 +306,9 @@ export function HudChatInput() {
   // containing block of fixed-position descendants), and the panel ends
   // up clipped inside the 48px HUD bar with `overflow: hidden`.
   const panel = (
-    <div className="hud-chat-panel" role="dialog" aria-label="Ambient TARS chat">
+    <div className="hud-chat-panel" role="dialog" aria-label={`Ambient ${entityName} chat`}>
       <header className="hud-chat-panel-head">
-        <span className="hud-chat-panel-title">TARS</span>
+        <span className="hud-chat-panel-title">{entityName}</span>
         <button
           type="button"
           className="hud-chat-panel-close"
@@ -387,7 +389,7 @@ export function HudChatInput() {
           className="hud-chat-input-field"
           type="text"
           value={draft}
-          placeholder="Ask TARS…"
+          placeholder={`Ask ${entityName}…`}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -395,7 +397,7 @@ export function HudChatInput() {
               submit();
             }
           }}
-          aria-label="Ask TARS from any tab"
+          aria-label={`Ask ${entityName} from any tab`}
         />
         {canSteer(isStreaming, draft) && (
           <Hint

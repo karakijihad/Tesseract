@@ -1,6 +1,6 @@
 """propose_change — generic operator-gated workspace mutation.
 
-TARS uses this to request a change to any operator-owned workspace `.md`
+The assistant uses this to request a change to any operator-owned workspace `.md`
 file (SOUL, IDENTITY, FOUNDATION, USER, VOICE, AGENTS, HEARTBEAT, MCP,
 TOOLS, WORKSHOP, DIARY, BOOT). The tool **never** writes the target
 file — it appends a `change_proposal` event to the workspace inbox with
@@ -158,7 +158,7 @@ class ProposeChangeTool(Tool):
 
         event = WorkspaceEvent.new(
             kind="change_proposal",
-            source="tars",
+            source="agent",
             title=f"Change request — {label}",
             summary=summary,
             payload={

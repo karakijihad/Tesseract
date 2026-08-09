@@ -1,7 +1,7 @@
-"""orb_visibility — TARS shows or hides its orb in the Mirror cockpit.
+"""orb_visibility — the assistant shows or hides its orb in the Mirror cockpit.
 
-The orb is TARS's body on screen. The operator can hide it via the HUD
-toggle; this tool gives TARS the same control from chat or voice ("hide
+The orb is the assistant's body on screen. The operator can hide it via the HUD
+toggle; this tool gives the assistant the same control from chat or voice ("hide
 yourself", "come back"). Hiding also pauses the WebGL render loop
 (GlobalCanvas pause/resume), so this doubles as a way to shed GPU/CPU
 load on request.

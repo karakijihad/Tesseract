@@ -1,4 +1,4 @@
-/* Slice 2 — region capture → TARS vision. A full-viewport overlay layer above
+/* Slice 2 — region capture → the assistant vision. A full-viewport overlay layer above
    the cockpit; pointer-transparent except its own controls so the idle trigger
    never blocks the cockpit. Real tokens only. */
 .region-capture-root {

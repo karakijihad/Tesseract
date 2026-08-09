@@ -70,7 +70,7 @@ def load_spawn_stall_seconds(path: Path) -> float:
     """Return `spawn_stall_seconds` from runtime.yaml — the halt-watchdog bound.
 
     Spawn push Stage 2B. A background spawn still `running` past this many
-    seconds is flagged stalled and surfaced to TARS via a one-shot
+    seconds is flagged stalled and surfaced to the assistant via a one-shot
     `[spawn_stalled]` floor note. Generous on purpose: a hung *subprocess* is
     already killed by `cli_stream.race_communicate`'s own timeout, so this only
     catches the rarer task/record staleness. Raises loudly when the file or key
@@ -98,7 +98,7 @@ def load_spawn_stall_seconds(path: Path) -> float:
 def load_max_concurrent_spawns_per_session(path: Path) -> int:
     """Return `max_concurrent_spawns_per_session` from runtime.yaml.
 
-    parallel-tars P4 — per-session cap on simultaneously-running background
+    per-session cap on simultaneously-running background
     spawns (SpawnRegistry). Register attempts past the cap raise
     `SpawnCapExceeded`, which tools map to a "drain first" error result.
     Raises loudly when the file or key is missing (CLAUDE.md: no hardcoded
@@ -313,5 +313,27 @@ def load_chat_queue_max(path: Path) -> int:
     if value < 1:
         raise ValueError(
             f"chat_queue_max must be >=1, got {value}",
+        )
+    return value
+
+
+def load_agent_question_timeout_s(path: Path) -> float:
+    """Return `agent_question_timeout_s` from runtime.yaml.
+
+    Bounds how long a sub-agent parked on `agent_ask` waits for an answer.
+    Raises loudly when the file or key is missing (CLAUDE.md: no hardcoded
+    infrastructure defaults).
+    """
+    cfg = load_runtime_config(path)
+    raw = cfg.get("agent_question_timeout_s")
+    if raw is None:
+        raise ValueError(
+            "runtime.yaml is missing `agent_question_timeout_s` — a parked "
+            "sub-agent question needs a bound, and config is authoritative"
+        )
+    value = float(raw)
+    if value <= 0:
+        raise ValueError(
+            f"runtime.yaml::agent_question_timeout_s must be positive, got {raw!r}"
         )
     return value

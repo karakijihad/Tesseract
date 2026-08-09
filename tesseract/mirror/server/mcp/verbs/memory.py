@@ -1,19 +1,31 @@
 """memory.* MCP verbs.
 
-``memory.search`` (read), ``memory.save`` / ``memory.update`` (write, ASK
-floor) each map to their kernel tool, run through the full permission pipeline.
+``memory.search`` / ``memory.recall`` / ``memory.get`` (read),
+``memory.save`` / ``memory.update`` / ``memory.promote`` / ``memory.forget``
+(write) each map to their kernel tool and run through the full permission
+pipeline.
+
+`search`, `save` and `update` hand-build their input because they reshape
+params; the rest are 1:1 with their tool and use ``make_tool_verb``. Curation
+was the gap that mattered — a client could add to the store but never read one
+entry whole, promote what proved durable, or drop what did not.
 """
 
 from __future__ import annotations
 
 from pydantic import ValidationError
 
+from tesseract.kernel.tools.memory_forget import MemoryForgetInput
+from tesseract.kernel.tools.memory_get import MemoryGetInput
+from tesseract.kernel.tools.memory_promote import MemoryPromoteInput
 from tesseract.kernel.tools.memory_save import MemorySaveInput
 from tesseract.kernel.tools.memory_search import MemorySearchInput
 from tesseract.kernel.tools.memory_update import MemoryUpdateInput
+from tesseract.kernel.tools.recall_history import RecallHistoryInput
 from tesseract.mirror.server.mcp.verbs._base import (
     MCPVerbError,
     VerbContext,
+    make_tool_verb,
     run_kernel_tool,
 )
 
@@ -79,13 +91,28 @@ async def memory_update(ctx: VerbContext) -> str:
     return await run_kernel_tool(ctx, "memory_update", tool_input, ask_fn=ctx.ask_fn)
 
 
+memory_recall = make_tool_verb("recall_history", RecallHistoryInput)
+memory_get = make_tool_verb("memory_get", MemoryGetInput)
+memory_promote = make_tool_verb("memory_promote", MemoryPromoteInput)
+memory_forget = make_tool_verb("memory_forget", MemoryForgetInput)
+
+
 # tools/list schema source (tesseract/mirror/server/mcp/tools.py::_input_schema) —
 # without this, memory.save/update fell back to a vague
 # `{"additionalProperties": true}` curated schema (P7 live-gate finding: a
 # lane client guessed at param shapes and got error_400 three times).
+# `make_tool_verb` carries it for the four above.
 memory_search.mcp_input_model = MemorySearchInput
 memory_save.mcp_input_model = MemorySaveInput
 memory_update.mcp_input_model = MemoryUpdateInput
 
 
-__all__ = ["memory_search", "memory_save", "memory_update"]
+__all__ = [
+    "memory_search",
+    "memory_save",
+    "memory_update",
+    "memory_recall",
+    "memory_get",
+    "memory_promote",
+    "memory_forget",
+]

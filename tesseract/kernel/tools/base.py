@@ -77,7 +77,7 @@ class SpawnCapExceeded(RuntimeError):
 
 class SpawnDepthExceeded(SpawnCapExceeded):
     """Raised by `SpawnRegistry.register` when the owning session already sits
-    at `runtime.yaml::max_spawn_depth` nesting levels (trio W3 — OpenClaw
+    at `runtime.yaml::max_spawn_depth` nesting levels (OpenClaw
     maxSpawnDepth analog, the structural backstop against spawn-inside-spawn
     runaways). Subclasses `SpawnCapExceeded` so every existing background-
     capable call site handles it without changes."""
@@ -130,8 +130,8 @@ class ToolResult:
     # NOT because the underlying operation logically failed. The autonomy
     # runner uses this to distinguish "ran out of time, park-not-discard"
     # from "tool error, mark FAILED". Tools that have no notion of
-    # wallclock timeouts leave it False; tools that DO (delegate_claude /
-    # delegate_codex) set it in their timeout
+    # wallclock timeouts leave it False; tools that DO (delegate_coder /
+    # delegate_auditor) set it in their timeout
     # branch alongside is_error=True.
     # lane_turn is a second, intentional exception: its `is_error` reflects
     # the lane turn's own outcome (turn_ended.payload["is_error"]) when the
@@ -148,6 +148,14 @@ class ToolContext:
     workspace_root: str = "."
     session_id: str = ""
     current_call_id: str = ""
+    # The MCP client identity this call is being made on behalf of, when it
+    # came in over the hub. Durable resource ownership hangs off this, not off
+    # `session_id` — a session id changes every reconnect, so a lane owned by
+    # one would be orphaned the moment its client came back. Empty means an
+    # in-process call with no MCP principal (the assistant's own turn, autonomy, the
+    # scheduler): those reach the substrate directly rather than through a
+    # gateway, and are the operator's work.
+    caller_principal: str = ""
     # Set by `decide.evaluate` before `ask_fn` is invoked so ask_fn
     # implementations can write durable approval-ledger rows with the
     # effective posture source. One of: "security", "path_validator",
@@ -184,7 +192,7 @@ class ToolContext:
     todos: list[dict[str, Any]] = field(default_factory=list, repr=False)
     # Phase 4 (CLI parity) — background-spawn registry hook. The
     # owning ChatSession populates this with its `SpawnRegistry`
-    # instance so tools (delegate_claude with await=False, plus the
+    # instance so tools (delegate_coder with await=False, plus the
     # spawn_check / spawn_await / spawn_cancel control tools) can
     # register or look up handles without importing
     # tesseract.brain.spawns from the kernel layer (which would cross
@@ -208,7 +216,7 @@ class ToolContext:
     # the addition. `None` in contexts with no owning session (tests,
     # sub-agent contexts that don't care about tiering).
     enabled_extended_tools: Any = field(default=None, repr=False)
-    # trio W3 — spawn nesting level of the owning session. Root sessions sit
+    # Spawn nesting level of the owning session. Root sessions sit
     # at 0; `agent_factory.build_sub_session` bumps the copied context by 1
     # per nesting. `ChatSession.__post_init__` stamps both onto its
     # SpawnRegistry; `register()` raises SpawnDepthExceeded when

@@ -480,7 +480,7 @@ class BriefRenderer:
                 payload=payload,
                 priority=4,
                 author_id="system",
-                author_display="TARS",
+                author_display="the assistant",
             )
             store.append_event(event)
         except Exception:  # noqa: BLE001

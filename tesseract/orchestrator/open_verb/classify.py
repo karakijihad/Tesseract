@@ -130,11 +130,100 @@ def _looks_like_a_path(target: str) -> bool:
     )
 
 
+class Intent(StrEnum):
+    """How the caller wants the target read.
+
+    The ladder below is first-match-wins and one of its rungs is "something
+    exists at this name", so the same string can mean different things on
+    different days: a file called `bbc.co.uk` in the working directory makes
+    that string a document rather than a site, and deleting it makes it a
+    site again. A caller that already knows what it meant should not have to
+    win a guessing game against the filesystem.
+
+    `AUTO` is the ladder, unchanged. Every other value pins one rung. None
+    of them can reach past the safety rungs — a pinned intent chooses among
+    readings, it never turns a refusal into an open.
+    """
+
+    AUTO = "auto"
+    PATH = "path"
+    URL = "url"
+    APP = "app"
+    SEARCH = "search"
+
+
+def _as_url(raw: str) -> Classification:
+    """Read `raw` as a web address, adding the scheme a bare domain omits."""
+    split = urlsplit(raw)
+    if split.scheme.lower() in _ALLOWED_SCHEMES:
+        if not split.hostname:
+            return Classification(
+                TargetKind.REFUSED, raw, f"{raw!r} has no host to open"
+            )
+        return Classification(
+            TargetKind.URL, _without_userinfo(raw, split), "explicit http(s) url"
+        )
+    if split.scheme:
+        return Classification(
+            TargetKind.REFUSED,
+            raw,
+            f"{split.scheme}: is not a scheme this can open",
+        )
+    if not _DOMAIN_RE.match(raw):
+        return Classification(
+            TargetKind.REFUSED, raw, f"{raw!r} is not shaped like a web address"
+        )
+    return Classification(TargetKind.DOMAIN, f"https://{raw}", "a bare domain")
+
+
+def _pinned(
+    intent: Intent,
+    raw: str,
+    *,
+    apps: Mapping[str, str],
+) -> Classification:
+    """Classify against one rung, chosen by the caller instead of guessed."""
+    if intent is Intent.SEARCH:
+        # Unconditional: the whole point is that a phrase which happens to
+        # name a file on this machine is still a phrase.
+        return Classification(TargetKind.QUERY, raw, "a search phrase")
+
+    if intent is Intent.URL:
+        return _as_url(raw)
+
+    if intent is Intent.APP:
+        match = _lookup_app(raw, apps)
+        if match is None:
+            return Classification(
+                TargetKind.REFUSED,
+                raw,
+                f"{raw!r} is not a configured application — add it to "
+                f"`open_verb.yaml::apps` or open it as a path",
+            )
+        return Classification(TargetKind.APP, match, "a known application")
+
+    expanded = Path(raw).expanduser()
+    try:
+        exists = expanded.exists()
+    except OSError:
+        exists = False
+    if not exists:
+        # Same sentence the ladder gives, for the same reason: a path that
+        # is not there is worth saying out loud rather than reinterpreting.
+        return Classification(
+            TargetKind.AMBIGUOUS,
+            raw,
+            f"{raw!r} was opened as a path but nothing is there",
+        )
+    return Classification(TargetKind.PATH, str(expanded.resolve()), "an existing path")
+
+
 def classify(
     target: str,
     *,
     apps: Mapping[str, str],
     launch_extensions: frozenset[str] = frozenset(),
+    intent: Intent = Intent.AUTO,
 ) -> Classification:
     raw = target.strip()
     if not raw:
@@ -192,6 +281,12 @@ def classify(
         return Classification(
             TargetKind.REFUSED, raw, "network paths are not opened"
         )
+
+    # Every rung above is a refusal, and they all run before the intent is
+    # consulted. A caller may say how to READ a target; it may not say that a
+    # UNC path, a mapped drive or a `javascript:` scheme is fine after all.
+    if intent is not Intent.AUTO:
+        return _pinned(intent, raw, apps=apps)
 
     # 2. Something that exists outranks every guess below.
     expanded = Path(raw).expanduser()

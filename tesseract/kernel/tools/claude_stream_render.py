@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from tesseract.orchestrator.tars_controller.interactive.stream_parser import (
+from tesseract.orchestrator.agent_controller.interactive.stream_parser import (
     ClaudeTurnAccumulator,
 )
 

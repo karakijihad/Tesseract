@@ -98,6 +98,14 @@ def _resolves_into_blocked_network(url: str, blocked: frozenset[str]) -> bool:
     resolves to a blocked address, so the resolved addresses are what matter.
     A resolution failure is not a block — an unreachable host already ends as
     `frameable=False` through the normal error path.
+
+    The configured ranges cover link-local (including cloud metadata at
+    169.254.169.254) but deliberately not RFC1918. Opening a router admin page
+    or a NAS by address is an ordinary act on a local-first tool, and the probe
+    is credential-free, cookie-free and reads no body, so what a private-range
+    HEAD exposes is response metadata for a host the operator just named.
+    Revisit when `open` becomes reachable by untrusted input without operator
+    intent — that condition, not the mechanism, is what changes the trade.
     """
     if not blocked:
         return False

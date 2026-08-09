@@ -1,4 +1,4 @@
-"""Tool registry and executor for the TARS chat layer.
+"""Tool registry and executor for the assistant chat layer.
 
 Registry maps tool names to `Tool` instances (defined in
 `tesseract.kernel.tools.base`). `execute_tool()` validates input via the
@@ -6,7 +6,7 @@ tool's pydantic schema, delegates the permission decision to
 `tesseract.permissions.decide.evaluate` (single source of truth for tool
 permission decisions), and runs the tool when the decision says proceed.
 
-Scope note (tars-reboot Session 2): the adapter-facing tool schema shape
+the adapter-facing tool schema shape
 and the assistant/tool message roundtrip are OpenAI-native. Gemini's
 function-calling message shape is different; the GeminiAdapter's system
 message split will handle tool descriptions, but tool-result turns over
@@ -37,21 +37,22 @@ from tesseract.permissions.policy import PermissionPolicy
 
 logger = logging.getLogger(__name__)
 
-# cli-auth DESIGN.md §3 — use-time cache invalidation. Maps the two headless
-# delegate tools to their `providers.yaml cli.<name>` provider so a failed
-# call can drop that provider's stale "ready" auth cache entry. Reuses
-# `CLIAdapter`'s own hard-error needles (`tesseract/kernel/adapters/cli.py`)
-# narrowed to the auth-shaped subset — read-only import, kernel stays
-# unedited (kernel lockdown). `lane_turn`/`lane_send` are NOT covered here:
-# they resolve their provider through a lane binding, not a fixed tool-name
-# mapping, so there's no clean generic attachment point for this hook.
-_CLI_DELEGATE_PROVIDERS = {"delegate_claude": "claude", "delegate_codex": "codex"}
+# cli-auth DESIGN.md §3 — use-time cache invalidation. The two headless
+# delegate tools, whose failed calls can drop a `providers.yaml cli.<name>`
+# provider's stale "ready" auth cache entry. Which provider that is comes from
+# the result, not from this set: a seat is filled by config and borrowable per
+# call. Reuses `CLIAdapter`'s own hard-error needles
+# (`tesseract/kernel/adapters/cli.py`) narrowed to the auth-shaped subset —
+# read-only import, kernel stays unedited (kernel lockdown). `lane_turn` /
+# `lane_send` are NOT covered here: they resolve their provider through a lane
+# binding, and there's no clean generic attachment point for this hook.
+_CLI_DELEGATE_TOOLS = frozenset({"delegate_coder", "delegate_auditor"})
 _AUTH_SHAPED_NEEDLES = tuple(
     n for n in _HARD_ERROR_NEEDLES if n in ("unauthorized", "authentication", "auth required")
 )
 
-# Distributable-app source-edit gate. `delegate_claude`/`delegate_codex` are
-# the sanctioned path for TARS to edit source (CLAUDE.md kernel-lockdown
+# Distributable-app source-edit gate. `delegate_coder`/`delegate_auditor` are
+# the sanctioned path for the assistant to edit source (CLAUDE.md kernel-lockdown
 # rule) — correct on a dev checkout, where the running tree IS the repo
 # being worked on, but pointless (the next update overwrites it) and risky
 # (someone else's machine) on an installed copy. Neither tool distinguishes
@@ -62,7 +63,7 @@ _AUTH_SHAPED_NEEDLES = tuple(
 # evidence snapshotting). An empty `target_paths` is the existing signal
 # for "not an edit task" (analysis/review/questions), so only a non-empty
 # declaration is gated here — non-editing delegate use is unaffected.
-_SOURCE_EDIT_DELEGATE_TOOLS = frozenset({"delegate_claude", "delegate_codex"})
+_SOURCE_EDIT_DELEGATE_TOOLS = frozenset({"delegate_coder", "delegate_auditor"})
 
 _INSTALLED_TREE_REFUSAL = (
     "Source edits are disabled on an installed copy of TESSERACT — this "
@@ -120,9 +121,15 @@ def _looks_auth_shaped(text: str) -> bool:
 def _invalidate_cli_auth_on_failure(tool_name: str, result: ToolResult) -> None:
     """Drop a delegate tool's cached cli-auth state after an auth-shaped
     failure so the next capabilities read/reverify re-probes instead of
-    trusting a subscription that just lapsed. Best-effort — never raises."""
-    provider = _CLI_DELEGATE_PROVIDERS.get(tool_name)
-    if provider is None or not result.is_error or not _looks_auth_shaped(result.output):
+    trusting a subscription that just lapsed. Best-effort — never raises.
+
+    The provider is read off the result, not off the tool name: a seat names
+    the CLI that fills it by default, but a call may borrow the other one, and
+    invalidating by seat would clear the wrong subscription's cache."""
+    if tool_name not in _CLI_DELEGATE_TOOLS:
+        return
+    provider = (result.metadata or {}).get("provider")
+    if not provider or not result.is_error or not _looks_auth_shaped(result.output):
         return
     try:
         from tesseract.brain import cli_auth
@@ -282,6 +289,40 @@ def reset_tokenjuice_cache() -> None:
     _TJ_CACHE["config"] = None
     _TJ_CACHE["rules"] = None
     _TJ_CACHE["init_failed"] = False
+
+
+def compress_for_delivery(text: str, tool_name: str) -> tuple[str, bool]:
+    """Run the TokenJuice chain over arbitrary text, outside a tool call.
+
+    For output that reaches the model somewhere other than a `tool_result`
+    envelope — a background spawn's completion, delivered into the
+    conversation rather than pointed at. Same rules, so a lane transcript is
+    compressed by the same head+tail that already preserves an auditor's
+    verdict at the tail.
+
+    Returns `(text, was_compressed)`; the flag is what lets a caller say so
+    rather than silently hand over a trimmed result. Best-effort: any failure
+    returns the text untouched."""
+    if not text:
+        return text, False
+    cfg, rules = _tj_state()
+    if cfg is None or not cfg.enabled or not rules:
+        return text, False
+    try:
+        pr = _tj_process(
+            text,
+            tool_name,
+            {},
+            rules=rules,
+            enabled=cfg.enabled,
+            dry_run=cfg.dry_run,
+            audit_log=cfg.audit_log,
+            disabled_rules=cfg.disabled_rules,
+        )
+    except Exception:
+        logger.exception("tokenjuice process raised; returning raw text")
+        return text, False
+    return pr.text, pr.text != text
 
 
 def _apply_tokenjuice(

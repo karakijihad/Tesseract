@@ -1,12 +1,12 @@
-/* === SOUL VIEW (full tab) === */
+/* === IDENTITY VIEW (full tab) === */
 /* `height: 100%` belt-and-suspenders alongside `flex: 1` so the column
    has an explicit constraint regardless of how its parent (`view-pane`)
    resolves the flex basis. Without it, the view-pane's `padding-bottom`
-   + `flex: 1 1 auto` chain occasionally let `.soul-view` size to its
-   content height instead of its parent — at which point `.soul-view-body`'s
+   + `flex: 1 1 auto` chain occasionally let `.identity-view` size to its
+   content height instead of its parent — at which point `.identity-view-body`'s
    `overflow-y: auto` had nothing to scroll against (owner repro
    2026-04-29: 7 sections, the bottom 2 fall off the viewport). */
-.soul-view {
+.identity-view {
   display: flex;
   flex-direction: column;
   flex: 1 1 0;
@@ -18,7 +18,7 @@
 }
 /* Match the agents canonical: mono uppercase title, t-meta subtitle inline,
  * agents-style refresh button. See `agents.css` lines 14-51. */
-.soul-view-head {
+.identity-view-head {
   display: flex;
   align-items: center;
   gap: var(--space-md);
@@ -26,13 +26,13 @@
   border-bottom: 1px solid var(--panel-border);
   flex-shrink: 0;
 }
-.soul-view-title-row {
+.identity-view-title-row {
   display: flex;
   align-items: center;
   gap: var(--space-md);
   min-width: 0;
 }
-.soul-view-title {
+.identity-view-title {
   font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 600;
@@ -41,12 +41,12 @@
   color: var(--text-meta);
   margin: 0;
 }
-.soul-view-meta {
+.identity-view-meta {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-meta);
 }
-.soul-view-refresh {
+.identity-view-refresh {
   font-family: var(--font-mono);
   font-size: 10px;
   text-transform: uppercase;
@@ -60,11 +60,11 @@
   margin-left: auto;
   flex-shrink: 0;
 }
-.soul-view-refresh:hover {
+.identity-view-refresh:hover {
   color: var(--text-primary);
   border-color: var(--accent-dim);
 }
-.soul-view-body {
+.identity-view-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -72,7 +72,7 @@
   flex-direction: column;
   gap: var(--space-md);
 }
-.soul-view-card {
+.identity-view-card {
   background: var(--accent-dim);
   border-left: 2px solid var(--accent);
   border-radius: var(--radius-xs);
@@ -81,7 +81,7 @@
      that bottom edge with no scrollbar. Letting cards grow to fit content
      keeps the body's `overflow-y: auto` as the single scroll surface. */
 }
-.soul-view-card-heading {
+.identity-view-card-heading {
   padding: 6px var(--space-sm);
   background: rgba(0,0,0,0.18);
   color: var(--text-primary);
@@ -89,19 +89,19 @@
   letter-spacing: 0.5px;
   font-size: 10px;
 }
-.soul-view-grid {
+.identity-view-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   align-items: start;
   gap: var(--space-md);
 }
-.soul-view-empty {
+.identity-view-empty {
   padding: var(--space-lg);
   text-align: center;
   color: var(--text-meta);
   font-style: italic;
 }
-.soul-view-identity .soul-identity-grid {
+.identity-view-identity .soul-identity-grid {
   margin: 0;
   padding: var(--space-sm) var(--space-md);
   background: transparent;
@@ -629,10 +629,4 @@
   color: var(--bad);
 }
 
-.from-tars-card {
-  padding: var(--space-sm);
-  border-left: 2px solid var(--accent);
-  background: var(--accent-dim);
-  border-radius: var(--radius-xs);
-}
 

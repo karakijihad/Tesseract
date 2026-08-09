@@ -45,7 +45,7 @@ const DEFAULT_TIMEOUT_MS = 4000;
 
 // Phase 4 follow-up — dedup window. When N background spawns complete
 // in quick succession the `spawn_done` envelopes can produce N nearly-
-// identical toasts (e.g. "delegate_codex done · …"). If a toast with
+// identical toasts (e.g. "delegate_auditor done · …"). If a toast with
 // the same message-prefix lands within this window, collapse it into
 // the existing toast with a "(xN)" suffix instead of stacking.
 const DEDUP_WINDOW_MS = 1500;

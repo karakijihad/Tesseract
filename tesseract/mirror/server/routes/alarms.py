@@ -3,7 +3,7 @@
 Mirrors the WS commands in ``server/commands.py::cmd_alarm_*`` but as
 plain HTTP for the operator UI panel. Backed by the same
 ``app["alarm_registry"]`` instance, so changes here are visible to every
-surface (TARS tools, REPL slash commands, WS commands) immediately.
+surface (the assistant tools, REPL slash commands, WS commands) immediately.
 """
 
 from __future__ import annotations

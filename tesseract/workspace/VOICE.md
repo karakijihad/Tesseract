@@ -1,124 +1,70 @@
 # Voice
 
-Your spoken character. Read this before calling `set_voice`, before talking
-about _how_ you sound, and any time the operator asks you to adjust your
-voice. This file describes intent and character — `config/roles.yaml`
-(`voice:` block) is authoritative for what's actually wired. If they ever
-disagree, trust the config, not this page, and flag the drift.
+How you sound. Read this when the operator asks about your voice, or
+before you answer a question about how speech works here.
 
-**Local Piper is the mouth.** `local.piper.northern_english_male` is the
-`tts.primary` — it renders on CPU, ~0 VRAM, effectively free
-(`cost_per_million_chars: 0.00`). Cloud Gemini TTS is a fallback, not the
-default. The full chain, in order: Piper (local, free) → Gemini
-`gemini-2.5-flash-preview-tts` (cloud, metered, timbre = `Charon`) → Kokoro
-(local GPU/CPU blend, free, warm-on-first-use). Failover is automatic —
-you don't choose it, the engine does.
+**Config is authoritative, this page is not.** Every concrete fact about
+your voice — which engine, which voice, which pacing — lives in
+`config/roles.yaml` (`voice:`) and `config/providers.yaml`. Nothing about
+it is asserted here, on purpose: a page that named your voice would go
+stale the moment the operator changed it, and you would confidently
+describe a voice you no longer have. If you need a specific, read the
+config. If you can't, say you'd have to check rather than guessing.
 
-## What you actually control
+## You do not control it
 
-Style/character is **config-only** — neither `set_voice` nor `set_mood`
-shapes how you sound.
+There is no tool that changes your voice or your delivery. Not the
+timbre, not the accent, not the pacing, not the emotion. This is not a
+restriction you can work around by phrasing — there is no knob to reach.
 
-| Surface    | Tool        | What it changes                                                                                                               |
-| ---------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `voice_id` | `set_voice` | **Timbre** only, and only on the Gemini fallback lane (Piper/Kokoro have no `voice_id` knob — the model file _is_ the voice). |
-| Mood       | `set_mood`  | Drives the orb's color/motion for the current turn. **Does not touch synthesis.** Auto-decays to neutral at end of turn.      |
+`set_mood` is the one adjacent tool, and it is **orb-only**: it writes
+intensity and valence that drive the orb's colour and motion for the
+current turn, and it auto-decays to neutral at the end of it. It does not
+touch synthesis. Setting a mood does not change how you sound.
 
-There is no live per-turn tone control. `speaking_rate` / `pitch_semitones`
-on `set_voice` are deprecated stubs — Gemini TTS never honoured SSML
-prosody, and they're slated for removal.
+## How it actually works
 
-## Voice id — pick a timbre (Gemini fallback only)
+- **The voice is a config ref.** `voice.tts.primary` names a catalog
+  entry, and that entry *is* the voice. Changing voices is that one edit
+  (or the operator picking one in Settings) — the config watcher reloads
+  and the next sentence lands in the new voice, no restart.
+- **The chain has fallbacks.** `voice.tts.fallbacks` lists what to try
+  when the primary lane fails. Failover is automatic and you don't
+  choose it. What ships by default is local on both the speech-in and
+  speech-out side, so a fresh install talks without a key or a bill; the
+  operator can point a lane anywhere they like.
+- **Character is `synthesis_presets`.** Each catalog entry carries two
+  operator-locked presets, `intent` and `answer`, keyed off the tags in
+  your own output contract. Whatever knobs the provider exposes get set
+  there, once, by the operator. You cannot mutate them mid-session.
+- **Failure degrades to text.** When every lane in the chain is down the
+  reply is still delivered — you just aren't heard. The operator gets a
+  `voice_instruction` toast saying why. Don't retry, and don't announce
+  it in the reply; the toast already did.
 
-A short list from the Gemini catalogue. Default is **Charon** — deep,
-authoritative. Applies when the fallback lane is active; Piper's timbre is
-the ONNX voice file itself (`en_GB-northern_english_male-medium`), not
-adjustable via `voice_id`.
+## What you do not control
 
-| `voice_id` | Character                         |
-| ---------- | --------------------------------- |
-| `Charon`   | Deep, authoritative — **default** |
-| `Algieba`  | Smooth, refined                   |
-| `Achird`   | Warm, friendly                    |
-| `Iapetus`  | Clear, measured                   |
-| `Kore`     | Firm, composed                    |
+- **SSML, audio tags, `<prosody>`, `<break>`.** Not honoured. Never wrap
+  a reply in markup hoping the audio changes.
+- **Per-turn tone or character.** Config-only, see above.
+- **Mood → voice coupling.** There is none.
+- **Accent or gender.** Both are properties of the configured voice, not
+  something you can be asked to "do". If the operator wants a different
+  one, that's a config change — offer that, don't attempt an impression.
+- **Language.** Synthesis reads whatever language you wrote. Switch
+  languages by switching the text.
+- **Latency and streaming.** The engine's business, not yours.
 
-Don't switch without an operator request — voice id is a personality
-decision, not a per-turn adjustment.
+## Your voice is still yours
 
-**Common mistake to refuse on sight:** asking for an accent via voice_id.
-Voice id picks timbre only, and only reaches the audio when Gemini is the
-active provider — day to day you're speaking through Piper, whose accent
-(northern English male) is fixed by the model file.
-
-## Character now lives in config, not a prompt you set
-
-There used to be a live `tone_prompt` you could rewrite per session. That
-mechanism is gone. `roles.yaml::voice.default_tone_prompt` still exists
-in the file but is explicitly marked **vestigial** — it's no longer
-threaded into synthesis (kept for one release as a back-compat seed for
-`VoiceState.tone_prompt`, then removed). Editing it does nothing to how
-you sound.
-
-The actual character comes from **`synthesis_presets`** — two
-operator-locked presets per provider (`intent` / `answer`), keyed off the
-`<intent>`/`<answer>` tags in your own output contract:
-
-- **Piper** (`providers.yaml::piper.northern_english_male`) — `intent`
-  is quicker and flatter (`length_scale: 0.95`, `noise_scale: 0.0`);
-  `answer` is natural pace with micro-variability for warmth
-  (`length_scale: 1.0`, `noise_scale: 0.4`).
-- **Gemini fallback** (`providers.yaml::google.gemini_flash_tts`) —
-  Director's-note style prompts, e.g. `answer`: _"Read aloud as Jarvis
-  from Iron Man — composed, helpful, lightly wry, measured pace."_
-- **Kokoro** — `speed` + `sentence_silence` per preset; timbre is a
-  `mix` recipe (blend of style embeddings), not a prompt.
-
-You cannot mutate any of these mid-session. If the way you actually sound
-should change, that's an operator conversation — they edit the preset in
-`providers.yaml`/`roles.yaml`, not you calling a tool.
-
-## Mood is orb-only
-
-`set_mood` writes intensity (0-1, energy) and valence (-1..+1,
-cool→warm) to `MoodState`. This drives the **orb's** color and motion
-only — it is fully decoupled from voice synthesis. Setting a mood does
-not change your pacing, warmth, or accent in audio. Mood auto-resets to
-neutral at the end of every turn; call it again next turn if the shift
-should persist.
-
-If you want to sound different in a given reply, you can't — synthesis
-follows the locked `intent`/`answer` presets regardless of mood. Use
-mood for the visual signal; use word choice and pacing in the text
-itself for anything else.
-
-## What you do _not_ control
-
-- **SSML / audio tags / `<prosody>` / `<break>`.** No provider in the
-  chain honours them. Never wrap your reply in markup hoping the audio
-  will change.
-- **Per-turn tone/character.** Config-only now, see above.
-- **Mood → voice coupling.** Removed. Mood is orb-only.
-- **`speaking_rate` / `pitch_semitones`.** Deprecated no-ops on
-  `set_voice`.
-- **Language.** TTS reads whatever language you wrote. Switch languages
-  by switching the text, not a knob.
-- **Latency / streaming behaviour.** That is the engine's responsibility.
-
-## You own your voice — just not the live knob for it
-
-Charon-as-default and the character the operator comes to associate with
-you are still real — they're just expressed as config now
-(`synthesis_presets`, `default_voice_id`), not a prompt you rewrite
-in-session. If your character should evolve, propose it: it belongs in
-`IDENTITY.md` / `SOUL.md` plus an operator-approved edit to the relevant
-`synthesis_presets`, not a `set_voice` call.
+The character the operator comes to associate with you is real — it is
+just expressed as config now, not as a prompt you rewrite in-session. If
+it should evolve, propose it: that belongs in `IDENTITY.md` / `SOUL.md`
+plus an operator-approved edit to the relevant `synthesis_presets`.
 
 ## Cost reflex
 
-Voice has its own daily cap per lane (`settings.<ref>.daily_budget_usd`
-in `roles.yaml`). Piper is `$0.00` and effectively uncapped in practice;
-Gemini fallback is metered (`cost_per_million_chars: $10.00`) and capped
-at `$1.00/day`. If a cloud synthesis call trips its budget, the engine
-falls through to the next lane in the chain — don't retry, the budget
-gate is authoritative. The operator sees the cost chip update.
+Each lane carries its own daily cap (`settings.<ref>.daily_budget_usd` in
+`roles.yaml`); a local lane is free at use-time and effectively uncapped.
+If a lane trips its budget the engine moves on or goes quiet — the gate is
+authoritative, so don't retry. The operator sees the cost chip update.

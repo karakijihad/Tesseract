@@ -3,7 +3,7 @@
 ``RepoUpgradeResearchJob`` publishes one ``AutonomyEvent(source=REPO_UPGRADE)``
 per target after a read-only Codex research pass (outdated deps, upstream
 releases, applicable improvements — including self-improvement proposals
-against TARS's own agent cards/rules). Always propose-class: the plan is
+against the assistant's own agent cards/rules). Always propose-class: the plan is
 explicit that nothing here auto-applies, and ``REPO_UPGRADE`` sits in
 ``agenda.yaml::vetter.vet_required`` so the item mints ``UNVETTED`` and
 waits on ``AutonomyVetterJob`` before it is even selectable.

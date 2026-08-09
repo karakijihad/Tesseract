@@ -127,10 +127,10 @@ def format_transition(new_state: State, when: datetime) -> str:
     stamp = when.strftime("%H:%M:%S")
     if new_state == "down":
         return (
-            f"🔴 TARS backend offline — {stamp}.\n"
+            f"🔴 the assistant backend offline — {stamp}.\n"
             "Messages sent now won't be received until I'm back up."
         )
-    return f"🟢 TARS backend back online — {stamp}."
+    return f"🟢 the assistant backend back online — {stamp}."
 
 
 def run_loop(cfg: WatchdogConfig, *, stop_after: int | None = None) -> int:

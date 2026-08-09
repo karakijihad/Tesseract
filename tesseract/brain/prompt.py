@@ -1,4 +1,4 @@
-"""System prompt assembly for TARS.
+"""System prompt assembly for the assistant.
 
 Reads the declarations in `workspace/` and composes a system prompt in one
 of two modes:
@@ -6,7 +6,7 @@ of two modes:
 - **manifest (default)** — inline IDENTITY.md, SOUL.md, USER.md, AGENTS.md
   (operating rules), plus a memory capsule (MEMORY.md synthesis + today's
   and yesterday's `memory-store/daily/*.md` captures) and a small pointer
-  block for the remaining workspace files. TARS reads the pointed-at
+  block for the remaining workspace files. The assistant reads the pointed-at
   files via `file_read` on demand. Char caps prevent runaway size.
 
 - **full** — inline every workspace file (IDENTITY, FOUNDATION, SOUL,
@@ -32,7 +32,7 @@ now" temporal block (kept here, not in `prompt_time.py`, because several
 tests patch `_now_local` / `_identity_config_path` / `_TEMPORAL_FALLBACK_WARNED`
 directly on `tesseract.brain.prompt` — see `prompt_time.py`'s docstring):
 
-- `prompt_rules.py` — operating-rules loader + the `# Trio` config block.
+- `prompt_rules.py` — operating-rules loader + the `# Active project` block.
 - `prompt_content.py` — file-read helpers, manifest/skills pointers, memory
   capsule, diary digest, operator directives, channel overlay.
 - `prompt_autonomy.py` — the agenda/self-reflection/failures digest.
@@ -90,7 +90,7 @@ from tesseract.brain.prompt_content import (
 from tesseract.brain.prompt_rules import (
     RULES_DIR,
     _RULE_NAME_TO_FILE,
-    _build_trio_block,
+    _build_project_block,
     _legacy_rule_attr,
     _load_rules,
 )
@@ -216,7 +216,7 @@ def assemble_system_prompt(
     In `manifest` mode (default), inlines IDENTITY + SOUL + USER + AGENTS
     (operating rules) + MCP + memory capsule (MEMORY.md + today/yesterday
     daily) + a pointer block for FOUNDATION / TOOLS / HEARTBEAT / WORKSHOP /
-    BOOT / any `workspace/skills/*/SKILL.md`. TARS reads the pointed-at
+    BOOT / any `workspace/skills/*/SKILL.md`. The assistant reads the pointed-at
     files with `file_read` when relevant.
 
     In `full` mode every workspace file is inlined (legacy behavior, useful
@@ -249,10 +249,14 @@ def assemble_system_prompt(
     if identity:
         sections.append(identity)
 
-    if mode == "full":
-        foundation = _strip_frontmatter(_read_capped(root / "FOUNDATION.md"))
-        if foundation:
-            sections.append(foundation)
+    # Inlined in both modes. As a manifest pointer the three laws, the
+    # definition of harm and the peacefulness stance were only ever read if
+    # the assistant chose to go and read them — which is not what a
+    # constitution is for. It is the one document whose cost is worth paying
+    # on every turn rather than on the turns it remembers to ask.
+    foundation = _strip_frontmatter(_read_capped(root / "FOUNDATION.md"))
+    if foundation:
+        sections.append(foundation)
 
     soul_raw = _read_capped(root / "SOUL.md")
     soul_front = _parse_frontmatter(soul_raw)
@@ -274,13 +278,15 @@ def assemble_system_prompt(
     # that used to live here.
     sections.extend(_load_rules(RULES_DIR))
 
-    # trio W2 — config-driven companion to the trio-verification rules card:
-    # lane names/kinds + relay tunables rendered from cockpit.yaml so the
-    # card stays value-free (config is SoT; roles are pillars). Static per
-    # config edit → rides the cacheable prefix with the rules.
-    trio_block = _build_trio_block()
-    if trio_block:
-        sections.append(trio_block)
+
+    # Where the work lives. Rides the same never-dropped tier as the rules and
+    # the project block: `_apply_total_budget` only sweeps diary / digest /
+    # manifest / directives / capsule, and a model that has lost track of which
+    # project it is in cannot be recovered by a tool call it does not know to
+    # make.
+    project_block = _build_project_block()
+    if project_block:
+        sections.append(project_block)
 
     if mode == "full":
         boot = _strip_frontmatter(_read_capped(root / "BOOT.md"))
@@ -343,7 +349,7 @@ def assemble_system_prompt(
     sections.append(_build_now_section(soul_front))
 
     if not sections:
-        return "You are TARS, the operator's personal AI assistant."
+        return "You are the assistant, the operator's personal AI assistant."
 
     prompt = "\n\n".join(sections)
     return _apply_total_budget(

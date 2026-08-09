@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -78,7 +79,9 @@ RECORD_SUBDIRS = ("user", "feedback", "project", "reference", "conscience")
 
 
 def list_frontmatter(
-    store_dir: Path, type_filter: MemoryType | None = None
+    store_dir: Path,
+    type_filter: MemoryType | None = None,
+    _cache: dict[str, tuple[int, int, MemoryFrontmatter | None]] | None = None,
 ) -> list[MemoryFrontmatter]:
     """Every parseable memory record under ``store_dir``, frontmatter only.
 
@@ -86,11 +89,19 @@ def list_frontmatter(
     ``MemoryStore`` calls ``_ensure_dirs``, which creates the store tree. Read-
     only callers — anything answering "what is in here" rather than writing to
     it — must be able to ask without bringing the tree into existence.
+
+    ``_cache`` (internal — ``MemoryStore.list_all`` passes its own) maps a
+    file path to ``(mtime_ns, size, frontmatter-or-None)``; unchanged files
+    skip the read+YAML+model pass, turning the per-query cost of this walk
+    from a full re-parse of the store into one stat per file. ``None`` marks
+    a non-record file (operator docs) so it costs only the stat on repeats.
+    External edits, deletes, and new files are all caught by the stat compare.
     """
     subdirs = (
         (type_filter.value,) if type_filter else RECORD_SUBDIRS
     )
     results: list[MemoryFrontmatter] = []
+    walked: set[str] = set()
     for subdir in subdirs:
         subdir_path = store_dir / subdir
         if not subdir_path.exists():
@@ -106,14 +117,38 @@ def list_frontmatter(
             # Files WITH a malformed frontmatter still log a warning
             # via the except below.
             try:
+                key = ""
+                stat = None
+                if _cache is not None:
+                    key = str(md_file)
+                    walked.add(key)
+                    stat = md_file.stat()
+                    hit = _cache.get(key)
+                    if (
+                        hit is not None
+                        and hit[0] == stat.st_mtime_ns
+                        and hit[1] == stat.st_size
+                    ):
+                        if hit[2] is not None:
+                            results.append(hit[2])
+                        continue
                 with md_file.open("r", encoding="utf-8") as f:
                     first = f.readline()
                 if first.strip() != "---":
+                    if _cache is not None and stat is not None:
+                        _cache[key] = (stat.st_mtime_ns, stat.st_size, None)
                     continue
                 text = MemoryStore._read_frontmatter_block(md_file)
-                results.append(MemoryStore._parse_frontmatter_only(text))
+                fm = MemoryStore._parse_frontmatter_only(text)
+                if _cache is not None and stat is not None:
+                    _cache[key] = (stat.st_mtime_ns, stat.st_size, fm)
+                results.append(fm)
             except Exception:
                 logger.warning("Failed to parse %s", md_file)
+    if _cache is not None and type_filter is None:
+        # Full scan — drop cache entries for files that no longer exist.
+        for stale in set(_cache) - walked:
+            del _cache[stale]
     return results
 
 
@@ -121,6 +156,18 @@ class MemoryStore:
     def __init__(self, store_dir: Path) -> None:
         self._store_dir = store_dir
         self._wnts = WhatNotToSave(store_dir=store_dir)
+        # Parsed-frontmatter cache for list_all — path -> (mtime_ns, size,
+        # frontmatter-or-None). The lock serializes concurrent scans:
+        # list_all runs both on the loop thread and under asyncio.to_thread
+        # (retrieval Stage 0/A), and a torn dict iteration would raise.
+        # Known tradeoff: write()/delete() invalidation takes this same lock,
+        # so a loop-thread write can block for the duration of a concurrent
+        # scan — bounded by the cold first scan (seconds on a large store,
+        # once per process); warm scans are stat-only. The coarse lock is
+        # load-bearing: without it a scan racing a write could re-insert a
+        # stale entry after the write's invalidation.
+        self._fm_cache: dict[str, tuple[int, int, MemoryFrontmatter | None]] = {}
+        self._fm_cache_lock = threading.Lock()
         self._ensure_dirs()
 
     @property
@@ -132,7 +179,7 @@ class MemoryStore:
         return self._store_dir
 
     def _ensure_dirs(self) -> None:
-        # tars-reboot memory types: user / feedback / project / reference /
+        # memory types: user / feedback / project / reference /
         # conscience. derived/ holds FAISS + FTS artifacts; events/ holds the
         # write/access audit log. daily/ (F1 2026-04-20) is the raw capture
         # layer — the librarian promotes entries from daily/ into the
@@ -232,6 +279,12 @@ class MemoryStore:
         tmp = path.with_suffix(".tmp")
         tmp.write_text(content, encoding="utf-8")
         tmp.replace(path)
+        # Our own rewrite may not move (mtime_ns, size) — a fixed-width
+        # updated_at bump inside the same filesystem tick is byte-for-byte
+        # the same stat. Invalidate directly; the stat compare only has to
+        # catch external (human-timescale) edits.
+        with self._fm_cache_lock:
+            self._fm_cache.pop(str(path), None)
 
         self.log_event("writes.jsonl", {
             "memory_id": frontmatter.id,
@@ -283,7 +336,8 @@ class MemoryStore:
         return fm, body
 
     def list_all(self, type_filter: MemoryType | None = None) -> list[MemoryFrontmatter]:
-        return list_frontmatter(self._store_dir, type_filter)
+        with self._fm_cache_lock:
+            return list_frontmatter(self._store_dir, type_filter, _cache=self._fm_cache)
 
     def list_active_directives(
         self,
@@ -296,7 +350,7 @@ class MemoryStore:
         Includes ``feedback`` and ``user`` records by default — the operator
         often saves a durable preference under ``user`` (e.g.
         ``mem_66d4e50b`` "Inline preview by default") rather than ``feedback``.
-        Both shapes describe rules TARS should obey across sessions, so both
+        Both shapes describe rules the assistant should obey across sessions, so both
         flow into the Operator Directives section.
 
         Filter: ``type in types``, ``stability == active``, ``importance >= floor``.
@@ -361,6 +415,8 @@ class MemoryStore:
             return False
 
         path.unlink()
+        with self._fm_cache_lock:
+            self._fm_cache.pop(str(path), None)
         self.log_event("writes.jsonl", {
             "memory_id": memory_id,
             "status": "deleted",

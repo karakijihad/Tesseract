@@ -2,11 +2,11 @@ import { create } from 'zustand';
 
 export type View =
   | 'autonomy'
-  | 'tars'
+  | 'orb'
   | 'chat'
   | 'terminal'
   | 'pulse'
-  | 'soul'
+  | 'identity'
   | 'schedule'
   | 'agents'
   | 'conscience'
@@ -27,11 +27,11 @@ interface UIState {
 // The right-side session drawer is the only overlay drawer now — the spawn
 // transcript moved to a canvas card (D-6, canvas/delegateTranscript.ts).
 export const useUIStore = create<UIState>((set) => ({
-  // SC-2 — the spatial cockpit boots to the bare orb home (`tars`): no panel
+  // SC-2 — the spatial cockpit boots to the bare orb home (`agent`): no panel
   // summoned, the orb glowing on a clean stage, the home tab active. Every view
   // (incl. the AU-7 autonomy dashboard) is one tab-click away as a glass panel.
-  // `view` tracks the focused panel, or `tars` when none are open.
-  view: 'tars',
+  // `view` tracks the focused panel, or `agent` when none are open.
+  view: 'orb',
   drawerOpen: false,
   pendingStatsToast: false,
   setView: (view) => set({ view }),

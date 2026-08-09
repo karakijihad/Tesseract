@@ -7,7 +7,7 @@ not break ``LaneManager.open`` / ``SessionRegistry.create_session`` etc.
 
 In the controller daemon these hooks publish on the controller's bus; the
 daemon's activity forwarder relays each event to connected Mirror clients
-(see ``tars_controller/daemon.py``). All hook call sites run on the
+(see ``agent_controller/daemon.py``). All hook call sites run on the
 controller event loop, so the loop-thread-only bus publish is safe without
 ``call_soon_threadsafe`` marshaling.
 
@@ -46,9 +46,20 @@ SESSION_STATE = {
 
 
 def register_lane(
-    lane_id: str, *, label: str, provider: str | None, lifecycle: str = "ready"
+    lane_id: str,
+    *,
+    label: str,
+    provider: str | None,
+    lifecycle: str = "ready",
+    owner_principal: str = "",
+    shared_with: tuple[str, ...] | list[str] = (),
 ) -> None:
-    """Upsert a lane into the registry (durability=persistent)."""
+    """Upsert a lane into the registry (durability=persistent).
+
+    ``owner_principal`` mirrors what `lane.json` persists. The registry is not
+    the authority on ownership — it is transient, and `LaneManager` reads the
+    record — but `activity.list` is the enumeration path, so a snapshot that
+    does not carry the owner cannot be scoped to a caller."""
     try:
         get_activity_registry().register(
             ActivityRecord(
@@ -59,6 +70,8 @@ def register_lane(
                 durability="persistent",
                 provider=provider,
                 transcript_ref=f"controller/lanes/{lane_id}/transcript.txt",
+                owner_principal=owner_principal,
+                shared_with=tuple(shared_with),
             )
         )
     except Exception:  # noqa: BLE001 — reflection is best-effort
@@ -76,7 +89,9 @@ def update_lane_state(lane_id: str, lifecycle: str) -> None:
         log.warning("activity: update_lane_state %s failed", lane_id, exc_info=True)
 
 
-def register_session(session_id: str, *, label: str, status: str) -> None:
+def register_session(
+    session_id: str, *, label: str, status: str, owner_principal: str = ""
+) -> None:
     """Upsert a controller session into the registry (durability=persistent)."""
     try:
         get_activity_registry().register(
@@ -86,6 +101,7 @@ def register_session(session_id: str, *, label: str, status: str) -> None:
                 label=label,
                 state=SESSION_STATE.get(status, "idle"),  # type: ignore[arg-type]
                 durability="persistent",
+                owner_principal=owner_principal,
             )
         )
     except Exception:  # noqa: BLE001

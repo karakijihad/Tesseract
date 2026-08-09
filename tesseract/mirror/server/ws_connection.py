@@ -161,6 +161,10 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     # Spawn push Stage 2 — wrap every open chat's spawn completion notifier so a
     # background spawn finishing while that chat is idle starts a proactive turn.
     spawn_wake.install(request.app, session)
+    # A result that landed while the backend was down was replayed into its
+    # rebuilt chat at restore. Wake that chat now rather than making the
+    # operator speak first — same reason a live completion wakes an idle chat.
+    spawn_wake.reconcile_on_connect(request.app, session)
     # Lazy: `_dispatch` stays in ws.py (the slim router), which re-exports
     # this module's public names — a module-level import here would cycle
     # with that re-export.

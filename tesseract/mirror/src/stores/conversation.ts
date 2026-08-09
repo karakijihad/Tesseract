@@ -91,7 +91,7 @@ interface ChatState {
   stopVoice: () => void;
   clearTtsDropFlag: () => void;
   beginTurn: (chatId: string | null, turn: string) => void;
-  appendDelta: (chatId: string | null, text: string, kind?: 'intent' | 'status' | 'answer') => void;
+  appendDelta: (chatId: string | null, text: string, kind?: 'intent' | 'status' | 'spoken' | 'answer') => void;
   addToolCall: (chatId: string | null, tc: ToolCall) => void;
   addToolResult: (chatId: string | null, tr: ToolResult) => void;
   completeTurn: (chatId: string | null, turn: string, stopReason?: string) => void;
@@ -266,7 +266,7 @@ function _appendSegments(
 
 function _segmentsText(
   segments: AssistantStreamSegment[],
-  kind: 'intent' | 'answer',
+  kind: 'intent' | 'spoken' | 'answer',
 ): string {
   return segments
     .filter(segment => segment.kind === kind)
@@ -360,6 +360,29 @@ function _dropPendingDelta(id: string): void {
   sc.pending = [];
 }
 
+// A reply can end after `<spoken>` without ever opening `<answer>` — a token
+// or tool-iteration cap cutting the stream is the ordinary way it happens,
+// and it is the same truncation `_extract_channel_reply` already defends
+// against on the channel side. The spoken text is then the only reply there
+// is, and `renderSegment` deliberately draws nothing for it, so the bubble
+// would settle empty while the audio said something. The turn boundary is
+// the first point where "no answer is coming" is knowable — promote it there
+// to the answer it turned out to be.
+function _promoteLoneSpoken(
+  segments: AssistantStreamSegment[],
+  text: string,
+): { segments: AssistantStreamSegment[]; text: string } {
+  if (text.trim()) return { segments, text };
+  const spoken = segments.filter(segment => segment.kind === 'spoken');
+  if (!spoken.length) return { segments, text };
+  return {
+    segments: segments.map(segment =>
+      segment.kind === 'spoken' ? { ...segment, kind: 'answer' as const } : segment,
+    ),
+    text: spoken.map(segment => segment.text).join(''),
+  };
+}
+
 function _freezeInterrupted(
   messages: ChatMessage[],
   id: string,
@@ -369,15 +392,16 @@ function _freezeInterrupted(
   calls: ToolCall[],
   results: ToolResult[],
 ): Partial<ChatSlice> {
+  const promoted = _promoteLoneSpoken(segments, text);
   return {
     messages: [
       ...messages,
       {
         id,
         role: 'assistant' as const,
-        content: text || '[interrupted]',
+        content: promoted.text || '[interrupted]',
         statusText: statusText || undefined,
-        segments: segments.length > 0 ? segments : undefined,
+        segments: promoted.segments.length > 0 ? promoted.segments : undefined,
         timestamp: Date.now(),
         toolCalls: calls.length > 0 ? calls : undefined,
         toolResults: results.length > 0 ? results : undefined,
@@ -511,7 +535,7 @@ export const useConversationStore = create<ChatState>((set, get) => ({
   sendUserMessage: (chatId, content: string, attachments: ChatAttachment[] = []) => {
     const id = _resolveId(get(), chatId);
     if (!id) return;
-    // If TARS is mid-turn, the backend now queues this message FIFO (per
+    // If the assistant is mid-turn, the backend now queues this message FIFO (per
     // chat) and drains the front of the queue when the active turn ends.
     // Mark the bubble as `queued` so the UI shows a pending pill, and
     // assign it the next FIFO slot from a per-chat counter — optimistic,
@@ -674,7 +698,12 @@ export const useConversationStore = create<ChatState>((set, get) => ({
     if (!text) return;
     const id = _resolveId(get(), chatId);
     if (!id) return;
-    const segmentKind = kind === 'status' || kind === 'intent' ? 'intent' : 'answer';
+    const segmentKind =
+      kind === 'status' || kind === 'intent'
+        ? 'intent'
+        : kind === 'spoken'
+          ? 'spoken'
+          : 'answer';
     _queuePendingSegment(id, segmentKind, text);
     _scheduleFlush(id, _flushMergeFn(set, id));
   },
@@ -706,30 +735,33 @@ export const useConversationStore = create<ChatState>((set, get) => ({
     _flushPendingDelta(id, _flushMergeFn(set, id));
     const slice = get().chats.get(id);
     if (!slice || slice.streamingMessageId === null) return;
-    _patchSlice(set, id, s => ({
-      messages: [
-        ...s.messages,
-        {
-          id: s.streamingMessageId as string,
-          role: 'assistant' as const,
-          content: s.streamingText,
-          statusText: s.streamingStatusText || undefined,
-          segments: s.streamingSegments.length > 0 ? s.streamingSegments : undefined,
-          timestamp: Date.now(),
-          toolCalls: s.currentToolCalls.length > 0 ? s.currentToolCalls : undefined,
-          toolResults: s.currentToolResults.length > 0 ? s.currentToolResults : undefined,
-          status: 'complete' as const,
-        },
-      ],
-      streamingMessageId: null,
-      streamingText: '',
-      streamingStatusText: '',
-      streamingSegments: [],
-      isStreaming: false,
-      currentTurn: null,
-      currentToolCalls: [],
-      currentToolResults: [],
-    }));
+    _patchSlice(set, id, s => {
+      const promoted = _promoteLoneSpoken(s.streamingSegments, s.streamingText);
+      return {
+        messages: [
+          ...s.messages,
+          {
+            id: s.streamingMessageId as string,
+            role: 'assistant' as const,
+            content: promoted.text,
+            segments: promoted.segments.length > 0 ? promoted.segments : undefined,
+            statusText: s.streamingStatusText || undefined,
+            timestamp: Date.now(),
+            toolCalls: s.currentToolCalls.length > 0 ? s.currentToolCalls : undefined,
+            toolResults: s.currentToolResults.length > 0 ? s.currentToolResults : undefined,
+            status: 'complete' as const,
+          },
+        ],
+        streamingMessageId: null,
+        streamingText: '',
+        streamingStatusText: '',
+        streamingSegments: [],
+        isStreaming: false,
+        currentTurn: null,
+        currentToolCalls: [],
+        currentToolResults: [],
+      };
+    });
     set({ dropTtsUntilTurnEnd: false });
   },
 

@@ -1,6 +1,6 @@
 """spawn_cancel — terminate a background spawn.
 
-Phase 4 of the TARS reboot CLI-parity plan. For subprocess delegates
+Phase 4 of the assistant reboot CLI-parity plan. For subprocess delegates
 this fires asyncio.Task.cancel() which propagates SIGTERM to the
 child via cli_stream's cleanup. For future in-process spawns
 (invoke_agent) the inner ChatSession's cancel_event is set.

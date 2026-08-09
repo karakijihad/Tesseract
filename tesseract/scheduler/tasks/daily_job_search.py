@@ -1,7 +1,7 @@
 """DailyJobSearchJob — daily 09:00 job-posting sweep delivered to a chat.
 
 A *lean* scheduled job, deliberately NOT a mission. The mission path
-(``WakeTarsJob``) drags in a planner + an operator approval gate +
+(``WakeJob``) drags in a planner + an operator approval gate +
 worker/verifier steps; for "search and send a shortlist every morning"
 none of that applies, and the approval gate actively breaks autonomy
 (it stalls every run waiting for the operator). This handler instead

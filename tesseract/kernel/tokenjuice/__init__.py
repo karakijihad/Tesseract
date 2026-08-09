@@ -3,7 +3,7 @@
 Single chokepoint between Tool.run() and the adapter input. Classifies the
 tool result by (tool_name, tool_args), applies a chain of pure reducers,
 and audits the before/after token counts. Port of vincentkoc/tokenjuice
-rule schema with TARS-specific reducer kinds.
+rule schema with agent-specific reducer kinds.
 
 Wired once in tesseract/brain/tools.py::execute_tool. The adapter side
 (tesseract/kernel/adapters/base.py) is the abstract; it never sees raw

@@ -5,7 +5,7 @@ digests, watches) is also written to a retrievable markdown file under
 
     <TESSERACT_HOME>/memory-store/scheduled/<job_name>/<iso-date>.md
 
-so both TARS (via ``memory_get`` / file reads) and the operator (via
+so both the assistant (via ``memory_get`` / file reads) and the operator (via
 Obsidian — memory-store is Obsidian-compatible markdown) can find "what
 we have" without scraping the chat. Mirrors how ``DailyBriefJob`` persists
 under ``memory-store/daily/briefs/``.

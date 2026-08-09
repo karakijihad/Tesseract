@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { Hint } from "../../components/ui/Hint";
+import { useEntityName } from "../../hooks/useEntityName";
 import { postMode } from "../../lib/api";
 import { useIdentityStore } from "../../stores/identity";
 
@@ -27,6 +28,7 @@ function isDowngrade(from: string, to: Mode): boolean {
 }
 
 export function ModeSection() {
+  const entityName = useEntityName();
   const securityMode = useIdentityStore((s) => s.securityMode);
   const [pending, setPending] = useState<Mode | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -107,7 +109,7 @@ export function ModeSection() {
               Lower security mode?
             </h4>
             <p className="mode-modal__body">
-              TARS will auto-approve more actions in <strong>{pending}</strong>{" "}
+              {entityName} will auto-approve more actions in <strong>{pending}</strong>{" "}
               mode.
             </p>
             <div className="mode-modal__actions">

@@ -20,7 +20,7 @@ already rejected (`agents/rejected/`).
 Every successful create (attended or headless) files an `agent_approval`
 WorkspaceEvent — the operator's proposal card in the Mirror Inbox, carrying
 the rendered markdown + rationale. The pending file is canonical; the card
-is best-effort (a card failure warns TARS in the tool output, never loses
+is best-effort (a card failure warns the assistant in the tool output, never loses
 the file).
 
 Quarantine (W7-A, 2026-04-29): the new agent is written to
@@ -306,7 +306,7 @@ class AgentCreateTool(Tool):
         if self._event_store is not None:
             event = WorkspaceEvent.new(
                 kind="agent_approval",
-                source="tars",
+                source="agent",
                 title=f"Agent proposal: {inp.name}",
                 summary=inp.rationale,
                 payload={

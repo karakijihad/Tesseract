@@ -28,6 +28,7 @@ import logging
 import os
 import re
 import secrets
+import threading
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -185,6 +186,32 @@ def leaf_archive_path(leaf_id: str, *, when: datetime) -> Path:
 _LEAF_ID_RE = re.compile(r"^leaf_[a-f0-9]{8}$")
 
 
+# Shared by `ExtractChunkJob`, `AppendBufferJob`, and `SealJob`
+# (`tesseract/scheduler/tasks/leaf_*.py`). Their fully synchronous
+# bodies used to be accidentally mutually exclusive: the scheduler
+# spawns each as its own task, but a coroutine with no `await` inside
+# it cannot be preempted, so only one ever ran at a time. Wrapping a
+# body in `asyncio.to_thread` removes that accident and opens a real
+# window: `SealJob` reads a `LeafBuffer`'s ids, looks up each leaf, and
+# clears the buffer; `AppendBufferJob` appends an id to that same
+# buffer and *then* transitions the leaf to `BUFFERED`. If a seal
+# lands between those two steps it finds the just-appended id pointing
+# at a leaf still `ADMITTED`, counts it as "missing", and clears the
+# buffer anyway — the id is gone, the leaf is about to become
+# `BUFFERED`, and nothing ever seals it. `ExtractChunkJob` shares the
+# same `LeafStore` files (a different leaf, but `list_in_state`'s glob
+# scan can read a file another job's `os.replace` is mid-write on,
+# which is `PermissionError` on Windows, not a stale read — same
+# failure mode as `MemoryIndex.load_raw` vs `MemoryIndex._write`).
+# One coarse lock held for a job's entire per-tick pass reinstates the
+# old mutual exclusion explicitly, matching `MemoryStore._fm_cache_lock`'s
+# reasoning for staying coarse rather than per-file: the jobs are
+# already bounded per tick (`max_per_tick` / `max_seals_per_tick`), so
+# there is no unbounded hold, and per-file locking would need its own
+# lock-lifecycle management for no correctness gain at this scale.
+LEAF_PIPELINE_LOCK = threading.RLock()
+
+
 class LeafStore:
     """Per-leaf JSON CRUD with atomic writes and terminal-state archive.
 
@@ -319,6 +346,7 @@ class LeafStore:
 
 
 __all__ = [
+    "LEAF_PIPELINE_LOCK",
     "LeafState",
     "LeafStore",
     "LeafTransition",

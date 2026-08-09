@@ -6,6 +6,7 @@ import type {
 } from '../../lib/types';
 import { useConversationStore } from '../../stores/conversation';
 import { useIdentityStore } from '../../stores/identity';
+import { ENTITY_FALLBACK } from '../../hooks/useEntityName';
 import { useWebSocketStore } from '../../stores/websocket';
 import { ChatMarkdown } from './ChatMarkdown';
 import { ChatPdfPreview } from './ChatPdfPreview';
@@ -65,9 +66,9 @@ function MessageBubbleImpl({ message, isLastAssistantComplete = false, previousU
   const sessionId = useWebSocketStore(s => s.sessionId);
 
   const speakerName =
-    role === 'assistant' ? (entityName || 'TARS') :
+    role === 'assistant' ? (entityName || ENTITY_FALLBACK) :
     role === 'user' ? (operatorName || 'You') :
-    role === 'entity' ? (entityName || 'TARS') :
+    role === 'entity' ? (entityName || ENTITY_FALLBACK) :
     role === 'error' ? 'error' :
     '';
 
@@ -164,7 +165,7 @@ function MessageBubbleImpl({ message, isLastAssistantComplete = false, previousU
           <div className="bubble-header">
             <span className="bubble-speaker">{speakerName}</span>
             {status === 'queued' && (
-              <span className="bubble-queued-pill t-meta" aria-label="queued - TARS will read this after the current turn">
+              <span className="bubble-queued-pill t-meta" aria-label={`queued - ${entityName || ENTITY_FALLBACK} will read this after the current turn`}>
                 queued
               </span>
             )}

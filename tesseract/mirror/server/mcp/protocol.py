@@ -27,6 +27,7 @@ import mcp.types as types
 from tesseract.config.mcp import MCPClient
 from tesseract.mirror.server.mcp.orientation import build_instructions
 from tesseract.mirror.server.mcp.session import MCPSession
+from tesseract.mirror.server.mcp.stream import CAPABILITY, CAPABILITY_KEY
 from tesseract.mirror.server.mcp.tools import call_result, list_tools, verb_for_tool
 
 # Echo the client's requested version when supported, else fall back to latest.
@@ -151,7 +152,13 @@ async def _initialize(
     instructions = await asyncio.to_thread(build_instructions)
     result = types.InitializeResult(
         protocolVersion=version,
-        capabilities=types.ServerCapabilities(tools=types.ToolsCapability(listChanged=False)),
+        capabilities=types.ServerCapabilities(
+            tools=types.ToolsCapability(listChanged=False),
+            # The activity subscription is not a tool and not a spec capability,
+            # so `experimental` is where a client can discover the protocol
+            # rather than infer it from the `activity.watch` name.
+            experimental={CAPABILITY_KEY: dict(CAPABILITY)},
+        ),
         serverInfo=types.Implementation(name=_SERVER_NAME, version=_SERVER_VERSION),
         instructions=instructions,
     ).model_dump(by_alias=True, exclude_none=True)
@@ -167,7 +174,13 @@ async def _tools_call(
     verb = verb_for_tool(name)
     if verb is None:
         return Handled(_err(msg_id, _INVALID_PARAMS, f"unknown tool: {name}"))
-    arguments = params.get("arguments") or {}
+    # Default only when absent/null, then reject every non-dict. `or {}`
+    # coerced falsy non-objects (`[]`, `false`, `0`, `""`) to an empty object
+    # before the type check, so whether malformed arguments were rejected
+    # depended on their truthiness — `arguments: []` ran the tool.
+    arguments = params.get("arguments")
+    if arguments is None:
+        arguments = {}
     if not isinstance(arguments, dict):
         return Handled(_err(msg_id, _INVALID_PARAMS, "'arguments' must be an object"))
     status, body = await server._dispatcher.dispatch(

@@ -10,7 +10,7 @@ Live emission sites:
 - ``memory/retrieval.py``                   (config-gated retrieval)
 
 Future emission sites:
-- delegated worker runs (claude_cli / codex_cli / markdown agent)
+- delegated worker runs (coder_seat / auditor_seat / markdown agent)
 
 Config: there is no live orchestrator config file today; ``emit()``
 takes an optional ``progress_events`` dict from callers that have one

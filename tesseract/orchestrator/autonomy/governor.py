@@ -458,8 +458,14 @@ class Governor:
         calls it on cadence. Returns the new pauses + side-effects so the
         operator-facing dashboard (AU-7) can stream the activity."""
         result = GovernorTickResult(at=self._clock())
-        items = self._collect_items_in_window()
-        archive_items = self._collect_archive_items_in_window()
+        # Both collectors read and parse every matching agenda file, which
+        # is CPU and blocking I/O on a cadence — on the loop it showed up as
+        # multi-second lag spikes while the operator was idle. Neither
+        # mutates anything, so a thread is the whole fix.
+        items, archive_items = await asyncio.gather(
+            asyncio.to_thread(self._collect_items_in_window),
+            asyncio.to_thread(self._collect_archive_items_in_window),
+        )
         all_items = items + archive_items
 
         # Loop detector — must see archive items too: the AgendaStore
@@ -709,18 +715,29 @@ class Governor:
         return [item for item in self._agenda.iter_active() if _in_window(item, cutoff)]
 
     def _collect_archive_items_in_window(self) -> list[AgendaItem]:
-        """Walk archive/*/ within the loop window. Cheap because the
-        archive is bucketed by month — at most two month dirs touch the
-        window. The trust detector needs terminal items to count
-        rejections, and the loop detector needs them to count repeats
-        across cancel cycles."""
+        """Walk archive/*/ within the loop window. The trust detector needs
+        terminal items to count rejections, and the loop detector needs them
+        to count repeats across cancel cycles.
+
+        Bucket names are the `%Y-%m` of `updated_at` (`agenda_store.py`
+        archives with exactly that), so a bucket older than the month the
+        window opens in cannot hold an item inside the window — skipped
+        without opening it. The docstring here has always claimed "at most
+        two month dirs touch the window"; the code parsed and validated
+        every item ever archived and filtered afterwards, so the cost grew
+        without bound as the archive did.
+        """
         cutoff = self._clock() - timedelta(hours=self._config.loop_window_hours)
+        earliest_bucket = cutoff.astimezone(timezone.utc).strftime("%Y-%m")
         root = agenda_archive_dir()
         if not root.exists():
             return []
         out: list[AgendaItem] = []
         for month_dir in sorted(root.iterdir()):
             if not month_dir.is_dir():
+                continue
+            # String compare is a date compare for zero-padded `%Y-%m`.
+            if month_dir.name < earliest_bucket:
                 continue
             for child in sorted(month_dir.iterdir()):
                 if child.suffix != ".json":

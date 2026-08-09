@@ -88,7 +88,7 @@ class MemoryPromoteTool(Tool):
         return (
             "Operator-confirmed feedback-memory lifecycle actions: archive, "
             "merge_into another record, bump_importance, or propose_soul_growth. "
-            "Used by the feedback consolidator's approval flow — TARS proposes, "
+            "Used by the feedback consolidator's approval flow — the assistant proposes, "
             "operator approves, this tool executes the single approved action."
         )
 

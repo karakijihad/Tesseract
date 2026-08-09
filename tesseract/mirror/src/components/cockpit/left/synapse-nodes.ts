@@ -78,8 +78,8 @@ export const TOOL_GROUPS: ToolGroup[] = [
     { name: 'pdf_read',       label: 'pdf' },
   ]},
   { id: 'delegate', label: 'Delegate', tools: [
-    { name: 'delegate_claude', label: 'claude' },
-    { name: 'delegate_codex',  label: 'codex' },
+    { name: 'delegate_coder',   label: 'coder' },
+    { name: 'delegate_auditor', label: 'auditor' },
   ]},
   { id: 'agents', label: 'Agents', tools: [
     { name: 'invoke_agent',    label: 'invoke' },

@@ -11,8 +11,8 @@
 // `view`-state coupling: view-panel focus drives `useUIStore.setView(kind)` so
 // the four `view` subscribers (terminal xterm-fit, HudChatInput collapse,
 // viewSnapshot sync, programmatic nav) keep working. Rails do NOT drive `view`.
-// `tars` is the orb home — `resetAll` closes UNPINNED view panels + re-docks
-// rails + parks `view` on `'tars'` (pinned panels stay).
+// `orb` is the orb home — `resetAll` closes UNPINNED view panels + re-docks
+// rails + parks `view` on `'orb'` (pinned panels stay).
 
 import { create } from "zustand";
 
@@ -22,10 +22,34 @@ import { nextZ, surfacePeakZ } from "./zStack";
 export type RailKind = "kernel" | "lifeline";
 export type DockSide = "left" | "right";
 
-// Panel kinds = every view tab except the `tars` orb home, plus the two rails.
-export type PanelKind = Exclude<View, "tars"> | RailKind;
+// Panel kinds = every view tab except the `orb` home, plus the two rails.
+export type PanelKind = Exclude<View, "orb"> | RailKind;
 
 export const RAIL_KINDS: readonly RailKind[] = ["kernel", "lifeline"];
+// Every view panel the registry can render. A saved layout is operator
+// localStorage that outlives a rename (AS-5 retired `soul` for `identity`),
+// so hydration filters against this list — a kind with no view component
+// would mount an empty panel the operator can't identify or close.
+export const VIEW_PANEL_KINDS: readonly Exclude<View, "orb">[] = [
+  "autonomy",
+  "pulse",
+  "chat",
+  "terminal",
+  "schedule",
+  "agents",
+  "channels",
+  "identity",
+  "conscience",
+  "workspace",
+  "settings",
+];
+
+export function isKnownViewPanel(kind: unknown): kind is Exclude<View, "orb"> {
+  return (
+    typeof kind === "string" &&
+    (VIEW_PANEL_KINDS as readonly string[]).includes(kind)
+  );
+}
 // Docked rail width. Shared by PanelHost (dock geometry) and GlassPanel
 // (per-rail min-width): the generic `.glass-panel` CSS floor is 340px, and
 // a right-docked rail positioned for 282 but rendered at 340 overflowed
@@ -36,8 +60,8 @@ const RAIL_HOME: Record<RailKind, DockSide> = {
   lifeline: "right",
 };
 
-export function isPanelKind(kind: View): kind is Exclude<View, "tars"> {
-  return kind !== "tars";
+export function isPanelKind(kind: View): kind is Exclude<View, "orb"> {
+  return kind !== "orb";
 }
 export function isRailKind(kind: string): kind is RailKind {
   return kind === "kernel" || kind === "lifeline";
@@ -71,7 +95,7 @@ export interface PanelState {
 // Every OPEN panel — not just pinned ones — persists with its full state so a
 // reload restores the whole workspace (which tabs were summoned + their layout).
 export interface SavedPanel {
-  kind: Exclude<View, "tars">;
+  kind: Exclude<View, "orb">;
   x: number;
   y: number;
   w: number;
@@ -123,7 +147,7 @@ const RAIL_Z: Record<RailKind, number> = { kernel: 4, lifeline: 5 };
 
 function topmostOpenViewKind(
   panels: PanelState[],
-): Exclude<View, "tars"> | null {
+): Exclude<View, "orb"> | null {
   // Minimized panels are open (kept mounted) but off-stage — handing them
   // the active view would light a tab with nothing visible.
   const open = panels.filter(
@@ -132,12 +156,12 @@ function topmostOpenViewKind(
   if (open.length === 0) return null;
   return open.reduce((a, b) => (b.z > a.z ? b : a)).kind as Exclude<
     View,
-    "tars"
+    "orb"
   >;
 }
 
 function newPanel(
-  kind: Exclude<View, "tars">,
+  kind: Exclude<View, "orb">,
   z: number,
   extra?: Partial<PanelState>,
 ): PanelState {
@@ -230,7 +254,7 @@ export const usePanelStore = create<PanelStore>((set, get) => ({
     }));
     if (!isRailKind(id)) {
       const next = topmostOpenViewKind(get().panels);
-      useUIStore.getState().setView(next ?? "tars");
+      useUIStore.getState().setView(next ?? "orb");
     }
   },
 
@@ -283,7 +307,7 @@ export const usePanelStore = create<PanelStore>((set, get) => ({
       // does — a lit tab with its panel off-stage reads as a broken toggle.
       if (!isRailKind(id) && useUIStore.getState().view === id) {
         const next = topmostOpenViewKind(get().panels);
-        useUIStore.getState().setView(next ?? "tars");
+        useUIStore.getState().setView(next ?? "orb");
       }
       return;
     }
@@ -406,6 +430,6 @@ export const usePanelStore = create<PanelStore>((set, get) => ({
         return { ...p, open: false, maximized: false, minimized: false };
       }),
     }));
-    useUIStore.getState().setView("tars");
+    useUIStore.getState().setView("orb");
   },
 }));

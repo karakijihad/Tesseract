@@ -6,7 +6,7 @@ OPERATOR_FACING_ORIGINS = frozenset({"mirror", "cli"})
 
 
 def _list_active_sessions():
-    from tesseract.orchestrator.tars_controller.sessions import (
+    from tesseract.orchestrator.agent_controller.sessions import (
         SessionRegistry,
     )
 
@@ -34,7 +34,7 @@ async def controller_session_status_handler(request: web.Request) -> web.Respons
     """Single controller session by id — used by ControllerMirrorBlock to
     show a detached session's outcome after the live WS closes (manual
     reload or real disconnect). 404 when the id is unknown."""
-    from tesseract.orchestrator.tars_controller.sessions import SessionRegistry
+    from tesseract.orchestrator.agent_controller.sessions import SessionRegistry
 
     session_id = request.match_info["session_id"]
     try:
@@ -48,7 +48,7 @@ async def controller_session_status_handler(request: web.Request) -> web.Respons
             {"error": "not_found", "session_id": session_id}, status=404
         )
     # X-2 (2026-06-02) — surface ``transcript_path`` (under
-    # ``<TESSERACT_HOME>/tars_controller/transcripts/``) so the Mirror
+    # ``<TESSERACT_HOME>/agent_controller/transcripts/``) so the Mirror
     # completion card can show the operator where to find the on-disk
     # transcript after the live WS has dropped.
     return web.json_response(

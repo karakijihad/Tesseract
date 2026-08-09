@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useEntityName } from '../../hooks/useEntityName';
 import { postOperatorPost, type OperatorPostInput } from '../../lib/api';
 
 interface Props {
@@ -7,6 +8,7 @@ interface Props {
 }
 
 export function NewThreadButton({ source = 'button', buttonLabel = 'New' }: Props) {
+  const entityName = useEntityName();
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
@@ -91,7 +93,7 @@ export function NewThreadButton({ source = 'button', buttonLabel = 'New' }: Prop
         />
         <textarea
           className="workspace-modal-textarea"
-          placeholder="Body — what should TARS know?"
+          placeholder={`Body — what should ${entityName} know?`}
           value={body}
           maxLength={4000}
           rows={6}

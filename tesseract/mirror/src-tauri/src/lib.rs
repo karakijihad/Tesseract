@@ -5,16 +5,18 @@ use std::time::{Duration, Instant};
 
 use tauri::{Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 
+mod app_swap;
 mod exe_update;
 mod provision;
 mod repo;
+mod setup;
 mod shell_log;
 #[cfg(test)]
 mod test_support;
 mod token;
 mod update;
 use provision::{
-    app_dir, hide_console, home_dir, is_provisioned, refresh_piper_voice, runtime_dir,
+    app_dir, hide_console, home_dir, is_provisioned, refresh_optional_assets, runtime_dir,
     tesseract_home, venv_python,
 };
 
@@ -273,7 +275,7 @@ fn kill_process_tree(child: &mut Child) {
 /// in a console-less GUI process. A backend that did not start is now a
 /// visible error instead of a dead-looking app.
 fn finish_provisioning_success(handle: &tauri::AppHandle, home: &PathBuf) {
-    refresh_piper_voice(home);
+    refresh_optional_assets(home);
     match spawn_supervisor(home) {
         Ok(child) => {
             if let Some(state) = handle.try_state::<SupervisorProc>() {
@@ -386,7 +388,8 @@ pub fn run() {
             update::app_info,
             exe_update::exe_update_check,
             exe_update::exe_update_apply,
-            token::submit_github_token
+            token::submit_github_token,
+            setup::submit_first_run_setup
         ])
         .setup(|app| {
             let home = tesseract_home(app.handle());
@@ -401,35 +404,40 @@ pub fn run() {
             // A dev run counts as provisioned — it uses the repo checkout and
             // must never provision a per-user tree it will not read.
             let already = dev_interpreter_override().is_some() || is_provisioned(&home);
-            if !already {
-                let _ =
-                    WebviewWindowBuilder::new(app, "splash", WebviewUrl::App("splash.html".into()))
-                        .title("Setting up TESSERACT")
-                        .inner_size(420.0, 240.0)
-                        .center()
-                        .decorations(false)
-                        .resizable(false)
-                        .build();
+            let handle = app.handle().clone();
+            if already {
+                // Every launch, not just first-run provisioning: retries the
+                // optional-asset fetches (voice models, reranker, embeddings)
+                // if a previous attempt failed (offline, transient outage) and
+                // spawns the supervisor. See `refresh_optional_assets`'s own
+                // doc comment.
+                std::thread::spawn(move || finish_provisioning_success(&handle, &home));
+                return Ok(());
             }
 
-            let handle = app.handle().clone();
-            std::thread::spawn(move || {
-                if already {
-                    // Every launch, not just first-run provisioning: retries
-                    // the voice model fetch if a previous attempt failed
-                    // (offline, transient outage) and spawns the supervisor.
-                    // See `refresh_piper_voice`'s own doc comment.
-                    finish_provisioning_success(&handle, &home);
-                } else {
-                    // On a clone auth failure with no working token,
-                    // `provision` returns `NeedsToken` instead of failing
-                    // outright — `token::handle_provision_result` shows the
-                    // in-app prompt (see `token::submit_github_token` for the
-                    // retry) rather than leaving the splash on a dead end.
-                    let result = provision::provision(&handle, &home);
-                    token::handle_provision_result(&handle, &home, result);
-                }
-            });
+            // First run. The splash opens on the setup form and provisioning
+            // does NOT start here — it starts when the form is submitted
+            // (`setup::submit_first_run_setup`), because the answers decide
+            // what gets downloaded. Declining speech is only meaningful if it
+            // happens before the model would have been fetched.
+            let splash =
+                WebviewWindowBuilder::new(app, "splash", WebviewUrl::App("splash.html".into()))
+                    .title("Setting up TESSERACT")
+                    .inner_size(460.0, 620.0)
+                    .center()
+                    .decorations(false)
+                    .resizable(false)
+                    .build();
+            if splash.is_err() {
+                // No window means no form and therefore no submit to wait for.
+                // Provisioning on the shipped defaults is the only outcome
+                // left that produces a working install; waiting forever for a
+                // form nobody can fill in is not.
+                shell_log::log_error(
+                    "could not open the setup window — provisioning with the shipped defaults",
+                );
+                setup::start_provisioning(handle, home);
+            }
             Ok(())
         })
         .build(tauri::generate_context!())

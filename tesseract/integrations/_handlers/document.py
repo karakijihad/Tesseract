@@ -93,7 +93,7 @@ def _extract_pdf_sync(data: bytes, *, max_chars: int) -> str:
             continue
         if not text.strip():
             continue
-        # Page separators help TARS reason about layout when several
+        # Page separators help the assistant reason about layout when several
         # pages worth of content fit under the cap. Trim them on the
         # final assembly to avoid a leading separator.
         marker = f"\n\n--- page {idx + 1} ---\n\n"

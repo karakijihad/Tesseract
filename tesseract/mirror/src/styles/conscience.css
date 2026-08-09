@@ -1,5 +1,5 @@
 /* === CONSCIENCE VIEW (full tab) ============================================
-   Shares shell shape with SoulView (head + body + grid) so the two
+   Shares shell shape with IdentityView (head + body + grid) so the two
    operator-facing status tabs read as a pair. Colour intent comes from
    token-level `--ok / --warn / --bad` + their `*-dim` backgrounds so
    each signal card announces its state without extra chrome.

@@ -93,7 +93,10 @@ class AutonomyStrategistJob(BaseJob):
                 ctx.config.get("max_initiatives") or DEFAULT_MAX_INITIATIVES
             )
 
-            inputs = collect_inputs(
+            # Off the loop: `collect_inputs` walks the workers/ tree
+            # (rglob) and reads several index/ledger files whole.
+            inputs = await asyncio.to_thread(
+                collect_inputs,
                 app=ctx.app,
                 now=now,
                 lookback_days=lookback_days,

@@ -8,7 +8,7 @@ runtime self-observation (auto-written by the heartbeat) from
 operator-curated PROJECT notes — both stay searchable through
 `memory_search` and the existing pipeline (BM25, FAISS, dreaming
 consolidation) treats them uniformly. Each entry carries a timestamp
-so TARS can detect "I keep drifting on the same thing" via
+so the assistant can detect "I keep drifting on the same thing" via
 `count_recent_drifts`.
 
 Same-day flap collapse: a transition arriving for a signal that already

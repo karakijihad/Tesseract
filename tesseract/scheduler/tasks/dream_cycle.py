@@ -20,6 +20,7 @@ writes.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -82,14 +83,17 @@ class DreamCycleJob(BaseJob):
                 )
 
             # Flip the orb to `dreaming` for the duration of the cycle so
-            # operators watching the Mirror can see why TARS just went
+            # operators watching the Mirror can see why the assistant just went
             # quiet. Restored in the finally block — never leave the orb
             # latched in dreaming if the job crashes.
             if affect is not None:
                 affect.set("dreaming")
                 await _broadcast_state(ctx.app, "dreaming")
 
-            promoted = engine.run_cycle()
+            # Off the loop: `run_cycle` parses the recall log, scores every
+            # candidate, reads each memory file, rewrites MEMORY.md and sweeps
+            # the store — all synchronous, and its cost grows with the corpus.
+            promoted = await asyncio.to_thread(engine.run_cycle)
             # Operator-visible nudge in the Workspace inbox when the cycle
             # actually changed something. Silent on no-op nights so the
             # inbox stays signal-only. Best-effort; failure to write the
@@ -130,7 +134,7 @@ async def _emit_dream_nudge(app, promoted) -> None:
 
     Skipped silently when no app handle (CLI-only scheduler runs) — there's
     no operator surface to notify. Covers the morning-after question
-    "what did TARS do overnight?" without noisy nightly toasts."""
+    "what did the assistant do overnight?" without noisy nightly toasts."""
     if app is None or not hasattr(app, "get"):
         return
     from tesseract.workspace_events.events import WorkspaceEvent

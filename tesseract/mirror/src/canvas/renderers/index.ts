@@ -23,7 +23,6 @@ import { AudioRenderer } from './AudioRenderer';
 import { TableRenderer } from './TableRenderer';
 import { JsonDumpRenderer } from './JsonDumpRenderer';
 import { LaneRenderer } from './LaneRenderer';
-import { RoutingRenderer } from './RoutingRenderer';
 import { PulseStreamRenderer } from './PulseStreamRenderer';
 import { PulseFilterRenderer } from './PulseFilterRenderer';
 import { DelegateTranscriptRenderer } from './DelegateTranscriptRenderer';
@@ -56,7 +55,6 @@ export const RENDERERS: Record<string, RendererComponent> = {
   table: TableRenderer, // csv/tsv text -> grid
   json: JsonDumpRenderer,
   lane: LaneRenderer, // CV-1 — live Claude/Codex controller lane
-  'trio-routing': RoutingRenderer, // CV-1 — center "TARS routing" applet
   // Y-3 — views-as-canvases (Pulse / Terminal applets).
   'pulse-stream': PulseStreamRenderer,
   'pulse-filters': PulseFilterRenderer,

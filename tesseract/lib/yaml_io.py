@@ -64,10 +64,15 @@ def round_trip_yaml(path: Path, mutate: Callable[[Any], None]) -> Any:
     output. The `path.exists()` precondition is left to the caller —
     different sites want different errors on miss (FileNotFoundError vs
     HTTP 404).
+
+    `width` is pinned wide because ruamel's default (80) re-wraps any
+    line longer than that — including flow sequences the operator wrote
+    on one line, which come back split across two with a trailing space.
+    A rename from the Identity tab was reflowing unrelated blocks of
+    mirror.yaml that way; a write must change the key it was asked to
+    change and nothing else.
     """
-    ryaml = YAML()
-    ryaml.preserve_quotes = True
-    ryaml.indent(mapping=2, sequence=4, offset=2)
+    ryaml = _round_trip_yaml()
     with path.open("r", encoding="utf-8") as fh:
         doc = ryaml.load(fh)
     mutate(doc)
@@ -75,3 +80,26 @@ def round_trip_yaml(path: Path, mutate: Callable[[Any], None]) -> Any:
     ryaml.dump(doc, buf)
     atomic_write_text(path, buf.getvalue())
     return doc
+
+
+def _round_trip_yaml() -> YAML:
+    """The pinned ruamel configuration, in one place so a document loaded
+    for reading and a document written back cannot disagree about quoting,
+    indentation, or wrap width."""
+    ryaml = YAML()
+    ryaml.preserve_quotes = True
+    ryaml.width = 4096
+    ryaml.indent(mapping=2, sequence=4, offset=2)
+    return ryaml
+
+
+def load_round_trip(path: Path) -> Any:
+    """Load `path` preserving comments and quote styles, without writing.
+
+    For reading a document whose *formatting* is part of what the caller
+    needs — `config_seed.migrate_config_keys` copies a subtree out of a
+    shipped template and into the operator's file, and the comments
+    explaining that block travel with the node.
+    """
+    with path.open("r", encoding="utf-8") as fh:
+        return _round_trip_yaml().load(fh)

@@ -10,11 +10,12 @@ Schema + invariants: ``Docs/Plan/mcp-control-plane/_shared/mcp-yaml-schema.md``.
 Posture is decided by this yaml alone. There is no source-side floor: the
 operator's file is the single authority, which is why `config/mcp.yaml` is DENY
 in `permissions.yaml` alongside `permissions.yaml` itself — it is a permissions
-file, and TARS must not be able to widen his own reach by editing it.
+file, and the assistant must not be able to widen its own reach by editing it.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -55,6 +56,7 @@ _KNOWN_VERBS: frozenset[str] = frozenset(
         "schedule.update",
         "schedule.run",
         "schedule.remove",
+        "schedule.list",
         "surface.open",
         "surface.spawn",
         "surface.update",
@@ -66,6 +68,16 @@ _KNOWN_VERBS: frozenset[str] = frozenset(
         "agent.assign",
         "agent.status",
         "agent.review",
+        "workspace.post",
+        "workspace.reply",
+        "workspace.read",
+        "workspace.ask",
+        "memory.recall",
+        "memory.get",
+        "memory.promote",
+        "memory.forget",
+        "diary.append",
+        "feedback.propose",
     }
 )
 
@@ -95,8 +107,31 @@ class MCPServerBind:
 
 
 @dataclass(frozen=True)
+class MCPStreamConfig:
+    """Server→client push over the GET SSE stream (``activity.watch``).
+
+    ``replay_buffer`` bounds what a reconnecting client can resume; a cursor
+    older than the retained window is told it lost events rather than handed a
+    partial history. ``client_queue`` bounds one slow consumer.
+
+    ``max_streams_total``/``max_streams_per_session`` bound how MANY
+    subscriptions may exist. ``server.max_connections`` gates session creation
+    only, so without these one configured client could hold a single session
+    open and stack unbounded streams — each with its own ``client_queue``-sized
+    queue — behind it. Together the four keys are the whole memory ceiling of
+    the subscription."""
+
+    heartbeat_s: float
+    replay_buffer: int
+    client_queue: int
+    max_streams_total: int
+    max_streams_per_session: int
+
+
+@dataclass(frozen=True)
 class MCPConfig:
     server: MCPServerBind
+    stream: MCPStreamConfig
     clients: tuple[MCPClient, ...]
     verbs: Mapping[str, str]  # verb -> posture, exactly as the operator wrote it
     trust_tiers: Mapping[str, str]  # trust tier -> posture cap (floor on strictness)
@@ -123,10 +158,57 @@ def load_mcp_config(path: Path = MCP_YAML) -> MCPConfig:
         raise RuntimeError(f"mcp config {path} did not parse to a mapping")
 
     server = _load_server(raw)
+    stream = _load_stream(raw)
     clients = _load_clients(raw, server)
     verbs = _load_verbs(raw)
     trust_tiers = _load_trust_tiers(raw)
-    return MCPConfig(server=server, clients=clients, verbs=verbs, trust_tiers=trust_tiers)
+    return MCPConfig(
+        server=server, stream=stream, clients=clients, verbs=verbs, trust_tiers=trust_tiers
+    )
+
+
+def _positive_number(block: dict[str, Any], key: str, *, integer: bool) -> Any:
+    """One required, positive, finite ``stream.*`` value.
+
+    Bare ``int()``/``float()`` accepted more than the schema means: ``True``
+    coerces to ``1``, ``"8"`` to ``8``, ``1.9`` silently truncates to ``1``,
+    and — the one that actually bypassed a check — ``.nan`` compares False
+    against every ``<= 0`` test and sailed through as a valid heartbeat.
+    """
+    try:
+        value = block[key]
+    except KeyError as exc:
+        raise RuntimeError(f"mcp.yaml stream.* missing key: {key}") from exc
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RuntimeError(f"mcp.yaml stream.{key} must be a number, got {value!r}")
+    if integer and not isinstance(value, int):
+        raise RuntimeError(f"mcp.yaml stream.{key} must be a whole number, got {value!r}")
+    if not math.isfinite(value) or value <= 0:
+        raise RuntimeError(f"mcp.yaml stream.{key} must be positive")
+    return value
+
+
+def _load_stream(raw: dict[str, Any]) -> MCPStreamConfig:
+    block = raw.get("stream")
+    if not isinstance(block, dict):
+        raise RuntimeError("mcp.yaml missing required 'stream' block")
+    heartbeat_s = float(_positive_number(block, "heartbeat_s", integer=False))
+    replay_buffer = _positive_number(block, "replay_buffer", integer=True)
+    client_queue = _positive_number(block, "client_queue", integer=True)
+    max_streams_total = _positive_number(block, "max_streams_total", integer=True)
+    max_streams_per_session = _positive_number(block, "max_streams_per_session", integer=True)
+    if max_streams_per_session > max_streams_total:
+        raise RuntimeError(
+            "mcp.yaml stream.max_streams_per_session must not exceed max_streams_total "
+            f"({max_streams_per_session} > {max_streams_total})"
+        )
+    return MCPStreamConfig(
+        heartbeat_s=heartbeat_s,
+        replay_buffer=replay_buffer,
+        client_queue=client_queue,
+        max_streams_total=max_streams_total,
+        max_streams_per_session=max_streams_per_session,
+    )
 
 
 def _load_trust_tiers(raw: dict[str, Any]) -> Mapping[str, str]:
@@ -259,6 +341,7 @@ def _load_verbs(raw: dict[str, Any]) -> Mapping[str, str]:
 __all__ = [
     "MCPClient",
     "MCPServerBind",
+    "MCPStreamConfig",
     "MCPConfig",
     "load_mcp_config",
     "strictest",

@@ -42,8 +42,13 @@ class VaultQueryInput(BaseModel):
     )
 
 
-_RAW_PAGE_CHAR_BUDGET = 12_000  # cap when synthesizing without a librarian
 _STOP_WORDS = frozenset({"the", "a", "an", "is", "are", "do", "we", "have", "what"})
+
+# Emitted after a partial page, and reserved before the slice is taken.
+_TRUNCATION_SUFFIX = "\n…[truncated]\n"
+# Below this much room a partial page is noise, so the slot is spent on saying
+# the budget ran out instead.
+_MIN_EXCERPT_CHARS = 200
 
 
 class VaultQueryTool(Tool):
@@ -119,7 +124,9 @@ class VaultQueryTool(Tool):
             synthesized = await self._librarian.synthesize_query(inp.query, candidate_slugs)
             return ToolResult(output=f"{header}\n{synthesized}")
 
-        body = _render_raw_pages(self._manager, candidate_slugs, _RAW_PAGE_CHAR_BUDGET)
+        body = _render_raw_pages(
+            self._manager, candidate_slugs, self._config.synthesis_char_budget
+        )
         return ToolResult(output=f"{header}\n{body}")
 
 
@@ -254,22 +261,52 @@ def _slugify_simple(text: str) -> str:
 
 
 def _render_raw_pages(manager: VaultManager, slugs: list[str], budget: int) -> str:
+    """Render whole wiki pages under one character budget.
+
+    Every emitted block is charged, not just page bodies: the missing-page
+    marker, the truncation notice, the trailing newline and the join separator
+    all reach the caller, and counting only headers and bodies let the result
+    run past the cap `vault.yaml` says bounds the assembled whole.
+    """
     blocks: list[str] = []
     used = 0
+
+    def _sep() -> int:
+        return 1 if blocks else 0  # the "\n" this block's join will add
+
+    def _fits(block: str) -> bool:
+        return used + _sep() + len(block) <= budget
+
+    def _charge(block: str) -> None:
+        nonlocal used
+        used += _sep() + len(block)
+        blocks.append(block)
+
     for slug in slugs:
         page = manager.read_wiki_page(slug)
-        if page is None:
-            blocks.append(f"=== {slug} ===\n(missing)\n")
-            continue
         header = f"=== {slug} ===\n"
-        remaining = budget - used - len(header)
-        if remaining <= 200:
-            blocks.append(f"{header}[truncated — page skipped, budget exhausted]\n")
+        if page is None:
+            block = f"{header}(missing)\n"
+            if not _fits(block):
+                break
+            _charge(block)
+            continue
+
+        # Build the exact string first, then ask whether it fits. Deriving a
+        # slice length from the budget and appending decoration afterwards is
+        # what let the earlier version overshoot: the truncation suffix and the
+        # join separator were emitted but never reserved.
+        whole = f"{header}{page}\n"
+        if _fits(whole):
+            _charge(whole)
+            continue
+
+        room = budget - used - _sep() - len(header) - len(_TRUNCATION_SUFFIX)
+        if room <= _MIN_EXCERPT_CHARS:
+            notice = f"{header}[truncated — page skipped, budget exhausted]\n"
+            if _fits(notice):
+                _charge(notice)
             break
-        if len(page) > remaining:
-            blocks.append(f"{header}{page[:remaining]}\n…[truncated]\n")
-            used = budget
-            break
-        blocks.append(f"{header}{page}\n")
-        used += len(header) + len(page)
+        _charge(f"{header}{page[:room]}{_TRUNCATION_SUFFIX}")
+        break
     return "\n".join(blocks)

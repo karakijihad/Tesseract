@@ -3,7 +3,7 @@
 # The librarian uses this file as the set of human-anchored entities.
 # It is free to enrich links between them (auto_links in memory frontmatter)
 # but may NOT invent new anchors. Add a new entity here when the operator
-# teaches TARS about someone / something durable.
+# teaches the assistant about someone / something durable.
 #
 # Schema: four top-level categories — people, projects, tools, concepts.
 # Each entry has `name` (canonical) and optional `aliases` + `notes`.
@@ -11,15 +11,15 @@
 people: []
 projects:
 - name: TESSERACT
-  aliases: [tesseract, tars-reboot]
+  aliases: [tesseract]
   notes: runtime — memory, permissions, tool registry, session store, kernel 
     lockdown.
-- name: TARS
-  aliases: [tars]
+- name: the assistant
+  aliases: [agent, assistant]
   notes: operator-facing assistant persona running inside TESSERACT.
 - name: Mirror
-  aliases: [mirror, tars-mirror, cockpit]
-  notes: browser UI for TARS (React/Vite). Phases 1–13 green.
+  aliases: [mirror, cockpit]
+  notes: browser UI for the assistant (React/Vite). Phases 1–13 green.
 - name: Vault
   aliases: [vault, vault-librarian]
   notes: research corpus — separate from memory-store. Librarian rewiring 
@@ -28,12 +28,12 @@ projects:
 tools:
 - name: Claude Code
   aliases: [claude, CC, claude-code]
-  notes: subscription CLI — invoked via delegate_claude for heavy reasoning / 
-    large refactors.
+  notes: subscription CLI — fills the coder seat by default; invoked via 
+    delegate_coder (or delegate_auditor with provider=claude).
 - name: Codex
   aliases: [codex, codex-cli]
-  notes: subscription CLI — invoked via delegate_codex for fast low-latency 
-    work.
+  notes: subscription CLI — fills the auditor seat by default; invoked via 
+    delegate_auditor (or delegate_coder with provider=codex).
 - name: Ollama
   aliases: [ollama]
   notes: local embeddings provider (nomic-embed-text). Best-effort — fail-open 

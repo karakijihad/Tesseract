@@ -24,7 +24,7 @@ from tesseract.config_seed import (
     ensure_config_seeded,
     ensure_env_seeded,
     ensure_memory_store_seeded,
-    ensure_tars_workshop_seeded,
+    ensure_workshop_seeded,
     ensure_vault_seeded,
     ensure_workspace_seeded,
 )
@@ -120,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     ensure_env_seeded()
     ensure_memory_store_seeded()
     ensure_vault_seeded()
-    ensure_tars_workshop_seeded()
+    ensure_workshop_seeded()
     _setup_logging(home)
     # After logging is attached, not before — see the identical comment in
     # `mirror/server/__main__.py::main`.
@@ -191,8 +191,8 @@ def main(argv: list[str] | None = None) -> int:
             backend_cmd=backend_cmd,
             separate_console=separate_console,
             # 2026-05-24: controller daemon is part of the standard
-            # supervised stack now so `tars` in any terminal attaches
-            # to it without manual `python -m tesseract.scripts.tars_controller`.
+            # supervised stack now so `agent` in any terminal attaches
+            # to it without manual `python -m tesseract.scripts.agent_controller`.
             # `SUPERVISOR_DISABLE_CONTROLLER=1` opts out for hermetic
             # test runs that don't want the sibling process.
             controller_daemon_enabled=(

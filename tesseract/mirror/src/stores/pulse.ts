@@ -30,9 +30,9 @@ const COALESCE_PREVIEW_CAP = 60;
 
 // Operator-controlled retention for the rolling pulse buffer (F2 §5l).
 // 'all' is unbounded — surfaced with a perf warning in the UI because long
-// idle sessions can balloon the array. Persisted to `tars_pulse_cap`.
+// idle sessions can balloon the array. Persisted to `pulse_cap`.
 export type PulseCapValue = 100 | 500 | 'all';
-const PULSE_CAP_KEY = 'tars_pulse_cap';
+const PULSE_CAP_KEY = 'pulse_cap';
 // Phase 15 audit reconciled this against the spec (100, not 500). Operators
 // can still raise the cap to 500 or 'all' via the Pulse view toggle.
 const PULSE_CAP_DEFAULT: PulseCapValue = 100;
@@ -98,6 +98,7 @@ function deriveTag(env: Envelope): PulseTag {
   const t = env.type;
   if (t === 'model_selected') return 'model';
   if (t === 'mode_changed') return 'route';
+  if (t === 'identity_changed') return 'system';
   if (t === 'stream_stop' || t === 'loop_end' || t === 'loop_start') return 'loop';
   if (t === 'memory_suggestion') return 'memory';
   if (t === 'tool_ask' || t === 'tool_approved' || t === 'tool_denied' || t === 'tool_denied_hard') {
@@ -221,6 +222,10 @@ function deriveLabel(env: Envelope): string {
       const to = (d as { to?: unknown }).to;
       return typeof to === 'string' ? `mode → ${to}` : t;
     }
+    case 'identity_changed': {
+      const name = (d as { name?: unknown }).name;
+      return typeof name === 'string' ? `identity → ${name}` : t;
+    }
     case 'session_compact': {
       const before = (d as { tokens_before?: unknown }).tokens_before;
       const after  = (d as { tokens_after?: unknown }).tokens_after;
@@ -290,6 +295,17 @@ function deriveLabel(env: Envelope): string {
       if (typeof text !== 'string') return t;
       return text ? `voice final: "${truncate(text, 56)}"` : 'voice final: (empty)';
     }
+    case 'voice_discarded': {
+      // The whole point of the row: what was heard and how close it came.
+      // Without the score the operator can't tell "threshold too tight"
+      // from "the mic heard the TV".
+      const text = (d as { text?: unknown }).text;
+      const score = (d as { score?: unknown }).score;
+      const scoreStr = typeof score === 'number' ? ` (${score.toFixed(2)})` : '';
+      return typeof text === 'string' && text
+        ? `no wake word${scoreStr}: "${truncate(text, 44)}"`
+        : `no wake word${scoreStr}`;
+    }
     case 'tts_chunk': {
       const seq = (d as { sequence?: unknown }).sequence;
       const isFinal = (d as { is_final?: unknown }).is_final;
@@ -301,9 +317,7 @@ function deriveLabel(env: Envelope): string {
     }
     case 'voice_instruction': {
       const instr = (d as { instruction?: unknown }).instruction;
-      const voiceId = (d as { voice_id?: unknown }).voice_id;
       if (typeof instr === 'string' && instr) return `voice: ${truncate(instr, 60)}`;
-      if (typeof voiceId === 'string') return `set_voice: ${voiceId}`;
       return t;
     }
     case 'voice_mode_set': {

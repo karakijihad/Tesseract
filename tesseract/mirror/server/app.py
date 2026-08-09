@@ -107,7 +107,7 @@ def create_app(config: ServerConfig) -> web.Application:
     # Spawn halt-watchdog bound (Stage 2B) — passed to every ChatSession so the
     # per-turn sweep flags spawns stuck `running` past it.
     app["spawn_stall_seconds"] = load_spawn_stall_seconds(default_runtime_config_path())
-    # parallel-tars P4 — per-session cap on concurrent background spawns.
+    # per-session cap on concurrent background spawns.
     app["max_concurrent_spawns_per_session"] = (
         load_max_concurrent_spawns_per_session(default_runtime_config_path())
     )
@@ -121,7 +121,6 @@ def create_app(config: ServerConfig) -> web.Application:
     app["autonomy_governor"] = None  # Governor | None — populated by _on_startup (AU-6)
     app["autonomy_pause_store"] = None  # PauseStore | None — populated by routes/agenda::register
     app["alarm_registry"] = None  # AlarmRegistry | None — populated by _on_startup (S4)
-    app["voice_state"] = None  # VoiceState | None — populated by _on_startup
     app["stt_engine"] = None  # STTEngine | None — populated when voice config is present
     app["tts_engine"] = None  # TTSEngine | None — populated when voice config is present
     app["vault_config"] = None  # VaultConfig | None — populated when watcher reloads
@@ -311,6 +310,7 @@ def _register_routes(app: web.Application) -> None:
     app.router.add_get("/api/soul", system_route.soul)
     app.router.add_get("/api/breakers", system_route.breakers)
     app.router.add_get("/api/identity", system_route.identity)
+    app.router.add_post("/api/identity", system_route.set_identity)
     app.router.add_post("/api/mode", system_route.set_mode)
     app.router.add_post("/api/settings/compact-threshold", settings_route.set_compact_threshold)
     app.router.add_post("/api/settings/cost", settings_route.set_cost)
@@ -329,6 +329,8 @@ def _register_routes(app: web.Application) -> None:
     app.router.add_post("/api/settings/session-caps", settings_route.set_session_caps)
     app.router.add_get("/api/tools", system_route.tools)
     app.router.add_get("/api/voice/providers", voice_route.get_providers)
+    app.router.add_get("/api/voice/catalog", voice_route.get_catalog)
+    app.router.add_post("/api/voice/primary", voice_route.set_primary)
     app.router.add_post("/api/voice/test", voice_route.post_test)
     app.router.add_get("/api/cost/state", cost_route.get_state)
     app.router.add_get("/api/system/ollama", ollama_route.status)
@@ -339,6 +341,7 @@ def _register_routes(app: web.Application) -> None:
     app.router.add_post("/api/system/piper", local_models_route.piper_action)
     app.router.add_get("/api/system/kokoro", local_models_route.kokoro_status)
     app.router.add_post("/api/system/kokoro", local_models_route.kokoro_action)
+    app.router.add_post("/api/system/models/download", local_models_route.model_download)
     app.router.add_get("/api/uploads/chat/config", uploads_route.get_chat_upload_config)
     app.router.add_post("/api/uploads/chat/{session_id}", uploads_route.upload_chat_attachment)
     app.router.add_get(
@@ -380,6 +383,9 @@ def _register_routes(app: web.Application) -> None:
     )
     app.router.add_get("/api/workspace/seen", workspace_route.get_seen)
     app.router.add_post("/api/workspace/seen", workspace_route.post_seen)
+    app.router.add_get("/api/workspace/docs", workspace_route.list_docs)
+    app.router.add_get("/api/workspace/doc", workspace_route.get_doc)
+    app.router.add_post("/api/workspace/doc", workspace_route.save_doc)
     app.router.add_get("/api/commands", commands_route.list_commands)
     app.router.add_get("/ws", websocket_handler)
     # Audit-1 M-2 — Mirror observer bridge to a controller session. Opens
@@ -492,10 +498,67 @@ async def _on_startup(app: web.Application) -> None:
     app["init_background_task"] = task
 
 
+_BOOT_TIMING_ENV = "TESSERACT_BOOT_TIMING"
+
+
+class _BootClock:
+    """Elapsed time between named boot checkpoints, when asked for.
+
+    Two boot stalls are reproduced across consecutive boots and neither can
+    be attributed from the log as it stands: ~11s between stage 2 starting
+    and the embedding model warming (a window that also contains a
+    94k-character prompt assembly, so two candidates share it), and ~24s
+    between the scheduler starting and the autonomy kernel, with no log
+    line in the gap at all.
+
+    Checkpoints rather than spans, because the boot chain is sequential and
+    the interesting number is the gap BETWEEN two stages — a span wrapping
+    both would report the sum and narrow nothing. A checkpoint also cannot
+    be skipped by an exception the way a context manager's exit can.
+
+    Off by default: a timing line per stage on every boot is noise for
+    everyone not chasing this.
+    """
+
+    def __init__(self) -> None:
+        self._enabled = bool(os.environ.get(_BOOT_TIMING_ENV))
+        self._last = time.monotonic()
+
+    def mark(self, name: str) -> None:
+        if not self._enabled:
+            return
+        now = time.monotonic()
+        log.info("boot timing: %s took %.2fs", name, now - self._last)
+        self._last = now
+
+
+def _enable_boot_timing_loop_debug() -> None:
+    """Turn on asyncio's own slow-callback reporting for this boot.
+
+    Deliberately not a configured value: this is a debug override in the
+    same family as `TESSERACT_PROMPT_FULL`, and asyncio's own default
+    threshold applies unless the env var carries one.
+    """
+    raw = os.environ.get(_BOOT_TIMING_ENV, "")
+    try:
+        threshold = float(raw)
+    except ValueError:
+        return
+    if threshold <= 0 or threshold == 1.0:
+        return  # `1` means "on", not "a 1-second threshold"
+    loop = asyncio.get_running_loop()
+    loop.set_debug(True)
+    loop.slow_callback_duration = threshold
+    log.info(
+        "boot timing: loop debug on, reporting callbacks slower than %.2fs",
+        threshold,
+    )
+
+
 async def _init_background(app: web.Application) -> None:
     """Heavy boot chain — runs after aiohttp binds the listener.
 
-    Architectural invariants (TARS-by-design — parallel + thread-pool):
+    Architectural invariants (agent-by-design — parallel + thread-pool):
 
     1. **The event loop stays free.** ``_on_startup`` returns in <1s,
        aiohttp binds the listener immediately, ``/api/health`` answers
@@ -572,6 +635,8 @@ async def _init_background(app: web.Application) -> None:
             log.exception("cli_auth: scheduling refresh failed — continuing boot")
 
         # ───── STAGE 1 ── parallel: ollama / tool_registry / cost_ledger / recovery
+        _enable_boot_timing_loop_debug()
+        clock = _BootClock()
         log.info("mirror init stage 1: ollama / tool_registry / cost_ledger / recovery (parallel)")
         ollama_task = asyncio.create_task(_ensure_ollama_ready(app), name="boot:ollama")
         registry_task = asyncio.create_task(
@@ -609,10 +674,9 @@ async def _init_background(app: web.Application) -> None:
                 )
 
         if isinstance(registry_res, tuple):
-            registry, mood, voice_state, bundle, alarm_registry = registry_res
+            registry, mood, bundle, alarm_registry = registry_res
             app["tool_registry"] = registry
             app["mood"] = mood
-            app["voice_state"] = voice_state
             app["memory_bundle"] = bundle
             app["alarm_registry"] = alarm_registry
             # Daily-brief auto-promote reads ``compile_source`` off this;
@@ -639,6 +703,7 @@ async def _init_background(app: web.Application) -> None:
             _wire_cost_broadcast(app)
 
         # ───── STAGE 2 ── parallel: voice / observer / chat_infra
+        clock.mark("stage 1: ollama / tool_registry / cost_ledger / recovery")
         log.info("mirror init stage 2: voice / observer / chat_infra (parallel)")
         voice_task = asyncio.create_task(
             asyncio.to_thread(_build_voice_runtime, app), name="boot:voice",
@@ -681,6 +746,7 @@ async def _init_background(app: web.Application) -> None:
                 app["observer_state"] = "armed"
                 log.info("observer: armed-by-default at boot")
 
+        clock.mark("stage 2: voice / observer / chat_infra")
         # ───── STAGE 3 ── serial: substrates that depend on stage 2 outputs
         if registry is not None:
             # Late import — commands_registry pulls in envelope/session
@@ -710,10 +776,16 @@ async def _init_background(app: web.Application) -> None:
 
         # ───── STAGE 4 ── orchestrator boot chain (serial — strict deps)
         # Recovery already ran in stage 1; scheduler catch-up happens
-        # after, then autonomy kernel.
+        # after, then autonomy kernel. Timed individually rather than as one
+        # stage: the unexplained gap sits BETWEEN the scheduler and the
+        # kernel, so a single span around both would not narrow it.
+        clock.mark("stage 3: command registry")
         await _start_scheduler(app)
+        clock.mark("stage 4: scheduler")
         await _start_autonomy_kernel(app)
+        clock.mark("stage 4: autonomy kernel")
         await _start_config_watcher(app)
+        clock.mark("stage 4: config watcher")
         try:
             await _start_code_watcher(app)
         except Exception:
@@ -822,7 +894,7 @@ async def _on_shutdown(app: web.Application) -> None:
             log.exception("activity subscriber stop on shutdown failed")
     await _close_all_websockets(app)
     # Phase 4 follow-up (2026-05-11): cancel any background spawns
-    # (delegate_claude/codex/invoke_agent fired with background=true)
+    # (delegate_coder/codex/invoke_agent fired with background=true)
     # before the process exits. cleanup_session schedules cancel_all
     # fire-and-forget per-session; awaiting here guarantees subprocess
     # children (claude/codex CLIs) are SIGTERMed rather than left as
@@ -932,7 +1004,7 @@ async def _on_shutdown(app: web.Application) -> None:
 
 
 async def reattach_operator_panes(*, list_fn, pty_open_fn) -> None:
-    """Re-open tars viewer panes for operator-facing controller sessions
+    """Re-open viewer panes for operator-facing controller sessions
     after a backend restart. Background (autonomy/scheduler) sessions are
     listed but not re-paned.
 
@@ -953,7 +1025,7 @@ async def reattach_operator_panes(*, list_fn, pty_open_fn) -> None:
             try:
                 await pty_open_fn("open", {
                     "name": f"ctrl-{rec.session_id}",
-                    "command": ["tars", "--session", rec.session_id],
+                    "command": ["agent", "--session", rec.session_id],
                 })
             except Exception:
                 log.exception(
@@ -1111,14 +1183,14 @@ def _try_build_tool_registry(policy=None, app=None):
     try:
         from tesseract.brain.boot import build_tool_registry
 
-        registry, mood, voice_state, bundle, alarm_registry = build_tool_registry(
+        registry, mood, bundle, alarm_registry = build_tool_registry(
             policy=policy, app=app,
         )
         log.info("tool_registry loaded: %d tools", len(registry.tools))
-        return registry, mood, voice_state, bundle, alarm_registry
+        return registry, mood, bundle, alarm_registry
     except Exception:
         log.exception("tool_registry unavailable — /api/tools will return []")
-        return None, None, None, None, None
+        return None, None, None, None
 
 
 async def _connect_mcp_clients(app: web.Application, registry) -> None:
@@ -1146,11 +1218,67 @@ async def _connect_mcp_clients(app: web.Application, registry) -> None:
         log.exception("mcp_client: outbound connect failed — no external tools registered")
 
 
+def _ollama_slots_safe() -> list[tuple[str, Any]]:
+    from tesseract.brain.boot import ollama_slots
+
+    try:
+        return ollama_slots()
+    except Exception:  # noqa: BLE001 — a broken catalog surfaces on its own path
+        return []
+
+
+async def _report_ollama_state(base_url: str, running: bool) -> None:
+    """Say out loud what an absent Ollama costs, once, at boot.
+
+    Ollama is ours — provisioning installs it — so its absence is not the
+    operator forgetting a login, it is something that broke. Two different
+    failures with two different remedies: the daemon is gone (reinstall or
+    start it), or the daemon is up but a model was never pulled (fetch it).
+    Both log at ERROR because that is the threshold `log_forwarder.py`
+    forwards to the pulse; at WARNING this reaches a terminal nobody is
+    reading. Neither stops boot.
+    """
+    slots = _ollama_slots_safe()
+    if not slots:
+        return
+
+    if not running:
+        wired = ", ".join(f"{slot} ({ref.model.model})" for slot, ref in slots)
+        log.error(
+            "Ollama is not running at %s and could not be started — %s will not "
+            "be served. Semantic search falls back to keyword matching and any "
+            "role wired to Ollama falls through to its fallbacks; memory writes "
+            "are unaffected. Reinstall or start it from Settings → Local models.",
+            base_url, wired,
+        )
+        return
+
+    from tesseract.memory.ollama_boot import _fetch_tags, _model_present
+
+    tags = await _fetch_tags(base_url)
+    missing = [
+        f"{slot} ({ref.model.model})"
+        for slot, ref in slots
+        if not _model_present(tags, ref.model.model)
+    ]
+    if missing:
+        log.error(
+            "Ollama is running at %s but these models are not pulled: %s. "
+            "Fetch them from Settings → Local models, or run "
+            "`python -m tesseract.scripts.ensure_ollama`.",
+            base_url, ", ".join(missing),
+        )
+
+
 async def _ensure_ollama_ready(app: web.Application) -> None:
-    """Probe Ollama + optionally auto-start; log WARN on failure, never raise.
+    """Probe Ollama + optionally auto-start; report on failure, never raise.
 
     Must run before `build_memory_bundle()` so the embeddings index is wired
     when the daemon is reachable. Fail-open: Mirror starts regardless.
+
+    A failure logs at ERROR, not WARNING, because that is the threshold
+    `log_forwarder.py` forwards to the pulse — below it the operator learns
+    that retrieval went keyword-only only by tailing a terminal.
 
     Also constructs the `OllamaSupervisor` so the Settings panel start/stop
     toggle has a stable handle. When this path auto-starts Ollama itself,
@@ -1162,27 +1290,47 @@ async def _ensure_ollama_ready(app: web.Application) -> None:
     supervisor = None
     try:
         from tesseract.brain.boot import load_embeddings_cfg
-        from tesseract.memory.ollama_boot import ensure_ollama_ready
+        from tesseract.memory.ollama_boot import _probe
         from tesseract.mirror.server.ollama_supervisor import OllamaSupervisor
 
-        cfg = load_embeddings_cfg()
-        if not cfg or cfg.get("provider") != "ollama":
+        # Any slot, not just embeddings. Keying this on the embeddings role
+        # meant a config that served embeddings elsewhere and pointed a chat
+        # role at Ollama got no auto-start, no report, and — because the
+        # supervisor is built here and nowhere else — a Settings → Local
+        # models panel that 503s, which is the panel the failure message
+        # tells the operator to go and use.
+        slots = _ollama_slots_safe()
+        if not slots:
             return
-        base_url = cfg["base_url"]
-        model = cfg["model"]
-        auto_start = bool(cfg.get("auto_start_ollama", True))
-        supervisor = OllamaSupervisor(base_url=base_url, embedding_model=model)
+        conn = slots[0][1].connection
+        base_url = conn.base_url
+        if not base_url:
+            return
+        auto_start = bool(conn.extra.get("auto_start", True))
+
+        # The panel's row is embedding-specific, so it gets the embedding
+        # model only when Ollama is the one serving it.
+        embed_cfg = load_embeddings_cfg()
+        embedding_model = (
+            embed_cfg["model"]
+            if embed_cfg and embed_cfg.get("provider") == "ollama"
+            else ""
+        )
+        supervisor = OllamaSupervisor(base_url=base_url, embedding_model=embedding_model)
         if auto_start:
-            await supervisor.start()
+            running, _reason = await supervisor.start()
         else:
-            await ensure_ollama_ready(base_url=base_url, model=model, auto_start=False)
+            running = await _probe(base_url, timeout_s=2.0)
         app["ollama_supervisor"] = supervisor
+        await _report_ollama_state(base_url, running)
     except Exception:
         log.exception("ollama readiness probe failed — continuing fail-open")
         # Supervisor was constructed but never reached `app[...]`. Close
         # its httpx client so a startup-path failure doesn't leak a
-        # keepalive pool with no shutdown owner.
-        if supervisor is not None and "ollama_supervisor" not in app:
+        # keepalive pool with no shutdown owner. Identity, not key presence:
+        # `_on_startup` seeds `app["ollama_supervisor"] = None`, so the key
+        # is always there and a presence check never fired.
+        if supervisor is not None and app.get("ollama_supervisor") is not supervisor:
             try:
                 await supervisor.aclose()
             except Exception:
@@ -1190,14 +1338,25 @@ async def _ensure_ollama_ready(app: web.Application) -> None:
 
 
 async def _warm_embeddings(bundle) -> None:
-    """Pre-warm the embedding model so the first dedupe doesn't pay cold-load tax."""
-    if bundle is None or bundle.embeddings is None:
+    """Pre-warm the embedding model so the first dedupe doesn't pay cold-load tax.
+
+    The reranker warms independently — it is constructed from its local ONNX
+    config regardless of whether embeddings came online, so BM25-only mode
+    still gets a warm reranker."""
+    if bundle is None:
         return
-    try:
-        await bundle.embeddings.warm_up()
-        log.info("embedding model warmed and pinned")
-    except Exception:
-        log.exception("warm_up failed — continuing without warm embeddings")
+    if bundle.embeddings is not None:
+        try:
+            await bundle.embeddings.warm_up()
+            log.info("embedding model warmed and pinned")
+        except Exception:
+            log.exception("warm_up failed — continuing without warm embeddings")
+    reranker = getattr(bundle, "reranker", None)
+    if reranker is not None:
+        try:
+            await reranker.warm_up()
+        except Exception:
+            log.exception("reranker warm_up failed — first retrieval loads lazily")
 
 
 def _schedule_warmup(app: web.Application, coro, *, name: str) -> None:
@@ -1211,7 +1370,7 @@ def _schedule_warmup(app: web.Application, coro, *, name: str) -> None:
     where there is no running loop. Calling `asyncio.create_task` there
     raised `RuntimeError: no running event loop`, which aborted the whole
     voice-runtime build BEFORE the TTS engine was constructed — leaving
-    TARS with no voice. When called off-loop we schedule the task on the
+    The assistant with no voice. When called off-loop we schedule the task on the
     captured main loop via `call_soon_threadsafe` instead.
     """
     async def _run() -> None:
@@ -1447,14 +1606,14 @@ async def _start_autonomy_kernel(app: web.Application) -> None:
         agenda_raw = _yaml.safe_load(agenda_yaml.read_text(encoding="utf-8")) or {}
         # AU-20 follow-up — wire the live tool registry into the
         # autonomy runner so selected agenda items dispatch to real
-        # delegate_claude / delegate_codex / invoke_agent calls. Falls
+        # delegate_coder / delegate_auditor / invoke_agent calls. Falls
         # back to the noop runner if the registry isn't ready yet
         # (e.g. tool_registry boot raised earlier and we're still
         # booting fail-open).
         tool_registry = app.get("tool_registry")
         worker_timeouts_raw = agenda_raw.get("worker_timeouts") or {}
         worker_timeouts: dict[WorkerKind, float] = {}
-        # delegate_claude / delegate_codex Pydantic schemas constrain
+        # delegate_coder / delegate_auditor Pydantic schemas constrain
         # timeout to 10–1800. Clamp at load time with a warning so a
         # typo'd 18000 surfaces as a startup log line, not a per-call
         # validation failure that wastes a dispatch slot.
@@ -1996,19 +2155,19 @@ def _build_voice_runtime(app: web.Application) -> None:
     """Construct STTEngine + TTSEngine from ``roles.yaml voice:``.
 
     The voice block follows the same primary+fallbacks shape as the
-    chat-brain roles (2026-05-01 refactor). For each side (STT / TTS)
-    the runtime walks the chain, branches on ``connection.adapter`` to
-    decide which provider config to populate, and picks the primary by
-    chain[0]. Keys consumed: ``stt.chain[*].adapter`` (``local_whisper``
-    or ``gemini``), ``tts.chain[*].adapter`` (``gemini``, ``piper``, or
-    ``kokoro``). Engine semantics:
+    chat-brain roles. For each side (STT / TTS) the runtime walks the
+    chain, branches on ``connection.adapter`` to decide which provider
+    config to populate, and picks the primary by chain[0]. An adapter
+    with no branch here is simply not built — the operator's chain can
+    name refs this build doesn't know how to drive, and the remaining
+    lanes still serve. Engine semantics:
 
     - STTEngine: local-first whenever a ``local_whisper`` entry exists
       anywhere in the chain. To force cloud-only, omit the
       ``local.whisper.*`` entry from the chain entirely.
-    - TTSEngine: dispatches by ``provider_key`` (the chain[0] catalog
-      id); a fallback entry only seeds its config so a future engine
-      could re-enter a different lane on failure.
+    - TTSEngine: tries ``provider_key`` (the chain[0] catalog id) first,
+      then every other configured lane in turn; a lane that raises is
+      latched off until the operator unloads it.
     """
     try:
         from pathlib import Path
@@ -2016,7 +2175,6 @@ def _build_voice_runtime(app: web.Application) -> None:
         from tesseract.brain.boot import load_voice_config
         from tesseract.voice import STTEngine, TTSEngine
         from tesseract.voice.providers.gemini import GeminiSTTConfig
-        from tesseract.voice.providers.gemini_tts import GeminiTTSConfig
         from tesseract.voice.providers.local_whisper import LocalWhisperConfig
         from tesseract.voice.providers.piper_tts import PiperPreset, PiperTTSConfig
         from tesseract.voice.providers.kokoro_tts import KokoroPreset, KokoroTTSConfig
@@ -2091,28 +2249,12 @@ def _build_voice_runtime(app: web.Application) -> None:
                 _schedule_warmup(app, app["stt_engine"].warm_up_local(), name="whisper")
 
         # ── TTS ─────────────────────────────────────────────────
-        cloud_tts_entry = next((e for e in tts_chain if e.get("adapter") == "gemini"), None)
         piper_entry = next((e for e in tts_chain if e.get("adapter") == "piper"), None)
         kokoro_entry = next((e for e in tts_chain if e.get("adapter") == "kokoro"), None)
 
-        if cloud_tts_entry or piper_entry or kokoro_entry:
-            cloud_config = None
+        if piper_entry or kokoro_entry:
             piper_config = None
             kokoro_config = None
-            if cloud_tts_entry:
-                from tesseract.voice.providers.gemini_tts import GeminiPreset
-                g_presets_raw = cloud_tts_entry.get("synthesis_presets") or {}
-                g_presets = {
-                    name: GeminiPreset(style_prompt=str(spec.get("style_prompt", "")))
-                    for name, spec in g_presets_raw.items()
-                }
-                cloud_config = GeminiTTSConfig(
-                    model=cloud_tts_entry["model"],
-                    api_key_env=cloud_tts_entry["api_key_env"],
-                    voice_id=cloud_tts_entry["voice_id"],
-                    timeout_seconds=float(cloud_tts_entry["timeout_seconds"]),
-                    presets=g_presets,
-                )
             if piper_entry:
                 piper_models_dir = Path(__file__).resolve().parents[2] / "voice" / "models" / "piper"
                 model_filename = piper_entry["model"]
@@ -2164,27 +2306,25 @@ def _build_voice_runtime(app: web.Application) -> None:
                     preload=bool(kokoro_entry.get("preload", False)),
                     timeout_seconds=float(kokoro_entry.get("timeout_seconds", 60.0)),
                 )
-            tts_primary_provider = (
-                tts_chain[0].get("provider") if tts_chain else "gemini_flash_tts"
-            )
+            # Every key comes off the chain entry that produced the
+            # config — no defaults. A lane with no entry has no config
+            # and no key, so the engine skips it by construction.
+            tts_primary_provider = tts_chain[0]["provider"]
             app["tts_engine"] = TTSEngine(
-                cloud_config=cloud_config,
                 cost_ledger=ledger,
                 piper_config=piper_config,
                 kokoro_config=kokoro_config,
                 provider_key=tts_primary_provider,
-                cloud_provider_key=(cloud_tts_entry or {}).get("provider", "gemini_flash_tts"),
-                piper_provider_key=(piper_entry or {}).get("provider", "piper_northern_english_male"),
-                kokoro_provider_key=(kokoro_entry or {}).get("provider", "kokoro_charon"),
+                piper_provider_key=(piper_entry or {}).get("provider", ""),
+                kokoro_provider_key=(kokoro_entry or {}).get("provider", ""),
             )
             log.info("voice: TTSEngine ready (primary=%s)", tts_primary_provider)
-            # Warm a local TTS engine at boot only when it is the role
-            # primary (or operator explicitly opted in via catalog
-            # preload). Fallback local engines stay cold so a piper-
-            # primary loadout no longer also pays the Kokoro CUDA-DLL
-            # preload cost, and a Kokoro-primary loadout no longer warms
-            # piper. First-use loads the cold engine lazily.
-            primary_tts_adapter = tts_chain[0].get("adapter") if tts_chain else None
+            # Warm a lane at boot only when it is the role primary (or
+            # the operator explicitly opted in via catalog `preload`).
+            # Fallback lanes stay cold so a Piper-primary loadout doesn't
+            # also pay Kokoro's CUDA-DLL preload cost, and vice versa.
+            # First use loads the cold lane lazily.
+            primary_tts_adapter = tts_chain[0].get("adapter")
             if (
                 app["tts_engine"] is not None
                 and kokoro_config is not None
@@ -2220,13 +2360,16 @@ def _build_chat_infra(app: web.Application) -> None:
         )
         from tesseract.brain.prompt import assemble_system_prompt
 
+        t0 = time.monotonic()
         chat_cfg, adapter, options, adapter_chain = resolve_chat_brain_runtime()
-        prompt_mode = "full" if os.environ.get("TARS_PROMPT_FULL") == "1" else "manifest"
+        t1 = time.monotonic()
+        prompt_mode = "full" if os.environ.get("TESSERACT_PROMPT_FULL") == "1" else "manifest"
 
         def _build_prompt() -> str:
             return assemble_system_prompt(mode=prompt_mode)
 
         system_prompt = _build_prompt()
+        t2 = time.monotonic()
 
         app["adapter"] = adapter
         app["adapter_options"] = options
@@ -2237,12 +2380,14 @@ def _build_chat_infra(app: web.Application) -> None:
         # CR-3 — channel sessions build a session-specific prompt_builder
         # in ``_build_chat_session`` that re-calls ``assemble_system_prompt``
         # with the adapter's ``channel_name``. Stash the resolved mode here
-        # so the session layer doesn't re-read ``TARS_PROMPT_FULL`` itself.
+        # so the session layer doesn't re-read ``TESSERACT_PROMPT_FULL`` itself.
         app["prompt_mode"] = prompt_mode
         app["chat_infra_error"] = None
         log.info(
-            "chat infra ready: provider=%s model=%s chain_len=%d prompt_mode=%s prompt_chars=%d",
+            "chat infra ready: provider=%s model=%s chain_len=%d prompt_mode=%s prompt_chars=%d "
+            "resolve_s=%.2f assemble_s=%.2f total_s=%.2f",
             chat_cfg.provider, chat_cfg.model, len(adapter_chain), prompt_mode, len(system_prompt),
+            t1 - t0, t2 - t1, t2 - t0,
         )
     except RuntimeError as exc:
         # No chat_brain candidate resolved (no API key set for any of them,
@@ -2283,7 +2428,7 @@ def _build_degraded_chat_infra(app: web.Application, reason: str) -> None:
         from tesseract.kernel.adapters.null_adapter import NullChatAdapter
 
         chat_cfg = load_chat_brain_chain()[0]
-        prompt_mode = "full" if os.environ.get("TARS_PROMPT_FULL") == "1" else "manifest"
+        prompt_mode = "full" if os.environ.get("TESSERACT_PROMPT_FULL") == "1" else "manifest"
 
         def _build_prompt() -> str:
             return assemble_system_prompt(mode=prompt_mode)

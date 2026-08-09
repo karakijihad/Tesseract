@@ -17,10 +17,14 @@ treated as fatal because the seal's job is "summarise activity for
 this slug" and slug collisions are rare in practice (operator-controlled
 source namespace). A registry-backed strict mode lands in S2 if needed.
 
-Single-writer assumption: the scheduler runs one ``AppendBufferJob`` at
-a time per `JobContext`, so atomic appends are sufficient — no need for
-fcntl/msvcrt advisory locking at this layer. Recovery treats a torn
-final line as best-effort: skip the malformed row, keep the rest.
+Coordination: ``AppendBufferJob`` and ``SealJob`` hold
+``tesseract.memory.leaves.LEAF_PIPELINE_LOCK`` for their entire per-tick
+pass (see that lock's docstring for why appending an id and clearing a
+buffer must never interleave). Appends within that lock are still
+plain atomic writes, not fcntl/msvcrt advisory locks — the process-wide
+lock is what keeps two jobs from touching a buffer at once, not the
+file mode. Recovery treats a torn final line as best-effort: skip the
+malformed row, keep the rest.
 """
 
 from __future__ import annotations

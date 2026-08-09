@@ -147,6 +147,29 @@ async def reflect_on_session(session: ChatSession, reason: str) -> list[dict[str
     calls: list[dict[str, Any]] = []
     by_call_id: dict[str, dict[str, Any]] = {}
     try:
+        return await _reflect(session, reason, calls, by_call_id)
+    finally:
+        # Reflection is a summarisation pass, not a turn the operator reads.
+        # `send` drains the pending spawn-completion queue like any other turn,
+        # so a result that landed since the last turn would be consumed here
+        # and never surface — worse than lost, because it looks delivered.
+        # Roll it back unconditionally (success included) so it reaches a real
+        # turn instead. Guarded because this sits in a `finally`: an error here
+        # would replace whatever the function was returning or raising,
+        # including the cancellation the docstring promises to propagate.
+        try:
+            session.rollback_spawn_delivery()
+        except Exception:  # noqa: BLE001
+            log.warning("reflection: spawn delivery rollback failed", exc_info=True)
+
+
+async def _reflect(
+    session: ChatSession,
+    reason: str,
+    calls: list[dict[str, Any]],
+    by_call_id: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    try:
         async for chunk in session.send(REFLECTION_PROMPT):
             if chunk.type == ChunkType.TOOL_CALL_START:
                 summary = _summarize_reflection_call(chunk.tool_call)
@@ -394,7 +417,7 @@ def do_stats(session: ChatSession) -> dict[str, Any]:
     """Snapshot of turns, token estimate, compact threshold, context window.
 
     CR-0 (2026-05-22): also surfaces the sliding-window knobs and the
-    current running-summary length, so the Mirror status pane / TARS
+    current running-summary length, so the Mirror status pane / the assistant
     `/stats` tool can show what shape the active window has.
     """
     from tesseract.brain.compaction import RUNNING_SUMMARY_PREFIX

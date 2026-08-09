@@ -1,5 +1,6 @@
 import type {
   Envelope,
+  IdentityChangedData,
   ModeChangedData,
   ModelSelectedData,
 } from "../../lib/types";
@@ -23,6 +24,14 @@ export function handleRouting(env: Envelope): void {
       // Tool postures are mode-aware; force the Settings tools view to refetch
       // so it reflects the new policy instead of stale defaults.
       useToolsStore.getState().invalidate();
+      break;
+    }
+    case "identity_changed": {
+      const data = env.data as unknown as IdentityChangedData;
+      identity.setNames(data.name, data.operator_name);
+      // Broadcast to every open session, including the one that saved —
+      // a second cockpit window must not keep rendering the old name.
+      toasts.push(`Identity: ${data.name}`);
       break;
     }
     case "model_selected": {

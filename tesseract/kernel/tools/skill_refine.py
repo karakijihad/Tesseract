@@ -1,7 +1,7 @@
 """skill_refine tool — propose a revised body for an existing active skill.
 
 Phase 4 (capability-growth) follow-up. The chat-side companion to the
-`skill_refinement` scheduler job: when TARS notices a live skill's instructions
+`skill_refinement` scheduler job: when the assistant notices a live skill's instructions
 are stale or wrong, it drafts an improved SKILL.md and files a `skill_refinement`
 card. It does NOT apply the change — activation stays with the operator (the
 card's approve route overwrites the live SKILL.md). Same invariant as every
@@ -136,7 +136,7 @@ class SkillRefineTool(Tool):
         current = _read_current(self._skills_dir, inp.name)
         event = WorkspaceEvent.new(
             kind="skill_refinement",
-            source="tars",
+            source="agent",
             title=f"Skill refinement: {inp.name}",
             summary=inp.rationale,
             payload={

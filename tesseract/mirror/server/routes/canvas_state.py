@@ -89,7 +89,7 @@ async def post_canvas_state(request: web.Request) -> web.Response:
         )
 
     # Preserve backend-owned surfaces — the frontend POSTs `surfaces: []`,
-    # which must not wipe TARS-spawned cards.
+    # which must not wipe agent-spawned cards.
     existing = read_view_blob(view)
     if existing is not None and "surfaces" in existing:
         body["surfaces"] = existing["surfaces"]

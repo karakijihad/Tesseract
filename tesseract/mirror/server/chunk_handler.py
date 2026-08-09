@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 # fires this many tool calls, the orb latches to `deep_focus` once (per
 # turn) so the operator sees a sustained-work signal. `_HAPPY_IMPORTANCE`:
 # successful `memory_save` calls at this importance level or above flip
-# the orb to `happy`. Both are auto-set by the runtime — TARS shouldn't
+# the orb to `happy`. Both are auto-set by the runtime — the assistant shouldn't
 # also call `set_state` for them (the prompt nudge says so).
 _DEEP_FOCUS_TOOL_THRESHOLD = 2
 _HAPPY_IMPORTANCE = 8
@@ -45,7 +45,7 @@ async def _broadcast_workspace_reply(
     propagated through the chunk pipeline as ``chunk.raw["metadata"]``
     by ``ChatSession._result_chunk``. We look up the comment by exact id
     and broadcast it. Missing metadata fails closed: live broadcast is
-    skipped rather than guessing from the latest TARS comment, which
+    skipped rather than guessing from the latest the assistant comment, which
     races under concurrent synthetic turns.
     """
     store = app.get("workspace_event_store")
@@ -177,7 +177,6 @@ async def _handle_chunk(app: web.Application, session: ServerSession, chunk: Str
     from tesseract.mirror.server import ws as _ws
 
     is_set_mood_result = False
-    is_set_voice_result = False
     is_set_state_result = False
     is_memory_save_result = False
     is_workspace_reply_result = False
@@ -220,7 +219,6 @@ async def _handle_chunk(app: web.Application, session: ServerSession, chunk: Str
     elif chunk.type is ChunkType.TOOL_RESULT:
         name = turn_state.tool_names_by_call.pop(chunk.tool_call_id, "")
         is_set_mood_result = name == "set_mood"
-        is_set_voice_result = name == "set_voice"
         is_set_state_result = name == "set_state"
         is_memory_save_result = name == "memory_save"
         is_workspace_reply_result = name == "workspace_reply"
@@ -255,7 +253,7 @@ async def _handle_chunk(app: web.Application, session: ServerSession, chunk: Str
             ))
         return
     if chunk.type is ChunkType.TEXT and chunk.text:
-        # Synthetic workspace turns: TARS replies via the workspace_reply
+        # Synthetic workspace turns: the assistant replies via the workspace_reply
         # tool; any free-form text is dropped from the chat surface so
         # the synthetic turn stays invisible to the chat conversation.
         # WP-2: per-task ContextVar so concurrent chat + synthetic turns
@@ -271,9 +269,9 @@ async def _handle_chunk(app: web.Application, session: ServerSession, chunk: Str
                 await _maybe_emit_tts_sentences(app, session, text, kind=kind)
     else:
         await send_envelope(session, chunk_to_envelope(chunk, session.session_id))
-    # Live-broadcast TARS's workspace_reply so the operator's CommentThread
+    # Live-broadcast the assistant's workspace_reply so the operator's CommentThread
     # renders the reply immediately. Fires for both synthetic workspace
-    # turns and regular chat turns where TARS calls workspace_reply mid-
+    # turns and regular chat turns where the assistant calls workspace_reply mid-
     # conversation. Tool name is already resolved into the local flag in
     # the TOOL_RESULT branch above.
     if is_workspace_reply_result and not chunk.error:
@@ -287,8 +285,6 @@ async def _handle_chunk(app: web.Application, session: ServerSession, chunk: Str
         await _broadcast_workspace_reply(app, chunk.tool_call_id, metadata)
     if is_set_mood_result:
         await _ws._emit_entity_signals(app, session)
-    if is_set_voice_result:
-        await _emit_voice_instruction_from_state(app, session)
     if is_tasks_mutation_result and not chunk.error:
         # Mirror the post-mutation list (lives on session.chat_session.
         # tool_context.todos) to the frontend. Replace-wholesale wire
@@ -307,22 +303,6 @@ async def _handle_chunk(app: web.Application, session: ServerSession, chunk: Str
     # the save didn't actually happen, so a "happy" flash would lie.
     if is_memory_save_result and happy_save_pending and not chunk.error:
         await _set_orb_state(app, session, "happy")
-
-
-async def _emit_voice_instruction_from_state(
-    app: web.Application,
-    session: ServerSession,
-) -> None:
-    """Mirror-only: after `set_voice` runs, surface the post-state to the
-    frontend via a `voice_instruction` envelope. The tool itself stays
-    side-effect-free so REPL / tests don't depend on a WS context."""
-    voice_state = app.get("voice_state")
-    if voice_state is None:
-        return
-    await send_envelope(session, make_voice_instruction(
-        session.session_id,
-        voice_id=voice_state.voice_id,
-    ))
 
 
 async def _emit_entity_state_from_affect(

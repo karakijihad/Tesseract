@@ -1,8 +1,8 @@
 """ScheduledTaskJob — the generic lean recurring-task primitive.
 
-This is the handler TARS points `schedule_create` at for *any* repetitive
+This is the handler the assistant points `schedule_create` at for *any* repetitive
 "interpret → (optionally search) → filter → deliver" request that does NOT
-need to be a mission. A mission (`WakeTarsJob`) drags in a planner + an
+need to be a mission. A mission (`WakeJob`) drags in a planner + an
 operator approval gate + multi-step worker/verifier DAG — that machinery
 is for one-off, plan-and-build-something goals. A recurring task that runs
 the same shape every tick (summarize today's X, watch Y, digest Z and

@@ -24,6 +24,7 @@ interface IdentityState {
   latestMessage: string | null;
   setLatestMessage: (msg: string | null) => void;
   setSecurityMode: (mode: string) => void;
+  setNames: (name: string, operatorName: string) => void;
   setModel: (provider: string, model: string) => void;
   setCompactThreshold: (role: string, threshold: IdentityCompactThreshold) => void;
   setCostTracking: (cost: IdentityCostTracking) => void;
@@ -52,6 +53,7 @@ export const useIdentityStore = create<IdentityState>((set) => ({
   ...defaultState,
   setLatestMessage: (msg) => set({ latestMessage: msg }),
   setSecurityMode: (mode) => set({ securityMode: mode }),
+  setNames: (name, operatorName) => set({ name, operatorName }),
   setModel: (provider, model) => set({ provider, modelName: model }),
   setCompactThreshold: (role, threshold) =>
     set((state) => ({

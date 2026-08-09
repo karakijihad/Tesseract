@@ -130,7 +130,10 @@ _PREAMBLE = (
 _SURFACE = """WHAT ELSE IS HERE
   memory_save / memory_update / vault_ingest — write back what is worth
     keeping. These need the operator's approval; expect a pause, not a refusal.
-  activity_* — what else is running right now, and how to cancel it.
+  activity_* — what else is running right now, and how to cancel it. For work
+    you are waiting on, open the GET SSE stream on this endpoint rather than
+    polling activity_list — a snapshot misses whatever started and finished
+    between two calls.
   lane_* — drive the assistant's own claude/codex worker lanes.
   schedule_* — the recurring-job surface.
   surface_open — put something in front of the operator: a URL, file, folder,
@@ -139,7 +142,7 @@ _SURFACE = """WHAT ELSE IS HERE
   budget_status — current spend against caps. agent_* — controller sessions."""
 
 _FILESYSTEM = """THE FILESYSTEM
-  home/ is the operator's tree — memory-store/, vault/, tars-workshop/,
+  home/ is the operator's tree — memory-store/, vault/, workshop/,
   config/, workspace/. Read it freely. It is context, not clutter, and it is
   usually a faster answer than asking.
 
@@ -150,7 +153,7 @@ _FILESYSTEM = """THE FILESYSTEM
   refuses to START a process inside either tree, but it cannot see writes your
   own file tools make once you are running — so this one is on you.
 
-  Write in tars-workshop/. That directory exists to be written in."""
+  Write in workshop/. That directory exists to be written in."""
 
 # The store only stays shared if connecting models actually write to it. Every
 # other block here describes what exists; this one asks for something, and it

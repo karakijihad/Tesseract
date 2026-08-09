@@ -42,10 +42,20 @@ class MCPSessionRegistry:
     without ``DELETE /mcp`` would otherwise leave a zombie session + a
     forever-"running" ``mcp_session`` Activity record."""
 
-    def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        on_close: Callable[[str], None] | None = None,
+    ) -> None:
         self._sessions: dict[str, MCPSession] = {}
         self._last_seen: dict[str, float] = {}
         self._clock = clock
+        # Fires on every close path — DELETE, the idle sweep, activity.cancel,
+        # shutdown — so anything bound to a session (the SSE stream) is torn
+        # down by the same act that ends it, rather than by each caller
+        # remembering to.
+        self._on_close = on_close
 
     def __len__(self) -> int:
         return len(self._sessions)
@@ -62,6 +72,10 @@ class MCPSessionRegistry:
                 label=f"MCP · {client.name} ({client.trust_tier})",
                 state="running",
                 durability="ephemeral",
+                # Without this the client cannot see — or cancel — its own
+                # session once `activity.list` is caller-scoped: a blank owner
+                # reads as the runtime's own work.
+                owner_principal=client.name,
             )
         )
         session = MCPSession(
@@ -88,6 +102,8 @@ class MCPSessionRegistry:
         self._last_seen.pop(session_id, None)
         if session is None:
             return False
+        if self._on_close is not None:
+            self._on_close(session_id)
         get_activity_registry().update_state(session_id, "closed")
         return True
 

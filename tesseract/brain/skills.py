@@ -1,9 +1,9 @@
-"""Markdown skills loader — TARS's prose self-extension mechanism ("workshop").
+"""Markdown skills loader — the assistant's prose self-extension mechanism ("workshop").
 
 Scans `tesseract/workspace/skills/<name>/SKILL.md` for YAML frontmatter
 (`name`, `description`) + a markdown instruction body. `brain/prompt.py::
 _build_skills_block` exposes only name/description/path into the prompt
-manifest section — TARS `file_read`s the SKILL.md body on demand.
+manifest section — the assistant `file_read`s the SKILL.md body on demand.
 
 Skill folders MAY also carry a `scripts/` subdirectory (P6 Task 4b
 "workshop" bundling). This loader never reads it: bundled scripts run

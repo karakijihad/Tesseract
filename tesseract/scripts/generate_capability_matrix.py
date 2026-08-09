@@ -94,7 +94,7 @@ def _ensure_env_independent_tools(registry) -> None:
 
 
 def render_matrix() -> str:
-    registry, _mood, _voice, _bundle, _alarms = build_tool_registry()
+    registry, _mood, _bundle, _alarms = build_tool_registry()
     _ensure_env_independent_tools(registry)
     schemas = sorted(registry.schemas_for_adapter(), key=lambda s: s["name"])
 

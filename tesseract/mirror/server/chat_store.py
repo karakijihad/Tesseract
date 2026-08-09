@@ -358,4 +358,10 @@ def delete_chat(chat_id: str) -> tuple[bool, str]:
     except OSError as exc:
         logger.warning("chat delete failed (%s): %s", path, exc)
         return False, "io_error"
+    # The chat_id is gone for good, so nothing can ever claim or replay a
+    # completion still outstanding for it. Left behind it would sit on disk
+    # forever (`brain/completion_store.py`).
+    from tesseract.brain import completion_store
+
+    completion_store.discard(chat_id)
     return True, ""

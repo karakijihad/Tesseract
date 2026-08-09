@@ -56,7 +56,17 @@ def _authorized(raw_path: str, signature: str) -> Path | None:
     which paths exist."""
     if not raw_path or not verify(raw_path, signature):
         return None
+    return _authorize_path(raw_path)
 
+
+def _authorize_path(raw_path: str) -> Path | None:
+    """Everything the signature does not cover: where the path lands right
+    now, and whether that is a file we may serve.
+
+    Split out from `_authorized` because it is re-run just before the bytes
+    are read. The signature is over the path *string*, which cannot change;
+    what the string resolves to can.
+    """
     ok, _reason = validate_path(
         raw_path,
         write_root=str(home_dir()),
@@ -85,11 +95,44 @@ def _authorized(raw_path: str, signature: str) -> Path | None:
     return candidate
 
 
+class _GuardedFileResponse(web.FileResponse):
+    """A `FileResponse` that re-checks the path just before it opens it.
+
+    `get_asset` authorizes a path and hands aiohttp a `Path`; aiohttp then
+    stats and opens that pathname again, by name, inside `prepare()`. What
+    the name resolves to can change in between — swap the file for a link
+    at a secret and the checks passed on one file while the bytes come from
+    another.
+
+    Re-running the check here moves the gap from a whole handler return
+    down to the microseconds inside `prepare()`. It does not close it: this
+    is still name-based, so a sufficiently lucky racer wins. Closing it
+    properly means serving from a descriptor opened exactly once, which
+    means hand-rolling Range and conditional requests that `FileResponse`
+    gives us for nothing — and this route is the one that streams video.
+
+    The refusal follows aiohttp's own idiom for an unreadable file: set the
+    status and delegate to `StreamResponse.prepare`, skipping the body.
+    Raising here would escape — `prepare()` runs inside `finish_response`,
+    outside the handler's `HTTPException` guard, so an exception becomes a
+    500 or a dropped connection rather than the 404 this owes the caller.
+    """
+
+    def __init__(self, path: Path, *, raw_path: str, **kwargs) -> None:
+        super().__init__(path, **kwargs)
+        self._raw_path = raw_path
+        self._authorized_path = path
+
+    async def prepare(self, request: web.BaseRequest):
+        if _authorize_path(self._raw_path) != self._authorized_path:
+            self.set_status(web.HTTPNotFound.status_code)
+            return await super(web.FileResponse, self).prepare(request)
+        return await super().prepare(request)
+
+
 async def get_asset(request: web.Request) -> web.Response:
-    path = _authorized(
-        request.query.get("path", ""),
-        request.query.get("sig", ""),
-    )
+    raw_path = request.query.get("path", "")
+    path = _authorized(raw_path, request.query.get("sig", ""))
     if path is None:
         return web.json_response({"error": "not_found"}, status=404)
 
@@ -97,8 +140,9 @@ async def get_asset(request: web.Request) -> web.Response:
     content_type = guessed or _DEFAULT_TYPE
     inline = content_type in _INLINE_TYPES
 
-    return web.FileResponse(
+    return _GuardedFileResponse(
         path,
+        raw_path=raw_path,
         headers={
             "Content-Type": content_type,
             "Content-Disposition": (

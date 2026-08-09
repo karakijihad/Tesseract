@@ -119,26 +119,52 @@ pub(crate) fn hide_console(cmd: &mut std::process::Command) {
     }
 }
 
-/// Fire-and-forget retry: on EVERY launch (not gated by `is_provisioned`),
-/// asks the venv's Python to fetch the pinned default Piper voice model if
-/// it's still missing. `fetch_piper_voice.py::ensure_default_voice` is a
-/// plain file-existence check per pinned file when the model is already
-/// present — no network call — so this costs nothing meaningful once the
-/// fetch has ever succeeded. It exists because `provision()`'s own attempt
-/// (during first run) writes the `provisioned.json` marker unconditionally,
-/// so a fetch that failed there (offline, transient upstream outage) would
-/// otherwise never be retried: the marker check does not look at whether the
-/// voice model made it to disk.
+/// The optional assets provisioning fetches best-effort, retried on EVERY
+/// launch. Each entry is a python `-m` module that is a cheap no-op once its
+/// artifact is on disk.
+///
+/// `provision()` writes the `provisioned.json` marker unconditionally, and the
+/// marker check does not look at whether any of these landed — so a fetch that
+/// failed during first run (offline, transient upstream outage, an interrupted
+/// download) would otherwise never be retried and the capability would stay
+/// off forever with no path back.
+///
+/// `ensure_ollama` runs with `--no-install` here, unlike at provisioning time:
+/// re-running the vendor installer download on every launch would mean
+/// re-fetching hundreds of megabytes for a machine where the install was
+/// declined. `--no-install` still starts a present-but-stopped Ollama and
+/// pulls the embedding model when the earlier pull was the part that failed.
+///
+/// The three voice fetchers are listed unconditionally even though first-run
+/// setup lets the operator decline speech entirely. They are not gated here
+/// because each one reads the operator's own config and downloads only what
+/// `roles.yaml` names with its provider enabled — declining a lane writes
+/// that decision into config, and these then have nothing to fetch, on this
+/// launch and every later one. Gating in the shell instead would put the same
+/// decision in two places and let them disagree.
+const LAUNCH_REFRESH_ASSETS: [&[&str]; 5] = [
+    &["-m", "tesseract.scripts.fetch_whisper_model"],
+    &["-m", "tesseract.scripts.fetch_kokoro_voice"],
+    &["-m", "tesseract.scripts.fetch_piper_voice"],
+    &["-m", "tesseract.scripts.fetch_reranker_model"],
+    &["-m", "tesseract.scripts.ensure_ollama", "--no-install"],
+];
+
+/// Fire-and-forget retry of every `LAUNCH_REFRESH_ASSETS` entry, on EVERY
+/// launch (not gated by `is_provisioned`).
 ///
 /// Deliberately uses `spawn()`, not `output()`: this must never add
 /// perceptible latency to launch, so it is never waited on — the caller
-/// starts the supervisor immediately afterward regardless of whether this
-/// subprocess has finished, or even whether it could be spawned at all.
-pub fn refresh_piper_voice(home: &Path) {
-    let mut cmd = std::process::Command::new(venv_python(home));
-    cmd.args(["-m", "tesseract.scripts.fetch_piper_voice"]);
-    hide_console(&mut cmd);
-    let _ = cmd.spawn();
+/// starts the supervisor immediately afterward regardless of whether these
+/// subprocesses have finished, or even whether they could be spawned at all.
+pub fn refresh_optional_assets(root: &Path) {
+    for args in LAUNCH_REFRESH_ASSETS {
+        let mut cmd = std::process::Command::new(venv_python(root));
+        cmd.args(args);
+        point_at_state_root(&mut cmd, root);
+        hide_console(&mut cmd);
+        let _ = cmd.spawn();
+    }
 }
 
 /// The result of a failed `provision()` call. `NeedsToken` is narrowly
@@ -190,6 +216,19 @@ fn emit_progress(app: &AppHandle, msg: &str) {
 pub fn provision(app: &AppHandle, home: &Path) -> Result<PathBuf, ProvisionError> {
     let uv = resolve_uv(app)?;
 
+    // Before anything looks at `app/`: an update that died between its two
+    // renames leaves no `app/` at all, and `clone_app_dir` would read that
+    // as a fresh install and re-download over a tree that is sitting right
+    // there as `app.old`.
+    match crate::app_swap::recover_interrupted(&app_dir(home)) {
+        Ok(true) => {
+            emit_progress(app, "Recovering from an interrupted update…");
+            crate::shell_log::log("provision: restored app/ after an interrupted update");
+        }
+        Ok(false) => {}
+        Err(e) => crate::shell_log::log(&format!("provision: {e}")),
+    }
+
     emit_progress(app, "Downloading TESSERACT…");
     clone_app_dir(&app_dir(home), home)?;
 
@@ -198,7 +237,7 @@ pub fn provision(app: &AppHandle, home: &Path) -> Result<PathBuf, ProvisionError
         &uv,
         &|msg| emit_progress(app, msg),
         &|program, args| run_uv(program, args),
-        &|program, args| run_python(program, args),
+        &|program, args| run_python(program, args, home),
     )
     .map_err(ProvisionError::from)
 }
@@ -251,14 +290,44 @@ fn provision_stages(
     progress("Downloading browser engine…");
     run_python(&py, &["-m", "playwright", "install", "chromium"])?;
 
-    // Best-effort: fetches the pinned default Piper voice model so spoken
-    // replies work out of the box. Never propagated as a provisioning
-    // failure — the script itself always exits 0, and any spawn error here
-    // is swallowed too, so an offline first run still finishes install with
-    // voice output simply unavailable (text-only replies), same as today.
-    // `refresh_piper_voice` retries it on every later launch.
-    progress("Downloading voice model…");
+    // The first stage that can run Python against the operator's state: it
+    // seeds `home/config/` from the freshly cloned templates and applies the
+    // setup form's staged answers to it. Must come BEFORE the fetch stages,
+    // which read that config to decide what to download — that ordering is
+    // the whole reason declining a lane costs nothing.
+    //
+    // Best-effort: a setup that could not be applied leaves the shipped
+    // defaults, which is a working install with a name the operator did not
+    // choose. The Identity tab can set every one of these afterwards, so
+    // failing the install over it would be a bad trade.
+    progress("Applying your setup…");
+    let _ = run_python(&py, &["-m", "tesseract.scripts.apply_first_run_setup"]);
+
+    // Best-effort, and each one reads the config the setup form just wrote:
+    // an operator who declined speech has no lane named in `roles.yaml`, so
+    // these find nothing to fetch and download nothing. Never propagated as
+    // a provisioning failure — the scripts always exit 0 and any spawn error
+    // here is swallowed too, so an offline first run still finishes install
+    // with voice simply unavailable (text-only replies), same as today.
+    // `refresh_optional_assets` retries them on every later launch.
+    //
+    // Speech-to-text first: without this snapshot faster-whisper downloads
+    // an unpinned one at the operator's first utterance, which is the one
+    // moment a multi-minute stall is least acceptable.
+    progress("Downloading speech recognition model…");
+    let _ = run_python(&py, &["-m", "tesseract.scripts.fetch_whisper_model"]);
+
+    progress("Downloading voice models…");
+    let _ = run_python(&py, &["-m", "tesseract.scripts.fetch_kokoro_voice"]);
     let _ = run_python(&py, &["-m", "tesseract.scripts.fetch_piper_voice"]);
+
+    // Best-effort, same contract: fetches the pinned cross-encoder reranker
+    // (~23 MB, sha256-pinned in the providers catalog) so retrieval ranks with
+    // the reranker instead of pure RRF. Absent files are a supported degraded
+    // mode, which is exactly why this must not be fatal — and also why it was
+    // worth adding: without it every shipped install ran degraded in silence.
+    progress("Downloading reranker model…");
+    let _ = run_python(&py, &["-m", "tesseract.scripts.fetch_reranker_model"]);
 
     // Best-effort, same contract as the voice model above: installs Ollama
     // if absent and pulls the configured embedding model, so semantic
@@ -470,7 +539,7 @@ fn is_transient_lock(e: &std::io::Error) -> bool {
 /// abandoned `.git` fails with Access Denied. The read-only bit is cleared
 /// across the tree first, then the delete is retried through
 /// `retry_while_locked`.
-fn remove_tree(dir: &Path) -> std::io::Result<()> {
+pub(crate) fn remove_tree(dir: &Path) -> std::io::Result<()> {
     clear_readonly_recursive(dir);
     retry_while_locked(|| match std::fs::remove_dir_all(dir) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -510,12 +579,29 @@ fn finalize_clone(staging: &Path, app_dir: &Path) -> Result<(), String> {
         .map_err(|e| fs_error_message(&e.to_string()))
 }
 
+/// Points a Python subprocess at the same state root the supervisor gets.
+///
+/// Every `tesseract.scripts.*` helper resolves its target directories through
+/// `paths.py`, which reads `TESSERACT_HOME` and otherwise falls back to the
+/// package directory. In a packaged install that fallback is `app/tesseract` —
+/// inside the sealed tree an update overwrites — so a fetch script run without
+/// this installs its artifact where the runtime will never look for it, and
+/// reads the shipped config instead of the operator's.
+pub(crate) fn point_at_state_root(cmd: &mut std::process::Command, root: &Path) {
+    cmd.current_dir(app_dir(root))
+        .env("TESSERACT_HOME", home_dir(root));
+}
+
 /// Runs a provisioning subprocess to completion, mapping a non-zero exit into
 /// an error carrying its stderr. `label` names the tool in both error shapes
 /// so `run_uv`/`run_python` stay one line each rather than two copies of this.
-fn run_tool(program: &Path, args: &[&str], label: &str) -> Result<(), String> {
+/// `root` is `Some` only for the Python stages, which resolve state paths.
+fn run_tool(program: &Path, args: &[&str], label: &str, root: Option<&Path>) -> Result<(), String> {
     let mut cmd = std::process::Command::new(program);
     cmd.args(args);
+    if let Some(root) = root {
+        point_at_state_root(&mut cmd, root);
+    }
     hide_console(&mut cmd);
     let out = cmd
         .output()
@@ -531,11 +617,11 @@ fn run_tool(program: &Path, args: &[&str], label: &str) -> Result<(), String> {
 }
 
 fn run_uv(uv: &Path, args: &[&str]) -> Result<(), String> {
-    run_tool(uv, args, "uv")
+    run_tool(uv, args, "uv", None)
 }
 
-fn run_python(py: &Path, args: &[&str]) -> Result<(), String> {
-    run_tool(py, args, "python")
+fn run_python(py: &Path, args: &[&str], root: &Path) -> Result<(), String> {
+    run_tool(py, args, "python", Some(root))
 }
 
 /// Redacts any `user:token@` userinfo segment from URLs embedded in an error
@@ -1351,7 +1437,35 @@ mod tests {
                 py_path.clone(),
                 vec![
                     "-m".to_string(),
+                    "tesseract.scripts.apply_first_run_setup".to_string(),
+                ],
+            ),
+            (
+                py_path.clone(),
+                vec![
+                    "-m".to_string(),
+                    "tesseract.scripts.fetch_whisper_model".to_string(),
+                ],
+            ),
+            (
+                py_path.clone(),
+                vec![
+                    "-m".to_string(),
+                    "tesseract.scripts.fetch_kokoro_voice".to_string(),
+                ],
+            ),
+            (
+                py_path.clone(),
+                vec![
+                    "-m".to_string(),
                     "tesseract.scripts.fetch_piper_voice".to_string(),
+                ],
+            ),
+            (
+                py_path.clone(),
+                vec![
+                    "-m".to_string(),
+                    "tesseract.scripts.fetch_reranker_model".to_string(),
                 ],
             ),
             (
@@ -1375,7 +1489,10 @@ mod tests {
                 "Creating Python environment…".to_string(),
                 "Downloading dependencies…".to_string(),
                 "Downloading browser engine…".to_string(),
-                "Downloading voice model…".to_string(),
+                "Applying your setup…".to_string(),
+                "Downloading speech recognition model…".to_string(),
+                "Downloading voice models…".to_string(),
+                "Downloading reranker model…".to_string(),
                 "Setting up embeddings…".to_string(),
                 "Ready.".to_string(),
             ],
@@ -1499,65 +1616,71 @@ mod tests {
         assert!(!marker_path(home.path()).exists());
     }
 
-    #[test]
-    fn provision_stages_survives_a_failed_voice_model_fetch() {
-        let home = TempDir::new("voice-model-fails");
-        let uv = PathBuf::from("uv-stub");
-        let python_calls = RefCell::new(0u32);
-
-        let run_uv = |_: &Path, _: &[&str]| -> Result<(), String> { Ok(()) };
-        let run_python = |_: &Path, _: &[&str]| -> Result<(), String> {
-            *python_calls.borrow_mut() += 1;
-            if *python_calls.borrow() == 1 {
-                Ok(()) // playwright install
-            } else {
-                Err("voice model boom".to_string()) // fetch_piper_voice
-            }
-        };
-        let progress = |_: &str| {};
-
-        let py = provision_stages(home.path(), &uv, &progress, &run_uv, &run_python)
-            .expect("a failed voice-model fetch must not be fatal");
-
-        assert_eq!(py, venv_python(home.path()));
-        assert_eq!(
-            *python_calls.borrow(),
-            3,
-            "a failed voice fetch must not skip the embedding stage after it"
-        );
-        assert!(
-            marker_path(home.path()).exists(),
-            "the marker must still be written despite the voice-model failure"
-        );
-    }
-
-    #[test]
-    fn provision_stages_survives_a_failed_embedding_setup() {
-        let home = TempDir::new("embeddings-fail");
-        let uv = PathBuf::from("uv-stub");
-        let python_calls = RefCell::new(0u32);
-
-        let run_uv = |_: &Path, _: &[&str]| -> Result<(), String> { Ok(()) };
-        let run_python = |_: &Path, _: &[&str]| -> Result<(), String> {
-            *python_calls.borrow_mut() += 1;
-            // Last stage is ensure_ollama; an offline first run fails it.
-            if *python_calls.borrow() == 3 {
-                Err("ollama boom".to_string())
+    /// The best-effort stages are keyed by MODULE NAME, not by call index.
+    /// These assertions used to count `run_python` calls positionally, so
+    /// adding a stage anywhere ahead of them broke tests that had nothing to
+    /// do with the change and said nothing useful about what went wrong.
+    fn failing_module_run<'a>(
+        failing: &'static str,
+        seen: &'a RefCell<Vec<String>>,
+    ) -> impl Fn(&Path, &[&str]) -> Result<(), String> + 'a {
+        move |_: &Path, args: &[&str]| {
+            let module = args.last().copied().unwrap_or_default().to_string();
+            seen.borrow_mut().push(module.clone());
+            if module == failing {
+                Err(format!("{failing} boom"))
             } else {
                 Ok(())
             }
-        };
-        let progress = |_: &str| {};
+        }
+    }
 
-        let py = provision_stages(home.path(), &uv, &progress, &run_uv, &run_python)
-            .expect("a failed embedding setup must not be fatal");
+    /// Every optional asset behind a failure must still be attempted: an
+    /// offline machine that cannot reach one upstream is not evidence it
+    /// cannot reach the next, and a first run that quietly stopped fetching
+    /// at the first failure would leave capabilities off with no path back
+    /// short of a reinstall.
+    #[test]
+    fn a_failed_optional_stage_never_skips_the_ones_behind_it() {
+        for failing in [
+            "tesseract.scripts.apply_first_run_setup",
+            "tesseract.scripts.fetch_whisper_model",
+            "tesseract.scripts.fetch_kokoro_voice",
+            "tesseract.scripts.fetch_piper_voice",
+            "tesseract.scripts.fetch_reranker_model",
+            "tesseract.scripts.ensure_ollama",
+        ] {
+            let home = TempDir::new("optional-stage-fails");
+            let uv = PathBuf::from("uv-stub");
+            let seen: RefCell<Vec<String>> = RefCell::new(Vec::new());
+            let run_uv = |_: &Path, _: &[&str]| -> Result<(), String> { Ok(()) };
+            let progress = |_: &str| {};
 
-        assert_eq!(py, venv_python(home.path()));
-        assert!(
-            marker_path(home.path()).exists(),
-            "an offline first run must still finish provisioning; embeddings \
-             are optional and degrade to keyword-only search"
-        );
+            let py = provision_stages(
+                home.path(),
+                &uv,
+                &progress,
+                &run_uv,
+                &failing_module_run(failing, &seen),
+            )
+            .unwrap_or_else(|e| panic!("a failed {failing} must not be fatal: {e}"));
+
+            assert_eq!(py, venv_python(home.path()));
+            let seen = seen.borrow();
+            assert!(
+                seen.iter().any(|m| m == failing),
+                "{failing} was never attempted; got {seen:?}"
+            );
+            assert_eq!(
+                seen.last().map(String::as_str),
+                Some("tesseract.scripts.ensure_ollama"),
+                "a failure at {failing} must not stop the stages behind it; got {seen:?}"
+            );
+            assert!(
+                marker_path(home.path()).exists(),
+                "the marker must still be written despite the {failing} failure"
+            );
+        }
     }
 
     // -- reinstall_deps_with ---------------------------------------------

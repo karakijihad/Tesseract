@@ -56,7 +56,7 @@ daily_caps:
   usd: 5.00                         # daily USD spend ceiling
   exceed_behavior: pause            # pause | operator_gate_all | stop
 
-# TARS controller daemon reload behavior.
+# agent controller daemon reload behavior.
 controller:
   drain_timeout_seconds: 30         # max wait for in-flight turns before forcing a reload
 
@@ -100,10 +100,10 @@ vetter:
 # elsewhere). A worker that exceeds its budget is parked (BLOCKED), not
 # discarded — the operator can extend the budget and re-queue it.
 worker_timeouts:
-  claude_cli: 1800
-  codex_cli: 1800
+  coder_seat: 1800
+  auditor_seat: 1800
   markdown_agent: 600
-  tars_self: 600
+  agent_self: 600
 
 # Auto-drafts a follow-up agenda item after a completed delegation whose
 # summary looks actionable. Purely heuristic — no LLM.

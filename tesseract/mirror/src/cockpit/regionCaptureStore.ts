@@ -1,6 +1,6 @@
-// Slice 2 — region capture → TARS vision. The operator drags a rectangle over
+// Slice 2 — region capture → the assistant vision. The operator drags a rectangle over
 // the cockpit; the region is captured to a PNG and sent (with a typed
-// instruction) through the EXISTING chat image-attachment path so TARS reasons
+// instruction) through the EXISTING chat image-attachment path so the assistant reasons
 // over it. Store = the capture state machine; the rest is a pure rect helper +
 // the DOM→image capture util.
 
@@ -61,7 +61,7 @@ export function isCapturable(rect: CaptureRect): boolean {
  * overlay (`.region-capture-root`) is filtered out so the marquee isn't in the
  * shot. NOTE: the WebGL orb (GlobalCanvas) may render blank — html-to-image
  * can't reliably read a WebGL canvas back; panel/chrome DOM captures fine, which
- * is the point of "select a panel region and ask TARS".
+ * is the point of "select a panel region and ask the assistant".
  */
 export async function captureRegion(rect: CaptureRect): Promise<{ file: File; preview: string }> {
   const render = htmlToImage.toCanvas(document.body, {

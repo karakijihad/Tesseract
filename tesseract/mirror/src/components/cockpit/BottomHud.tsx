@@ -15,7 +15,6 @@ import { useCaptionsStore } from "../../stores/captions";
 import { useOrbVisibilityStore } from "../../stores/orbVisibility";
 import { useWorkspaceStore } from "../../stores/workspace";
 import { useHudDockStore } from "../../stores/hudDock";
-import { spawnTrio } from "../../canvas/triorenderer";
 import { Hint } from "../ui/Hint";
 import { HudSection } from "./hud/HudSection";
 import { ChatHudGroup } from "./hud/ChatHudGroup";
@@ -99,10 +98,10 @@ const ConscienceIcon = () => (
   </svg>
 );
 
-// Soul tab — concentric circles + radiating arcs evoke an inner core
+// Identity tab — concentric circles + radiating arcs evoke an inner core
 // surrounded by aura. Stroke-only so it picks up currentColor like the
 // other tab icons.
-const SoulIcon = () => (
+const IdentityIcon = () => (
   <svg
     viewBox="0 0 20 20"
     width="1em"
@@ -247,7 +246,7 @@ const TABS: TabDef[] = [
   { id: "schedule", icon: <ScheduleIcon />, label: "Schedule" },
   { id: "agents", icon: <AgentsIcon />, label: "Agents" },
   { id: "channels", icon: <ChannelsIcon />, label: "Channels" },
-  { id: "soul", icon: <SoulIcon />, label: "Soul" },
+  { id: "identity", icon: <IdentityIcon />, label: "Identity" },
   { id: "conscience", icon: <ConscienceIcon />, label: "Conscience" },
   { id: "workspace", icon: <WorkspaceIcon />, label: "Workspace" },
   { id: "settings", icon: <SettingsIcon />, label: "Settings" },
@@ -264,7 +263,7 @@ function ViewsSection() {
   const view = useUIStore((s) => s.view);
   // SC-2 — a tab summons its whole view as a glass panel (openPanel also drives
   // `setView`, preserving the terminal-fit / chat-collapse / snapshot
-  // subscribers). `tars` routes to the orb home (resetAll) inside openPanel.
+  // subscribers). `orb` routes to the home view (resetAll) inside openPanel.
   const openPanel = usePanelStore((s) => s.openPanel);
   const closeSections = useHudDockStore((s) => s.closeSections);
   const fetchInbox = useWorkspaceStore((s) => s.fetchInbox);
@@ -505,49 +504,6 @@ function SummonedPanes() {
   );
 }
 
-// Two side-by-side panes — reads as the two lane cards the trio lays out.
-const TrioIcon = () => (
-  <svg
-    viewBox="0 0 20 20"
-    width="1em"
-    height="1em"
-    stroke="currentColor"
-    fill="none"
-    strokeWidth={1.4}
-    strokeLinejoin="round"
-  >
-    <rect x="2.5" y="5" width="6" height="10" rx="1" />
-    <rect x="11.5" y="5" width="6" height="10" rx="1" />
-  </svg>
-);
-
-// Manual "load the trio lanes" action — ensures the named lanes (coder/claude +
-// auditor/codex) and lays out their canvas cards. Same path as the typed
-// `spawn trio` command, surfaced as a no-typing button. spawnTrio is idempotent
-// and in-flight-deduped per view, so repeated clicks are safe.
-function TrioButton() {
-  const [busy, setBusy] = useState(false);
-  const load = useCallback(() => {
-    setBusy(true);
-    void spawnTrio("tars").finally(() => setBusy(false));
-  }, []);
-  return (
-    <Hint label="Load trio lanes" position="right" maxWidth={140}>
-      <button
-        type="button"
-        className="hud-tab hud-rail-toggle"
-        onClick={load}
-        aria-label="Load trio lanes (coder + auditor)"
-        disabled={busy}
-      >
-        <span className="hud-tab-icon" aria-hidden="true">
-          <TrioIcon />
-        </span>
-      </button>
-    </Hint>
-  );
-}
-
 // Orb hide/show — the tab that used to park the cockpit on the bare orb is
 // gone (the orb is always on-canvas now), so this is the operator's control
 // for hiding it instead.
@@ -564,7 +520,7 @@ function OrbToggle() {
         type="button"
         className={`hud-tab hud-rail-toggle${visible ? " is-active" : ""}`}
         onClick={toggle}
-        aria-label={`${visible ? "Hide" : "Show"} the TARS orb`}
+        aria-label={`${visible ? "Hide" : "Show"} the orb`}
         aria-pressed={visible}
       >
         ◉
@@ -573,7 +529,7 @@ function OrbToggle() {
   );
 }
 
-// Ambient orb-captions on/off (TARS's latest line faded under the orb).
+// Ambient orb-captions on/off (the agent's latest line faded under the orb).
 function CaptionsToggle() {
   const enabled = useCaptionsStore((s) => s.enabled);
   const toggle = useCaptionsStore((s) => s.toggle);
@@ -587,7 +543,7 @@ function CaptionsToggle() {
         type="button"
         className={`hud-tab hud-rail-toggle${enabled ? " is-active" : ""}`}
         onClick={toggle}
-        aria-label={`${enabled ? "Hide" : "Show"} ambient TARS captions`}
+        aria-label={`${enabled ? "Hide" : "Show"} ambient orb captions`}
         aria-pressed={enabled}
       >
         CC
@@ -596,7 +552,7 @@ function CaptionsToggle() {
   );
 }
 
-// Stage section — the left control cluster (rails, panes, trio, orb, CC) as a
+// Stage section — the left control cluster (rails, panes, orb, CC) as a
 // vertical stack. The summoned-pane count doubles as the section-face badge.
 function StageSection() {
   const panels = usePanelStore((s) => s.panels);
@@ -612,7 +568,6 @@ function StageSection() {
     >
       <RailToggleItems />
       <SummonedPanes />
-      <TrioButton />
       <OrbToggle />
       <CaptionsToggle />
     </HudSection>

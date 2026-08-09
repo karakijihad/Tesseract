@@ -29,6 +29,10 @@ export function renderSegment(
   results: ToolResult[],
 ) {
   if (segment.kind === 'intent') return renderIntent(segment.text, `intent-${idx}`);
+  // `spoken` is deliberately not rendered: it is the audio track for the
+  // `answer` that follows it, and showing both prints the reply twice.
+  // OrbCaptions is where it surfaces.
+  if (segment.kind === 'spoken') return null;
   if (segment.kind === 'answer') return renderAnswer(segment.text, `answer-${idx}`);
   if (segment.kind === 'system_note')
     return (

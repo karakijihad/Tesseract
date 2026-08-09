@@ -233,7 +233,7 @@ export class ParticleSystem {
     const s = parseFloat(parts[1]) / 100;
     const l = parseFloat(parts[2]) / 100;
     // Valence brightness/saturation lift — the orb itself glows brighter when
-    // TARS feels good, dims when subdued. Tuned subtle: ±10% L / ±7% S.
+    // The assistant feels good, dims when subdued. Tuned subtle: ±10% L / ±7% S.
     const sFinal = Math.max(0, Math.min(1, s + this._valence * 0.07));
     const lFinal = Math.max(0, Math.min(1, l + this._valence * 0.10));
     this._baseColor.setHSL(h / 360, sFinal, lFinal);

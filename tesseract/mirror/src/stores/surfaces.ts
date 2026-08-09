@@ -1,4 +1,4 @@
-// Y-2 — Surface Protocol store. Holds TARS-spawned canvas surfaces per
+// Y-2 — Surface Protocol store. Holds agent-spawned canvas surfaces per
 // view, hydrated from REST on canvas mount and kept live via the `canvas`
 // WS category (re-keyed from the `surface` background-bus channel). Operator
 // interactions update optimistically + POST back through `emitSurfaceEvent`.

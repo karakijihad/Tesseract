@@ -118,20 +118,20 @@ DEFAULT_VET_REQUIRED: tuple[str, ...] = (
 # admission *check* (selection only); S2 swaps in real per-item
 # kind selection driven by the mapper.
 _DEFAULT_KIND_FOR_RISK: dict[RiskClass, WorkerKind] = {
-    RiskClass.AUTONOMOUS: WorkerKind.TARS_SELF,
+    RiskClass.AUTONOMOUS: WorkerKind.AGENT_SELF,
     RiskClass.PROPOSE: WorkerKind.MARKDOWN_AGENT,
-    RiskClass.OPERATOR_GATE: WorkerKind.CLAUDE_CLI,
+    RiskClass.OPERATOR_GATE: WorkerKind.CODER_SEAT,
 }
 
 
 def _kind_for_item(item: AgendaItem) -> WorkerKind | None:
     """Resolve an agenda item to a concrete WorkerKind.
 
-    Dynamic routing for ``OPERATOR_GATE`` items: if the TARS controller
+    Dynamic routing for ``OPERATOR_GATE`` items: if the agent controller
     daemon's port file is on disk AND a TCP probe succeeds, the
     dispatcher routes through the controller (whose chat brain
     orchestrates claude/codex/agents) instead of spawning a fresh
-    ``claude_cli`` advisor. The static ``_DEFAULT_KIND_FOR_RISK`` map
+    ``coder_seat`` advisor. The static ``_DEFAULT_KIND_FOR_RISK`` map
     remains the fallback so a missing controller does not block
     dispatch — the operator-gate item still runs, just through the
     historical CLI path.
@@ -140,24 +140,24 @@ def _kind_for_item(item: AgendaItem) -> WorkerKind | None:
 
     * TC-4 (2026-05-23) introduced the dynamic branch.
     * Audit-2 C-1 (2026-05-23) reverted it because the runner couldn't
-      dispatch ``TARS_CONTROLLER`` — every selection hit
+      dispatch ``AGENT_CONTROLLER`` — every selection hit
       ``unsupported_kind``.
     * 2026-05-24 — re-enabled now that ``KernelWorkerRunner._route_for_kind``
-      routes ``TARS_CONTROLLER`` through the ``delegate_tars_controller``
+      routes ``AGENT_CONTROLLER`` through the ``delegate_agent_controller``
       tool, which uses the shared dispatcher to mint a session and
       tail the controller's reply.
     """
     base = _DEFAULT_KIND_FOR_RISK.get(item.risk_class)
-    if base is WorkerKind.CLAUDE_CLI:
+    if base is WorkerKind.CODER_SEAT:
         try:
-            from tesseract.orchestrator.tars_controller import (
+            from tesseract.orchestrator.agent_controller import (
                 controller_port_alive,
             )
         except Exception:  # noqa: BLE001 — never let the import gate dispatch
             return base
         try:
             if controller_port_alive():
-                return WorkerKind.TARS_CONTROLLER
+                return WorkerKind.AGENT_CONTROLLER
         except Exception:  # noqa: BLE001
             log.debug("kernel: controller_port_alive probe raised", exc_info=True)
     return base
@@ -1013,17 +1013,17 @@ class AutonomyKernel:
         # (a *model role* name like "agents_default") into the agent-slug
         # field, and the runner then called ``invoke_agent(name="agents_default")``
         # which failed every dispatch with ``Unknown agent: 'agents_default'``.
-        # The runner falls back to ``DEFAULT_TARS_SELF_AGENT`` / kind-specific
+        # The runner falls back to ``DEFAULT_AGENT_SELF_AGENT`` / kind-specific
         # defaults when this field is empty.
         record = build_worker_record(
             item, kind=kind, role="", now=self._clock()
         )
         # Audit-2 M-3 / audit-1 follow-up (2026-05-24): allocate an
         # isolated git worktree for code-editing risk classes + kinds
-        # (PROPOSE / OPERATOR_GATE × CLAUDE_CLI / CODEX_CLI). The path
+        # (PROPOSE / OPERATOR_GATE × CODER_SEAT / AUDITOR_SEAT). The path
         # lands on the record BEFORE ``write_record`` so the SPAWNING
         # row already names the worktree the runner will execute inside.
-        # Read-only kinds (markdown_agent / tars_self) and AUTONOMOUS
+        # Read-only kinds (markdown_agent / agent_self) and AUTONOMOUS
         # items return ``None`` and dispatch unchanged.
         #
         # Fail-closed policy: if allocation raises (git missing, path
@@ -1081,7 +1081,7 @@ class AutonomyKernel:
 
         Codex audit 2026-05-19 P0 #2: also reconciles the linked agenda
         item once the runner terminates. Without this the dashboard
-        showed RUNNING agenda items linked to FAILED workers — TARS
+        showed RUNNING agenda items linked to FAILED workers — the assistant
         looked busy while doing nothing. DONE workers transition the
         item to DONE; non-DONE terminals transition to BLOCKED with
         ``blocked_reason=worker_<status>:<id>`` so the operator can

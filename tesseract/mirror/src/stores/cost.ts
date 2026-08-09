@@ -139,7 +139,7 @@ export const useCostStore = create<CostStore>()(
       }),
     }),
     {
-      name: 'tars-mirror-cost',
+      name: 'tesseract-mirror-cost',
       storage: createJSONStorage(() => localStorage),
       // Bump version to invalidate stale localStorage when chips lock to
       // pre-restart values. The backend re-broadcasts a fresh cost_state on

@@ -16,11 +16,11 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
-from tesseract.orchestrator.tars_controller.lanes.named import (
+from tesseract.orchestrator.agent_controller.lanes.named import (
     InvalidNamedLaneNameError,
     NamedLaneError,
 )
-from tesseract.orchestrator.tars_controller.lanes.tool_support import (
+from tesseract.orchestrator.agent_controller.lanes.tool_support import (
     resolve_named_lane_manager,
     validate_lane_model,
 )
@@ -33,7 +33,7 @@ class LaneNamedEnsureInput(BaseModel):
             "[a-z0-9_-]+(/[a-z0-9_-]+)?."
         )
     )
-    kind: Literal["claude", "codex"] = Field(
+    kind: Literal["claude", "codex", "api"] = Field(
         description=(
             "Lane kind: 'claude' or 'codex'. Must match any existing "
             "binding for this name — kind swap requires release first."
@@ -41,17 +41,21 @@ class LaneNamedEnsureInput(BaseModel):
     )
     model: str = Field(
         description=(
-            "Model id the lane should target. For the trio lanes use the "
-            "config-resolved model (lane_named_get / the trio definition) — "
+            "Model id the lane should target. Use the config-resolved model "
+            "(lane_named_get, or the seat's roles.yaml primary) — "
             "never invent one. Recorded on the binding + passed as --model "
             "when the CLI spawns."
         )
     )
-    working_dir: str = Field(
+    working_dir: str | None = Field(
+        default=None,
         description=(
-            "Working directory the CLI runs in. Recorded on the binding "
-            "so a brain-restart-driven attach knows where the lane lives."
-        )
+            "Working directory the CLI runs in. Omit to use the active "
+            "project's root — that is the normal case, and passing a path is "
+            "how you deliberately send a lane somewhere else. Recorded on the "
+            "binding so a brain-restart-driven attach knows where the lane "
+            "lives."
+        ),
     )
 
 

@@ -26,8 +26,11 @@ from typing import Any
 from aiohttp import web
 
 from tesseract.mirror.server.controller_ws import APP_FACTORY_KEY
+from tesseract.orchestrator.agent_controller.lanes.principals import (
+    OPERATOR_PRINCIPAL,
+)
 from tesseract.orchestrator.activity import get_activity_registry
-from tesseract.orchestrator.tars_controller.ipc_client import (
+from tesseract.orchestrator.agent_controller.ipc_client import (
     ControllerClient,
     ControllerClientError,
 )
@@ -36,8 +39,8 @@ log = logging.getLogger(__name__)
 
 _CANCELLABLE = {"lane", "mcp_session", "delegate"}
 _REASON = "operator_close"
-# Lane surfaces are opened on the cockpit `tars` view (canvas openActivity VIEW).
-_LANE_SURFACE_VIEW = "tars"
+# Lane surfaces are opened on the cockpit `agent` view (canvas openActivity VIEW).
+_LANE_SURFACE_VIEW = "orb"
 
 
 def _dismiss_lane_surfaces(closed_lane_activity_ids: list[str]) -> None:
@@ -90,7 +93,9 @@ async def _close_lanes(
     try:
         for activity_id, lane_id in lane_ids:
             try:
-                await client.lane_close(lane_id, _REASON)
+                await client.lane_close(
+                    lane_id, _REASON, caller_principal=OPERATOR_PRINCIPAL
+                )
                 closed.append(activity_id)
             except Exception:
                 log.exception("close-all: lane_close failed for %s", lane_id)

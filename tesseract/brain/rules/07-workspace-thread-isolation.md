@@ -9,4 +9,4 @@ Concrete rules:
 - Tools and knowledge fetches are fine: `memory_search`, `vault_query`, `web_search`, `channel_send`, etc. — those bring in new info, they don't carry chat context.
 - If the thread's own state is genuinely too thin to answer, ASK a short clarifying question in-thread via `workspace_reply` rather than guess by reaching into chat.
 
-Concrete miss (2026-05-18, daily brief thread evt_e76fdf1cee9a): operator said "send again" referring to a Telegram send earlier in the same thread. The reply pulled in unrelated GlobalCanvas / typecheck work from the chat session as if that were the topic. That is the exact failure this rule exists to prevent.
+Concrete miss: in a daily-brief thread the operator said "send again", referring to a Telegram send earlier in that same thread. The reply pulled in unrelated canvas / typecheck work from the chat session as if that were the topic. That is the exact failure this rule exists to prevent.

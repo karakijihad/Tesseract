@@ -7,7 +7,7 @@ admission, kind-specific cancellation, recovery handler registered with
 RecoveryManager.
 
 The substrate is intentionally additive: SpawnRegistry stays untouched
-for ``delegate_claude`` / ``delegate_codex`` / ``invoke_agent`` called
+for ``delegate_coder`` / ``delegate_auditor`` / ``invoke_agent`` called
 from a chat turn. The durable substrate is the path autonomous work
 takes.
 """

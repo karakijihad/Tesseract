@@ -143,11 +143,17 @@ class FTSIndex:
         query: str,
         filter_ids: set[str] | None = None,
         limit: int = 20,
+        require_prefix: str | None = None,
     ) -> list[tuple[str, float]]:
         """Search by BM25. Returns [(memory_id, score)] sorted best-first.
 
         BM25 scores are negative in SQLite (lower = better match),
         so we negate them to return positive scores (higher = better).
+
+        `require_prefix` filters SQL-side. The table is shared between
+        memory records (mem_*), vault chunks (vault:*) and daily notes
+        (daily_*) — without the filter, foreign rows crowd the LIMIT
+        window and the caller's own hits never come back at all.
         """
         if not query.strip():
             return []
@@ -156,11 +162,14 @@ class FTSIndex:
             return []
 
         def _do() -> list[tuple[str, float]]:
-            cursor = self._conn.execute(
-                "SELECT memory_id, rank FROM memories "
-                "WHERE memories MATCH ? ORDER BY rank LIMIT ?",
-                (safe_query, limit * 3 if filter_ids else limit),
-            )
+            sql = "SELECT memory_id, rank FROM memories WHERE memories MATCH ? "
+            params: list = [safe_query]
+            if require_prefix:
+                sql += "AND memory_id LIKE ? ESCAPE '\\' "
+                params.append(self._escape_like(require_prefix) + "%")
+            sql += "ORDER BY rank LIMIT ?"
+            params.append(limit * 3 if filter_ids else limit)
+            cursor = self._conn.execute(sql, params)
             results = []
             for row in cursor:
                 mem_id, rank = row
@@ -173,8 +182,16 @@ class FTSIndex:
 
         return self._with_recovery("search", _do, [], query[:50])
 
-    def rebuild(self, memories: list[tuple[str, str, str]]) -> int:
+    def rebuild(
+        self,
+        memories: list[tuple[str, str, str]],
+        preserve_prefixes: tuple[str, ...] = (),
+    ) -> int:
         """Rebuild index from scratch. Takes [(memory_id, title, body)]. Returns count.
+
+        The table is shared with rows the caller cannot re-feed (vault chunks,
+        daily notes); `preserve_prefixes` keeps rows whose memory_id starts
+        with any given prefix instead of deleting them.
 
         Commits in batches. `rebuild()` runs off the event loop (via
         `asyncio.to_thread` in `index_rebuild.py`) on its own thread-local
@@ -186,7 +203,14 @@ class FTSIndex:
         `_REBUILD_COMMIT_BATCH` rows releases the lock frequently so a
         colliding loop-thread write waits at most one small batch."""
         def _do() -> int:
-            self._conn.execute("DELETE FROM memories")
+            if preserve_prefixes:
+                conditions = " AND ".join(
+                    "memory_id NOT LIKE ? ESCAPE '\\'" for _ in preserve_prefixes
+                )
+                params = [self._escape_like(p) + "%" for p in preserve_prefixes]
+                self._conn.execute(f"DELETE FROM memories WHERE {conditions}", params)
+            else:
+                self._conn.execute("DELETE FROM memories")
             self._conn.commit()
             count = 0
             for memory_id, title, body in memories:
@@ -202,6 +226,18 @@ class FTSIndex:
 
         return self._with_recovery("rebuild", _do, 0)
 
+    def get_body(self, memory_id: str) -> str | None:
+        """Stored body text for one row, or None. Feeds the reranker's
+        (query, text) pairs without touching the filesystem."""
+        def _do() -> str | None:
+            cursor = self._conn.execute(
+                "SELECT body FROM memories WHERE memory_id = ?", (memory_id,)
+            )
+            row = cursor.fetchone()
+            return row[0] if row else None
+
+        return self._with_recovery("get_body", _do, None, memory_id)
+
     def all_ids(self) -> set[str]:
         try:
             cursor = self._conn.execute("SELECT memory_id FROM memories")
@@ -214,6 +250,13 @@ class FTSIndex:
 
     def close(self) -> None:
         self._conn.close()
+
+    @staticmethod
+    def _escape_like(prefix: str) -> str:
+        """Escape LIKE wildcards so a prefix matches literally."""
+        return (
+            prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
 
     @staticmethod
     def _sanitize_query(query: str) -> str:

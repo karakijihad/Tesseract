@@ -1,6 +1,6 @@
 """AS-1 — the Unified Activity Registry.
 
-A process-global, in-memory index of every running unit of TARS's work.
+A process-global, in-memory index of every running unit of the assistant's work.
 Each substrate (delegate / lane / controller session / …) reports in via
 best-effort hooks; every mutation publishes an ``activity`` event so the
 Mirror can reflect the live set. The registry owns NO persistent store —

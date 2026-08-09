@@ -9,7 +9,7 @@ After consolidation, runs personality distillation: reads the last 7 days
 of diary entries and the current SOUL.md `## Growth` section, asks the
 adapter for stable observations, and writes 0-3 candidates to
 `memory-store/pending_growth.md`. The librarian never edits SOUL.md
-itself — `pending_growth.md` is a proposal surface that TARS reviews at
+itself — `pending_growth.md` is a proposal surface that the assistant reviews at
 session-end reflection.
 
 Embedding-failure-tolerant: `Librarian` itself falls back to

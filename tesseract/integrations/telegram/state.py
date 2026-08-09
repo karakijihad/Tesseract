@@ -202,7 +202,7 @@ class PollState:
     pending_clear: dict[str, str] = field(default_factory=dict)
     # Session 3 (2026-05-16) — per-chat "reply with voice" toggle. Keys:
     # stringified chat_id. Value: bool. When True the bridge synthesises
-    # TARS's text reply via the local TTS engine and ships it as a voice
+    # the assistant's text reply via the local TTS engine and ships it as a voice
     # note instead of plain text. Operator-controlled via /voice_on
     # /voice_off slash commands; persisted across restarts.
     reply_voice: dict[str, bool] = field(default_factory=dict)

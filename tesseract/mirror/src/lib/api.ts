@@ -2,6 +2,8 @@ import type {
   SoulResponse,
   BreakersResponse,
   IdentityResponse,
+  IdentityChangedData,
+  IdentitySavePatch,
   Envelope,
   ScheduleResponse,
   ScheduleRolesResponse,
@@ -32,6 +34,11 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    // The parsed error body, when the backend sent one. A 409 from the
+    // workspace doc save carries the current bytes and a diff — losing
+    // those to a flattened message would leave the operator with a
+    // conflict they can't resolve.
+    public payload?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "ApiError";
@@ -145,7 +152,13 @@ export type CapabilityProviderStatus = "ready" | "unavailable" | "unverified";
 export interface CapabilityProvider {
   tier: string;
   provider: string;
+  // `enabled` is the AND of the two below — what the runtime acts on.
+  // The separate flags drive the two separate checkboxes: a provider keeps
+  // its own `true` while its tier is off, so re-enabling the tier restores
+  // exactly the per-provider picture the operator left behind.
   enabled: boolean;
+  tier_enabled: boolean;
+  provider_enabled: boolean;
   key_name: string | null;
   key_present: boolean | null;
   status: CapabilityProviderStatus;
@@ -213,6 +226,20 @@ export async function postCapabilitiesDismiss(): Promise<CapabilitiesResponse> {
   );
 }
 
+// Flips a tier switch (`provider: null`) or one provider's, in providers.yaml.
+// Returns the refreshed report, so callers don't need a follow-up GET.
+export async function postProviderEnabled(
+  tier: string,
+  provider: string | null,
+  enabled: boolean,
+): Promise<CapabilitiesResponse> {
+  return apiPost<CapabilitiesResponse>("/api/capabilities/provider-enabled", {
+    tier,
+    provider,
+    enabled,
+  });
+}
+
 export interface RuntimeRestartResponse {
   status: string;
   intent: string;
@@ -242,6 +269,16 @@ export async function fetchBreakers(): Promise<BreakersResponse> {
 
 export async function fetchIdentity(): Promise<IdentityResponse> {
   return apiFetch<IdentityResponse>("/api/identity");
+}
+
+// Every field is optional — the Identity tab saves one control at a time
+// and the backend writes only the keys it is sent. Set-to-X, so retryable.
+export async function saveIdentity(
+  patch: IdentitySavePatch,
+): Promise<IdentityChangedData> {
+  return apiPost<IdentityChangedData>("/api/identity", patch, {
+    retryable: true,
+  });
 }
 
 export async function fetchSchedule(): Promise<ScheduleResponse> {
@@ -406,13 +443,16 @@ async function apiPost<T>(
     : await timedFetch(`${BASE}${path}`, init, TIMEOUT_MS);
   if (!res.ok) {
     let msg = `HTTP ${res.status}: ${res.statusText}`;
+    let payload: Record<string, unknown> | undefined;
     try {
       const err = await res.json();
+      if (err && typeof err === "object") payload = err as Record<string, unknown>;
       if (err?.error) msg = String(err.error);
+      if (err?.detail) msg = `${msg}: ${String(err.detail)}`;
     } catch {
       // response had no JSON body — keep the default message
     }
-    throw new ApiError(res.status, msg);
+    throw new ApiError(res.status, msg, payload);
   }
   return res.json() as Promise<T>;
 }
@@ -511,6 +551,13 @@ export interface OllamaStatusResponse {
   tags: string[];
   embedding_present: boolean;
   owned_by_mirror: boolean;
+  // Distinguishes "stopped" from "never installed" — the two need different
+  // offers, and only the second one is a download worth asking about.
+  binary_present: boolean;
+  // An install runs detached (it can take the better part of an hour), so its
+  // progress and outcome arrive through the status poll, not the POST reply.
+  installing: boolean;
+  install_error: string | null;
 }
 
 export interface OllamaActionResponse {
@@ -519,6 +566,9 @@ export interface OllamaActionResponse {
   running: boolean;
   embedding_present: boolean;
   owned_by_mirror: boolean;
+  binary_present: boolean;
+  installing: boolean;
+  install_error: string | null;
 }
 
 export async function fetchOllamaStatus(): Promise<OllamaStatusResponse> {
@@ -526,12 +576,39 @@ export async function fetchOllamaStatus(): Promise<OllamaStatusResponse> {
 }
 
 export async function postOllamaAction(
-  action: "start" | "stop",
+  action: "start" | "stop" | "install",
 ): Promise<OllamaActionResponse> {
   return apiPost<OllamaActionResponse>("/api/system/ollama", { action });
 }
 
-export interface WhisperStatusResponse {
+/** The model-file fields every local-model lane carries.
+ *
+ * `files_present` is `null` when the lane is not configured at all — which
+ * is different from "configured but the files were never downloaded", the
+ * state an operator lands in after declining a lane during first-run setup
+ * and re-enabling it later.
+ */
+export interface ModelFilesStatus {
+  files_present: boolean | null;
+  downloading: boolean;
+  download_error: string;
+}
+
+export type ModelLane = "whisper" | "kokoro" | "piper";
+
+export interface ModelDownloadResponse extends ModelFilesStatus {
+  ok: true;
+}
+
+/** Schedules the fetch and returns immediately — the Whisper snapshot alone
+ * is 1.6 GB. Progress is read back from the lane's own status. */
+export async function postModelDownload(
+  lane: ModelLane,
+): Promise<ModelDownloadResponse> {
+  return apiPost<ModelDownloadResponse>("/api/system/models/download", { lane });
+}
+
+export interface WhisperStatusResponse extends ModelFilesStatus {
   configured: boolean;
   provider: string;
   model: string;
@@ -561,7 +638,7 @@ export async function postWhisperAction(
   return apiPost<WhisperActionResponse>("/api/system/whisper", { action });
 }
 
-export interface PiperStatusResponse {
+export interface PiperStatusResponse extends ModelFilesStatus {
   configured: boolean;
   model_path: string;
   config_path: string;
@@ -590,7 +667,7 @@ export async function postPiperAction(
   return apiPost<PiperActionResponse>("/api/system/piper", { action });
 }
 
-export interface KokoroStatusResponse {
+export interface KokoroStatusResponse extends ModelFilesStatus {
   configured: boolean;
   model_path: string;
   voices_path: string;
@@ -662,7 +739,7 @@ export async function postSessionDuplicate(
   });
 }
 
-// ── Schedule (Phase 18 Task B — TARS-authored jobs) ────
+// ── Schedule (Phase 18 Task B — agent-authored jobs) ────
 
 export interface ScheduleHandlerEntry {
   dotpath: string;
@@ -772,22 +849,28 @@ export async function createAlarm(payload: {
 
 export interface VoiceStylePreset {
   surface: string; // "intent" | "answer"
-  style_prompt: string; // Director's-Notes prefix for that surface
+  ref: string; // catalog ref the preset belongs to
+  // Whatever knobs that provider exposes — no fixed shape, so a new
+  // provider's presets render without a frontend change.
+  settings: Record<string, string | number | boolean>;
 }
 
 export interface VoiceSettingsResponse {
-  voice_id: string;
-  default_rate: number | null;
-  available_voice_ids: string[];
-  // Per-surface style prompts surfaced read-only from roles.yaml
-  // (api.google.gemini_flash_tts.synthesis_presets). Edit in
-  // roles.yaml directly — agent-side mutation is locked off.
-  gemini_style_presets: VoiceStylePreset[];
+  // Per-surface synthesis presets, read-only. They live on the catalog
+  // entry in providers.yaml (a voice's character travels with the
+  // voice); a roles.yaml per-ref block may override a surface. Edit
+  // either directly — agent-side mutation is locked off.
+  style_presets: VoiceStylePreset[];
+  // Wake-word gate. Only `enabled` is writable here; the phrase is
+  // `<prefix> <entity_name>` and the threshold is a config edit.
+  wake_word_enabled: boolean;
+  wake_word_prefix: string;
+  wake_word_threshold: number | null;
+  entity_name: string;
 }
 
 export interface VoiceSettingsUpdate {
-  voice_id?: string;
-  default_rate?: number;
+  wake_word_enabled: boolean;
 }
 
 export async function fetchVoiceSettings(): Promise<VoiceSettingsResponse> {
@@ -800,6 +883,122 @@ export async function postVoiceSettings(
   return apiPost<VoiceSettingsUpdate>("/api/settings/voice", update, {
     retryable: true,
   });
+}
+
+// ── Voice catalog + selection (AS-5) ────────────────────
+// Every `kind: tts` entry the catalog holds. The picker renders whatever
+// this returns — a voice added to providers.yaml appears with no code
+// change, and nothing here names a provider.
+
+export interface CatalogVoice {
+  ref: string;
+  tier: string;
+  provider: string;
+  model_id: string;
+  adapter: string;
+  // Optional catalog fields — a provider that sets neither renders by
+  // ref rather than having the picker invent a display name for it.
+  label: string;
+  gender: string;
+  enabled: boolean;
+}
+
+export interface VoiceCatalogResponse {
+  voices: CatalogVoice[];
+  primary: string;
+  fallbacks: string[];
+  sample_text: string;
+}
+
+export interface VoicePrimaryResponse {
+  primary: string;
+  fallbacks: string[];
+  applied: boolean;
+  live_update_failed: boolean;
+  live_update_error: string | null;
+}
+
+export interface VoiceTestResponse {
+  provider: string;
+  byte_count: number;
+  audio_b64: string;
+  char_count: number;
+}
+
+export async function fetchVoiceCatalog(): Promise<VoiceCatalogResponse> {
+  return apiFetch<VoiceCatalogResponse>("/api/voice/catalog");
+}
+
+export async function postVoicePrimary(
+  ref: string,
+): Promise<VoicePrimaryResponse> {
+  return apiPost<VoicePrimaryResponse>(
+    "/api/voice/primary",
+    { ref },
+    { retryable: true },
+  );
+}
+
+// Not retryable: synthesis is the slow part and a retry would queue a
+// second audition behind the first rather than recover anything.
+export async function postVoiceTest(text?: string): Promise<VoiceTestResponse> {
+  return apiPost<VoiceTestResponse>("/api/voice/test", text ? { text } : {});
+}
+
+// ── Workspace documents (AS-5) ──────────────────────────
+// The operator writing the documents the assistant otherwise proposes
+// against. `hash` is the concurrency token: read it, echo it back on
+// save, and a 409 means the file moved underneath the editor.
+
+export interface WorkspaceDocRow {
+  path: string;
+  label: string;
+  exists: boolean;
+  bytes: number;
+  lines: number;
+  hash: string;
+  modified_at: number | null;
+}
+
+export interface WorkspaceDoc {
+  path: string;
+  label: string;
+  content: string;
+  hash: string;
+}
+
+export interface WorkspaceDocSaved {
+  path: string;
+  label: string;
+  hash: string;
+  bytes: number;
+  no_op_reason: "duplicate" | "unchanged" | null;
+}
+
+export async function fetchWorkspaceDocs(): Promise<{
+  docs: WorkspaceDocRow[];
+  count: number;
+}> {
+  return apiFetch<{ docs: WorkspaceDocRow[]; count: number }>(
+    "/api/workspace/docs",
+  );
+}
+
+export async function fetchWorkspaceDoc(path: string): Promise<WorkspaceDoc> {
+  return apiFetch<WorkspaceDoc>(
+    `/api/workspace/doc?path=${encodeURIComponent(path)}`,
+  );
+}
+
+// Not retryable: a repeat POST after an ambiguous failure would carry a
+// hash the first attempt already consumed, turning a maybe-saved edit
+// into a spurious conflict.
+export async function saveWorkspaceDoc(input: {
+  path: string;
+  content: string;
+  expected_hash: string;
+}): Promise<WorkspaceDocSaved> {
+  return apiPost<WorkspaceDocSaved>("/api/workspace/doc", input);
 }
 
 export interface CapabilitySnapshot {
@@ -1418,9 +1617,16 @@ export interface McpApproval {
 
 // Pending ASK-over-MCP approvals (an external CLI called a write verb and is
 // held awaiting the operator). Returns [] if the registry isn't ready.
-export async function getMcpApprovals(): Promise<McpApproval[]> {
+// Operator-session-gated server-side: the client being asked about runs on this
+// machine too, so the live chat session is the credential, not localhost.
+export async function getMcpApprovals(sessionId: string): Promise<McpApproval[]> {
+  if (!sessionId) return [];
   try {
-    const res = await timedFetch(`${BASE}/api/mcp/approvals`, {}, TIMEOUT_MS);
+    const res = await timedFetch(
+      `${BASE}/api/mcp/approvals?session_id=${encodeURIComponent(sessionId)}`,
+      {},
+      TIMEOUT_MS,
+    );
     if (!res.ok) return [];
     const body = (await res.json()) as { items?: McpApproval[] };
     return body.items ?? [];
@@ -1434,10 +1640,11 @@ export async function getMcpApprovals(): Promise<McpApproval[]> {
 export async function decideMcpApproval(
   approvalId: string,
   approved: boolean,
+  sessionId: string,
 ): Promise<void> {
   await apiPost(
     `/api/mcp/approvals/${encodeURIComponent(approvalId)}/decision`,
-    { approved },
+    { approved, session_id: sessionId },
   );
 }
 
@@ -1453,7 +1660,7 @@ export interface ParkedAsk {
   spawn_handle_id: string | null;
   parked_at: string;
   // Controller-daemon parking (Option B, 2026-07-13): "controller" for an
-  // ask relayed from the tars_controller daemon, "chat" (default) for a
+  // ask relayed from the agent_controller daemon, "chat" (default) for a
   // Mirror-process background-spawn ask. Absent on older cached responses.
   origin?: "chat" | "controller";
 }

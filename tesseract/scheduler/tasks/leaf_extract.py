@@ -13,13 +13,14 @@ won't change.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
 from datetime import datetime
 from pathlib import Path
 
-from tesseract.memory.leaves import LeafState, LeafStore
+from tesseract.memory.leaves import LEAF_PIPELINE_LOCK, LeafState, LeafStore
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.scheduler.types import JobContext, JobResult
 
@@ -46,7 +47,7 @@ _CAP_STOPWORDS = frozenset(
         "From", "About", "Into", "Over",
         "Their", "They", "Your", "His", "Her",
         "After", "Before", "Today", "Tomorrow", "Yesterday",
-        "Assistant", "User", "Operator", "TARS",
+        "Assistant", "User", "Operator", "the assistant",
     }
 )
 
@@ -131,38 +132,46 @@ class ExtractChunkJob(BaseJob):
         store_root = ctx.config.get("store_root")
         store = LeafStore(root=Path(store_root) if store_root else None)
 
-        processed = 0
-        admitted = 0
-        dropped = 0
-        errors = 0
+        def _process() -> tuple[int, int, int, int]:
+            processed = 0
+            admitted = 0
+            dropped = 0
+            errors = 0
+            # Held for the whole pass — see `LEAF_PIPELINE_LOCK`'s
+            # docstring. Extraction shares `LeafStore`'s on-disk files
+            # with `AppendBufferJob` / `SealJob`; the lock keeps this
+            # job's reads+writes from landing mid-file-replace of theirs.
+            with LEAF_PIPELINE_LOCK:
+                for leaf in store.list_in_state(LeafState.PENDING_EXTRACTION):
+                    if processed >= max_per_tick:
+                        break
+                    processed += 1
+                    try:
+                        cleaned = normalise_body(leaf.body)
+                        entities = extract_entities(cleaned)
+                        importance = score_importance(cleaned, entities=entities)
+                        if len(cleaned) < MIN_LEAF_CHARS:
+                            store.transition(
+                                leaf,
+                                LeafState.DROPPED,
+                                reason=f"too_short:{len(cleaned)}<{MIN_LEAF_CHARS}",
+                            )
+                            dropped += 1
+                            continue
+                        leaf.body = cleaned
+                        leaf.entities = entities
+                        leaf.importance = importance
+                        store.transition(leaf, LeafState.ADMITTED, reason="extracted")
+                        admitted += 1
+                    except Exception:
+                        log.exception(
+                            "extract_chunk: leaf %s raised — leaving in pending",
+                            leaf.id,
+                        )
+                        errors += 1
+            return processed, admitted, dropped, errors
 
-        for leaf in store.list_in_state(LeafState.PENDING_EXTRACTION):
-            if processed >= max_per_tick:
-                break
-            processed += 1
-            try:
-                cleaned = normalise_body(leaf.body)
-                entities = extract_entities(cleaned)
-                importance = score_importance(cleaned, entities=entities)
-                if len(cleaned) < MIN_LEAF_CHARS:
-                    store.transition(
-                        leaf,
-                        LeafState.DROPPED,
-                        reason=f"too_short:{len(cleaned)}<{MIN_LEAF_CHARS}",
-                    )
-                    dropped += 1
-                    continue
-                leaf.body = cleaned
-                leaf.entities = entities
-                leaf.importance = importance
-                store.transition(leaf, LeafState.ADMITTED, reason="extracted")
-                admitted += 1
-            except Exception:
-                log.exception(
-                    "extract_chunk: leaf %s raised — leaving in pending",
-                    leaf.id,
-                )
-                errors += 1
+        processed, admitted, dropped, errors = await asyncio.to_thread(_process)
 
         return JobResult(
             job_name=ctx.job_name,

@@ -1,4 +1,4 @@
-"""Agenda comment auto-reply — operator comment -> TARS answers in-thread.
+"""Agenda comment auto-reply — operator comment -> the assistant answers in-thread.
 
 Option-B durability (matches ``workspace_reply_dispatch.py``): the
 controller calls the ``agenda_comment`` tool directly, which writes the
@@ -40,7 +40,7 @@ from tesseract.orchestrator.autonomy.broadcast import (
     broadcast_agenda_comment_event,
 )
 from tesseract.orchestrator.autonomy.models import AgendaItem
-from tesseract.orchestrator.tars_controller.dispatcher import (
+from tesseract.orchestrator.agent_controller.dispatcher import (
     DispatcherError,
     dispatch_to_controller,
 )
@@ -121,7 +121,7 @@ def build_agenda_reply_prompt(
 ) -> str:
     """Assemble the controller directive prompt.
 
-    Instructs TARS to call the ``agenda_comment`` tool with the exact
+    Instructs the assistant to call the ``agenda_comment`` tool with the exact
     ``item_id`` rather than returning prose — the reply is durable only
     when the controller writes it via the tool."""
     gates = ", ".join(
@@ -147,7 +147,7 @@ def build_agenda_reply_prompt(
     lines.append("")
     lines.append("Comment thread (oldest first):")
     for c in thread:
-        who = "Operator" if c.role == "operator" else "TARS"
+        who = "Operator" if c.role == "operator" else "the assistant"
         lines.append(f"  [{who}] {c.body}")
     return "\n".join(lines)
 

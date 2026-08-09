@@ -64,6 +64,11 @@ def _restore_persisted_chats(app: web.Application, session: ServerSession) -> No
         # instead of notifying the orphaned prior ChatSession.
         from tesseract.mirror.server.spawn_ownership import rebind_chat
         rebind_chat(app, session, cs, record.chat_id)
+        # AFTER the rebind, so a dead-window completion it just folded in by
+        # hand is skipped rather than delivered twice. What is left here is the
+        # cross-restart case the in-memory ownership index cannot see: a spawn
+        # that finished under the PREVIOUS process and was never read.
+        cs.replay_undelivered_completions(record.chat_id)
         chats[record.chat_id] = cs
         chat_meta[record.chat_id] = ChatMeta(
             chat_id=record.chat_id,

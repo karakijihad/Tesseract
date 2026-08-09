@@ -4,7 +4,7 @@ import { getTtsPlayer } from "../../lib/voice/tts-player";
 import { useConversationStore } from "../conversation";
 import { useToastStore } from "../toasts";
 
-// parallel-tars P6 (M10) — every focus transition (create / switch / archive /
+// every focus transition (create / switch / archive /
 // restore) must stop the outgoing chat's queued audio the moment focus leaves
 // it, or old-chat speech trails on across the switch. Centralized so a new
 // focus-changing envelope can't silently reintroduce the leak.
@@ -36,7 +36,7 @@ export function handleChat(env: Envelope): void {
     }
     case "chat_switched": {
       if (!data.chat_id) break;
-      // parallel-tars P6 — stop the outgoing chat's audio the moment focus
+      // stop the outgoing chat's audio the moment focus
       // moves; the incoming chat's voice picks up from its next chunk.
       _cancelOutgoingAudioIfFocusChanges(data.chat_id);
       chat.initChat(data.chat_id); // idempotent — sets active

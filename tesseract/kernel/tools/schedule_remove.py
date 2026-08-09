@@ -1,4 +1,4 @@
-"""schedule_remove tool — operator-or-TARS removal of a scheduler job.
+"""schedule_remove tool — operator-or-the assistant removal of a scheduler job.
 
 Phase 18 Task B. ASK-gated. Calls `SchedulerEngine.remove_job_runtime`
 which trims `schedule.yaml` and the live registry. Built-in jobs

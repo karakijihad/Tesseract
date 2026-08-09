@@ -25,6 +25,7 @@ refs at delete time, scrub heals refs that pre-date the cascade landing.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from pathlib import Path
@@ -79,11 +80,18 @@ class MemoryScrubJob(BaseJob):
                     duration_ms=(time.monotonic() - t0) * 1000.0,
                 )
 
-            report_before = MemoryLinter(
-                store_dir=store_dir,
-                project_root=TESSERACT_HOME,
-                repo_root=ROOT,
-            ).lint()
+            # Off the loop: this walks and rewrites the whole memory store,
+            # and the scheduler awaits `run()` directly — a sync body here
+            # holds the event loop for its full duration, which is what the
+            # boot-time catch-up stall looked like from outside.
+            def _lint():
+                return MemoryLinter(
+                    store_dir=store_dir,
+                    project_root=TESSERACT_HOME,
+                    repo_root=ROOT,
+                ).lint()
+
+            report_before = await asyncio.to_thread(_lint)
 
             scrubbable = (
                 len(report_before.broken_frontmatter_links)
@@ -110,13 +118,11 @@ class MemoryScrubJob(BaseJob):
                 )
 
             # mode == "fix"
-            fixed_fm, fixed_orphans = _scrub(store, report_before, store_dir)
+            fixed_fm, fixed_orphans = await asyncio.to_thread(
+                _scrub, store, report_before, store_dir
+            )
 
-            report_after = MemoryLinter(
-                store_dir=store_dir,
-                project_root=TESSERACT_HOME,
-                repo_root=ROOT,
-            ).lint()
+            report_after = await asyncio.to_thread(_lint)
 
             detail = (
                 f"mode=fix fixed_fm={fixed_fm} fixed_orphans={fixed_orphans} "

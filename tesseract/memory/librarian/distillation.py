@@ -60,7 +60,7 @@ class DistillationMixin:
         for direct REPL callers and existing tests.
 
         The librarian itself never edits SOUL.md. `pending_growth.md` is a
-        proposal surface — the operator (or TARS via `soul_growth_propose`)
+        proposal surface — the operator (or the assistant via `soul_growth_propose`)
         is the only path that mutates Growth.
         """
         chain = adapter_chain
@@ -196,7 +196,7 @@ class DistillationMixin:
             "**Source:** librarian heartbeat → diary distillation",
             "",
             "Candidate observations the librarian noticed across recent diary "
-            "entries. Not yet in SOUL.md — TARS reviews these at session-end "
+            "entries. Not yet in SOUL.md — the assistant reviews these at session-end "
             "reflection and calls `soul_growth_propose` if any feel stable.",
             "",
         ]

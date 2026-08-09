@@ -124,7 +124,7 @@ export function AboutSection() {
                 )}
                 {applying && (
                   <span className="system-update-note t-meta">
-                    applying update, TARS will restart shortly…{" "}
+                    applying update, TESSERACT will restart shortly…{" "}
                   </span>
                 )}
                 {behind === 0 &&

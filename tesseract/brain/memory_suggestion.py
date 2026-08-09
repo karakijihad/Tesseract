@@ -82,7 +82,7 @@ def format_for_injection(s: MemorySuggestion) -> str:
     """Render a suggestion as the `[observer_suggestion]` text block
     ChatSession injects as a synthetic user message. Format is the one
     fixed in `_shared/memory-suggestion-envelope.md` § "Injection into
-    TARS turn loop"."""
+    The assistant turn loop"."""
     target_line = _format_target(s.target)
     return (
         "[observer_suggestion]\n"

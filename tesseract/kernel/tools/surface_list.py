@@ -16,7 +16,7 @@ from tesseract.orchestrator.surfaces.store import get_surface_store
 
 
 class SurfaceListInput(BaseModel):
-    view: str = Field(default="tars", description="Canvas view to list (e.g. 'tars').")
+    view: str = Field(default="orb", description="Canvas view to list (e.g. 'orb').")
 
 
 class SurfaceListTool(Tool):
