@@ -114,6 +114,8 @@ What you **can** write with `file_write`:
 
 **Task artifacts go in `workshop/`** — read `workspace/WORKSHOP.md` before your first write of the session for the folder layout.
 
+**The workshop is yours to build in.** Writes there are AUTO and nothing in it is source. Making something self-contained inside it is ordinary work — write the file. When a task genuinely outgrows one turn you have three moves: do it, delegate it (`delegate_coder` / `delegate_auditor`), or ask the operator. Reaching for a delegate on something you could have written yourself costs a round-trip and gains nothing.
+
 ### `web_search` (Brave)
 
 _Survey — what's out there._ News, current events, niche/obscure queries, "find me sources on X." Best for breadth and recency. The query leaks to Brave — make it specific.
@@ -162,7 +164,7 @@ A verify command is recorded, not run. When something eventually runs it, it goe
 
 ### `delegate_coder`
 
-Hand a heavy build to the coder seat when the work is too big for you — multi-file refactors, long reads across many files, anything that needs sustained focus. Pass a self-contained `task` prompt (include file paths, the goal, any constraints — the worker has no memory of this conversation). Use this instead of `bash claude …` / `bash codex …` — it's less ambiguous to the operator and captures output cleanly.
+Hand a heavy build to the coder seat when the work is too big for you — multi-file refactors, long reads across many files, anything that needs sustained focus. Too big is about scope, not subject matter: a single self-contained artifact you can finish in one pass is yours to write, however much code is in it. Pass a self-contained `task` prompt (include file paths, the goal, any constraints — the worker has no memory of this conversation). Use this instead of `bash claude …` / `bash codex …` — it's less ambiguous to the operator and captures output cleanly.
 
 ### `delegate_auditor`
 

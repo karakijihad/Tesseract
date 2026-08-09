@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from tesseract.kernel.tokenjuice import (
@@ -57,45 +58,84 @@ _AUTH_SHAPED_NEEDLES = tuple(
 # being worked on, but pointless (the next update overwrites it) and risky
 # (someone else's machine) on an installed copy. Neither tool distinguishes
 # "edit" from "analyse" via a dedicated mode/cwd argument; both DO carry a
-# `target_paths: list[str]` field ("repo-relative paths this task will
-# edit... declare them for edit tasks", already resolved against
-# `context.workspace_root` — the code tree — by `_delegate_runner.py`'s own
-# evidence snapshotting). An empty `target_paths` is the existing signal
-# for "not an edit task" (analysis/review/questions), so only a non-empty
-# declaration is gated here — non-editing delegate use is unaffected.
+# `target_paths: list[str]` field ("paths this task will edit... declare
+# them for edit tasks"). An empty `target_paths` is the existing signal for
+# "not an edit task" (analysis/review/questions), so only a non-empty
+# declaration is examined here — non-editing delegate use is unaffected.
+#
+# What makes a declaration refusable is WHERE it lands, not that it exists.
+# The sealed `app/` and `runtime/` trees are the ones an update replaces
+# wholesale; everything else an installed copy can reach — `home/workshop/`
+# above all, the delegate's own working directory — is durable, and building
+# there is ordinary work. Gating on "declared any path at all" refused those
+# too, so declaring targets honestly was the thing that got a build denied.
 _SOURCE_EDIT_DELEGATE_TOOLS = frozenset({"delegate_coder", "delegate_auditor"})
 
-_INSTALLED_TREE_REFUSAL = (
-    "Source edits are disabled on an installed copy of TESSERACT — this "
-    "tree is replaced by updates. Run TESSERACT from a development "
-    "checkout to modify its source."
+_SEALED_TARGET_REFUSAL = (
+    "Refusing: the declared target_paths land inside the sealed application "
+    "tree (app/ or runtime/), which every update replaces wholesale — edits "
+    "made there are destroyed silently and are never reviewed. Work under "
+    "the home tree instead (workshop/ is writable and survives updates), or "
+    "run TESSERACT from a development checkout to change the application "
+    "itself."
 )
+
+
+def _declares_sealed_target(target_paths: Any, workspace_root: str) -> bool:
+    """True when any declared target path lands inside the sealed `app/` or
+    `runtime/` tree.
+
+    Relative paths resolve against `safe_cwd(workspace_root)` — the exact
+    directory `_delegate_runner.py` will start the CLI in, not the raw
+    `workspace_root` (which IS the sealed `app/` on a packaged install, so
+    anchoring there would read every relative path as sealed). Sharing the
+    anchor with the run is the point: a gate that resolves paths differently
+    from the process it guards judges a location nobody will write to.
+    """
+    from tesseract.orchestrator.seal_guard import (
+        SealViolation,
+        assert_cwd_outside_seal,
+        safe_cwd,
+    )
+
+    base = safe_cwd(workspace_root or ".")
+    for raw in target_paths:
+        candidate = Path(str(raw))
+        resolved = candidate if candidate.is_absolute() else base / candidate
+        try:
+            assert_cwd_outside_seal(resolved)
+        except SealViolation:
+            return True
+    return False
 
 
 async def _installed_tree_source_edit_refusal(
     tool_name: str, validated: Any, raw_input: dict[str, Any], context: ToolContext
 ) -> ToolResult | None:
     """`ToolResult` refusal when `tool_name` is a source-editing delegate
-    call with a non-empty `target_paths` AND this process is running from
-    an installed tree; `None` otherwise (proceed as normal). Logged AND
-    recorded in the durable `approvals.jsonl` ledger — same forensics trail
-    every other permission denial gets (`permissions/decide.py::evaluate`) —
-    so the refusal is visible for ops review, not just a transient log
-    line."""
+    call whose declared `target_paths` reach into a sealed tree AND this
+    process is running from an installed tree; `None` otherwise (proceed as
+    normal). Logged AND recorded in the durable `approvals.jsonl` ledger —
+    same forensics trail every other permission denial gets
+    (`permissions/decide.py::evaluate`) — so the refusal is visible for ops
+    review, not just a transient log line."""
     if tool_name not in _SOURCE_EDIT_DELEGATE_TOOLS:
         return None
-    if not getattr(validated, "target_paths", None):
+    declared = getattr(validated, "target_paths", None)
+    if not declared:
         return None
 
     from tesseract.paths import is_installed_tree
 
     if not is_installed_tree():
         return None
+    if not _declares_sealed_target(declared, context.workspace_root):
+        return None
 
     logger.warning(
-        "%s refused on installed tree: declared target_paths=%r",
+        "%s refused on installed tree: declared target_paths=%r reach the sealed tree",
         tool_name,
-        validated.target_paths,
+        declared,
     )
     await approval_log.record_ask(
         session_id=context.session_id,
@@ -107,7 +147,7 @@ async def _installed_tree_source_edit_refusal(
         actor="system",
     )
     return ToolResult(
-        output=_INSTALLED_TREE_REFUSAL,
+        output=_SEALED_TARGET_REFUSAL,
         is_error=True,
         metadata={"reason": "installed_tree_source_edit_refused"},
     )
