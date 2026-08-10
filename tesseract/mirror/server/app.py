@@ -699,6 +699,13 @@ async def _init_background(app: web.Application) -> None:
                     len(alarm_registry.list_pending()),
                 )
             _schedule_warmup(app, _warm_embeddings(bundle), name="embeddings")
+            # Armed BEFORE the warm-up is queued, because the thing it guards
+            # against runs in between: the autonomy kernel starts later in
+            # boot and its resume sweep can retrieve, which would build the
+            # session on the request path and block the loop for seconds.
+            reranker = getattr(bundle, "reranker", None) if bundle is not None else None
+            if reranker is not None and hasattr(reranker, "defer_until_warm"):
+                reranker.defer_until_warm()
             _queue_serial_warmup(app, _warm_reranker(bundle), name="reranker")
         else:
             registry = None

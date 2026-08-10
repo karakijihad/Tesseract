@@ -211,12 +211,16 @@ def _seat_from_ref(ref) -> DelegateSeat:
 
 
 def snapshot_target_state(
-    workspace_root: str, target_paths: Sequence[str] | None
+    anchor: str, target_paths: Sequence[str] | None
 ) -> dict[str, tuple[int, int]] | None:
     """Best-effort ``{relative_path: (mtime_ns, size)}`` snapshot of the
     declared ``target_paths`` (files directly; directories recursively,
     bounded). Size rides along because filesystem mtime ticks are coarse
     enough (Windows) for a fast rewrite to keep the same timestamp.
+
+    ``anchor`` is the directory relative declarations resolve against, which
+    must be the one the delegate is actually running in — not necessarily
+    ``context.workspace_root``, since ``safe_cwd`` relocates a sealed run.
 
     Returns None when there is nothing to snapshot or the walk fails — the
     evidence layer must never break the delegation itself.
@@ -224,7 +228,7 @@ def snapshot_target_state(
     if not target_paths:
         return None
     try:
-        root = Path(workspace_root)
+        root = Path(anchor)
         state: dict[str, tuple[int, int]] = {}
         for raw in target_paths:
             target = root / raw
@@ -239,19 +243,38 @@ def snapshot_target_state(
                     return state
                 if child.is_file():
                     st = child.stat()
-                    state[str(child.relative_to(root))] = (st.st_mtime_ns, st.st_size)
+                    state[_label(child, root)] = (st.st_mtime_ns, st.st_size)
         return state
     except OSError:
-        log.warning("target_paths snapshot failed for %r", workspace_root, exc_info=True)
+        log.warning("target_paths snapshot failed for %r", anchor, exc_info=True)
         return None
+
+
+def _label(child: Path, root: Path) -> str:
+    """`child` named relative to `root`, falling back to its full path.
+
+    An absolute `target_paths` entry replaces `root` entirely on join, so its
+    children need not sit under `root` at all — and `relative_to` raises
+    `ValueError` rather than `OSError` when they don't, which would escape the
+    walk's handler and take the whole delegation down with it. The evidence
+    layer is documented never to do that.
+    """
+    try:
+        return str(child.relative_to(root))
+    except ValueError:
+        return str(child)
 
 
 def describe_target_changes(
     before: dict[str, tuple[int, int]] | None,
-    workspace_root: str,
+    anchor: str,
     target_paths: Sequence[str] | None,
 ) -> str:
     """Human-readable diff of the declared target_paths against ``before``.
+
+    ``anchor`` must be the same one ``before`` was taken with — the keys are
+    paths relative to it, and comparing two differently-anchored snapshots
+    would report every file as new.
 
     Appended to timeout error results so the model can distinguish
     productive-but-slow from dead (the 2026-07-10 incident: a killed
@@ -261,7 +284,7 @@ def describe_target_changes(
     """
     if before is None:
         return ""
-    after = snapshot_target_state(workspace_root, target_paths)
+    after = snapshot_target_state(anchor, target_paths)
     if after is None:
         return ""
     created = sorted(p for p in after if p not in before)
@@ -350,8 +373,15 @@ async def run_delegate_foreground(
     # delegate actually accomplished before it went quiet (fix-pass
     # 2026-07-10: a killed delegate had written 9 files and the assistant saw only
     # "timed out", so it redid the work).
+    #
+    # Anchored on `working_dir`, not `context.workspace_root`: the two differ
+    # exactly when `safe_cwd` relocated the run out of the sealed tree, which
+    # on a packaged install is every time. Anchoring on the workspace root
+    # then looked for `app/<declared path>` while the delegate was writing
+    # under `home/workshop/` — so the evidence came back empty for precisely
+    # the declarations that are normal there.
     target_paths = list(getattr(inp, "target_paths", None) or [])
-    before = snapshot_target_state(context.workspace_root, target_paths)
+    before = snapshot_target_state(working_dir, target_paths)
 
     try:
         result = await run_delegation_on_lane(
@@ -384,9 +414,7 @@ async def run_delegate_foreground(
         )
 
     if result.timed_out:
-        evidence = describe_target_changes(
-            before, context.workspace_root, target_paths
-        )
+        evidence = describe_target_changes(before, working_dir, target_paths)
         if evidence:
             result = ToolResult(
                 output=result.output + evidence,

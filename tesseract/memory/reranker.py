@@ -44,6 +44,10 @@ class CrossEncoderReranker:
         self._load_failed = False
         self._logged_missing = False
         self._lock = threading.Lock()
+        # While true, a retrieval will NOT build the session itself; it keeps
+        # RRF order and leaves the load to the scheduled warm-up. See
+        # `defer_until_warm`.
+        self._defer_lazy_load = False
 
     @property
     def available(self) -> bool:
@@ -94,12 +98,42 @@ class CrossEncoderReranker:
 
     async def warm_up(self) -> None:
         """Load session + tokenizer off the loop so the first retrieval
-        doesn't pay the cold-load tax (~seconds). No-op when unavailable."""
+        doesn't pay the cold-load tax (~seconds). No-op when unavailable.
+
+        Clears any `defer_until_warm` hold in a `finally`, so a warm-up that
+        FAILED does not leave retrieval permanently refusing to rerank: the
+        deferral exists to move one blocking load off the boot path, not to
+        disable the stage. After this returns, the lazy path is available
+        again as the backstop it was.
+        """
         if not self.available:
             return
-        loaded = await asyncio.to_thread(self._ensure_loaded)
+        try:
+            loaded = await asyncio.to_thread(self._ensure_loaded)
+        finally:
+            self._defer_lazy_load = False
         if loaded:
             logger.info("reranker warmed")
+
+    def defer_until_warm(self) -> None:
+        """Refuse to build the session on a retrieval until warm-up has run.
+
+        Building an onnxruntime session holds the GIL for its whole duration
+        — measured at several seconds — so it blocks the event loop even from
+        a worker thread. That is acceptable once, in the warm-up, which is
+        scheduled after the backend is answering. It is not acceptable on the
+        retrieval path during boot, and that is reachable: the autonomy
+        kernel runs a resume sweep while boot is still finishing, and its
+        retrieval would build the session first, beating the warm-up to it
+        and stalling startup by seconds.
+
+        Skipping costs the ordering quality of those first few retrievals,
+        nothing more — the caller keeps the RRF order, which is this module's
+        documented degraded mode and already its behaviour when the model
+        files are absent. Recall-grade ordering on an autonomy sweep is a
+        smaller loss than a backend that answers nothing for six seconds.
+        """
+        self._defer_lazy_load = True
 
     async def rerank(
         self, query: str, candidates: list[tuple[str, str]]
@@ -107,6 +141,9 @@ class CrossEncoderReranker:
         """Score (query, text) pairs. Returns [(id, score 0..1)] best-first,
         or None when unavailable/failed — caller keeps its existing order."""
         if not candidates or not self.available:
+            return None
+        if self._defer_lazy_load and self._session is None:
+            logger.debug("reranker not warmed yet — keeping RRF order for this query")
             return None
         pool = candidates[: self._candidate_cap]
         return await asyncio.to_thread(self._rerank_sync, query, pool)

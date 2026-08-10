@@ -23,7 +23,7 @@ from tesseract.config_seed import (
 )
 from tesseract.mirror.server.app import create_app
 from tesseract.mirror.server.config import load_server_config
-from tesseract.paths import TESSERACT_HOME, runtime_dir
+from tesseract.paths import TESSERACT_HOME, install_root, runtime_dir
 from tesseract.scheduler.alarms import ensure_alarms_state_migrated
 
 
@@ -130,7 +130,19 @@ def _watch_stack_dump_requests() -> None:
                     output_raw = payload.get("output_path")
                     if isinstance(output_raw, str) and output_raw:
                         output_path = Path(output_raw).resolve()
-                        if not output_path.is_relative_to(home):
+                        # `install_root()` is the documented read boundary —
+                        # the parent of home/, app/ and runtime/. The bound
+                        # matters because the request file names its own
+                        # output path, so without it a dump of every thread's
+                        # stack could be written anywhere the backend can
+                        # reach. This previously referenced an undefined
+                        # `home`, so EVERY request raised NameError and the
+                        # watcher has never produced a dump.
+                        if not output_path.is_relative_to(install_root()):
+                            log.warning(
+                                "stack dump output %s is outside the install — "
+                                "writing to %s instead", output_path, log_dir,
+                            )
                             output_path = log_dir / f"backend-stack-{pid}.txt"
                     else:
                         output_path = log_dir / f"backend-stack-{pid}.txt"
