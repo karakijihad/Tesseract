@@ -1375,8 +1375,8 @@ async def _warm_embeddings(bundle) -> None:
 
     Embeddings only. This awaits an HTTP call to Ollama, which yields the
     loop properly, so it belongs on the concurrent path. The reranker does
-    NOT — it builds an ONNX session, which holds the GIL — and is queued with
-    the other ONNX loads by `_queue_reranker_warmup`.
+    NOT — it builds an ONNX session, which holds the GIL — and is warmed by
+    `_warm_reranker`, queued with the other ONNX loads.
     """
     if bundle is None or bundle.embeddings is None:
         return
@@ -1398,6 +1398,13 @@ async def _warm_reranker(bundle) -> None:
 
     Warms regardless of whether embeddings came online: it is built from its
     own local config, so BM25-only retrieval still gets a warm reranker.
+
+    Note it can still lose the race to a LAZY load: `retrieval.py`'s
+    `_apply_reranker` builds the session on first use, and the autonomy
+    kernel's resume sweep runs a retrieval during boot. When that happens
+    this is a no-op and the blocking load has already been paid on the
+    concurrent path — shaping what autonomy may do before the warm-ups
+    finish is a separate problem from where the warm-ups are scheduled.
     """
     reranker = getattr(bundle, "reranker", None) if bundle is not None else None
     if reranker is None:
