@@ -699,6 +699,7 @@ async def _init_background(app: web.Application) -> None:
                     len(alarm_registry.list_pending()),
                 )
             _schedule_warmup(app, _warm_embeddings(bundle), name="embeddings")
+            _queue_serial_warmup(app, _warm_reranker(bundle), name="reranker")
         else:
             registry = None
             bundle = None
@@ -1372,23 +1373,39 @@ async def _ensure_ollama_ready(app: web.Application) -> None:
 async def _warm_embeddings(bundle) -> None:
     """Pre-warm the embedding model so the first dedupe doesn't pay cold-load tax.
 
-    The reranker warms independently — it is constructed from its local ONNX
-    config regardless of whether embeddings came online, so BM25-only mode
-    still gets a warm reranker."""
-    if bundle is None:
+    Embeddings only. This awaits an HTTP call to Ollama, which yields the
+    loop properly, so it belongs on the concurrent path. The reranker does
+    NOT — it builds an ONNX session, which holds the GIL — and is queued with
+    the other ONNX loads by `_queue_reranker_warmup`.
+    """
+    if bundle is None or bundle.embeddings is None:
         return
-    if bundle.embeddings is not None:
-        try:
-            await bundle.embeddings.warm_up()
-            log.info("embedding model warmed and pinned")
-        except Exception:
-            log.exception("warm_up failed — continuing without warm embeddings")
-    reranker = getattr(bundle, "reranker", None)
-    if reranker is not None:
-        try:
-            await reranker.warm_up()
-        except Exception:
-            log.exception("reranker warm_up failed — first retrieval loads lazily")
+    try:
+        await bundle.embeddings.warm_up()
+        log.info("embedding model warmed and pinned")
+    except Exception:
+        log.exception("warm_up failed — continuing without warm embeddings")
+
+
+async def _warm_reranker(bundle) -> None:
+    """Load the reranker's ONNX session. Queued, never raced.
+
+    Left on the concurrent path this was the last blocking stretch at boot:
+    measured after the voice lanes were serialised, its warm-up was the only
+    remaining event-loop breach, at 5.34s. It is the same defect as Kokoro's
+    and Piper's — an onnxruntime session constructor that does not release
+    the GIL — so it gets the same treatment.
+
+    Warms regardless of whether embeddings came online: it is built from its
+    own local config, so BM25-only retrieval still gets a warm reranker.
+    """
+    reranker = getattr(bundle, "reranker", None) if bundle is not None else None
+    if reranker is None:
+        return
+    try:
+        await reranker.warm_up()
+    except Exception:
+        log.exception("reranker warm_up failed — first retrieval loads lazily")
 
 
 def _queue_serial_warmup(app: web.Application, coro, *, name: str) -> None:
