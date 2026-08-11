@@ -1138,6 +1138,33 @@ def _primary_summary_for_role(app: web.Application, role: str) -> dict[str, Any]
     }
 
 
+def _materialize_role_chain(doc: Any, role_cfg: Any) -> None:
+    """Expand a `chain:`-backed role into its own primary + fallbacks.
+
+    Picking a model in Settings is a decision about ONE role, so the first
+    such edit detaches it from the shared chain rather than repointing every
+    role that names the chain. Without this the write paths below would read
+    an absent `primary`/`fallbacks` off the raw doc and flatten the chain to
+    a single entry.
+    """
+    if "chain" not in role_cfg:
+        return
+    chain_name = str(role_cfg["chain"])
+    if role_cfg.get("primary") is not None:
+        # Both keys set — a shape the loader refuses, so this file never
+        # booted. Drop `chain` and keep the explicit refs rather than writing
+        # the pair back out: committing a doc that still cannot load would
+        # fail `rebuild_adapters` after the YAML is already on disk.
+        del role_cfg["chain"]
+        return
+    refs = [str(r) for r in ((doc.get("chains") or {}).get(chain_name) or [])]
+    if not refs:
+        raise KeyError(f"chains.{chain_name}")
+    del role_cfg["chain"]
+    role_cfg["primary"] = refs[0]
+    role_cfg["fallbacks"] = refs[1:]
+
+
 def _apply_role_models_update(
     doc: Any, role: str, mode: str | None, primary_model: str | None
 ) -> None:
@@ -1155,6 +1182,7 @@ def _apply_role_models_update(
     if primary_model is None:
         return
 
+    _materialize_role_chain(doc, role_cfg)
     primary_ref = role_cfg.get("primary")
     fallbacks = list(role_cfg.get("fallbacks") or [])
     if primary_ref is None:
@@ -1626,6 +1654,7 @@ def _apply_model_ref_update(doc: Any, target: str, ref: str) -> None:
     roles = doc.get("roles") or {}
     if target in roles:
         role_cfg = roles[target]
+        _materialize_role_chain(doc, role_cfg)
         old_primary = role_cfg.get("primary")
         if old_primary == ref:
             return

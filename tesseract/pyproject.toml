@@ -106,7 +106,7 @@ dev = [
 # themselves are core dependencies (see above) and run on CPU without any
 # of this; the CUDA 12 wheels are here so Kokoro's CUDAExecutionProvider
 # can resolve its DLLs on Windows. Voice models are downloaded into
-# `tesseract/voice/models/{piper,kokoro}/`; pip only ships the runtime.
+# `runtime/models/voice/{piper,kokoro}/`; pip only ships the runtime.
 #
 # Installing this extra is NOT sufficient on its own, for two reasons, both
 # measured rather than assumed:

@@ -550,6 +550,12 @@ export interface OllamaStatusResponse {
   embedding_model: string;
   tags: string[];
   embedding_present: boolean;
+  // Why `tags` is empty, when it is empty because the daemon could not be read
+  // rather than because it holds nothing. `null` means the list was fetched
+  // and `tags` is the truth. `embedding_present` is reported true while this
+  // is set — the model is not knowably absent — so this is the only field that
+  // separates "installed" from "could not check".
+  tags_error: string | null;
   owned_by_mirror: boolean;
   // Distinguishes "stopped" from "never installed" — the two need different
   // offers, and only the second one is a download worth asking about.

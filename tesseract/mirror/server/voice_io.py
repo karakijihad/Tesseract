@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -152,6 +153,13 @@ async def _handle_voice_commit(
     audio = bytes(session.voice_pcm_buffer or b"")
     session.voice_pcm_buffer = None
     log.info("voice_commit: %d bytes (~%.2fs) mode=%s", len(audio), len(audio) / 32_000, mode)
+    # End of speech. Held locally and only published to the session once a
+    # chat turn is actually dispatched — see the bottom of this function. Most
+    # of the paths below never start a turn (no engine, no audio, STT failure,
+    # wake-word rejection, transcribe mode, empty transcript), and publishing
+    # here would leave a timestamp standing that the next unrelated turn would
+    # pick up and report as its own.
+    commit_at = time.monotonic()
 
     engine = app.get("stt_engine")
     if engine is None:
@@ -243,7 +251,15 @@ async def _handle_voice_commit(
         # now lives in `turn_intake.py`. Lazy import: avoids a hard
         # circular dependency at module-load time.
         from tesseract.mirror.server.turn_intake import _start_turn
-        await _start_turn(app, session, {"text": text})
+        # End of speech rides WITH the payload, the way `view_snapshot` does,
+        # and `_start_turn` re-carries it through the queue on drain. A
+        # session-wide slot could be claimed by whatever turn happened to start
+        # next — a typed message already queued ahead of this transcript drains
+        # first — and would outlive a payload that `_start_turn` rejects on
+        # queue overflow.
+        await _start_turn(
+            app, session, {"text": text, "voice_commit_at": commit_at},
+        )
 
 
 async def _handle_voice_cancel(
@@ -296,4 +312,8 @@ async def _handle_voice_cancel(
         return
 
     session.voice_pcm_buffer = None
+    # A cancelled voice turn never reaches its first audio chunk, so an
+    # unclaimed commit timestamp would survive and be reported against whatever
+    # turn came next — including a typed one.
+    session.voice_commit_at = None
     await _emit_voice_state(session, session.voice_loop.cancel())

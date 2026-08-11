@@ -83,6 +83,7 @@ _READ_PATH_TOOLS: dict[str, tuple[str, ...]] = {
     "pdf_read": ("file_path",),
     "glob": ("path",),
     "grep": ("path",),
+    "log_triage": ("path",),
     "file_copy": ("source_path",),
     "vault_ingest": ("source_path",),
     "channel_send_photo": ("source_path",),
@@ -261,8 +262,23 @@ async def evaluate(
             # only handles the hard-DENY paths above.
             approved = await ask_fn(tool, validated, context)
             if not approved:
+                # NOT "declined". `ask_fn` returns one bool for two different
+                # events and the ledger keeps them apart (`result: deny` vs
+                # `result: timeout, actor: timeout`) — so asserting a decline
+                # here contradicts the runtime's own record whenever the
+                # prompt simply expired. Live case, 2026-08-09T15:13:58: the
+                # operator approved a heredoc into `python -`, the ask had
+                # already timed out, and this line told them they had declined
+                # it. They then reported an approval that failed to
+                # round-trip; the approval path was fine, this sentence was
+                # not. Name both possibilities rather than guess wrong.
                 return ToolResult(
-                    output=f"operator declined tool call: {tool.name}. Explain what you intended and choose a different approach.",
+                    output=(
+                        f"{tool.name} was not approved — the operator declined it, "
+                        "or the approval prompt expired before it was answered. "
+                        "Say what you intended, and offer to retry it or take a "
+                        "different approach."
+                    ),
                     is_error=True,
                 )
 

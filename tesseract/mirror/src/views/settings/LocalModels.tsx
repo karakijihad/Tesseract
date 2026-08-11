@@ -265,9 +265,16 @@ export function LocalModelsSection() {
     : status.running
       ? !status.embedding_model
         ? 'running'
-        : status.embedding_present
-          ? 'running · embedding model loaded'
-          : 'running · embedding model missing'
+        : // `tags_error` first: the backend reports `embedding_present` as
+          // true when it could not read the tag list, so that an unreadable
+          // daemon does not raise a false "missing" badge. Checking
+          // `embedding_present` before this would render "loaded" over a
+          // model nobody actually looked for.
+          status.tags_error
+          ? `running · could not check models (${status.tags_error})`
+          : status.embedding_present
+            ? 'running · embedding model loaded'
+            : 'running · embedding model missing'
       : 'stopped';
 
   const ownedHint = !status.binary_present
@@ -296,7 +303,11 @@ export function LocalModelsSection() {
       <div className="cost-row">
         <label className="cost-row__label">Available models</label>
         <span className="t-meta">
-          {status.tags.length === 0 ? '—' : status.tags.join(', ')}
+          {status.tags_error
+            ? 'unknown — the daemon did not answer'
+            : status.tags.length === 0
+              ? '—'
+              : status.tags.join(', ')}
         </span>
       </div>
       <div className="cost-row cost-row--actions">

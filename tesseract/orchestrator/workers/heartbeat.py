@@ -6,8 +6,15 @@ dead → ``interrupted``. The file is mtime-only (zero bytes) per the
 schema contract — no payload needed, the mtime IS the heartbeat.
 
 The 30s / 90s pair is locked in
-``_shared/worker-record-schema.md §Heartbeat / staleness``. If you
-need to tune them, do it in YAML, not in code.
+``_shared/worker-record-schema.md §Heartbeat / staleness`` and lives here
+as constants — there is no YAML key for either, and an earlier version of
+this docstring wrongly sent operators looking for one. Changing them means
+changing the schema and this module together, since recovery's staleness
+verdict and the writer's interval have to stay a 1:3 pair.
+
+``worker_liveness``'s own ``staleness_threshold_seconds`` job config
+overrides only what THAT job reports; it does not move the recovery
+threshold below.
 """
 
 from __future__ import annotations

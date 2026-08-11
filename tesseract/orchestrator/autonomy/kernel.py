@@ -123,6 +123,11 @@ _DEFAULT_KIND_FOR_RISK: dict[RiskClass, WorkerKind] = {
     RiskClass.OPERATOR_GATE: WorkerKind.CODER_SEAT,
 }
 
+# Sources whose goals are built from a fixed template rather than written by
+# a model. They are exempt from FUZZY dedupe only — exact dedupe and the caps
+# still apply. See the reasoning at the fuzzy check in `_persist_draft`.
+_TEMPLATE_GOAL_SOURCES: frozenset[AgendaSource] = frozenset({AgendaSource.OPERATOR_VIEW})
+
 
 def _kind_for_item(item: AgendaItem) -> WorkerKind | None:
     """Resolve an agenda item to a concrete WorkerKind.
@@ -834,13 +839,60 @@ class AutonomyKernel:
         # (source, normalised goal) dedupe the store ships with.
         if draft.source_event_id:
             for existing in self._agenda.iter_active():
-                if existing.source_event_id == draft.source_event_id:
+                # BOTH halves, which is what the comment above has always
+                # claimed and the code did not do. Six mappers mint
+                # `source_event_id` as the bare `event.event_id`
+                # (operator, provider_watch, repo_upgrade, scout,
+                # self_reflection, strategist, vault_signal), so comparing the
+                # id alone lets one source's item suppress another's whenever
+                # the ids coincide — a cross-source drop that reads as a replay.
+                if (
+                    existing.source is draft.source
+                    and existing.source_event_id == draft.source_event_id
+                ):
+                    # Recorded for the same reason the exact-goal branch below
+                    # is: a drop nobody can see is indistinguishable from an
+                    # item that was never proposed.
+                    record_prune(
+                        PruneRecord(
+                            item_id=None,
+                            source=draft.source,
+                            goal=draft.goal[:500],
+                            stage=PruneStage.DUPLICATE,
+                            reason=f"replay of event {draft.source_event_id} ({existing.id})",
+                            ts=self._clock(),
+                        )
+                    )
                     return False, True
         existing = self._agenda.find_dedupe(draft.goal, draft.source)
         if existing is not None:
+            # Record it. Every other drop in this function writes a prune row;
+            # this branch never did, and stabilising the operator_view goal
+            # made it the branch that fires most often. What it discards is
+            # not always redundant: a repeat_switch draft carries a LIVE
+            # `failure_summary`, so a second one can mean "the same view, now
+            # with five failures instead of two" — dropped in favour of the
+            # first item's older snapshot. Keeping the first item is right
+            # (it is the same work), but doing it invisibly is not.
+            record_prune(
+                PruneRecord(
+                    item_id=None,
+                    source=draft.source,
+                    goal=draft.goal[:500],
+                    stage=PruneStage.DUPLICATE,
+                    reason=f"exact dup of {existing.id}",
+                    ts=self._clock(),
+                )
+            )
             return False, True
 
-        if draft.source not in (AgendaSource.OPERATOR, AgendaSource.OPERATOR_VIEW):
+        # Only a DIRECT operator request is exempt from pruning and caps.
+        # `OPERATOR_VIEW` used to share the exemption and should never have:
+        # it is ambient telemetry about where the operator was looking, not an
+        # instruction, and skipping all three gates below let it accumulate 8
+        # near-identical open items on the live install while every other
+        # source stayed capped.
+        if draft.source is not AgendaSource.OPERATOR:
             now = self._clock()
 
             def _prune(stage: PruneStage, reason: str) -> None:
@@ -863,22 +915,34 @@ class AutonomyKernel:
             # dedupe_window_hours when configured (was parsed-but-inert
             # since inception — Deferred 2026-07-12), else the kernel-wide
             # fuzzy_window_hours.
-            mapper_cfg = self._mapper_configs.get(draft.source)
-            window_hours = (
-                mapper_cfg.dedupe_window_hours
-                if mapper_cfg is not None
-                else self._config.fuzzy_window_hours
-            )
-            dup = self._agenda.find_fuzzy_dedupe(
-                draft.goal,
-                draft.source,
-                threshold=self._config.fuzzy_threshold,
-                window_hours=window_hours,
-                now=now,
-            )
-            if dup is not None:
-                _prune(PruneStage.DUPLICATE, f"fuzzy dup of {dup.id}")
-                return False, True
+            #
+            # Skipped for sources whose goals come from a fixed template.
+            # Fuzzy matching exists to catch LLM re-phrasings of the same
+            # intent; a template cannot re-phrase itself, so all it can do
+            # here is merge goals that differ only by the short variable the
+            # template interpolates. Measured at threshold 0.9: the view-dwell
+            # goal scores 0.913 chat-vs-autonomy and 0.920 chat-vs-orb (both
+            # wrongly pruned) but 0.891 chat-vs-settings (kept) — so which
+            # distinct views survive is decided by the character length of
+            # their names. Exact dedupe already covers this source correctly
+            # now that its goals are stable.
+            if draft.source not in _TEMPLATE_GOAL_SOURCES:
+                mapper_cfg = self._mapper_configs.get(draft.source)
+                window_hours = (
+                    mapper_cfg.dedupe_window_hours
+                    if mapper_cfg is not None
+                    else self._config.fuzzy_window_hours
+                )
+                dup = self._agenda.find_fuzzy_dedupe(
+                    draft.goal,
+                    draft.source,
+                    threshold=self._config.fuzzy_threshold,
+                    window_hours=window_hours,
+                    now=now,
+                )
+                if dup is not None:
+                    _prune(PruneStage.DUPLICATE, f"fuzzy dup of {dup.id}")
+                    return False, True
             # 3. caps
             if self._agenda.count_open_total() >= self._config.max_open_total:
                 _prune(PruneStage.CAPPED, "max_open_total reached")

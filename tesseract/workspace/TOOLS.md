@@ -82,6 +82,24 @@ Discrete orb-state lever. Allowed: `happy`, `deep_focus`, `dreaming`, `idle`. Re
 
 Codebase questions. Read before answering anything that depends on what's actually in a file. `grep` for symbols, `glob` for finding files by path shape, `file_read` for specific contents.
 
+`glob` supports brace alternation — `**/*.{log,jsonl}` — and **refuses** syntax it cannot express (POSIX classes, extended globs, absolute patterns) rather than reporting zero matches. An empty result from `glob` therefore means the files are genuinely absent.
+
+`grep`'s summary line reports the **true** match and file totals; when there are more matches than `max_results`, it says so and shows the first N. Read the header before concluding how widespread something is.
+
+**Which paths need to be absolute** is in `AGENTS.md` § "Where You Live" — it lives there rather than here because it is inlined in every payload, while this file is fetched only when asked for. The short version: relative resolves against the code tree and five state prefixes; the rest of `home/logs/**` and all of `runtime/**` need an absolute path.
+
+### `log_triage`
+
+_"What is wrong in this log?"_ — as opposed to `grep`'s _"does this exact string appear?"_. Reports record count and time span, counts by level and by logger, and the most frequent distinct messages with their newest occurrence. Distinctness is computed after normalising timestamps, durations, ids and paths, so ninety occurrences of one failing request read as one problem rather than ninety. Reach for this first on any log bigger than a screen; `grep` after, once you know what you are looking for.
+
+### `system_diagnose`
+
+_"Is this machine healthy?"_ in one call: GPU and CUDA, whether Whisper and Kokoro can reach the GPU, Ollama reachability **and which models are really installed**, the last recorded provider probe per role with its age, open circuit breakers, the last scheduler run per job, and free disk.
+
+Two things it deliberately does not do. It never remediates — it reports, and what to do about a finding is the operator's call. And it never calls out: everything comes from local files and localhost, so it costs nothing and can be run freely. Consequences worth holding: acceleration reflects installed capability, not the execution provider a live model session actually received, and provider health is the last *recorded* probe rather than a live one — which is why the report states each probe's age.
+
+A failed Ollama fetch and a genuinely missing model are reported as **different** states with different remedies. Do not collapse them when relaying the result.
+
 ### `pdf_read`
 
 Local PDFs in the repo or under `Research/`. Page-range for large docs (e.g. `"pages": "1-10"`). Capped at 50 pages / 120k chars per call — request another range if you need more.

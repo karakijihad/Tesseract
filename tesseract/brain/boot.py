@@ -37,6 +37,9 @@ from tesseract.config.loader import (
     ResolvedRef,
     RoleConfig,
     load_config,
+    require_field as _require,
+    resolve_output_cap,
+    resolve_temperature,
 )
 from tesseract.kernel.adapters.anthropic import AnthropicAdapter
 from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
@@ -71,6 +74,8 @@ from tesseract.kernel.tools.file_transfer import FileCopyTool, FileMoveTool
 from tesseract.kernel.tools.file_write import FileWriteTool
 from tesseract.kernel.tools.glob_tool import GlobTool
 from tesseract.kernel.tools.grep_tool import GrepTool
+from tesseract.kernel.tools.log_triage import LogTriageTool
+from tesseract.kernel.tools.system_diagnose import SystemDiagnoseTool
 from tesseract.kernel.tools.channel_history import ChannelHistoryReadTool
 from tesseract.kernel.tools.channel_send import (
     ChannelReactTool,
@@ -306,7 +311,7 @@ class ChatBrainConfig:
     provider: str
     model: str
     tier: str
-    temperature: float
+    temperature: float | None
     max_output_tokens: int
     context_window: int
     reasoning_effort: str
@@ -323,13 +328,8 @@ class ChatBrainConfig:
     ref: ResolvedRef
     tool_iteration_cap: int
     consecutive_error_cap: int
-
-
-def _require(d: dict, key: str, where: str):
-    """Fetch `key` from `d`; raise RuntimeError naming the location on miss."""
-    if key not in d:
-        raise RuntimeError(f"missing required key '{key}' in {where}")
-    return d[key]
+    # Per-model catalog quirk; absence means stream. See `AdapterOptions.stream`.
+    stream: bool = True
 
 
 def _provider_cfg_dict(ref: ResolvedRef) -> dict:
@@ -359,32 +359,41 @@ def _chat_brain_from_ref(
 ) -> ChatBrainConfig:
     """Build a ChatBrainConfig from a resolved ref, layering role overrides.
 
-    Required model fields (temperature, max_output_tokens, context_window,
-    reasoning_effort, knowledge_cutoff, use_responses_api) come from the
-    catalog. Role-level *_override keys (e.g. ``reasoning_effort_override``,
-    ``max_output_tokens_override``) replace the catalog default. Compact
-    knobs (``compact_threshold``, ``keep_recent_turns``) live only on the
-    role.
+    Model fields come from the catalog; role-level *_override keys (e.g.
+    ``reasoning_effort_override``, ``max_output_tokens_override``) replace the
+    catalog value. Compact knobs (``compact_threshold``,
+    ``keep_recent_turns``) live only on the role.
+
+    `context_window` is required. `temperature` is not: an entry that declares
+    none is saying the model takes none — `cli.claude.opus_5` and
+    `api.anthropic.opus_5` both do — and adapters omit the field rather than
+    invent a value. The output cap is resolved through the same helper the
+    scheduler uses, so `max_output_ratio` is accepted here too. Those two
+    consumers previously disagreed: pointing `chat_brain` at a CLI ref raised
+    at boot while the identical ref built fine for a scheduler job.
     """
     fields = ref.model.fields
+    _where_ref = f"{where} {ref.ref}"
     eff_reasoning = role_overrides.get(
         "reasoning_effort_override",
         fields.get("reasoning_effort", "none"),
     )
+    context_window = int(_require(fields, "context_window", _where_ref))
     eff_max_out = int(role_overrides.get(
         "max_output_tokens_override",
-        _require(fields, "max_output_tokens", f"{where} {ref.ref}"),
+        resolve_output_cap(fields, context_window, _where_ref),
     ))
     return ChatBrainConfig(
         provider=ref.connection.name,
         model=ref.model.model,
         tier=ref.connection.tier,
-        temperature=float(_require(fields, "temperature", f"{where} {ref.ref}")),
+        temperature=resolve_temperature(fields),
         max_output_tokens=eff_max_out,
-        context_window=int(_require(fields, "context_window", f"{where} {ref.ref}")),
+        context_window=context_window,
         reasoning_effort=str(eff_reasoning),
         knowledge_cutoff=str(fields.get("knowledge_cutoff", "")),
         use_responses_api=bool(fields.get("use_responses_api", False)),
+        stream=bool(fields.get("stream", True)),
         compact_threshold=float(role_overrides.get("compact_threshold", 0.5)),
         keep_recent_turns=int(role_overrides.get("keep_recent_turns", 10)),
         head_anchor_messages=int(role_overrides.get("head_anchor_messages", 3)),
@@ -848,6 +857,7 @@ def adapter_options_from_chat_brain(cfg: ChatBrainConfig) -> AdapterOptions:
         reasoning_effort=cfg.reasoning_effort,
         knowledge_cutoff=cfg.knowledge_cutoff,
         use_responses_api=cfg.use_responses_api,
+        stream=cfg.stream,
         extra=extra,
     )
 
@@ -1182,22 +1192,28 @@ def build_observer(cost_ledger: CostLedger | None = None) -> Observer | None:
         except RuntimeError as exc:
             logger.info("observer: cannot build %s — %s", ref.ref, exc)
             continue
-        entry = {
-            "provider": ref.connection.name,
-            "tier": ref.connection.tier,
-            "model": ref.model.model,
-            "use_responses_api": bool(ref.model.fields.get("use_responses_api", False)),
-            "context_window": ref.model.fields.get("context_window"),
-            "max_output_tokens": int(overrides.get(
-                "max_output_tokens_override",
-                ref.model.fields.get("max_output_tokens", 2048),
-            )),
-            "temperature": ref.model.fields.get("temperature", 0.7),
-            "reasoning_effort": str(overrides.get(
-                "reasoning_effort_override",
-                ref.model.fields.get("reasoning_effort", "low"),
-            )),
-        }
+        _where = f"providers.yaml entry for {ref.ref}"
+        try:
+            entry = {
+                "provider": ref.connection.name,
+                "tier": ref.connection.tier,
+                "model": ref.model.model,
+                "use_responses_api": bool(ref.model.fields.get("use_responses_api", False)),
+                "stream": bool(ref.model.fields.get("stream", True)),
+                "context_window": int(_require(ref.model.fields, "context_window", _where)),
+                "max_output_tokens": int(overrides.get(
+                    "max_output_tokens_override",
+                    _require(ref.model.fields, "max_output_tokens", _where),
+                )),
+                "temperature": float(_require(ref.model.fields, "temperature", _where)),
+                "reasoning_effort": str(overrides.get(
+                    "reasoning_effort_override",
+                    ref.model.fields.get("reasoning_effort", "low"),
+                )),
+            }
+        except ConfigError as exc:
+            logger.warning("observer: skipping %s — %s", ref.ref, exc)
+            continue
         provider_cfg = _provider_cfg_dict(ref)
         try:
             observer = build_observer_from_config(
@@ -2018,6 +2034,8 @@ def build_tool_registry(
     registry.register(FileReadTool())
     registry.register(GlobTool())
     registry.register(GrepTool())
+    registry.register(LogTriageTool())
+    registry.register(SystemDiagnoseTool())
     registry.register(FileWriteTool())
     registry.register(FileCopyTool())
     registry.register(FileMoveTool())

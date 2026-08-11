@@ -341,6 +341,20 @@ jobs:
   # processes, pytest scratch dirs, stale controller sessions, aged lane
   # archives. Kill policy fixed in janitor code (fingerprint AND orphan);
   # targets in config/janitor.yaml. Also runs at every supervisor boot.
+  # Worker liveness (P9 item 2) — a worker in a non-terminal status whose
+  # heartbeat has gone stale is announced on the pulse while the app is
+  # running, instead of waiting for the next boot's recovery scan to report
+  # that it died hours ago. Read-only: recovery still owns status changes.
+  - name: worker_liveness
+    cadence: "*/5 * * * *"         # every 5 min — staleness threshold is 90s; operator-tunable via this cron only
+    handler: tesseract.scheduler.tasks.worker_liveness.WorkerLivenessJob
+    enabled: true
+    on_failure: log
+    retry_policy:
+      max_retries: 0
+      backoff_seconds: 0
+    config: {}
+
   - name: janitor_sweep
     cadence: "30 4 * * *"          # 04:30 local — nightly, before the day starts
     handler: tesseract.scheduler.tasks.janitor_sweep.JanitorSweepJob

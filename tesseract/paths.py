@@ -110,6 +110,10 @@ _RUNTIME_LOG_DIRS = frozenset(
     {
         "audit", "circuit-breakers", "supervisor", "janitor", "provider-health",
         "tokenjuice", "governor",
+        # One file per boot, named for its boot id. Machine ops: which run of
+        # this process on this machine said what. Never synced — a per-launch
+        # file travelling to the other PC is noise, not history.
+        "backend",
     }
 )
 

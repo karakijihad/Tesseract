@@ -33,6 +33,12 @@ logger = logging.getLogger(__name__)
 
 _BACKOFF_BASE = 1.0
 
+# Stop reasons meaning the message was cut off mid-generation, as opposed to
+# declined (`refusal`) or completed. Only these justify discarding a tool call
+# whose arguments failed to parse — everywhere else, malformed JSON is the
+# model's mistake and is passed through for the tool to reject.
+_TRUNCATING_STOP_REASONS = frozenset({"max_tokens"})
+
 
 class AnthropicAdapter(ModelAdapter):
     """Async streaming adapter against the Anthropic Messages API.
@@ -76,8 +82,12 @@ class AnthropicAdapter(ModelAdapter):
             "model": opts.model,
             "messages": msg_list,
             "max_tokens": opts.max_output_tokens,
-            "temperature": opts.temperature,
         }
+        # Omitted, not defaulted: `api.anthropic.opus_5` declares no
+        # temperature because that generation rejects the sampling parameters
+        # outright. Sending one would 400 the request.
+        if opts.temperature is not None:
+            kwargs["temperature"] = opts.temperature
         if system:
             # System prompt as a single cache-controlled block — identical
             # system text across requests hits the prompt cache.
@@ -130,6 +140,9 @@ class AnthropicAdapter(ModelAdapter):
     async def _do_stream(self, kwargs: dict[str, Any]) -> AsyncGenerator[StreamChunk, None]:
         # tool block accumulator: content-block index → ToolCall in progress
         tool_acc: dict[int, dict[str, Any]] = {}
+        # Closed tool blocks, held until the stop reason arrives — see
+        # `content_block_stop` below.
+        finalized: list[dict[str, Any]] = []
         usage_raw: dict[str, int] = {}
         stop_reason = "end_turn"
 
@@ -179,22 +192,26 @@ class AnthropicAdapter(ModelAdapter):
                     idx = getattr(event, "index", -1)
                     acc = tool_acc.pop(idx, None)
                     if acc is not None:
-                        try:
-                            import json
-                            parsed = json.loads(acc["args"]) if acc["args"] else {}
-                        except json.JSONDecodeError:
-                            parsed = {"raw": acc["args"]}
-                        yield StreamChunk(
-                            type=ChunkType.TOOL_CALL_END,
-                            tool_call_id=acc["id"],
-                            tool_call=ToolCall(id=acc["id"], name=acc["name"], input=parsed),
-                        )
+                        # Held rather than emitted. Anthropic sends the stop
+                        # reason in `message_delta`, which arrives AFTER every
+                        # content block has closed — so at this point we cannot
+                        # yet tell a finished tool call from one whose arguments
+                        # were cut off. Emitting here handed the tool loop
+                        # `{"raw": "{\"path\": \"C:/Us"}` to execute.
+                        finalized.append(acc)
 
                 elif etype == "message_delta":
                     delta = getattr(event, "delta", None)
                     sr = getattr(delta, "stop_reason", None) if delta else None
                     if sr:
-                        stop_reason = "tool_use" if sr == "tool_use" else "end_turn"
+                        # `tool_use` and `end_turn` are the clean endings and
+                        # keep their normalised names. Everything else
+                        # (`max_tokens`, `stop_sequence`, `refusal`) passes
+                        # through verbatim — collapsing those to `end_turn`
+                        # told the tool loop a truncated response had
+                        # finished, which is how a cut-off turn came back
+                        # indistinguishable from a complete one.
+                        stop_reason = "tool_use" if sr == "tool_use" else str(sr)
                     usage = getattr(event, "usage", None)
                     if usage:
                         out_tokens = getattr(usage, "output_tokens", None)
@@ -221,6 +238,32 @@ class AnthropicAdapter(ModelAdapter):
                             usage_raw["cached_tokens"] = cached
                         if cache_create_raw is not None:
                             usage_raw["cache_creation_tokens"] = int(cache_create_raw)
+
+        # Tool calls are released here, once `stop_reason` is known. A call
+        # whose arguments are unparseable AND whose message was truncated was
+        # cut off mid-JSON: those arguments are unfinished, not malformed, and
+        # executing them runs a tool on a fragment of its own input. Dropping
+        # it leaves the response tool-less, so the chat loop sees the truncated
+        # stop and retries. Unparseable JSON on a clean stop is the model's
+        # mistake and still goes through for the tool to reject.
+        truncated = stop_reason.strip().lower() in _TRUNCATING_STOP_REASONS
+        for acc in finalized:
+            try:
+                parsed = json.loads(acc["args"]) if acc["args"] else {}
+            except json.JSONDecodeError:
+                if truncated:
+                    logger.warning(
+                        "anthropic: dropping tool call %r — arguments cut off by "
+                        "stop_reason=%s (%d chars accumulated)",
+                        acc["name"], stop_reason, len(acc["args"]),
+                    )
+                    continue
+                parsed = {"raw": acc["args"]}
+            yield StreamChunk(
+                type=ChunkType.TOOL_CALL_END,
+                tool_call_id=acc["id"],
+                tool_call=ToolCall(id=acc["id"], name=acc["name"], input=parsed),
+            )
 
         yield StreamChunk(type=ChunkType.STOP, stop_reason=stop_reason, raw={"usage": usage_raw})
 

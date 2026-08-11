@@ -77,6 +77,15 @@ class TurnState:
     tts_sequence: int = 0
     tts_synth_task: asyncio.Task | None = None
     tts_failure_notified: bool = False
+    # Voice-latency legs, per turn for the same reason as everything above it.
+    # `voice_commit_at` is handed over from ``ServerSession`` when this turn
+    # claims the pending commit — end of speech happens before any turn exists,
+    # so the session carries it exactly that far and no further. Claiming it
+    # empties the session slot, so a barge-in turn and the turn it interrupted
+    # cannot report each other's timings.
+    voice_commit_at: float | None = None
+    voice_turn_started_at: float | None = None
+    voice_first_speakable_at: float | None = None
 
 
 # Per-task ContextVar holding the active turn's mutable state.

@@ -32,6 +32,12 @@ logger = logging.getLogger(__name__)
 
 _BACKOFF_BASE = 1.0
 
+# Finish reasons that mean the response was cut off mid-generation, as opposed
+# to declined (`content_filter`) or completed. Only these justify discarding a
+# tool call whose arguments failed to parse — everywhere else, malformed JSON
+# is the model's mistake and is passed through for the tool to reject.
+_TRUNCATING_FINISH_REASONS = frozenset({"length"})
+
 _RESPONSES_HARD_CODES = frozenset({
     "invalid_request_error",
     "invalid_api_key",
@@ -50,6 +56,52 @@ _RESPONSES_TRANSIENT_CODES = frozenset({
     "timeout",
     "engine_overloaded",
 })
+
+
+def _usage_raw(usage: Any, in_field: str, out_field: str, details_field: str) -> dict[str, int]:
+    """Normalise a usage object into the shape STOP carries to the ledger.
+
+    Four call sites — streamed and one-shot, Chat Completions and Responses —
+    apply the same three rules to two different sets of field names. Kept in
+    one place so a correction lands on all four: the one-shot paths were added
+    by copying the streamed extraction, and a rule applied to one twin and
+    missed on the other is how the `TOOL_CALL_START` gap happened.
+    """
+    if not usage:
+        return {}
+    out = {
+        "input_tokens": getattr(usage, in_field, 0) or 0,
+        "output_tokens": getattr(usage, out_field, 0) or 0,
+    }
+    details = getattr(usage, details_field, None)
+    cached = getattr(details, "cached_tokens", None) if details else None
+    if cached is not None:
+        out["cached_tokens"] = int(cached)
+    return out
+
+
+def _chat_usage(usage: Any) -> dict[str, int]:
+    return _usage_raw(usage, "prompt_tokens", "completion_tokens", "prompt_tokens_details")
+
+
+def _responses_usage(usage: Any) -> dict[str, int]:
+    return _usage_raw(usage, "input_tokens", "output_tokens", "input_tokens_details")
+
+
+def _chat_stop_reason(finish_reason: str) -> str:
+    """Map a Chat Completions `finish_reason` onto our stop vocabulary.
+
+    `tool_calls` and `stop` are the clean endings and get normalised names.
+    Everything else (`length`, `content_filter`) passes through verbatim —
+    collapsing those to `end_turn` told the tool loop a truncated response had
+    finished, which is how a cut-off turn came back indistinguishable from a
+    complete one.
+    """
+    if finish_reason == "tool_calls":
+        return "tool_use"
+    if finish_reason in ("stop", ""):
+        return "end_turn"
+    return finish_reason
 
 
 def _classify_responses_error_code(code: str | None, msg: str) -> ErrorKind:
@@ -155,10 +207,15 @@ class OpenAIAdapter(ModelAdapter):
             "model": opts.model,
             "messages": clean_messages,
             "max_completion_tokens": opts.max_output_tokens,
-            "temperature": opts.temperature,
-            "stream": True,
+            "stream": opts.stream,
         }
-        if self._supports_stream_usage:
+        # See `AdapterOptions.temperature` — absent in the catalog means the
+        # model does not take one, so the key is omitted rather than invented.
+        if opts.temperature is not None:
+            kwargs["temperature"] = opts.temperature
+        # Streaming-only param: sending it on a non-streamed request is a 400
+        # on spec-faithful providers.
+        if opts.stream and self._supports_stream_usage:
             kwargs["stream_options"] = {"include_usage": True}
         if tools:
             kwargs["tools"] = [
@@ -188,7 +245,8 @@ class OpenAIAdapter(ModelAdapter):
         last_error: Exception | None = None
         for attempt in range(self.max_retries):
             try:
-                async for chunk in self._do_stream(kwargs):
+                producer = self._do_stream if opts.stream else self._do_request
+                async for chunk in producer(kwargs):
                     yield chunk
                 return
             except Exception as e:
@@ -216,6 +274,69 @@ class OpenAIAdapter(ModelAdapter):
             error_kind=classify_exception(last_error) if last_error else ErrorKind.TRANSIENT,
         )
 
+    async def _do_request(self, kwargs: dict[str, Any]) -> AsyncGenerator[StreamChunk, None]:
+        """One-shot Chat Completions, yielding the same chunk contract as the
+        streamed path so nothing downstream can tell the difference.
+
+        Truncation is classified from `finish_reason` exactly as the streamed
+        path does, and a tool call cut off mid-JSON is dropped rather than
+        executed on a fragment of its own arguments.
+        """
+        resp = await self.client.chat.completions.create(**kwargs)
+
+        usage_raw = _chat_usage(getattr(resp, "usage", None))
+
+        choice = resp.choices[0] if resp.choices else None
+        message = getattr(choice, "message", None) if choice else None
+
+        if message is not None:
+            reasoning = (
+                getattr(message, "reasoning_content", None)
+                or getattr(message, "reasoning", None)
+            )
+            if isinstance(reasoning, str) and reasoning:
+                yield StreamChunk(type=ChunkType.THINKING, thinking=reasoning)
+            if message.content:
+                yield StreamChunk(type=ChunkType.TEXT, text=message.content)
+
+        _finish = str(getattr(choice, "finish_reason", "") or "") if choice else ""
+        stop_reason = _chat_stop_reason(_finish)
+
+        for tc in (getattr(message, "tool_calls", None) or []) if message else []:
+            fn = getattr(tc, "function", None)
+            raw_args = getattr(fn, "arguments", "") or ""
+            try:
+                parsed = json.loads(raw_args) if raw_args else {}
+            except json.JSONDecodeError:
+                if _finish in _TRUNCATING_FINISH_REASONS:
+                    logger.warning(
+                        "openai: dropping tool call %r — arguments cut off by "
+                        "finish_reason=%s (%d chars)",
+                        getattr(fn, "name", ""), _finish, len(raw_args),
+                    )
+                    continue
+                parsed = {"raw": raw_args}
+            call = ToolCall(id=tc.id, name=getattr(fn, "name", ""), input=parsed)
+            # START before END even with no deltas between them: consumers key
+            # off START to capture a call at all (`session_ops._reflect`), and
+            # the streamed paths, Gemini and Anthropic all pair them.
+            yield StreamChunk(
+                type=ChunkType.TOOL_CALL_START,
+                tool_call_id=tc.id,
+                tool_call=call,
+            )
+            yield StreamChunk(
+                type=ChunkType.TOOL_CALL_END,
+                tool_call_id=tc.id,
+                tool_call=call,
+            )
+
+        yield StreamChunk(
+            type=ChunkType.STOP,
+            stop_reason=stop_reason or "end_turn",
+            raw={"usage": usage_raw},
+        )
+
     async def _do_stream(self, kwargs: dict[str, Any]) -> AsyncGenerator[StreamChunk, None]:
         tool_calls_acc: dict[int, dict[str, str]] = {}
         usage_raw: dict[str, int] = {}
@@ -229,14 +350,7 @@ class OpenAIAdapter(ModelAdapter):
             # empty-choice skip below. NIM instead attaches it to the
             # finish_reason chunk; both shapes land here. Last non-empty wins.
             if chunk.usage:
-                usage_raw = {
-                    "input_tokens": chunk.usage.prompt_tokens,
-                    "output_tokens": chunk.usage.completion_tokens,
-                }
-                details = getattr(chunk.usage, "prompt_tokens_details", None)
-                cached = getattr(details, "cached_tokens", None) if details else None
-                if cached is not None:
-                    usage_raw["cached_tokens"] = int(cached)
+                usage_raw = _chat_usage(chunk.usage)
 
             choice = chunk.choices[0] if chunk.choices else None
             if not choice:
@@ -287,10 +401,32 @@ class OpenAIAdapter(ModelAdapter):
                             )
 
             if choice.finish_reason:
+                # `tool_calls` and `stop` are the clean endings and keep their
+                # normalised names. Everything else (`length`,
+                # `content_filter`) passes through verbatim — collapsing those
+                # to `end_turn` told the tool loop a truncated response had
+                # finished, which is how a cut-off turn came back
+                # indistinguishable from a complete one.
+                _finish = str(choice.finish_reason or "")
+                stop_reason = _chat_stop_reason(_finish)
+
                 for acc in tool_calls_acc.values():
                     try:
                         parsed = json.loads(acc["arguments"]) if acc["arguments"] else {}
                     except json.JSONDecodeError:
+                        if _finish in _TRUNCATING_FINISH_REASONS:
+                            # Cut off mid-JSON: these arguments are not
+                            # malformed, they are unfinished. Handing them on as
+                            # `{"raw": ...}` executes a tool with a fragment of
+                            # its own input. Dropping the call leaves the
+                            # response tool-less, so the chat loop sees the
+                            # truncated stop and retries it instead.
+                            logger.warning(
+                                "openai: dropping tool call %r — arguments cut off by "
+                                "finish_reason=%s (%d chars accumulated)",
+                                acc["name"], _finish, len(acc["arguments"]),
+                            )
+                            continue
                         parsed = {"raw": acc["arguments"]}
                     yield StreamChunk(
                         type=ChunkType.TOOL_CALL_END,
@@ -298,7 +434,6 @@ class OpenAIAdapter(ModelAdapter):
                         tool_call=ToolCall(id=acc["id"], name=acc["name"], input=parsed),
                     )
                 tool_calls_acc.clear()
-                stop_reason = "tool_use" if choice.finish_reason == "tool_calls" else "end_turn"
 
         # STOP is deferred to stream end (NOT emitted at finish_reason):
         # with include_usage the usage chunk arrives AFTER the finish_reason
@@ -324,7 +459,7 @@ class OpenAIAdapter(ModelAdapter):
             "model": opts.model,
             "input": input_items,
             "max_output_tokens": opts.max_output_tokens,
-            "stream": True,
+            "stream": opts.stream,
             # stateless — we own history + reasoning stash. NOTE: `store` (and
             # the `include: reasoning.encrypted_content` below) are Responses-API-
             # only; an openai-COMPATIBLE provider (NIM, etc.) would 400 on them.
@@ -332,6 +467,12 @@ class OpenAIAdapter(ModelAdapter):
             # If a NIM model ever enables it, gate these like `prompt_cache_key`.
             "store": False,
         }
+        # The Responses API takes a temperature too, and this path was dropping
+        # the catalog's on the floor — invisible only because both entries that
+        # use it happen to declare 1.0, which is also the API default. Omitted
+        # when the entry declares none, as everywhere else.
+        if opts.temperature is not None:
+            kwargs["temperature"] = opts.temperature
         if instructions:
             kwargs["instructions"] = instructions
             if self._supports_prompt_cache_key:
@@ -358,7 +499,10 @@ class OpenAIAdapter(ModelAdapter):
         last_error: Exception | None = None
         for attempt in range(self.max_retries):
             try:
-                async for chunk in self._do_stream_responses(kwargs):
+                producer = (
+                    self._do_stream_responses if opts.stream else self._do_request_responses
+                )
+                async for chunk in producer(kwargs):
                     yield chunk
                 return
             except Exception as e:
@@ -386,9 +530,103 @@ class OpenAIAdapter(ModelAdapter):
             error_kind=classify_exception(last_error) if last_error else ErrorKind.TRANSIENT,
         )
 
+    async def _do_request_responses(self, kwargs: dict[str, Any]) -> AsyncGenerator[StreamChunk, None]:
+        """One-shot Responses call, yielding the streamed path's chunk contract.
+
+        Keeps every distinction the streamed path learned to make: a refusal
+        is text rather than silence, `status == "incomplete"` reports the
+        truncation reason instead of a clean `end_turn`, and encrypted
+        reasoning still round-trips as a REASONING_ITEM.
+        """
+        resp = await self.client.responses.create(**kwargs)
+
+        emitted_any_tool = False
+        for item in getattr(resp, "output", None) or []:
+            itype = getattr(item, "type", "")
+
+            if itype == "reasoning":
+                encrypted = getattr(item, "encrypted_content", None)
+                if encrypted:
+                    yield StreamChunk(
+                        type=ChunkType.REASONING_ITEM,
+                        raw={"item": {
+                            "type": "reasoning",
+                            "id": getattr(item, "id", ""),
+                            "encrypted_content": encrypted,
+                        }},
+                    )
+
+            elif itype == "message":
+                for part in getattr(item, "content", None) or []:
+                    ptype = getattr(part, "type", "")
+                    if ptype == "output_text":
+                        text = getattr(part, "text", "")
+                        if text:
+                            yield StreamChunk(type=ChunkType.TEXT, text=text)
+                    elif ptype == "refusal":
+                        refusal = getattr(part, "refusal", "")
+                        if refusal:
+                            yield StreamChunk(type=ChunkType.TEXT, text=str(refusal))
+
+            elif itype == "function_call":
+                call_id = getattr(item, "call_id", "") or getattr(item, "id", "")
+                name = getattr(item, "name", "") or ""
+                raw_args = getattr(item, "arguments", "") or ""
+                emitted_any_tool = True
+                try:
+                    parsed = json.loads(raw_args) if raw_args else {}
+                except json.JSONDecodeError:
+                    parsed = {"raw": raw_args}
+                call = ToolCall(id=call_id, name=name, input=parsed)
+                # START before END — see `_do_request` for why the pair matters.
+                yield StreamChunk(
+                    type=ChunkType.TOOL_CALL_START,
+                    tool_call_id=call_id,
+                    tool_call=call,
+                )
+                yield StreamChunk(
+                    type=ChunkType.TOOL_CALL_END,
+                    tool_call_id=call_id,
+                    tool_call=call,
+                )
+
+        usage_raw = _responses_usage(getattr(resp, "usage", None))
+
+        status = str(getattr(resp, "status", "") or "")
+
+        # A failed Responses call comes back as HTTP 200 carrying
+        # `status: "failed"` and an `error` object, so the SDK never raises and
+        # the retry loop above never sees it. Without this branch the response
+        # fell through to `end_turn`: no text, no ERROR, and — because STOP is
+        # a committed chunk — `FallbackAdapter` recorded the turn as a SUCCESS,
+        # resetting the breaker instead of retrying or advancing. That is the
+        # silent turn P12 closed, reopened on a path that had no handler yet.
+        if status in ("failed", "cancelled"):
+            err_obj = getattr(resp, "error", None)
+            msg = (
+                getattr(err_obj, "message", None)
+                or f"Responses call ended with status={status}"
+            )
+            code = getattr(err_obj, "code", None)
+            yield StreamChunk(
+                type=ChunkType.ERROR,
+                error=f"OpenAI Responses error: {msg}",
+                error_kind=_classify_responses_error_code(code, str(msg)),
+            )
+            return
+
+        if status == "incomplete":
+            incomplete = getattr(resp, "incomplete_details", None)
+            reason = getattr(incomplete, "reason", None) if incomplete else None
+            stop = str(reason) if reason else "incomplete"
+        else:
+            stop = "tool_use" if emitted_any_tool else "end_turn"
+        yield StreamChunk(type=ChunkType.STOP, stop_reason=stop, raw={"usage": usage_raw})
+
     async def _do_stream_responses(self, kwargs: dict[str, Any]) -> AsyncGenerator[StreamChunk, None]:
         tool_acc: dict[str, dict[str, str]] = {}  # item_id → {call_id, name, args}
         emitted_any_tool = False
+        refusal_streamed = False
 
         stream = await self.client.responses.create(**kwargs)
         async for event in stream:
@@ -396,6 +634,25 @@ class OpenAIAdapter(ModelAdapter):
 
             if t == "response.output_text.delta":
                 yield StreamChunk(type=ChunkType.TEXT, text=getattr(event, "delta", ""))
+
+            # A refusal arrives on its own channel, not as output text. With no
+            # handler the stream carried no text at all and the response still
+            # completed cleanly, so the turn ended with an empty bubble and no
+            # explanation — the same silence this phase exists to remove, on a
+            # path the chat loop cannot distinguish from a deliberate one.
+            elif t == "response.refusal.delta":
+                delta = getattr(event, "delta", "")
+                if delta:
+                    refusal_streamed = True
+                    yield StreamChunk(type=ChunkType.TEXT, text=delta)
+
+            elif t == "response.refusal.done":
+                # Only when nothing streamed — `done` repeats the full text,
+                # and emitting both would print the refusal twice.
+                if not refusal_streamed:
+                    refusal = getattr(event, "refusal", "")
+                    if refusal:
+                        yield StreamChunk(type=ChunkType.TEXT, text=str(refusal))
 
             elif t == "response.output_item.added":
                 item = getattr(event, "item", None)
@@ -455,20 +712,22 @@ class OpenAIAdapter(ModelAdapter):
                             }},
                         )
 
-            elif t == "response.completed":
+            # `response.incomplete` is the Responses-API truncation event —
+            # the model hit `max_output_tokens` or a content filter mid-answer.
+            # It was previously unhandled, so a truncated stream emitted no
+            # STOP at all and the tool loop simply ran out of chunks: a turn
+            # that was cut off looked exactly like a turn that finished.
+            elif t in ("response.completed", "response.incomplete"):
                 resp = getattr(event, "response", None)
-                usage_raw: dict[str, int] = {}
-                if resp is not None and getattr(resp, "usage", None):
-                    u = resp.usage
-                    usage_raw = {
-                        "input_tokens": getattr(u, "input_tokens", 0) or 0,
-                        "output_tokens": getattr(u, "output_tokens", 0) or 0,
-                    }
-                    details = getattr(u, "input_tokens_details", None)
-                    cached = getattr(details, "cached_tokens", None) if details else None
-                    if cached is not None:
-                        usage_raw["cached_tokens"] = int(cached)
-                stop = "tool_use" if emitted_any_tool else "end_turn"
+                usage_raw = _responses_usage(
+                    getattr(resp, "usage", None) if resp is not None else None
+                )
+                if t == "response.incomplete":
+                    incomplete = getattr(resp, "incomplete_details", None) if resp else None
+                    reason = getattr(incomplete, "reason", None) if incomplete else None
+                    stop = str(reason) if reason else "incomplete"
+                else:
+                    stop = "tool_use" if emitted_any_tool else "end_turn"
                 yield StreamChunk(type=ChunkType.STOP, stop_reason=stop, raw={"usage": usage_raw})
 
             elif t in ("response.failed", "error"):

@@ -61,10 +61,11 @@ def map(event: AutonomyEvent) -> list[AgendaItemDraft]:
     if long_dwell:
         dwell_seconds = float(payload.get("dwell_seconds") or 0.0)
         prev_view = str(payload.get("prev_view") or "").strip() or "(unknown)"
-        goal = (
-            f"summarise recent activity on the '{prev_view}' view "
-            f"(operator dwelt ≥{int(dwell_seconds)}s before moving on)"
-        )
+        # The goal is an identity, not a reading. Baking the dwell into it
+        # made every emission a unique string, so the exact-goal dedupe could
+        # never match and five near-identical items reached the live agenda.
+        # The measurement belongs in `rationale`, which already carries it.
+        goal = f"summarise recent activity on the '{prev_view}' view"
         rationale = (
             f"long_dwell trigger — prev_view={prev_view} dwell={dwell_seconds:.1f}s "
             f"now_on={view}"
@@ -82,10 +83,10 @@ def map(event: AutonomyEvent) -> list[AgendaItemDraft]:
     if repeat_switch_actionable:
         switch_count = int(payload.get("switch_count_today") or 0)
         failure_summary = str(payload.get("failure_summary") or "").strip()
-        goal = (
-            f"address ongoing issue on '{view}' "
-            f"(operator returned {switch_count}× today; view shows active failure)"
-        )
+        # Same rule as the dwell goal above: `switch_count` climbs on every
+        # emission, so embedding it would defeat the exact-goal dedupe the
+        # same way. It is already in the rationale below.
+        goal = f"address ongoing issue on '{view}'"
         rationale_parts = [
             f"repeat_switch+failure trigger — view={view}",
             f"switch_count_today={switch_count}",

@@ -4,8 +4,8 @@ The supervisor spawns the Mirror backend and the agent controller with
 inherited console streams (deliberate — CTRL_BREAK shutdown semantics,
 see ``supervisor/daemon.py``), so ``logging.basicConfig`` output vanishes
 with the console and a crash-respawn eats the evidence. This module gives
-each process a durable rotating file under ``<TESSERACT_HOME>/logs/``
-without touching the console handler.
+each process durable rotating files under ``runtime/logs/`` without
+touching the console handler — one per boot, plus a rolling aggregate.
 
 Config lives in ``tesseract/config/mirror.yaml::logging`` (single source
 of truth — missing keys raise at boot). ``file_min_levels`` sets
@@ -20,7 +20,6 @@ the assistant down. Config errors are fail-loud, per project rule.
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -28,7 +27,8 @@ from typing import Any, Mapping
 
 import yaml
 
-from tesseract.paths import CONFIG_DIR, TESSERACT_HOME
+from tesseract.bootid import current_boot_id
+from tesseract.paths import CONFIG_DIR, log_dir, runtime_logs_root
 
 MIRROR_YAML = CONFIG_DIR / "mirror.yaml"
 
@@ -95,16 +95,12 @@ def load_logging_config(path: Path = MIRROR_YAML) -> dict[str, Any]:
     }
 
 
-def attach_file_logging(process: str, *, config_path: Path = MIRROR_YAML) -> Path | None:
-    """Attach a rotating ``<TESSERACT_HOME>/<dir>/<process>.log`` handler to
-    the root logger. Call once at process start, after ``basicConfig``.
+def _rotating_handler(path: Path, cfg: Mapping[str, Any]) -> RotatingFileHandler | None:
+    """A configured handler at ``path``, or ``None`` if it cannot be opened.
 
-    Returns the log path, or ``None`` when the file could not be opened
-    (fail-soft: the process keeps running on console logging alone).
+    Fail-soft by design: losing a log file must never stop the process that
+    was trying to write it.
     """
-    cfg = load_logging_config(config_path)
-    home = Path(os.environ.get("TESSERACT_HOME") or TESSERACT_HOME).resolve()
-    path = home / cfg["dir"] / f"{process}.log"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         handler = RotatingFileHandler(
@@ -115,15 +111,60 @@ def attach_file_logging(process: str, *, config_path: Path = MIRROR_YAML) -> Pat
         )
     except OSError:
         logging.getLogger(__name__).exception(
-            "file logging unavailable at %s — continuing on console only", path
+            "file logging unavailable at %s — continuing without it", path
         )
         return None
     handler.setFormatter(logging.Formatter(_FORMAT))
     if cfg["file_min_levels"]:
         handler.addFilter(_PerLoggerFloorFilter(cfg["file_min_levels"]))
-    logging.getLogger().addHandler(handler)
-    logging.getLogger(__name__).info("file logging armed at %s", path)
-    return path
+    return handler
+
+
+def boot_log_path(process: str) -> Path:
+    """Where this process's per-boot log lives, without opening it.
+
+    ``runtime/logs/backend/<process>-<boot id>.log``. The boot id leads with
+    ``YYYYMMDDTHHMMSS``, so a plain name sort puts the newest run last and
+    "which file is this run" is answerable from outside the process.
+    """
+    return log_dir("backend") / f"{process}-{current_boot_id()}.log"
+
+
+def attach_file_logging(process: str, *, config_path: Path = MIRROR_YAML) -> Path | None:
+    """Attach this process's file logging. Call once at start, after
+    ``basicConfig``.
+
+    Two handlers, because they answer different questions:
+
+    * ``runtime/logs/backend/<process>-<boot id>.log`` — THIS run, whole and
+      uninterleaved. What "show me that launch" needs.
+    * ``runtime/logs/<process>.log`` — the rolling aggregate across boots,
+      kept as the backstop it has always been. Size rotation bounds both.
+
+    Returns the per-boot path (``None`` if it could not be opened), which is
+    the one a caller wants to name.
+    """
+    cfg = load_logging_config(config_path)
+    root = logging.getLogger()
+
+    # `runtime/`, not `home/`: these are machine ops. `migrate_install_layout`
+    # has classified them that way since the split shipped, but this function
+    # built its path from TESSERACT_HOME directly and so recreated the file on
+    # the home side after every migration — putting machine-ops logs on the
+    # SYNCED side of the boundary that `paths.log_dir` exists to hold.
+    aggregate = runtime_logs_root() / f"{process}.log"
+    if (handler := _rotating_handler(aggregate, cfg)) is not None:
+        root.addHandler(handler)
+
+    per_boot = boot_log_path(process)
+    if (handler := _rotating_handler(per_boot, cfg)) is None:
+        logging.getLogger(__name__).info("file logging armed at %s", aggregate)
+        return None
+    root.addHandler(handler)
+    logging.getLogger(__name__).info(
+        "file logging armed — this boot at %s, aggregate at %s", per_boot, aggregate
+    )
+    return per_boot
 
 
 class _ProactorDisconnectFilter(logging.Filter):
@@ -158,6 +199,7 @@ def suppress_proactor_disconnect_noise() -> None:
 
 __all__ = [
     "attach_file_logging",
+    "boot_log_path",
     "load_logging_config",
     "suppress_proactor_disconnect_noise",
     "MIRROR_YAML",

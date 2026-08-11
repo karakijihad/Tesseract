@@ -10,6 +10,9 @@
 # Mid-turn failover is automatic. To swap a primary: edit `primary`. The Mirror
 # config watcher detects the change and calls `boot.rebuild_adapters` — no restart.
 #
+# A role may instead name a shared chain — `chain: <name>` in place of
+# `primary`/`fallbacks`, resolved against the `chains:` block below.
+#
 # Fresh-install defaults split across two keys, both listed in `.env.example`:
 #
 #   OPENAI_API_KEY   — `chat_brain`, the conversational layer. Required to
@@ -41,6 +44,37 @@ embeddings:
 # RRF order. Fetch: python -m tesseract.scripts.fetch_reranker_model
 reranker:
   primary: local.onnx_reranker.msmarco_minilm_l6
+
+# ─── Shared chains ──────────────────────────────────────────
+# A chain written once and named by many roles. `chain: <name>` on a role
+# replaces its `primary` + `fallbacks`: the first ref is the primary, the
+# rest are the fallbacks in order. Swapping a provider for every role on a
+# chain is then one edit here instead of one per role — which is the whole
+# point, so a role may not set `chain` AND its own primary/fallbacks. Pick
+# one; the loader refuses both and says so.
+#
+# A role is not obliged to use these. Anything with a reason of its own to
+# sit on a particular model writes its refs out — chat_brain, the CLI roles,
+# the delegation seats, image_generator and audio_transcribe all do.
+#
+# Naming: numbered on purpose. Any descriptive name — for the providers on
+# it, or for what it costs — is a claim that expires the moment you point the
+# chain somewhere else, and pointing it somewhere else is the reason it
+# exists. A number cannot go stale. What a chain is for is decided by the
+# roles that name it, and those you can read.
+#
+# Selecting a model in Settings edits ONE role, so the first such edit
+# rewrites that role's refs in place and drops its `chain:` key. The other
+# roles on the chain do not move.
+chains:
+  chain_1:
+    - api.nim.gpt_oss_120b
+    - api.google.gemini_36_flash
+    - api.openai.gpt56_luna
+  chain_2:
+    - api.google.gemini_36_flash
+    - api.nim.gpt_oss_120b
+    - api.openai.gpt56_luna
 
 # ─── Cognition roles ────────────────────────────────────────
 roles:
@@ -77,10 +111,7 @@ roles:
 
   observer_agent:
     mode: active
-    primary: api.nim.gpt_oss_120b
-    fallbacks:
-      - api.nim.glm_5_2
-      - api.openai.gpt56_luna
+    chain: chain_1
     reasoning_effort_override: low    # observer doesn't need multi-step planning
     max_output_tokens_override: 2048  # gemini fallback burns output tokens on internal thinking — 2048 leaves headroom for the ~200-token JSON envelope
     daily_budget_usd: 1.0
@@ -141,28 +172,19 @@ roles:
 
   agents_default:
     mode: active
-    primary: api.nim.gpt_oss_120b
-    fallbacks:
-      - api.nim.glm_5_2
-      - api.openai.gpt56_luna
+    chain: chain_2
     notes: >-
       Default model for sub-agents that don't pin one in agents/INDEX.md. Cheapest
       viable fit — agents that need more horsepower set their own.
 
   subagents_default:
     mode: active
-    primary: api.nim.gpt_oss_120b
-    fallbacks:
-      - api.nim.glm_5_2
-      - api.openai.gpt56_luna
+    chain: chain_2
     notes: "Default model for sub-sub-agents (delegates spawned by agents)."
 
   feedback_consolidator:
     mode: active
-    primary: api.nim.gpt_oss_120b
-    fallbacks:
-      - api.nim.glm_5_2
-      - api.openai.gpt56_luna
+    chain: chain_2
     daily_budget_usd: 0.50
     notes: >-
       Layer B/C of feedback durability — weekly consolidator + daily sweep both
@@ -171,10 +193,7 @@ roles:
 
   autonomy_heartbeat:
     mode: active
-    primary: api.nim.gpt_oss_120b
-    fallbacks:
-      - api.nim.glm_5_2
-      - api.openai.gpt56_luna
+    chain: chain_1
     daily_budget_usd: 0.50
     notes: >-
       Periodic self-reflection pass. Reads recent workspace events + memory
@@ -184,25 +203,18 @@ roles:
 
   autonomy_vetter:
     mode: active
-    primary: api.nim.gpt_oss_120b
-    fallbacks:
-      - api.openai.gpt56_luna
-      - api.nim.glm_5_2
-      - api.google.gemini_25_flash
+    chain: chain_2
     daily_budget_usd: 0.25
     notes: >-
       Agenda quality gate. Judges UNVETTED low-trust proposals in batches —
       promote/reject/merge with a 0-1 usefulness score. Reviewing/verifying is exactly
-      codex_cli's remit; to use a stronger auditor, swap primary to cli.codex.gpt55
-      or cli.claude.opus_48 (subscription CLI, no extra API key). Idle short-circuit
+      codex_cli's remit; to use a stronger auditor, swap primary to cli.codex.gpt56_terra
+      or cli.claude.opus_5 (subscription CLI, no extra API key). Idle short-circuit
       (no unvetted items → no model bill) keeps the cap ample.
 
   autonomy_scout:
     mode: active
-    primary: api.nim.gpt_oss_120b
-    fallbacks:
-      - api.nim.glm_5_2
-      - api.openai.gpt56_luna
+    chain: chain_1
     daily_budget_usd: 0.50
     notes: >-
       Identity-anchored discovery. Two LLM calls per run (query-gen, then evaluation)
@@ -212,10 +224,7 @@ roles:
 
   autonomy_strategist:
     mode: active
-    primary: api.nim.gpt_oss_120b
-    fallbacks:
-      - api.nim.glm_5_2
-      - api.openai.gpt56_luna
+    chain: chain_2
     daily_budget_usd: 0.25
     notes: >-
       Periodic initiative curator. Reads recent agenda outcomes, discovery leaves,
@@ -229,19 +238,17 @@ roles:
   # ─── Delegation roles ───────────────────────────────────────
   image_generator:
     mode: active
-    primary: api.nim.flux2_klein_4b
+    primary: api.google.gemini_31_flash_image
     fallbacks:
-      - api.nim.flux1_dev
       - api.xai.grok_imagine_image
     notes: >-
-      No chat key covers image generation — this role needs its own provider.
-      Least-friction default: NIM's free FLUX.2-klein (sign up for BUILD_NVIDIA_KEY
-      at build.nvidia.com — free developer tier, no payment method). Add XAI_API_KEY
-      and swap primary to api.xai.grok_imagine_image for higher-quality / image-to-image
-      generation (paid, per-image). The image_generate tool walks primary→fallbacks
-      and skips any entry whose catalog `capabilities` don't cover the requested op
-      — the FLUX entries are text-to-image only, so i2i requests only run once an
-      xai entry is reachable.
+      Both entries do text-to-image AND image-to-image, so the chain degrades on
+      availability rather than on capability. Gemini 3.1 Flash Image leads on prompt
+      adherence and legible in-image text; Grok Imagine sits behind it at roughly a
+      third the price. Primary rides GOOGLE_API_KEY, which the gemini cognition roles
+      already require, so image generation needs no additional key on a default
+      install — but it is PAID either way: there is no free image lane in the catalog
+      since the NIM FLUX entries were retired. Set XAI_API_KEY to arm the fallback.
 
   audio_transcribe:
     mode: active

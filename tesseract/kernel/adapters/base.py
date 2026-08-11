@@ -67,12 +67,24 @@ class AdapterOptions:
     provider: str = ""          # provider tag for the resolved entry (cli/ollama/anthropic/openai/google)
     role: str = ""              # role label from roles.yaml (e.g. "chat_brain")
     tier: str = "api"           # role-level tier (api / cli / local — derived from roles.yaml)
-    temperature: float = 0.7
+    # `None` means the catalog entry declares no temperature, which is a
+    # statement about the model rather than a missing value: the Claude Opus 5
+    # generation removed the sampling parameters and 400s on them. Adapters
+    # omit the field entirely when it is None — substituting a number here is
+    # what sent 0.7 to a model that only accepts its own default.
+    temperature: float | None = None
     max_output_tokens: int = 4096
     context_window: int = 32768
     reasoning_effort: str = ""  # OpenAI reasoning-effort field (model-agnostic)
     knowledge_cutoff: str = ""  # ISO date carried from roles.yaml — consumable by prompt builders
     use_responses_api: bool = False  # OpenAI only — prefer Responses API over Chat Completions
+    # Whether to request a streamed response. A per-model property of the
+    # catalog entry (`providers.yaml: stream: false`), not an adapter
+    # constant — the catalog already owns every other per-model quirk
+    # (`use_responses_api`, `reasoning_effort`). Absence means stream, which
+    # is what nearly every entry wants; set it false for an endpoint that
+    # serves the model reliably only in one shot.
+    stream: bool = True
     think: bool | None = None   # Ollama: enable interleaved thinking for models that support it
     keep_alive: str = ""        # Ollama: how long to keep model loaded (e.g. "30m", "1h", "0")
     extra: dict[str, Any] = field(default_factory=dict)

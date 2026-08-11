@@ -1,11 +1,10 @@
 """Image-generation role probe — text-to-image known-good call.
 
-Triggers ``image_generate`` with a high-contrast prompt and the explicit
-``cfg_scale=3.5`` that flux1-profile endpoints need (the 2026-05-17 FLUX
-patch; flux2-profile bodies drop cfg_scale and clamp steps). Healthy
-responses return a JPEG/PNG/WebP of at least the
-``_UNIFORM_IMAGE_BYTE_FLOOR`` size; smaller payloads come back from the
-tool as ``is_error=True`` with the uniform-image message, which the
+Triggers ``image_generate`` with a high-contrast prompt and a pinned
+square frame, so a drifting endpoint is the only thing that can change
+the result shape. Healthy responses return a JPEG/PNG/WebP of at least
+the ``_UNIFORM_IMAGE_BYTE_FLOOR`` size; smaller payloads come back from
+the tool as ``is_error=True`` with the uniform-image message, which the
 probe maps to ``drift_kind="uniform_output"``.
 """
 
@@ -44,10 +43,7 @@ class ImageRoleProbe:
         inp = ImageGenerateInput(
             prompt=_KNOWN_GOOD_PROMPT,
             model_role=role_name,
-            steps=10,
-            cfg_scale=3.5,
-            width=512,
-            height=512,
+            aspect_ratio="1:1",
         )
         return await _run_probe(self._tool, inp, ctx, role_name, ref)
 
@@ -107,7 +103,7 @@ def _classify_image_error(output: str, metadata: dict[str, Any]) -> str:
     """Map the tool's free-form error message to a ``DriftKind``.
 
     The tool's uniform-image branch produces a stable substring ("uniform")
-    and carries ``cfg_scale`` in metadata; everything else is bucketed as
+    and carries ``image_bytes`` in metadata; everything else is bucketed as
     ``http_error`` or ``unavailable`` based on the message shape.
     """
     text = output.lower()

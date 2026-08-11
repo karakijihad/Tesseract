@@ -190,6 +190,13 @@ def main() -> None:
     # through to `logging.lastResort` (bare stderr) — invisible once this
     # process detaches from its parent's console.
     ensure_alarms_state_migrated()
+    # Same reasoning, and before anything resolves a voice model path: the
+    # weights moved out of the swapped `app/` tree, and without this the
+    # first launch after that change would re-download ~2 GB already on disk.
+    # Idempotent — a no-op on every launch after the first.
+    from tesseract.voice.model_files import migrate_legacy_models
+
+    migrate_legacy_models()
     # Janitor claim: a detached backend has a dead parent by design; the
     # pidfile keeps the orphan sweep off it (janitor/pidfile.py).
     from tesseract.janitor.pidfile import write_pidfile

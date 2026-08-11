@@ -444,14 +444,18 @@ def make_log_error(
     exc_type: str | None = None,
     exc_message: str | None = None,
 ) -> dict[str, Any]:
-    """`log_error` envelope — server-side log record at ERROR or above,
-    forwarded to active sessions so the operator sees backend failures
-    in the pulse feed without tailing a terminal. Carries the logger
-    name, the rendered message, and (when present) the exception
-    type+message so the pulse row can show actionable text.
+    """`log_error` envelope — a server-side log record forwarded to active
+    sessions so the operator sees backend failures in the pulse feed without
+    tailing a terminal. Carries the logger name, the rendered message, and
+    (when present) the exception type+message so the pulse row can show
+    actionable text.
 
-    Severity always maps to `bad` on the frontend. Categorised under
-    `system` for tag filtering."""
+    ERROR and above, plus WARNING from `log_forwarder._ELEVATED_LOGGERS` —
+    modules with something the operator must see, which should not have to
+    claim ERROR to be heard. `level` therefore decides severity on the
+    frontend: WARNING maps to `warn`, everything else to `bad`, so the
+    errors-only view stays a real-failure view. Categorised under `system`
+    for tag filtering."""
     data: dict[str, Any] = {
         "level": level,
         "logger": logger_name,

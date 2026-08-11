@@ -18,10 +18,10 @@ from __future__ import annotations
 import json
 import logging
 import time
-import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from tesseract.bootid import current_boot_id, mint_boot_id
 from tesseract.orchestrator.workers.record import WorkerStatus
 from tesseract.orchestrator.recovery.summary import (
     RecoverySummary,
@@ -40,15 +40,17 @@ _SCHEDULE_LOOKBACK = timedelta(hours=24)
 
 
 def boot_id(*, now: datetime | None = None) -> str:
-    """Compact deterministic-ish id used in the summary event id.
+    """This process's boot id — the same one the backend log is named after.
 
-    Format: ``boot-YYYYMMDDTHHMMSS-<8 hex>``. The hex suffix prevents
-    two boots in the same second from colliding (rare but possible in
-    test fixtures that drive recovery repeatedly).
+    Format: ``boot-YYYYMMDDTHHMMSS-<8 hex>``. Called bare it returns the
+    process-wide id (``bootid.current_boot_id``), so a recovery summary and
+    the log file covering that boot carry one identifier and can be joined.
+    Passing ``now`` mints a fresh id instead, which is what fixtures driving
+    recovery repeatedly want.
     """
-    when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    stamp = when.strftime("%Y%m%dT%H%M%S")
-    return f"boot-{stamp}-{uuid.uuid4().hex[:8]}"
+    if now is not None:
+        return mint_boot_id(now=now)
+    return current_boot_id()
 
 
 def new_recovery_manager(

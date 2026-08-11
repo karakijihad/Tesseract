@@ -41,8 +41,16 @@ stale_session_grace_hours: 24
 # a heartbeat file younger than this many seconds counts as claimed.
 claimed_heartbeat_max_age_s: 600
 
-# Log pruning is opt-in: paths (globs, relative to <home>/logs/) listed
-# here have files older than retention_days deleted. Empty list = off.
+# Log pruning is opt-in: paths listed here have files older than
+# retention_days deleted. Globs are matched under BOTH log roots —
+# <home>/logs/ and <runtime>/logs/ (janitor/archives.py). Empty list = off.
+#
+# `backend/*.log` is one file per launch, named for its boot id. It is the
+# only entry on by default: these are machine ops, not operator-visible
+# history, and unlike everything else here the set grows once per boot
+# forever. The aggregate <process>.log beside them is bounded by size
+# rotation instead and is deliberately not listed.
 log_prune:
   retention_days: 60
-  globs: []
+  globs:
+    - "backend/*.log"

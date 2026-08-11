@@ -74,6 +74,9 @@ async def _start_channel_turn(
     # can attribute the matching TOOL_RESULT back to a tool name + args
     # when the adapter only forwards the call_id on result chunks.
     tool_starts: dict[str, tuple[str, dict[str, Any]]] = {}
+    # Call ids that reached a TOOL_RESULT, so the sweep at the end of the
+    # stream can close only the pulses that never did.
+    tool_ended: set[str] = set()
     turn_started_at = time.monotonic()
     elapsed_task: asyncio.Task[None] | None = None
 
@@ -124,6 +127,7 @@ async def _start_channel_turn(
                         tc = chunk.tool_call
                         tool_starts[tc.id] = (tc.name, dict(tc.input or {}))
                 elif chunk.type == ChunkType.TOOL_RESULT:
+                    tool_ended.add(chunk.tool_call_id)
                     if on_progress is not None:
                         name, args = tool_starts.get(chunk.tool_call_id, ("", {}))
                         await _safe_progress(ProgressEvent(
@@ -143,6 +147,22 @@ async def _start_channel_turn(
                 exc,
             )
             error_holder.append(f"channel turn crashed: {type(exc).__name__}: {exc}")
+        finally:
+            # A `tool_start` pulse with no matching result leaves the channel
+            # showing "calling <tool>" forever. That happens whenever a call is
+            # announced and then never runs: an adapter error mid-arguments, a
+            # cancelled or crashed turn, or a call the adapter discards because
+            # the provider truncated its JSON. In `finally` because the paths
+            # that strand a pulse are exactly the ones that skip a normal exit.
+            # On cancellation the first await here re-raises and the sweep stops
+            # short — cancellation has to win — so a barged-in turn can still
+            # leave one open. Every other path closes.
+            for call_id, (name, args) in tool_starts.items():
+                if call_id in tool_ended:
+                    continue
+                await _safe_progress(ProgressEvent(
+                    kind="tool_end", tool_name=name, tool_args=args,
+                ))
 
     turn_task = asyncio.create_task(
         _drive(),

@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
@@ -352,53 +353,51 @@ def _hash_file(path: Path) -> str:
     return h.hexdigest()
 
 
-async def _run_git(args: list[str], *, cwd: Path) -> tuple[int, str, str]:
-    """Run ``git`` asynchronously; return (rc, stdout, stderr).
-
-    Returns ``(-1, "", "")`` if git itself isn't on PATH, the cwd isn't a
-    repo, the call times out, OR the Proactor event loop on Windows
-    raises ``ProcessLookupError`` from ``proc.communicate()`` (a known
-    asyncio race when the child exits during transport setup —
-    cpython bpo-45034 and friends). Callers treat any non-zero return
-    as fail-open, so we must NEVER raise out of here — a raised
-    exception inside the code-drift snapshot path aborts watcher
-    boot and surfaces as the confusing log line "code_watcher: refused
-    to start — code drift will not surface."
-    """
+def _run_git_blocking(args: list[str], *, cwd: Path) -> tuple[int, str, str]:
+    """The actual spawn. Runs in a worker thread — never on the loop."""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "git", *args,
+        completed = subprocess.run(
+            ["git", *args],
             cwd=str(cwd),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            capture_output=True,
+            timeout=10.0,
         )
     except (OSError, FileNotFoundError):
         return -1, "", ""
-    except Exception:  # noqa: BLE001
-        # NotImplementedError on Selector loop on Windows, runtime
-        # transport errors from the proactor, etc. Stay fail-open.
-        log.debug("code_watcher: subprocess_exec raised", exc_info=True)
+    except subprocess.TimeoutExpired:
         return -1, "", ""
+    except Exception:  # noqa: BLE001
+        log.debug("code_watcher: git run raised", exc_info=True)
+        return -1, "", ""
+    return (
+        completed.returncode or 0,
+        completed.stdout.decode("utf-8", errors="replace"),
+        completed.stderr.decode("utf-8", errors="replace"),
+    )
+
+
+async def _run_git(args: list[str], *, cwd: Path) -> tuple[int, str, str]:
+    """Run ``git`` off the event loop; return (rc, stdout, stderr).
+
+    Threaded rather than ``create_subprocess_exec``, which is not as
+    asynchronous as its name suggests: on the Windows proactor the spawn
+    itself runs inline on the loop — ``_make_subprocess_transport`` →
+    ``subprocess.Popen`` → ``CreateProcess`` — and the lag sampler caught this
+    watcher's 30-second poll holding the loop for 3.8 s that way, with an
+    on-access virus scanner in the path. Only the pipe reads were ever
+    awaited; the expensive part never was.
+
+    Returns ``(-1, "", "")`` if git isn't on PATH, the cwd isn't a repo, or the
+    call times out. Callers treat any non-zero return as fail-open, so this
+    must NEVER raise — a raised exception inside the code-drift snapshot path
+    aborts watcher boot and surfaces as the confusing log line
+    "code_watcher: refused to start — code drift will not surface."
+    """
     try:
-        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=10.0)
-    except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except (ProcessLookupError, OSError):
-            pass
-        # Drain pipes so the proactor transport tears down cleanly and the
-        # process doesn't linger as a zombie on Windows.
-        try:
-            await proc.communicate()
-        except Exception:  # noqa: BLE001
-            pass
-        return -1, "", ""
+        return await asyncio.to_thread(_run_git_blocking, args, cwd=cwd)
     except Exception:  # noqa: BLE001
-        # ProcessLookupError (child exited during transport teardown on
-        # Windows proactor), ConnectionResetError on broken pipes, etc.
-        log.debug("code_watcher: git communicate raised", exc_info=True)
+        log.debug("code_watcher: git thread raised", exc_info=True)
         return -1, "", ""
-    return proc.returncode or 0, out_b.decode("utf-8", errors="replace"), err_b.decode("utf-8", errors="replace")
 
 
 __all__ = [

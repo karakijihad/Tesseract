@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import uuid
 from collections import deque
 import dataclasses
@@ -224,17 +225,111 @@ _PROMISE_REGEX = _re.compile(
 )
 _MAX_PROMISE_AUDIT_LOG_CHARS = 240
 
+# Prompt assembly above this costs a visible slice of the voice latency budget
+# and earns an INFO line; below it the measurement stays at DEBUG.
+_SLOW_PROMPT_ASSEMBLY_S = 0.25
+
+
+# Terminal-message guard. `<intent>` is a status channel, not reply content:
+# the mirror parser routes it to `statusText` and never into the message body,
+# so a turn whose terminal assistant message holds nothing but `<intent>`
+# renders a status line above an empty bubble and returns cleanly — no error,
+# no reply, no retry. Two recorded sessions ended exactly that way, both on a
+# sentence promising the next action.
+#
+# The unclosed alternative is deliberate: a stream cut mid-tag leaves
+# `<intent>...` with no terminator, and that is precisely the shape this guard
+# has to catch.
+_INTENT_BLOCK_RE = _re.compile(r"(?is)<intent>.*?(?:</intent>|\Z)")
+_SURFACE_TAG_RE = _re.compile(r"(?i)</?(?:intent|spoken|answer)>")
+_SURFACE_TAGS = (
+    "<intent>", "</intent>", "<spoken>", "</spoken>", "<answer>", "</answer>",
+)
+
+
+def _strip_partial_tag_tail(text: str) -> str:
+    """Drop a trailing fragment of a surface tag, e.g. the `<ans` left when a
+    stream dies just after opening `<answer>`.
+
+    The cockpit parser holds exactly this fragment back rather than rendering
+    it, so counting it as visible text would let the shape this guard exists
+    to catch slip through as a finished reply.
+    """
+    idx = text.rfind("<")
+    if idx == -1:
+        return text
+    tail = text[idx:].lower()
+    if any(tag.startswith(tail) for tag in _SURFACE_TAGS):
+        return text[:idx]
+    return text
+
+# Substring markers rather than exact reasons: each provider spells truncation
+# its own way and one of them hands us a stringified enum
+# (`finishreason.max_tokens`).
+#
+# Only accidental cut-offs belong here. `refusal`, `content_filter`, `safety`
+# and `recitation` are deliberate stops — the model or the provider declined —
+# and the retry nudge tells the model to continue and call the tool it was
+# about to call. Firing that at a refusal is the runtime pressuring a safety
+# stop into compliance, so those reasons end the turn like any other reply and
+# the operator reads the refusal. `stop_sequence` is out for the same family of
+# reason: hitting a configured stop string is a clean ending.
+_TRUNCATED_STOP_MARKERS = (
+    "max_token", "max_output_token", "length", "incomplete",
+)
+
+
+def _has_operator_visible_text(assistant_text: list[str]) -> bool:
+    """True if the accumulated assistant text carries anything the operator
+    would actually read.
+
+    `<intent>` blocks are stripped, then the remaining surface tags — so
+    `<answer></answer>` counts as empty. Untagged prose counts as visible: the
+    parser degrades it to `answer` and the operator sees it.
+
+    Text-free input returns True. A turn that emitted nothing at all is a
+    deliberate silence (the ambient observer declining to speak), not a
+    dropped reply, and must not be nudged into talking.
+    """
+    try:
+        body = "".join(assistant_text)
+    except Exception:  # noqa: BLE001 — the guard must never break a turn
+        return True
+    if not body.strip():
+        return True
+    residue = _SURFACE_TAG_RE.sub("", _INTENT_BLOCK_RE.sub("", body))
+    return bool(_strip_partial_tag_tail(residue).strip())
+
+
+def _is_truncated_stop(stop_reason: str) -> bool:
+    """True if the provider said this response was cut off rather than
+    finished. Adapters normalise the two clean endings (`tool_use`,
+    `end_turn`) and pass everything else through verbatim."""
+    reason = (stop_reason or "").strip().lower()
+    if not reason:
+        return False
+    return any(marker in reason for marker in _TRUNCATED_STOP_MARKERS)
+
 
 def _audit_promise_without_action(
     *,
     assistant_text: list[str],
     turn_tool_invocations: int,
     options: Any,
+    status_only_terminal: bool = False,
 ) -> None:
     """Log a WARNING if the final assistant text claims an action but
     no tool was invoked in the whole turn. Best-effort — failures here
-    must never break the turn."""
-    if turn_tool_invocations > 0:
+    must never break the turn.
+
+    `status_only_terminal` bypasses the turn-wide gate. A terminal message
+    that is nothing but `<intent>` is a forward-looking promise by
+    construction — "Reloading the corrected surface now" — so whatever tools
+    ran earlier in the turn, that particular sentence was not acted on. The
+    gate stays for every other shape, because "I've updated it" after a real
+    `file_write` is not confabulation and logging it as such is noise.
+    """
+    if turn_tool_invocations > 0 and not status_only_terminal:
         return
     try:
         body = "".join(assistant_text).strip()
@@ -1720,6 +1815,11 @@ class ChatSession:
             # incident: model said "Done. Every 15 min I'll fire a toast"
             # without invoking schedule_update).
             turn_tool_invocations = 0
+            # One re-entry per turn for a terminal message that says nothing
+            # (status-only) or was cut off. Deliberately a single budget shared
+            # by both shapes — the guard exists to break silence, not to argue
+            # with a model that keeps failing the contract.
+            terminal_retry_used = False
             while True:
                 if iteration >= self.max_tool_iterations:
                     # Operator policy: do NOT break the turn at the cap.
@@ -1756,7 +1856,23 @@ class ChatSession:
                 adapter_error_text = ""
                 adapter_error_soft = False
 
+                # Timed on the first iteration only. Prompt assembly is the one
+                # piece of the "brain" leg that is ours rather than the
+                # provider's, and without a number for it a slow turn can only
+                # be blamed on the API rather than shown to be its fault.
+                _assembly_started = time.monotonic() if iteration == 0 else 0.0
                 messages = self._messages_for_turn()
+                if iteration == 0:
+                    _assembly_took = time.monotonic() - _assembly_started
+                    # INFO only when it is worth a line. Every turn passes
+                    # through here — typed, channel, synthetic, background —
+                    # and a 0.02 s assembly is noise in a log that gets read
+                    # during incidents. The number matters when it is large.
+                    logger.log(
+                        logging.INFO if _assembly_took >= _SLOW_PROMPT_ASSEMBLY_S
+                        else logging.DEBUG,
+                        "chat: prompt assembled in %.2fs", _assembly_took,
+                    )
                 # One-shot: injection visible on iteration 0 only — on re-
                 # entry `self.history[-1]` is no longer the user turn, so
                 # anchoring would mis-place the suggestion.
@@ -1923,6 +2039,96 @@ class ChatSession:
                 self._append_assistant_message(assistant_text, pending_calls, last_model_meta, last_usage)
 
                 if not pending_calls:
+                    # A turn may not end mutely. Two shapes reach this branch
+                    # looking like a finished turn and are not one: a message
+                    # that is only `<intent>` (status, never rendered as a
+                    # reply) and a message the provider cut off. Both get one
+                    # re-entry with a system nudge; the iteration cap and the
+                    # adapter breaker stay the outer net.
+                    # Channels are exempt from the status-only half. A channel
+                    # has no tag contract, and `_extract_channel_reply` ends on
+                    # a tier that deliberately strips `<intent>` and sends the
+                    # sentence anyway — so on Telegram that message reached the
+                    # operator and the turn was never silent. Retrying it would
+                    # buy a wasted roundtrip and risk a doubled reply, since the
+                    # extractor runs over the whole concatenated text.
+                    # Truncation is not exempt: a cut-off stream is a defect on
+                    # every surface.
+                    status_only = (
+                        self.session_kind != "channel"
+                        and not _has_operator_visible_text(assistant_text)
+                    )
+                    truncated = _is_truncated_stop(stop_reason)
+                    if (status_only or truncated) and not terminal_retry_used:
+                        terminal_retry_used = True
+                        if status_only:
+                            logger.warning(
+                                "chat: status-only terminal message (stop=%s iter=%d) — "
+                                "retrying once before the turn is allowed to end",
+                                stop_reason, iteration,
+                            )
+                            # Worded to stay valid even when the re-entry lands
+                            # on the wrap-up iteration, which forbids tools:
+                            # answering is always the instruction, calling a
+                            # tool is the conditional.
+                            nudge = (
+                                "[runtime] Your last message carried no reply — it was a "
+                                "status line with no tool calls, so the operator saw an "
+                                "empty bubble. Answer now inside <answer>...</answer>, or "
+                                "call the tool you announced if you are still allowed to. "
+                                "Do not send another status-only message."
+                            )
+                        else:
+                            logger.warning(
+                                "chat: truncated stop %r on a tool-less message (iter=%d) — "
+                                "retrying once; the reply was cut off, not finished",
+                                stop_reason, iteration,
+                            )
+                            nudge = (
+                                f"[runtime] Your last response was cut off "
+                                f"({stop_reason}) before it finished. Continue from where "
+                                f"it stopped and keep it short enough to complete. If you "
+                                f"were about to call a tool, call it if you are still "
+                                f"allowed to."
+                            )
+                        self.history.append({
+                            "role": "system",
+                            "content": nudge,
+                            "timestamp": _now_iso(),
+                        })
+                        iteration += 1
+                        continue
+
+                    if status_only:
+                        # The retry came back status-only too. Say so — a
+                        # silent stop is the worst available outcome, and the
+                        # operator waited eight minutes on one before quitting
+                        # the app. Soft severity: the turn is over, but this is
+                        # a contract failure, not an adapter fault.
+                        logger.error(
+                            "chat: turn ended with no reply — status-only message twice "
+                            "in a row (stop=%s iter=%d tools=%d)",
+                            stop_reason, iteration, turn_tool_invocations,
+                        )
+                        yield StreamChunk(
+                            type=ChunkType.ERROR,
+                            error=(
+                                "The turn ended without a reply — the assistant sent a "
+                                "status line with no tool calls twice in a row. Nothing "
+                                "was said. Ask again, or rephrase."
+                            ),
+                            raw={
+                                "severity": "soft",
+                                "reason": "status_only_turn",
+                                "stop_reason": stop_reason,
+                            },
+                        )
+                    elif truncated:
+                        logger.warning(
+                            "chat: turn ended on a truncated stop %r after one retry "
+                            "(iter=%d) — the reply the operator sees is incomplete",
+                            stop_reason, iteration,
+                        )
                     # Codex audit-2 follow-up: chat-turn promise audit.
                     # If the final assistant text contains action-claim
                     # language AND no tool was invoked across the whole
@@ -1935,6 +2141,7 @@ class ChatSession:
                         assistant_text=assistant_text,
                         turn_tool_invocations=turn_tool_invocations,
                         options=self.options,
+                        status_only_terminal=status_only,
                     )
                     logger.debug(
                         "turn complete: iter=%d stop=%s chars=%d tools=%d",

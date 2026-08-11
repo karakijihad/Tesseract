@@ -211,11 +211,13 @@ def build(src_root: Path, out_root: Path, files: Iterable[str] | None = None) ->
 
     _reset_entities(out_root)
 
-    # Voice model dirs: `fetch_piper_voice` downloads .onnx weights INTO the
-    # clone at runtime, and without an ignore rule git reports them as
-    # uncommitted changes — the update UI then shows a scary "local history
-    # diverged" row on every install and nudges users toward force-updates
-    # (observed live 2026-07-30). Ignore everything but the shipped scaffold.
+    # Voice model dirs: weights now land in `runtime/models/voice/`, outside
+    # the clone entirely, so this no longer guards the common case. It stays
+    # for the install that updates ACROSS that change — its clone still holds
+    # the old weights until `migrate_legacy_models` runs on the next launch,
+    # and without an ignore rule git reports them as uncommitted changes. The
+    # update UI then shows a "local history diverged" row and nudges the user
+    # toward a force-update (observed live 2026-07-30).
     for rel in ("tesseract/voice/models/piper", "tesseract/voice/models/kokoro"):
         d = out_root / rel
         if d.is_dir():

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -169,6 +170,26 @@ async def _run_turn(
         text, attachments = await _ws._preprocess_audio_attachments(
             app, session, text, attachments or [],
         )
+        # Claim the pending voice commit for THIS turn, and empty the session
+        # slot so nothing else can. Only a real chat turn may claim it —
+        # synthetic workspace turns are excluded the same way they are excluded
+        # from `turn_states_by_chat` above, since they produce no speech.
+        # Everything before this boundary is ours (STT, queueing, retrieval);
+        # everything after it, until the first speakable sentence, is prompt
+        # assembly plus the provider round trip.
+        # Restricted to a real, foreground chat turn: synthetic workspace turns
+        # are excluded the same way `turn_states_by_chat` excludes them, and a
+        # background chat turn is excluded because `tts_suppressed` will stop it
+        # ever producing audio — it could only take the timestamp away from the
+        # turn that will.
+        if (
+            workspace_origin is None
+            and resolved_cid == (session.active_chat_id or None)
+            and getattr(session, "voice_commit_at", None) is not None
+        ):
+            turn_state.voice_commit_at = session.voice_commit_at
+            turn_state.voice_turn_started_at = time.monotonic()
+            session.voice_commit_at = None
         async for chunk in cs.send(
             await _chat_content_for_model(text, attachments),
             transient=workspace_origin is not None,

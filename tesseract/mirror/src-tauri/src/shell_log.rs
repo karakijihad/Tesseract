@@ -72,7 +72,15 @@ fn write_line(path: &Path, level: &str, msg: &str) {
     }
     rotate_if_needed(path);
     let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-    let line = format!("{ts} {level} shell: {msg}\n");
+    // The pid is not decoration. `LOG_LOCK` serialises writers inside ONE
+    // process, but a restart overlaps two shells — the new one started 6s
+    // before the old one finished on the live install — and they append to
+    // the same file holding separate locks. Cross-process locking could wedge
+    // a boot on a lock the dying shell never releases, which is a worse
+    // failure than the one it fixes. So the interleave is accepted and made
+    // READABLE instead: every line names its writer, and the two runs can be
+    // separated afterwards. That was the only thing the interleave cost.
+    let line = format!("{ts} {level} shell[{}]: {msg}\n", std::process::id());
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = f.write_all(line.as_bytes());
     }
@@ -123,7 +131,10 @@ mod tests {
 
         let contents = fs::read_to_string(&path).unwrap();
         assert!(contents.contains("INFO"));
-        assert!(contents.contains("shell: hello world"));
+        assert!(contents.contains("hello world"));
+        // Every line names the process that wrote it, so an overlapping
+        // restart leaves two separable streams instead of one blended log.
+        assert!(contents.contains(&format!("shell[{}]:", std::process::id())));
     }
 
     #[test]

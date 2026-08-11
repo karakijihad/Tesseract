@@ -166,6 +166,21 @@ class ServerSession:
     # `voice_cancel` clears it. Capped at `VOICE_PCM_BUFFER_CAP_BYTES` (5 min
     # at 16 kHz/16-bit mono = 9_600_000 bytes). Excess frames trim the head.
     voice_pcm_buffer: bytearray | None = None
+    # Voice-latency legs. The live copies live on ``TurnState``, per turn, for
+    # the same reason as every other field migrated off this class — two turns
+    # sharing one slot report each other's timings. These two are transitional
+    # fallbacks only, in the sense the class docstring describes: nothing writes
+    # them, and `_tts_state` reaches them solely when the emit helpers are
+    # driven outside a turn.
+    voice_turn_started_at: float | None = None
+    voice_first_speakable_at: float | None = None
+    # The one exception, and only briefly: end of speech happens before any
+    # turn exists, so `_start_turn` parks it here immediately before spawning
+    # the turn and `_run_turn` claims it into that turn's ``TurnState`` and
+    # empties the slot. It rides with the payload through the queue rather than
+    # sitting here, so a rejected or queued-behind payload leaves nothing for
+    # another turn to pick up.
+    voice_commit_at: float | None = None
     # SC-5 — server-side voice-input state machine (idle → listening →
     # transcribing → idle). Owns the `voice_state` wire emissions for the
     # speech-in half; the speech-back half (RESPONDING / SPEAKING) is

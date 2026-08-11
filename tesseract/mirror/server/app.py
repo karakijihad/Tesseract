@@ -3,7 +3,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
+import threading
 import time
+import traceback
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
@@ -58,6 +62,14 @@ TESSERACT_DIR = Path(__file__).resolve().parents[2]
 REPO_ROOT = TESSERACT_DIR.parent
 _LOOP_LAG_INTERVAL_S = 1.0
 _LOOP_LAG_WARN_S = 2.0
+# How often the watchdog samples the loop thread's stack, and how many
+# samples it keeps. 0.25s over 240 samples is a minute of history for a few
+# hundred KB — enough to cover any stall worth chasing.
+_LAG_SAMPLE_INTERVAL_S = 0.25
+_LAG_SAMPLE_HISTORY = 240
+# (monotonic, formatted top frames) for the event-loop thread only.
+_lag_samples: deque[tuple[float, str]] = deque(maxlen=_LAG_SAMPLE_HISTORY)
+_lag_sampler_started = False
 
 
 def create_app(config: ServerConfig) -> web.Application:
@@ -400,15 +412,82 @@ def _register_routes(app: web.Application) -> None:
     app.router.add_get("/ws/controller/{session_id}", controller_ws_handler)
 
 
+def _start_lag_sampler() -> None:
+    """Sample the event-loop thread's stack from a watchdog thread.
+
+    A lag warning says the loop was late; it never said WHY, and every
+    attempt to find out from outside the process failed for the same reason
+    — by the time a stack dump was requested, serviced and written, the stall
+    was over and the loop was back to idling in `select`. The evidence has to
+    be collected DURING the window, which means sampling continuously and
+    keeping the recent past.
+
+    Runs on a plain daemon thread, deliberately: it must be able to observe a
+    loop that is not running. `sys._current_frames()` gives that thread's
+    frames without cooperation from the loop, so a stall shows up as the same
+    stack repeating across consecutive samples — which is the signature that
+    names the culprit.
+
+    If the sampler ITSELF stops producing samples across a stall, that is not
+    a failure of the instrument; it is the finding. It means the interpreter
+    could not schedule a plain thread either, so nothing Python-level was
+    holding the loop and the cause is below us: the GIL held by a native call
+    that never releases it, or the whole process descheduled by the OS.
+    """
+    global _lag_sampler_started
+    if _lag_sampler_started:
+        return
+    _lag_sampler_started = True
+    loop_thread_id = threading.get_ident()
+
+    def _run() -> None:
+        while True:
+            try:
+                frame = sys._current_frames().get(loop_thread_id)
+                if frame is not None:
+                    # Formatted immediately — holding frame objects would pin
+                    # every local in the stall's stack for the ring's lifetime.
+                    stack = traceback.extract_stack(frame)[-6:]
+                    summary = " <- ".join(
+                        f"{Path(f.filename).name}:{f.lineno}:{f.name}" for f in reversed(stack)
+                    )
+                    _lag_samples.append((time.monotonic(), summary))
+            except Exception:  # noqa: BLE001 — a sampler must never take the process down
+                pass
+            time.sleep(_LAG_SAMPLE_INTERVAL_S)
+
+    threading.Thread(target=_run, name="mirror-lag-sampler", daemon=True).start()
+
+
+def _lag_window_report(lag: float) -> str:
+    """What the loop thread was doing across the stall that just ended."""
+    now = time.monotonic()
+    window = [(t, s) for t, s in list(_lag_samples) if now - t <= lag + _LAG_SAMPLE_INTERVAL_S]
+    if not window:
+        return (
+            "no stack samples cover the window — the sampler thread was not "
+            "scheduled either, so the cause is below Python: a native call "
+            "holding the GIL, or the process descheduled by the OS"
+        )
+    counts: dict[str, int] = {}
+    for _t, summary in window:
+        counts[summary] = counts.get(summary, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:3]
+    span = f"{len(window)} samples over {window[-1][0] - window[0][0]:.1f}s"
+    return " | ".join(f"{n}x {summary}" for summary, n in ranked) + f"  ({span})"
+
+
 async def _monitor_loop_lag() -> None:
     """Log when the aiohttp loop is blocked long enough to threaten liveness."""
     loop = asyncio.get_running_loop()
+    _start_lag_sampler()
     expected = loop.time() + _LOOP_LAG_INTERVAL_S
     while True:
         await asyncio.sleep(_LOOP_LAG_INTERVAL_S)
         now = loop.time()
         lag = now - expected
         if lag >= _LOOP_LAG_WARN_S:
+            log.warning("mirror: loop was doing: %s", _lag_window_report(lag))
             log.warning(
                 "mirror: event loop lag %.3fs exceeds %.3fs heartbeat-risk threshold",
                 lag,
@@ -1293,13 +1372,29 @@ async def _report_ollama_state(base_url: str, running: bool) -> None:
         )
         return
 
-    from tesseract.memory.ollama_boot import _fetch_tags, _model_present
+    from tesseract.memory.ollama_boot import _model_present, fetch_tags
 
-    tags = await _fetch_tags(base_url)
+    fetched = await fetch_tags(base_url)
+    if not fetched.ok:
+        # NOT "models are not pulled". The daemon answered the liveness probe
+        # and then failed to list its tags, so which models exist is unknown —
+        # and a slow daemon under load is the common case. Saying "missing"
+        # here sent the operator hunting for a model that was installed.
+        wired = ", ".join(f"{slot} ({ref.model.model})" for slot, ref in slots)
+        log.error(
+            "Ollama is running at %s but its model list could not be read (%s). "
+            "Which of %s are pulled is unknown — this is a daemon that is up "
+            "but not answering, not a missing model. Check it from Settings → "
+            "Local models; retrieval falls back to keyword matching until it "
+            "responds.",
+            base_url, fetched.error, wired,
+        )
+        return
+
     missing = [
         f"{slot} ({ref.model.model})"
         for slot, ref in slots
-        if not _model_present(tags, ref.model.model)
+        if not _model_present(fetched.tags, ref.model.model)
     ]
     if missing:
         log.error(
@@ -2355,6 +2450,7 @@ def _build_voice_runtime(app: web.Application) -> None:
 
         from tesseract.brain.boot import load_voice_config
         from tesseract.voice import STTEngine, TTSEngine
+        from tesseract.voice import model_files as voice_model_files
         from tesseract.voice.providers.gemini import GeminiSTTConfig
         from tesseract.voice.providers.local_whisper import LocalWhisperConfig
         from tesseract.voice.providers.piper_tts import PiperPreset, PiperTTSConfig
@@ -2437,7 +2533,7 @@ def _build_voice_runtime(app: web.Application) -> None:
             piper_config = None
             kokoro_config = None
             if piper_entry:
-                piper_models_dir = Path(__file__).resolve().parents[2] / "voice" / "models" / "piper"
+                piper_models_dir = voice_model_files.lane_dir("piper")
                 model_filename = piper_entry["model"]
                 model_path = piper_models_dir / model_filename
                 config_path = model_path.with_suffix(model_path.suffix + ".json")
@@ -2460,7 +2556,7 @@ def _build_voice_runtime(app: web.Application) -> None:
                     timeout_seconds=float(piper_entry.get("timeout_seconds", 60.0)),
                 )
             if kokoro_entry:
-                kokoro_models_dir = Path(__file__).resolve().parents[2] / "voice" / "models" / "kokoro"
+                kokoro_models_dir = voice_model_files.lane_dir("kokoro")
                 model_filename = kokoro_entry["model"]
                 voices_filename = kokoro_entry.get("voices_file", "voices-v1.0.bin")
                 k_model_path = kokoro_models_dir / model_filename

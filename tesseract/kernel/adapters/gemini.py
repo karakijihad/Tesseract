@@ -282,9 +282,12 @@ class GeminiAdapter(ModelAdapter):
         tools: list[dict[str, Any]] | None,
     ) -> dict[str, Any]:
         cfg: dict[str, Any] = {
-            "temperature": opts.temperature,
             "max_output_tokens": opts.max_output_tokens,
         }
+        # See `AdapterOptions.temperature` — absent in the catalog means the
+        # model does not take one, so the key is omitted rather than invented.
+        if opts.temperature is not None:
+            cfg["temperature"] = opts.temperature
         if system_msg:
             cfg["system_instruction"] = system_msg
         if tools:

@@ -92,6 +92,36 @@ def _pid_alive(pid: int) -> bool:
     return pid_alive(pid)
 
 
+def _report_previous_pid_file(home: Path) -> None:
+    """Name what a leftover ``supervisor.pid`` means, before overwriting it.
+
+    Two different findings wear the same file: a dead pid says the previous
+    supervisor was hard-killed past its teardown, and a LIVE one says a second
+    supervisor is already running — which is the more serious of the two and
+    had no voice at all before.
+    """
+    path = runtime_dir(home) / "supervisor.pid"
+    if not path.exists():
+        return
+    try:
+        pid = int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        logging.warning("supervisor: previous pid file at %s is unreadable", path)
+        return
+    if _pid_alive(pid):
+        logging.warning(
+            "supervisor: pid %d from a previous run is STILL ALIVE — two "
+            "supervisors will fight over the same ports and children",
+            pid,
+        )
+    else:
+        logging.warning(
+            "supervisor: previous run (pid %d) left its pid file behind, so it "
+            "exited without teardown — hard kill, crash, or console close",
+            pid,
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m tesseract.supervisor",
@@ -135,7 +165,16 @@ def main(argv: list[str] | None = None) -> int:
     # enumerate/kill real processes. Opt out with SUPERVISOR_DISABLE_REAP=1.
     try:
         from tesseract.supervisor.reap import reap_orphans
-        reap_orphans()
+
+        outcome = reap_orphans()
+        if not outcome.swept:
+            # Say it at the supervisor, not only inside the reaper: this boot
+            # started without knowing whether orphans from a prior generation
+            # are still running, and that is worth seeing beside the spawn
+            # lines rather than buried three frames down.
+            logging.warning(
+                "supervisor: booting without an orphan sweep — %s", outcome.reason
+            )
     except Exception:  # noqa: BLE001
         logging.exception("supervisor: orphan reap raised — continuing boot")
 
@@ -156,6 +195,13 @@ def main(argv: list[str] | None = None) -> int:
         archive = breaker.clear()
         logging.warning("supervisor: --force cleared crash storm; archived to %s", archive)
 
+    # A pid file already here means the last supervisor never reached its
+    # teardown — `clear_pid_file` lives in a `finally`, so the only way to
+    # leave one behind is a hard kill (taskkill, console close, crash). That
+    # is worth one line: it is the difference between "this boot follows a
+    # clean stop" and "this boot follows something that died", and every
+    # reader already liveness-checks the file so it was otherwise silent.
+    _report_previous_pid_file(home)
     pid_file = write_pid_file(home)
     try:
         backend_cmd_env = os.environ.get("SUPERVISOR_BACKEND_CMD")

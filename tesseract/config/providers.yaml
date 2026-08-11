@@ -136,18 +136,24 @@ api:
     max_retries: 3
     adapter: gemini     # tesseract/kernel/adapters/gemini.py
     models:
-      gemini_25_flash:
-        model: gemini-2.5-flash
-        context_window: 1000000
+      gemini_36_flash:
+        model: gemini-3.6-flash
+        context_window: 1048576
         max_output_tokens: 8192
         temperature: 0.7
-        knowledge_cutoff: "2025-01-01"
         use_responses_api: false  # Gemini — no Responses API
-        cost_per_mtok_in: 0.30
-        cost_per_mtok_out: 2.50
-        cost_per_mtok_cached_in: 0.075   # Gemini cached input ≈ 25% of base; verify against ai.google.dev/pricing if rates change
-        # Image generation lives on `gemini-2.5-flash-image` (separate
-        # model). The text-chat entry handles the input modalities only.
+        cost_per_mtok_in: 1.50
+        cost_per_mtok_out: 7.50
+        cost_per_mtok_cached_in: 0.15    # cache reads are 10% of base input
+        # No `knowledge_cutoff`: Google does not publish one for this model
+        # and the field is optional. An invented date is worse than an absent
+        # one — prompt builders read it and would state it as fact.
+        #
+        # Limits and defaults are the API's own (`GET /v1beta/models/
+        # gemini-3.6-flash`): 1048576 in / 65536 out, default temperature 1,
+        # max 2, and `thinking: true` — it reasons before answering, so a
+        # role wanting a short JSON envelope should still leave output room
+        # for the thinking that precedes it. 8192 matches the sibling entries.
         capabilities:
           vision_input: true
           audio_input: true
@@ -155,6 +161,35 @@ api:
           pdf_input: true
           image_output: false
           audio_output: false
+      # Image generation — "Nano Banana 2". Separate REST surface from the
+      # chat entries above: the Interactions API (`POST /v1beta/interactions`,
+      # GA and the documented path for this model family), NOT the chat
+      # `:generateContent` one. Auth is the `x-goog-api-key` header rather
+      # than a bearer token; `payload_profile: gemini_images` carries both
+      # that and the body/response shape in `image_generate.py`.
+      #
+      # Request:  {"model", "input":[{"type":"text","text":…}
+      #            (+ {"type":"image","mime_type","data": <b64>} for i2i)]}
+      # Response: {"steps":[{"type":"thought",…},
+      #            {"type":"model_output","content":[
+      #              {"type":"image","data": <b64>,"mime_type":"image/jpeg"}]}]}
+      #
+      # The thought step carries a very large `signature` blob that is NOT an
+      # image — the extractor keys on `content[].type == "image"` for exactly
+      # that reason. Both ops verified live 2026-08-10.
+      gemini_31_flash_image:
+        kind: image_generation
+        model: gemini-3.1-flash-image
+        base_url_override: https://generativelanguage.googleapis.com/v1beta/interactions
+        payload_profile: gemini_images
+        # Output images bill as tokens ($60/Mtok), not flat per image: 1120
+        # tokens at 1K ≈ $0.067, rising to ~$0.151 at 4K. This entry generates
+        # at the default size, so the 1K figure is the honest one for the
+        # ledger. Text input ($0.50/Mtok) is rounding error beside it.
+        cost_per_image: 0.067
+        capabilities:
+          text_to_image: true
+          image_to_image: true
       gemini_flash_audio:         # voice STT — the only cloud voice lane left
         kind: audio_stt
         model: gemini-2.5-flash
@@ -243,8 +278,8 @@ api:
           pdf_input: false
           image_output: false
           audio_output: false
-      # Grok Imagine — image generation (Flux-based). Both t2i and i2i.
-      # Different REST contract from NIM FLUX: text-to-image hits
+      # Grok Imagine — image generation. Both t2i and i2i. OpenAI-images
+      # REST contract, distinct from the Gemini one above: text-to-image hits
       # /v1/images/generations, image-to-image hits /v1/images/edits (source
       # image as a base64 data URI). The image_generate tool selects the
       # endpoint by op via `payload_profile: xai_images`. Flat per-image
@@ -255,15 +290,6 @@ api:
         base_url_override: https://api.x.ai/v1/images/generations
         payload_profile: xai_images
         cost_per_image: 0.02    # flat per docs.x.ai/developers/pricing
-        capabilities:
-          text_to_image: true
-          image_to_image: true
-      grok_imagine_image_quality:
-        kind: image_generation
-        model: grok-imagine-image-quality
-        base_url_override: https://api.x.ai/v1/images/generations
-        payload_profile: xai_images
-        cost_per_image: 0.05    # flat per docs.x.ai/developers/pricing
         capabilities:
           text_to_image: true
           image_to_image: true
@@ -279,19 +305,11 @@ api:
     max_retries: 2
     adapter: openai
     models:
-      # qwen3_5_122b_a10b removed 2026-07-30 — NIM returns 410 Gone
-      # ("end of life 2026-07-20T00:00:00Z").
-      # Qwen3.5 flagship MoE 397B / 17B-active. Tool-calling ✓. Multimodal —
-      # image_url support confirmed. Video per spec (early-fusion VL
-      # training), NIM round-trip untested. NIM serves it non-thinking
-      # (`reasoning_content` null, answer in `content`). Sampling per
-      # Qwen's non-thinking recommendation (temp 0.7 / top_p 0.8). Context:
-      # 262K native (1M via YaRN; NIM serves the native window).
       gpt_oss_120b:
         model: openai/gpt-oss-120b
         context_window: 128000
         max_output_tokens: 8192
-        reasoning_effort: high  # REQUIRED by NIM — see comment above.
+        reasoning_effort: high  # REQUIRED by NIM — it 400s when the key is absent.
         temperature: 0.7
         top_p: 0.95
         cost_per_mtok_in: 0.00
@@ -303,78 +321,6 @@ api:
           pdf_input: false
           image_output: false
           audio_output: false
-      # NVIDIA omni-modal MoE 30B / 3B-active. Image + text confirmed; the
-      # model name implies audio/video too — our adapter currently only
-      # sends `image_url` parts so audio/video is a future-tool concern.
-      # Tool-calling ✓.
-      #
-      # Reasoning quirk: at `reasoning_effort: medium` the model frequently
-      # stops with `finish_reason=stop` AFTER emitting only `reasoning_content`,
-      # leaving `content` empty — the OpenAI adapter only streams
-      # `delta.content`, so the operator would see nothing. Pinning to `low`
-      # fixes this: the model still reasons internally but reliably writes
-      # the final answer to `content`. For the vision_agent role (single-shot
-      # image-to-text caption) low is the right effort tier anyway.
-      # Zhipu GLM-5.2 — MoE 753B / ~40B-active, text-only (multimodal lives
-      # on the separate GLM-5V SKU, which NIM does not host). Capabilities
-      # pinned all-false — correct per spec, not a temporary restriction.
-      # 1M context per the NIM model card (DSA/IndexShare sparse attention).
-      # Non-thinking by default (`reasoning_content` null); `reasoning_effort`
-      # is accepted but IGNORED (null also fine); thinking toggles via
-      # `chat_template_kwargs: {"thinking": true}` → `reasoning_content`
-      # populated, final answer still lands in `content`. The openai adapter
-      # does not forward chat_template_kwargs, so thinking stays off — the
-      # right default for a latency-sensitive chat layer.
-      glm_5_2:
-        model: z-ai/glm-5.2
-        context_window: 1000000
-        max_output_tokens: 8192
-        temperature: 0.7
-        top_p: 0.95
-        cost_per_mtok_in: 0.00
-        cost_per_mtok_out: 0.00
-        capabilities:
-          vision_input: false
-          audio_input: false
-          video_input: false
-          pdf_input: false
-          image_output: false
-          audio_output: false
-      # Text-to-image — Black Forest Labs FLUX.1-dev on the NIM genai
-      # endpoint. Body: `{prompt, mode, steps?, seed?, image?}`. Modes:
-      # `base | canny | depth`. Steps ≤ 100 (tool default = 20, see
-      # `image_generate.py::ImageGenerateInput.steps`). Response is the
-      # standard `{"artifacts":[{"base64": "..."}]}` shape — no tool change.
-      flux1_dev:
-        kind: image_generation
-        model: black-forest-labs/flux.1-dev
-        base_url_override: https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-dev
-        cost_per_image: 0.00
-        # Text-to-image only. Its canny/depth `mode` is control-net (a t2i
-        # variant via `control_image_attachment_id`), NOT general image-to-
-        # image editing — so image_to_image stays false and the chain skips
-        # this entry for i2i requests.
-        capabilities:
-          text_to_image: true
-          image_to_image: false
-      # Text-to-image — FLUX.2-klein (4B distilled rectified-flow) on the
-      # NIM genai endpoint. Contract: accepts {prompt, steps, width, height,
-      # seed?}; REJECTS `mode` (extra_forbidden) and caps cfg_scale ≤ 1 —
-      # hence `payload_profile: flux2` (image_generate.py omits mode/cfg_scale
-      # and refuses canny/depth for this profile; for control-net work swap
-      # the image_generator primary back to flux1_dev). Response is the
-      # standard {"artifacts":[{"base64": ...}]} shape (JPEG). Distilled
-      # arch — the endpoint hard-caps steps ≤ 4, so the flux2 profile
-      # clamps steps to 4.
-      flux2_klein_4b:
-        kind: image_generation
-        model: black-forest-labs/flux.2-klein-4b
-        base_url_override: https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b
-        payload_profile: flux2
-        cost_per_image: 0.00
-        capabilities:
-          text_to_image: true
-          image_to_image: false
 
 # ─── CLI tier (subscription — free at use-time) ─────────────
 # Rides your existing Claude Code / Codex CLI login — no API key, no
@@ -399,7 +345,10 @@ cli:
       command: [claude, auth, status]
       success_pattern: '"loggedIn"\s*:\s*true'
       login_hint: claude auth login
-      timeout_seconds: 10
+      # Measured 11.5s on a healthy loop, so a 10s budget reports a logged-in
+      # CLI as "auth probe timed out". The probe is a scheduled warm-up, not on
+      # the boot critical path, so the headroom costs nothing.
+      timeout_seconds: 30
     models:
       opus_5:
         model: claude-opus-5
@@ -607,7 +556,7 @@ local:
     max_retries: 1
     host: this_pc
     models:
-      # `model` is the ONNX filename under `tesseract/voice/models/piper/`;
+      # `model` is the ONNX filename under `runtime/models/voice/piper/`;
       # each voice needs BOTH the `.onnx` and its `.onnx.json` sidecar in
       # that directory. Fetch them with:
       #   python -m tesseract.scripts.fetch_piper_voice

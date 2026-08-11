@@ -39,7 +39,9 @@ or rework the agenda item to use an AUTO-posture path.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Callable
 
@@ -48,6 +50,10 @@ from tesseract.config.cockpit import load_conductor_relay
 from tesseract.kernel.tools.base import ToolContext
 from tesseract.orchestrator.autonomy.summary_sanitize import clean_summary_tail
 from tesseract.orchestrator.autonomy.worker_dispatch import WorkerRunner
+from tesseract.orchestrator.workers.heartbeat import (
+    HEARTBEAT_INTERVAL_SECONDS,
+    touch_heartbeat,
+)
 from tesseract.orchestrator.workers.kinds import WorkerKind
 from tesseract.orchestrator.workers.record import (
     Billing,
@@ -191,6 +197,47 @@ class KernelWorkerRunner:
         if record.status is WorkerStatus.SPAWNING:
             record.transition_to(WorkerStatus.RUNNING, reason="runner_start")
             write_record(record)
+        # These workers run in-process, so nothing else touches their
+        # heartbeat — `touch_heartbeat` had exactly one caller in the runtime
+        # and it is the agent controller's PTY seats. Without this, a missing
+        # heartbeat file made `stale_heartbeat` the guaranteed verdict for
+        # every one of them at the next boot, healthy or not, so the signal
+        # carried no information. Beat once up front so a worker that dies in
+        # its first second still leaves a timestamp behind.
+        # Guarded for the same reason the loop below is: a heartbeat describes
+        # the work, it does not get to end it. Unguarded, a transient FS error
+        # here would abort the dispatch before it started — the record would
+        # land in FAILED via the kernel's outer handler, blaming the worker for
+        # a file the runtime could not touch.
+        try:
+            touch_heartbeat(record.id)
+        except OSError:
+            log.warning("heartbeat write failed for %s", record.id, exc_info=True)
+        beat = asyncio.create_task(
+            self._beat_until_done(record.id), name=f"heartbeat-{record.id}"
+        )
+        try:
+            await self._run_to_terminal(record)
+        finally:
+            beat.cancel()
+            with suppress(asyncio.CancelledError):
+                await beat
+
+    async def _beat_until_done(self, worker_id: str) -> None:
+        """Touch the heartbeat on the schema-locked interval until cancelled.
+
+        Failures are logged and the loop continues: a heartbeat that cannot
+        be written is worth knowing about, but it must not take down the
+        worker whose liveness it was only describing.
+        """
+        while True:
+            await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+            try:
+                touch_heartbeat(worker_id)
+            except OSError:
+                log.warning("heartbeat write failed for %s", worker_id, exc_info=True)
+
+    async def _run_to_terminal(self, record: WorkerRecord) -> None:
         try:
             result = await self._dispatch(record)
         except Exception as exc:  # noqa: BLE001 — handler contract: never raise

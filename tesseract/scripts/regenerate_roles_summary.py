@@ -71,6 +71,25 @@ def _render_section_heading(level: int, text: str) -> str:
     return f"{'#' * level} {text}"
 
 
+def _role_refs(body: dict[str, Any], chains: dict[str, Any]) -> tuple[str, list[str]]:
+    """The role's `(primary, fallbacks)` refs, following `chain:` when set.
+
+    This table is what the vault answers "which model serves which role" from,
+    so a chain-backed role that rendered as an em-dash would read as
+    unconfigured rather than as configured elsewhere.
+    """
+    chain_name = body.get("chain")
+    if chain_name is not None:
+        refs = chains.get(str(chain_name))
+        if isinstance(refs, list) and refs:
+            return str(refs[0]), [str(r) for r in refs[1:]]
+        return "", []
+    fallbacks = body.get("fallbacks") or []
+    if not isinstance(fallbacks, list):
+        fallbacks = []
+    return str(body.get("primary") or ""), [str(f) for f in fallbacks]
+
+
 def render_summary(roles_doc: dict[str, Any], providers_doc: dict[str, Any]) -> str:
     """Build the SUMMARY.md text. Pure function — easy to test."""
     now = datetime.now(timezone.utc).isoformat()
@@ -94,15 +113,15 @@ def render_summary(roles_doc: dict[str, Any], providers_doc: dict[str, Any]) -> 
     buf.write("| Role | Mode | Primary | Fallbacks | Adapter |\n")
     buf.write("|------|------|---------|-----------|---------|\n")
     roles = roles_doc.get("roles") or {}
+    chains = roles_doc.get("chains") or {}
+    if not isinstance(chains, dict):
+        chains = {}
     if isinstance(roles, dict):
         for name, body in roles.items():
             if not isinstance(body, dict):
                 continue
             mode = str(body.get("mode") or "?")
-            primary = str(body.get("primary") or "")
-            fallbacks = body.get("fallbacks") or []
-            if not isinstance(fallbacks, list):
-                fallbacks = []
+            primary, fallbacks = _role_refs(body, chains)
             adapter = _resolve_adapter(providers_doc, primary) if primary else "?"
             primary_cell = f"`{primary}`" if primary else "—"
             fb_cell = ", ".join(f"`{f}`" for f in fallbacks) if fallbacks else "—"

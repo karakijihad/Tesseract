@@ -1,10 +1,15 @@
 """Backend log forwarder — pipes server-side errors into the pulse feed.
 
-Installs a `logging.Handler` on the root logger that captures every record
-at level ``ERROR`` or above and broadcasts a ``log_error`` envelope to all
-active Mirror sessions. The operator sees backend failures (TTS provider
-errors, scheduler exceptions, adapter blow-ups) in the pulse panel without
-tailing the server terminal.
+Installs a `logging.Handler` on the root logger that broadcasts a
+``log_error`` envelope to all active Mirror sessions. The operator sees
+backend failures (TTS provider errors, scheduler exceptions, adapter
+blow-ups) in the pulse panel without tailing the server terminal.
+
+Admits every record at ``ERROR`` or above, plus ``WARNING`` from the narrow
+``_ELEVATED_LOGGERS`` list — so a module with something the operator must see
+does not have to claim ERROR to be heard. The envelope carries the level and
+the frontend classifies on it, keeping the pulse's errors-only view a
+real-failure view.
 
 The handler tolerates being called from any thread — sync log calls in a
 background worker still reach the asyncio loop via
@@ -37,16 +42,30 @@ _DEDUPE_RING_CAP = 64
 # never broadly.
 _SUPPRESSED_LOGGERS: frozenset[str] = frozenset()
 
+# Loggers whose WARNING records also reach the pulse. This exists so a module
+# with something the operator must see does not have to claim ERROR to be
+# heard — severity should describe the event, not choose the channel. A stale
+# worker is a true operational fact and a false error, and logging it as the
+# latter put it in the pulse's `errorsOnly` view beside real crashes. Add
+# narrowly, never broadly, and only for loggers whose warnings are all
+# operator-facing.
+_ELEVATED_LOGGERS: frozenset[str] = frozenset(
+    {"tesseract.scheduler.tasks.worker_liveness"}
+)
+
 
 class MirrorLogHandler(logging.Handler):
-    """Forwards records >= ERROR to every live ServerSession as `log_error`.
+    """Forwards records >= ERROR to every live ServerSession as `log_error`,
+    plus WARNING records from `_ELEVATED_LOGGERS`.
 
     One handler per Mirror process. Installed on the root logger in
     ``_on_startup``; uninstalled in ``_on_shutdown`` so test harnesses
     don't accumulate handlers across app rebuilds."""
 
     def __init__(self, app: web.Application) -> None:
-        super().__init__(level=logging.ERROR)
+        # WARNING, so `_ELEVATED_LOGGERS` records reach `emit` at all; every
+        # other logger is filtered back up to ERROR there.
+        super().__init__(level=logging.WARNING)
         self._app = app
         self._loop: asyncio.AbstractEventLoop | None = None
         self._recent: deque[tuple[float, str]] = deque(maxlen=_DEDUPE_RING_CAP)
@@ -57,6 +76,21 @@ class MirrorLogHandler(logging.Handler):
         self._loop = loop
 
     def emit(self, record: logging.LogRecord) -> None:
+        # First, before any other work. The handler sits on the ROOT logger at
+        # WARNING so elevated records can reach here at all, which means every
+        # warning in the process now enters emit — httpx, aiohttp, onnxruntime.
+        # Reject what is not ours before touching the suppression lookup or the
+        # dedupe ring.
+        #
+        # The WARNING floor is asserted here rather than left to the handler's
+        # level: relying on that made the elevation check unbounded downward,
+        # so a future change lowering the handler level would have started
+        # forwarding INFO and DEBUG from elevated loggers. emit decides for
+        # itself what it admits.
+        if record.levelno < logging.WARNING:
+            return
+        if record.levelno < logging.ERROR and record.name not in _ELEVATED_LOGGERS:
+            return
         if record.name in _SUPPRESSED_LOGGERS:
             return
         try:

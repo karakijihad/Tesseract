@@ -246,10 +246,10 @@ def ensure_ollama(*, allow_install: bool = True) -> bool:
         return True
 
     from tesseract.memory.ollama_boot import (
-        _fetch_tags,
         _model_present,
         _spawn_ollama_serve_sync,
         _wait_for_ollama,
+        fetch_tags,
     )
 
     exe = _ollama_exe()
@@ -282,7 +282,18 @@ def ensure_ollama(*, allow_install: bool = True) -> bool:
             if not await _wait_for_ollama(base_url, total_s=30.0, poll_s=1.0):
                 logger.warning("Ollama did not become reachable at %s", base_url)
                 return None
-        return await _fetch_tags(base_url)
+        fetched = await fetch_tags(base_url)
+        if not fetched.ok:
+            # Bail rather than treat an unreadable list as an empty one: every
+            # configured model would look absent and this would re-pull
+            # gigabytes that are already on disk.
+            logger.warning(
+                "Ollama is up at %s but its model list could not be read (%s) — "
+                "not pulling, since what is already present is unknown",
+                base_url, fetched.error,
+            )
+            return None
+        return list(fetched.tags)
 
     try:
         tags = asyncio.run(_bring_up())

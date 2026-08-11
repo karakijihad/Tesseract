@@ -28,6 +28,12 @@ def _status_body(s) -> dict:
         "embedding_model": s.embedding_model,
         "tags": s.tags,
         "embedding_present": s.embedding_present,
+        # Without this the panel cannot tell a model that is present from one
+        # the daemon could not be asked about: `embedding_present` is reported
+        # True in both cases, deliberately, so an unreadable tag list does not
+        # raise a false "missing" badge. `tags_error` is what carries the
+        # difference.
+        "tags_error": s.tags_error,
         "owned_by_mirror": s.owned_by_mirror,
         "binary_present": s.binary_present,
         "installing": s.installing,

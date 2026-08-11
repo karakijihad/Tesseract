@@ -25,9 +25,9 @@ import httpx
 
 from tesseract.brain.boot import ollama_up
 from tesseract.memory.ollama_boot import (
-    _fetch_tags,
     _is_localhost,
     _wait_for_ollama,
+    fetch_tags,
 )
 from tesseract.memory.ollama_boot import ollama_exe as _ollama_exe
 from tesseract.scripts.ensure_ollama import ensure_ollama
@@ -60,6 +60,12 @@ class OllamaStatus:
     # rather than through the request that started it.
     installing: bool = False
     install_error: str | None = None
+    # Why the tag list is empty, when it is empty because the daemon could not
+    # be read rather than because it holds nothing. `None` means the list was
+    # fetched successfully and `tags` is the truth. Without this the panel
+    # cannot tell "no models pulled" from "could not ask", which is the
+    # conflation that cost two days of debugging on the first install.
+    tags_error: str | None = None
 
 
 class OllamaSupervisor:
@@ -98,21 +104,32 @@ class OllamaSupervisor:
     async def status(self) -> OllamaStatus:
         running = await asyncio.to_thread(ollama_up, self.base_url, 2.0)
         tags: list[str] = []
+        tags_error: str | None = None
         if running:
-            tags = await _fetch_tags(self.base_url, client=self._client)
+            fetched = await fetch_tags(self.base_url, client=self._client)
+            if fetched.ok:
+                tags = list(fetched.tags)
+            else:
+                tags_error = fetched.error
         owned = self._proc is not None and self._proc.poll() is None
         return OllamaStatus(
             running=running,
             base_url=self.base_url,
             embedding_model=self.embedding_model,
             tags=tags,
+            tags_error=tags_error,
             # No tracked model means Ollama is not the one serving embeddings,
             # so there is nothing here to be missing. Reporting False would
             # light the panel's "embedding model missing" warning over a
             # model that lives somewhere else entirely.
+            #
+            # An unreadable tag list gets the same treatment for the same
+            # reason: the model is not knowably absent, so claiming it is
+            # missing is a guess rendered as a fact. `tags_error` carries the
+            # real state for a surface that wants to show it.
             embedding_present=(
                 _model_present(tags, self.embedding_model)
-                if self.embedding_model
+                if self.embedding_model and tags_error is None
                 else True
             ),
             owned_by_mirror=owned,

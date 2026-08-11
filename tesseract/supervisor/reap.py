@@ -26,8 +26,26 @@ import os
 import signal
 import subprocess
 import sys
+from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ReapOutcome:
+    """What the sweep managed to do.
+
+    ``swept`` exists because an empty ``reaped`` used to mean two opposite
+    things — "looked, found nothing" and "could not look at all". Cold boot is
+    exactly when the process enumeration is slowest and most likely to blow
+    its timeout, so the reaper was least trustworthy at the only moment it
+    runs, and said so in a way nothing could distinguish from success.
+    """
+
+    reaped: tuple[int, ...] = ()
+    swept: bool = True
+    reason: str = ""
+
 
 
 # Module invocations only the supervisor should own. A python process running
@@ -59,7 +77,7 @@ def orphan_pids(processes: list[tuple[int, str]], self_pid: int) -> list[int]:
     return out
 
 
-def _enumerate_windows() -> list[tuple[int, str]]:
+def _enumerate_windows() -> tuple[list[tuple[int, str]], str]:
     """``python.exe`` processes as ``(pid, cmdline)`` via ``Get-CimInstance``.
 
     PowerShell (not ``wmic``, which is absent on newer Win11) emits one
@@ -77,9 +95,10 @@ def _enumerate_windows() -> list[tuple[int, str]]:
             timeout=_PS_TIMEOUT_S,
             check=False,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        log.exception("reap: powershell process enumeration failed")
-        return []
+    except subprocess.TimeoutExpired:
+        return [], f"powershell process enumeration exceeded {_PS_TIMEOUT_S:.0f}s"
+    except FileNotFoundError:
+        return [], "powershell not found on PATH"
     procs: list[tuple[int, str]] = []
     for line in result.stdout.splitlines():
         pid_str, sep, cmdline = line.partition("\t")
@@ -89,10 +108,10 @@ def _enumerate_windows() -> list[tuple[int, str]]:
             procs.append((int(pid_str.strip()), cmdline))
         except ValueError:
             continue
-    return procs
+    return procs, ""
 
 
-def _enumerate_posix() -> list[tuple[int, str]]:
+def _enumerate_posix() -> tuple[list[tuple[int, str]], str]:
     try:
         result = subprocess.run(
             ["ps", "-eo", "pid=,args="],
@@ -101,9 +120,10 @@ def _enumerate_posix() -> list[tuple[int, str]]:
             timeout=_PS_TIMEOUT_S,
             check=False,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        log.exception("reap: ps process enumeration failed")
-        return []
+    except subprocess.TimeoutExpired:
+        return [], f"ps process enumeration exceeded {_PS_TIMEOUT_S:.0f}s"
+    except FileNotFoundError:
+        return [], "ps not found on PATH"
     procs: list[tuple[int, str]] = []
     for line in result.stdout.splitlines():
         line = line.strip()
@@ -114,7 +134,7 @@ def _enumerate_posix() -> list[tuple[int, str]]:
             procs.append((int(pid_str), cmdline))
         except ValueError:
             continue
-    return procs
+    return procs, ""
 
 
 def _kill(pid: int) -> bool:
@@ -139,25 +159,36 @@ def _kill(pid: int) -> bool:
         return False
 
 
-def reap_orphans() -> list[int]:
+def reap_orphans() -> ReapOutcome:
     """Kill orphaned Tesseract daemon/backend processes from prior supervisors.
 
-    Called at supervisor startup, before any child is spawned. Best-effort —
-    returns the list of pids successfully reaped. ``SUPERVISOR_DISABLE_REAP=1``
-    disables it entirely.
+    Called at supervisor startup, before any child is spawned. Best-effort,
+    and the outcome says which kind of best-effort it was:
+    :attr:`ReapOutcome.swept` is False when the process list could not be read
+    at all, so "no orphans" and "no idea" are no longer the same answer.
+    ``SUPERVISOR_DISABLE_REAP=1`` disables it entirely.
     """
     if os.environ.get("SUPERVISOR_DISABLE_REAP") == "1":
-        return []
-    processes = _enumerate_windows() if sys.platform == "win32" else _enumerate_posix()
-    targets = orphan_pids(processes, os.getpid())
+        return ReapOutcome(swept=False, reason="disabled by SUPERVISOR_DISABLE_REAP")
+    processes, failure = (
+        _enumerate_windows() if sys.platform == "win32" else _enumerate_posix()
+    )
+    if failure:
+        # WARNING, not exception: this is a degraded sweep, not a crash, and
+        # the supervisor carries on either way. Naming the reason is the point
+        # — a cold boot that could not enumerate now says so in the log
+        # instead of reporting the same empty list a clean boot does.
+        log.warning("reap: could not sweep for orphans — %s", failure)
+        return ReapOutcome(swept=False, reason=failure)
+
     reaped: list[int] = []
-    for pid in targets:
+    for pid in orphan_pids(processes, os.getpid()):
         if _kill(pid):
             reaped.append(pid)
             log.warning("reap: killed orphaned Tesseract process pid=%d (prior supervisor)", pid)
     if reaped:
         log.warning("reap: cleared %d orphaned process(es) before boot: %s", len(reaped), reaped)
-    return reaped
+    return ReapOutcome(reaped=tuple(reaped))
 
 
-__all__ = ["orphan_pids", "reap_orphans"]
+__all__ = ["ReapOutcome", "orphan_pids", "reap_orphans"]

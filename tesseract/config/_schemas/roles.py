@@ -22,15 +22,26 @@ class Embeddings(BaseModel):
     primary: str
 
 
+class Reranker(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    primary: str
+
+
 class RoleBody(_Permissive):
-    """A single cognition role. ``primary`` is required; ``fallbacks`` is
-    optional. Everything else (overrides, budgets, notes) flows through
-    as extras.
+    """A single cognition role. Everything not named here (overrides,
+    budgets, notes) flows through as extras.
+
+    A role names its chain one of two ways: `primary` (+ optional
+    `fallbacks`) written out, or `chain` naming an entry in the top-level
+    ``chains:`` block. Exactly one — the loader refuses both, because a
+    role that says two different things about the same slot has no
+    answer, only a precedence rule nobody would remember.
     """
 
     mode: str = "active"
     primary: str | None = None
     fallbacks: list[str] = Field(default_factory=list)
+    chain: str | None = None
     notes: str | None = None
 
 
@@ -52,5 +63,7 @@ class RolesConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     embeddings: Embeddings
+    reranker: Reranker | None = None
+    chains: dict[str, list[str]] = Field(default_factory=dict)
     roles: dict[str, RoleBody] = Field(default_factory=dict)
     voice: VoiceBlock | None = None

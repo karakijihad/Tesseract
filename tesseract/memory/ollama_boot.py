@@ -21,7 +21,9 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 from urllib.parse import urlparse
 
 import httpx
@@ -56,12 +58,31 @@ async def _probe(base_url: str, timeout_s: float = 2.0) -> bool:
     return await asyncio.to_thread(ollama_up, base_url, timeout_s)
 
 
-async def _fetch_tags(
+@dataclass(frozen=True)
+class TagFetch:
+    """Outcome of one ``/api/tags`` request — asked-and-answered, or not asked.
+
+    The distinction is the whole point of the type. ``ok=False`` means the
+    daemon could not be reached or did not answer usefully, so nothing is
+    known about which models are pulled; the remedy is to look at the
+    daemon. ``ok=True`` with empty ``tags`` means it answered and genuinely
+    has nothing; the remedy is to pull. Returning ``[]`` for both is what
+    told the operator for two days that `nomic-embed-text` was missing while
+    it was installed the entire time — under loop starvation the 5 s timeout
+    was routine, and every consumer read the timeout as an empty daemon.
+    """
+
+    ok: bool
+    tags: tuple[str, ...] = ()
+    error: str = ""
+
+
+async def fetch_tags(
     base_url: str,
     timeout_s: float = 5.0,
     *,
     client: httpx.AsyncClient | None = None,
-) -> list[str]:
+) -> TagFetch:
     """Fetch the Ollama tag list. Accepts an optional shared client.
 
     When ``client`` is provided, the caller owns the connection lifecycle
@@ -71,6 +92,8 @@ async def _fetch_tags(
     ``TIME_WAIT`` sockets to ``localhost:11434`` on Windows. Without a
     shared client the function falls back to its old per-call behaviour
     (test callers / one-off probes).
+
+    Never raises: the failure rides in the returned :class:`TagFetch`.
     """
     url = f"{base_url.rstrip('/')}/api/tags"
     try:
@@ -83,10 +106,41 @@ async def _fetch_tags(
                 r = await c.get(url)
                 r.raise_for_status()
                 data = r.json()
-    except (httpx.HTTPError, ValueError):
-        return []
-    models = data.get("models") or []
-    return [m.get("name", "") for m in models if isinstance(m, dict)]
+    except httpx.TimeoutException:
+        return TagFetch(ok=False, error=f"no response within {timeout_s:g}s")
+    except httpx.HTTPError as exc:
+        return TagFetch(ok=False, error=f"{type(exc).__name__}: {exc}")
+    except ValueError as exc:
+        return TagFetch(ok=False, error=f"unreadable response: {exc}")
+    # Valid JSON of the wrong shape is still a daemon we could not read. A
+    # bare `data.get(...)` here raises AttributeError on a list or a string
+    # body — outside the try, so it escapes the "never raises" contract above
+    # and 500s the Settings endpoint this function exists to make honest.
+    if not isinstance(data, dict):
+        return TagFetch(
+            ok=False,
+            error=f"unexpected response shape: {type(data).__name__}",
+        )
+    models = data.get("models")
+    if models is None:
+        # The daemon answered and listed nothing. Genuinely empty, not a
+        # failure — this is the state that earns a "pull it" remedy.
+        return TagFetch(ok=True)
+    if not isinstance(models, list):
+        return TagFetch(
+            ok=False,
+            error=f"unexpected 'models' shape: {type(models).__name__}",
+        )
+    # Names are validated as strings, not merely present: `_model_present`
+    # calls `tag.split(":", 1)`, so a numeric name would raise there instead —
+    # inside `OllamaSupervisor.status`, which the Settings route calls with no
+    # handler, turning a malformed payload into a 500 on the endpoint this
+    # function exists to keep honest.
+    tags = tuple(
+        m["name"] for m in models
+        if isinstance(m, dict) and isinstance(m.get("name"), str)
+    )
+    return TagFetch(ok=True, tags=tags)
 
 
 def _is_localhost(base_url: str) -> bool:
@@ -138,7 +192,13 @@ async def _wait_for_ollama(base_url: str, total_s: float = 10.0, poll_s: float =
     return False
 
 
-def _model_present(tags: list[str], model: str) -> bool:
+def _model_present(tags: Sequence[str], model: str) -> bool:
+    """Whether `model` appears in a tag list that was actually fetched.
+
+    Callers must check `TagFetch.ok` first: an empty `tags` here means the
+    daemon reported nothing, and this returns False for every model — which
+    is only the truth when the fetch succeeded.
+    """
     if not tags:
         return False
     target = model.split(":", 1)[0]

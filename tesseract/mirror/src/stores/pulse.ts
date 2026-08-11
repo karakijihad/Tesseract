@@ -130,7 +130,15 @@ function deriveTag(env: Envelope): PulseTag {
 function deriveSeverity(env: Envelope): PulseSeverity {
   const t = env.type;
   if (t === 'tool_denied' || t === 'tool_denied_hard' || t === 'stream_error') return 'bad';
-  if (t === 'observer_unavailable' || t === 'error' || t === 'log_error') return 'bad';
+  if (t === 'observer_unavailable' || t === 'error') return 'bad';
+  if (t === 'log_error') {
+    // The envelope has always carried `level`; this is the first thing to read
+    // it. Forwarded WARNING records are operational facts, not failures — a
+    // stale worker belongs in the feed but not in the errors-only view beside
+    // real crashes. Same shape as `command_result` below.
+    const level = (env.data as { level?: unknown })?.level;
+    return level === 'WARNING' ? 'warn' : 'bad';
+  }
   if (t === 'cli_end') {
     const exit = (env.data as { exit_code?: unknown })?.exit_code;
     if (typeof exit === 'number' && exit !== 0) return 'bad';

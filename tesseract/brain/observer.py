@@ -79,6 +79,7 @@ class ObserverConfig:
     max_retries: int
     reasoning_effort: str = ""
     use_responses_api: bool = False
+    stream: bool = True
 
     @classmethod
     def from_role_entry(cls, entry: dict[str, Any], provider_cfg: dict[str, Any]) -> "ObserverConfig":
@@ -96,6 +97,7 @@ class ObserverConfig:
             max_retries=provider_cfg["max_retries"],
             reasoning_effort=entry.get("reasoning_effort", ""),
             use_responses_api=bool(entry.get("use_responses_api", False)),
+            stream=bool(entry.get("stream", True)),
         )
 
 
@@ -162,6 +164,7 @@ class Observer:
             context_window=self._config.context_window,
             reasoning_effort=self._config.reasoning_effort,
             use_responses_api=self._config.use_responses_api,
+            stream=self._config.stream,
         )
 
     async def observe(
@@ -195,6 +198,18 @@ class Observer:
         trimmed = _trim_history_for_observer(history, context_turns)
         if not trimmed:
             return ""
+        if self._circuit_breaker.is_open():
+            # Gated as well as counted. Counting a hang without gating on it
+            # protects the incremental path but still spends the full timeout
+            # on every hand-run call, which is the cost this decision was
+            # taken to stop. Logged rather than silent: a `/observe` that
+            # returns nothing has to say why.
+            logger.warning(
+                "observer breaker open (provider %s/%s) — skipping stateless observation",
+                self._config.provider,
+                self._config.model,
+            )
+            return ""
         try:
             text, _tokens = await asyncio.wait_for(
                 self._run_stream(self._compose_messages(trimmed)),
@@ -204,12 +219,19 @@ class Observer:
             logger.info("observer skipped — %s", exc)
             return ""
         except asyncio.TimeoutError:
+            # Counted, like the incremental path. These two handlers used to
+            # disagree: a hang here only dropped the observation, so a
+            # provider that accepts the connection and never streams could
+            # cost the full timeout on every operator-triggered `/observe`
+            # forever with the breaker still green. The breaker is per
+            # provider-entry, not per call path, so both paths feed it.
             logger.warning(
-                "observer call exceeded %ss (provider %s/%s hung) — dropping observation",
+                "observer call exceeded %ss (provider %s/%s hung) — counting as failure",
                 self._config.timeout_seconds,
                 self._config.provider,
                 self._config.model,
             )
+            self._circuit_breaker.record_failure()
             return ""
         # Stateless and incremental paths share the same counter so the
         # ObserverStatsChip "N obs" / "N tok" / "last fired" reading reflects
@@ -220,6 +242,12 @@ class Observer:
             self._fires_total += 1
             self._tokens_used_total += _tokens
             self._last_fired_at = datetime.now(timezone.utc).isoformat()
+            # Paired with the `record_failure` above. The breaker counts
+            # CONSECUTIVE failures, so a path that only ever reports failures
+            # would let three hangs spread across an otherwise healthy session
+            # open it — the success has to reset the run for the count to mean
+            # what its name says.
+            self._circuit_breaker.record_success()
         out = text or ""
         if out:
             _append_observation_log(mode=mode, session_id=session_id, text=out)

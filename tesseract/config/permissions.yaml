@@ -75,7 +75,7 @@ tools:
   # Writes + outbound + subprocess
   #
   # Tools that are operator-visible (PTY panes, delegate spawns), cost-capped
-  # (brief_render via loop_cost_caps, image_generate — cheap paid grok-imagine primary, free NIM fallback), or
+  # (brief_render via loop_cost_caps, image_generate — paid per-image on both chain entries), or
   # protected by another layer (`file_write` by path_overrides) are AUTO
   # so the assistant can run without per-call ASKs during autonomous operation.
   #
@@ -113,7 +113,9 @@ tools:
   file_read: auto
   glob: auto
   grep: auto
-  image_generate: auto         # cheap per-image ($0.002 grok-imagine primary; free NIM FLUX fallback), daily-budget-capped
+  log_triage: auto
+  system_diagnose: auto
+  image_generate: auto         # paid per-image (~$0.067 gemini primary, $0.02 grok fallback), daily-budget-capped
 
 # Mode-specific overrides. Only keys listed here override the `tools` default.
   session_list: auto            # Mirror trio lister (interactive sessions)

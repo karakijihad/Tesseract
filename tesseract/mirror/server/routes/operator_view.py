@@ -16,7 +16,7 @@ Per ``Docs/Plan/autonomy/phase-AU-21-mirror-vision.md``:
   frontend already redacts; we never trust the WS payload).
 - Threshold detection lives here so the mapper stays pure: when the
   handler stamps ``long_dwell=True`` or ``repeat_switch=True``, the
-  mapper lifts the event into an ``inform``-class agenda candidate;
+  mapper lifts the event into a ``PROPOSE``-class agenda candidate;
   otherwise the bus event drains as ambient context.
 
 Single-operator MVP: state lives per ``aiohttp.web.Application`` instance

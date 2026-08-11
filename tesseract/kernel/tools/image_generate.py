@@ -10,17 +10,23 @@ returns the public `/api/downloads/...` URL so the chat surface can render
 it inline. Failures on one provider advance to the next; only an exhausted
 chain returns ``ToolResult(is_error=True)`` — never a crash.
 
-Per-model request contract is selected by `payload_profile`:
+Per-model request contract is selected by `payload_profile`, which every
+`kind: image_generation` catalog entry must declare — there is no default,
+because guessing a body shape produces a 400 that reads like an outage.
 
-* ``flux1`` (default) — NIM FLUX.1-dev genai endpoint. Text-to-image only.
-    Body: {"prompt","mode","steps","cfg_scale","width","height","seed?","image?"}
-    Response: {"artifacts":[{"base64": ...}]}
-* ``flux2`` — NIM FLUX.2-klein. Text-to-image only; rejects `mode`/`cfg_scale`,
-    caps steps ≤ 4.  Body: {"prompt","steps≤4","width","height","seed?"}
+* ``gemini_images`` — Google's Interactions API (`POST /v1beta/interactions`).
+    Authenticates with the `x-goog-api-key` header, NOT a bearer token.
+    Body: {"model","input":[{"type":"text","text": ...}
+           (+ {"type":"image","mime_type","data": <b64>} for image-to-image)],
+           "response_format"?: {"type":"image","aspect_ratio": ...}}
+    Response: {"steps":[{"type":"thought","signature": <huge b64>},
+               {"type":"model_output","content":[{"type":"image","data": <b64>}]}]}
+    The thought step's `signature` is a large base64 blob that is NOT an
+    image; extraction keys on `content[].type == "image"` to avoid it.
 * ``xai_images`` — xAI Grok Imagine (OpenAI-images-style). Text-to-image hits
     `.../v1/images/generations`; image-to-image hits `.../v1/images/edits`
     (source image passed as a base64 data URI in `image`). Body:
-    {"model","prompt","n","response_format","image?"}.  Response:
+    {"model","prompt","image?"}.  Response:
     {"data":[{"b64_json"|"url": ...}]} — URL responses are fetched to bytes.
 """
 
@@ -59,60 +65,18 @@ class ImageGenerateInput(BaseModel):
             "primary + fallbacks."
         ),
     )
-    seed: Optional[int] = Field(
-        default=None,
-        description="Reproducibility seed (FLUX profiles only). Omit to randomize.",
-    )
-    steps: int = Field(
-        default=20,
-        ge=1,
-        le=100,
-        description=(
-            "Sampler steps (FLUX profiles). 20 suits flux1; flux2 is distilled "
-            "and the endpoint caps steps at 4 (clamped automatically). Ignored "
-            "by the xai_images profile."
-        ),
-    )
-    # 2026-05-16: cfg_scale + width/height added because NIM FLUX.1-dev
-    # returns pitch-black PNGs when the body omits cfg_scale. 3.5 is FLUX's
-    # documented sweet spot; 1024×1024 is the default canvas. Ignored by the
-    # xai_images profile (xAI's image API takes no cfg/size knobs).
-    cfg_scale: float = Field(
-        default=3.5,
-        ge=0.0,
-        le=20.0,
-        description=(
-            "Classifier-free guidance scale (FLUX.1-dev). Recommended 2.5-5.0; "
-            "3.5 default. Below ~1.0 the model ignores the prompt and produces "
-            "near-uniform / black output. Ignored by xai_images."
-        ),
-    )
-    width: int = Field(
-        default=1024,
-        ge=256,
-        le=2048,
-        description="Image width in pixels (FLUX profiles). 1024 default.",
-    )
-    height: int = Field(
-        default=1024,
-        ge=256,
-        le=2048,
-        description="Image height in pixels (FLUX profiles). 1024 default.",
-    )
-    mode: Literal["base", "canny", "depth"] = Field(
-        default="base",
-        description=(
-            "FLUX generation mode. `base` is plain text-to-image. `canny`/`depth` "
-            "are control-net (a text-to-image variant) and require "
-            "`control_image_attachment_id`. Distinct from image-to-image editing "
-            "(`image_attachment_id`)."
-        ),
-    )
-    control_image_attachment_id: Optional[str] = Field(
+    aspect_ratio: Optional[
+        Literal[
+            "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4",
+            "9:16", "16:9", "21:9", "1:8", "8:1", "1:4", "4:1",
+        ]
+    ] = Field(
         default=None,
         description=(
-            "When mode is canny/depth (FLUX control-net), the attachment ID of "
-            "the operator-uploaded control image. Ignored in base mode."
+            "Shape of the generated image (gemini_images profile). Omit to let "
+            "the model choose one that suits the subject — it does this well, so "
+            "only set it when the frame is part of the request (a square avatar, "
+            "a 16:9 header). Ignored by the xai_images profile."
         ),
     )
     image_attachment_id: Optional[str] = Field(
@@ -211,14 +175,6 @@ class ImageGenerateTool(Tool):
                     is_error=True,
                 )
 
-        # FLUX control-net (canny/depth) is a text-to-image variant, distinct
-        # from image-to-image editing — resolved only on the flux path.
-        control_image_b64: str | None = None
-        if op == "text_to_image" and inp.mode != "base" and inp.control_image_attachment_id:
-            control_image_b64 = await _resolve_uploaded_image(
-                inp.control_image_attachment_id, session_id,
-            )
-
         # `skip_reason` records why entries were passed over (disabled / no
         # capability); `attempt_error` holds the last REAL provider failure.
         # The final message prefers `attempt_error` so an i2i failure surfaces
@@ -235,17 +191,7 @@ class ImageGenerateTool(Tool):
             if not bool(caps.get(op, False)):
                 skip_reason = f"{ref.ref}: no `{op}` capability"
                 continue
-            # Control-net (canny/depth) is FLUX.1-only — a text-to-image
-            # variant needing the `mode` + control image that neither flux2
-            # nor the xai_images profile can express. Skip non-flux1 entries
-            # rather than silently dropping the control image on them.
-            profile = ref.model.fields.get("payload_profile") or "flux1"
-            if op == "text_to_image" and inp.mode != "base" and profile != "flux1":
-                skip_reason = f"{ref.ref}: control-net mode {inp.mode!r} needs a flux1 provider"
-                continue
-            result = await self._attempt(
-                ref, inp, op, source_image_b64, control_image_b64, context,
-            )
+            result = await self._attempt(ref, inp, op, source_image_b64, context)
             if result is not None and not result.is_error:
                 return result
             if result is not None:
@@ -264,7 +210,6 @@ class ImageGenerateTool(Tool):
         inp: ImageGenerateInput,
         op: str,
         source_image_b64: str | None,
-        control_image_b64: str | None,
         context: ToolContext,
     ) -> ToolResult | None:
         """One provider attempt. Returns a success ToolResult, or an
@@ -286,7 +231,17 @@ class ImageGenerateTool(Tool):
                 is_error=True,
             )
 
-        payload_profile = ref.model.fields.get("payload_profile") or "flux1"
+        payload_profile = ref.model.fields.get("payload_profile")
+        if not isinstance(payload_profile, str) or not payload_profile:
+            return ToolResult(
+                output=(
+                    f"{ref.ref}: catalog entry has no `payload_profile` — every "
+                    f"`kind: image_generation` entry must name the request "
+                    f"contract it speaks (see providers.yaml)"
+                ),
+                is_error=True,
+            )
+
         await _emit_status(
             context, f"calling image_generator ({ref.model.model}, {op})…",
         )
@@ -294,7 +249,7 @@ class ImageGenerateTool(Tool):
         try:
             url, body = _build_request(
                 base_url, ref.model.model, inp, op, payload_profile,
-                source_image_b64, control_image_b64,
+                source_image_b64,
             )
         except _ProfileError as exc:
             return ToolResult(output=f"{ref.ref}: {exc}", is_error=True)
@@ -304,11 +259,7 @@ class ImageGenerateTool(Tool):
             async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.post(
                     url,
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Accept": "application/json",
-                        "Content-Type": "application/json",
-                    },
+                    headers=_auth_headers(payload_profile, api_key),
                     json=body,
                 )
         except httpx.HTTPError as exc:
@@ -358,16 +309,10 @@ class ImageGenerateTool(Tool):
             _note_image_tripwire(
                 inp.model_role, ref.ref, "uniform_output",
                 {"image_bytes": len(image_bytes),
-                 "cfg_scale": inp.cfg_scale,
-                 "steps": inp.steps,
+                 "aspect_ratio": inp.aspect_ratio,
                  "prompt": inp.prompt[:200]},
             )
-            hint = (
-                f"Most common FLUX cause: missing/too-low cfg_scale (sent "
-                f"{inp.cfg_scale}). Try 4-5."
-                if payload_profile == "flux1"
-                else "Re-check the endpoint contract for this model."
-            )
+            hint = "Re-check the endpoint contract for this model."
             return ToolResult(
                 output=(
                     f"{ref.ref} returned what looks like a uniform "
@@ -377,8 +322,7 @@ class ImageGenerateTool(Tool):
                 is_error=True,
                 metadata={
                     "image_bytes": len(image_bytes),
-                    "cfg_scale": inp.cfg_scale,
-                    "steps": inp.steps,
+                    "aspect_ratio": inp.aspect_ratio,
                     "prompt": inp.prompt[:200],
                 },
             )
@@ -416,15 +360,25 @@ class ImageGenerateTool(Tool):
                 "kind": rec.kind,
                 "size_bytes": rec.size,
                 "storage_path": rec.storage_path,
-                "mode": inp.mode,
+                "aspect_ratio": inp.aspect_ratio,
             },
         )
 
 
 class _ProfileError(Exception):
-    """Raised by `_build_request` when a request can't be built for a
-    profile+op (e.g. flux2 asked for a non-base mode). Surfaced as an
-    is_error ToolResult so the chain advances."""
+    """Raised by `_build_request` when no request can be built — the catalog
+    entry names a `payload_profile` this tool does not implement. Surfaced as
+    an is_error ToolResult so the chain advances to the next provider."""
+
+
+def _auth_headers(profile: str, api_key: str) -> dict[str, str]:
+    """Auth is part of a profile's contract, not an operator choice — Google's
+    Interactions API rejects a bearer token and wants its key in a header of
+    its own, while the OpenAI-shaped surfaces want `Authorization`."""
+    common = {"Accept": "application/json", "Content-Type": "application/json"}
+    if profile == "gemini_images":
+        return {"x-goog-api-key": api_key, **common}
+    return {"Authorization": f"Bearer {api_key}", **common}
 
 
 def _build_request(
@@ -434,15 +388,36 @@ def _build_request(
     op: str,
     profile: str,
     source_image_b64: str | None,
-    control_image_b64: str | None,
 ) -> tuple[str, dict[str, Any]]:
     """Return (url, json_body) for one provider attempt.
 
+    gemini_images: one endpoint for both ops — image-to-image is just a
+    second `input` block carrying the source image inline.
+
     xai_images: text-to-image → /v1/images/generations; image-to-image →
     /v1/images/edits (derived by swapping the path suffix), with the source
-    image as a base64 data URI. FLUX profiles are text-to-image only (the
-    capability gate guarantees op == text_to_image before we get here).
+    image as a base64 data URI.
     """
+    if profile == "gemini_images":
+        parts: list[dict[str, Any]] = [{"type": "text", "text": inp.prompt}]
+        if op == "image_to_image":
+            # An attachment arrives as whatever the operator uploaded, so the
+            # declared mime has to be sniffed rather than assumed — Google
+            # validates this field and rejects the image outright when it
+            # disagrees with the bytes.
+            parts.append({
+                "type": "image",
+                "mime_type": _mime_from_b64(source_image_b64 or ""),
+                "data": source_image_b64 or "",
+            })
+        body: dict[str, Any] = {"model": model, "input": parts}
+        if inp.aspect_ratio is not None:
+            body["response_format"] = {
+                "type": "image",
+                "aspect_ratio": inp.aspect_ratio,
+            }
+        return base_url, body
+
     if profile == "xai_images":
         # Minimal body matching xAI's documented examples ({model, prompt}
         # [+ image]). We deliberately DON'T send `n`/`response_format`/size —
@@ -466,39 +441,16 @@ def _build_request(
             }
         return url, body
 
-    # ── FLUX profiles (text-to-image only) ──────────────────────────────
-    if profile == "flux2":
-        if inp.mode != "base":
-            raise _ProfileError(
-                f"mode {inp.mode!r} not supported by {model} "
-                "(flux2 — text-to-image only; use a flux1 entry for canny/depth)"
-            )
-        body = {
-            "prompt": inp.prompt,
-            "steps": min(inp.steps, 4),
-            "width": inp.width,
-            "height": inp.height,
-        }
-    else:  # flux1
-        body = {
-            "prompt": inp.prompt,
-            "mode": inp.mode,
-            "steps": inp.steps,
-            "cfg_scale": inp.cfg_scale,
-            "width": inp.width,
-            "height": inp.height,
-        }
-        if control_image_b64 is not None:
-            body["image"] = control_image_b64
-    if inp.seed is not None:
-        body["seed"] = inp.seed
-    return base_url, body
+    raise _ProfileError(
+        f"unknown payload_profile {profile!r} for {model} — the catalog entry "
+        f"names a request contract this tool does not implement"
+    )
 
 
 async def _bytes_from_payload(payload: Any, timeout: float) -> bytes | None:
     """Decode image bytes from a response — base64 first, else fetch a URL.
 
-    Covers the NIM `artifacts[0].base64` shape, the OpenAI-images
+    Covers the Gemini Interactions `steps[].content[]` shape, the OpenAI-images
     `data[0].b64_json` shape, and the xAI `data[0].url` shape (fetched to
     bytes). Returns None when no known shape carries an image.
     """
@@ -523,15 +475,22 @@ async def _bytes_from_payload(payload: Any, timeout: float) -> bytes | None:
 
 
 def _extract_image_b64(payload: dict[str, Any]) -> str:
-    """Pull base64 image data out of the NIM genai shape or the
+    """Pull base64 image data out of the Gemini Interactions shape or the
     OpenAI-compatible /v1/images/generations shape."""
-    artifacts = payload.get("artifacts")
-    if isinstance(artifacts, list) and artifacts:
-        first = artifacts[0]
-        if isinstance(first, dict):
-            b64 = first.get("base64") or first.get("b64_json")
-            if isinstance(b64, str) and b64:
-                return b64
+    # Gemini: walk the steps and take the block that SAYS it is an image.
+    # A `thought` step sits alongside carrying a ~1 MB `signature` blob, so
+    # "the longest base64 string in the response" is the wrong rule here.
+    steps = payload.get("steps")
+    if isinstance(steps, list):
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            for block in step.get("content") or []:
+                if not isinstance(block, dict) or block.get("type") != "image":
+                    continue
+                b64 = block.get("data")
+                if isinstance(b64, str) and b64:
+                    return b64
     data = payload.get("data")
     if isinstance(data, list) and data:
         first = data[0]
@@ -539,9 +498,6 @@ def _extract_image_b64(payload: dict[str, Any]) -> str:
             b64 = first.get("b64_json") or first.get("base64")
             if isinstance(b64, str) and b64:
                 return b64
-    image = payload.get("image")
-    if isinstance(image, str) and image:
-        return image
     return ""
 
 
@@ -559,7 +515,7 @@ def _extract_image_url(payload: dict[str, Any]) -> str:
 
 def _suffix_and_mime(image_bytes: bytes) -> tuple[str, str]:
     """Pick file suffix + MIME from the magic bytes so the saved file matches
-    what came down the wire (FLUX returns JPEG; others may differ)."""
+    what came down the wire (Gemini returns JPEG; others may differ)."""
     if image_bytes[:3] == b"\xff\xd8\xff":
         return ".jpg", "image/jpeg"
     if image_bytes[:8] == b"\x89PNG\r\n\x1a\n":
@@ -567,6 +523,17 @@ def _suffix_and_mime(image_bytes: bytes) -> tuple[str, str]:
     if image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
         return ".webp", "image/webp"
     return ".png", "image/png"
+
+
+def _mime_from_b64(b64: str) -> str:
+    """MIME of a base64 payload, read from its magic bytes. Only the header is
+    decoded — an uploaded image can be several megabytes and the caller is
+    about to send the encoded form anyway."""
+    try:
+        head = base64.b64decode(b64[:32], validate=False)
+    except (ValueError, TypeError):
+        return "image/png"
+    return _suffix_and_mime(head)[1]
 
 
 async def _emit_status(context: ToolContext, message: str) -> None:
@@ -624,8 +591,9 @@ async def _resolve_uploaded_image(
 ) -> str | None:
     """Read a previously-uploaded image attachment and return it base64.
 
-    Shared by the image-to-image source path and the FLUX control-net
-    (canny/depth) control-image path — both need an uploaded image as base64.
+    The bytes are passed through as stored, so callers that must declare a
+    mime type read it off the magic bytes (`_mime_from_b64`) rather than
+    assuming the upload was any particular format.
     """
     if not attachment_id:
         return None

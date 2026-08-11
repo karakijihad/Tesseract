@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import time
 import uuid
 from dataclasses import replace
 from typing import TYPE_CHECKING
@@ -191,7 +192,14 @@ async def _chained_tts_synth(
     Errors in the prior task don't block the current emit; a failed
     sentence shouldn't stall the whole reply.
     """
-    audio_task = asyncio.create_task(_synthesize_sentence_audio(app, session, sentence, kind=kind))
+    # Stamped here, not inside the coroutine: this is the moment the sentence
+    # was actually in hand, before the loop was asked to schedule anything.
+    sentence_ready_at = time.monotonic()
+    audio_task = asyncio.create_task(
+        _synthesize_sentence_audio(
+            app, session, sentence, kind=kind, ready_at=sentence_ready_at,
+        )
+    )
     if prior is not None:
         try:
             await prior
@@ -213,7 +221,15 @@ async def _chained_tts_synth(
             log.info("tts transient error for %s — retrying once: %s", session.session_id, msg[:120])
             await asyncio.sleep(0.4)
             try:
-                result = await asyncio.create_task(_synthesize_sentence_audio(app, session, sentence, kind=kind))
+                # Deliberately the ORIGINAL ready time, not a fresh one: the
+                # boundary is when the sentence was ready to be spoken, so the
+                # failed attempt and its backoff belong to the synth leg rather
+                # than vanishing from the measurement.
+                result = await asyncio.create_task(
+                    _synthesize_sentence_audio(
+                        app, session, sentence, kind=kind, ready_at=sentence_ready_at,
+                    )
+                )
             except asyncio.CancelledError:
                 raise
             except BudgetExhausted as bexc:
@@ -346,6 +362,7 @@ async def _synthesize_sentence_audio(
     sentence: str,
     *,
     kind: str = "answer",
+    ready_at: float | None = None,
 ) -> tuple[bytes, str] | None:
     """Pure synth — returns ``(audio_bytes, provider)`` or ``None`` when
     transcribe-mode gates the call. Split out from emission so multiple
@@ -354,6 +371,12 @@ async def _synthesize_sentence_audio(
     ``BudgetExhausted`` on cap; caller surfaces via ``voice_instruction``.
     ``kind`` selects the per-surface synthesis preset the provider was
     configured with (intent vs answer).
+
+    ``ready_at`` is when the caller actually had this sentence in hand. The
+    chained path schedules this coroutine with ``create_task``, so reading the
+    clock here would charge the provider leg for however long the loop took to
+    get round to us — worst on exactly the congested turns the split exists to
+    explain.
     """
     from tesseract.voice.text_for_speech import to_spoken_text
 
@@ -363,6 +386,18 @@ async def _synthesize_sentence_audio(
         # skip synth entirely. Both callers already treat None as a
         # transcribe-mode short-circuit, so the wire stays clean.
         return None
+    # Leg boundary, and only now that the text is known speakable: a segment
+    # that reduces to nothing produces no audio, so stamping before this check
+    # would fix the boundary on a sentence nobody ever hears. `<intent>` never
+    # reaches TTS at all, so time the model spends narrating intent before it
+    # says anything speakable stays inside the provider leg, visible as ours
+    # rather than hidden as the network's.
+    state = _tts_state(session)
+    if (
+        getattr(state, "voice_commit_at", None) is not None
+        and getattr(state, "voice_first_speakable_at", None) is None
+    ):
+        state.voice_first_speakable_at = ready_at or time.monotonic()
     engine = app["tts_engine"]
     audio_bytes, provider = await engine.synthesize(
         spoken, preset=_preset_for_kind(kind),
@@ -385,6 +420,34 @@ async def _emit_tts_chunk(
     state = _tts_state(session)
     seq = state.tts_sequence
     state.tts_sequence += 1
+    # Time to first audio — end of speech to the operator hearing anything.
+    # The latency budget is written against this leg and nothing measured it,
+    # so it could only ever be asserted. Consumed once: cleared here so the
+    # next sentence, or a typed turn, cannot re-report a stale commit.
+    commit_at = getattr(state, "voice_commit_at", None)
+    if seq == 0 and commit_at is not None:
+        now = time.monotonic()
+        started = getattr(state, "voice_turn_started_at", None)
+        speakable = getattr(state, "voice_first_speakable_at", None)
+        state.voice_commit_at = None
+        state.voice_turn_started_at = None
+        state.voice_first_speakable_at = None
+        # Split into the three legs so the dominant one is named rather than
+        # guessed: `prep` is ours (STT, queueing, retrieval), `brain` is prompt
+        # assembly plus the provider round trip to a speakable sentence, and
+        # `synth` is TTS. Legs are omitted rather than faked when a boundary
+        # was missed — a turn can reach audio by a path that skips one.
+        legs = ""
+        if started is not None and speakable is not None:
+            legs = (
+                f" [prep {started - commit_at:.2f}s, "
+                f"brain {speakable - started:.2f}s, "
+                f"synth {now - speakable:.2f}s]"
+            )
+        log.info(
+            "voice: first audio %.2fs after end of speech%s (provider=%s)",
+            now - commit_at, legs, provider,
+        )
     audio_b64 = base64.b64encode(audio_bytes).decode("ascii") if audio_bytes else ""
     await send_envelope(session, make_tts_chunk(
         session.session_id,

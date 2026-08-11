@@ -32,7 +32,7 @@ from tesseract.lib.pinned_fetch import (
     parse_download_block,
 )
 from tesseract.voice import model_files
-from tesseract.voice.model_files import configured_refs, warn_uncovered
+from tesseract.voice.model_files import configured_refs, migrate_legacy_models, warn_uncovered
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +138,15 @@ def main() -> int:
     parser.add_argument("--voice", help="catalog model id to fetch (default: whatever roles.yaml names)")
     parser.add_argument("--force", action="store_true", help="re-download even if present")
     args = parser.parse_args()
+    # The shell spawns this script DETACHED at launch (provision.rs::
+    # refresh_optional_assets) and starts the supervisor in the same breath,
+    # so this process races the backend's own call to the same function. Do it
+    # here too, before anything checks what is present: otherwise a fetch that
+    # wins the race looks at the new location, finds it empty, and
+    # re-downloads weights that are already on disk — the exact ~2 GB this
+    # migration exists to save. It is idempotent, so both callers doing it is
+    # free.
+    migrate_legacy_models()
     try:
         if args.voice:
             ensure_voice(args.voice, force=args.force)

@@ -44,6 +44,14 @@ async def _start_turn(app: web.Application, session: ServerSession, data: dict) 
     snapshot = data.get("view_snapshot")
     snapshot = snapshot if isinstance(snapshot, dict) else None
     session.pending_view_snapshot = snapshot
+    # End of speech for a voice transcript, carried by the payload. Read here
+    # but NOT stashed on the session until the turn is actually spawned below:
+    # every return between here and there (bad attachments, oversized text,
+    # queue overflow, queued-behind-a-running-turn) is a payload that starts no
+    # turn, and a stashed timestamp would be claimed by whichever turn started
+    # next instead.
+    voice_commit_at = data.get("voice_commit_at")
+    voice_commit_at = voice_commit_at if isinstance(voice_commit_at, (int, float)) else None
     if attachments is None:
         await send_envelope(session, make_envelope(
             "stream_error", "loop", session.session_id,
@@ -90,6 +98,7 @@ async def _start_turn(app: web.Application, session: ServerSession, data: dict) 
             "attachments": attachments,
             "view_snapshot": snapshot,
             "queued_at": queued_at,
+            "voice_commit_at": voice_commit_at,
         })
         await send_envelope(session, make_queued_message(
             session.session_id,
@@ -99,6 +108,10 @@ async def _start_turn(app: web.Application, session: ServerSession, data: dict) 
             position=len(queue),
         ))
         return
+    # Only now, with this payload certain to become a turn, does the timestamp
+    # reach the session — `_run_turn` claims it into that turn's own TurnState
+    # and empties the slot on the very next line it runs.
+    session.voice_commit_at = voice_commit_at
     session.current_turn_task = _ws._spawn_tracked(
         app,
         _run_chat_turn(app, session, text, attachments, chat_id=session.active_chat_id),

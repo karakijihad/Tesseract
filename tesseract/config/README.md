@@ -77,8 +77,8 @@ the loader API all use:
 <tier>.<provider>.<model_id>
 ```
 
-e.g. `api.openai.gpt54_mini`, `api.anthropic.opus_47`,
-`cli.claude.opus_47`, `local.ollama.nomic_embed`. Anything else (a bare
+e.g. `api.openai.gpt54_mini`, `api.anthropic.opus_5`,
+`cli.claude.opus_5`, `local.ollama.nomic_embed`. Anything else (a bare
 role name like `chat_brain`) resolves through `roles.yaml::roles.<r>.primary`.
 
 ### `availability:`
@@ -110,11 +110,11 @@ list. Code references roles by name; `boot.py` resolves them through
 roles:
   chat_brain:
     mode: active
-    primary: api.openai.gpt54_mini
+    primary: api.openai.gpt56_luna
     fallbacks:
-      - api.openai.gpt54_nano
-      - api.google.gemini_25_flash
-    compact_threshold: 0.4
+      - api.openai.gpt54_mini
+      - api.xai.grok_43
+    compact_threshold: 0.7
     keep_recent_turns: 10
     daily_budget_usd: 3.0
 ```
@@ -123,14 +123,51 @@ roles:
 entry fails (network error, 5xx, rate limit). Mid-turn failover is
 automatic.
 
+### `chains:` — one chain, many roles
+
+A role may name a shared chain instead of writing its own refs:
+
+```yaml
+chains:
+  chain_1:
+    - api.nim.gpt_oss_120b
+    - api.google.gemini_36_flash
+    - api.openai.gpt56_luna
+
+roles:
+  observer_agent:
+    mode: active
+    chain: chain_1
+    daily_budget_usd: 1.0
+```
+
+First ref is the primary, the rest are the fallbacks in order — a chain
+role is indistinguishable from a longhand one everywhere downstream. It
+keeps its own `daily_budget_usd` and every other override; only the refs
+are shared.
+
+`chain` and `primary`/`fallbacks` on the same role is a `ConfigError`,
+not a precedence rule. The alias exists so one edit moves every role on
+the chain, and a role quietly overriding it would defeat that without
+saying so.
+
+Chains are numbered rather than named. Any descriptive name is a claim
+that expires the moment the chain is repointed, which is the operation it
+exists for.
+
+Picking a model for a chain-backed role in Settings **detaches that
+role**: its refs are written out in place, its `chain:` key is dropped,
+and the other roles on the chain do not move. Repointing the whole chain
+is an edit to `chains:`.
+
 ### Universality (the load-bearing rule)
 
 **Any role can reference any catalog entry.** Roles do not own
 providers — they pick from the catalog. Concrete consequences:
 
-- Swap `chat_brain.primary` from `api.openai.gpt54_mini` to
-  `api.anthropic.sonnet_46` (or `api.google.gemini_25_flash`, or
-  `cli.claude.opus_47`) — that's the whole change. The Mirror config
+- Swap `chat_brain.primary` from `api.openai.gpt56_luna` to
+  `api.anthropic.sonnet_5` (or `api.google.gemini_36_flash`, or
+  `cli.claude.opus_5`) — that's the whole change. The Mirror config
   watcher detects the edit, calls `boot.rebuild_adapters`, the next
   turn uses the new primary.
 - `observer_agent`, `agents_default`, `subagents_default` work the

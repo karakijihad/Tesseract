@@ -69,10 +69,53 @@ def resolve_env(value: Any) -> Any:
     return default
 
 
-def _require(d: Mapping[str, Any], key: str, where: str) -> Any:
+def require_field(d: Mapping[str, Any], key: str, where: str) -> Any:
+    """Fetch `key` from `d`, raising `ConfigError` naming `where` on a miss.
+
+    Public because every consumer of a resolved catalog entry needs the same
+    guarantee: an infrastructure value either comes from config or the call
+    fails loudly. A `.get(key, <literal>)` in its place is what let scheduler
+    jobs run at a temperature the catalog never set.
+    """
     if key not in d:
         raise ConfigError(f"missing required key '{key}' in {where}")
     return d[key]
+
+
+def resolve_temperature(fields: Mapping[str, Any]) -> float | None:
+    """The entry's temperature, or `None` when it declares none.
+
+    Absence is a statement about the model, not a missing value: the Claude
+    Opus 5 generation removed the sampling parameters and rejects them with a
+    400, so `cli.claude.opus_5` and `api.anthropic.opus_5` carry no
+    `temperature` on purpose. Adapters omit the field when this returns None.
+    """
+    raw = fields.get("temperature")
+    return None if raw is None else float(raw)
+
+
+def resolve_output_cap(
+    fields: Mapping[str, Any], context_window: int, where: str,
+) -> int:
+    """The entry's output cap, however the catalog chose to express it.
+
+    Two spellings, one meaning: `max_output_tokens` states the cap outright,
+    `max_output_ratio` states it as a fraction of the context window (which is
+    how the CLI entries declare theirs). Neither present is a real
+    misconfiguration and raises.
+
+    Lives here rather than in either caller because `brain/boot.py` and
+    `scheduler/role_chain.py` both resolve catalog entries, and this audit
+    found them disagreeing about exactly this: one accepted the CLI shape
+    while the other rejected it and emptied the chain.
+    """
+    if "max_output_tokens" in fields:
+        return int(fields["max_output_tokens"])
+    if "max_output_ratio" in fields:
+        return int(float(fields["max_output_ratio"]) * context_window)
+    raise ConfigError(
+        f"missing required key 'max_output_tokens' (or 'max_output_ratio') in {where}"
+    )
 
 
 # ── Typed views ──────────────────────────────────────────
@@ -300,14 +343,14 @@ def _build_auth_check(tier: str, name: str, block: Mapping[str, Any]) -> CliAuth
     if not isinstance(raw, Mapping):
         raise ConfigError(f"'{where}.auth_check' must be a mapping in providers.yaml")
     where_auth = f"{where}.auth_check"
-    command = _require(raw, "command", where_auth)
+    command = require_field(raw, "command", where_auth)
     if not isinstance(command, list) or not command:
         raise ConfigError(f"'{where_auth}.command' must be a non-empty list in providers.yaml")
     return CliAuthCheck(
         command=tuple(str(c) for c in command),
-        success_pattern=str(_require(raw, "success_pattern", where_auth)),
-        login_hint=str(_require(raw, "login_hint", where_auth)),
-        timeout_seconds=float(_require(raw, "timeout_seconds", where_auth)),
+        success_pattern=str(require_field(raw, "success_pattern", where_auth)),
+        login_hint=str(require_field(raw, "login_hint", where_auth)),
+        timeout_seconds=float(require_field(raw, "timeout_seconds", where_auth)),
     )
 
 
@@ -321,9 +364,9 @@ def _build_connection(
     return ProviderConnection(
         tier=tier,
         name=name,
-        adapter=str(_require(block, "adapter", where)),
-        timeout_seconds=float(_require(block, "timeout_seconds", where)),
-        max_retries=int(_require(block, "max_retries", where)),
+        adapter=str(require_field(block, "adapter", where)),
+        timeout_seconds=float(require_field(block, "timeout_seconds", where)),
+        max_retries=int(require_field(block, "max_retries", where)),
         enabled=bool(block.get("enabled", True)),
         tier_enabled=tier_enabled,
         base_url=resolve_env(block.get("base_url")) if block.get("base_url") else None,
@@ -358,7 +401,7 @@ def _build_connection(
 
 def _build_model(tier: str, prov_name: str, model_id: str, block: Mapping[str, Any]) -> ProviderModel:
     where = f"providers.yaml {tier}.{prov_name}.models.{model_id}"
-    model_name = str(_require(block, "model", where))
+    model_name = str(require_field(block, "model", where))
     kind = str(block.get("kind", "chat"))
     fields = {k: v for k, v in block.items() if k not in ("model", "kind")}
     return ProviderModel(id=model_id, model=model_name, kind=kind, fields=fields)
@@ -395,8 +438,47 @@ def _resolve_ref(ref: str, providers_raw: Mapping[str, Any]) -> ResolvedRef:
     )
 
 
-def _build_role(name: str, block: Mapping[str, Any], providers_raw: Mapping[str, Any]) -> RoleConfig:
+def _chain_refs(
+    name: str, block: Mapping[str, Any], chains: Mapping[str, Any]
+) -> tuple[str, list[str]]:
+    """The role's ordered chain as raw refs: ``(primary, fallbacks)``.
+
+    A role either writes `primary` (+ optional `fallbacks`) out, or names a
+    shared `chain`. Both together is refused rather than resolved by
+    precedence — the point of the alias is that one edit moves every role on
+    the chain, and a role quietly overriding it defeats that silently.
+    """
     where = f"roles.yaml roles.{name}"
+    chain_name = block.get("chain")
+    if chain_name is None:
+        return (
+            str(require_field(block, "primary", where)),
+            [str(r) for r in (block.get("fallbacks") or [])],
+        )
+    if block.get("primary") is not None or block.get("fallbacks"):
+        raise ConfigError(
+            f"{where} sets both `chain: {chain_name}` and its own "
+            f"primary/fallbacks — drop one. Keep `chain` to follow the shared "
+            f"chain, or drop it to pin this role independently."
+        )
+    if chain_name not in chains:
+        known = ", ".join(sorted(chains)) or "(none defined)"
+        raise ConfigError(
+            f"{where}.chain names '{chain_name}', which is missing from "
+            f"roles.yaml chains — known chains: {known}"
+        )
+    refs = [str(r) for r in (chains[chain_name] or [])]
+    if not refs:
+        raise ConfigError(f"roles.yaml chains.{chain_name} is empty — a chain needs at least a primary")
+    return refs[0], refs[1:]
+
+
+def _build_role(
+    name: str,
+    block: Mapping[str, Any],
+    providers_raw: Mapping[str, Any],
+    chains: Mapping[str, Any] | None = None,
+) -> RoleConfig:
     mode = str(block.get("mode", "active"))
     # Inactive roles are kept as schema stubs — primary/fallbacks may be
     # blank or reference a removed provider. Skip resolution; consumers
@@ -405,15 +487,12 @@ def _build_role(name: str, block: Mapping[str, Any], providers_raw: Mapping[str,
         primary = None
         fallbacks: tuple[ResolvedRef, ...] = ()
     else:
-        primary_ref = str(_require(block, "primary", where))
+        primary_ref, fallback_refs = _chain_refs(name, block, chains or {})
         primary = _resolve_ref(primary_ref, providers_raw)
-        fallbacks = tuple(
-            _resolve_ref(str(r), providers_raw)
-            for r in (block.get("fallbacks") or [])
-        )
+        fallbacks = tuple(_resolve_ref(r, providers_raw) for r in fallback_refs)
     overrides = {
         k: v for k, v in block.items()
-        if k not in ("mode", "primary", "fallbacks", "notes")
+        if k not in ("mode", "primary", "fallbacks", "chain", "notes")
     }
     return RoleConfig(
         name=name,
@@ -453,7 +532,7 @@ def _build_voice_chain(
     if not block:
         return None
     where = f"roles.yaml voice.{lane}"
-    primary_ref = _require(block, "primary", where)
+    primary_ref = require_field(block, "primary", where)
     if not isinstance(primary_ref, str) or not primary_ref:
         raise ConfigError(f"{where}.primary must be a catalog ref string")
     settings_block = block.get("settings") or {}
@@ -520,7 +599,7 @@ def load_config(
     roles_raw = yaml.safe_load(rp.read_text(encoding="utf-8")) or {}
 
     embeddings_block = roles_raw.get("embeddings") or {}
-    embeddings_ref = str(_require(embeddings_block, "primary", "roles.yaml embeddings"))
+    embeddings_ref = str(require_field(embeddings_block, "primary", "roles.yaml embeddings"))
     embeddings_resolved = _resolve_ref(embeddings_ref, providers_raw)
 
     reranker_block = roles_raw.get("reranker") or {}
@@ -532,8 +611,9 @@ def load_config(
     roles_block = roles_raw.get("roles") or {}
     if not roles_block:
         raise ConfigError("roles.yaml has no `roles:` section")
+    chains_block = roles_raw.get("chains") or {}
     roles = {
-        name: _build_role(name, block, providers_raw)
+        name: _build_role(name, block, providers_raw, chains_block)
         for name, block in roles_block.items()
     }
 
