@@ -7,7 +7,7 @@ supervisor could only log ``backend exited (code=1)``. That is exactly
 how the 2026-07-29 pywinpty crash storm shipped undiagnosable.
 
 This module drains a child's merged stdout/stderr pipe into a rotating
-``<TESSERACT_HOME>/<logging.dir>/<name>-console.log`` (sizes from
+``<runtime>/logs/<name>-console.log`` (sizes from
 ``mirror.yaml::logging`` via :func:`tesseract.logsetup.load_logging_config`
 — single source of truth, no defaults here) and keeps an in-memory tail
 so the supervisor can inline the child's last words into its own log on
@@ -28,6 +28,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from tesseract.logsetup import load_logging_config
+from tesseract.paths import runtime_logs_root
 
 log = logging.getLogger(__name__)
 
@@ -40,9 +41,21 @@ class ConsoleWriter:
     counts the whole history, and the tail can span a respawn boundary.
     """
 
-    def __init__(self, tesseract_home: Path, name: str) -> None:
+    def __init__(self, name: str) -> None:
         cfg = load_logging_config()
-        path = Path(tesseract_home) / cfg["dir"] / f"{name}-console.log"
+        # `runtime/`, not `<home>/<logging.dir>`. These are console captures of
+        # machine-ops processes — the backend, the supervisor, the agent
+        # controller — and `migrate_install_layout` has classified
+        # `*-console.log` as runtime-side since the split shipped. Building the
+        # path from the home root put them back on the SYNCED half after every
+        # migration, exactly as `logsetup.py` did until it was corrected; this
+        # was the other half of the same defect and outlived the first fix.
+        #
+        # The home is deliberately NOT a parameter. It was one, unread, for
+        # long enough that the signature implied a choice the class does not
+        # offer: the target resolves from the environment at call time, so a
+        # caller passing a different home would have been silently ignored.
+        path = runtime_logs_root() / f"{name}-console.log"
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         self._handler = RotatingFileHandler(

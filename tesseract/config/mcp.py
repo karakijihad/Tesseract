@@ -1,11 +1,10 @@
 """MCP control-plane config (``mcp.yaml``).
 
-Config-as-authority (CLAUDE.md hard rule): every key is required — the loader
+Config-as-authority: every key is required — the loader
 raises ``RuntimeError``/``KeyError`` on a missing or malformed value rather
 than substituting a hardcoded infrastructure default. Mirrors the raise-loudly
 convention of ``config/cockpit.py``.
 
-Schema + invariants: ``Docs/Plan/mcp-control-plane/_shared/mcp-yaml-schema.md``.
 
 Posture is decided by this yaml alone. There is no source-side floor: the
 operator's file is the single authority, which is why `config/mcp.yaml` is DENY

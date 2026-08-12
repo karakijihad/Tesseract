@@ -60,7 +60,7 @@ In a connected session the verbs appear as `mcp__tesseract__memory_search`, `mcp
 Manual registration, if a client ever needs it:
 
 ```bash
-export TESSERACT_MCP_SECRET=<the operator token from tesseract/.env>
+export TESSERACT_MCP_SECRET=<the operator token — Settings → API keys mints one, or read it from .env>
 claude mcp add --scope user --transport http tesseract http://127.0.0.1:8000/mcp \
   --header "Authorization: Bearer $TESSERACT_MCP_SECRET"
 ```

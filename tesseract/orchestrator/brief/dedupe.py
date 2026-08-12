@@ -1,7 +1,7 @@
 """URL dedupe state for the world-digest.
 
 State file: ``memory-store/daily/briefs/_dedupe.json`` (atomic-rewritten).
-Schema in ``Docs/Plan/mission-orchestrator/MO-9/_shared/tracked-topics-schema.md``::
+Tracked-topics schema::
 
     {
       "url_hashes": {"<sha256>": "YYYY-MM-DD", ...},

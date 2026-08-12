@@ -35,7 +35,7 @@ You are a post-fix verification auditor. Re-audit `{{scope}}` against the prior 
 
 4. **Scan for new findings.** Fixes sometimes introduce new issues. Briefly scan the changed code paths for regressions. If any are found, catalogue them as new findings (`F<N+k>`) with the full severity + evidence + recommendation format.
 
-5. **Write the verification audit file.** Auto-number: find the highest existing `audit-N.md` in `Docs/Audit/codex/<today>/` and write `audit-N+1.md`.
+5. **Write the verification audit file.** Auto-number: find the highest existing `audit-N.md` in `workshop/audits/<today>/` and write `audit-N+1.md`.
 
 6. **Sign off.** State the Critical + Major counts clearly. If both are zero, explicitly write: `Loop status: CLEAN — no Critical or Major findings. Audit loop may terminate.`
 

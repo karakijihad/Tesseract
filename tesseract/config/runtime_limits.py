@@ -42,9 +42,8 @@ def load_runtime_config(path: Path) -> dict:
 def load_max_concurrent_synthetic_turns(path: Path) -> int:
     """Return `max_concurrent_synthetic_turns` from runtime.yaml.
 
-    Raises loudly when the file or key is missing — per CLAUDE.md
-    "no hardcoded defaults for infrastructure values; raise loudly on
-    missing keys". WP-2 reads this; values <=0 are rejected. A value
+    Raises loudly when the file or key is missing: no hardcoded defaults
+    for infrastructure values. Values <=0 are rejected. A value
     of 1 reproduces the pre-WP serial behavior (useful kill-switch).
     """
     cfg = load_runtime_config(path)
@@ -74,7 +73,7 @@ def load_spawn_stall_seconds(path: Path) -> float:
     `[spawn_stalled]` floor note. Generous on purpose: a hung *subprocess* is
     already killed by `cli_stream.race_communicate`'s own timeout, so this only
     catches the rarer task/record staleness. Raises loudly when the file or key
-    is missing (CLAUDE.md: no hardcoded infrastructure defaults).
+    is missing (no hardcoded infrastructure defaults).
     """
     cfg = load_runtime_config(path)
     raw = cfg.get("spawn_stall_seconds")
@@ -101,7 +100,7 @@ def load_max_concurrent_spawns_per_session(path: Path) -> int:
     per-session cap on simultaneously-running background
     spawns (SpawnRegistry). Register attempts past the cap raise
     `SpawnCapExceeded`, which tools map to a "drain first" error result.
-    Raises loudly when the file or key is missing (CLAUDE.md: no hardcoded
+    Raises loudly when the file or key is missing (no hardcoded
     infrastructure defaults).
     """
     cfg = load_runtime_config(path)
@@ -128,7 +127,7 @@ def load_ask_park_timeout_s(path: Path) -> float:
 
     trio W4 — bound on how long a background spawn's unattended ASK stays
     parked (input_required) awaiting the operator before it finally denies.
-    Raises loudly when the file or key is missing (CLAUDE.md: no hardcoded
+    Raises loudly when the file or key is missing (no hardcoded
     infrastructure defaults).
     """
     cfg = load_runtime_config(path)
@@ -157,7 +156,7 @@ def load_max_foreground_delegate_timeout_s(path: Path) -> float:
     ``background: false`` delegate_* call may block the chat turn. Foreground
     requests with a larger ``timeout`` are auto-flipped to background spawns
     by ``_delegate_runner.run_delegate``. Raises loudly when the file or key
-    is missing (CLAUDE.md: no hardcoded infrastructure defaults).
+    is missing (no hardcoded infrastructure defaults).
     """
     cfg = load_runtime_config(path)
     raw = cfg.get("max_foreground_delegate_timeout_s")
@@ -184,7 +183,7 @@ def load_max_spawn_depth(path: Path) -> int:
     trio W3 — structural cap on spawn NESTING (root chat session = depth 0;
     each invoke_agent sub-session +1). A session at or past the cap may not
     register background spawns (`SpawnDepthExceeded` → "don't nest deeper"
-    error). Raises loudly when the file or key is missing (CLAUDE.md: no
+    error). Raises loudly when the file or key is missing (no
     hardcoded infrastructure defaults).
     """
     cfg = load_runtime_config(path)
@@ -212,7 +211,7 @@ def load_max_concurrent_chat_turns_per_provider(path: Path) -> int:
     mirror-multi-chat P2 inc.C2 — bounds how many chat turns may stream
     concurrently against a single provider so parallel background chats can't
     collide on its rate limit. Raises loudly when the file or key is missing
-    (CLAUDE.md: no hardcoded infrastructure defaults). A value of 1 reproduces
+    (no hardcoded infrastructure defaults). A value of 1 reproduces
     the pre-inc.C2 fully-serial behavior (useful kill-switch).
     """
     cfg = load_runtime_config(path)
@@ -240,7 +239,7 @@ def load_agent_pending_cap(path: Path) -> int:
     Stage 10 — maximum number of agents that may sit in ``agents/pending/``
     before HEADLESS ``agent_create`` calls are refused (attended creates are
     ASK-gated and uncapped). Flood guard for unattended proposal loops.
-    Raises loudly when the file or key is missing (CLAUDE.md: no hardcoded
+    Raises loudly when the file or key is missing (no hardcoded
     infrastructure defaults).
     """
     cfg = load_runtime_config(path)
@@ -269,7 +268,7 @@ def load_skill_pending_cap(path: Path) -> int:
     ``workspace/skills/pending/`` before HEADLESS ``skill_create`` calls are
     refused (attended drafts are ASK-gated and uncapped). Flood guard for
     unattended proposal loops, mirroring ``agent_pending_cap``. Raises loudly
-    when the file or key is missing (CLAUDE.md: no hardcoded infra defaults).
+    when the file or key is missing (no hardcoded infra defaults).
     """
     cfg = load_runtime_config(path)
     raw = cfg.get("skill_pending_cap")
@@ -296,7 +295,7 @@ def load_chat_queue_max(path: Path) -> int:
     conversation-layer Task 4.1 — maximum number of chat turns that may sit
     queued (not yet dispatched) for one session before the queue is
     considered full. Raises loudly when the file or key is missing
-    (CLAUDE.md: no hardcoded infrastructure defaults).
+    (no hardcoded infrastructure defaults).
     """
     cfg = load_runtime_config(path)
     raw = cfg.get("chat_queue_max")
@@ -321,7 +320,7 @@ def load_agent_question_timeout_s(path: Path) -> float:
     """Return `agent_question_timeout_s` from runtime.yaml.
 
     Bounds how long a sub-agent parked on `agent_ask` waits for an answer.
-    Raises loudly when the file or key is missing (CLAUDE.md: no hardcoded
+    Raises loudly when the file or key is missing (no hardcoded
     infrastructure defaults).
     """
     cfg = load_runtime_config(path)

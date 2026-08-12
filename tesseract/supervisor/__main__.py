@@ -33,8 +33,9 @@ from tesseract.scheduler.alarms import ensure_alarms_state_migrated
 from tesseract.supervisor.breaker import CrashStormBreaker, crash_storm_path
 from tesseract.supervisor.daemon import (
     Supervisor,
+    SupervisorAlreadyRunning,
+    claim_pid_file,
     clear_pid_file,
-    write_pid_file,
 )
 from tesseract.supervisor.intent import runtime_dir
 
@@ -92,36 +93,6 @@ def _pid_alive(pid: int) -> bool:
     return pid_alive(pid)
 
 
-def _report_previous_pid_file(home: Path) -> None:
-    """Name what a leftover ``supervisor.pid`` means, before overwriting it.
-
-    Two different findings wear the same file: a dead pid says the previous
-    supervisor was hard-killed past its teardown, and a LIVE one says a second
-    supervisor is already running — which is the more serious of the two and
-    had no voice at all before.
-    """
-    path = runtime_dir(home) / "supervisor.pid"
-    if not path.exists():
-        return
-    try:
-        pid = int(path.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        logging.warning("supervisor: previous pid file at %s is unreadable", path)
-        return
-    if _pid_alive(pid):
-        logging.warning(
-            "supervisor: pid %d from a previous run is STILL ALIVE — two "
-            "supervisors will fight over the same ports and children",
-            pid,
-        )
-    else:
-        logging.warning(
-            "supervisor: previous run (pid %d) left its pid file behind, so it "
-            "exited without teardown — hard kill, crash, or console close",
-            pid,
-        )
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m tesseract.supervisor",
@@ -156,28 +127,6 @@ def main(argv: list[str] | None = None) -> int:
     # `mirror/server/__main__.py::main`.
     ensure_alarms_state_migrated()
 
-    # Reap daemon/backend children leaked by a prior supervisor that was
-    # hard-killed (skipping its finally-block teardown). Runs at the production
-    # entry, before any child spawns, so every match is a genuine orphan —
-    # leaving them alive lets stacked generations kill each other's healthy
-    # backend/Vite (exit code=1, no traceback). Best-effort; never blocks boot.
-    # Kept out of Supervisor.run() so unit tests that call run() directly don't
-    # enumerate/kill real processes. Opt out with SUPERVISOR_DISABLE_REAP=1.
-    try:
-        from tesseract.supervisor.reap import reap_orphans
-
-        outcome = reap_orphans()
-        if not outcome.swept:
-            # Say it at the supervisor, not only inside the reaper: this boot
-            # started without knowing whether orphans from a prior generation
-            # are still running, and that is worth seeing beside the spawn
-            # lines rather than buried three frames down.
-            logging.warning(
-                "supervisor: booting without an orphan sweep — %s", outcome.reason
-            )
-    except Exception:  # noqa: BLE001
-        logging.exception("supervisor: orphan reap raised — continuing boot")
-
     # Crash-storm gate. Marker present + no --force → refuse to start.
     # --force clears the marker (archived) and proceeds normally; the
     # next start with no marker behaves like a fresh boot.
@@ -195,14 +144,52 @@ def main(argv: list[str] | None = None) -> int:
         archive = breaker.clear()
         logging.warning("supervisor: --force cleared crash storm; archived to %s", archive)
 
-    # A pid file already here means the last supervisor never reached its
-    # teardown — `clear_pid_file` lives in a `finally`, so the only way to
-    # leave one behind is a hard kill (taskkill, console close, crash). That
-    # is worth one line: it is the difference between "this boot follows a
-    # clean stop" and "this boot follows something that died", and every
-    # reader already liveness-checks the file so it was otherwise silent.
-    _report_previous_pid_file(home)
-    pid_file = write_pid_file(home)
+    # AFTER the crash-storm gate and BEFORE the reap, and both halves of
+    # that matter. Claiming first meant a crash-storm refusal returned
+    # holding the lock, leaving a pid file nothing clears — the class of
+    # self-perpetuating wedge this codebase has been bitten by twice (the
+    # stale stop-request, and the crash-storm latch itself). Claiming late
+    # would be worse: the reaper spares other supervisors but not their
+    # CHILDREN, so an unclaimed second launch's own sweep kills the first
+    # one's backend and controller on its way past. Atomically, because
+    # checking liveness and overwriting later is a race both racers win.
+    try:
+        pid_file = claim_pid_file(home)
+    except SupervisorAlreadyRunning as already:
+        logging.error(
+            "supervisor: pid %d is already running — refusing to start a second "
+            "supervisor, which would reap that one's backend and controller. "
+            "Stop it first (python -m tesseract.scripts.shutdown), or delete "
+            "%s if you are certain that process is gone.",
+            already.pid,
+            runtime_dir(home) / "supervisor.pid",
+        )
+        return 3
+
+    # Reap daemon/backend children leaked by a prior supervisor that was
+    # hard-killed (skipping its finally-block teardown). Runs at the production
+    # entry, before any child spawns, so every match is a genuine orphan —
+    # leaving them alive lets stacked generations kill each other's healthy
+    # backend/Vite (exit code=1, no traceback). Best-effort; never blocks boot.
+    # Kept out of Supervisor.run() so unit tests that call run() directly don't
+    # enumerate/kill real processes. Opt out with SUPERVISOR_DISABLE_REAP=1.
+    try:
+        from tesseract.supervisor.reap import reap_orphans
+
+        outcome = reap_orphans()
+        if not outcome.swept and not outcome.disabled:
+            # Say it at the supervisor, not only inside the reaper: this boot
+            # started without knowing whether orphans from a prior generation
+            # are still running, and that is worth seeing beside the spawn
+            # lines rather than buried three frames down. `disabled` is exempt —
+            # a setting the operator chose is not a degradation to warn about
+            # on every launch.
+            logging.warning(
+                "supervisor: booting without an orphan sweep — %s", outcome.reason
+            )
+    except Exception:  # noqa: BLE001
+        logging.exception("supervisor: orphan reap raised — continuing boot")
+
     try:
         backend_cmd_env = os.environ.get("SUPERVISOR_BACKEND_CMD")
         backend_cmd: list[str] | None = None

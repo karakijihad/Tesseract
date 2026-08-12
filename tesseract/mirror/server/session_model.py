@@ -209,7 +209,7 @@ class ServerSession:
     # synthesizes the tail with that preset rather than whichever surface
     # happened to arrive last. Note the buffer can therefore hold text from
     # more than one surface when the opening one never hit a sentence
-    # boundary; see `Docs/Deferred.md`. Reset at turn start.
+    # boundary. Reset at turn start.
     tts_buffer_kind: str = "answer"
     # Latched by the first `<spoken>` delta of the turn; mutes every later
     # `<answer>` delta from TTS while it still streams to screen. Reset at

@@ -7,7 +7,6 @@ when a spawn finishes while the owning chat is **idle** (no turn in flight),
 start a turn so the assistant reads the completion and acts on its own, instead of
 waiting for the operator's next message.
 
-Design: ``Docs/Plan/mcp-control-plane/SPAWN-STAGE2-DESIGN.md`` (part A).
 
 The wake turn carries only a short nudge body; the ``[spawn_completed]`` detail
 rides in via Stage 1's injection (single source — no double-surface). Wiring is

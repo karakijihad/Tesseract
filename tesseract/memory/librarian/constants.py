@@ -48,7 +48,7 @@ _SECTION_MIN_CHARS = 80
 
 # Section-title tags that are runtime bookkeeping, not durable memory.
 # The librarian refuses to promote these — they belong to a log stream, not
-# the memory layer (see `Docs/Plan/memory-retune/` for the stream-split plan).
+# the memory layer, under the stream split.
 # Full memory-worthy surface is under `[user|feedback|project|reference|chat_digest]`.
 _BOOKKEEPING_TITLE_PREFIXES = (
     "[reflect]",

@@ -141,8 +141,15 @@ def attach_file_logging(process: str, *, config_path: Path = MIRROR_YAML) -> Pat
     * ``runtime/logs/<process>.log`` — the rolling aggregate across boots,
       kept as the backstop it has always been. Size rotation bounds both.
 
-    Returns the per-boot path (``None`` if it could not be opened), which is
-    the one a caller wants to name.
+    Returns the per-boot path, or ``None`` when it could not be opened — in
+    which case the AGGREGATE handler may still be attached, since it is armed
+    first. ``None`` therefore means "no per-boot file", not "no file logging".
+
+    ``logging.dir`` does not govern either of these paths; both resolve through
+    ``paths.py``'s home-vs-runtime ownership split. The key is still required
+    and still live — ``supervisor/console_capture.py`` builds the console-log
+    paths from it — so it is inconsistently honored rather than dead, and that
+    is worth knowing before someone edits it expecting these files to move.
     """
     cfg = load_logging_config(config_path)
     root = logging.getLogger()

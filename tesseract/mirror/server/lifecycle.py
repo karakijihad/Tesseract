@@ -35,8 +35,7 @@ log = logging.getLogger(__name__)
 def _resolve_home() -> Path:
     """Resolve ``TESSERACT_HOME`` at call time so test fixtures that
     set the env var BEFORE invoking lifecycle helpers don't need to
-    reload this module. Matches the pattern called out in CLAUDE.md
-    for log/runtime writers."""
+    reload this module. Same pattern every log/runtime writer uses."""
     env = os.environ.get("TESSERACT_HOME")
     if env:
         return Path(env).resolve()

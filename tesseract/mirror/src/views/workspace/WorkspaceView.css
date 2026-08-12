@@ -2,7 +2,7 @@
    Matches the Conscience / Soul shell shape: head + filters + body, all
    clipped to the cockpit center slot via `.view-pane.is-active`. Token
    discipline only — no raw rem sizes, no undefined --bg-base / --accent-*
-   variants. Hint text uses var(--text-meta) per CLAUDE.md hard rule.
+   variants. Hint text uses var(--text-meta) — a hard rule here.
 */
 .workspace-view {
   display: flex;

@@ -1,5 +1,5 @@
 """Janitor — fingerprint-and-orphan cleanup of processes, scratch dirs,
-stale controller sessions, and aged archives (Docs/Plan/janitor/PLAN.md).
+stale controller sessions, and aged archives.
 
 Three entry points share `runner.run_sweep`: the supervisor boot sweep,
 the `janitor_sweep` scheduled job, and `python -m tesseract.scripts.cleanup`.

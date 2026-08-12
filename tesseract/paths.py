@@ -167,6 +167,102 @@ READABLE_STATE_PREFIXES: tuple[str, ...] = (
 )
 
 
+# Filenames the read tools refuse outright, wherever on disk they sit.
+#
+# Containment cannot cover this and it is worth being exact about why:
+# `tesseract/.env` lives INSIDE the code tree, so it is reachable with zero
+# traversal by a path the runtime itself prints in error messages. Bounding
+# reads to `workspace_root` leaves it fully readable. `permissions.yaml`
+# carries `path_overrides` for `file_write` only, so no policy layer scopes a
+# read underneath either — which leaves exactly one place for the refusal to
+# live, and this is it.
+#
+# Templates stay readable on purpose: `.env.example` carries key NAMES and no
+# values, and the first-run setup form is built by parsing it.
+_SECRET_FILENAMES: frozenset[str] = frozenset(
+    {
+        ".env",
+        ".mcp.json",
+        "trusted_dirs.json",
+        "github_token",
+        "secrets.yaml",
+        "secrets.yml",
+        # SSH private keys. The `.pub` halves are deliberately absent — a
+        # public key is public, and refusing it would be theatre.
+        "id_rsa",
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
+        # Credential stores the wider toolchain writes into a home directory,
+        # every one of which sits in the same tree the read tools can reach.
+        # Named individually rather than by pattern: each is a real file with
+        # a known name, and a pattern broad enough to catch them all would
+        # also catch ordinary configuration.
+        ".netrc",
+        "_netrc",  # the Windows spelling
+        ".npmrc",
+        ".pypirc",
+        ".git-credentials",
+        ".htpasswd",
+        "credentials",  # `~/.aws/credentials`, `~/.config/gcloud/credentials`
+        "credentials.json",
+    }
+)
+_SECRET_SUFFIXES: tuple[str, ...] = (".pem", ".pfx", ".p12", ".keystore")
+_TEMPLATE_SUFFIXES: tuple[str, ...] = (".example", ".template", ".sample", ".dist")
+
+
+def _effective_name(name: str) -> str:
+    """The name Windows will actually open, given `name`.
+
+    Two normalisations, both measured against the real filesystem rather than
+    assumed, because each one opens `.env` while spelling it differently:
+
+    - everything from the first `:` is a stream specifier, so `.env::$DATA`
+      reads the DEFAULT stream — the file's own bytes;
+    - a trailing dot or space is stripped by the filesystem, so `.env ` and
+      `.env.` are both `.env`.
+
+    Matching the raw string refuses the documented spelling and admits three
+    that reach the same bytes, which is worse than no check at all: it reads
+    as a control while behaving as a gap.
+    """
+    return name.split(":", 1)[0].rstrip(". ")
+
+
+def is_secret_filename(name: str) -> bool:
+    """Whether `name` is a credential-bearing file a read tool must refuse.
+
+    Case-insensitive for the same reason `readable_state_prefix` is: the
+    target filesystem is NTFS, where `.ENV` and `.env` are one file, so an
+    exact-case test would refuse the documented spelling and pass the other.
+    """
+    folded = _effective_name(name).casefold()
+    if folded.endswith(_TEMPLATE_SUFFIXES):
+        return False
+    if folded in _SECRET_FILENAMES:
+        return True
+    if folded.startswith(".env."):
+        return True
+    return folded.endswith(_SECRET_SUFFIXES)
+
+
+def secret_exclusion_globs() -> tuple[str, ...]:
+    """`is_secret_filename` as glob patterns, for tools that hand the walk to
+    an external searcher and so cannot filter file by file.
+
+    `.env.*` sweeps up `.env.example` too, which `is_secret_filename` allows.
+    Accepted rather than worked around: a template holds key names and no
+    values, so excluding it from a content search costs a caller nothing,
+    while a re-include rule would be one more thing to keep in step.
+    """
+    return (
+        *sorted(_SECRET_FILENAMES),
+        ".env.*",
+        *(f"*{suffix}" for suffix in _SECRET_SUFFIXES),
+    )
+
+
 def readable_state_prefix(relative_posix: str) -> str | None:
     """The `READABLE_STATE_PREFIXES` entry covering `relative_posix`, or None.
 

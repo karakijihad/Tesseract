@@ -8,7 +8,7 @@ on start and only registers mappers whose ``enabled`` is true.
 P4 prune wave 2 (2026-07-04) deleted the zero-signal ``repo_health``,
 ``scheduler``, ``observer``, ``test_failure``, ``channel``, and
 ``memory_signal`` mappers along with their producer scheduler jobs —
-see ``Docs/Plan/lean-agent-os/phase-4-prune-2-docs.md`` Batch 1.
+see the mapper list below.
 """
 
 from tesseract.orchestrator.autonomy.mappers.operator import map as map_operator

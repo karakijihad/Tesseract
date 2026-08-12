@@ -7,7 +7,7 @@ FileReadTool, just a different decoder.
 from __future__ import annotations
 
 import asyncio
-from tesseract.kernel.tools._path_anchor import anchor_read_path
+from tesseract.kernel.tools._path_anchor import ReadPathRefused, anchor_read_path
 
 from pydantic import BaseModel, Field
 
@@ -52,7 +52,10 @@ class PdfReadTool(Tool):
 
     async def run(self, tool_input: BaseModel, context: ToolContext) -> ToolResult:
         inp = tool_input if isinstance(tool_input, PdfReadInput) else PdfReadInput(**tool_input.model_dump())
-        path = anchor_read_path(inp.file_path, context.workspace_root)
+        try:
+            path = anchor_read_path(inp.file_path, context.workspace_root)
+        except ReadPathRefused as exc:
+            return ToolResult(output=str(exc), is_error=True)
 
         if not path.exists():
             return ToolResult(output=f"PDF not found: {path}", is_error=True)

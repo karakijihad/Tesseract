@@ -83,7 +83,7 @@ class ObserverConfig:
 
     @classmethod
     def from_role_entry(cls, entry: dict[str, Any], provider_cfg: dict[str, Any]) -> "ObserverConfig":
-        # CLAUDE.md hard rule: no hardcoded defaults for infrastructure
+        # No hardcoded defaults for infrastructure
         # values. Missing keys raise loudly rather than silently falling
         # back to invented numbers. `reasoning_effort` + `use_responses_api`
         # are feature flags whose absence legitimately means "off".

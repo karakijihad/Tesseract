@@ -4,7 +4,6 @@ Telegram is the first concrete adapter (MO-9-10); WhatsApp / Signal / Discord
 land later by implementing the same protocol. The Mirror Channels tab
 (MO-9-11 / 12) talks to this protocol, never to a concrete adapter directly.
 
-Seeded contract: ``Docs/Plan/mission-orchestrator/MO-9/_shared/channel-adapter-protocol.md``.
 """
 
 from __future__ import annotations

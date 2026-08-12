@@ -14,7 +14,6 @@ Why move: rules drift independent of code logic — they want to be
 editable as content, reviewed as content, diffed as content. Inline
 Python literals turned every wording tweak into a code commit and
 hid them from operator-side review. See
-`Docs/Plan/context-recall/phase-CR-2-prompt-consolidation.md`.
 
 The ``# Active project`` block rides alongside the rules here rather than
 its own module — both are config/disk-driven content blocks injected

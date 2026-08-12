@@ -7,7 +7,6 @@ chat_brain adapter for a 3-8 sentence digest, and appends a
 `memory-store/daily/<YYYY-MM-DD>.md`. Idempotent — the header itself is
 the probe, so re-firing on the same day is a no-op.
 
-Contract: `Docs/Plan/memory-retune/_shared/memory-stream-contract.md`.
 """
 
 from __future__ import annotations

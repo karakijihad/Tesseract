@@ -14,7 +14,7 @@
  *   - `.test.ts(x)` — a test asserting "this string is not 'the assistant'" has to
  *     name the string it is refusing.
  *   - `workshop` / the `tars` CLI entry point — identifiers with a
- *     rename cost beyond this phase (Docs/Deferred.md).
+ *     rename cost beyond this point.
  *
  * Components read the name with `useEntityName()`; a store reads
  * `useIdentityStore.getState().name` and falls back to `ENTITY_FALLBACK`.

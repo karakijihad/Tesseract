@@ -1,7 +1,7 @@
 /* === SCHEDULE VIEW ===
  * Hint / subtext / meta text MUST use var(--text-meta). var(--text-dim) is
  * reserved for deep-background labels on near-black surfaces and is too low
- * contrast for UI copy. See CLAUDE.md → Mirror hint-token rule.
+ * contrast for UI copy.
  */
 .schedule-view-wrap {
   display: flex;

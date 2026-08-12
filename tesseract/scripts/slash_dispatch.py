@@ -30,7 +30,7 @@ skips policy posture, any Tool that wrapped it would let the LLM bypass
      import it to drive the dispatcher in unit tests. Any *other* import
      of ``_OPERATOR_TOKEN`` (especially from a Tool subclass) is a hard
      review block.
-  2. Kernel lockdown (CLAUDE.md) prevents the assistant from writing source, so it
+  2. The kernel lockdown prevents the assistant from writing source, so it
      cannot author a Tool that calls this module in the first place.
 
 ``print_slash_help(registry)`` renders the dynamic ``/help`` output.

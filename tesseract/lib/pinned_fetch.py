@@ -29,14 +29,112 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
+import re
+import time
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Mapping
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Any, Callable, Mapping
 
 logger = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 120.0
 _CHUNK_BYTES = 1024 * 1024
+
+# A URL up to (and not including) its query string. The trailing class excludes
+# whitespace, quotes and the closing brackets a URL is usually reported inside,
+# so the match ends where the URL does rather than eating the rest of a sentence.
+_URL_QUERY_RE = re.compile(r"(https?://[^\s'\"<>)\]}]*?)\?[^\s'\"<>)\]}]*")
+
+# The userinfo segment: everything between the scheme and the last `@` before
+# the path starts. Greedy up to that `@`, so a password containing one of its
+# own is redacted whole rather than half.
+_URL_USERINFO_RE = re.compile(r"(https?://)[^/\s'\"<>)\]}]*@")
+
+# Set by the shell on every provisioning subprocess (`provision.rs::
+# point_at_state_root`). Off by default so a hand-run
+# `python -m tesseract.scripts.fetch_whisper_model` stays readable, and inert
+# anywhere nobody is reading stdout.
+_PROGRESS_ENV = "TESSERACT_PROVISION_PROGRESS"
+
+# The shell's parser. Kept in one place on each side; the two are asserted
+# against each other by `provision.rs::parse_progress_marker`'s unit test and
+# this module's own.
+_PROGRESS_MARKER = "TESSERACT_PROGRESS"
+
+# Emit on EITHER threshold. Bytes alone would go silent on a slow link at the
+# exact moment a user needs to see something moving; seconds alone would emit
+# thousands of lines on a fast one. A stalled transfer therefore keeps
+# re-reporting the same figure, which is the honest signal — the process is
+# alive and the bytes are not arriving.
+_PROGRESS_EVERY_BYTES = 4 * 1024 * 1024
+_PROGRESS_EVERY_SECONDS = 1.0
+
+
+def _progress_reporter(
+    filename: str, expected: int | None
+) -> Callable[..., None]:
+    """A throttled byte reporter for one file, or a no-op when disabled.
+
+    Writes to STDOUT, deliberately: every human-facing line in this module
+    goes to the logger, which is stderr, so a 1.6 GB download cannot bury the
+    four lines that say what actually happened. The shell reads the two
+    streams for different purposes and never shows a marker verbatim.
+    """
+    if os.environ.get(_PROGRESS_ENV) != "1":
+        return lambda received, force=False: None
+
+    state: dict[str, Any] = {"bytes": -1, "at": 0.0, "off": False}
+
+    def report(received: int, force: bool = False) -> None:
+        if state["off"]:
+            return
+        now = time.monotonic()
+        if (
+            not force
+            and received - state["bytes"] < _PROGRESS_EVERY_BYTES
+            and now - state["at"] < _PROGRESS_EVERY_SECONDS
+        ):
+            return
+        state["bytes"] = received
+        state["at"] = now
+        try:
+            print(
+                f"{_PROGRESS_MARKER} file={filename} received={received} "
+                f"expected={expected if expected is not None else '-'}",
+                flush=True,
+            )
+        except Exception:  # noqa: BLE001 — a closed stdout is not a failed download
+            # Every call to this sits inside `_download_one`'s transfer `try`,
+            # whose handler deletes the partial file and returns False. An
+            # unguarded write meant a `BrokenPipeError` on the progress channel
+            # — the shell exiting mid-fetch is enough — was indistinguishable
+            # from a failed transfer and threw away good bytes. Reporting stops
+            # for the rest of this file; the download continues.
+            state["off"] = True
+
+    return report
+
+
+def _expected_bytes(response: Any) -> int | None:
+    """The transfer size the server declared, or None when it did not.
+
+    None is a supported answer and is passed through as such rather than
+    guessed at: the catalog's `max_download_mb` is a refusal cap, not a size,
+    and using it here would render a 1.6 GB model as a fraction of 2 GB.
+
+    Total by construction — it cannot raise. This runs inside the download's
+    own `try`, where anything thrown is reported as "could not download" and
+    the model stays unavailable. A figure shown on a progress bar must never
+    be able to cost the operator the artifact it was describing.
+    """
+    headers = getattr(response, "headers", None)
+    raw = headers.get("content-length") if headers is not None else None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 @dataclass(frozen=True)
@@ -63,6 +161,33 @@ class PinnedSource:
     def url_for(self, filename: str) -> str:
         remote = self.sources.get(filename, filename)
         return f"{self.base_url.rstrip('/')}/{remote.lstrip('/')}"
+
+
+def _unsafe_filename_reason(name: str) -> str | None:
+    """Why `name` cannot be used as an on-disk filename, or None if it can.
+
+    A ``files:`` key names a file INSIDE the destination directory. It is not
+    a path, and the sha256 pin does not make it one: the digest guarantees the
+    bytes are what the catalog promised, never that they land where the
+    catalog was entitled to put them.
+
+    Checked on the way in rather than at the join, so every consumer of a
+    `PinnedSource` inherits the guarantee instead of repeating it.
+    """
+    if not name or name in (".", ".."):
+        return "is empty or names a directory rather than a file"
+    if "/" in name or "\\" in name:
+        return "contains a path separator"
+    if ":" in name:
+        # `C:model.onnx` is drive-RELATIVE on Windows — NOT `is_absolute()`,
+        # yet joining it discards the destination directory entirely. The
+        # same character introduces an NTFS alternate data stream.
+        return "contains a drive or stream separator"
+    if "\x00" in name:
+        return "contains a NUL byte"
+    if PurePosixPath(name).is_absolute() or PureWindowsPath(name).is_absolute():
+        return "is an absolute path"
+    return None
 
 
 def parse_download_block(raw: Any, *, where: str) -> PinnedSource | None:
@@ -102,6 +227,17 @@ def parse_download_block(raw: Any, *, where: str) -> PinnedSource | None:
     sources: dict[str, str] = {}
     for name, spec in files_raw.items():
         filename = str(name)
+        unsafe = _unsafe_filename_reason(filename)
+        if unsafe is not None:
+            logger.warning(
+                "%s: download entry %r %s — a files: key names a file inside "
+                "the destination directory, never a path to anywhere else; "
+                "refusing the whole block",
+                where,
+                filename,
+                unsafe,
+            )
+            return None
         if isinstance(spec, Mapping):
             files[filename] = str(spec.get("sha256") or "").lower()
             remote = str(spec.get("source") or "").strip()
@@ -135,6 +271,32 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def scrub_url_credentials(text: str) -> str:
+    """Redact both places a URL can carry a secret, in every URL in `text`.
+
+    A URL that reaches a log file can be a credential that reaches a log file,
+    two different ways:
+
+    - **the query string**, for a presigned CDN URL whose authorisation IS its
+      query. HuggingFace redirects a model fetch to exactly such a URL, and an
+      httpx exception carries the request URL in its message — so the failure
+      path, not the happy one, is where it escapes;
+    - **the userinfo segment**, for a `https://user:token@host/...` source. No
+      shipped `download:` block uses one, but pointing a block at a private
+      repository is precisely the case that needs a token.
+
+    Truncating keeps the half worth reading — which host refused, which path —
+    and discards the half that is a secret. This is the Python side of the rule
+    the shell applies to its own log, which scrubs both.
+
+    Query strings go first on purpose: the userinfo placeholder contains angle
+    brackets, which the query pattern's URL character class excludes, so
+    redacting userinfo first would stop the query pattern at the placeholder
+    and leave the signature behind.
+    """
+    return _URL_USERINFO_RE.sub(r"\1<redacted>@", _URL_QUERY_RE.sub(r"\1?<redacted>", text))
+
+
 def _download_one(url: str, dest: Path, expected_sha256: str, max_bytes: int, label: str) -> bool:
     """Stream `url` into `dest`, installing only on a digest match."""
     import httpx
@@ -160,6 +322,11 @@ def _download_one(url: str, dest: Path, expected_sha256: str, max_bytes: int, la
             "GET", url, follow_redirects=True, timeout=_TIMEOUT_SECONDS
         ) as resp:
             resp.raise_for_status()
+            report = _progress_reporter(dest.name, _expected_bytes(resp))
+            # A zero at the start so the shell can name the file it is about
+            # to spend minutes on, rather than showing nothing until the
+            # first threshold is crossed.
+            report(0, force=True)
             with tmp.open("wb") as fh:
                 for chunk in resp.iter_bytes(_CHUNK_BYTES):
                     received += len(chunk)
@@ -172,13 +339,15 @@ def _download_one(url: str, dest: Path, expected_sha256: str, max_bytes: int, la
                         break
                     digest.update(chunk)
                     fh.write(chunk)
+                    report(received)
+            report(received, force=True)
     except Exception as exc:  # noqa: BLE001 — offline/upstream/disk are all the same outcome
         logger.warning(
             "%s: could not download %s (%s) — it stays unavailable until this "
             "succeeds; the app continues without it.",
             label,
             dest.name,
-            exc,
+            scrub_url_credentials(str(exc)),
         )
         tmp.unlink(missing_ok=True)
         return False
@@ -233,16 +402,57 @@ def ensure_files(
     """
     try:
         dest_dir.mkdir(parents=True, exist_ok=True)
+        resolved_dir = dest_dir.resolve()
     except OSError as exc:
         logger.warning("%s: cannot create %s: %s", label, dest_dir, exc)
         return False
 
     complete = True
     for filename, expected in source.files.items():
-        dest = dest_dir / filename
-        if dest.exists() and not force:
+        # The SAME name guard the parser applies. `ensure_files` takes a
+        # `PinnedSource`, which is a public frozen dataclass anyone can build
+        # directly, so a containment check on the joined path is not enough on
+        # its own: `model.onnx:stream` resolves to a parent that passes
+        # containment while naming an NTFS alternate data stream.
+        unsafe = _unsafe_filename_reason(str(filename))
+        if unsafe is not None:
+            logger.warning("%s: refusing %r — it %s", label, filename, unsafe)
+            complete = False
+            continue
+
+        lexical = dest_dir / str(filename)
+        # Presence is decided on the LEXICAL path, and BEFORE containment.
+        # This module's first invariant is that a file already on disk is the
+        # operator's, whatever it is — and an operator who symlinked a 1.6 GB
+        # model in from another drive has a `models/model.onnx` whose target
+        # is deliberately outside `dest_dir`. Checking containment first turned
+        # that documented, supported setup into a refusal.
+        if lexical.exists() and not force:
             logger.info("%s: %s already present, skipping", label, filename)
             continue
+
+        # Containment governs the WRITE, which is the only thing it protects.
+        # `parse_download_block` already refuses a key that could escape, but
+        # `PinnedSource` is a public dataclass and nothing stops a caller
+        # constructing one directly.
+        try:
+            dest = lexical.resolve()
+            contained = dest.parent == resolved_dir
+        except OSError:
+            contained = False
+        if not contained:
+            logger.warning(
+                "%s: refusing %r — it resolves outside %s",
+                label,
+                filename,
+                resolved_dir,
+            )
+            complete = False
+            continue
+        # The RESOLVED destination is what gets written, not the lexical join.
+        # Handing the unresolved path downstream would let the directory be
+        # replaced by a junction after the check and before `.part` is opened,
+        # so the path validated and the path written are two different places.
         if not _download_one(
             source.url_for(filename), dest, expected, source.max_bytes, label
         ):

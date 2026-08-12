@@ -13,9 +13,6 @@ signal — the phase-gate reviewer flagged the lost-update window as an
 exit-criterion gap and this lock is the fold.
 
 Authoritative contracts:
-- ``Docs/Plan/mission-orchestrator/MO-9/_shared/brief-renderer-spec.md``
-- ``Docs/Plan/mission-orchestrator/MO-9/phase-MO-9-9-mirror-brief-tab-and-voice.md``
-- ``Docs/Plan/mission-orchestrator/MO-9/phase-MO-9-14-brief-newsletter-workspace.md``
 """
 
 from __future__ import annotations
@@ -51,7 +48,7 @@ _FEEDBACK_LOCK = asyncio.Lock()
 def _briefs_dir() -> Path:
     # Resolve TESSERACT_HOME at call time so monkeypatched env vars in
     # tests reach the writer/reader. Same pattern as
-    # ``workspace_changes.workspace_events_dir`` (CLAUDE.md hard rule).
+    # ``workspace_changes.workspace_events_dir``, which is the only writer.
     home = Path(__import__("os").environ.get("TESSERACT_HOME") or TESSERACT_HOME).resolve()
     return home / "memory-store" / "daily" / "briefs"
 

@@ -3,7 +3,7 @@
 File management previously had no dedicated tool, so the assistant routed
 copies through bash (`copy /Y`, `shutil` one-liners) — a needless trip
 through the shell security layer for a pure file operation (live
-incident: session 2026-07-12-1818). These tools share `file_write`'s
+incident). These tools share `file_write`'s
 posture: bare-relative paths anchor at the state root, destinations pass
 the locked-config check, and `decide.evaluate` runs `validate_path` on the
 write-side fields (see `_WRITE_PATH_TOOLS`) and on the read-side source
@@ -124,7 +124,7 @@ class _FileTransferTool(Tool):
         except OSError as exc:
             return ToolResult(output=f"{self.name} failed: {exc}", is_error=True)
 
-        _maybe_index_workshop_write(dest)
+        _maybe_index_workshop_write(dest, state_root)
         return ToolResult(output=f"{self.name}: {source} -> {dest}")
 
 

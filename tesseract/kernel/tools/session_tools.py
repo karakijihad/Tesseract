@@ -47,8 +47,8 @@ def _load_session_thresholds() -> dict[str, object]:
     turn-timeout knob). Errors are non-fatal; returns {}."""
     try:
         import yaml
-        from tesseract.paths import CONFIG_DIR
-        path = CONFIG_DIR / "permissions.yaml"
+        from tesseract.paths import config_dir
+        path = config_dir() / "permissions.yaml"
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except Exception:  # noqa: BLE001
         return {}

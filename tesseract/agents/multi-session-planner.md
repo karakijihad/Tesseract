@@ -46,7 +46,7 @@ Do not deploy this agent when:
 When invoking this agent, provide:
 
 1. **Goal** — what the initiative must accomplish in one paragraph
-2. **Constraints** — hard rules the plan must respect (CLAUDE.md rules, runtime constraints, toolchain limits)
+2. **Constraints** — hard rules the plan must respect (the project's own conventions, runtime constraints, toolchain limits)
 3. **Reference paths** — key files, spec documents, design docs the plan should cite
 4. **Session budget** — rough estimate of how many sessions this will take
 5. **Audit requirements** — what counts as "done" for the initiative overall
@@ -139,7 +139,7 @@ Current: {phase-id}-{slug} · status: {status} · owner: {owner} · started: {YY
 
 ## Rules
 
-{numbered list inherited from spec + CLAUDE.md}
+{numbered list inherited from the spec and the project's conventions}
 
 ## Subagent roster
 
@@ -188,7 +188,7 @@ Any phase may update _shared/ when reality shifts. Audit gate for any phase touc
 2. Run feature-dev:code-reviewer (mid-phase) OR superpowers:code-reviewer (phase-gate)
 3. Write or update the phase audit file with concrete evidence (file:line, screenshots, test output)
 4. Update INDEX.md — status, sessions-actual, append to session history
-5. Update Docs/CHANGELOG.md, Docs/Sessions/YYYY-MM-DD.md, Docs/Logs/CODEMAP.md
+5. Update the changelog, the session log, and the structural map
 6. Commit
 ```
 
@@ -237,7 +237,10 @@ These rules are mandatory in every plan this agent produces:
 
 ## Deployment Examples
 
-- **`Docs/Plan/Phase 2/mirror/`** — Mirror desktop app (Stage 7). INDEX shows phase 0a–11, dependency DAG, session history. `_shared/` seeded with real WS event types from `event_envelope.py`, REST endpoints from `server.py`, design tokens from spec §3. Reference implementation — not a template fork.
-- **`Docs/Plan/Phase 2/stage-6/`** (hypothetical) — Soul/identity system. Same structure, different `_shared/` content, different phase breakdown.
+- **A desktop-app initiative.** INDEX shows every phase, the dependency
+  DAG, and session history. `_shared/` is seeded with the real event
+  types, endpoints and design tokens pulled from the code, not invented.
+- **An identity-system initiative.** Same structure, different `_shared/`
+  content, different phase breakdown.
 
 **Genericity constraint:** do not hardcode the structure of any specific initiative. The templates above are domain-independent. The reference implementations are examples of applying the pattern, not forks to copy.

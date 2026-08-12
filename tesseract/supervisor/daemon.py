@@ -293,7 +293,7 @@ class Supervisor:
         if self._breaker is None:
             self._breaker = CrashStormBreaker(tesseract_home=self.tesseract_home)
         # Janitor claim first (a detached supervisor is an orphan by design),
-        # then the boot sweep (Docs/Plan/janitor/PLAN.md): reap fingerprinted
+        # then the boot sweep: reap fingerprinted
         # orphans / scratch / stale sessions from the previous run BEFORE
         # spawning fresh daemons. Best-effort — a janitor failure must never
         # block or crash boot.
@@ -641,7 +641,7 @@ class Supervisor:
         """
         if name not in self._console_writers:
             try:
-                self._console_writers[name] = ConsoleWriter(self.tesseract_home, name)
+                self._console_writers[name] = ConsoleWriter(name)
             except Exception:  # noqa: BLE001
                 log.exception(
                     "supervisor: console capture unavailable for %s — continuing without it",
@@ -1027,15 +1027,83 @@ class Supervisor:
             log.debug("supervisor: signal handlers skipped (likely test context)")
 
 
-def write_pid_file(tesseract_home: Path) -> Path:
-    """Write our PID to ``<TESSERACT_HOME>/runtime/supervisor.pid``.
+# Circuit breaker on the claim loop: every retry loop carries one.
+# Three is the project-wide MAX_CONSECUTIVE_FAILURES.
+_PID_CLAIM_ATTEMPTS = 3
+
+
+class SupervisorAlreadyRunning(RuntimeError):
+    """Another supervisor holds the pid file. Carries its pid."""
+
+    def __init__(self, pid: int) -> None:
+        super().__init__(f"supervisor pid {pid} already holds the pid file")
+        self.pid = pid
+
+
+def claim_pid_file(tesseract_home: Path) -> Path:
+    """Claim ``<TESSERACT_HOME>/runtime/supervisor.pid`` for this process.
+
+    An exclusive create, not a write, and that is the whole point. A
+    liveness check followed by a plain overwrite is a check-then-act race
+    two near-simultaneous launches both win — and losing it is expensive:
+    ``reap.py::_ORPHAN_MARKERS`` spares other supervisors but NOT their
+    children, so the second process's own orphan sweep kills the first
+    supervisor's live backend and controller. An accidental double-launch
+    was enough to tear down a running session.
+
+    A pid file whose process is gone is a leftover from a hard kill (the
+    normal exit path unlinks it in a ``finally``), so it is replaced.
+    A pid file whose process is ALIVE raises.
 
     Operator CLI tools (`shutdown.py`, `clear_crash_storm.py`) read this
     to send signals. Caller is responsible for unlinking on exit.
     """
+    from tesseract.supervisor.process_probe import pid_alive
+
     path = runtime_dir(tesseract_home) / "supervisor.pid"
-    path.write_text(f"{os.getpid()}\n", encoding="utf-8")
-    return path
+    payload = f"{os.getpid()}\n".encode()
+    # Bounded, per the project rule that every retry loop carries a circuit
+    # breaker. An unbounded `while True` here would spin forever, at boot,
+    # before logging is useful, if any peer kept recreating the file between
+    # our unlink and our next open — a worse failure than the double-launch
+    # this function exists to prevent.
+    for _ in range(_PID_CLAIM_ATTEMPTS):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                holder = int(path.read_text(encoding="utf-8").strip())
+            except (OSError, ValueError):
+                # Corrupt, or it vanished between the open and the read.
+                path.unlink(missing_ok=True)
+                continue
+            if pid_alive(holder):
+                raise SupervisorAlreadyRunning(holder)
+            # Stale. Re-read before unlinking: between the read above and the
+            # unlink, another process can legitimately claim this file, and
+            # deleting THAT would hand two supervisors the same lock — the
+            # exact outcome this function exists to prevent. Comparing the
+            # contents first means we only ever remove the dead entry we
+            # actually inspected.
+            try:
+                if int(path.read_text(encoding="utf-8").strip()) != holder:
+                    continue  # someone else moved it on; re-evaluate
+            except (OSError, ValueError):
+                continue
+            path.unlink(missing_ok=True)
+            continue
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(payload)
+        except OSError:
+            path.unlink(missing_ok=True)
+            raise
+        return path
+
+    raise RuntimeError(
+        f"supervisor: could not claim {path} in {_PID_CLAIM_ATTEMPTS} attempts — "
+        "something is recreating it faster than it can be claimed"
+    )
 
 
 def clear_pid_file(tesseract_home: Path) -> None:
@@ -1046,4 +1114,10 @@ def clear_pid_file(tesseract_home: Path) -> None:
         pass
 
 
-__all__ = ["Supervisor", "BackendProcess", "write_pid_file", "clear_pid_file"]
+__all__ = [
+    "Supervisor",
+    "BackendProcess",
+    "SupervisorAlreadyRunning",
+    "claim_pid_file",
+    "clear_pid_file",
+]

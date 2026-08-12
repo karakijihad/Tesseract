@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 # Concrete tool names that a friend-tier session MUST NOT invoke. Names
 # track ``tesseract/kernel/tools/<name>.py`` so a missing entry here is
 # instantly visible against the registry. Add new sensitive tools to
-# this list when they land — kernel-lockdown CLAUDE.md hard rule.
+# this list when they land; the kernel lockdown depends on it.
 FRIEND_DENIED_TOOLS: frozenset[str] = frozenset(
     {
         # mission orchestration — friend cannot start, pause, resume, cancel

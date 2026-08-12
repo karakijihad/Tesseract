@@ -21,6 +21,7 @@ import logging
 import os
 import shutil
 from pathlib import Path
+from uuid import uuid4
 
 from tesseract.paths import TESSERACT_DIR, install_root, runtime_dir
 
@@ -94,14 +95,39 @@ def migrate_legacy_models() -> list[str]:
 
     moved: list[str] = []
     destination_root = models_root()
-    for lane in sorted(p for p in legacy.iterdir() if p.is_dir()):
+    try:
+        lanes = sorted(p for p in legacy.iterdir() if p.is_dir())
+    except OSError:
+        return []
+
+    for lane in lanes:
         target = destination_root / lane.name
         if target.exists():
             continue
-        # A scaffold-only lane (README/.gitignore, no weights) is not worth
-        # moving — the fetch scripts recreate it.
-        if not any(child.is_file() and child.suffix not in (".md", "") for child in lane.rglob("*")):
+        # Everything that touches the filesystem is inside the guard, scan
+        # included. `refresh_optional_assets` spawns all three fetch scripts
+        # detached and simultaneously and the backend runs this too, so up to
+        # four processes walk these same lanes in the same order at once — and
+        # `Path.rglob` swallows only PermissionError, so a lane renamed out
+        # from under a scan raised FileNotFoundError straight through a caller
+        # that had not started its own try yet.
+        # The scan gets its OWN guard, separate from the move's. Sharing one
+        # meant a scan that raised fell into the move's `except`, which then
+        # ran the copy fallback and migrated the lane WITHOUT ever applying
+        # the scaffold check — turning a lost race into a wrong move.
+        try:
+            # A scaffold-only lane (README/.gitignore, no weights) is not worth
+            # moving — the fetch scripts recreate it.
+            has_weights = any(
+                child.is_file() and child.suffix not in (".md", "")
+                for child in lane.rglob("*")
+            )
+        except OSError:
+            # Another process renamed this lane out from under the scan.
             continue
+        if not has_weights:
+            continue
+
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             # `os.rename` first, deliberately. It is atomic on one filesystem
@@ -118,13 +144,49 @@ def migrate_legacy_models() -> list[str]:
             # unreachable; a lost race needs no work from us.
             if target.exists():
                 continue
+            # Copy to a staging sibling and rename into place, never straight
+            # into the final path. `shutil.move` across devices is copytree +
+            # rmtree, and an interruption mid-copy — crash, disk-full, a kill —
+            # would leave a partial, non-empty `target` that the
+            # `if target.exists(): continue` check above then skips FOREVER,
+            # with the weights split across two locations and no way to tell a
+            # finished migration from an abandoned one. Staging makes the
+            # final step atomic again: a dead copy leaves rubbish beside the
+            # destination, and the next launch retries cleanly.
+            # Unique per CALL, not per process. A shared `.incoming` put the
+            # same collision back one step along: several callers reach here
+            # with the same lane, and one would rmtree the tree another was
+            # mid-copy into — then rename the wreckage into place, where it
+            # looks complete and nothing retries. Keying on the pid fixes the
+            # deployment shape (three fetch scripts plus the backend) but not
+            # two threads in one process, and there is no reason to leave that
+            # edge open when a token costs nothing.
+            staging = target.with_name(f"{target.name}.incoming.{uuid4().hex[:12]}")
             try:
-                shutil.move(str(lane), str(target))
+                shutil.copytree(lane, staging)
+                os.rename(staging, target)
             except OSError:
+                shutil.rmtree(staging, ignore_errors=True)
                 logger.warning(
                     "voice models: could not move %s to %s", lane, target, exc_info=True
                 )
                 continue
+            try:
+                shutil.rmtree(lane)
+            except OSError:
+                # Not silent, and not fatal. The weights are safely at the
+                # destination; what is left is a copy inside the tree the
+                # updater still has to walk — the exact cost this phase exists
+                # to remove. `target.exists()` means no later run revisits it,
+                # so if this is not said here it is never said at all.
+                logger.warning(
+                    "voice models: %s was copied to %s but the original could not "
+                    "be removed — it stays inside the app tree and updates keep "
+                    "paying for it",
+                    lane,
+                    target,
+                    exc_info=True,
+                )
         moved.append(lane.name)
 
     if moved:

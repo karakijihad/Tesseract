@@ -48,8 +48,8 @@ _KIND_BY_MIME_PREFIX = {
 
 def _download_root() -> Path:
     """Resolve at call time so tests overriding `TESSERACT_HOME` via
-    `monkeypatch.setenv` land their writes under tmp_path. CLAUDE.md
-    hard rule: no test pollution under production state paths."""
+    `monkeypatch.setenv` land their writes under tmp_path: no test
+    pollution under production state paths."""
     home_env = os.environ.get("TESSERACT_HOME")
     base = Path(home_env) if home_env else TESSERACT_HOME
     return base / "downloads" / "chat"

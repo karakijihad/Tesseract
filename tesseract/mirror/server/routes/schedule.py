@@ -10,7 +10,6 @@ async def list_jobs(request: web.Request) -> web.Response:
 
     Response shape: `{"jobs": [{**JobConfig, "runtime": {...} | null}]}`.
     `runtime` is `null` when the scheduler is not running.
-    Contract: `Docs/Plan/scheduler/_shared/mirror-schedule-tab.md`.
     """
     scheduler = request.app.get("scheduler")
     if scheduler is None:

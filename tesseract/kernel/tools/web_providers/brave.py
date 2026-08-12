@@ -19,6 +19,7 @@ _MISSING_KEY_HINT = (
 
 class BraveProvider(WebSearchProvider):
     api_key_env = "BRAVE_SEARCH_API_KEY"
+    service = "brave"
     endpoint = "https://api.search.brave.com/res/v1/web/search"
     http_method = "GET"
     tripwire_source = "api.brave.search"

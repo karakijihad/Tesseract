@@ -1,7 +1,7 @@
 """TokenJuice config + path resolution.
 
 `load_config()` reads `tesseract/config/tokenjuice.yaml`; every key is
-required (no silent `.get(..., default)` per CLAUDE.md hard rules).
+required (no silent `.get(..., default)` for an infrastructure value).
 `user_rules_dir()` and `project_rules_dir()` resolve TESSERACT_HOME / ROOT
 at call time so test fixtures stay isolated.
 """

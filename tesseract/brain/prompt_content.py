@@ -54,7 +54,6 @@ CHANNEL_OVERLAY_HEADER = "# Channel overlay"
 # messaging channel (no operator at the cockpit, markdown only, no
 # ``<intent>``/``<spoken>``/``<answer>`` scaffold, ASK gates have nobody to
 # approve).
-# Authoritative source: ``Docs/Plan/channels-redesign/phase-CR-3-channel-prompt-overlay.md`` §2.
 # ``{channel_name}`` is filled at render time so the overlay caches with
 # the static prefix for a given (kind, channel) pair across turns.
 CHANNEL_OVERLAY_TEMPLATE = (

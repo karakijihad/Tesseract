@@ -7,7 +7,6 @@ no decoder is wired. The bridge concatenates a synthetic XML
 passing it to ``_start_channel_turn``; the assistant sees what was sent and can
 apologize, propose a tool, or file a workspace nudge.
 
-Authoritative shape: ``Docs/Plan/channels-redesign/_shared/channel-attachment-envelope.md``.
 """
 
 from __future__ import annotations

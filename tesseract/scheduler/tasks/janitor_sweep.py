@@ -1,6 +1,6 @@
 """JanitorSweepJob — scheduled fingerprint-and-orphan cleanup.
 
-Wraps `tesseract.janitor.run_sweep` (Docs/Plan/janitor/PLAN.md). Kill
+Wraps `tesseract.janitor.run_sweep`. Kill
 policy is fixed in janitor code (fingerprint AND orphan); cadence lives
 in schedule.yaml only.
 """

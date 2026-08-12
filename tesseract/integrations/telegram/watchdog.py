@@ -60,9 +60,12 @@ class WatchdogConfig:
 
     @classmethod
     def from_env(cls) -> "WatchdogConfig":
-        token = (os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
+        from tesseract.integrations._channels_config import channel_key_env
+
+        key_env = channel_key_env("telegram", "TELEGRAM_BOT_TOKEN")
+        token = (os.environ.get(key_env) or "").strip()
         if not token:
-            raise RuntimeError("TELEGRAM_BOT_TOKEN not set — watchdog requires it")
+            raise RuntimeError(f"{key_env} not set — watchdog requires it")
         chat_raw = (os.environ.get("TELEGRAM_WATCHDOG_CHAT_ID") or "").strip()
         if not chat_raw:
             seed = (os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS") or "").strip()
@@ -186,7 +189,9 @@ def _load_env() -> None:
 
         from tesseract.paths import home_dir
 
-        load_dotenv(home_dir() / ".env")
+        from tesseract.env_file import INTERPOLATE
+
+        load_dotenv(home_dir() / ".env", interpolate=INTERPOLATE)
     except Exception as exc:  # noqa: BLE001
         log.warning("watchdog: .env load failed (%s); relying on OS environment", exc)
 

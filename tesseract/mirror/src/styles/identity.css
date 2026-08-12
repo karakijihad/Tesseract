@@ -2,8 +2,8 @@
 /* The editable half of the Identity tab: names + wake phrase, the voice
    picker, and the workspace document editor. The read-only SOUL.md cards
    below them keep the `.identity-view-*` / `.soul-block-*` shell in
-   `soul.css`. Every hint here is `--text-meta` per the CLAUDE.md hint
-   token rule — `--text-dim` is for deep-background chrome, not text. */
+   `soul.css`. Every hint here is `--text-meta` per the hint-token
+   rule — `--text-dim` is for deep-background chrome, not text. */
 
 .identity-panel-body {
   display: flex;

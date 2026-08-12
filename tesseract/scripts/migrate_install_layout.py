@@ -75,6 +75,11 @@ LOGS_TO_RUNTIME = (
     "provider-health", "tokenjuice", "governor", "capability-snapshot.json",
     # Console and daemon logs: machine ops, named here because they are files
     # at the top of logs/ rather than subdirectories.
+    # `backend/` cannot appear in a flat pre-split tree — per-boot logging
+    # only exists in code that already resolves through the split-aware
+    # paths.py — but an unclassified entry refuses the whole migration, so
+    # naming it costs nothing and removes a way for that to happen.
+    "backend",
     "backend-console.log", "mirror-backend.log", "shell.log",
     "supervisor-console.log", "supervisor.log",
     "agent-controller-console.log", "agent-controller.log",

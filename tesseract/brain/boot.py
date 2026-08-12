@@ -195,7 +195,7 @@ SESSIONS_DIR = TESSERACT_HOME / "sessions"
 # model until `tool_search` surfaces it); the names below are marked
 # `tier = "core"` at the end of `build_tool_registry` so their schemas
 # are always in the per-turn payload. ~45 of ~125 registered tools —
-# "~40" per `Docs/Plan/lean-agent-os/phase-1-unmuzzle.md` Task 2, sized
+# "~40" sized
 # up slightly to keep each named category (memory/delegate/lane/file/
 # web/schedule/alarm/vault/surface) usable without a search round trip.
 # Pin by literal registered name (`Tool.name`, not class name) — verify
@@ -320,7 +320,7 @@ class ChatBrainConfig:
     compact_threshold: float
     keep_recent_turns: int
     # CR-0 (2026-05-22) sliding-window knobs. See
-    # tesseract/brain/chat.py module docstring + Docs/Plan/context-recall/.
+    # tesseract/brain/chat.py module docstring.
     head_anchor_messages: int
     active_window_tokens: int | None
     summary_char_budget: int
@@ -433,9 +433,8 @@ class ChainConfig:
     """Knobs that govern `FallbackAdapter` retry-then-advance behavior.
 
     Read from the top-level `chain:` block in ``providers.yaml``. All
-    keys are required — missing keys raise loudly per CLAUDE.md
-    §"No hardcoded model IDs, URLs, timeouts, or get(..., 'default')
-    patterns for infrastructure values anywhere in Python".
+    keys are required — a missing key raises rather than falling back
+    to a hardcoded model id, URL or timeout.
     """
 
     transient_retries: int
@@ -644,7 +643,7 @@ def resolve_role_runtime(
     # same loop). Role-specific overrides for temperature etc. ride on
     # the role's own overrides via _chat_brain_from_ref. Hard-require
     # the caps from chat_brain rather than defaulting silently — they
-    # are required keys on roles.yaml::chat_brain per CLAUDE.md hard rule.
+    # are required keys on roles.yaml::chat_brain.
     cb_role = bundle.role("chat_brain")
     inherited = {
         "tool_iteration_cap": int(
@@ -867,7 +866,7 @@ class VaultConfig:
     """Typed view of `tesseract/config/vault.yaml`.
 
     Every field is required. `load_vault_config()` raises if any key is
-    missing — no silent fallbacks (CLAUDE.md §Hard Rules).
+    missing — no silent fallbacks.
     """
     max_extract_chars: int
     scale_split_threshold: int
@@ -1032,12 +1031,41 @@ def _reranker_cfg_from_ref(ref) -> dict:
     config is the single source of truth, no silent Python defaults."""
     from tesseract.config.loader import ConfigError
 
+    from tesseract.lib.pinned_fetch import _unsafe_filename_reason
+
     fields = ref.model.fields
     where = f"providers.yaml entry for {ref.ref}"
     for key in ("tokenizer", "max_seq_len", "candidate_cap"):
         if key not in fields:
             raise ConfigError(f"{where} missing required key '{key}'")
-    models_dir = TESSERACT_HOME / "models" / "reranker"
+
+    # `model` and `tokenizer` are FILENAMES inside the reranker directory, and
+    # nothing checked that until now. They are joined onto `models_dir` to
+    # produce paths that are read from AND fetched into — `capability/models.py
+    # ::reranker_lane` takes `model_path.parent` as its download destination —
+    # so a catalog entry naming `../..` or an absolute path moved both outside
+    # the state root entirely.
+    #
+    # `pinned_fetch` already guards the `files:` keys of a download block with
+    # exactly this rule; the model NAME sat one level above it and inherited
+    # none of that. Reached for rather than restated so one definition of
+    # "this is a filename" governs both.
+    for key in ("model", "tokenizer"):
+        value = str(getattr(ref.model, key, None) if key == "model" else fields[key])
+        unsafe = _unsafe_filename_reason(value)
+        if unsafe is not None:
+            raise ConfigError(
+                f"{where}: '{key}' is {value!r}, which {unsafe} — it names a file "
+                f"inside the reranker directory, never a path to anywhere else"
+            )
+    # `home_dir()`, not the frozen `TESSERACT_HOME` constant. The constant is
+    # bound once, at first import, so a `TESSERACT_HOME` set afterwards is
+    # ignored — and this value becomes a directory something then READS from
+    # and FETCHES into. Under pytest, where the env var is set per test but
+    # this module was imported at collection, that meant the reranker path
+    # resolved to the operator's real install however carefully a test
+    # isolated itself.
+    models_dir = home_dir() / "models" / "reranker"
     return {
         "model_path": models_dir / str(ref.model.model),
         "tokenizer_path": models_dir / str(fields["tokenizer"]),
@@ -1178,6 +1206,9 @@ def build_observer(cost_ledger: CostLedger | None = None) -> Observer | None:
     if "observer_agent" not in bundle.roles:
         return None
     role = bundle.role("observer_agent")
+    if role.mode != "active" or role.primary is None:
+        logger.info("observer: role is %s — not constructing an observer", role.mode)
+        return None
 
     try:
         agent_def = load_agent("observer")
@@ -1552,6 +1583,15 @@ def load_voice_config() -> dict:
         # which `_build_voice_runtime` already handles ("no `voice:` block"
         # path equivalent — the engine simply isn't constructed).
         kept: list[dict] = []
+        if chain.mode != "active":
+            # Belt to the loader's brace. The loader drops an inactive lane
+            # before it resolves anything, so this is unreachable from
+            # `roles.yaml` today — but `_build_voice_runtime` reads `chain`
+            # and nothing else, so a lane arriving inactive by any other route
+            # would build an engine, warm it up and spend. The empty chain is
+            # the shape that path already treats as "no engine".
+            logger.info("voice: lane is %s — no chain materialized", chain.mode)
+            return {"mode": chain.mode, "chain": kept}
         for p in chain.chain():
             conn = p.ref.connection
             if not conn.tier_enabled or not conn.enabled:
@@ -1947,7 +1987,7 @@ def build_tool_registry(
     if alarm_registry is None:
         # Call-time resolved (never the frozen import-time constant this used
         # to be) so a relocated TESSERACT_HOME takes effect (distributable-app
-        # pre-installer blocker, Docs/Deferred.md). The one-time legacy-state
+        # pre-installer blocker). The one-time legacy-state
         # migration is a separate, explicit `ensure_alarms_state_migrated()`
         # call at the real entry points (mirror/supervisor/agent_controller
         # main()), not here — this function is exercised by unit tests too
@@ -2341,7 +2381,7 @@ def _wire_tool_defaults(
                 f"tool '{tool.name}' (class {type(tool).__name__}) declares "
                 f"risk_class={risk!r}; expected one of {sorted(valid_risks)}. "
                 "Set it at the class level per "
-                "Docs/Plan/autonomy/_shared/risk-class-taxonomy.md."
+                "the risk-class taxonomy."
             )
         # Lean-agent-os P1 Task 2 — every tool's `tier` (class default or
         # `_apply_tool_tiers` instance override) must resolve to a known

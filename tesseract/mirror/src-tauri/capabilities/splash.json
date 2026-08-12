@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "splash",
+  "description": "Window controls for the undecorated first-run splash. It draws its own title strip, so drag and minimise have to come from the page; it also sizes itself per state. Close is deliberately absent: it routes through the quit_app command instead, because closing this window alone would leave the hidden main window holding the process open. The cockpit uses OS decorations and never calls these, and it renders model-influenced HTML, so the grant stops at this window.",
+  "windows": ["splash"],
+  "permissions": [
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-set-size",
+    "core:window:allow-center"
+  ]
+}

@@ -226,6 +226,11 @@ def _register_routes(app: web.Application) -> None:
     # dependency.
     from tesseract.mirror.server.routes import capabilities as capabilities_route
     capabilities_route.register(app)
+    # The editing half of the same picture: the keys themselves, read from
+    # .env.example and written back to <TESSERACT_HOME>/.env. Same zero-key
+    # constraint — this is the route a fresh install opens to stop being one.
+    from tesseract.mirror.server.routes import env_keys as env_keys_route
+    env_keys_route.register(app)
     app.router.add_get("/api/health", health)
     app.router.add_get("/api/controller/sessions", controller_sessions_handler)
     app.router.add_get(
@@ -1250,7 +1255,15 @@ def _load_env() -> None:
     # the env var on every call instead.
     from tesseract.paths import home_dir
 
-    load_dotenv(home_dir() / ".env")
+    # `interpolate=False` (env_file.INTERPOLATE): dotenv's default expands
+    # `${NAME}` inside a value, so a credential containing that sequence
+    # would silently load as something else — or as nothing, when the name it
+    # names is unset. This file holds secrets, not shell, and the settings
+    # view reads it back through the same switch so what it shows as set is
+    # what the process is running on.
+    from tesseract.env_file import INTERPOLATE
+
+    load_dotenv(home_dir() / ".env", interpolate=INTERPOLATE)
 
 
 def _regenerate_kb_roles_summary() -> None:

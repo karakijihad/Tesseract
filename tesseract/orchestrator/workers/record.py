@@ -1,6 +1,5 @@
 """Durable ``WorkerRecord`` — Pydantic v2 shape + atomic IO.
 
-Schema locked in ``Docs/Plan/autonomy/_shared/worker-record-schema.md``.
 A worker MUST have its record written to disk BEFORE the underlying
 process / task starts, so recovery can always find it. Status
 transitions go through ``write_record`` → atomic ``.tmp`` rewrite of

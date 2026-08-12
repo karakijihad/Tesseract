@@ -78,7 +78,7 @@ def _extract_type_prefix(title: str) -> str | None:
     """Return the `[token]` string from a daily section title, else None.
 
     Pure — zero I/O. Wired by M2's classifier routing; M1 only lands the
-    helper. Contract: `Docs/Plan/memory-retune/_shared/memory-stream-contract.md`.
+    helper.
     """
     t = (title or "").strip()
     if not t.startswith("[") or "]" not in t:

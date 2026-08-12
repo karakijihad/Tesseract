@@ -1,6 +1,5 @@
 """Typed `memory_suggestion` payload produced by the stateful observer.
 
-Shape contract: `Docs/Plan/observer-agent/_shared/memory-suggestion-envelope.md`.
 The observer parses its LLM output into a `MemorySuggestion`; the server
 serialises it via `to_envelope_data()` and streams it as the `data` field
 of a `memory_suggestion` WS envelope. `ChatSession` re-uses

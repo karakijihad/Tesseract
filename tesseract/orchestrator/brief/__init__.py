@@ -17,5 +17,5 @@ left in place for one phase per MO-9-13 §7 plan; MO-9-14 removes the
 loader after confirming no orphans).
 
 Contract:
-``Docs/Plan/mission-orchestrator/MO-9/_shared/brief-renderer-spec.md``.
+the brief renderer spec below.
 """

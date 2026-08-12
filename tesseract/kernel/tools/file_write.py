@@ -11,6 +11,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
+from tesseract.paths import readable_state_prefix
 
 # Source trees, state-root-relative. In a packaged install these are inert —
 # source lives in the sealed `app/` tree, which the write boundary denies
@@ -183,20 +184,25 @@ class FileWriteTool(Tool):
         except OSError as e:
             return ToolResult(output=f"Error writing file: {e}", is_error=True)
 
-        # CR-1 (2026-05-22) — fire-and-forget workshop indexing. When the assistant
-        # writes any markdown / text under `workshop/`, the resulting
-        # artifact becomes recallable via `recall_history` within seconds.
-        # Best-effort: failure does not surface to the caller (the write
-        # already succeeded). Resolved against the path-validator output
-        # so the indexer never sees `..`-traversed targets.
-        _maybe_index_workshop_write(path)
+        # Fire-and-forget workshop indexing. When the assistant writes any
+        # markdown / text under `workshop/`, the resulting artifact becomes
+        # recallable via `recall_history` within seconds. Best-effort: failure
+        # does not surface to the caller (the write already succeeded).
+        # Resolved against the path-validator output so the indexer never sees
+        # `..`-traversed targets.
+        _maybe_index_workshop_write(path, state_root)
 
         return ToolResult(output=f"Written {len(inp.content)} bytes to {path}")
 
 
-def _maybe_index_workshop_write(path: Path) -> None:
+def _maybe_index_workshop_write(path: Path, state_root: Path) -> None:
     """Index ``path`` into the work-history index if it lives under
     ``workshop/`` and looks like a text artifact.
+
+    "Under ``workshop/``" is decided against ``state_root``, not by looking
+    for the word anywhere in the absolute path — the install root is
+    operator-chosen, so a substring test indexes every markdown file written
+    by anyone whose home directory happens to contain "workshop".
 
     Synchronous: one MD/TXT file is microseconds of FTS5 inserts —
     not worth executor scheduling overhead. Matches the parallel
@@ -207,9 +213,10 @@ def _maybe_index_workshop_write(path: Path) -> None:
     if path.suffix.lower() not in (".md", ".txt"):
         return
     try:
-        if "workshop" not in path.as_posix():
-            return
-    except Exception:
+        relative = path.relative_to(state_root).as_posix()
+    except (ValueError, OSError):
+        return
+    if readable_state_prefix(relative) != "workshop":
         return
     try:
         import os

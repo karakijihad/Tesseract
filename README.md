@@ -23,7 +23,7 @@ Everything it remembers is plain files on your disk — Markdown you can open, r
 
 ## Install
 
-1. Go to the [Releases](../../releases) page and download the latest installer (`TESSERACT_x.y.z_x64-setup.exe`).
+1. Download the installer: **[TESSERACT-Installer.exe](../../releases/latest/download/TESSERACT-Installer.exe)**. That link always gives you the current version — bookmark it rather than a release page. What changed in each version is in [CHANGELOG.md](CHANGELOG.md).
 2. Run it. Windows will show a blue screen titled **"Windows protected your PC"**, and the only button on it says **"Don't run"**.
 
    This is expected. The app isn't code-signed yet, so Windows has no history with it and treats it as unknown by default — the same thing happens to any new small app until enough people have run it. To get past it: click **"More info"**, then click **"Run anyway"**.
@@ -36,21 +36,47 @@ Everything it remembers is plain files on your disk — Markdown you can open, r
 
 TESSERACT appears in your Start Menu — just search for it. Opening it a second time while it's already running brings the existing window back rather than starting a second copy.
 
-### A note while the project is private
-
-Right now the TESSERACT source repository is private, and the app downloads its own source code from that repository the first time it runs. Until it's made public you also need a GitHub account with access and a personal access token, which the person who gave you the installer will need to give you. If first-run setup can't download the source because the repository is private, it asks you to paste that token right there — no need to create any folders or files yourself. Paste it and setup continues on its own. This section stops applying once the repository goes public.
-
 ## First run
 
-The first time you open TESSERACT, a setup screen walks you through two things before anything else happens.
+The first time you open TESSERACT, a setup screen walks you through two steps before anything else happens.
+
+![Step one of setup: fields for your name, a name for the assistant, the wake word, and optional API keys](assets/onboarding/setup-identity.png)
 
 **It asks what to call it.** The assistant ships without a name — deliberately. A shipped stand-in name would be indistinguishable from one you chose, so an install whose setup quietly failed would look configured instead of looking unnamed. You give it a name here, and you tell it what to call you. The name is not cosmetic: it's what the assistant calls itself, what shows in the header, and what the wake phrase is built from.
 
-You can change all of it later in the **Identity** tab. Nothing is locked in by answering now.
+Every API key on this screen is optional and every one can be added later in **Settings → API keys**. You can change all of it later in the **Identity** tab. Nothing is locked in by answering now.
 
-**Then it asks before it downloads.** Setup fetches a Python runtime, its dependencies, a browser engine for web tasks, and the local voice it speaks with — several hundred megabytes in total. It tells you that and waits for you rather than starting on its own.
+![Step two of setup: a required list with sizes, and an optional list you can switch off, above a running download total](assets/onboarding/setup-downloads.png)
 
-Once you say go, expect roughly five to ten minutes depending on your connection. That's normal. Don't force-quit it; just let it finish. Every later launch is fast.
+**Then it asks before it downloads anything.** The second step lists what it needs and what it costs. The top group is what TESSERACT cannot run without, shown so the download isn't a surprise. Everything below it is a choice — speech recognition, the voice it speaks with, semantic search, and so on — and anything you switch off downloads nothing at all, now or later. The running total at the bottom moves as you decide.
+
+Whatever you skip can be added afterwards from **Settings**, so nothing here is a one-way door.
+
+![Setup in progress, showing the current step, a progress bar, and the file being downloaded](assets/onboarding/setup-progress.png)
+
+Once you say go, it shows you which step it's on and what it's fetching. Expect roughly five to ten minutes depending on your connection and what you chose. That's normal — don't force-quit it, just let it finish. Every later launch is fast.
+
+On every launch after that, TESSERACT checks what's on your machine against what that version needs, in the background. If something is missing or is the wrong version it repairs what you already agreed to and tells you about anything else — and if nothing has changed, it says nothing at all.
+
+### What your graphics card changes
+
+**You don't need one.** TESSERACT installs and runs on any Windows machine, and hearing you and speaking still work with no graphics card at all.
+
+What a card changes is speed, and only one kind counts: **hardware acceleration here is NVIDIA-only**, because it's built on CUDA. (Unrelated to the free NVIDIA API key mentioned further down — that's a cloud service, this is the card in your machine.)
+
+Setup looks before it decides, and gives your machine a configuration it can actually carry rather than a heavy one it would struggle with:
+
+| | With an NVIDIA card | Without |
+| --- | --- | --- |
+| Speech recognition | The large, most accurate model | A smaller, faster one |
+| Voice | The natural-sounding voice | The lighter voice, which starts speaking sooner |
+| Extra download | ~2.2 GB of acceleration libraries | none |
+
+So a machine without a card isn't running the same thing slowly — it's running a lighter setup chosen for it. You can override either choice in **Settings** afterwards.
+
+**AMD and Intel graphics are not used for acceleration today**, integrated or discrete. Those machines get the same treatment as one with no card. It's a real limitation rather than an oversight, and it's the honest state of things rather than a promise about what's coming.
+
+If you add a graphics card later — an external one, or a new machine restoring from your data folder — the next launch notices and upgrades the configuration on its own. Lose one, and it tells you what would keep up better instead of quietly getting worse.
 
 ## Naming, voice, and who it becomes
 
@@ -163,3 +189,15 @@ The uninstaller will ask whether to also delete your saved data (memory, researc
 ```
 %LOCALAPPDATA%\com.tesseract.mirror
 ```
+
+## Security
+
+TESSERACT runs an assistant that can read files, run commands, and call external services on your machine. [`SECURITY.md`](SECURITY.md) sets out what it defends against, how the permission model works, and — as plainly — what it does not defend against. Read it before switching `security_mode` away from the shipped `max`.
+
+To report a vulnerability, open a private security advisory rather than a public issue.
+
+## License
+
+Copyright © 2026 Jihad Karaki.
+
+TESSERACT is free software, licensed under the [GNU Affero General Public License v3.0](LICENSE). You may use, study, modify and share it. If you distribute a modified version — **including running one as a service others can reach over a network** — you must make your source available under the same license.

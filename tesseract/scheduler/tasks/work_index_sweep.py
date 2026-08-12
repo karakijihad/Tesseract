@@ -16,8 +16,8 @@ This job is the cheap nightly pass that keeps the indexes from
 accumulating ghost rows between full rebuilds.
 
 The job is read-then-prune — no LLM call, no network. Sub-second
-on a typical corpus. Per CLAUDE.md "BaseJob contract forbids
-raising"; every error path returns ``JobResult(ok=False, …)``.
+on a typical corpus. The ``BaseJob`` contract forbids raising, so
+every error path returns ``JobResult(ok=False, …)``.
 """
 
 from __future__ import annotations

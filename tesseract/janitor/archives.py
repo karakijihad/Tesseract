@@ -2,9 +2,15 @@
 
 Lane archives: `controller/lanes-archive/<YYYY-MM>/<lane>/` dirs whose
 newest file is older than the retention window are removed. Log pruning
-runs ONLY over the globs the operator listed in `janitor.yaml`
-(`log_prune.globs`, relative to `<home>/logs/`) — empty list = off, so
-operator-visible history is never touched by default."""
+runs ONLY over the globs listed in `janitor.yaml` (`log_prune.globs`),
+matched under BOTH log roots — `<home>/logs/` and `<runtime>/logs/`. The
+docstring said home-relative for as long as the split has existed, which
+is wrong in the direction that matters: the machine-ops half is the half
+that grows.
+
+`backend/*.log*` is the one entry on by default — per-boot backend logs
+accrue one file per launch and are machine ops, not operator history.
+Everything else under `logs/` stays untouched unless listed."""
 
 from __future__ import annotations
 

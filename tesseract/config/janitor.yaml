@@ -53,4 +53,10 @@ claimed_heartbeat_max_age_s: 600
 log_prune:
   retention_days: 60
   globs:
-    - "backend/*.log"
+    # `*.log*`, not `*.log`. RotatingFileHandler names its rolled generations
+    # `<file>.log.1`..`.log.3`, which `*.log` does not match — so the live file
+    # of each boot was pruned and up to 15 MB of rotated generations per boot
+    # was kept forever. Retention is age-only within the window; the count of
+    # per-boot files is bounded by launch frequency, deliberately and not by a
+    # cap.
+    - "backend/*.log*"

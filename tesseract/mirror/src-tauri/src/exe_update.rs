@@ -1,15 +1,13 @@
-//! Shell self-update (2026-07-29). The UI and this Rust shell ship inside
-//! the installer, so git updates can never deliver them — this module
-//! closes that gap: check the private repo's GitHub Releases for a newer
-//! installer, download it (sha256-verified against the hash our release
-//! notes always carry), and hand off to a silent NSIS upgrade + relaunch.
+//! Shell self-update. The UI and this Rust shell ship inside the installer,
+//! so git updates can never deliver them — this module closes that gap:
+//! check the repo's GitHub Releases for a newer installer, download it
+//! (sha256-verified against the hash our release notes always carry), and
+//! hand off to a silent NSIS upgrade + relaunch.
 //!
-//! Deliberately NOT tauri-plugin-updater: that plugin wants a public
-//! static endpoint serving its own manifest schema. Our releases live in a
-//! private repo behind a token, and the plugin forwards auth headers into
-//! GitHub's S3 redirect (which rejects them). We already own token
-//! handling for git updates; this reuses it, and handles the redirect hop
-//! manually so the token never reaches the asset host.
+//! Deliberately NOT tauri-plugin-updater: that plugin wants a static
+//! endpoint serving its own manifest schema, which would mean publishing and
+//! maintaining a second description of every release alongside the release
+//! itself. Reading the Releases API directly keeps one source of truth.
 //!
 //! Operator-prompted, never silent: `exe_update_apply` only runs from an
 //! explicit click, mirroring `update_apply`'s contract.
@@ -19,9 +17,8 @@ use std::path::Path;
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use tauri::State;
 
-use crate::{repo, shell_log, TesseractHome};
+use crate::{repo, shell_log};
 
 /// GitHub caps a REST asset redirect chain at one hop in practice; a tiny
 /// fixed budget guards against a loop without a dependency on redirect
@@ -39,8 +36,31 @@ pub struct ExeUpdateStatus {
 }
 
 /// `https://github.com/{owner}/{repo}.git` → `("{owner}", "{repo}")`.
+///
+/// Userinfo is stripped before the host is matched, so a URL carrying
+/// credentials — the operator escape hatch `repo.rs` documents — parses to the
+/// same pair as the anonymous one. Matching the whole `https://github.com/`
+/// prefix instead made
+/// every such URL unparseable, which silently disabled update checks for
+/// exactly the operator who had gone out of their way to configure one — and
+/// reported it as "unsupported repo URL", naming the symptom rather than the
+/// cause. The credential is dropped here rather than carried: this parse feeds
+/// the public releases API, which needs no authentication.
 fn owner_repo(url: &str) -> Option<(String, String)> {
-    let rest = url.strip_prefix("https://github.com/")?;
+    let after_scheme = url.strip_prefix("https://")?;
+    // Userinfo, if present, is everything before the LAST `@` in the authority
+    // — a password may itself contain an `@`. The authority ends at the first
+    // `/`, so a later `@` in the path cannot be mistaken for a delimiter.
+    let authority_end = after_scheme.find('/').unwrap_or(after_scheme.len());
+    let (authority, path) = after_scheme.split_at(authority_end);
+    let host = match authority.rfind('@') {
+        Some(at) => &authority[at + 1..],
+        None => authority,
+    };
+    if host != "github.com" {
+        return None;
+    }
+    let rest = path.strip_prefix('/')?;
     let rest = rest.strip_suffix(".git").unwrap_or(rest);
     let mut parts = rest.splitn(2, '/');
     let owner = parts.next()?.to_string();
@@ -104,19 +124,51 @@ struct LatestRelease {
     asset_name: String,
 }
 
-fn fetch_latest(home: &Path) -> Result<LatestRelease, String> {
+/// The releases API is read anonymously, which requires the repository to be
+/// public — there is no credential path left to fall back on.
+///
+/// Anonymous REST calls are rate-limited per source IP (60/hour) rather than
+/// the 5000/hour an authenticated call used to get. A single desktop client
+/// stays far below that, but a shared or NATed egress can exhaust it, so a
+/// rate-limited refusal is named as one instead of reading as a network
+/// fault — otherwise the user goes looking at their own connection.
+fn fetch_latest() -> Result<LatestRelease, String> {
+    fetch_latest_from(GITHUB_API_BASE, &repo::repo_url())
+}
+
+/// The API host, split out only so a test can point the release check at a
+/// local server and read the bytes actually put on the wire. Asserting that
+/// no `Authorization` header is sent is not something a unit test of the
+/// response parsing can do — it is a property of the request.
+const GITHUB_API_BASE: &str = "https://api.github.com";
+
+/// Both inputs are parameters rather than globals so a test is a pure
+/// function of its arguments. `repo_url` in particular: reading
+/// `repo::repo_url()` in here would make every test share one process-global
+/// env var with `repo::tests`, which mutates it — `cargo test` runs these
+/// concurrently, and this file's neighbour in `provision.rs` is already
+/// `#[ignore]`d over exactly that collision. Passing it in costs one argument
+/// and removes the race instead of opting out of it.
+fn fetch_latest_from(api_base: &str, repo_url: &str) -> Result<LatestRelease, String> {
     let (owner, repo_name) =
-        owner_repo(&repo::repo_url()).ok_or("release check: unsupported repo URL")?;
-    let token = repo::github_token(home)
-        .ok_or("release check needs the saved GitHub token — it was not found")?;
-    let url = format!("https://api.github.com/repos/{owner}/{repo_name}/releases/latest");
+        owner_repo(repo_url).ok_or("release check: unsupported repo URL")?;
+    let url = format!("{api_base}/repos/{owner}/{repo_name}/releases/latest");
 
     let resp = ureq::get(&url)
-        .set("Authorization", &format!("Bearer {token}"))
         .set("Accept", "application/vnd.github+json")
         .set("User-Agent", "tesseract-shell")
         .call()
-        .map_err(|e| scrub(&format!("release check failed: {e}")))?;
+        .map_err(|e| match &e {
+            ureq::Error::Status(status, resp)
+                if (*status == 403 || *status == 429)
+                    && resp.header("x-ratelimit-remaining") == Some("0") =>
+            {
+                "release check: GitHub is rate-limiting this network — update checks are \
+                 capped per internet connection, not per machine. Try again within the hour."
+                    .to_string()
+            }
+            _ => scrub(&format!("release check failed: {e}")),
+        })?;
     let body: serde_json::Value = resp
         .into_json()
         .map_err(|e| format!("release check: bad response: {e}"))?;
@@ -152,32 +204,29 @@ fn fetch_latest(home: &Path) -> Result<LatestRelease, String> {
     })
 }
 
-/// Never let a transport error echo a token back into the UI.
+/// A transport error can echo a URL back into the UI, and a hand-set
+/// `TESSERACT_REPO_URL` may carry userinfo, so errors stay scrubbed.
 fn scrub(msg: &str) -> String {
     crate::provision::scrub_credentials(msg)
 }
 
-/// Downloads a private-repo release asset. GitHub's asset endpoint answers
-/// a 302 to a pre-signed asset-host URL; the token goes ONLY to
-/// api.github.com and the redirect is followed with a clean request.
+/// Downloads a release asset. GitHub's asset endpoint answers a 302 to a
+/// pre-signed asset-host URL, which this follows by hand.
 ///
-/// Redirect-following is explicitly DISABLED on the agent so this hop is
-/// ours to make. ureq's default agent would auto-follow (and happens to
-/// strip auth headers itself), but a security property this central must
-/// not ride on an unstated library default that a version bump could
-/// change.
-fn download_asset(api_url: &str, token: &str, dest: &Path) -> Result<(), String> {
+/// Redirect-following is explicitly DISABLED on the agent so the hop is ours
+/// to make: the pre-signed URL carries its own credentials in the query
+/// string, and an auto-following agent decides on our behalf what is
+/// forwarded across a host change. The integrity guarantee does not rest on
+/// the transport either way — the downloaded installer is SHA-256 checked
+/// against the release notes before it is ever run.
+fn download_asset(api_url: &str, dest: &Path) -> Result<(), String> {
     let agent = ureq::AgentBuilder::new().redirects(0).build();
     let mut url = api_url.to_string();
-    let mut authorized = true;
     for _ in 0..MAX_REDIRECTS {
-        let mut req = agent
+        let req = agent
             .get(&url)
             .set("Accept", "application/octet-stream")
             .set("User-Agent", "tesseract-shell");
-        if authorized {
-            req = req.set("Authorization", &format!("Bearer {token}"));
-        }
         let resp = match req.call() {
             Ok(r) => r,
             Err(e) => return Err(scrub(&format!("download failed: {e}"))),
@@ -187,7 +236,6 @@ fn download_asset(api_url: &str, token: &str, dest: &Path) -> Result<(), String>
                 .header("Location")
                 .ok_or_else(|| format!("download: redirect ({}) without Location", resp.status()))?
                 .to_string();
-            authorized = false;
             continue;
         }
         let mut reader = resp.into_reader().take(MAX_DOWNLOAD_BYTES);
@@ -260,11 +308,8 @@ fn spawn_installer_and_exit(app: &tauri::AppHandle, setup: &Path) -> Result<(), 
 }
 
 #[tauri::command]
-pub fn exe_update_check(
-    app: tauri::AppHandle,
-    home: State<TesseractHome>,
-) -> Result<ExeUpdateStatus, String> {
-    let latest = fetch_latest(&home.0)?;
+pub fn exe_update_check(app: tauri::AppHandle) -> Result<ExeUpdateStatus, String> {
+    let latest = fetch_latest()?;
     let current = app.package_info().version.to_string();
     Ok(ExeUpdateStatus {
         available: is_newer(&current, &latest.version),
@@ -274,20 +319,18 @@ pub fn exe_update_check(
 }
 
 #[tauri::command]
-pub fn exe_update_apply(app: tauri::AppHandle, home: State<TesseractHome>) -> Result<(), String> {
+pub fn exe_update_apply(app: tauri::AppHandle) -> Result<(), String> {
     shell_log::log("exe_update_apply: invoked");
-    let latest = fetch_latest(&home.0)?;
+    let latest = fetch_latest()?;
     let current = app.package_info().version.to_string();
     if !is_newer(&current, &latest.version) {
         return Err(format!("already on the latest version ({current})"));
     }
     let expected = parse_sha256(&latest.notes)
         .ok_or("release notes carry no SHA-256 — refusing to install an unverifiable installer")?;
-    let token = repo::github_token(&home.0)
-        .ok_or("self-update needs the saved GitHub token — it was not found")?;
 
     let dest = std::env::temp_dir().join(&latest.asset_name);
-    download_asset(&latest.asset_api_url, &token, &dest)?;
+    download_asset(&latest.asset_api_url, &dest)?;
     let actual = sha256_file(&dest)?;
     if actual != expected {
         let _ = std::fs::remove_file(&dest);
@@ -318,8 +361,37 @@ mod tests {
         );
         assert_eq!(owner_repo("https://example.com/a/b.git"), None);
         assert_eq!(owner_repo("https://github.com/only-owner"), None);
+        assert_eq!(owner_repo("https://github.com"), None);
+        // A hostname that merely ENDS in the real one is a different host.
+        assert_eq!(owner_repo("https://notgithub.com/a/b"), None);
         // The compiled-in production URL must always parse.
         assert!(owner_repo(crate::repo::DEFAULT_REPO_URL).is_some());
+    }
+
+    #[test]
+    fn owner_repo_ignores_userinfo_so_a_credentialed_override_still_checks_updates() {
+        // `repo.rs` documents a userinfo-bearing TESSERACT_REPO_URL as a
+        // deliberate operator escape hatch. It must reach the releases API as
+        // the same owner/repo the anonymous URL does — otherwise setting one
+        // turns update checks off without saying so.
+        assert_eq!(
+            owner_repo("https://jane-doe@github.com/jane-doe/Widget.git"),
+            Some(("jane-doe".into(), "Widget".into()))
+        );
+        assert_eq!(
+            owner_repo("https://x-access-token:ghp_supersecret@github.com/jane-doe/Widget.git"),
+            Some(("jane-doe".into(), "Widget".into()))
+        );
+        // A password may carry an unencoded '@' of its own, and curl, browsers
+        // and libgit2 all resolve the host from the LAST one in the authority.
+        // Parsing from the first would read this as host "@github.com" and
+        // refuse a URL the fetch itself accepts.
+        assert_eq!(
+            owner_repo("https://jane:secret@@github.com/jane-doe/Widget.git"),
+            Some(("jane-doe".into(), "Widget".into()))
+        );
+        // Userinfo cannot smuggle in a different host.
+        assert_eq!(owner_repo("https://github.com@evil.invalid/a/b"), None);
     }
 
     #[test]
@@ -385,6 +457,95 @@ mod tests {
         assert_eq!(
             sha256_file(&p).unwrap(),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    /// A one-request HTTP server on loopback. Returns the bound address and a
+    /// receiver yielding the raw request head the client actually sent.
+    ///
+    /// Hand-rolled on `TcpListener` rather than pulling in a test HTTP crate:
+    /// what is under test is the literal bytes on the wire, and a framework
+    /// that parsed them into a typed request would be answering the question
+    /// with its own reading instead of showing the request.
+    fn one_shot_server(response: String) -> (String, std::sync::mpsc::Receiver<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 8192];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let _ = tx.send(String::from_utf8_lossy(&buf[..n]).to_string());
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        (format!("http://{addr}"), rx)
+    }
+
+    /// Header lines joined with an explicit CRLF. An earlier version used a
+    /// placeholder character and a final `replace`, which silently split the
+    /// response if the BODY happened to contain that character — a trap for
+    /// the next fixture holding an email address or a scoped package name.
+    fn http_response(content_type: &str, body: &str) -> String {
+        const CRLF: &str = "\r\n";
+        [
+            "HTTP/1.1 200 OK".to_string(),
+            format!("Content-Type: {content_type}"),
+            format!("Content-Length: {}", body.len()),
+            "Connection: close".to_string(),
+            String::new(),
+            body.to_string(),
+        ]
+        .join(CRLF)
+    }
+
+    /// The shell removed its GitHub token path entirely, and nothing proved the
+    /// transport had actually stopped sending one — the existing tests cover
+    /// parsing, version comparison and hashing, none of which observe a
+    /// request. This reads the request head straight off the socket.
+    #[test]
+    fn release_check_sends_no_authorization_header() {
+        let body = r#"{"tag_name":"v9.9.9","body":"notes","assets":[{"name":"a-setup.exe","url":"http://127.0.0.1:1/asset"}]}"#;
+        let (base, rx) = one_shot_server(http_response("application/json", body));
+        let _ = fetch_latest_from(&base, "https://github.com/owner/repo.git");
+
+        let head = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        let lower = head.to_lowercase();
+        assert!(
+            !lower.contains("authorization:"),
+            "the release check must be anonymous, sent: {head}"
+        );
+        assert!(
+            !lower.contains("x-access-token") && !lower.contains("ghp_"),
+            "no credential may appear anywhere in the request: {head}"
+        );
+        assert!(
+            lower.contains("user-agent: tesseract-shell"),
+            "the request the assertions above ran against must be ours: {head}"
+        );
+    }
+
+    /// The asset download is the other half, and the one that historically
+    /// carried a credential: it hops to a pre-signed host by hand.
+    #[test]
+    fn asset_download_sends_no_authorization_header() {
+        let (base, rx) = one_shot_server(http_response("application/octet-stream", "abc"));
+        let dir = crate::test_support::TempDir::new("asset-auth");
+        let dest = dir.join("setup.exe");
+
+        let _ = download_asset(&format!("{base}/asset"), &dest);
+
+        let head = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        let lower = head.to_lowercase();
+        assert!(
+            !lower.contains("authorization:"),
+            "the asset download must be anonymous, sent: {head}"
+        );
+        assert!(
+            lower.contains("accept: application/octet-stream"),
+            "the request the assertion above ran against must be ours: {head}"
         );
     }
 }

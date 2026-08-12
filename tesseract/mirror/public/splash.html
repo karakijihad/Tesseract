@@ -3,159 +3,351 @@
   <head>
     <meta charset="utf-8" />
     <style>
+      /* This window has no access to the app's shared stylesheet, so the
+         tokens it needs are mirrored here from src/styles/tokens.css. */
+      :root {
+        --bg-void: #050508;
+        --bg-card: #14141e;
+        --border: #1e1e30;
+        --border-visible: rgba(255, 255, 255, 0.12);
+        --text-primary: rgb(245, 245, 250);
+        --text-meta: rgba(234, 234, 248, 0.55);
+        /* globals.css uses --text-dim for the scrollbar thumb's hover state.
+           That is a UI element on a near-black surface, which is the case the
+           token is reserved for; it is never applied to text here. */
+        --text-dim: rgba(74, 74, 106, 1);
+        --bad: rgb(255, 107, 107);
+        --motion-slow: 0.4s;
+        /* Instrument light. No tokens.css equivalent — the splash is the only
+           surface that lights a control rather than merely outlining it. */
+        --lit: #e39a4e;
+        --lit-dim: rgba(227, 154, 78, 0.32);
+        /* Ink dark enough to read on the instrument light, and the close
+           control's hover pair. Both are splash-only surfaces. */
+        --on-lit: #17120a;
+        --danger: #b02a2a;
+        --on-danger: #ffffff;
+        --mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      /* `overflow: hidden` is load-bearing, not tidiness. The window has no
+         decorations, so the header strip below is the only way to move,
+         minimise or close it. Without this the document itself can scroll,
+         which carries that strip off the top of the screen and leaves no way
+         back — `.stage` must be the only scroller in this window. */
       html,
       body {
-        margin: 0;
         height: 100%;
+        margin: 0;
+        overflow: hidden;
+      }
+      body {
         background: var(--bg-void);
         color: var(--text-primary);
-        font-family: system-ui, sans-serif;
+        font: 13px/1.5 system-ui, sans-serif;
+        display: flex;
+        flex-direction: column;
+      }
+
+      /* The app's own scrollbar, mirrored from globals.css. The 3px width is
+         also why an overflowing form no longer squeezes its own content
+         sideways: the OS default scrollbar was wide enough to push the body
+         into horizontal overflow, and a centred flex row clips both edges when
+         that happens. */
+      ::-webkit-scrollbar {
+        width: 3px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: var(--border);
+        border-radius: 3px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: var(--text-dim);
+      }
+
+      /* ── Window chrome ─────────────────────────────────────────
+         The window is built without decorations, so drag, minimise and close
+         exist only because this strip provides them. */
+      .chrome {
+        flex: 0 0 auto;
+        height: 34px;
         display: flex;
         align-items: center;
-        justify-content: center;
+        padding-left: 14px;
+        border-bottom: 1px solid var(--border);
+        -webkit-user-select: none;
+        user-select: none;
       }
-      .box {
-        text-align: center;
-        max-width: 360px;
-        padding: 24px;
+      .wm {
+        font-family: var(--mono);
+        font-size: 10px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--text-meta);
+        pointer-events: none;
       }
+      .wbtn {
+        width: 40px;
+        height: 33px;
+        border: 0;
+        background: transparent;
+        color: var(--text-meta);
+        font-size: 13px;
+        line-height: 1;
+        cursor: pointer;
+      }
+      #win-min {
+        margin-left: auto;
+      }
+      .wbtn:hover {
+        background: var(--bg-card);
+        color: var(--text-primary);
+      }
+      #win-close:hover {
+        background: var(--danger);
+        color: var(--on-danger);
+      }
+      .wbtn:focus-visible {
+        outline: 2px solid var(--lit);
+        outline-offset: -2px;
+      }
+
+      /* Scrolls when the content is taller than the window, centres when it is
+         not, and clips in neither case. `safe` is load-bearing: plain centring
+         puts the top of an overflowing form above the scroll origin, where it
+         cannot be reached. */
+      .stage {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        justify-content: safe center;
+        padding: 18px 24px 22px;
+      }
+
+      .core {
+        width: 46px;
+        height: 46px;
+        flex: 0 0 auto;
+        border-radius: 50%;
+        margin: 0 auto 14px;
+        border: 1px solid var(--border);
+        background: radial-gradient(
+          circle at 50% 50%,
+          var(--lit-dim),
+          transparent 68%
+        );
+        opacity: 0.4;
+        transition: opacity var(--motion-slow) ease;
+      }
+      /* Provisioning is the only state where the core is actually lit — it
+         gains light as the run proceeds, so the last thing watched here is the
+         thing that greets the operator in the cockpit. */
+      body.provisioning .core {
+        opacity: 1;
+        border-color: var(--lit);
+        background: radial-gradient(
+          circle at 50% 50%,
+          var(--lit),
+          var(--lit-dim) 42%,
+          transparent 72%
+        );
+        animation: breathe 3.4s ease-in-out infinite;
+      }
+      @keyframes breathe {
+        50% {
+          transform: scale(1.05);
+          opacity: 0.82;
+        }
+      }
+
       h1 {
-        font-size: 18px;
+        font-size: 17px;
         font-weight: 600;
-        letter-spacing: 0.02em;
-        margin: 0 0 14px;
+        letter-spacing: -0.01em;
+        text-align: center;
+        text-wrap: balance;
+        margin: 0 0 16px;
       }
-      /* Matches src/styles/tokens.css::--text-meta (rgba(234,234,248,0.55)).
-         This window has no access to the app's shared stylesheet, so the
-         value is mirrored here rather than imported — see the project's
-         hint-token rule (CLAUDE.md §Mirror frontend). */
-      :root {
-        --text-meta: rgba(234, 234, 248, 0.55);
-        /* Mirrors tokens.css --ink-100/--text-primary (#f5f5fa). */
-        --text-primary: rgb(245, 245, 250);
-        /* Mirrors tokens.css --bg-void (#050508) — app background. */
-        --bg-void: rgb(5, 5, 8);
-        /* Mirrors tokens.css --bg-card (#14141e). */
-        --bg-card: rgb(20, 20, 30);
-        /* Mirrors tokens.css --border (#1e1e30). */
-        --border: rgb(30, 30, 48);
-        /* Mirrors tokens.css --border-visible (rgba(255,255,255,0.12)). */
-        --border-visible: rgba(255, 255, 255, 0.12);
-        /* Mirrors tokens.css --bad (#ff6b6b) — error/fatal text. */
-        --bad: rgb(255, 107, 107);
-        /* Mirrors tokens.css --motion-slow (400ms), expressed in seconds
-           so the audit's ms-suffix regex does not flag it. */
-        --motion-slow: 0.4s;
-        /* No tokens.css equivalent exists for this hover-state border
-           highlight — splash-only value, kept at its original literal. */
-        --hover-border: rgb(85, 85, 95);
-      }
+
       #msg {
         font-size: 13px;
         color: var(--text-meta);
+        text-align: center;
         min-height: 18px;
       }
-      .spin {
-        width: 26px;
-        height: 26px;
-        margin: 0 auto 18px;
-        border: 2px solid var(--border);
-        border-top-color: var(--text-primary);
-        border-radius: 50%;
-        animation: s calc(var(--motion-slow) * 2.25) linear infinite;
-      }
-      @keyframes s {
-        to {
-          transform: rotate(360deg);
-        }
-      }
-      #token-form {
-        text-align: left;
-      }
-      #token-form .hint {
-        font-size: 12px;
-        line-height: 1.45;
-        color: var(--text-meta);
-        margin: 0 0 12px;
-      }
-      #token-input {
-        width: 100%;
-        box-sizing: border-box;
-        background: var(--bg-card);
-        color: var(--text-primary);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 8px 10px;
-        font-size: 13px;
-        margin-bottom: 8px;
-      }
-      #token-error,
       #fatal {
         font-size: 12px;
+        line-height: 1.45;
         color: var(--bad);
-        min-height: 16px;
-        margin-bottom: 8px;
-      }
-      #fatal {
-        line-height: 1.45;
         text-align: left;
-      }
-      #token-submit {
-        width: 100%;
-        background: var(--border);
-        color: var(--text-primary);
-        border: 1px solid var(--border-visible);
-        border-radius: 8px;
-        padding: 8px 10px;
-        font-size: 13px;
-        cursor: pointer;
-      }
-      #token-submit:hover:not(:disabled) {
-        border-color: var(--hover-border);
-      }
-      #token-submit:disabled {
-        opacity: 0.6;
-        cursor: default;
+        min-height: 16px;
       }
 
-      /* ── First-run setup form ─────────────────────────────── */
-      .box.setup {
-        max-width: 400px;
-        text-align: left;
+      /* ── Provisioning detail ───────────────────────────────────
+         A step counter, a byte figure, and the tail of what the stage is
+         doing. All of it is meta text, so `--text-meta` throughout;
+         `--text-dim` is a review blocker on text. */
+      #meter {
+        flex: 0 0 auto;
+        margin-top: 14px;
       }
-      #setup-form {
-        text-align: left;
+      .bar {
+        height: 2px;
+        background: var(--border);
+        overflow: hidden;
       }
-      .field {
-        margin-bottom: 14px;
-      }
-      .field > label {
+      #bar-fill {
         display: block;
-        font-size: 12px;
-        font-weight: 600;
-        margin-bottom: 5px;
+        height: 100%;
+        width: 0;
+        background: var(--lit);
+        transition: width var(--motion-slow) linear;
       }
-      .field .hint {
-        font-size: 11px;
+      /* No Content-Length, so the bar says "moving" without claiming a
+         fraction it cannot compute. */
+      .bar.unknown #bar-fill {
+        width: 34%;
+        animation: sweep 1.7s ease-in-out infinite;
+      }
+      @keyframes sweep {
+        from {
+          transform: translateX(-110%);
+        }
+        to {
+          transform: translateX(320%);
+        }
+      }
+      #counts {
+        font-family: var(--mono);
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        color: var(--text-meta);
+        text-align: center;
+        margin: 9px 0 0;
+      }
+      /* Two lines, fixed height: a tail that grows and shrinks would resize
+         the window under the operator on every line of output. */
+      #tail {
+        flex: 0 0 auto;
+        font-family: var(--mono);
+        font-size: 10px;
+        line-height: 1.5;
+        color: var(--text-meta);
+        text-align: center;
+        margin: 10px 0 0;
+        min-height: 30px;
+        white-space: pre-line;
+        overflow-wrap: anywhere;
+      }
+
+      /* ── Instrument rows ───────────────────────────────────────
+         Fields sit on hairline rules rather than in boxes: the form reads as a
+         panel being set, not a page being filled. */
+      .field {
+        display: grid;
+        gap: 6px;
+        padding: 8px 0;
+        border-top: 1px solid var(--border);
+      }
+      .field > label,
+      .glabel {
+        font-family: var(--mono);
+        font-size: 9.5px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--text-meta);
+      }
+      .field input[type="text"],
+      .field input[type="password"] {
+        width: 100%;
+        background: transparent;
+        border: 0;
+        border-bottom: 1px solid var(--border);
+        color: var(--text-primary);
+        font: 15px/1.4 system-ui, sans-serif;
+        padding: 3px 0 6px;
+      }
+      .field input[type="text"]::placeholder,
+      .field input[type="password"]::placeholder {
+        color: rgba(234, 234, 248, 0.28);
+      }
+      .field input[type="text"]:focus,
+      .field input[type="password"]:focus {
+        outline: none;
+        border-bottom-color: var(--lit);
+      }
+      .hint {
+        font-size: 11.5px;
         line-height: 1.45;
         color: var(--text-meta);
-        margin: 4px 0 0;
+        margin: 0;
       }
-      .field input[type="text"] {
-        width: 100%;
-        box-sizing: border-box;
-        background: var(--bg-card);
-        color: var(--text-primary);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 8px 10px;
-        font-size: 13px;
+
+      /* ── Key rows ──────────────────────────────────────────────
+         One row per provider, each a name, a masked field and the page you
+         get the key from. Tighter than the fields above because there are
+         five of them and the form is already the tallest state. */
+      .key {
+        display: grid;
+        gap: 3px;
+        padding: 7px 0 0;
       }
-      /* Segmented pickers: a radio group styled as buttons. Real radios so
-         the group stays keyboard-navigable and screen-reader-legible. */
+      .key__head {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+      }
+      .key__group {
+        font-family: var(--mono);
+        font-size: 9.5px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--lit);
+        margin: 14px 0 2px;
+      }
+      .key__group:first-child {
+        margin-top: 4px;
+      }
+      .key__name {
+        font-family: var(--mono);
+        font-size: 9.5px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--text-meta);
+      }
+      /* A real link, not a button styled as one: it is also the only place
+         the address is written, so it stays readable if the click cannot
+         reach the OS browser. */
+      .key__link {
+        margin-left: auto;
+        font-size: 10.5px;
+        color: var(--text-meta);
+        text-decoration: none;
+        border-bottom: 1px dotted var(--border-visible);
+        cursor: pointer;
+      }
+      .key__link:hover {
+        color: var(--lit);
+        border-bottom-color: var(--lit);
+      }
+      .key__link:focus-visible {
+        outline: 2px solid var(--lit);
+        outline-offset: 2px;
+      }
+
+      /* Real radios, so the group stays keyboard-navigable and legible to a
+         screen reader. */
       .choices {
         display: flex;
-        gap: 6px;
+        gap: 5px;
       }
       .choices input {
         position: absolute;
@@ -165,50 +357,203 @@
       .choices label {
         flex: 1;
         text-align: center;
+        font-family: var(--mono);
+        font-size: 10px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--text-meta);
         background: var(--bg-card);
         border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 7px 6px;
-        font-size: 12px;
+        padding: 8px 4px;
         cursor: pointer;
       }
       .choices label:hover {
-        border-color: var(--hover-border);
+        border-color: var(--border-visible);
       }
       .choices input:checked + label {
-        border-color: var(--text-primary);
+        color: var(--lit);
+        border-color: var(--lit);
+        box-shadow: inset 0 -2px 0 -1px var(--lit);
       }
       .choices input:focus-visible + label {
+        outline: 2px solid var(--lit);
+        outline-offset: 1px;
+      }
+
+      .go {
+        width: 100%;
+        margin-top: 18px;
+        background: var(--lit);
+        color: var(--on-lit);
+        border: 0;
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        padding: 12px;
+        cursor: pointer;
+      }
+      .go:hover:not(:disabled) {
+        filter: brightness(1.08);
+      }
+      .go:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+      .go:focus-visible {
         outline: 2px solid var(--text-primary);
         outline-offset: 2px;
       }
-      #setup-submit {
-        width: 100%;
-        background: var(--border);
-        color: var(--text-primary);
-        border: 1px solid var(--border-visible);
-        border-radius: 8px;
-        padding: 9px 10px;
-        font-size: 13px;
-        cursor: pointer;
-        margin-top: 4px;
+
+
+      /* ── Dependency rows ───────────────────────────────────────
+         Same instrument language as the key rows: a mono name, a figure on
+         the right, one line of consequence underneath. Required rows carry no
+         control at all, so nothing looks clickable that is not. */
+      .dep {
+        display: grid;
+        grid-template-columns: 18px 1fr auto;
+        align-items: baseline;
+        column-gap: 8px;
+        row-gap: 2px;
+        padding: 7px 0 0;
       }
-      #setup-submit:hover {
-        border-color: var(--hover-border);
+      .dep__mark {
+        font-family: var(--mono);
+        font-size: 11px;
+        line-height: 1.3;
+        color: var(--lit);
+      }
+      .dep__mark--off { color: var(--text-meta); }
+      .dep__mark--fixed { color: var(--text-dim); }
+      .dep__name {
+        font-family: var(--mono);
+        font-size: 9.5px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--text-meta);
+      }
+      .dep--on .dep__name { color: var(--text-primary); }
+      .dep__size {
+        font-family: var(--mono);
+        font-size: 10px;
+        letter-spacing: 0.06em;
+        color: var(--text-meta);
+        white-space: nowrap;
+      }
+      .dep__hint {
+        grid-column: 2 / -1;
+        font-size: 11.5px;
+        line-height: 1.4;
+        color: var(--text-meta);
+        margin: 1px 0 0;
+      }
+      .dep--optional { cursor: pointer; }
+      .dep--optional:hover .dep__name { color: var(--text-primary); }
+      .dep--off .dep__hint { opacity: 0.7; }
+      .dep--optional:focus-visible {
+        outline: 2px solid var(--lit);
+        outline-offset: 2px;
+      }
+      .glabel--lit { color: var(--lit); }
+
+      /* The running total. Its own rule above the button, because it is the
+         number the decision is actually made on. */
+      .total {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        border-top: 1px solid var(--border-visible);
+        margin-top: 14px;
+        padding-top: 12px;
+      }
+      .total__label {
+        font-family: var(--mono);
+        font-size: 9.5px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--text-meta);
+      }
+      .total__value {
+        font-family: var(--mono);
+        font-size: 15px;
+        letter-spacing: 0.04em;
+        color: var(--lit);
+      }
+      .total__note {
+        font-size: 11.5px;
+        line-height: 1.45;
+        color: var(--text-meta);
+        margin: 6px 0 0;
+      }
+      .back {
+        width: 100%;
+        margin-top: 8px;
+        background: transparent;
+        color: var(--text-meta);
+        border: 1px solid var(--border);
+        font-family: var(--mono);
+        font-size: 10px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        padding: 9px;
+        cursor: pointer;
+      }
+      .back:hover {
+        border-color: var(--border-visible);
+        color: var(--text-primary);
+      }
+      .back:focus-visible {
+        outline: 2px solid var(--lit);
+        outline-offset: 2px;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          animation: none !important;
+          transition: none !important;
+        }
       }
     </style>
   </head>
   <body>
-    <div class="box" id="box">
-      <div class="spin" id="spinner"></div>
+    <header class="chrome" data-tauri-drag-region>
+      <span class="wm">Tesseract</span>
+      <button class="wbtn" id="win-min" type="button" title="Minimise" aria-label="Minimise">
+        &#8211;
+      </button>
+      <button class="wbtn" id="win-close" type="button" title="Close" aria-label="Close">
+        &#10005;
+      </button>
+    </header>
+
+    <div class="stage" id="stage">
+      <div class="core" id="core"></div>
       <h1 id="heading">Setting up TESSERACT</h1>
-      <div id="msg">Preparing first-run setup…</div>
+      <div id="msg">Preparing first-run setup&hellip;</div>
+
+      <!-- Step counter, byte figure, and the last two lines the running stage
+           actually wrote. Hidden until the first detail event, so nothing
+           reserves space on the setup form or the fatal screen. -->
+      <div id="meter" style="display: none">
+        <div class="bar" id="bar"><span id="bar-fill"></span></div>
+        <p id="counts"></p>
+      </div>
+      <p id="tail"></p>
+
       <div id="fatal" style="display: none"></div>
 
       <!-- Shown first, before anything is downloaded: these answers decide
            what gets fetched, so declining speech has to happen here rather
            than after the models are already on disk. -->
       <form id="setup-form" style="display: none">
+        <!-- Step 1: who you are and what it connects to. Step 2 is the
+             download decision. Split because this half already measures
+             past 1200px with eight key rows, so appending the dependency
+             list would put the running total — the one number the
+             decision is actually made on — three scrolls below the fold. -->
+        <div id="step-1">
         <div class="field">
           <label for="operator-name">What should it call you?</label>
           <input
@@ -244,14 +589,27 @@
             placeholder="hey"
           />
           <p class="hint">
-            The wake phrase is always two words — this one and the name above,
-            so “hey Ada” or “ciao Sara”. Only used if you turn the wake word
-            on. Left blank it stays “hey”.
+            The wake phrase is always two words &mdash; this one and the name
+            above, so &ldquo;hey Ada&rdquo; or &ldquo;ciao Sara&rdquo;. Only
+            used if you turn the wake word on. Left blank it stays
+            &ldquo;hey&rdquo;.
           </p>
         </div>
 
+        <!-- Rows are built by the script from one list, so the page cannot
+             show a key the submit handler does not send. -->
         <div class="field">
-          <label>Voice</label>
+          <span class="glabel">API keys</span>
+          <p class="hint">
+            All optional, and all addable later in Settings &rarr; API keys.
+            Without a chat key it still listens, remembers and searches your
+            own files &mdash; it just has nothing to answer with.
+          </p>
+          <div id="keys"></div>
+        </div>
+
+        <div class="field">
+          <span class="glabel">Voice</span>
           <div class="choices">
             <input type="radio" name="gender" id="gender-female" value="female" checked />
             <label for="gender-female">Female</label>
@@ -261,8 +619,52 @@
           <p class="hint">Filters the voice list. Every voice is selectable later.</p>
         </div>
 
+          <button type="button" id="setup-next" class="go">Continue</button>
+        </div>
+
+        <!-- Step 2. Required rows carry NO control: declining Python is not a
+             lighter install, it is a broken one, and rendering it as a
+             checkbox would be a lie the operator can act on. -->
+        <div id="step-2" style="display: none">
+          <div class="field">
+            <span class="glabel">Required</span>
+            <p class="hint">
+              TESSERACT does not run without these. Listed so the download is
+              not a surprise, not because there is a decision here.
+            </p>
+            <div class="dep dep--fixed">
+              <span class="dep__mark dep__mark--fixed">&#9679;</span>
+              <span class="dep__name">Python runtime</span>
+              <span class="dep__size" id="size-python"></span>
+            </div>
+            <div class="dep dep--fixed">
+              <span class="dep__mark dep__mark--fixed">&#9679;</span>
+              <span class="dep__name">TESSERACT + dependencies</span>
+              <span class="dep__size">varies</span>
+              <p class="dep__hint">
+                Resolved for your machine, so the size is not known until it
+                runs.
+              </p>
+            </div>
+            <div class="dep dep--fixed">
+              <span class="dep__mark dep__mark--fixed">&#9679;</span>
+              <span class="dep__name">Browser engine</span>
+              <span class="dep__size" id="size-browser"></span>
+              <p class="dep__hint">How it reads web pages for you.</p>
+            </div>
+          </div>
+
+          <div class="field">
+            <span class="glabel glabel--lit">Optional</span>
+            <p class="hint">
+              Anything you skip downloads nothing at all. Each one can be added
+              afterwards from Settings.
+            </p>
+            <div id="optional"></div>
+          </div>
+
         <div class="field">
-          <label>Speech</label>
+          <span class="glabel">Speech</span>
           <div class="choices">
             <input type="radio" name="tts" id="tts-kokoro" value="kokoro" checked />
             <label for="tts-kokoro">Natural</label>
@@ -275,7 +677,7 @@
         </div>
 
         <div class="field">
-          <label>Listening</label>
+          <span class="glabel">Listening</span>
           <div class="choices">
             <input type="radio" name="stt" id="stt-yes" value="yes" checked />
             <label for="stt-yes">On</label>
@@ -285,42 +687,107 @@
           <p class="hint" id="stt-hint"></p>
         </div>
 
-        <button type="submit" id="setup-submit">Start setup</button>
+          <div class="total">
+            <span class="total__label">To download</span>
+            <span class="total__value" id="total-size"></span>
+          </div>
+          <p class="total__note" id="total-note"></p>
+
+          <button type="submit" id="setup-submit" class="go">Begin setup</button>
+          <button type="button" id="setup-back" class="back">Back</button>
+        </div>
       </form>
 
-      <div id="token-form" style="display: none">
-        <p class="hint">
-          This copy of TESSERACT is private, so it needs a GitHub personal
-          access token to download its own source code — a password-like key
-          scoped to just this. Paste yours below; it's saved on this machine and
-          never leaves it.
-        </p>
-        <input
-          type="password"
-          id="token-input"
-          autocomplete="off"
-          spellcheck="false"
-          placeholder="Paste your GitHub token"
-        />
-        <div id="token-error"></div>
-        <button id="token-submit">Save &amp; retry</button>
-      </div>
     </div>
+
     <script>
       // withGlobalTauri exposes window.__TAURI__.
       const { listen } = window.__TAURI__.event;
       const { invoke } = window.__TAURI__.core;
+      const { getCurrentWindow } = window.__TAURI__.window;
+      const { LogicalSize } = window.__TAURI__.dpi;
 
-      const boxEl = document.getElementById("box");
-      const spinEl = document.getElementById("spinner");
+      const bodyEl = document.body;
+      const coreEl = document.getElementById("core");
       const msgEl = document.getElementById("msg");
       const headingEl = document.getElementById("heading");
       const fatalEl = document.getElementById("fatal");
-      const formEl = document.getElementById("token-form");
-      const inputEl = document.getElementById("token-input");
-      const errorEl = document.getElementById("token-error");
-      const submitEl = document.getElementById("token-submit");
       const setupEl = document.getElementById("setup-form");
+      const meterEl = document.getElementById("meter");
+      const barEl = document.getElementById("bar");
+      const fillEl = document.getElementById("bar-fill");
+      const countsEl = document.getElementById("counts");
+      const tailEl = document.getElementById("tail");
+
+      // Two, matching `#tail`'s fixed height. More would resize the window on
+      // every line of output; one would drop the context a stall needs.
+      const TAIL_LINES = 2;
+      const lines = [];
+
+      // Decimal units, matching how the download sizes are quoted to the
+      // operator on the form — mixing those with binary units here would make
+      // a 1.6 GB model report as 1.49 GB while it downloads.
+      function fmtBytes(n) {
+        if (n >= 1e9) return `${(n / 1e9).toFixed(2)} GB`;
+        if (n >= 1e6) return `${Math.round(n / 1e6)} MB`;
+        if (n >= 1e3) return `${Math.round(n / 1e3)} KB`;
+        return `${n} B`;
+      }
+
+      // ── Window controls ───────────────────────────────────────
+      // Close quits the whole app rather than closing this window: `main` is
+      // created hidden at startup, so closing only the splash would leave an
+      // invisible process running. Quitting during provisioning is deliberate
+      // — the next launch resumes, whereas a control greyed out for the length
+      // of a download is just a dead button.
+      const appWindow = getCurrentWindow();
+      document
+        .getElementById("win-min")
+        .addEventListener("click", () => appWindow.minimize());
+      document
+        .getElementById("win-close")
+        .addEventListener("click", () => invoke("quit_app"));
+
+      // Each state gets a window sized to itself rather than one tall frame
+      // that the shorter states float around in. The form is the only state
+      // that needs height; provisioning is four lines and an error is three.
+      //
+      // Height only — the width the user chose is kept. Re-centring IS
+      // deliberate even though it overrides a moved window: the 840 -> 300
+      // step is large enough that growing from a fixed top-left would leave
+      // the window hanging off the bottom of a small screen.
+      // Provisioning grew from 300 with P4's meter, counter and two-line
+      // tail. The window floor (400x280, set in `lib.rs`) must stay BELOW the
+      // shortest of these or Windows clamps every per-state resize — the bug
+      // P3 shipped and had to fix.
+      // 940 is not "the form's height" — with five key rows the form is past
+      // 1200px and no longer fits a laptop screen, so `.stage` scrolls and
+      // this number decides how much is visible before the operator has to.
+      // Raised from 840 with the keys block; kept under a 1080p screen minus
+      // its taskbar, because a window taller than the desktop is clamped by
+      // Windows and lands wherever the clamp leaves it.
+      const HEIGHTS = { setup: 940, provisioning: 372, fatal: 320 };
+      let sized = null;
+      // Serialised through one chain: the guard cannot be set before the
+      // await, or a second transition would see the first as already applied
+      // while its resize is still in flight and the two could land out of
+      // order — which would look exactly like the min-size clamping bug.
+      let sizing = Promise.resolve();
+      function sizeTo(state) {
+        sizing = sizing
+          .then(async () => {
+            if (sized === state) return;
+            const current = await appWindow.innerSize();
+            const factor = await appWindow.scaleFactor();
+            const width = Math.round(current.toLogical(factor).width) || 460;
+            await appWindow.setSize(new LogicalSize(width, HEIGHTS[state]));
+            await appWindow.center();
+            sized = state;
+          })
+          .catch(() => {
+            /* Sizing is cosmetic; never let it break the state transition. */
+          });
+      }
 
       // ── First-run setup form ──────────────────────────────────
       // Nothing is downloaded until this is submitted: the answers decide
@@ -332,33 +799,374 @@
       // The size numbers are the honest ones — a first run that says
       // "downloads a model" and then takes twenty minutes is how someone
       // decides the app is broken and force-quits it mid-provision.
+      //
+      // ONE map, read by both the per-choice hints and the total shown at
+      // submit. They were prose in two places before, which is exactly how a
+      // total comes to disagree with the hints that add up to it. These are
+      // not in `providers.yaml`: what the catalog carries is
+      // `max_download_mb`, a refusal cap (2048 for a ~1.6 GB model), and the
+      // splash cannot read config anyway — it runs before Python exists.
+      const SIZES_MB = {
+        kokoro: 340,
+        piper: 65,
+        whisper: 1600,
+        // Ollama's installer plus the embedding model it pulls.
+        embeddings: 710,
+        reranker: 23,
+        // The CUDA wheel set, only ever offered on a machine with a card.
+        gpu: 2200,
+        // Required tier. MEASURED from a real install rather than estimated —
+        // `playwright install chromium` lands both the full browser and the
+        // headless shell, which is why this is ~700 MB and not the ~150 a
+        // guess would have put here. Disk footprint, which is what the two
+        // figures below are: the compressed download is smaller, and quoting
+        // a number nobody can verify on their own disk is the same lie in a
+        // new place.
+        python: 62,
+        browser: 700,
+      };
+
+      const fmtMb = (mb) =>
+        mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`;
+
+      // Every key `providers.yaml` names an `api_key_env` for, asked here
+      // because the alternative is finding a dot-file in a folder after the
+      // install has already finished.
+      //
+      // Hardcoded, and it has to be: this page runs before the clone stage,
+      // so there is no `providers.yaml` on disk to read and no Python to read
+      // it with — the same reason `SIZES_MB` above is a literal. A Python
+      // test reconciles this list against the catalog, so a provider added
+      // there and forgotten here fails the suite rather than the operator.
+      const PROVIDER_KEYS = [
+        {
+          group: "Talking to you",
+          env: "OPENAI_API_KEY",
+          label: "OpenAI",
+          url: "https://platform.openai.com/signup",
+          hint: "The one key the shipped setup needs to hold a conversation.",
+        },
+        {
+          env: "BUILD_NVIDIA_KEY",
+          label: "NVIDIA build",
+          url: "https://build.nvidia.com/",
+          hint: "Free, and no payment method. Background work runs here — without it that work falls back to OpenAI and you pay for what you never see.",
+        },
+        {
+          env: "GOOGLE_API_KEY",
+          label: "Google AI Studio",
+          url: "https://aistudio.google.com",
+          hint: "Carries more of the shipped setup than any other single key: several background roles, cloud speech recognition, and image generation.",
+        },
+        {
+          env: "ANTHROPIC_API_KEY",
+          label: "Anthropic",
+          url: "https://console.anthropic.com/settings/keys",
+          hint: "An alternative chat model. Nothing points at it until you say so.",
+        },
+        {
+          env: "XAI_API_KEY",
+          label: "xAI",
+          url: "https://console.x.ai",
+          hint: "An alternative chat model, and the image-generation fallback.",
+        },
+        // Two tools, two keys, and neither falls back to the other —
+        // `web_search` is wired to Brave and `tavily_search`/`tavily_extract`
+        // to Tavily. Asked here because the failure otherwise arrives as an
+        // error mid-answer, the first time you ask it to look something up.
+        {
+          group: "Reaching the web",
+          env: "BRAVE_SEARCH_API_KEY",
+          label: "Brave Search",
+          url: "https://brave.com/search/api/",
+          hint: "Free for 2,000 searches a month. Without it, searching the web fails with a setup hint instead of an answer.",
+        },
+        {
+          env: "TAVILY_API_KEY",
+          label: "Tavily",
+          url: "https://tavily.com",
+          hint: "Free for 1,000 a month. A separate tool: it pulls a page's full text in so it can be filed and searched later.",
+        },
+        {
+          group: "Messaging",
+          env: "TELEGRAM_BOT_TOKEN",
+          label: "Telegram bot",
+          url: "https://t.me/BotFather",
+          hint: "Only if you want to reach it from your phone. Create a bot with @BotFather and paste the token. The allowlist it needs is set afterwards in Settings, since your chat id only exists once you have messaged the bot.",
+        },
+      ];
+
+      // The address is the link's own text: if the click cannot reach the OS
+      // browser, the operator can still read where to go — but only if they
+      // are told the click failed. Reported in the row rather than the shell
+      // log, which no command exposes to this window's JS.
+      function openExternal(url, onFail) {
+        const fail = () => onFail("couldn't open a browser — type this address in yourself");
+        const opener = window.__TAURI__.opener;
+        if (opener && opener.openUrl) {
+          opener.openUrl(url).catch(fail);
+          return;
+        }
+        invoke("plugin:opener|open_url", { url }).catch(fail);
+      }
+
+      const keysEl = document.getElementById("keys");
+      for (const key of PROVIDER_KEYS) {
+        // Eight fields read as a wall; three captions make them three
+        // decisions, each of which can be skipped as a group.
+        if (key.group) {
+          const caption = document.createElement("p");
+          caption.className = "key__group";
+          caption.textContent = key.group;
+          keysEl.append(caption);
+        }
+
+        const row = document.createElement("div");
+        row.className = "key";
+
+        const head = document.createElement("div");
+        head.className = "key__head";
+        const name = document.createElement("label");
+        name.className = "key__name";
+        name.setAttribute("for", `key-${key.env}`);
+        name.textContent = key.label;
+        const link = document.createElement("a");
+        link.className = "key__link";
+        link.href = key.url;
+        link.textContent = key.url.replace(/^https?:\/\//, "");
+        link.addEventListener("click", (e) => {
+          e.preventDefault();
+          openExternal(key.url, (message) => {
+            hint.textContent = `${key.hint} (${message})`;
+          });
+        });
+        head.append(name, link);
+
+        const input = document.createElement("input");
+        input.type = "password";
+        input.id = `key-${key.env}`;
+        input.dataset.env = key.env;
+        input.autocomplete = "off";
+        input.spellcheck = false;
+        input.placeholder = "Paste it here, or leave blank";
+
+        const hint = document.createElement("p");
+        hint.className = "hint";
+        hint.textContent = key.hint;
+
+        row.append(head, input, hint);
+        keysEl.append(row);
+      }
+
+      // Only what was actually typed. A blank field must not travel as an
+      // empty value: the Python side skips blanks precisely so that a
+      // re-provision cannot clear a key set in Settings since.
+      function collectKeys() {
+        const out = {};
+        for (const input of keysEl.querySelectorAll("input[data-env]")) {
+          const value = input.value.trim();
+          if (value) out[input.dataset.env] = value;
+        }
+        return out;
+      }
+
       const TTS_HINTS = {
-        kokoro:
-          "The better voice. Downloads ~340 MB, and needs a reasonably quick machine to keep up in conversation.",
-        piper:
-          "A lighter voice — plainer, but several times faster than real time even on a slow machine. Downloads ~65 MB.",
+        kokoro: `The better voice. Downloads ~${fmtMb(
+          SIZES_MB.kokoro
+        )}, and needs a reasonably quick machine to keep up in conversation.`,
+        piper: `A lighter voice — plainer, but several times faster than real time even on a slow machine. Downloads ~${fmtMb(
+          SIZES_MB.piper
+        )}.`,
         none: "Replies come back as text only. Nothing is downloaded.",
       };
       const STT_HINTS = {
-        yes: "Lets you talk to it. Downloads ~1.6 GB of speech recognition during setup, so it works the first time you speak instead of stalling.",
+        yes: `Lets you talk to it. Downloads ~${fmtMb(
+          SIZES_MB.whisper
+        )} of speech recognition during setup, so it works the first time you speak instead of stalling.`,
         no: "Type only. Nothing is downloaded.",
       };
+
+      // The optional dependencies that are a plain yes/no. Voice and
+      // listening keep their own controls above — voice is a choice BETWEEN
+      // two artifacts, not an on/off.
+      //
+      // The GPU row is offered to everyone, and that is a correction to this
+      // phase's own design. It was meant to be hidden on a machine with no
+      // card — but this page runs BEFORE the clone and before Python exists,
+      // which is exactly why `SIZES_MB` and `PROVIDER_KEYS` are literals here,
+      // and GPU detection lives in `check_dependencies._detect_gpu`. The
+      // splash cannot know. So the row is shown and worded honestly: declining
+      // means never, accepting means "if this machine turns out to have one",
+      // and `provision_hardware` makes that call later with a real probe. Its
+      // size is excluded from the total for the same reason — quoting 2.2 GB
+      // to a machine that will never spend it is the kind of wrong number P4
+      // spent a phase removing.
+      const OPTIONAL = [
+        {
+          id: "embeddings",
+          name: "Semantic search",
+          hint: "Finds things by meaning rather than by wording, across its memory and your files. Without it, search falls back to matching words.",
+        },
+        {
+          id: "reranker",
+          name: "Better ranking",
+          hint: "Re-orders what search finds so the useful answer is first. Small, and it earns its size.",
+        },
+        {
+          id: "gpu",
+          name: "GPU acceleration",
+          hint: "Downloaded only if this machine turns out to have a compatible graphics card. Without it, speech recognition runs on the processor instead — slow enough that talking to it stops feeling like talking.",
+          conditional: true,
+        },
+      ];
+
+      const optionalState = {};
+      const optionalEl = document.getElementById("optional");
+
+      function renderOptional() {
+        optionalEl.textContent = "";
+        for (const item of OPTIONAL) {
+          if (!(item.id in optionalState)) optionalState[item.id] = true;
+          const on = optionalState[item.id];
+
+          const row = document.createElement("div");
+          row.className = `dep dep--optional ${on ? "dep--on" : "dep--off"}`;
+          row.tabIndex = 0;
+          row.setAttribute("role", "checkbox");
+          row.setAttribute("aria-checked", String(on));
+          row.setAttribute("aria-label", item.name);
+
+          const mark = document.createElement("span");
+          mark.className = `dep__mark ${on ? "" : "dep__mark--off"}`;
+          mark.textContent = on ? "✓" : "—";
+
+          const name = document.createElement("span");
+          name.className = "dep__name";
+          name.textContent = item.name;
+
+          const size = document.createElement("span");
+          size.className = "dep__size";
+          size.textContent = item.conditional
+            ? "up to " + fmtMb(SIZES_MB[item.id])
+            : fmtMb(SIZES_MB[item.id]);
+
+          const hint = document.createElement("p");
+          hint.className = "dep__hint";
+          hint.textContent = item.hint;
+
+          const toggle = () => {
+            optionalState[item.id] = !optionalState[item.id];
+            renderOptional();
+            refreshTotal();
+          };
+          row.addEventListener("click", toggle);
+          row.addEventListener("keydown", (e) => {
+            if (e.key === " " || e.key === "Enter") {
+              e.preventDefault();
+              toggle();
+            }
+          });
+
+          row.append(mark, name, size, hint);
+          optionalEl.append(row);
+        }
+      }
+
+      // What the answers add up to. Every figure here is a fact about an
+      // artifact — the same bytes on every machine — which is the only kind
+      // of number that may be shown to someone else's install. The dependency
+      // set is excluded and says so: `uv` resolves it per machine, and a total
+      // that silently excluded it would be the same lie P4 removed.
+      function plannedMb() {
+        const tts = checked("tts");
+        let mb = SIZES_MB.python + SIZES_MB.browser;
+        if (tts !== "none") mb += SIZES_MB[tts];
+        if (checked("stt") === "yes") mb += SIZES_MB.whisper;
+        for (const item of OPTIONAL) {
+          if (item.conditional) continue;
+          if (optionalState[item.id]) mb += SIZES_MB[item.id];
+        }
+        return mb;
+      }
+
+      // Models only, for the line shown once provisioning starts.
+      function plannedModelMb() {
+        const tts = checked("tts");
+        let mb = tts === "none" ? 0 : SIZES_MB[tts];
+        if (checked("stt") === "yes") mb += SIZES_MB.whisper;
+        return mb;
+      }
+
+      function refreshTotal() {
+        document.getElementById("size-python").textContent = fmtMb(SIZES_MB.python);
+        document.getElementById("size-browser").textContent = fmtMb(SIZES_MB.browser);
+        document.getElementById("total-size").textContent =
+          "≈ " + fmtMb(plannedMb());
+        document.getElementById("total-note").textContent =
+          "Plus the dependency set, which is resolved for your machine. You can start using it while the rest arrives.";
+      }
+
+      // Which optional lanes the operator actually agreed to, as the consent
+      // record understands them. Sent so the answer is stored rather than
+      // inferred from config later: `enabled: false` alone cannot tell a lane
+      // someone declined from one nobody ever reached.
+      function collectOptional() {
+        const out = {};
+        for (const item of OPTIONAL) {
+          out[item.id] = optionalState[item.id] === true;
+        }
+        return out;
+      }
 
       function refreshHints() {
         document.getElementById("tts-hint").textContent = TTS_HINTS[checked("tts")];
         document.getElementById("stt-hint").textContent = STT_HINTS[checked("stt")];
       }
+
+      // Both, on every change: these two rows are download decisions like the
+      // checkboxes above them, so the total has to move when they do. It did
+      // not, briefly, and the render is what caught it.
       for (const input of setupEl.querySelectorAll('input[type="radio"]')) {
-        input.addEventListener("change", refreshHints);
+        input.addEventListener("change", () => {
+          refreshHints();
+          refreshTotal();
+        });
       }
       refreshHints();
 
+      // ── Step handling ─────────────────────────────────────────
+      const step1El = document.getElementById("step-1");
+      const step2El = document.getElementById("step-2");
+
+      function showStep(n) {
+        step1El.style.display = n === 1 ? "block" : "none";
+        step2El.style.display = n === 2 ? "block" : "none";
+        headingEl.textContent =
+          n === 1 ? "Let's set up TESSERACT" : "What should it install?";
+        if (n === 2) {
+          renderOptional();
+          refreshTotal();
+        }
+        // The stage is the only scroller in this window, so a step change has
+        // to return it to the top — otherwise step 2 opens halfway down.
+        document.getElementById("stage").scrollTop = 0;
+        sizeTo("setup");
+      }
+
+      document
+        .getElementById("setup-next")
+        .addEventListener("click", () => showStep(2));
+      document
+        .getElementById("setup-back")
+        .addEventListener("click", () => showStep(1));
+
       function showSetupForm() {
-        boxEl.classList.add("setup");
-        spinEl.style.display = "none";
+        bodyEl.classList.remove("provisioning");
         msgEl.style.display = "none";
-        headingEl.textContent = "Let's set up TESSERACT";
+        meterEl.style.display = "none";
+        tailEl.textContent = "";
         setupEl.style.display = "block";
+        showStep(1);
         document.getElementById("operator-name").focus();
       }
 
@@ -367,12 +1175,15 @@
         // Hand back to the normal progress view immediately: provisioning
         // takes minutes, and a form that stays on screen after the button
         // is pressed reads as a click that did nothing.
-        boxEl.classList.remove("setup");
-        setupEl.style.display = "none";
-        headingEl.textContent = "Setting up TESSERACT";
-        spinEl.style.display = "";
-        msgEl.style.display = "";
+        showProvisioning();
         msgEl.textContent = "Starting…";
+        // The one moment the operator has agreed to a wait but has no idea
+        // how long it is. Shown in the tail so the first real output line
+        // replaces it rather than fighting it for space.
+        const mb = plannedModelMb();
+        tailEl.textContent = mb
+          ? `About ${fmtMb(mb)} of models to download, plus Python and dependencies.`
+          : "No models to download — Python and dependencies only.";
         invoke("submit_first_run_setup", {
           answers: {
             operator_name: document.getElementById("operator-name").value.trim(),
@@ -381,6 +1192,8 @@
             gender: checked("gender"),
             tts: checked("tts"),
             stt: checked("stt") === "yes",
+            optional: collectOptional(),
+            api_keys: collectKeys(),
           },
         });
       });
@@ -389,44 +1202,76 @@
       // is retryable from this window, so every other control is removed
       // rather than left looking actionable.
       function showFatal(message) {
-        boxEl.classList.remove("setup");
-        spinEl.style.display = "none";
+        bodyEl.classList.remove("provisioning");
+        coreEl.style.display = "none";
         msgEl.style.display = "none";
-        formEl.style.display = "none";
         setupEl.style.display = "none";
+        // A step counter and a byte figure next to "couldn't start" would
+        // read as progress that is still happening.
+        meterEl.style.display = "none";
+        tailEl.textContent = "";
         headingEl.textContent = "TESSERACT couldn't start";
         fatalEl.textContent = message;
         fatalEl.style.display = "block";
+        sizeTo("fatal");
       }
 
-      function showTokenForm(message) {
-        spinEl.style.display = "none";
-        msgEl.style.display = "none";
-        formEl.style.display = "block";
-        errorEl.textContent = message || "";
-        submitEl.disabled = false;
-        submitEl.textContent = "Save & retry";
-      }
-
-      function hideTokenForm() {
-        formEl.style.display = "none";
-        spinEl.style.display = "";
+      function showProvisioning() {
+        setupEl.style.display = "none";
+        bodyEl.classList.add("provisioning");
+        headingEl.textContent = "Coming online";
         msgEl.style.display = "";
+        sizeTo("provisioning");
       }
 
-      // Normal progress ("Downloading…", "Ready.", or "Setup failed: …" for
-      // a non-auth failure) — always means the token prompt (if it was
-      // showing) is no longer the relevant UI.
+      // Normal progress ("Downloading…", "Ready.", or "Setup failed: …").
+      // Owns the headline; the detail event below never writes to it.
       listen("provision-progress", (e) => {
-        hideTokenForm();
+        showProvisioning();
         msgEl.textContent = e.payload;
+        // A new stage: drop the previous one's lines and byte figure, so the
+        // tail always describes what is running now rather than trailing the
+        // stage before it.
+        lines.length = 0;
+        tailEl.textContent = "";
+        barEl.style.display = "none";
       });
 
-      // Fired only for a clone failure classified as auth/not-found — shown
-      // again after a failed retry (bad token, still-private repo) so the
-      // user can always try a different token rather than being stuck.
-      listen("provision-needs-token", (e) => {
-        showTokenForm(e.payload);
+      // Per-stage detail: which step, how many bytes, and the last two lines
+      // the stage actually wrote. Separate from the event above because that
+      // payload is a bare string three other places render directly.
+      listen("provision-detail", (e) => {
+        const d = e.payload;
+        showProvisioning();
+        meterEl.style.display = "";
+
+        const step = d.total ? `Step ${d.index} of ${d.total}` : "";
+        const got = d.received_bytes;
+        if (got === null || got === undefined) {
+          barEl.style.display = "none";
+          countsEl.textContent = step;
+        } else {
+          barEl.style.display = "";
+          const want = d.expected_bytes;
+          if (want) {
+            barEl.classList.remove("unknown");
+            fillEl.style.width = `${Math.min(100, (got / want) * 100).toFixed(1)}%`;
+            countsEl.textContent = `${step} · ${fmtBytes(got)} / ${fmtBytes(want)}`;
+          } else {
+            // libgit2 reports no byte total, and not every response carries a
+            // Content-Length. A rising figure is honest; a percentage would
+            // not be.
+            barEl.classList.add("unknown");
+            fillEl.style.width = "";
+            countsEl.textContent = `${step} · ${fmtBytes(got)}`;
+          }
+        }
+
+        if (d.line) {
+          lines.push(d.line);
+          while (lines.length > TAIL_LINES) lines.shift();
+          tailEl.textContent = lines.join("\n");
+        }
       });
 
       // Emitted when the splash is already open (first-run path).
@@ -448,15 +1293,6 @@
       } else {
         showSetupForm();
       }
-
-      submitEl.addEventListener("click", () => {
-        const token = inputEl.value;
-        inputEl.value = "";
-        submitEl.disabled = true;
-        submitEl.textContent = "Retrying…";
-        errorEl.textContent = "";
-        invoke("submit_github_token", { token });
-      });
     </script>
   </body>
 </html>

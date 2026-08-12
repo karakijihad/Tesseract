@@ -1,5 +1,9 @@
+use std::collections::VecDeque;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::process::Stdio;
+use std::sync::{mpsc, Mutex, OnceLock};
+use serde::Serialize;
 use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -174,21 +178,24 @@ pub(crate) fn hide_console(cmd: &mut std::process::Command) {
 /// download while it happens is the provisioning-transparency work, not a
 /// reason to withhold the capability until then.
 ///
-/// These are spawned CONCURRENTLY, so nothing here may depend on running
-/// before another entry. The model-choice half is ordered in
-/// `provision_stages` instead. The one case where that matters is an install
-/// whose first run never got to profile: the fetcher can then read
-/// `providers.yaml` in the same moment the profiler is rewriting it and
-/// fetch the outgoing model. It settles on the next launch — the profile is
-/// recorded by then, and the fetcher is a no-op once the snapshot is present.
-const LAUNCH_REFRESH_ASSETS: [&[&str]; 6] = [
-    &["-m", "tesseract.scripts.provision_hardware"],
-    &["-m", "tesseract.scripts.fetch_whisper_model"],
-    &["-m", "tesseract.scripts.fetch_kokoro_voice"],
-    &["-m", "tesseract.scripts.fetch_piper_voice"],
-    &["-m", "tesseract.scripts.fetch_reranker_model"],
-    &["-m", "tesseract.scripts.ensure_ollama", "--no-install"],
-];
+/// ONE entry, and it used to be six. `launch_refresh` runs the same work in a
+/// single interpreter, in a deliberate order, and that order is the fix:
+///
+/// - The six were spawned CONCURRENTLY and shared no result, so each fetcher
+///   re-derived which lane it wanted, from config, in its own process — six
+///   imports of the runtime to answer one question six ways.
+/// - `provision_hardware` WRITES the speech model into `providers.yaml` while
+///   the fetchers READ it to decide what to download. Racing them meant a
+///   first run could fetch the model it was in the middle of replacing. The
+///   comment that used to sit here described that race and could only promise
+///   it "settles on the next launch".
+///
+/// What did NOT change: this is still spawned and never waited on, so launch
+/// pays no latency for it; the fetchers still run concurrently with each
+/// other inside the pass; and Ollama is still handled without the vendor
+/// installer, so a machine where that install was declined does not re-fetch
+/// hundreds of megabytes on every start.
+const LAUNCH_REFRESH_ASSETS: [&[&str]; 1] = [&["-m", "tesseract.scripts.launch_refresh"]];
 
 /// Fire-and-forget retry of every `LAUNCH_REFRESH_ASSETS` entry, on EVERY
 /// launch (not gated by `is_provisioned`).
@@ -198,33 +205,37 @@ const LAUNCH_REFRESH_ASSETS: [&[&str]; 6] = [
 /// starts the supervisor immediately afterward regardless of whether these
 /// subprocesses have finished, or even whether they could be spawned at all.
 pub fn refresh_optional_assets(root: &Path) {
+    // A quit that latched while this was being reached must not start six new
+    // downloads on the way out.
+    if stopping() {
+        return;
+    }
     for args in LAUNCH_REFRESH_ASSETS {
         let mut cmd = std::process::Command::new(venv_python(root));
         cmd.args(args);
         point_at_state_root(&mut cmd, root);
         hide_console(&mut cmd);
-        let _ = cmd.spawn();
+        // Kept, not dropped: the `Child` is what holds the process handle, and
+        // the handle is what makes stopping it on quit safe. Still never
+        // waited on — this must add no latency to launch.
+        if let Ok(child) = cmd.spawn() {
+            if let Ok(mut children) = REFRESH_CHILDREN.lock() {
+                children.push(child);
+            }
+        }
     }
 }
 
-/// The result of a failed `provision()` call. `NeedsToken` is narrowly
-/// scoped to the one clone-stage failure shape the shell can act on without
-/// operator intervention — a 401/403/404-shaped libgit2 error — mirroring
-/// the auth-vs-network-vs-disk classification `classify_clone_error` already
-/// performs, rather than inventing a parallel scheme. Every other stage
-/// (python install, venv, deps, playwright, marker write) can only ever
-/// produce `Other`.
+/// The result of a failed `provision()` call: an operator-facing, already
+/// credential-scrubbed message. Every stage — clone, python install, venv,
+/// deps, playwright, marker write — produces the same shape, because no
+/// failure here is recoverable from inside the shell.
 #[derive(Debug)]
-pub enum ProvisionError {
-    NeedsToken(String),
-    Other(String),
-}
+pub struct ProvisionError(pub String);
 
 impl std::fmt::Display for ProvisionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ProvisionError::NeedsToken(m) | ProvisionError::Other(m) => write!(f, "{m}"),
-        }
+        write!(f, "{}", self.0)
     }
 }
 
@@ -234,7 +245,7 @@ impl std::fmt::Display for ProvisionError {
 /// clone stage constructs `ProvisionError` explicitly.
 impl From<String> for ProvisionError {
     fn from(s: String) -> Self {
-        ProvisionError::Other(s)
+        ProvisionError(s)
     }
 }
 
@@ -247,12 +258,170 @@ fn emit_progress(app: &AppHandle, msg: &str) {
     let _ = app.emit("provision-progress", msg.to_string());
 }
 
+/// How many stages a first run walks through: the clone, then every
+/// `progress(...)` call in `provision_stages` except the terminal "Ready.".
+///
+/// Guarded by a unit test rather than trusted, because a stage added without
+/// touching this constant would silently make every "step N of TOTAL" wrong
+/// for the rest of the run.
+pub const TOTAL_STAGES: u32 = 11;
+
+/// The machine-readable line `pinned_fetch` writes to STDOUT while it streams
+/// a model file. Human-facing log lines go to stderr, so the two channels
+/// cannot interleave into each other: everything on stdout matching this
+/// prefix is byte progress and is never shown verbatim or logged, and
+/// everything else is text for the operator.
+const PROGRESS_MARKER: &str = "TESSERACT_PROGRESS ";
+
+/// One update for the splash: which stage is running, how far in, and either
+/// the latest line of output or the byte counts of the file being fetched.
+///
+/// Kept separate from `provision-progress`, which stays a bare `String`: the
+/// fatal path and the already-provisioned window both render that payload
+/// directly, and widening it would have meant changing three consumers to add
+/// a detail line to one.
+#[derive(Clone, Serialize)]
+pub struct ProvisionDetail {
+    pub stage: String,
+    pub index: u32,
+    pub total: u32,
+    /// Empty for a pure byte update, so the splash keeps the previous line
+    /// on screen instead of blanking it between counter ticks.
+    pub line: String,
+    pub received_bytes: Option<u64>,
+    /// `None` whenever the source did not say — libgit2 reports no byte
+    /// total at all, and not every HTTP response carries a Content-Length.
+    /// The splash shows a rising figure rather than inventing a percentage.
+    pub expected_bytes: Option<u64>,
+}
+
+/// Reads `TESSERACT_PROGRESS file=<name> received=<n> expected=<n|->`.
+/// Returns None for anything else, which is how a normal line is told apart
+/// from a counter tick.
+fn parse_progress_marker(line: &str) -> Option<(String, u64, Option<u64>)> {
+    let rest = line.strip_prefix(PROGRESS_MARKER)?;
+    let (mut file, mut received, mut expected) = (None, None, None);
+    for field in rest.split_whitespace() {
+        match field.split_once('=') {
+            Some(("file", v)) => file = Some(v.to_string()),
+            Some(("received", v)) => received = v.parse::<u64>().ok(),
+            Some(("expected", v)) => expected = v.parse::<u64>().ok(),
+            _ => {}
+        }
+    }
+    Some((file?, received?, expected))
+}
+
+/// Byte thresholds below which an update is dropped.
+///
+/// libgit2 calls its transfer callback per packet, which would emit thousands
+/// of events for one clone; the fetch scripts already throttle their own
+/// markers, so this only bounds the in-process source.
+const CLONE_EMIT_EVERY_BYTES: u64 = 4 * 1024 * 1024;
+
+#[derive(Default)]
+struct StageState {
+    index: u32,
+    name: String,
+    received: Option<u64>,
+    expected: Option<u64>,
+    last_emit: u64,
+}
+
+/// Tracks which stage is running so a line of subprocess output can be
+/// attributed to it.
+///
+/// Deliberately lives here and not in `provision_stages`: that function takes
+/// a `&dyn Fn(&str)` progress sink and its nine unit tests assert on the exact
+/// strings it emits. Counting stages on this side keeps the staged sequence,
+/// its argv and its ordering tests untouched.
+struct StageTracker {
+    state: Mutex<StageState>,
+}
+
+impl StageTracker {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(StageState::default()),
+        }
+    }
+
+    /// A new stage started: bump the counter and forget the previous stage's
+    /// byte counts, so a stage that reports none does not inherit them.
+    fn begin(&self, name: &str) {
+        if let Ok(mut s) = self.state.lock() {
+            s.index = (s.index + 1).min(TOTAL_STAGES);
+            s.name = name.to_string();
+            s.received = None;
+            s.expected = None;
+            s.last_emit = 0;
+        }
+    }
+
+    /// One line of subprocess output. A counter marker updates the byte
+    /// figures and is never logged or shown verbatim; anything else is
+    /// operator-facing text that lands in `shell.log` and on the splash.
+    fn line(&self, app: &AppHandle, line: &str) {
+        let Ok(mut s) = self.state.lock() else {
+            return;
+        };
+        match parse_progress_marker(line) {
+            Some((file, received, expected)) => {
+                s.received = Some(received);
+                s.expected = expected;
+                let detail = Self::detail(&s, &file);
+                drop(s);
+                let _ = app.emit("provision-detail", detail);
+            }
+            None => {
+                crate::shell_log::log(line);
+                let detail = Self::detail(&s, line);
+                drop(s);
+                let _ = app.emit("provision-detail", detail);
+            }
+        }
+    }
+
+    /// libgit2's transfer statistics for the clone stage, throttled.
+    fn transfer(&self, app: &AppHandle, received: u64, objects: u64, total_objects: u64) {
+        let Ok(mut s) = self.state.lock() else {
+            return;
+        };
+        let done = total_objects > 0 && objects >= total_objects;
+        if received < s.last_emit.saturating_add(CLONE_EMIT_EVERY_BYTES) && !done {
+            return;
+        }
+        s.last_emit = received;
+        s.received = Some(received);
+        s.expected = None;
+        let line = if total_objects > 0 {
+            format!("{objects} of {total_objects} objects")
+        } else {
+            String::new()
+        };
+        let detail = Self::detail(&s, &line);
+        drop(s);
+        let _ = app.emit("provision-detail", detail);
+    }
+
+    fn detail(s: &StageState, line: &str) -> ProvisionDetail {
+        ProvisionDetail {
+            stage: s.name.clone(),
+            index: s.index,
+            total: TOTAL_STAGES,
+            line: line.to_string(),
+            received_bytes: s.received,
+            expected_bytes: s.expected,
+        }
+    }
+}
+
 /// Clone the source repo into the per-user home, download Python + deps
 /// online, editable-install tesseract, and fetch the browser engine. On
 /// success writes the marker and returns the venv python path. Emits
-/// "provision-progress" events (payload: a String line); on a clone auth
-/// failure with no working token, returns `ProvisionError::NeedsToken`
-/// instead of failing outright, so the caller can prompt for one and retry.
+/// "provision-progress" events (payload: a String line). Every failure is
+/// terminal for the run: the clone is anonymous, so there is no credential
+/// the caller could supply to retry with.
 pub fn provision(app: &AppHandle, home: &Path) -> Result<PathBuf, ProvisionError> {
     let uv = resolve_uv(app)?;
 
@@ -269,17 +438,50 @@ pub fn provision(app: &AppHandle, home: &Path) -> Result<PathBuf, ProvisionError
         Err(e) => crate::shell_log::log(&format!("provision: {e}")),
     }
 
-    emit_progress(app, "Downloading TESSERACT…");
-    clone_app_dir(&app_dir(home), home)?;
+    // One tracker for the whole run: `progress` names the stage and `on_line`
+    // attributes every subsequent line of output to it, so a stall shows which
+    // step it stalled in rather than the last headline that happened to fire.
+    let tracker = StageTracker::new();
+    let progress = |msg: &str| {
+        tracker.begin(msg);
+        emit_progress(app, msg);
+    };
+    let on_line = |line: &str| tracker.line(app, line);
+
+    progress("Downloading TESSERACT…");
+    clone_with_progress(app, &tracker, &app_dir(home))?;
 
     provision_stages(
         home,
         &uv,
-        &|msg| emit_progress(app, msg),
-        &|program, args| run_uv(program, args),
-        &|program, args| run_python(program, args, home),
+        &progress,
+        &|program, args| run_uv(program, args, &on_line),
+        &|program, args| run_python(program, args, home, &on_line),
     )
     .map_err(ProvisionError::from)
+}
+
+/// Clones on a worker thread so this one can pump transfer statistics.
+///
+/// libgit2's callback must be `'static` (it is owned by `FetchOptions`), which
+/// rules out a closure borrowing the `AppHandle` and the tracker. Sending the
+/// numbers over a channel and rendering them here keeps the borrow local: the
+/// channel closes when the worker returns, which is what ends the loop.
+fn clone_with_progress(
+    app: &AppHandle,
+    tracker: &StageTracker,
+    app_dir: &Path,
+) -> Result<(), ProvisionError> {
+    let (tx, rx) = mpsc::channel::<(u64, u64, u64)>();
+    let dir = app_dir.to_path_buf();
+    let url = crate::repo::repo_url();
+    let worker = std::thread::spawn(move || clone_app_dir_reporting(&dir, &url, Some(tx)));
+    for (received, objects, total_objects) in rx {
+        tracker.transfer(app, received, objects, total_objects);
+    }
+    worker
+        .join()
+        .map_err(|_| ProvisionError("the clone did not complete".to_string()))?
 }
 
 /// Locates the bundled `uv.exe` the installer ships as a Tauri resource.
@@ -420,7 +622,12 @@ fn write_marker(home: &Path) -> Result<(), String> {
 /// (re-run only when `pyproject.toml` changed across an update).
 pub fn reinstall_deps(app: &AppHandle, home: &Path) -> Result<(), String> {
     let uv = resolve_uv(app)?;
-    reinstall_deps_with(&uv, home, &|program, args| run_uv(program, args))
+    // The update path has no splash to emit to, so its lines go to the log
+    // only — but they DO go there now. A dependency re-install that hung
+    // during an update previously left nothing behind but the stage headline.
+    reinstall_deps_with(&uv, home, &|program, args| {
+        run_uv(program, args, &|line| crate::shell_log::log(line))
+    })
 }
 
 /// `reinstall_deps` with the `uv` path and runner supplied by the caller, so
@@ -445,21 +652,39 @@ fn reinstall_deps_with(
     )
 }
 
+/// The clone with the URL passed explicitly and no progress reporting, so
+/// tests drive the real guard/clear/clone/error-mapping logic against a local
+/// throwaway repo without mutating the process-global `TESSERACT_REPO_URL`
+/// env var (which `repo::tests` also exercises and would race with under
+/// parallel `cargo test`).
+#[cfg(test)]
+fn clone_app_dir_with(app_dir: &Path, url: &str) -> Result<(), ProvisionError> {
+    clone_app_dir_reporting(app_dir, url, None)
+}
+
+/// The URL resolution `clone_with_progress` performs, without the worker
+/// thread and channel — so the env-var end-to-end test still covers the step
+/// where `TESSERACT_REPO_URL` is read, which is the only part of the real path
+/// a progress channel does not change.
+#[cfg(test)]
+fn clone_app_dir(app_dir: &Path) -> Result<(), ProvisionError> {
+    clone_app_dir_reporting(app_dir, &crate::repo::repo_url(), None)
+}
+
 /// The .exe is a thin shell: the source tree and all third-party deps come
 /// from the network on first run. A `.git` dir marks a complete clone; its
 /// absence (missing entirely, or left behind by an interrupted first run)
 /// means we clear whatever is there and re-clone, so a partial `app_dir` can
 /// never wedge the app in an unrecoverable state. No-ops if already cloned.
-fn clone_app_dir(app_dir: &Path, home: &Path) -> Result<(), ProvisionError> {
-    clone_app_dir_with(app_dir, home, &crate::repo::repo_url())
-}
-
-/// `clone_app_dir` with the repo URL passed explicitly, so tests can drive
-/// the real guard/clear/clone/error-mapping logic against a local throwaway
-/// repo without mutating the process-global `TESSERACT_REPO_URL` env var
-/// (which `repo::tests` also exercises and would race with under parallel
-/// `cargo test`).
-fn clone_app_dir_with(app_dir: &Path, home: &Path, url: &str) -> Result<(), ProvisionError> {
+///
+/// `progress` is `Some` only on the real first-run path; every recovery and
+/// adoption branch below returns without transferring anything, so a `None`
+/// here means "nothing to report", never "reporting suppressed".
+fn clone_app_dir_reporting(
+    app_dir: &Path,
+    url: &str,
+    progress: Option<mpsc::Sender<(u64, u64, u64)>>,
+) -> Result<(), ProvisionError> {
     if app_dir.join(".git").exists() {
         return Ok(());
     }
@@ -506,8 +731,15 @@ fn clone_app_dir_with(app_dir: &Path, home: &Path, url: &str) -> Result<(), Prov
         }
         remove_tree(&staging).map_err(|e| fs_error_message(&e.to_string()))?;
     }
-    let token = crate::repo::github_token(home);
-    if let Err(e) = crate::repo::clone(url, &staging, token) {
+    let cloned = match progress {
+        Some(tx) => crate::repo::clone_reporting(url, &staging, move |received, objects, total| {
+            // A closed receiver just means nobody is rendering any more —
+            // never a reason to interrupt a transfer that is working.
+            let _ = tx.send((received, objects, total));
+        }),
+        None => crate::repo::clone(url, &staging),
+    };
+    if let Err(e) = cloned {
         // Best-effort: a failed clone's partial staging dir is cleared so the
         // next attempt starts clean. `remove_tree` (not `remove_dir_all`)
         // because libgit2 leaves read-only objects behind even on failure, and
@@ -655,38 +887,304 @@ pub(crate) fn point_at_state_root(cmd: &mut std::process::Command, root: &Path) 
     if let Some(uv) = UV_PATH.get() {
         cmd.env("TESSERACT_UV", uv);
     }
+    // Turns on `pinned_fetch`'s byte-progress markers. Set here rather than at
+    // the fetch call sites so the first-run and launch-refresh paths cannot
+    // disagree about it; on the refresh path nothing reads stdout and the
+    // markers go nowhere, which costs a formatted string per 4 MB.
+    cmd.env("TESSERACT_PROVISION_PROGRESS", "1");
 }
 
-/// Runs a provisioning subprocess to completion, mapping a non-zero exit into
-/// an error carrying its stderr. `label` names the tool in both error shapes
-/// so `run_uv`/`run_python` stay one line each rather than two copies of this.
+/// How many output lines are kept for a failure message.
+///
+/// The buffered runner this replaced put the WHOLE of stderr into the error,
+/// which was bounded only by how much the tool chose to say. A resolver
+/// failure can run to hundreds of lines, and that string is rendered on a
+/// 460px splash — so the tail is capped and the full text is in `shell.log`,
+/// which now receives every line as it arrives rather than only on failure.
+const TAIL_LINES: usize = 40;
+
+/// A single line is flushed at this length even without a terminator, so a
+/// tool that renders an unterminated progress bar cannot grow one "line"
+/// without bound in memory.
+const MAX_LINE_BYTES: usize = 4096;
+
+/// The pid of the provisioning subprocess currently running, if any.
+///
+/// Provisioning shells out to `uv` and `python`, which Windows does not reap
+/// when the parent exits — so quitting mid-download left them running against
+/// a staging directory the next launch would try to adopt. Recording the pid
+/// is what makes `stop_active` possible at all; the buffered runner never had
+/// a handle to hold, because `output()` consumes the child.
+static ACTIVE_PID: Mutex<Option<u32>> = Mutex::new(None);
+
+/// The launch-refresh fetchers, held as `Child` values rather than pids.
+///
+/// `refresh_optional_assets` spawns six of these on EVERY launch and never
+/// waits on them — that is deliberate, it must add no latency to startup — so
+/// none of them pass through `run_tool` and nothing recorded them. Quitting
+/// left them running, and one of them (`provision_hardware`) can be pulling
+/// ~2.2 GB of CUDA wheels.
+///
+/// Holding the `Child` and not the pid is the load-bearing detail: a `Child`
+/// keeps the Windows process handle open, and Windows will not recycle a pid
+/// while a handle to it exists. The previous code dropped the `Child` at the
+/// end of the spawn loop, so a stored pid could have been reused by an
+/// unrelated process by the time quit read it — the recycling hazard that is
+/// unreachable in `run_tool` precisely because it holds its `Child`.
+static REFRESH_CHILDREN: Mutex<Vec<std::process::Child>> = Mutex::new(Vec::new());
+
+/// Latched by `stop_active()` and never cleared: the process is going away.
+///
+/// Killing the running child is not enough on its own. Every stage after the
+/// dependency install is best-effort (`let _ = run_python(...)`), so a killed
+/// stage's error is swallowed and the provisioning thread proceeds straight to
+/// the next `run_tool` — which would spawn a fresh child that nothing is left
+/// to signal, since `RunEvent::Exit` has already run its own `stop_active()`.
+/// That is the abandoned-child case reappearing one stage later.
+static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn stopping() -> bool {
+    STOPPING.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+fn set_active(pid: Option<u32>) {
+    if let Ok(mut guard) = ACTIVE_PID.lock() {
+        *guard = pid;
+    }
+}
+
+/// Stops the provisioning subprocess tree, if one is running.
+///
+/// Called from the quit path. `taskkill /T` walks the tree because `uv` itself
+/// spawns children (its own resolver and, for the Python stages, whatever the
+/// script shelled out to), and killing only the named pid would leave those
+/// behind — the exact failure this exists to prevent, one level down.
+///
+/// Returns whether anything was signalled, so the caller can log the
+/// difference between "stopped a download" and "nothing was running".
+pub fn stop_active() -> bool {
+    // Latch FIRST, so a stage that is between subprocesses right now finds the
+    // flag already set when it tries to start the next one. Setting it after
+    // the kill would leave exactly the gap this closes.
+    STOPPING.store(true, std::sync::atomic::Ordering::SeqCst);
+    // Both, and the provisioning child first: a first run has one of these and
+    // an already-provisioned launch has the other, but `RunEvent::Exit` cannot
+    // know which and must cover both.
+    let stopped_stage = stop_provisioning_stage();
+    let stopped_refresh = stop_refresh_children();
+    stopped_stage || stopped_refresh
+}
+
+fn stop_provisioning_stage() -> bool {
+    let Ok(mut guard) = ACTIVE_PID.lock() else {
+        return false;
+    };
+    let Some(pid) = guard.take() else {
+        return false;
+    };
+    kill_tree(pid);
+    crate::shell_log::log(&format!("provisioning subprocess {pid} stopped"));
+    true
+}
+
+/// Stops whatever the launch refresh still has running.
+///
+/// `try_wait` first: most launches find every fetcher already finished, and
+/// `taskkill` on a pid whose process has exited is at best noise and at worst
+/// a kill aimed at whatever inherited that number — which cannot happen while
+/// the `Child` is held, but only because we check before releasing it.
+fn stop_refresh_children() -> bool {
+    let Ok(mut children) = REFRESH_CHILDREN.lock() else {
+        return false;
+    };
+    let mut stopped = 0usize;
+    for mut child in children.drain(..) {
+        match child.try_wait() {
+            Ok(Some(_)) => {}
+            _ => {
+                kill_tree(child.id());
+                let _ = child.wait();
+                stopped += 1;
+            }
+        }
+    }
+    if stopped > 0 {
+        crate::shell_log::log(&format!(
+            "stopped {stopped} launch-refresh fetcher(s) still running"
+        ));
+    }
+    stopped > 0
+}
+
+/// Kills a process AND its descendants. `uv` spawns children of its own, so
+/// killing only the named pid leaves the download running one level down.
+fn kill_tree(pid: u32) {
+    #[cfg(windows)]
+    {
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/T", "/F", "/PID", &pid.to_string()]);
+        hide_console(&mut cmd);
+        let _ = cmd.status();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status();
+    }
+}
+
+/// Splits a byte stream into lines on BOTH `\n` and `\r`, handing each one to
+/// `emit` as it completes.
+///
+/// `\r` is treated as a terminator, not as text: measured against the shipped
+/// `uv` and `playwright`, neither emits a bare `\r` through a pipe — but a
+/// tool that renders a redrawing progress bar would otherwise arrive as one
+/// unbounded line that never terminates until the process exits, which is the
+/// failure mode this whole change exists to remove.
+fn split_lines(mut stream: impl Read, is_stderr: bool, out: mpsc::Sender<(bool, String)>) {
+    let mut buf = [0u8; 8192];
+    let mut pending: Vec<u8> = Vec::new();
+    let flush = |pending: &mut Vec<u8>| {
+        if pending.is_empty() {
+            return true;
+        }
+        let line = String::from_utf8_lossy(pending).trim().to_string();
+        pending.clear();
+        if line.is_empty() {
+            return true;
+        }
+        out.send((is_stderr, line)).is_ok()
+    };
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                for &byte in &buf[..n] {
+                    if byte == b'\n' || byte == b'\r' {
+                        if !flush(&mut pending) {
+                            return;
+                        }
+                    } else {
+                        pending.push(byte);
+                        if pending.len() >= MAX_LINE_BYTES && !flush(&mut pending) {
+                            return;
+                        }
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    flush(&mut pending);
+}
+
+/// Runs a provisioning subprocess, forwarding every line it writes to
+/// `on_line` WHILE IT RUNS, and mapping a non-zero exit into an error carrying
+/// the tail of its stderr. `label` names the tool in both error shapes so
+/// `run_uv`/`run_python` stay one line each rather than two copies of this.
 /// `root` is `Some` only for the Python stages, which resolve state paths.
-fn run_tool(program: &Path, args: &[&str], label: &str, root: Option<&Path>) -> Result<(), String> {
+///
+/// Both streams are read, and that is not defensive: measured through a pipe,
+/// `uv` writes every informational line — including "Downloading x (1.2MiB)" —
+/// to **stderr** and nothing at all to stdout, while `playwright install`
+/// writes its ~49 progress lines to **stdout**. Watching either one alone
+/// would leave one of the two longest stages silent.
+///
+/// Each line is scrubbed before it leaves this function: with the output now
+/// forwarded continuously rather than only on failure, a credentialed index or
+/// proxy URL echoed by a tool would otherwise reach the screen on the SUCCESS
+/// path too.
+fn run_tool(
+    program: &Path,
+    args: &[&str],
+    label: &str,
+    root: Option<&Path>,
+    on_line: &dyn Fn(&str),
+) -> Result<(), String> {
     let mut cmd = std::process::Command::new(program);
-    cmd.args(args);
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     if let Some(root) = root {
         point_at_state_root(&mut cmd, root);
     }
     hide_console(&mut cmd);
-    let out = cmd
-        .output()
+    if stopping() {
+        return Err(format!("{label} not started: TESSERACT is shutting down"));
+    }
+    let mut child = cmd
+        .spawn()
         .map_err(|e| format!("{label} spawn failed: {e}"))?;
-    if !out.status.success() {
+    set_active(Some(child.id()));
+    // Re-checked after recording, not only before: a quit that latched the
+    // flag between the check above and this line would already have taken its
+    // one look at `ACTIVE_PID` and found it empty, so nothing else would ever
+    // kill this child.
+    if stopping() {
+        stop_active();
+        let _ = child.wait();
+        return Err(format!("{label} stopped: TESSERACT is shutting down"));
+    }
+
+    let (tx, rx) = mpsc::channel::<(bool, String)>();
+    let readers: Vec<_> = [
+        child.stdout.take().map(|s| {
+            let tx = tx.clone();
+            std::thread::spawn(move || split_lines(s, false, tx))
+        }),
+        child.stderr.take().map(|s| {
+            let tx = tx.clone();
+            std::thread::spawn(move || split_lines(s, true, tx))
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    // The last live sender, or the loop below would never see the channel
+    // close and would block forever after the child had exited.
+    drop(tx);
+
+    let mut tail: VecDeque<String> = VecDeque::with_capacity(TAIL_LINES);
+    for (_is_stderr, line) in rx {
+        let line = scrub_credentials(&line);
+        // BOTH streams, for the same reason both are read at all: the tail is
+        // what the operator is shown when a stage fails, and `playwright`
+        // writes to stdout. Keeping it to stderr — which is what the buffered
+        // runner did, since it only ever had `out.stderr` — would have made a
+        // playwright failure surface an empty "Setup failed:" while the real
+        // text sat in `shell.log`.
+        if tail.len() == TAIL_LINES {
+            tail.pop_front();
+        }
+        tail.push_back(line.clone());
+        on_line(&line);
+    }
+    for reader in readers {
+        let _ = reader.join();
+    }
+
+    let status = child.wait();
+    set_active(None);
+    let status = status.map_err(|e| format!("{label} did not complete: {e}"))?;
+    if !status.success() {
+        let detail: Vec<&str> = tail.iter().map(String::as_str).collect();
         return Err(format!(
             "{label} {:?} failed: {}",
             args,
-            String::from_utf8_lossy(&out.stderr)
+            detail.join(" | ")
         ));
     }
     Ok(())
 }
 
-fn run_uv(uv: &Path, args: &[&str]) -> Result<(), String> {
-    run_tool(uv, args, "uv", None)
+fn run_uv(uv: &Path, args: &[&str], on_line: &dyn Fn(&str)) -> Result<(), String> {
+    run_tool(uv, args, "uv", None, on_line)
 }
 
-fn run_python(py: &Path, args: &[&str], root: &Path) -> Result<(), String> {
-    run_tool(py, args, "python", Some(root))
+fn run_python(py: &Path, args: &[&str], root: &Path, on_line: &dyn Fn(&str)) -> Result<(), String> {
+    run_tool(py, args, "python", Some(root), on_line)
 }
 
 /// Redacts any `user:token@` userinfo segment from URLs embedded in an error
@@ -695,8 +1193,13 @@ fn run_python(py: &Path, args: &[&str], root: &Path) -> Result<(), String> {
 /// `update.rs` can reuse it for `check_behind` errors, which can likewise
 /// embed the remote URL, rather than duplicating the redaction logic.
 pub(crate) fn scrub_credentials(s: &str) -> String {
+    // Query strings go FIRST. The userinfo pass below writes a `<redacted>`
+    // marker into the URL, and `<` is one of the characters the query pass
+    // treats as the end of a URL — so running it second would make it stop at
+    // the marker and walk straight past the query it was meant to remove.
+    let queryless = scrub_query_strings(s);
     let mut out = String::new();
-    let mut rest = s;
+    let mut rest = queryless.as_str();
     while let Some(scheme_pos) = rest.find("://") {
         let split_at = scheme_pos + 3;
         out.push_str(&rest[..split_at]);
@@ -709,6 +1212,45 @@ pub(crate) fn scrub_credentials(s: &str) -> String {
             }
             None => {
                 rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Userinfo is not the only place a secret rides in a URL. GitHub answers an
+/// asset request with a redirect to a pre-signed URL whose authorisation IS
+/// its query string, and a transport error can carry that whole URL into the
+/// log and onto the screen. A URL therefore loses everything from the first
+/// `?` or `#`, whichever comes first — the fragment is included because it is
+/// the other half of the same class and costs one character to cover.
+///
+/// The whole query goes rather than named-parameter matching: the parameter
+/// names differ per signing scheme, and a redaction list that has to be kept
+/// in step with someone else's URL format is one that eventually misses.
+/// Nothing downstream parses these strings — they exist to be read by a
+/// person — so losing the query costs nothing an operator needed.
+fn scrub_query_strings(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(scheme_pos) = rest.find("://") {
+        let after_scheme = scheme_pos + 3;
+        let tail = &rest[after_scheme..];
+        // A URL ends at the first character that cannot appear in one; that
+        // boundary is what keeps surrounding prose intact.
+        let url_end = tail
+            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | ')' | ','))
+            .unwrap_or(tail.len());
+        match tail[..url_end].find(['?', '#']) {
+            Some(q) => {
+                out.push_str(&rest[..after_scheme + q]);
+                out.push_str("?<redacted>");
+                rest = &tail[url_end..];
+            }
+            None => {
+                out.push_str(&rest[..after_scheme + url_end]);
+                rest = &tail[url_end..];
             }
         }
     }
@@ -740,20 +1282,20 @@ fn is_disk_space_failure(lower: &str) -> bool {
 }
 
 /// Turns a raw `repo::clone` error (which may embed a git2/libcurl message)
-/// into an actionable, credential-free `ProvisionError`. Auth/not-found
-/// shaped errors (401/403/404/"authentication"/"not found") are the one
-/// class the shell can recover from without operator intervention — they
-/// become `NeedsToken` so the caller can show the in-app token prompt and
-/// retry instead of telling the user to hand-create a folder. Every other
-/// class (network, disk space, unrecognized) becomes `Other`, matching the
-/// splash's pre-existing dead-end display.
+/// into an actionable, credential-free `ProvisionError`.
+///
+/// The repository is public, so an auth/not-found shaped failure is no longer
+/// something the user can fix by supplying anything: it means the repository
+/// moved, was renamed, or is temporarily unreachable. It gets its own message
+/// rather than being folded into the generic one, because "check your
+/// connection" is misleading advice for a 404.
 fn classify_clone_error(raw: &str) -> ProvisionError {
     let scrubbed = scrub_credentials(raw);
     let lower = scrubbed.to_lowercase();
     if is_auth_failure(&lower) {
-        return ProvisionError::NeedsToken(
-            "could not access the TESSERACT repository — it's private, so it needs a GitHub \
-             personal access token to download its source. Paste one below."
+        return ProvisionError(
+            "could not reach the TESSERACT repository — it may have moved or be temporarily \
+             unavailable. Try again shortly; if it persists, a newer installer is needed."
                 .to_string(),
         );
     }
@@ -764,7 +1306,7 @@ fn classify_clone_error(raw: &str) -> ProvisionError {
     } else {
         format!("could not download TESSERACT ({scrubbed}) — check your connection and try again")
     };
-    ProvisionError::Other(msg)
+    ProvisionError(msg)
 }
 
 /// Turns a raw local-filesystem error (from clearing `app_dir`/staging or
@@ -818,7 +1360,7 @@ mod tests {
         let home = base.join("home");
         let app_dir = home.join("app");
 
-        clone_app_dir_with(&app_dir, &home, &origin.to_string_lossy())
+        clone_app_dir_with(&app_dir, &origin.to_string_lossy())
             .expect("clone into a missing app_dir should succeed");
 
         assert!(app_dir.join(".git").exists());
@@ -838,7 +1380,7 @@ mod tests {
         std::fs::create_dir_all(&app_dir).unwrap();
         std::fs::write(app_dir.join("partial.tmp"), b"leftover").unwrap();
 
-        clone_app_dir_with(&app_dir, &home, &origin.to_string_lossy())
+        clone_app_dir_with(&app_dir, &origin.to_string_lossy())
             .expect("clone should recover from a .git-less app_dir");
 
         assert!(app_dir.join(".git").exists());
@@ -876,10 +1418,10 @@ mod tests {
         // with no `app/` and an unreachable URL so any re-download would fail.
         let staging = home.join("app.clone-tmp");
         std::fs::create_dir_all(&home).unwrap();
-        crate::repo::clone(&origin.to_string_lossy(), &staging, None).expect("seed staging");
+        crate::repo::clone(&origin.to_string_lossy(), &staging).expect("seed staging");
         assert!(staging.join(".git").exists());
 
-        clone_app_dir_with(&app_dir, &home, "https://127.0.0.1:1/unreachable.git")
+        clone_app_dir_with(&app_dir, "https://127.0.0.1:1/unreachable.git")
             .expect("a complete staging clone must be adopted, not re-downloaded");
 
         assert!(app_dir.join(".git").exists(), "staging must land at app/");
@@ -921,7 +1463,7 @@ mod tests {
         );
         drop(repo);
         let good = base.join("good");
-        crate::repo::clone(&origin.to_string_lossy(), &good, None).expect("seed");
+        crate::repo::clone(&origin.to_string_lossy(), &good).expect("seed");
         assert!(
             staging_clone_is_complete(&good),
             "a genuinely finished clone must still be adoptable"
@@ -996,7 +1538,7 @@ mod tests {
         let home = base.join("home");
         let app_dir = home.join("app");
 
-        let err = clone_app_dir_with(&app_dir, &home, &bogus_origin.to_string_lossy())
+        let err = clone_app_dir_with(&app_dir, &bogus_origin.to_string_lossy())
             .expect_err("cloning a nonexistent origin must fail")
             .to_string();
         assert!(!err.is_empty());
@@ -1015,7 +1557,7 @@ mod tests {
 
         // Recovery: a subsequent call against a real origin must still succeed.
         let origin = make_origin(&base);
-        clone_app_dir_with(&app_dir, &home, &origin.to_string_lossy())
+        clone_app_dir_with(&app_dir, &origin.to_string_lossy())
             .expect("a real clone after a failed one must succeed");
         assert!(app_dir.join(".git").exists());
         assert!(app_dir.join("pyproject.toml").exists());
@@ -1038,7 +1580,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         std::fs::write(&app_dir, b"not a directory").unwrap();
 
-        let err = clone_app_dir_with(&app_dir, &home, "https://example.invalid/unused.git")
+        let err = clone_app_dir_with(&app_dir, "https://example.invalid/unused.git")
             .expect_err("clearing a file where a directory is expected must fail")
             .to_string();
         assert!(
@@ -1058,7 +1600,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         std::fs::write(home.join("app.clone-tmp"), b"not a directory").unwrap();
 
-        let err = clone_app_dir_with(&app_dir, &home, "https://example.invalid/unused.git")
+        let err = clone_app_dir_with(&app_dir, "https://example.invalid/unused.git")
             .expect_err("clearing a file where the staging directory is expected must fail")
             .to_string();
         assert!(
@@ -1117,11 +1659,11 @@ mod tests {
         let home = base.join("home");
         let app_dir = home.join("app");
 
-        clone_app_dir_with(&app_dir, &home, &origin.to_string_lossy()).expect("initial clone");
+        clone_app_dir_with(&app_dir, &origin.to_string_lossy()).expect("initial clone");
         // Mark the existing clone so a second call touching it would be observable.
         std::fs::write(app_dir.join("venv-marker.txt"), b"do-not-touch").unwrap();
 
-        clone_app_dir_with(&app_dir, &home, &origin.to_string_lossy())
+        clone_app_dir_with(&app_dir, &origin.to_string_lossy())
             .expect("second call against an already-cloned app_dir should no-op");
 
         assert!(
@@ -1141,44 +1683,88 @@ mod tests {
     }
 
     #[test]
+    fn scrub_credentials_redacts_a_presigned_asset_url_query() {
+        // The shape GitHub redirects an asset request to: the authorisation
+        // IS the query string, and download_asset can carry that whole URL
+        // into an error message.
+        let raw = "download failed: https://objects.githubusercontent.com/repo/setup.exe\
+                   ?X-Amz-Credential=AKIAEXAMPLE&X-Amz-Signature=deadbeefsecret got 403";
+        let scrubbed = scrub_credentials(raw);
+        assert!(!scrubbed.contains("deadbeefsecret"));
+        assert!(!scrubbed.contains("AKIAEXAMPLE"));
+        assert!(scrubbed.contains("?<redacted>"));
+        assert!(
+            scrubbed.contains("objects.githubusercontent.com/repo/setup.exe"),
+            "the host and path must survive - they are what makes the error readable: {scrubbed}"
+        );
+        assert!(
+            scrubbed.contains("got 403"),
+            "prose after the URL must survive: {scrubbed}"
+        );
+    }
+
+    #[test]
+    fn scrub_credentials_redacts_a_url_fragment_as_well_as_a_query() {
+        let raw = "download failed: https://host/path#access_token=fragmentsecret meanwhile";
+        let scrubbed = scrub_credentials(raw);
+        assert!(!scrubbed.contains("fragmentsecret"));
+        assert!(scrubbed.contains("https://host/path?<redacted>"));
+        assert!(
+            scrubbed.contains("meanwhile"),
+            "prose after the URL must survive: {scrubbed}"
+        );
+    }
+
+    #[test]
+    fn scrub_credentials_redacts_userinfo_and_query_together() {
+        // Same fake token as the sibling tests. The production-tree PII gate
+        // allowlists this exact literal and nothing else — a fixture that
+        // invents its own token shape fails that gate, which is what guards
+        // the production push.
+        let raw = "clone https://x-access-token:ghp_supersecret@github.com/o/r.git?token=alsosecret: 401";
+        let scrubbed = scrub_credentials(raw);
+        assert!(!scrubbed.contains("ghp_supersecret"));
+        assert!(!scrubbed.contains("alsosecret"));
+        assert!(scrubbed.contains("<redacted>@"));
+        assert!(scrubbed.contains("?<redacted>"));
+    }
+
+    #[test]
     fn scrub_credentials_is_a_noop_without_userinfo() {
         let raw = "clone https://github.com/karakijihad/Tesseract.git: could not resolve host";
         assert_eq!(scrub_credentials(raw), raw);
     }
 
     #[test]
-    fn classify_clone_error_maps_auth_failures_to_needs_token_without_leaking_the_token() {
+    fn classify_clone_error_reports_auth_shaped_failures_without_leaking_a_credential() {
+        // A credentialed URL can still appear in a libgit2 message if the user
+        // set TESSERACT_REPO_URL by hand, so scrubbing stays load-bearing even
+        // though the shell no longer supplies credentials of its own.
         let raw = "clone https://x-access-token:ghp_supersecret@github.com/karakijihad/Tesseract.git: unexpected http status code: 401 Unauthorized";
-        match classify_clone_error(raw) {
-            ProvisionError::NeedsToken(msg) => {
-                assert!(!msg.contains("ghp_supersecret"));
-                assert!(msg.to_lowercase().contains("token"));
-            }
-            ProvisionError::Other(msg) => panic!("401 must classify as NeedsToken, got: {msg}"),
-        }
+        let ProvisionError(msg) = classify_clone_error(raw);
+        assert!(!msg.contains("ghp_supersecret"));
+        assert!(
+            !msg.to_lowercase().contains("token"),
+            "a public repo must never ask the user for a token, got: {msg}"
+        );
+        assert!(msg.contains("moved or be temporarily unavailable"));
     }
 
     #[test]
-    fn classify_clone_error_maps_not_found_to_needs_token() {
-        // A private repo an unauthenticated clone can't see typically 404s
-        // rather than 401/403 — this must classify the same as an explicit
-        // auth failure, not fall through to the generic "Other" message.
+    fn classify_clone_error_reports_not_found_as_unreachable_rather_than_a_network_fault() {
+        // A renamed or deleted repository 404s. Telling that user to check
+        // their internet connection sends them after the wrong problem.
         let raw = "clone https://github.com/karakijihad/Tesseract.git: unexpected http status code: 404 Not Found";
-        match classify_clone_error(raw) {
-            ProvisionError::NeedsToken(_) => {}
-            ProvisionError::Other(msg) => panic!("404 must classify as NeedsToken, got: {msg}"),
-        }
+        let ProvisionError(msg) = classify_clone_error(raw);
+        assert!(msg.contains("moved or be temporarily unavailable"));
+        assert!(!msg.contains("internet connection"));
     }
 
     #[test]
-    fn classify_clone_error_classifies_network_failures_as_other() {
+    fn classify_clone_error_classifies_network_failures_as_a_connection_problem() {
         let raw = "clone https://github.com/karakijihad/Tesseract.git: failed to resolve host";
-        match classify_clone_error(raw) {
-            ProvisionError::Other(msg) => assert!(msg.contains("internet connection")),
-            ProvisionError::NeedsToken(msg) => {
-                panic!("network failure must not classify as NeedsToken, got: {msg}")
-            }
-        }
+        let ProvisionError(msg) = classify_clone_error(raw);
+        assert!(msg.contains("internet connection"));
     }
 
     /// Regression fixture: the exact (credential-free) error text libgit2's
@@ -1187,116 +1773,55 @@ mod tests {
     /// `https://this-host-can-never-resolve.invalid/...`.
     /// The original phrase list (`"resolve host"`/`"resolve address"`) did
     /// not match this real wording and fell through to the generic fallback
-    /// message instead of the friendlier network one — still `Other`, never
-    /// `NeedsToken`, but worth fixing for message accuracy.
+    /// message instead of the friendlier network one.
     #[test]
     fn classify_clone_error_matches_the_real_windows_dns_failure_wording() {
         let raw = "clone https://this-host-can-never-resolve.invalid/owner/repo.git: failed to \
                    send request: The server name or address could not be resolved\r\n; class=Os (2)";
-        match classify_clone_error(raw) {
-            ProvisionError::Other(msg) => assert!(msg.contains("internet connection")),
-            ProvisionError::NeedsToken(msg) => {
-                panic!("a DNS failure must not classify as NeedsToken, got: {msg}")
-            }
-        }
+        let ProvisionError(msg) = classify_clone_error(raw);
+        assert!(msg.contains("internet connection"));
     }
 
     #[test]
-    fn classify_clone_error_classifies_disk_space_failures_as_other() {
+    fn classify_clone_error_classifies_disk_space_failures_as_disk_space() {
         let raw = "clone https://github.com/karakijihad/Tesseract.git: no space left on device";
-        match classify_clone_error(raw) {
-            ProvisionError::Other(msg) => assert!(msg.contains("disk space")),
-            ProvisionError::NeedsToken(msg) => {
-                panic!("disk space failure must not classify as NeedsToken, got: {msg}")
-            }
-        }
+        let ProvisionError(msg) = classify_clone_error(raw);
+        assert!(msg.contains("disk space"));
     }
 
-    /// Manual, network-touching proof that the auth-failure/retry loop
-    /// works against a REAL private GitHub repo, at the exact layer the
-    /// shell drives (clone + classify + token file), against a private repo.
-    /// `#[ignore]`d because it requires
-    /// outbound internet access and hits github.com; run manually:
-    /// `cargo test --lib clone_app_dir_with_needs_token_then_retries_after_a_saved_token -- --ignored`
+    /// Manual, network-touching proof that a real DNS failure reports as a
+    /// connection problem rather than an unreachable-repository one, so the
+    /// user is sent after the right cause. `#[ignore]`d because DNS
+    /// resolution can be slow to fail depending on the network; run manually:
+    /// `cargo test --lib clone_app_dir_with_unreachable_host_reports_a_connection_problem -- --ignored`
     #[test]
     #[ignore]
-    fn clone_app_dir_with_needs_token_then_retries_after_a_saved_token() {
-        let base = TempDir::new("real-private-repo");
-        let home = base.join("home");
-        let app_dir = home.join("app");
-        let url = "https://github.com/karakijihad/tesseract-dev.git";
-
-        // 1) No token file exists yet: the real GitHub response for a
-        //    private repo the caller can't see must classify as NeedsToken.
-        match clone_app_dir_with(&app_dir, &home, url) {
-            Err(ProvisionError::NeedsToken(msg)) => {
-                assert!(msg.to_lowercase().contains("token"));
-            }
-            other => panic!(
-                "expected NeedsToken against a real private repo with no token, got {other:?}"
-            ),
-        }
-        assert!(
-            !app_dir.exists(),
-            "a NeedsToken failure must not leave a partial app_dir"
-        );
-
-        // 2) Save a (deliberately invalid) token to the exact path
-        //    `repo::github_token` reads — mirrors `token::save_github_token`.
-        let runtime = home.join("runtime");
-        std::fs::create_dir_all(&runtime).unwrap();
-        std::fs::write(runtime.join("github_token"), "bogus-test-token-not-real").unwrap();
-
-        // 3) Retry: the saved token is genuinely read and sent, the real
-        //    GitHub call repeats, and — since the token is invalid — it
-        //    must classify as NeedsToken AGAIN (not get stuck in some other
-        //    error shape), proving the "try again" loop holds for a bad
-        //    token too, not just a missing one. Never leaks the token.
-        match clone_app_dir_with(&app_dir, &home, url) {
-            Err(ProvisionError::NeedsToken(msg)) => {
-                assert!(!msg.contains("bogus-test-token-not-real"));
-            }
-            other => panic!("expected NeedsToken again with an invalid token, got {other:?}"),
-        }
-    }
-
-    /// Manual, network-touching proof of the other half of Part 1's
-    /// requirement: a non-auth failure (here, real DNS resolution failure
-    /// against a host that cannot exist) must classify as `Other`, never
-    /// `NeedsToken` — so the shell never shows the token prompt for a
-    /// network outage. `#[ignore]`d because DNS resolution can be slow to
-    /// fail depending on the network; run manually:
-    /// `cargo test --lib clone_app_dir_with_unreachable_host_never_needs_a_token -- --ignored`
-    #[test]
-    #[ignore]
-    fn clone_app_dir_with_unreachable_host_never_needs_a_token() {
+    fn clone_app_dir_with_unreachable_host_reports_a_connection_problem() {
         let base = TempDir::new("unreachable-host");
         let home = base.join("home");
         let app_dir = home.join("app");
         // `.invalid` is reserved by RFC 2606 — guaranteed never to resolve.
         let url = "https://this-host-can-never-resolve.invalid/owner/repo.git";
 
-        match clone_app_dir_with(&app_dir, &home, url) {
-            Err(ProvisionError::Other(msg)) => {
+        match clone_app_dir_with(&app_dir, url) {
+            Err(ProvisionError(msg)) => {
                 assert!(
                     !msg.to_lowercase().contains("token"),
                     "a network failure must never mention a token, got: {msg}"
                 );
-            }
-            Err(ProvisionError::NeedsToken(msg)) => {
-                panic!("a DNS failure must never classify as NeedsToken, got: {msg}")
+                assert!(msg.contains("internet connection"));
             }
             Ok(()) => panic!("cloning an unresolvable host must fail"),
         }
     }
 
     /// End-to-end proof of the real, env-var-driven path (`clone_app_dir`,
-    /// which reads `TESSERACT_REPO_URL`/`GITHUB_TOKEN` via `repo::repo_url`/
-    /// `repo::github_token` exactly as `provision()` does) against a local
-    /// throwaway repo — no network access, and the production repo does not
-    /// need to exist. `#[ignore]`d because it mutates process-global env
-    /// vars that `repo::tests::repo_url_and_github_token_precedence` also
-    /// exercises; run manually and serially to verify:
+    /// which reads `TESSERACT_REPO_URL` via `repo::repo_url` exactly as
+    /// `provision()` does) against a local throwaway repo — no network
+    /// access, and the production repo does not need to exist. `#[ignore]`d
+    /// because it mutates a process-global env var that
+    /// `repo::tests::repo_url_prefers_the_env_override_then_the_default`
+    /// also exercises; run manually and serially to verify:
     /// `cargo test --lib clone_app_dir_end_to_end_via_env_vars -- --ignored --test-threads=1`
     #[test]
     #[ignore]
@@ -1307,15 +1832,14 @@ mod tests {
         let app_dir = home.join("app");
 
         std::env::set_var("TESSERACT_REPO_URL", origin.to_string_lossy().into_owned());
-        std::env::remove_var("GITHUB_TOKEN");
 
-        clone_app_dir(&app_dir, &home).expect("env-var-driven clone should succeed");
+        clone_app_dir(&app_dir).expect("env-var-driven clone should succeed");
         assert!(app_dir.join(".git").exists());
         assert!(app_dir.join("pyproject.toml").exists());
 
         // Second call against the now-cloned dir must no-op, matching
         // provision()'s real re-launch behavior.
-        clone_app_dir(&app_dir, &home).expect("second call should no-op, not error");
+        clone_app_dir(&app_dir).expect("second call should no-op, not error");
 
         std::env::remove_var("TESSERACT_REPO_URL");
     }
@@ -1446,15 +1970,22 @@ mod tests {
     /// or whose wheels were wrong before this version. Dropping it from here
     /// leaves those installs on the CPU path with no path back short of a
     /// reinstall, and nothing else would fail.
+    ///
+    /// It used to assert `provision_hardware` was in this list directly. The
+    /// hardware stage now runs INSIDE `launch_refresh`, which is what fixed
+    /// the race between it and the fetchers — so this side can only guard the
+    /// entry point, and the Python half of the same invariant is asserted by
+    /// `test_launch_refresh.py::test_the_hardware_stage_runs_before_the_pass`.
+    /// Both halves are needed: neither language can see the other's.
     #[test]
-    fn the_launch_refresh_list_carries_the_hardware_check() {
+    fn the_launch_refresh_list_carries_the_maintenance_pass() {
         let modules: Vec<&str> = LAUNCH_REFRESH_ASSETS
             .iter()
             .filter_map(|args| args.last().copied())
             .collect();
         assert!(
-            modules.contains(&"tesseract.scripts.provision_hardware"),
-            "hardware profiling must be retried on every launch, got {modules:?}",
+            modules.contains(&"tesseract.scripts.launch_refresh"),
+            "the launch maintenance pass must run on every launch, got {modules:?}",
         );
         // Every entry is a `python -m <module>` pair; a malformed one would
         // spawn silently and do nothing, since these are never awaited.
@@ -1638,6 +2169,293 @@ mod tests {
         );
 
         assert!(marker_path(home.path()).exists());
+    }
+
+    // -- streaming output, stage counting, byte markers --------------------
+
+    /// `TOTAL_STAGES` is rendered to the operator as "Step N of TOTAL", so a
+    /// stage added to `provision_stages` without touching the constant would
+    /// make every counter in the run wrong — and nothing else would notice.
+    /// Counted here against the real function rather than by hand.
+    #[test]
+    fn total_stages_matches_what_provision_stages_actually_emits() {
+        let home = TempDir::new("stage-count");
+        let uv = PathBuf::from("uv-stub");
+        let progress_log: RefCell<Vec<String>> = RefCell::new(Vec::new());
+
+        let progress = |msg: &str| progress_log.borrow_mut().push(msg.to_string());
+        let ok = |_: &Path, _: &[&str]| -> Result<(), String> { Ok(()) };
+
+        provision_stages(home.path(), &uv, &progress, &ok, &ok).expect("stages should succeed");
+
+        // Every stage except the terminal "Ready.", plus the clone that
+        // `provision()` performs before calling in here.
+        let staged = progress_log.borrow().len() as u32 - 1;
+        assert_eq!(
+            staged + 1,
+            TOTAL_STAGES,
+            "a stage was added or removed without updating TOTAL_STAGES"
+        );
+        assert_eq!(progress_log.borrow().last().map(String::as_str), Some("Ready."));
+    }
+
+    #[test]
+    fn parse_progress_marker_reads_a_full_marker() {
+        let parsed = parse_progress_marker(
+            "TESSERACT_PROGRESS file=model.bin received=1048576 expected=1600000000",
+        )
+        .expect("a well-formed marker must parse");
+        assert_eq!(parsed, ("model.bin".to_string(), 1_048_576, Some(1_600_000_000)));
+    }
+
+    /// A server that sends no Content-Length is the normal case for some
+    /// mirrors, and the marker says so with `-` rather than omitting the
+    /// field. Parsing it as "no total" is what makes the splash show a rising
+    /// figure instead of a percentage of nothing.
+    #[test]
+    fn parse_progress_marker_accepts_an_unknown_total() {
+        let parsed = parse_progress_marker(
+            "TESSERACT_PROGRESS file=voices-v1.0.bin received=42 expected=-",
+        )
+        .expect("an unknown total must still parse");
+        assert_eq!(parsed, ("voices-v1.0.bin".to_string(), 42, None));
+    }
+
+    #[test]
+    fn parse_progress_marker_ignores_ordinary_output() {
+        assert!(parse_progress_marker("Downloading pygments (1.2MiB)").is_none());
+        assert!(parse_progress_marker("").is_none());
+        // Right prefix, no usable numbers — must not be mistaken for a tick
+        // and silently render as zero bytes.
+        assert!(parse_progress_marker("TESSERACT_PROGRESS file=x").is_none());
+    }
+
+    fn collect_lines(input: &[u8]) -> Vec<String> {
+        let (tx, rx) = mpsc::channel();
+        split_lines(input, false, tx);
+        rx.into_iter().map(|(_, line)| line).collect()
+    }
+
+    /// Measured against the shipped `uv` and `playwright`, neither emits a
+    /// bare `\r` through a pipe — but `ollama pull` redraws its bar with one,
+    /// and a reader that only split on `\n` would hold the whole download in
+    /// a single line that arrives after it finishes.
+    #[test]
+    fn split_lines_treats_carriage_returns_as_terminators() {
+        assert_eq!(
+            collect_lines(b"first\nsecond\rthird\r\nfourth"),
+            vec!["first", "second", "third", "fourth"],
+            "both terminators split, and a trailing line with neither still arrives"
+        );
+    }
+
+    #[test]
+    fn split_lines_drops_blank_and_whitespace_only_lines() {
+        assert_eq!(collect_lines(b"\n\n  \nreal\n\n"), vec!["real"]);
+    }
+
+    /// A tool rendering a bar with no terminator at all must not be able to
+    /// grow one "line" without bound in memory.
+    #[test]
+    fn split_lines_flushes_an_unterminated_line_at_the_cap() {
+        let oversized = vec![b'x'; MAX_LINE_BYTES + 10];
+        let lines = collect_lines(&oversized);
+        assert_eq!(lines.len(), 2, "must flush at the cap rather than buffer on");
+        assert_eq!(lines[0].len(), MAX_LINE_BYTES);
+        assert_eq!(lines[1].len(), 10);
+    }
+
+    /// The launch-refresh half of the same problem. `refresh_optional_assets`
+    /// spawns six fetchers on every launch and never waits on them, so none
+    /// reach `run_tool` and quit had nothing to stop — including the one that
+    /// can be pulling ~2.2 GB of CUDA wheels. Raised by this session's own
+    /// re-audit, then confirmed independently by three Trio lenses.
+    #[cfg(windows)]
+    #[test]
+    fn stop_active_kills_a_registered_refresh_child() {
+        let _guard = run_tool_guard();
+        REFRESH_CHILDREN.lock().unwrap().clear();
+
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/C", "ping -n 30 127.0.0.1 >nul"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        hide_console(&mut cmd);
+        let child = cmd.spawn().expect("the probe child should spawn");
+        let pid = child.id();
+        REFRESH_CHILDREN.lock().unwrap().push(child);
+
+        assert!(stop_active(), "a running refresh child must be reported stopped");
+        assert!(
+            REFRESH_CHILDREN.lock().unwrap().is_empty(),
+            "the registry must be drained, not left holding dead handles"
+        );
+
+        // The handle is released by now, so ask the OS rather than the struct.
+        let listed = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}")])
+            .output()
+            .expect("tasklist should run");
+        let listed = String::from_utf8_lossy(&listed.stdout);
+        assert!(
+            !listed.contains(&pid.to_string()),
+            "pid {pid} still running after the quit; tasklist said: {listed}"
+        );
+    }
+
+    /// A fetcher that finished on its own must not be taskkilled by pid. It
+    /// cannot reach an unrelated process while the `Child` is held — but only
+    /// because the exit is observed before the handle is released.
+    #[cfg(windows)]
+    #[test]
+    fn stop_active_does_not_kill_a_refresh_child_that_already_exited() {
+        let _guard = run_tool_guard();
+        REFRESH_CHILDREN.lock().unwrap().clear();
+
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/C", "exit 0"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        hide_console(&mut cmd);
+        let mut child = cmd.spawn().expect("the probe child should spawn");
+        let _ = child.wait();
+        REFRESH_CHILDREN.lock().unwrap().push(child);
+
+        assert!(
+            !stop_active(),
+            "nothing was running, so nothing should be reported stopped"
+        );
+        assert!(REFRESH_CHILDREN.lock().unwrap().is_empty());
+    }
+
+    /// Killing the running child was not enough. Every stage after the
+    /// dependency install swallows its error, so a killed stage let the
+    /// provisioning thread walk straight on to the next `run_tool` and spawn a
+    /// child that `RunEvent::Exit` had already had its one look for — the
+    /// abandoned-child case reappearing one stage later. Confirmed by the
+    /// Trio auditor lens on this phase's own fix.
+    #[cfg(windows)]
+    #[test]
+    fn run_tool_refuses_to_spawn_once_a_quit_has_latched() {
+        let _guard = run_tool_guard();
+        let (program, args) = cmd_args("echo should-never-run");
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        let seen: RefCell<Vec<String>> = RefCell::new(Vec::new());
+
+        // `stop_active` with nothing running still latches, which is exactly
+        // the state a quit between two stages leaves behind.
+        stop_active();
+        let result = run_tool(&program, &argv, "cmd", None, &|line| {
+            seen.borrow_mut().push(line.to_string())
+        });
+        assert!(result.is_err(), "a latched quit must refuse the next stage");
+        assert!(
+            seen.borrow().is_empty(),
+            "nothing may be spawned after a quit; got {:?}",
+            seen.borrow()
+        );
+    }
+
+    /// Windows-only because the shell is: the test drives `cmd` directly
+    /// rather than a stub, which is the point — the buffered runner this
+    /// replaced passed every unit test it had while showing the operator
+    /// nothing for ten minutes.
+    #[cfg(windows)]
+    fn cmd_args(script: &str) -> (PathBuf, Vec<String>) {
+        (PathBuf::from("cmd"), vec!["/C".to_string(), script.to_string()])
+    }
+
+    /// `STOPPING` and `ACTIVE_PID` are process-global, and `cargo test` runs
+    /// these in parallel threads — so the latch test would make its neighbours
+    /// fail at random if they overlapped. Held by every test that touches
+    /// either. Poison is recovered rather than propagated: one failing test
+    /// must not turn into three.
+    #[cfg(windows)]
+    static RUN_TOOL_LOCK: Mutex<()> = Mutex::new(());
+
+    #[cfg(windows)]
+    fn run_tool_guard() -> std::sync::MutexGuard<'static, ()> {
+        let guard = RUN_TOOL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Cleared on ACQUIRE, not by the latch test on its way out: a panic
+        // there would otherwise leave the flag set for every test behind it,
+        // turning one failure into four. Production never clears it — a quit
+        // is terminal — so this lives here rather than in `stop_active`.
+        STOPPING.store(false, std::sync::atomic::Ordering::SeqCst);
+        guard
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn run_tool_forwards_both_streams_because_the_tools_disagree_about_which_to_use() {
+        let _guard = run_tool_guard();
+        let (program, args) = cmd_args("echo out-line& echo err-line 1>&2");
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        let seen: RefCell<Vec<String>> = RefCell::new(Vec::new());
+
+        run_tool(&program, &argv, "cmd", None, &|line| {
+            seen.borrow_mut().push(line.to_string())
+        })
+        .expect("a zero exit must succeed");
+
+        let seen = seen.borrow();
+        assert!(
+            seen.iter().any(|l| l == "out-line"),
+            "stdout must be forwarded — playwright writes its progress there; got {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|l| l == "err-line"),
+            "stderr must be forwarded — uv writes EVERYTHING there; got {seen:?}"
+        );
+    }
+
+    /// The tail must cover BOTH streams. `uv` puts its errors on stderr but
+    /// `playwright` writes to stdout, so a stderr-only tail — which is what
+    /// the buffered runner had, since it only ever kept `out.stderr` — would
+    /// show an empty "Setup failed:" for a playwright failure while the real
+    /// text sat in `shell.log`.
+    #[cfg(windows)]
+    #[test]
+    fn run_tool_failure_carries_the_tail_of_both_streams() {
+        let _guard = run_tool_guard();
+        let (program, args) =
+            cmd_args("echo stdout-error& echo stderr-error 1>&2& exit 1");
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+
+        let err = run_tool(&program, &argv, "cmd", None, &|_| {})
+            .expect_err("a non-zero exit must fail");
+
+        assert!(
+            err.contains("stderr-error"),
+            "the failure must carry what stderr said; got {err}"
+        );
+        assert!(
+            err.contains("stdout-error"),
+            "and what stdout said — playwright fails there; got {err}"
+        );
+        assert!(err.starts_with("cmd "), "the label must name the tool; got {err}");
+    }
+
+    /// Every line now reaches the screen on the SUCCESS path, not only inside
+    /// a failure message — so a credentialed URL echoed by a tool would be
+    /// newly visible if the scrub were not applied per line.
+    #[cfg(windows)]
+    #[test]
+    fn run_tool_scrubs_credentials_out_of_every_forwarded_line() {
+        let _guard = run_tool_guard();
+        let (program, args) = cmd_args("echo fetching https://user:secret@example.invalid/x.git");
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        let seen: RefCell<Vec<String>> = RefCell::new(Vec::new());
+
+        run_tool(&program, &argv, "cmd", None, &|line| {
+            seen.borrow_mut().push(line.to_string())
+        })
+        .expect("echo should succeed");
+
+        let joined = seen.borrow().join("\n");
+        assert!(!joined.contains("secret"), "a credential reached the sink: {joined}");
+        assert!(joined.contains("<redacted>@example.invalid"));
     }
 
     #[test]

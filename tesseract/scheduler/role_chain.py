@@ -47,7 +47,7 @@ def _options_for_ref(ref: ResolvedRef, role_name: str) -> AdapterOptions:
 
     Only `context_window` is required. The first cut of this required
     `temperature` and `max_output_tokens` too, on the reasoning that an
-    invented infrastructure value is what CLAUDE.md forbids — but that
+    invented infrastructure value is exactly what is forbidden — but that
     mistook *absent* for *unconfigured*. `cli.claude.opus_5` declares
     neither, deliberately: that generation removed the sampling parameters
     and 400s on them, and the CLI derives its output cap from
@@ -119,15 +119,23 @@ def build_chain_for_role(
         log.warning("%s: role %r missing from roles.yaml", log_label, role_name)
         return []
     role = bundle.role(role_name)
+    if role.mode != "active":
+        # An operator switching a role off in Settings must stop the jobs that
+        # run on it, and stop the spend. Gating on `mode` rather than inferring
+        # it from an empty chain says so directly.
+        log.info("%s: role %r is %s — no chain built", log_label, role_name, role.mode)
+        return []
     chain: AdapterChain = []
     failures: list[str] = []
     for ref in (role.primary, *role.fallbacks):
         if ref is None:
-            # `RoleConfig.primary` is None for `mode: inactive` and the
-            # dataclass makes gating the consumer's job. Without this the
-            # except below dereferences `ref.ref` on None and the
-            # AttributeError escapes uncaught.
-            failures.append("role is inactive (no primary wired)")
+            # Unreachable as written — `primary` is None only for an inactive
+            # role, and the gate above already returned for those. Kept as a
+            # skip rather than an assertion because the `except` below reads
+            # `ref.ref`: a None reaching it raises an uncaught AttributeError
+            # and takes the calling job down, and `python -O` strips
+            # assertions. Cheap here, unrecoverable there.
+            failures.append("role resolved to no provider")
             continue
         try:
             adapter = build_adapter(ref)

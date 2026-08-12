@@ -43,7 +43,6 @@ const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 // whole view as a movable glass panel over the orb (panel manager wired in
 // SC-2). The orb keeps its exact prior rendering — full mode, clamped above the
 // `.cockpit-hud`, immersive `data-view="orb"` atmosphere.
-// Spec: Docs/Plan/cockpit/design/2026-06-17-spatial-cockpit-spec.md.
 function App() {
   useWebSocket();
 

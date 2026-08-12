@@ -6,7 +6,7 @@ here keeps an in-memory ``operator_presence`` cache the autonomy layer
 queries via :func:`get_presence`, and forwards a threshold-stamped
 payload to the autonomy event bus for the operator-view mapper.
 
-Per ``Docs/Plan/autonomy/phase-AU-21-mirror-vision.md``:
+Contract:
 
 - No new event store — workspace_event.jsonl is deliberately *not*
   appended to. The presence cache + autonomy bus carry the signal;

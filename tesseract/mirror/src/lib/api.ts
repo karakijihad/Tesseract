@@ -26,6 +26,9 @@ import type {
   AgentsListResponse,
   Alarm,
   AlarmsResponse,
+  EnvKeysResponse,
+  EnvKeysWriteResponse,
+  EnvKeyTokenResponse,
 } from "./types";
 import { isEnvelope } from "./envelope";
 import { BACKEND_BASE } from "./endpoints";
@@ -182,6 +185,14 @@ export interface CapabilityIntegration {
   name: string;
   key_name: string;
   key_present: boolean;
+  // Independent of the key: `providers.yaml::services` and a channel's own
+  // block can switch one off while its key stays set, which is how an
+  // operator says "I have this, I don't want it running".
+  enabled: boolean;
+  // The `providers.yaml::services` block name when this row is a service,
+  // and null for a channel — a channel's switch lives in its own file and
+  // is not writable from this panel.
+  service: string | null;
 }
 
 // cli-auth DESIGN.md §4/§5 — per roles.yaml role, whether its primary
@@ -257,6 +268,27 @@ export async function postRuntimeRestart(
     "/api/runtime/restart_for_code_drift",
     { reason },
   );
+}
+
+// ── API keys (P5) ───────────────────────────────────────
+// The list and the prose come from `.env.example`; the writes land in
+// <TESSERACT_HOME>/.env. A report never carries a value — `in_file` and
+// `active` are the whole picture, and their disagreement is the restart.
+
+export async function fetchEnvKeys(): Promise<EnvKeysResponse> {
+  return apiFetch<EnvKeysResponse>("/api/env-keys");
+}
+
+export async function postEnvKeys(
+  updates: Record<string, string>,
+): Promise<EnvKeysWriteResponse> {
+  return apiPost<EnvKeysWriteResponse>("/api/env-keys", { updates });
+}
+
+export async function postGenerateEnvToken(
+  name: string,
+): Promise<EnvKeyTokenResponse> {
+  return apiPost<EnvKeyTokenResponse>("/api/env-keys/generate", { name });
 }
 
 export async function fetchSoul(): Promise<SoulResponse> {
@@ -1030,6 +1062,52 @@ export async function fetchSystem(
     ? "/api/settings/system?refresh=1"
     : "/api/settings/system";
   return apiFetch<CapabilitySnapshot>(path);
+}
+
+// What the launch reconcile pass concluded. `attention` is deliberately the
+// short list — a dependency that is fine has nothing to say, and a panel that
+// is usually full is one people stop reading.
+export interface DependencyAttention {
+  id: string;
+  state: "ok" | "absent" | "stale" | "unknown";
+  reason: string;
+  size_mb: number | null;
+  consent: "granted" | "declined" | "never_asked";
+}
+
+export interface DependencyAdvice {
+  id: string;
+  text: string;
+  at: string;
+}
+
+export interface DependencyReport {
+  checked_at: string;
+  attention: DependencyAttention[];
+  advice: DependencyAdvice[];
+  dependencies: Record<
+    string,
+    {
+      state: string;
+      consent: string;
+      consent_origin: string;
+      reason: string;
+      size_mb: number | null;
+      version: string;
+    }
+  >;
+}
+
+export async function fetchDependencies(
+  refresh = false,
+): Promise<DependencyReport> {
+  // Reads the artifact by default; `refresh` runs a real pass. A panel that
+  // polls must not be able to start a hardware probe on every tick.
+  return apiFetch<DependencyReport>(
+    refresh
+      ? "/api/capabilities/dependencies?refresh=1"
+      : "/api/capabilities/dependencies",
+  );
 }
 
 export type SessionResumePolicy =

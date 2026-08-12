@@ -34,9 +34,7 @@ from typing import Any, Literal
 
 log = logging.getLogger(__name__)
 
-from tesseract.paths import TESSERACT_DIR, TESSERACT_HOME, runtime_logs_root
-
-SNAPSHOT_PATH = runtime_logs_root() / "capability-snapshot.json"
+from tesseract.paths import TESSERACT_DIR, TESSERACT_HOME
 
 
 @dataclass
@@ -234,19 +232,12 @@ def collect() -> CapabilitySnapshot:
     return snap
 
 
-def write_snapshot(snap: CapabilitySnapshot) -> Path:
-    SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SNAPSHOT_PATH.write_text(json.dumps(_to_dict(snap), indent=2), encoding="utf-8")
-    return SNAPSHOT_PATH
-
-
-def read_snapshot() -> dict[str, Any] | None:
-    if not SNAPSHOT_PATH.exists():
-        return None
-    try:
-        return json.loads(SNAPSHOT_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+# `write_snapshot` / `read_snapshot` / `SNAPSHOT_PATH` lived here and are
+# gone. This module COLLECTS the machine's facts; persisting them is
+# `tesseract.capability`'s, which keeps one artifact under `runtime/` rather
+# than a second one inside `runtime/logs/` — a tree the janitor prunes by age,
+# so a cache of machine state quietly expired and every reader then paid a
+# 10-15 s re-collect believing it was reading a cache.
 
 
 def _to_dict(snap: CapabilitySnapshot) -> dict[str, Any]:
@@ -476,10 +467,10 @@ def main() -> int:
         print(_format_doctor_report(hard, soft))
         return 0 if all(c.ok for c in hard) else 1
 
-    snap = collect()
-    path = write_snapshot(snap)
-    print(json.dumps(_to_dict(snap), indent=2))
-    print(f"# wrote {path}", file=sys.stderr)
+    # Prints and does not persist. Writing was this script's half of a second
+    # artifact; `python -m tesseract.scripts.reconcile_capabilities` is what
+    # records machine state now, and it records the dependencies beside it.
+    print(json.dumps(_to_dict(collect()), indent=2))
     return 0
 
 

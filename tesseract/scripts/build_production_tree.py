@@ -218,7 +218,16 @@ def build(src_root: Path, out_root: Path, files: Iterable[str] | None = None) ->
     # and without an ignore rule git reports them as uncommitted changes. The
     # update UI then shows a "local history diverged" row and nudges the user
     # toward a force-update (observed live 2026-07-30).
-    for rel in ("tesseract/voice/models/piper", "tesseract/voice/models/kokoro"):
+    # All three lanes, whisper included — it was omitted while the other two
+    # were covered, and it is the LARGEST (~1.6 GB), so the one lane most
+    # likely to make an updating install report divergence was the one lane
+    # without a rule. Each ships a tracked README, so each directory exists in
+    # the output tree and each needs its own ignore file.
+    for rel in (
+        "tesseract/voice/models/piper",
+        "tesseract/voice/models/kokoro",
+        "tesseract/voice/models/whisper",
+    ):
         d = out_root / rel
         if d.is_dir():
             _write_state_dir_gitignore(d)

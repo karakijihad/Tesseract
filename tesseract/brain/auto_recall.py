@@ -27,11 +27,9 @@ from dataclasses import dataclass
 import yaml
 
 from tesseract.memory.retrieval import MAX_FINAL_RESULTS
-from tesseract.paths import CONFIG_DIR
+from tesseract.paths import config_dir
 
 logger = logging.getLogger(__name__)
-
-MEMORY_YAML = CONFIG_DIR / "memory.yaml"
 
 _RECALL_OPEN = "[recalled_memories]"
 _RECALL_CLOSE = "[/recalled_memories]"
@@ -53,8 +51,15 @@ class AutoRecallConfig:
 
 
 def load_auto_recall_config() -> AutoRecallConfig:
-    """Read ``memory.yaml::auto_recall``; raise loudly on missing keys."""
-    raw = yaml.safe_load(MEMORY_YAML.read_text(encoding="utf-8"))
+    """Read ``memory.yaml::auto_recall``; raise loudly on missing keys.
+
+    The path resolves at call time. Frozen at import it captured whatever
+    ``TESSERACT_HOME`` held when this module first loaded, so a caller that
+    set the home afterwards — every test that isolates itself, and any process
+    started before the home is known — read a different config directory than
+    the one it had just written to.
+    """
+    raw = yaml.safe_load((config_dir() / "memory.yaml").read_text(encoding="utf-8"))
     section = _require(raw, "auto_recall", "memory.yaml")
     return AutoRecallConfig(
         top_k=int(_require(section, "top_k", "memory.yaml auto_recall")),

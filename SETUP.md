@@ -12,14 +12,15 @@ Paste that into File Explorer's address bar. Nothing outside it is touched.
 
 ---
 
-## 0. The four questions on first run
+## 0. The setup form on first run
 
-Before it downloads anything, TESSERACT asks four things. They're all changeable later — this is just so the first run fetches what you actually want.
+Before it downloads anything, TESSERACT asks what to call each other, whether it speaks and listens, and for your API keys. Everything here is changeable later — this is just so the first run fetches what you actually want and can answer you the moment it finishes.
 
 | Question | What it decides |
 | --- | --- |
 | **What should it call you?** | How it addresses you. |
 | **What do you want to call it?** | Its name — used everywhere it refers to itself, and in the wake phrase (`hey <name>`) if you turn that on. |
+| **API keys** | One field per provider, all optional and all skippable. Each row carries the signup address for that provider. Filling in the first one is what lets it hold a conversation as soon as setup finishes; skip them all and it still installs, listens and remembers. |
 | **Voice** | Female or male. Only filters the list; every voice stays selectable afterwards. |
 | **Speech** | **Natural** (~340 MB, better voice, wants a reasonably quick machine) · **Light** (~65 MB, plainer but several times faster than real time) · **Off** (text replies, nothing downloaded). |
 | **Listening** | On downloads ~1.6 GB of speech recognition so talking to it works the first time you try. Off downloads nothing. |
@@ -34,7 +35,7 @@ Names and voice live in the **Identity** tab.
 
 ## 1. The keys
 
-Open `.env` in that folder. It arrives commented, with a signup link next to every key. Add what you want, save, and **restart** — `.env` is read once at startup and is the only file that needs a restart.
+Set them in **Settings → API keys**. Every key is listed there with what it unlocks and where to sign up, showing set or not set and never the value; saving one offers the restart it needs. Nothing forces you through that panel — the keys live in a plain `.env` in the folder above, it arrives commented with a signup link next to every key, and editing it by hand works exactly the same. Either way, **restart** afterwards: `.env` is read once at startup and is the only file that needs one.
 
 ### The one that matters
 

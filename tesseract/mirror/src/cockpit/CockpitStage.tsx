@@ -22,7 +22,6 @@ import { installLayoutPersistence } from "./layoutPersistence";
 // rail panels once on mount. The cockpit is permanently in the immersive
 // `data-view="orb"` mode — atmosphere + glass HUD — so the orb keeps the exact
 // rendering it had on the old OrbView.
-// Spec: Docs/Plan/cockpit/design/2026-06-17-spatial-cockpit-spec.md.
 
 export function CockpitStage() {
   const ensureRails = usePanelStore((s) => s.ensureRails);

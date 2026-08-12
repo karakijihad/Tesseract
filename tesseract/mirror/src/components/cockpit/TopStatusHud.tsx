@@ -17,6 +17,7 @@ import { useEntityStore } from "../../stores/entity";
 import { useSoulStore } from "../../stores/soul";
 import { useActivityStore } from "../../stores/activity";
 import { needsManualRestart, useUpdateStore } from "../../stores/update";
+import { useDependencyStore } from "../../stores/dependencies";
 import { isTauri } from "../../lib/endpoints";
 import { formatRelative } from "../../lib/time";
 import { ActivityMap } from "../../cockpit/ActivityMap";
@@ -41,6 +42,10 @@ export function TopStatusHud() {
   const exeApplying = useUpdateStore((s) => s.exeApplying);
   const exeApply = useUpdateStore((s) => s.exeApply);
 
+  const depCount = useDependencyStore((s) => s.attention.length);
+  const depDrift = useDependencyStore((s) => s.hasDrift());
+  const hydrateDependencies = useDependencyStore((s) => s.hydrate);
+
   // Apply is HUD-only (Settings only offers "check now"), so an apply
   // failure — including the worst case, the app's respawn itself failing —
   // must be visible right here, not just in a Settings panel the user has
@@ -63,10 +68,22 @@ export function TopStatusHud() {
   // resurfaces on the post-relaunch check if the app tree is still behind.
   const showUpdateChip =
     isTauri() && !updateFailed && updateBehind > 0 && !showExeChip;
+  // Last in the precedence, deliberately: an available update may BE the
+  // thing that fixes a dependency, so offering both at once invites the
+  // operator to chase the symptom instead of the cause. Shown only when
+  // there is nothing more useful to offer.
+  const showDepChip = depCount > 0 && !showExeChip && !showUpdateChip;
 
   useEffect(() => {
     void hydrateActivity();
   }, [hydrateActivity]);
+
+  // Read once on mount and never polled. The artifact only changes when a
+  // launch pass writes it, so polling would re-read an unchanged file for
+  // the life of the session.
+  useEffect(() => {
+    void hydrateDependencies();
+  }, [hydrateDependencies]);
 
   const ledClass =
     state === "error" ? "is-bad" : state === "idle" ? "is-ok" : "is-active";
@@ -118,6 +135,18 @@ export function TopStatusHud() {
           >
             {updateApplying ? "restarting…" : `update · ${updateBehind}`}
           </button>
+        )}
+        {showDepChip && (
+          <span
+            className="top-status-hud__update"
+            title={
+              depDrift
+                ? "Something this build needs is not the version it expects — open Settings → Local models"
+                : "Something switched on has not been downloaded — open Settings → Local models"
+            }
+          >
+            {depDrift ? `mismatched · ${depCount}` : `missing · ${depCount}`}
+          </span>
         )}
         {showExeChip && (
           <button

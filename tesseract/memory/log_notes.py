@@ -5,7 +5,6 @@ writers (`[reflect]`, `[session_end]`, `[auto_compact]`, `[scheduler]`)
 route here instead of `memory-store/daily/` so the librarian never sees
 them.
 
-Contract lives in `Docs/Plan/memory-retune/_shared/memory-stream-contract.md`.
 """
 
 from __future__ import annotations

@@ -66,6 +66,33 @@ fn log_line(level: &str, msg: &str) {
     write_line(path, level, msg);
 }
 
+/// One log line is one physical line. A message carrying a newline would
+/// otherwise append a second line the reader cannot tell from a real one —
+/// timestamp, level and pid are all forgeable from inside the text. Escaped
+/// rather than dropped so the message stays legible and nothing goes missing
+/// silently: `\n`, `\r`, `\t` by name, every other C0 control and DEL as
+/// `\xNN`. Applied here rather than at each caller so no future caller has to
+/// remember, and so a panic message (which arrives multi-line) is covered too.
+///
+/// A literal backslash is left alone: escaping it would double every Windows
+/// path in the log, and the property being defended is one message = one
+/// physical line, which the text `\n` does not break.
+fn escape_controls(msg: &str) -> String {
+    let mut out = String::with_capacity(msg.len());
+    for ch in msg.chars() {
+        match ch {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                out.push_str(&format!("\\x{:02x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn write_line(path: &Path, level: &str, msg: &str) {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
@@ -80,7 +107,11 @@ fn write_line(path: &Path, level: &str, msg: &str) {
     // failure than the one it fixes. So the interleave is accepted and made
     // READABLE instead: every line names its writer, and the two runs can be
     // separated afterwards. That was the only thing the interleave cost.
-    let line = format!("{ts} {level} shell[{}]: {msg}\n", std::process::id());
+    let line = format!(
+        "{ts} {level} shell[{}]: {}\n",
+        std::process::id(),
+        escape_controls(msg)
+    );
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = f.write_all(line.as_bytes());
     }
@@ -149,6 +180,53 @@ mod tests {
         assert!(contents.contains("first"));
         assert!(contents.contains("second"));
         assert_eq!(contents.lines().count(), 2);
+    }
+
+    #[test]
+    fn a_message_carrying_a_newline_cannot_forge_a_second_log_line() {
+        // `setup::submit_first_run_setup` logs operator-supplied answers, and
+        // the level/timestamp/pid prefix is trivially forgeable from inside
+        // the text once a real newline gets through.
+        let base = TempDir::new("forge");
+        let path = base.join("shell.log");
+
+        write_line(&path, "INFO", "tts=kokoro\n2026-01-01 00:00:00.000 ERROR shell[1]: forged");
+
+        let contents = fs::read_to_string(&path).unwrap();
+        assert_eq!(contents.lines().count(), 1);
+        assert!(contents.contains("\\n"), "the newline survives as an escape");
+        assert!(contents.contains("forged"), "nothing is dropped silently");
+    }
+
+    #[test]
+    fn carriage_returns_and_other_controls_are_escaped_too() {
+        // A bare CR rewrites the line in a terminal; NUL and friends make the
+        // file unreadable to line-oriented tooling.
+        let base = TempDir::new("controls");
+        let path = base.join("shell.log");
+
+        write_line(&path, "INFO", "a\rb\tc\u{0}d\u{7f}e");
+
+        let contents = fs::read_to_string(&path).unwrap();
+        assert_eq!(contents.lines().count(), 1);
+        assert!(contents.contains("a\\rb\\tc\\x00d\\x7fe"));
+    }
+
+    #[test]
+    fn ordinary_text_including_windows_paths_is_written_verbatim() {
+        // The escape must not make the common case unreadable — these logs
+        // carry install paths on every line that matters.
+        let base = TempDir::new("verbatim");
+        let path = base.join("shell.log");
+
+        // Not a `C:\Users\<name>` shape — the production-tree PII gate
+        // (`test_no_generic_pii_in_production_tree.py`) rejects those on sight,
+        // and it is right to: a home path in shipped source is a leak whether
+        // or not the name in it is real.
+        write_line(&path, "INFO", r"cloning into C:\TESSERACT\app\src");
+
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.contains(r"cloning into C:\TESSERACT\app\src"));
     }
 
     #[test]

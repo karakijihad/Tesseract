@@ -7,7 +7,6 @@ single-turn prompt defined by `<TESSERACT_HOME>/agents/memory-classifier.md`
 Never raises — adapter / JSON / timeout failures all return
 `(None, 0.0)` so the caller can log one `unclassifiable` event and skip.
 
-Contract: `Docs/Plan/memory-retune/_shared/librarian-classifier-contract.md`.
 """
 
 from __future__ import annotations

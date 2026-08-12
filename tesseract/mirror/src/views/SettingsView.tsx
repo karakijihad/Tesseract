@@ -2,6 +2,7 @@ import { AboutSection } from "./settings/About";
 import { CapabilitiesSection } from "./settings/Capabilities";
 import { CompactSection } from "./settings/Compact";
 import { CostSection } from "./settings/Cost";
+import { KeysSection } from "./settings/Keys";
 import { LocalModelsSection } from "./settings/LocalModels";
 import { LoopLimitsSection } from "./settings/LoopLimits";
 import { ModelRolesSection } from "./settings/ModelRoles";
@@ -26,6 +27,9 @@ export function SettingsView() {
         <AboutSection />
         <ModeSection />
         <CapabilitiesSection />
+        {/* Directly under Capabilities: that section says which key is
+            missing, and this is where it gets set. */}
+        <KeysSection />
         <ModelRolesSection />
         <CompactSection />
         <LoopLimitsSection />

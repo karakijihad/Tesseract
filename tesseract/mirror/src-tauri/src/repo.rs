@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use git2::{build::RepoBuilder, Cred, FetchOptions, RemoteCallbacks, Repository, StatusOptions};
+use git2::{build::RepoBuilder, FetchOptions, Repository, StatusOptions};
 use serde::Serialize;
 
 /// Caps how many dirty paths / ahead-commit summaries `local_divergence`
@@ -28,44 +28,69 @@ pub fn repo_url() -> String {
     std::env::var("TESSERACT_REPO_URL").unwrap_or_else(|_| DEFAULT_REPO_URL.to_string())
 }
 
-pub fn github_token(home: &Path) -> Option<String> {
-    if let Ok(t) = std::env::var("GITHUB_TOKEN") {
-        let t = t.trim().to_string();
-        if !t.is_empty() {
-            return Some(t);
-        }
-    }
-    std::fs::read_to_string(crate::provision::runtime_dir(home).join("github_token"))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+/// The shell supplies no credentials of its own: no credential callback is
+/// installed, so nothing the app stores or prompts for can enter a fetch.
+/// That REQUIRES the default repository to be publicly readable, with nothing
+/// to fall back on if the remote starts refusing anonymous reads.
+///
+/// It is not the same as saying the transport can never be authenticated —
+/// a `TESSERACT_REPO_URL` carrying userinfo is passed to libgit2 verbatim, so
+/// an operator who sets one is choosing to authenticate. That is an escape
+/// hatch the operator opens deliberately, not a path the app can take itself.
+fn fetch_options() -> FetchOptions<'static> {
+    FetchOptions::new()
 }
 
-fn fetch_options(token: Option<String>) -> FetchOptions<'static> {
-    let mut cb = RemoteCallbacks::new();
-    if let Some(tok) = token {
-        cb.credentials(move |_url, _user, _| Cred::userpass_plaintext("x-access-token", &tok));
-    }
-    let mut fo = FetchOptions::new();
-    fo.remote_callbacks(cb);
-    fo
+pub fn clone(url: &str, dest: &Path) -> Result<(), String> {
+    clone_reporting(url, dest, |_, _, _| {})
 }
 
-pub fn clone(url: &str, dest: &Path, token: Option<String>) -> Result<(), String> {
+/// `clone` with libgit2's transfer statistics forwarded as they arrive.
+///
+/// The source tree is one of the largest downloads a first run performs and
+/// was the one stage that could not be instrumented by reading a subprocess's
+/// output — there is no subprocess, just libgit2 inside this process. Without
+/// the callback "Downloading TESSERACT…" is a static line for the whole
+/// transfer.
+///
+/// `total_bytes` is deliberately absent from the callback: libgit2 reports
+/// received bytes and an object count, and never a byte total, so a caller
+/// gets a figure that rises and a ratio that completes rather than a
+/// percentage this cannot honestly compute.
+///
+/// The callback is `'static` because `FetchOptions` here is, and it always
+/// returns `true` — refusing the transfer from a progress reporter would turn
+/// a display concern into a failed clone.
+pub fn clone_reporting(
+    url: &str,
+    dest: &Path,
+    mut on_transfer: impl FnMut(u64, u64, u64) + Send + 'static,
+) -> Result<(), String> {
+    let mut callbacks = git2::RemoteCallbacks::new();
+    callbacks.transfer_progress(move |stats| {
+        on_transfer(
+            stats.received_bytes() as u64,
+            stats.received_objects() as u64,
+            stats.total_objects() as u64,
+        );
+        true
+    });
+    let mut options = fetch_options();
+    options.remote_callbacks(callbacks);
     RepoBuilder::new()
-        .fetch_options(fetch_options(token))
+        .fetch_options(options)
         .clone(url, dest)
         .map(|_| ())
         .map_err(|e| format!("clone {url}: {e}"))
 }
 
-pub fn check_behind(dest: &Path, token: Option<String>) -> Result<(usize, Vec<String>), String> {
+pub fn check_behind(dest: &Path) -> Result<(usize, Vec<String>), String> {
     let repo = Repository::open(dest).map_err(|e| format!("open: {e}"))?;
     let mut remote = repo
         .find_remote("origin")
         .map_err(|e| format!("origin: {e}"))?;
     remote
-        .fetch(&["main"], Some(&mut fetch_options(token)), None)
+        .fetch(&["main"], Some(&mut fetch_options()), None)
         .map_err(|e| format!("fetch: {e}"))?;
     let head = repo
         .head()
@@ -301,9 +326,9 @@ mod tests {
         // Two independent clones of the same state, so one can fast-forward
         // cleanly while the other diverges before the remote gains a commit.
         let dest_ff = base.join("dest_ff");
-        clone(&origin_url, &dest_ff, None).expect("clone dest_ff");
+        clone(&origin_url, &dest_ff).expect("clone dest_ff");
         let dest_diverged = base.join("dest_diverged");
-        clone(&origin_url, &dest_diverged, None).expect("clone dest_diverged");
+        clone(&origin_url, &dest_diverged).expect("clone dest_diverged");
 
         // Diverge dest_diverged with a local-only commit before the remote moves.
         {
@@ -321,7 +346,7 @@ mod tests {
         let origin_head = head_short(&origin_path).unwrap();
 
         // Clean fast-forward case.
-        let (behind, summaries) = check_behind(&dest_ff, None).expect("check_behind dest_ff");
+        let (behind, summaries) = check_behind(&dest_ff).expect("check_behind dest_ff");
         assert_eq!(
             behind, 1,
             "dest_ff should be exactly one commit behind origin"
@@ -341,7 +366,7 @@ mod tests {
         );
 
         // Diverged case: fetch sees the remote is ahead too, but fast_forward must refuse.
-        let (behind, _) = check_behind(&dest_diverged, None).expect("check_behind dest_diverged");
+        let (behind, _) = check_behind(&dest_diverged).expect("check_behind dest_diverged");
         assert_eq!(
             behind, 1,
             "dest_diverged is behind by origin's one new commit"
@@ -361,56 +386,12 @@ mod tests {
     }
 
     #[test]
-    fn repo_url_and_github_token_precedence() {
-        // repo_url(): env override wins, then falls back to the default constant.
+    fn repo_url_prefers_the_env_override_then_the_default() {
         std::env::remove_var("TESSERACT_REPO_URL");
         assert_eq!(repo_url(), DEFAULT_REPO_URL);
         std::env::set_var("TESSERACT_REPO_URL", "https://example.invalid/x.git");
         assert_eq!(repo_url(), "https://example.invalid/x.git");
         std::env::remove_var("TESSERACT_REPO_URL");
-
-        // github_token(): env var wins (trimmed), then <home>/runtime/github_token
-        // (trimmed, empty treated as absent), else None.
-        let home = TempDir::new("token-home");
-
-        std::env::remove_var("GITHUB_TOKEN");
-        assert_eq!(github_token(home.path()), None, "no env, no file => None");
-
-        std::fs::create_dir_all(home.join("runtime")).unwrap();
-        std::fs::write(
-            home.join("runtime").join("github_token"),
-            "  file-token  \n",
-        )
-        .unwrap();
-        assert_eq!(
-            github_token(home.path()),
-            Some("file-token".to_string()),
-            "file token should be trimmed"
-        );
-
-        std::env::set_var("GITHUB_TOKEN", "  env-token  ");
-        assert_eq!(
-            github_token(home.path()),
-            Some("env-token".to_string()),
-            "env var should win over file and be trimmed"
-        );
-
-        std::env::set_var("GITHUB_TOKEN", "   ");
-        assert_eq!(
-            github_token(home.path()),
-            Some("file-token".to_string()),
-            "whitespace-only env var must be treated as absent, falling back to file"
-        );
-
-        std::fs::write(home.join("runtime").join("github_token"), "").unwrap();
-        std::env::remove_var("GITHUB_TOKEN");
-        assert_eq!(
-            github_token(home.path()),
-            None,
-            "empty file content must be treated as absent"
-        );
-
-        std::env::remove_var("GITHUB_TOKEN");
     }
 
     #[test]
@@ -484,8 +465,8 @@ mod tests {
         drop(origin);
 
         let dest = base.join("dest");
-        clone(&origin_path.to_string_lossy(), &dest, None).expect("clone dest");
-        check_behind(&dest, None).expect("fetch so origin/main exists");
+        clone(&origin_path.to_string_lossy(), &dest).expect("clone dest");
+        check_behind(&dest).expect("fetch so origin/main exists");
         (origin_path, dest)
     }
 
@@ -590,7 +571,7 @@ mod tests {
             let origin = Repository::open(&origin_path).unwrap();
             write_commit(&origin, "a.txt", "v2", "origin moved on");
         }
-        check_behind(&dest, None).expect("fetch before fast_forward");
+        check_behind(&dest).expect("fetch before fast_forward");
 
         let err = fast_forward(&dest).expect_err("a diverged history must refuse fast-forward");
         assert!(err.contains("non-fast-forward"), "got: {err}");
@@ -618,7 +599,7 @@ mod tests {
             let origin = Repository::open(&origin_path).unwrap();
             write_commit(&origin, "a.txt", "v2", "origin moved on");
         }
-        check_behind(&dest, None).expect("fetch before reset_to_remote");
+        check_behind(&dest).expect("fetch before reset_to_remote");
         let origin_head = head_short(&origin_path).unwrap();
 
         assert!(

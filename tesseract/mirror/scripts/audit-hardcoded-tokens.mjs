@@ -19,6 +19,17 @@
  * implementation detail, not design surface, and are excluded to avoid
  * false positives.
  *
+ * Within those <style> blocks, a hex on a CUSTOM PROPERTY DECLARATION
+ * (`--bg-void: #050508`) is allowed and a hex used directly in a rule
+ * (`background: #b02a2a`) is not — including when both sit on one line, since
+ * only the declarations are stripped and the remainder is still scanned. A standalone document cannot import
+ * tokens.css, so it has to define its own palette — flagging those
+ * definitions would make the rule impossible to satisfy rather than
+ * enforceable, which is what it did: the splash defines its tokens in a
+ * `:root` block that says so in a comment, and the audit failed on every
+ * line of it. The check that still bites is the one that matters, namely a
+ * rule reaching past the document's own tokens for a literal.
+ *
  * Exits 1 if any hex/ms violation is found outside src/styles/tokens.css.
  *
  * Run: node scripts/audit-hardcoded-tokens.mjs
@@ -37,6 +48,15 @@ const TOKENS_FILE = join(SRC_DIR, 'styles', 'tokens.css');
 // Patterns
 const HEX_RE = /#[0-9a-fA-F]{3,8}\b/g;
 const MS_RE  = /(?<![a-zA-Z-])\b(\d+(?:\.\d+)?)ms\b/g;
+// Every `--token-name: <value>` declaration on a line, anchored to the start
+// of the line or to a preceding `{` or `;` so it cannot match mid-value. The
+// separator is captured and put back, leaving the rest of the line intact for
+// scanning — the declaration is exempt, the line is not.
+//
+// `{` belongs in that set: `:root { --danger: #b02a2a; }` on one line is a
+// declaration like any other, and anchoring to `^|;` alone reported it as a
+// violation there while accepting the identical declaration on its own line.
+const CUSTOM_PROPERTY_DECL_RE = /(^|[;{])\s*--[A-Za-z0-9-]+\s*:[^;}]*/g;
 
 /**
  * Walk dir and collect all files whose name matches extRe, excluding any
@@ -103,7 +123,14 @@ function scanFile(filePath) {
 
     if (isCommentLine(rawLine)) return;
 
-    const line = filePath.endsWith('.css') || isHtml ? rawLine : stripStringLiterals(rawLine);
+    let line = filePath.endsWith('.css') || isHtml ? rawLine : stripStringLiterals(rawLine);
+
+    // A standalone document defines the palette it cannot import, so a literal
+    // in a custom-property DECLARATION is allowed. Strip the declarations and
+    // scan what is left, rather than skipping the line: returning early here
+    // exempted `--danger: #b02a2a; background: #cc0000;` in full, hiding the
+    // second literal, which is a real violation sitting beside an allowed one.
+    if (isHtml) line = line.replace(CUSTOM_PROPERTY_DECL_RE, '$1');
 
     // HEX check — every raw hex has a token replacement
     for (const m of line.matchAll(HEX_RE)) {

@@ -23,6 +23,7 @@ _MISSING_KEY_HINT = (
 
 class _TavilyProviderBase(WebSearchProvider):
     api_key_env = "TAVILY_API_KEY"
+    service = "tavily"
     http_method = "POST"
 
     def missing_key_message(self) -> str:

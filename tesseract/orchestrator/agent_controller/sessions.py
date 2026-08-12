@@ -13,7 +13,7 @@ TUI, and the Mirror backend:
   never collide (session ids are dated+hex, chats are bare UUID4).
 
 TC-2 ships read/write primitives only — no Mirror UI changes. The shape
-is the contract `Docs/Plan/mirror-multi-chat` will consume.
+is the contract multi-chat consumes.
 """
 
 from __future__ import annotations

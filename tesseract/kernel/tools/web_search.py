@@ -18,7 +18,11 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
-from tesseract.kernel.tools.web_providers import fetch_json
+from tesseract.kernel.tools.web_providers import (
+    fetch_json,
+    service_disabled_reason,
+    service_key_env,
+)
 from tesseract.kernel.tools.web_providers.brave import BraveProvider
 
 _DEFAULT_TIMEOUT = 10.0
@@ -69,7 +73,17 @@ class WebSearchTool(Tool):
     async def run(self, tool_input: BaseModel, context: ToolContext) -> ToolResult:
         inp = tool_input if isinstance(tool_input, WebSearchInput) else WebSearchInput(**tool_input.model_dump())
 
-        api_key = os.environ.get(_PROVIDER.api_key_env)
+        # The operator may hold a key and still want this off; the
+        # catalog switch decides, and it is read per call so the
+        # config watcher's reload takes effect on the next turn.
+        disabled = service_disabled_reason(_PROVIDER.service)
+        if disabled is not None:
+            return ToolResult(output=f"{self.name}: {disabled}", is_error=True)
+        # The catalog names the key; the class constant is only the
+        # fallback for a config that does not.
+        api_key = os.environ.get(
+            service_key_env(_PROVIDER.service, _PROVIDER.api_key_env)
+        )
         if not api_key:
             return ToolResult(output=_PROVIDER.missing_key_message(), is_error=True)
 

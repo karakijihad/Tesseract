@@ -98,7 +98,7 @@ KEEP_LAST_TURNS = 3
 # message. If trimming below this would be required, drop the block
 # entirely rather than emit a useless single-line stub.
 RECALL_CONTEXT_MIN_KEEP = 4_000
-# Per CLAUDE.md hard rule: every retry loop has a circuit breaker. The
+# Every retry loop has a circuit breaker. The
 # tool-iteration cap (`max_tool_iterations`) and adapter-error breaker
 # (`max_consecutive_adapter_errors`) are **YAML-driven** — canonical values
 # live in `roles.yaml::roles.chat_brain.{tool_iteration_cap,
@@ -950,7 +950,7 @@ class ChatSession:
     tool_context: ToolContext = field(default_factory=ToolContext)
     compact_threshold: float = DEFAULT_COMPACT_THRESHOLD
     keep_recent_turns: int = DEFAULT_KEEP_RECENT_TURNS
-    # CR-0 sliding-window knobs. See module docstring + Docs/Plan/context-recall/
+    # Sliding-window knobs. See the module docstring
     # phase-CR-0-compaction-sliding-window.md.
     head_anchor_messages: int = DEFAULT_HEAD_ANCHOR_MESSAGES
     active_window_tokens: int | None = DEFAULT_ACTIVE_WINDOW_TOKENS
@@ -1158,7 +1158,7 @@ class ChatSession:
         turn. It must NOT mutate the canonical history (the workspace
         reply is delivered via the `workspace_reply` tool, not via the
         chat conversation), and it must NOT share mutable state with the
-        chat session — see ``Docs/Plan/workspace-parallel/audit.md`` for
+        chat session — see
         the per-tool / per-infra audit that drove these decisions.
 
         Shared (read-only or natively concurrency-safe):
@@ -2751,7 +2751,7 @@ class ChatSession:
         when history is too short or summarization fails.
 
         CR-0 (2026-05-22) replaced the prior destructive 4-6-sentence
-        rewrite. See ``Docs/Plan/context-recall/phase-CR-0-*.md``.
+        rewrite.
         """
         before = self.token_estimate()
 

@@ -53,8 +53,8 @@ _AUTH_SHAPED_NEEDLES = tuple(
 )
 
 # Distributable-app source-edit gate. `delegate_coder`/`delegate_auditor` are
-# the sanctioned path for the assistant to edit source (CLAUDE.md kernel-lockdown
-# rule) — correct on a dev checkout, where the running tree IS the repo
+# the sanctioned path for the assistant to edit source (the kernel is
+# write-locked against it editing its own) — correct on a dev checkout, where the running tree IS the repo
 # being worked on, but pointless (the next update overwrites it) and risky
 # (someone else's machine) on an installed copy. Neither tool distinguishes
 # "edit" from "analyse" via a dedicated mode/cwd argument; both DO carry a

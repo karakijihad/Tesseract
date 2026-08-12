@@ -28,8 +28,8 @@ The daemon's resolution path:
   `permission_request` over IPC and `await` the response on a Future; the
   client replies with an `approval` message.
 * else (no interactive attach) → return `BLOCKED`. The forced-ASK bash
-  checks in headless contexts MUST surface as `BLOCKED` per CLAUDE.md
-  hard-rule for `bash_security` checks 8/15/17/18/24.
+  checks in headless contexts MUST surface as `BLOCKED` — that is the
+  rule for `bash_security` checks 8/15/17/18/24.
 
 Module-size cleanup (Task 7.5) split this class's responsibilities across
 sibling mixin modules — this file keeps the ``_DISPATCH_TABLE`` + connection

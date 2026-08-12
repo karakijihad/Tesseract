@@ -4,7 +4,7 @@ The single backend index of everything the assistant is running (delegates, lane
 controller sessions; AS-3 adds routines). A derived
 projection over the substrates' canonical on-disk state, published on the
 ``activity`` bus channel for the Mirror to reflect. See
-``Docs/Plan/cockpit/INDEX.md`` (AS-arc).
+the cockpit's activity arc.
 """
 
 from tesseract.orchestrator.activity.events import (

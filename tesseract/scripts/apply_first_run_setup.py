@@ -18,7 +18,10 @@ Applied as *config*, never as a flag some other component checks later:
   runtime skips the lane — and Settings → Capabilities can flip it back on
   later without this script or a reinstall;
 - the voice choice writes `roles.yaml::voice.tts.primary`, the same key the
-  Identity tab's picker writes.
+  Identity tab's picker writes;
+- the API keys go into `<TESSERACT_HOME>/.env`, seeded from the shipped
+  template first so the operator keeps the documented file rather than one
+  holding only what the form collected.
 
 Idempotent, and safe to re-run: applying the same answers twice produces
 the same config. Never fails provisioning — a setup this could not apply
@@ -242,6 +245,59 @@ def apply_voice(answers: Mapping[str, Any]) -> list[str]:
     return changed
 
 
+def apply_keys(answers: Mapping[str, Any]) -> list[str]:
+    """Write the form's API keys into `<TESSERACT_HOME>/.env`.
+
+    Seeds the file first: `ensure_env_seeded` copies the shipped template and
+    is a no-op once that copy exists, so doing it here — rather than leaving
+    it to the backend start that happens later — means the keys land in the
+    documented file instead of creating a bare one the seeder would then
+    decline to replace.
+
+    Blank values are skipped rather than written as empty. That is what makes
+    this safe to re-run: a re-provision replays a staged file whose secrets
+    have since been redacted, and writing those blanks back would clear keys
+    the operator has set in Settings in the meantime.
+
+    Names are checked against the template, so a hand-edited answers file
+    cannot use this path to set an arbitrary environment variable for the
+    next boot.
+    """
+    from tesseract import env_file
+    from tesseract.config_seed import ensure_env_seeded
+
+    raw = answers.get("api_keys")
+    if not isinstance(raw, Mapping):
+        return []
+    wanted = {
+        str(name): str(value).strip()
+        for name, value in raw.items()
+        if str(value or "").strip()
+    }
+    if not wanted:
+        return []
+
+    ensure_env_seeded()
+
+    known = {spec.name for spec in env_file.parse_example()}
+    unknown = sorted(set(wanted) - known)
+    if unknown:
+        logger.warning("%s: ignoring keys not in .env.example: %s", _LABEL, ", ".join(unknown))
+    wanted = {name: value for name, value in wanted.items() if name in known}
+
+    if not wanted:
+        return []
+
+    try:
+        return env_file.set_values(wanted)
+    except OSError as exc:
+        # Never fatal: the operator can set every one of these in Settings ->
+        # API keys, which is a worse first run than the one they asked for but
+        # a working one.
+        logger.warning("%s: could not write .env (%s) — keys not applied", _LABEL, exc)
+        return []
+
+
 def _kokoro_model_ids() -> list[str]:
     from tesseract.config.loader import load_config
 
@@ -249,7 +305,51 @@ def _kokoro_model_ids() -> list[str]:
     return sorted(block.get("models") or {})
 
 
-def _consume(path: Path) -> None:
+def _redact(path: Path, answers: Mapping[str, Any]) -> bool:
+    """Strip the secrets out of the staged file, in place, before it is kept.
+
+    `_consume` archives rather than deletes, so without this the keys the
+    operator typed on the setup form would live on in `runtime/` forever, in
+    plaintext, beside the `.env` that is supposed to be the one place they
+    are. The key NAMES stay — they are the record of what the form asked —
+    and only the values go.
+
+    Returns whether the file is safe to keep. False means it still holds
+    secrets, and the caller must destroy it rather than archive it.
+    """
+    if not isinstance(answers.get("api_keys"), Mapping) or not answers["api_keys"]:
+        return True
+    redacted = {**answers, "api_keys": {name: "" for name in answers["api_keys"]}}
+    body = json.dumps(redacted, indent=2)
+    try:
+        from tesseract.lib.yaml_io import atomic_write_text
+
+        atomic_write_text(path, body, prefix=".first-run-")
+        return True
+    except (OSError, TypeError, ValueError) as exc:
+        logger.warning("%s: atomic redaction of %s failed (%s) — overwriting in place", _LABEL, path, exc)
+
+    # The atomic write replaces a sibling tempfile, which Windows refuses
+    # while any handle on the target is open. Truncating the file we already
+    # have needs no rename, so it survives the case that just failed — and
+    # truncation happens first, which is what makes a half-written fallback
+    # safe: the worst outcome is an empty file, never a file still holding
+    # the tail of the keys.
+    try:
+        with path.open("w", encoding="utf-8") as handle:
+            handle.write(body)
+        return True
+    except OSError as exc:
+        logger.error(
+            "%s: could not redact %s (%s) — removing it instead of keeping it",
+            _LABEL,
+            path,
+            exc,
+        )
+        return False
+
+
+def _consume(path: Path, *, archive: bool = True) -> None:
     """Retire the answers file so it is applied exactly once.
 
     `provision()` runs again whenever an install fails its health check — a
@@ -258,28 +358,186 @@ def _consume(path: Path) -> None:
     Identity tab or by hand. Renamed rather than deleted so the record of
     what the install was set up with survives on the machine.
 
+    `archive=False` when the file could not be redacted: the record is a
+    convenience and the secrets in it are not, so an unredactable file is
+    destroyed rather than kept.
+
     Deleting is the fallback because retiring this file is what enforces
     once-only, and keeping the record is only a convenience. Windows refuses
     a rename while any handle on the file is open, and losing that race would
     leave the answers live to be reapplied over a rename the operator has
     since made — the exact outcome this function exists to prevent.
     """
-    try:
-        path.replace(path.with_name(f"{path.stem}.applied{path.suffix}"))
-        return
-    except OSError as exc:
-        logger.warning("%s: could not archive %s (%s) — removing it instead", _LABEL, path, exc)
+    if archive:
+        try:
+            path.replace(path.with_name(f"{path.stem}.applied{path.suffix}"))
+            return
+        except OSError as exc:
+            logger.warning(
+                "%s: could not archive %s (%s) — removing it instead", _LABEL, path, exc
+            )
     try:
         path.unlink(missing_ok=True)
     except OSError as exc:
-        logger.error(
-            "%s: could not retire %s (%s). It will be applied again if this "
-            "install ever re-provisions, which would revert any identity or "
-            "voice change made since. Delete it by hand.",
+        if archive:
+            logger.error(
+                "%s: could not retire %s (%s). It will be applied again if this "
+                "install ever re-provisions, which would revert any identity or "
+                "voice change made since. Delete it by hand.",
+                _LABEL,
+                path,
+                exc,
+            )
+            return
+        # Redaction failed and now removal has too, by two different
+        # mechanisms — a rewrite and an unlink. Nothing else in this process
+        # is going to succeed where both failed, so the honest end of the
+        # line is to say exactly what is on disk rather than to keep trying
+        # and report success.
+        logger.critical(
+            "%s: %s STILL HOLDS the API keys typed on the setup form — it "
+            "could be neither redacted nor removed (%s). Delete it by hand.",
             _LABEL,
             path,
             exc,
         )
+
+
+#: Form answer -> the dependency the reconciler knows it by. The voice and
+#: listening answers are here too, because they are download decisions even
+#: though they are asked as a choice between engines rather than a checkbox.
+_CONSENT_FROM_ANSWERS = {
+    "embeddings": ("ollama", "ollama-models"),
+    "reranker": ("reranker",),
+    "gpu": ("gpu-acceleration",),
+}
+
+#: Form answer -> the `local.<provider>` switch that actually stops the
+#: download. Recording consent is not enough on its own and that was a real
+#: defect: the fetch scripts read the CATALOG, never the ledger —
+#: `ensure_ollama` via `boot.ollama_refs()`, `fetch_reranker_model` via
+#: `roles.yaml::reranker`, and `provision_hardware::wanted_extras` via
+#: `local.<provider>.enabled`. So a decline that only reached the ledger left
+#: every one of them downloading exactly as before.
+#:
+#: This is the same mechanism `apply_voice` already uses for tts/stt, extended
+#: to the three answers step 2 added. The ledger still records WHY; this is
+#: what makes the answer bite.
+_SWITCHES_FROM_ANSWERS = {
+    "embeddings": ("ollama",),
+    "reranker": ("onnx_reranker",),
+    # No provider of its own: `wanted_extras` drops an extra whose consumers
+    # are all disabled, and both consumers are the speech engines the operator
+    # answered separately. Declining acceleration therefore cannot be
+    # expressed as a switch without also turning off the engine it
+    # accelerates, so it is recorded as consent only and `provision_hardware`
+    # is left to decide from the hardware.
+    "gpu": (),
+}
+
+
+def apply_optional_switches(answers: Mapping[str, Any]) -> list[str]:
+    """Turn the step-2 declines into the config switches the fetchers read.
+
+    Returns what changed. A missing `optional` block changes nothing, which is
+    what an install predating step 2 must do.
+    """
+    optional = answers.get("optional")
+    if not isinstance(optional, Mapping):
+        return []
+
+    wanted: dict[str, bool] = {}
+    for key, providers in _SWITCHES_FROM_ANSWERS.items():
+        if key not in optional:
+            continue
+        for provider in providers:
+            wanted[provider] = bool(optional[key])
+    if not wanted:
+        return []
+
+    from tesseract.lib.yaml_io import round_trip_yaml
+    from tesseract.paths import config_dir
+
+    path = config_dir() / "providers.yaml"
+    if not path.exists():
+        logger.warning("%s: %s missing - optional switches not applied", _LABEL, path)
+        return []
+
+    changed: list[str] = []
+
+    def _apply(doc: Any) -> None:
+        local = doc.get("local")
+        if not isinstance(local, dict):
+            raise KeyError("local")
+        for provider, enabled in wanted.items():
+            block = local.get(provider)
+            if not isinstance(block, dict):
+                logger.warning(
+                    "%s: providers.yaml has no local.%s - skipping", _LABEL, provider
+                )
+                continue
+            if bool(block.get("enabled", True)) == enabled:
+                continue
+            block["enabled"] = enabled
+            changed.append(f"local.{provider}.enabled={str(enabled).lower()}")
+
+    try:
+        round_trip_yaml(path, _apply)
+    except KeyError as exc:
+        logger.warning("%s: providers.yaml has no %s - switches not applied", _LABEL, exc)
+        return []
+    return changed
+
+
+def apply_consent(answers: Mapping[str, Any]) -> list[str]:
+    """Record what the operator agreed to download, as an ANSWER.
+
+    The config writes above already decide what gets fetched. This records
+    *why*, and that is not the same fact: `enabled: false` cannot tell a lane
+    someone declined from one nobody ever reached, and the reconciler needs
+    the difference to know what it may repair without asking. Without this,
+    every dependency on a fresh install would read as `never_asked` forever
+    and the launch pass would go on treating the config as the only signal.
+
+    Best-effort. A ledger that cannot be written leaves the install working —
+    consent then falls back to what config implies, which is exactly today's
+    behaviour — so this must never fail a first run.
+    """
+    from tesseract.capability.consent import record
+    from tesseract.capability.state import Consent, ConsentOrigin
+
+    decisions: dict[str, Consent] = {}
+
+    engine = str(answers.get("tts") or "").strip().lower()
+    if engine:
+        for name in ("kokoro", "piper"):
+            decisions[name] = (
+                Consent.GRANTED if engine == name else Consent.DECLINED
+            )
+    if "stt" in answers:
+        decisions["whisper"] = (
+            Consent.GRANTED if bool(answers.get("stt")) else Consent.DECLINED
+        )
+
+    optional = answers.get("optional")
+    if isinstance(optional, Mapping):
+        for key, dependencies in _CONSENT_FROM_ANSWERS.items():
+            if key not in optional:
+                continue
+            answer = Consent.GRANTED if bool(optional[key]) else Consent.DECLINED
+            for dependency in dependencies:
+                decisions[dependency] = answer
+
+    if not decisions:
+        return []
+    try:
+        record(decisions, origin=ConsentOrigin.FIRST_RUN)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("%s: could not record consent (%s)", _LABEL, exc)
+        return []
+    granted = sorted(k for k, v in decisions.items() if v is Consent.GRANTED)
+    declined = sorted(k for k, v in decisions.items() if v is Consent.DECLINED)
+    return [f"consent granted={','.join(granted) or '-'} declined={','.join(declined) or '-'}"]
 
 
 def apply_setup(path: Path | None = None) -> bool:
@@ -299,9 +557,22 @@ def apply_setup(path: Path | None = None) -> bool:
         logger.info("%s: no staged answers — shipped defaults kept", _LABEL)
         return False
 
-    applied = apply_identity(answers) + apply_voice(answers)
-    logger.info("%s: applied %s", _LABEL, ", ".join(applied) or "nothing")
-    _consume(target)
+    # Redaction runs whatever happens above it. `apply_identity` and
+    # `apply_voice` both raise on a config missing the block they write, and
+    # `main` catches everything and exits 0 — so without the `finally` a
+    # failed identity write would leave the operator's API keys staged in
+    # plaintext, permanently, in the file this function exists to retire.
+    try:
+        applied = (
+            apply_identity(answers)
+            + apply_voice(answers)
+            + apply_optional_switches(answers)
+            + apply_keys(answers)
+            + apply_consent(answers)
+        )
+        logger.info("%s: applied %s", _LABEL, ", ".join(applied) or "nothing")
+    finally:
+        _consume(target, archive=_redact(target, answers))
     return True
 
 

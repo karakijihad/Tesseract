@@ -1,6 +1,5 @@
 """Rolling transcript + memory-delta buffer for the stateful observer.
 
-Field shapes match `Docs/Plan/observer-agent/_shared/observer-state-shape.md`.
 Instance state is in-memory only; reset on observer disarm or server restart.
 """
 

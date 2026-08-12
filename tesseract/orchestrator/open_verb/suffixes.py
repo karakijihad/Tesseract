@@ -53,7 +53,7 @@ def is_secret(name: str) -> bool:
     """A denylist, and denylists are never complete — this cannot promise that
     no credential ever reaches a card. What it does is stop the shapes that
     actually sit in a home directory. The residual is recorded in
-    `Docs/Deferred.md` rather than implied away.
+    deliberately rather than implied away.
     """
     lowered = name.lower()
     if lowered in SECRET_NAMES or lowered.startswith(".env"):

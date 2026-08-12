@@ -35,7 +35,7 @@ from tesseract.integrations._channel_uploads import (
     StoredChannelAttachment,
     save_channel_attachment,
 )
-from tesseract.integrations._channels_config import ChannelsConfig
+from tesseract.integrations._channels_config import ChannelsConfig, channel_key_env
 from tesseract.integrations._chat_memory import ChatMemoryService
 from tesseract.integrations._conversation_store import ConversationStore
 from tesseract.integrations._url_extract import (
@@ -3221,9 +3221,13 @@ def build_telegram_bridge(
     conversation_store: ConversationStore | None = None,
     retention_policy: RetentionPolicy | None = None,
 ) -> TelegramBridge | None:
-    token = (os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
+    # The variable's NAME comes from the channel's own block, so
+    # `channels.yaml::telegram.api_key_env` is the authority rather than a
+    # declaration this line happens to agree with.
+    key_env = channel_key_env("telegram")
+    token = (os.environ.get(key_env) or "").strip()
     if not token:
-        log.info("telegram: TELEGRAM_BOT_TOKEN not set; bridge disabled")
+        log.info("telegram: %s not set; bridge disabled", key_env)
         return None
     store = conversation_store or app.get("conversation_store") or ConversationStore()
     policy = retention_policy or policy_for_channel("telegram")

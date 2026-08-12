@@ -33,7 +33,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+from tesseract.env_file import INTERPOLATE  # noqa: E402
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env", interpolate=INTERPOLATE)
 
 from tesseract.brain.boot import build_adapter, load_chat_brain_config  # noqa: E402
 from tesseract.brain.prompt import assemble_system_prompt  # noqa: E402

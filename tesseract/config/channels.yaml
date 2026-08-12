@@ -52,6 +52,12 @@ telegram:
   enabled: true
   display_name: Telegram
 
+  # The `.env` key this channel needs. Named here rather than in
+  # providers.yaml because the channel is ours and its credential belongs
+  # with it — the capability report and the first-run form read this, so
+  # neither has to keep its own list of which channel needs which key.
+  api_key_env: TELEGRAM_BOT_TOKEN
+
   # Push a daily-brief summary to this channel when one is ready.
   brief_push: true
 

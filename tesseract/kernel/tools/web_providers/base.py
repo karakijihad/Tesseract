@@ -23,6 +23,76 @@ from tesseract.kernel.tools.base import ToolResult
 NoteTripwire = Callable[[str, dict[str, Any]], None]
 
 
+#: `(mtime_ns, services block)`. `load_bundle()` re-reads providers.yaml and
+#: roles.yaml on every call by design, which measured **186 ms** here — this
+#: check runs before every search and before every inbound message carrying a
+#: link, against an event-loop budget of 50 ms. A stat is microseconds
+#: and the config watcher's edit changes the mtime, so freshness survives.
+_SERVICES_CACHE: tuple[int, dict[str, Any]] | None = None
+
+
+def _services_block() -> dict[str, Any] | None:
+    global _SERVICES_CACHE
+
+    try:
+        import yaml
+
+        from tesseract.paths import config_dir
+
+        path = config_dir() / "providers.yaml"
+        stamp = path.stat().st_mtime_ns
+        if _SERVICES_CACHE is None or _SERVICES_CACHE[0] != stamp:
+            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            block = raw.get("services")
+            _SERVICES_CACHE = (stamp, block if isinstance(block, dict) else {})
+        return _SERVICES_CACHE[1]
+    except Exception:  # noqa: BLE001 — availability beats strictness here
+        return None
+
+
+def service_key_env(service: str, default: str) -> str:
+    """The env var name `providers.yaml::services.<service>.api_key_env`
+    declares, or `default` when the catalog does not say.
+
+    The declaration exists so the settings view and the setup form can tell
+    the operator which key a capability needs; if the code that resolves the
+    credential ignored it, the file would be describing something it does
+    not control. Same reasoning as `channels.yaml` and its channel tokens.
+    """
+    block = (_services_block() or {}).get(service)
+    if isinstance(block, dict) and block.get("api_key_env"):
+        return str(block["api_key_env"])
+    return default
+
+
+def service_disabled_reason(service: str) -> str | None:
+    """Why `providers.yaml::services.<service>` is off, or None when it is on.
+
+    Mirrors how a disabled provider is skipped in `brain/boot.py` — the
+    section switch and the per-service switch are checked separately, and the
+    message names the one that is false, so the operator is told which line
+    to edit rather than that "it is off".
+
+    Read at call time, not at boot: the config watcher reloads this file
+    live, so switching a service back on takes effect on the next turn.
+    Absent config, or an unreadable catalog, means enabled — a tool must not
+    go dark because a file could not be parsed.
+    """
+    raw = _services_block()
+    if not raw:
+        return None
+
+    if not raw.get("enabled", True):
+        return "every service is switched off in providers.yaml (services.enabled: false)"
+    block = raw.get(service)
+    if isinstance(block, dict) and not block.get("enabled", True):
+        return (
+            f"switched off in providers.yaml (services.{service}.enabled: false) — "
+            "set it to true to use this again"
+        )
+    return None
+
+
 class WebSearchProvider(ABC):
     """What varies between web-search/extract vendors.
 
@@ -38,6 +108,31 @@ class WebSearchProvider(ABC):
     endpoint: str
     http_method: Literal["GET", "POST"]
     tripwire_source: str
+    #: The `providers.yaml::services` block this provider belongs to. What
+    #: makes the catalog's `enabled` switch real for a tool: a key present
+    #: and a service switched off means the operator wants it off.
+    service: str
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Reject a bad `http_method` at class-definition time.
+
+        This used to be checked inside `fetch_json`, which is the wrong
+        altitude twice over: the failure arrived per request rather than once,
+        after an `httpx.AsyncClient` had been built for a call that was never
+        going to be sent, and as an uncaught traceback where every other
+        invalid-input path in this package returns a `ToolResult`. The value is
+        a class attribute written by hand, so it is knowable at import — and a
+        provider that cannot send a request should not survive being defined.
+
+        Abstract intermediates are skipped: only a class that declares the
+        attribute is checked, so a subclass hierarchy may fill it in later.
+        """
+        super().__init_subclass__(**kwargs)
+        method = getattr(cls, "http_method", None)
+        if method is not None and method not in ("GET", "POST"):
+            raise ValueError(
+                f"{cls.__name__}.http_method must be 'GET' or 'POST', got {method!r}"
+            )
 
     @abstractmethod
     def missing_key_message(self) -> str: ...
@@ -102,12 +197,13 @@ async def fetch_json(
             elif provider.http_method == "POST":
                 r = await client.post(provider.endpoint, headers=headers, json=request)
             else:
-                # Fail where the method is declared, not at the vendor: an
-                # unrecognised value silently POSTing a GET provider's query
-                # params as a JSON body surfaces as a vendor 4xx.
-                raise ValueError(
-                    f"{type(provider).__name__}.http_method must be 'GET' or "
-                    f"'POST', got {provider.http_method!r}"
+                # Unreachable: `WebSearchProvider.__init_subclass__` refuses
+                # any other value at class-definition time. Kept as an
+                # assertion so the branch cannot fall through silently and
+                # POST a GET provider's query params as a JSON body.
+                raise AssertionError(
+                    f"{type(provider).__name__}.http_method passed class-time "
+                    f"validation but is {provider.http_method!r}"
                 )
     except httpx.TimeoutException:
         if note_tripwire:

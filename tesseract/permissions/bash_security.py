@@ -8,9 +8,9 @@ check returns (check_number, posture) on failure, None on pass. The
     that have no benign agent use; sandboxing doesn't change their risk.
     Cannot be relaxed by hooks, plugins, skills, or agents.
   - ``"ask"`` — forced ASK posture. Tier-shifted 2026-05-08 per
-    ``Docs/Doclog/2026-05-03.md`` so MO-8 provisional-candidate KPI
+    so provisional-candidate KPI
     runs and MO-9 ``crontab`` self-scheduling can run without blanket
-    denial. Check 10 joined 2026-07-12 (``Docs/Doclog/2026-07-12.md``) —
+    denial. Check 10 joined later —
     its pattern false-positives on quoted regex literals. Requires an
     operator-attended approval channel; cannot auto-allow. Hits checks
     8, 10, 15, 17, 18, 24.
@@ -144,7 +144,7 @@ def _check_10(cmd: str) -> tuple[int, str] | None:
     Tier-shifted 2026-07-12: the pattern matches ``>(`` / ``<(``
     anywhere, including inside quoted strings — a regex literal like
     ``'<body[^>]*>(.*)'`` in a python one-liner is a guaranteed benign
-    hit (live incident, session 2026-07-12-1818). Real process
+    hit, observed live. Real process
     substitution has legitimate uses too (``diff <(a) <(b)``); the full
     command is in the approval ledger either way. Operator-attended
     only — never auto-allow.
@@ -167,7 +167,7 @@ def _check_11(cmd: str) -> tuple[int, str] | None:
 # echo -e (any flag cluster containing `e`), and ANSI-C $'...' quoting.
 # Outside these, a backslash escape is inert text — which matters on
 # Windows, where `workshop\2026-07-12` matches the octal pattern
-# (live incident, session 2026-07-12-1818) and `build\x64` the hex one.
+# (observed live) and `build\x64` the hex one.
 _ESCAPE_DECODER_RE = re.compile(r"\bprintf\b|\becho\s+-\w*e")
 
 # Escapes + a pipe into a shell/interpreter is a decode-and-exec chain

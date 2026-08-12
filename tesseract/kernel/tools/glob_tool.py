@@ -25,7 +25,11 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
-from tesseract.kernel.tools._path_anchor import anchor_read_path
+from tesseract.kernel.tools._path_anchor import (
+    ReadPathRefused,
+    anchor_read_path,
+    refuse_if_secret_path,
+)
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
 
 # The innermost `{…}` group that actually offers a choice — no braces inside
@@ -176,7 +180,10 @@ class GlobTool(Tool):
         if context.cancel_event.is_set():
             raise asyncio.CancelledError
         inp = tool_input if isinstance(tool_input, GlobInput) else GlobInput(**tool_input.model_dump())
-        search_dir = anchor_read_path(inp.path, context.workspace_root)
+        try:
+            search_dir = anchor_read_path(inp.path, context.workspace_root)
+        except ReadPathRefused as exc:
+            return ToolResult(output=str(exc), is_error=True)
 
         if not search_dir.exists():
             return ToolResult(output=f"Directory not found: {search_dir}", is_error=True)
@@ -189,11 +196,54 @@ class GlobTool(Tool):
 
         # Dedup across expansions: `{py,*}` legitimately overlaps, and the
         # same file surfacing twice would misreport the count.
-        seen: dict[Path, None] = {}
-        try:
+        # A pattern is not a path, and `Path.glob` does not enforce the
+        # difference: `..` and nested segments are matched literally, so a
+        # pattern escapes the base directory even though the base is bounded.
+        # Anchoring the base is therefore only half the guarantee — the hits
+        # have to be filtered too, on the same two rules the anchor applies.
+        def _walk() -> dict[Path, None]:
+            """The tree walk plus its filtering, off the event loop.
+
+            Synchronous filesystem work proportional to the size of the tree,
+            not to `_MAX_RESULTS` — that caps what is returned, never what is
+            visited. The event loop budgets 50 ms for anything holding it, and
+            a `**/*` over a real repository is not that.
+            """
+            found: dict[Path, None] = {}
+            base = search_dir.resolve()
             for candidate in patterns:
                 for hit in search_dir.glob(candidate):
-                    seen[hit] = None
+                    # Checked INSIDE the thread. Cancelling the await abandons
+                    # the coroutine but cannot stop the worker, so without this
+                    # a cancelled glob leaves a thread walking the tree to
+                    # completion with nobody waiting for it — and the default
+                    # executor is shared, so several of those starve every
+                    # other `to_thread` caller in the process.
+                    if context.cancel_event.is_set():
+                        return found
+                    # Resolved ONCE and reused for both checks. Containment and
+                    # the secret check each used to resolve independently,
+                    # which cost three syscalls per hit for one question.
+                    try:
+                        real_hit = hit.resolve()
+                        real_hit.relative_to(base)
+                    except (OSError, RuntimeError, ValueError):
+                        continue
+                    # Both forms, and both are load-bearing. The LEXICAL path
+                    # catches `.env/keys.txt`, whose basename is innocuous. The
+                    # RESOLVED one catches a link named innocently that leads
+                    # into a secret directory — containment passes for it,
+                    # because the target really is inside the base.
+                    try:
+                        refuse_if_secret_path(hit)
+                        refuse_if_secret_path(real_hit)
+                    except ReadPathRefused:
+                        continue
+                    found[hit] = None
+            return found
+
+        try:
+            seen = await asyncio.to_thread(_walk)
         except (OSError, ValueError, NotImplementedError) as e:
             return ToolResult(output=f"Glob error: {e}", is_error=True)
 

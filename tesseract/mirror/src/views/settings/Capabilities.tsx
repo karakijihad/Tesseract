@@ -3,20 +3,12 @@ import { useEffect, useMemo, useState } from "react";
 import {
   fetchCapabilities,
   postProviderEnabled,
-  postRuntimeRestart,
   type CapabilitiesResponse,
   type CapabilityProvider,
   type CapabilityProviderStatus,
 } from "../../lib/api";
-import { isTauri } from "../../lib/endpoints";
 import { useWebSocketStore } from "../../stores/websocket";
 import { useFetchRetryTick } from "../../lib/useFetchRetry";
-
-async function revealEnvFile(path: string): Promise<void> {
-  if (!isTauri()) return;
-  const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
-  await revealItemInDir(path);
-}
 
 function dot(available: boolean): string {
   return available ? "●" : "○";
@@ -68,8 +60,6 @@ function groupByTier(providers: CapabilityProvider[]): TierGroup[] {
 export function CapabilitiesSection() {
   const [caps, setCaps] = useState<CapabilitiesResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [restarting, setRestarting] = useState(false);
-  const [restartNote, setRestartNote] = useState<string | null>(null);
   const [savingKey, setSavingKey] = useState<string | null>(null);
 
   const tierGroups = useMemo(
@@ -112,21 +102,6 @@ export function CapabilitiesSection() {
       );
     } finally {
       setSavingKey(null);
-    }
-  };
-
-  const onRestart = async () => {
-    setRestarting(true);
-    setRestartNote(null);
-    try {
-      await postRuntimeRestart(
-        "operator restarted from Settings → Capabilities",
-      );
-      setRestartNote("Restarting TESSERACT — this takes a few seconds.");
-    } catch (err) {
-      setRestartNote(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRestarting(false);
     }
   };
 
@@ -255,56 +230,53 @@ export function CapabilitiesSection() {
             {i.name}
           </label>
           <span className="t-meta">
-            {dot(i.key_present)} {i.key_name}
+            {/* Services carry the same switch the providers above do, and
+                the operator throws it for the same reason: having the key
+                and not wanting the capability to run. Channels are not
+                writable here — they have their own panel. */}
+            {i.service ? (
+              <input
+                type="checkbox"
+                className="provider-row__toggle"
+                checked={i.enabled}
+                disabled={savingKey !== null}
+                onChange={(e) =>
+                  void onToggle("services", i.service as string, e.target.checked)
+                }
+                aria-label={`services.${i.service} enabled`}
+              />
+            ) : (
+              dot(i.key_present && i.enabled)
+            )}{" "}
+            {i.key_name}
           </span>
           <span className="cost-row__spend t-meta">
-            {i.key_present ? "set" : "not set"}
+            {!i.enabled
+              ? i.key_present
+                ? "switched off in config — key is set"
+                : "switched off in config"
+              : i.key_present
+                ? "set"
+                : "not set"}
           </span>
         </div>
       ))}
 
-      <div className="cost-row" style={{ marginTop: "0.75rem" }}>
-        <span className="t-meta">Edit this file:</span>
-        {/* Span the remaining tracks — the 140px value column truncated the
-            path and the button used to sit on top of it (2026-07-30). */}
-        <code className="t-meta" style={{ gridColumn: "2 / -1" }}>
-          {caps.env_path}
-        </code>
-      </div>
-      {isTauri() && (
-        <div className="cost-row cost-row--actions">
-          <button
-            type="button"
-            className="cost-row__save"
-            onClick={() => void revealEnvFile(caps.env_path)}
-          >
-            Open folder
-          </button>
-        </div>
-      )}
+      {/* Setting a key, the file it lives in, and the restart that loads it
+          all moved to Settings → API keys below. Two restart buttons on one
+          screen is two answers to "did that apply?". */}
       <div className="settings-hint t-meta">
-        .env is read once at boot — restart TESSERACT after editing it for changes to
-        take effect.
+        A missing key is set in Settings &rarr; API keys, directly below.
       </div>
       <div className="cost-row cost-row--actions">
         <button
           type="button"
           className="cost-row__save"
-          onClick={() => void onRestart()}
-          disabled={restarting}
-        >
-          {restarting ? "Restarting…" : "Restart TESSERACT"}
-        </button>
-        <button
-          type="button"
-          className="cost-row__save"
           onClick={() => void refresh()}
-          style={{ marginLeft: "0.5rem" }}
         >
           Refresh
         </button>
       </div>
-      {restartNote && <div className="t-meta">{restartNote}</div>}
     </section>
   );
 }

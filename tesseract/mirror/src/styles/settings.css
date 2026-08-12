@@ -483,7 +483,7 @@
   border: 1px solid rgba(74, 222, 128, 0.35);
 }
 
-.role-toggle--disabled {
+.role-toggle--inactive {
   background: rgba(255, 107, 106, 0.12);
   color: var(--bad);
   border: 1px solid rgba(255, 107, 106, 0.35);
@@ -562,6 +562,73 @@
 .provider-row__toggle:disabled {
   cursor: not-allowed;
   opacity: 0.5;
+}
+
+/* ── API key rows ─────────────────────────────────────
+   Wider than `.cost-row` in the middle track: a key is pasted, not typed,
+   and a 140px box shows the operator none of what they pasted. The prose
+   spans all three tracks below the field, so a long description wraps
+   under the row rather than squeezing the box that matters. */
+.key-row {
+  display: grid;
+  grid-template-columns: 200px 1fr 140px;
+  gap: var(--space-sm);
+  align-items: center;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--bg-elevated);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-sm);
+}
+
+.key-row__name {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.key-row__state {
+  text-align: right;
+}
+
+.key-row__hint {
+  grid-column: 1 / -1;
+  margin: 0;
+  line-height: 1.45;
+}
+
+/* Inline with the state text rather than a row button: clearing is a rare,
+   deliberate act, and a full-size control beside every set key would read as
+   the primary thing to do with one. */
+.key-row__clear {
+  background: transparent;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-xs);
+  color: inherit;
+  font-size: inherit;
+  padding: 0 var(--space-xs);
+  cursor: pointer;
+}
+
+.key-row__clear:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.key-row__link {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.key-row__link:hover {
+  color: var(--accent);
+}
+
+/* A minted token is shown once and has to be selectable to be useful. */
+.key-row__token {
+  user-select: all;
+  overflow-wrap: anywhere;
 }
 
 .cost-row__input {

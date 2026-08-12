@@ -74,8 +74,8 @@ def _people_dir() -> Path:
     # anchor (``TESSERACT_DIR``), NOT the import-time `tesseract.paths`
     # constant — that constant captures the env var at import time and
     # a missing env var would otherwise silently route writes to whichever
-    # operator-home was set when paths.py first loaded (CLAUDE.md import-
-    # time-capture anti-pattern, same shape as the log-discipline rule).
+    # home was set when paths.py first loaded — the import-time-capture
+    # anti-pattern, same shape as the log-discipline rule.
     val = os.environ.get("TESSERACT_HOME")
     root = Path(val).resolve() if val else TESSERACT_DIR.resolve()
     out = root / "memory-store" / "reference" / "people"

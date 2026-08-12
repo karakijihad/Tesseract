@@ -11,7 +11,7 @@ Reference shape used in `roles.yaml` and `agents/INDEX.md`:
 e.g. ``api.openai.gpt54_mini``, ``cli.claude.opus_47``, ``local.ollama.nomic_embed``.
 The loader resolves every reference up-front so a typo surfaces at boot,
 not at first use. Missing required keys raise :class:`ConfigError` naming
-the file + dotted path — no silent fallbacks (CLAUDE.md §Hard Rules).
+the file + dotted path — no silent fallbacks.
 
 Persisting edits round-trips through :func:`tesseract.lib.yaml_io.round_trip_yaml`,
 preserving operator comments and key order.
@@ -40,6 +40,16 @@ ROLES_YAML = CONFIG_DIR / "roles.yaml"
 
 _SHELL_VAR_RE = re.compile(r"^\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}$")
 _REF_RE = re.compile(r"^(api|cli|local)\.([a-z][a-z0-9_]*)\.([a-z][a-z0-9_]*)$")
+
+# Re-exported from `config/role_modes.py`, which owns them — that module has no
+# imports of its own so `voice/lane_config.py` can reach the same constants
+# without taking on a config-loading dependency it documents itself as not
+# having. Importing either place is correct; there is still one definition.
+from tesseract.config.role_modes import (  # noqa: E402
+    ROLE_MODE_ACTIVE,
+    ROLE_MODE_INACTIVE,
+    ROLE_MODES,
+)
 
 ConfigFile = Literal["providers", "roles"]
 
@@ -126,8 +136,7 @@ class CliAuthCheck:
     """``cli.<provider>.auth_check`` block — how to probe subscription auth.
 
     Required on every `cli`-tier provider (config-is-authority; no assumed-
-    authenticated default — see CLAUDE.md hard rules and
-    ``Docs/Plan/cli-auth/DESIGN.md`` §1). Consumed by
+    authenticated default). Consumed by
     ``tesseract/brain/cli_auth.py``'s probe, never by adapter dispatch.
     """
     command: tuple[str, ...]
@@ -455,6 +464,13 @@ def _chain_refs(
             str(require_field(block, "primary", where)),
             [str(r) for r in (block.get("fallbacks") or [])],
         )
+    # Type before duplication: a malformed `chain` is the more fundamental
+    # problem, and reporting "sets both" would name the wrong one.
+    if not isinstance(chain_name, str):
+        raise ConfigError(
+            f"{where}.chain must be the name of a chain, got "
+            f"{type(chain_name).__name__}: {chain_name!r}"
+        )
     if block.get("primary") is not None or block.get("fallbacks"):
         raise ConfigError(
             f"{where} sets both `chain: {chain_name}` and its own "
@@ -467,7 +483,13 @@ def _chain_refs(
             f"{where}.chain names '{chain_name}', which is missing from "
             f"roles.yaml chains — known chains: {known}"
         )
-    refs = [str(r) for r in (chains[chain_name] or [])]
+    raw_refs = chains[chain_name]
+    if not isinstance(raw_refs, list):
+        raise ConfigError(
+            f"roles.yaml chains.{chain_name} must be a list of catalog refs, got "
+            f"{type(raw_refs).__name__} — a one-entry chain is still a list"
+        )
+    refs = [str(r) for r in raw_refs]
     if not refs:
         raise ConfigError(f"roles.yaml chains.{chain_name} is empty — a chain needs at least a primary")
     return refs[0], refs[1:]
@@ -480,10 +502,28 @@ def _build_role(
     chains: Mapping[str, Any] | None = None,
 ) -> RoleConfig:
     mode = str(block.get("mode", "active"))
+    if mode not in ROLE_MODES:
+        # A mode this file does not know resolves as active everywhere that
+        # tests `mode != "active"` but keeps a populated `primary` — the role
+        # reads as off and keeps billing. Refuse it instead of guessing.
+        hint = ""
+        if mode == "disabled":
+            # The one wrong value that can already be on disk: Settings wrote
+            # it for every role the operator switched off before the spelling
+            # was unified. Name the edit rather than only the rule — this
+            # raises at boot, and an install is otherwise stuck on it.
+            hint = (
+                " — this is the value the Settings toggle used to write; "
+                "change it to 'inactive' to keep the role switched off"
+            )
+        raise ConfigError(
+            f"roles.{name}.mode is {mode!r} — must be one of "
+            f"{', '.join(sorted(ROLE_MODES))}{hint}"
+        )
     # Inactive roles are kept as schema stubs — primary/fallbacks may be
     # blank or reference a removed provider. Skip resolution; consumers
     # MUST gate on `role.mode == "active"` before reading `role.primary`.
-    if mode == "inactive":
+    if mode == ROLE_MODE_INACTIVE:
         primary = None
         fallbacks: tuple[ResolvedRef, ...] = ()
     else:
@@ -528,10 +568,27 @@ def _build_voice_chain(
 ) -> VoiceChain | None:
     """Parse one ``voice.<stt|tts>`` block in the new
     primary+fallbacks+settings shape. Returns None when the block is
-    empty/missing — voice-disabled deployments stay valid."""
+    empty/missing, or when the lane is inactive — voice-disabled deployments
+    stay valid, and so does a lane the operator switched off."""
     if not block:
         return None
     where = f"roles.yaml voice.{lane}"
+    # Mode is read BEFORE any ref is resolved, mirroring `_build_role`. A
+    # switched-off lane whose model was later dropped from the catalog must
+    # not raise at boot for a chain the runtime was never going to build —
+    # that is exactly what the role stub exists to prevent, and the two
+    # structs now share one `mode` vocabulary.
+    mode = str(block.get("mode", "active"))
+    if mode not in ROLE_MODES:
+        # `boot.py` gates the lane on `mode != "active"`, so an unrecognised
+        # value here switches speech off and says nothing. Same refusal a role
+        # gets, for the same reason.
+        raise ConfigError(
+            f"{where}.mode is {mode!r} — must be one of "
+            f"{', '.join(sorted(ROLE_MODES))}"
+        )
+    if mode == ROLE_MODE_INACTIVE:
+        return None
     primary_ref = require_field(block, "primary", where)
     if not isinstance(primary_ref, str) or not primary_ref:
         raise ConfigError(f"{where}.primary must be a catalog ref string")
@@ -561,7 +618,7 @@ def _build_voice_chain(
         for ref in fallback_refs
     )
     return VoiceChain(
-        mode=str(block.get("mode", "active")),
+        mode=mode,
         primary=primary,
         fallbacks=fallbacks,
     )
@@ -612,6 +669,11 @@ def load_config(
     if not roles_block:
         raise ConfigError("roles.yaml has no `roles:` section")
     chains_block = roles_raw.get("chains") or {}
+    if not isinstance(chains_block, Mapping):
+        raise ConfigError(
+            f"roles.yaml chains must be a mapping of name -> list of refs, got "
+            f"{type(chains_block).__name__}"
+        )
     roles = {
         name: _build_role(name, block, providers_raw, chains_block)
         for name, block in roles_block.items()

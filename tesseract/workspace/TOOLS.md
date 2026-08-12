@@ -33,7 +33,7 @@ You can **read** anywhere under `<install>`, including all of `app/`'s source. T
 
 Don't worry about per-tool permissions — `config/permissions.yaml` decides at call time. You only need to handle two response shapes:
 
-- **Operator declined** → `"operator declined tool call: <name>. Explain what you intended and choose a different approach."` Don't retry the same call — explain what you wanted and try something else.
+- **Not approved** → `"<name> was not approved — the operator declined it, or the approval prompt expired before it was answered."` Two different events share this one shape, so don't tell the operator they declined something: say what you wanted, and offer to retry it or take another route. If they believe they approved it, the prompt most likely timed out — retrying is reasonable.
 - **Hardcoded DENY** → `"permission denied: <tool>"`. Non-negotiable security-layer block (injection patterns, `rm -rf`, `git push --force`, etc.). Choose a different command.
 
 ## Tool inventory — discover it, don't memorise it

@@ -53,7 +53,7 @@ from tesseract.orchestrator.agent_controller.events import (
     ToolUseEvent,
     WorkerStatusEvent,
 )
-from tesseract.paths import CONFIG_DIR
+from tesseract.paths import config_dir
 from tesseract.scheduler.alarms import ensure_alarms_state_migrated
 
 log = logging.getLogger(__name__)
@@ -61,7 +61,6 @@ log = logging.getLogger(__name__)
 # Strong-reference set so GC cannot collect in-flight controller session-emit tasks.
 _CONTROLLER_EMIT_TASKS: set[asyncio.Task] = set()
 
-_AGENDA_YAML = CONFIG_DIR / "agenda.yaml"
 _DEFAULT_DRAIN_TIMEOUT_SECONDS = 30.0
 
 
@@ -104,7 +103,12 @@ def _load_drain_timeout_seconds() -> float:
     try:
         import yaml as _yaml
 
-        raw = _yaml.safe_load(_AGENDA_YAML.read_text(encoding="utf-8")) or {}
+        # Resolved here, not frozen at import: `_rebuild_scheduler` in this
+        # same file already reads config through call-time `config_dir()`, and
+        # two readers in one process disagreeing about where config lives is
+        # the whole defect class this pattern exists to avoid.
+        agenda_yaml = config_dir() / "agenda.yaml"
+        raw = _yaml.safe_load(agenda_yaml.read_text(encoding="utf-8")) or {}
     except (OSError, Exception):  # noqa: BLE001 — boot must never wedge
         log.warning(
             "controller: agenda.yaml unreadable; drain_timeout default=%.0fs",
@@ -467,7 +471,9 @@ class ControllerRuntime:
             # Call-time resolution — `boot.ENV_PATH` is frozen at first
             # import, before a relocated `TESSERACT_HOME` is guaranteed
             # visible; `home_dir()` re-resolves the env var on every call.
-            load_dotenv(home_dir() / ".env")
+            from tesseract.env_file import INTERPOLATE
+
+            load_dotenv(home_dir() / ".env", interpolate=INTERPOLATE)
             chat_cfg, adapter, options, adapter_chain = (
                 resolve_chat_brain_runtime()
             )
@@ -519,10 +525,10 @@ class ControllerRuntime:
         reloaded: list[str] = []
         failed: list[str] = []
         try:
-            from tesseract.paths import CONFIG_DIR
+            from tesseract.paths import config_dir
             from tesseract.scheduler.engine import SchedulerEngine
 
-            self.scheduler = SchedulerEngine(config_dir=CONFIG_DIR)
+            self.scheduler = SchedulerEngine(config_dir=config_dir())
             reloaded.append("scheduler")
         except Exception as exc:  # noqa: BLE001
             log.exception("controller: scheduler rebuild failed")

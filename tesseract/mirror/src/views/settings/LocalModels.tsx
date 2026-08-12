@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import {
   ApiError,
+  fetchDependencies,
   fetchKokoroStatus,
   fetchOllamaStatus,
   fetchPiperStatus,
@@ -11,6 +12,7 @@ import {
   postOllamaAction,
   postPiperAction,
   postWhisperAction,
+  type DependencyReport,
   type KokoroStatusResponse,
   type ModelFilesStatus,
   type ModelLane,
@@ -74,11 +76,37 @@ function ModelFilesRow({
   );
 }
 
+// The reconciler's verdict for one lane, when it has something to say.
+//
+// Deliberately renders NOTHING for a healthy dependency. The existing rows
+// already report presence and offer a download; what this adds is the case
+// presence cannot express — the files are here and are the wrong ones — which
+// otherwise looks identical to a working install right up until it misbehaves.
+function DriftRow({
+  report,
+  dependency,
+}: {
+  report: DependencyReport | null;
+  dependency: string;
+}) {
+  const record = report?.dependencies?.[dependency];
+  if (!record || record.state !== 'stale') return null;
+  return (
+    <div className="cost-row">
+      <span className="t-meta">
+        {record.reason ||
+          'this is not the version this build expects — it will be replaced on the next launch'}
+      </span>
+    </div>
+  );
+}
+
 export function LocalModelsSection() {
   const [status, setStatus] = useState<OllamaStatusResponse | null>(null);
   const [whisper, setWhisper] = useState<WhisperStatusResponse | null>(null);
   const [piper, setPiper] = useState<PiperStatusResponse | null>(null);
   const [kokoro, setKokoro] = useState<KokoroStatusResponse | null>(null);
+  const [deps, setDeps] = useState<DependencyReport | null>(null);
   const [busy, setBusy] = useState(false);
   const [whisperBusy, setWhisperBusy] = useState(false);
   const [piperBusy, setPiperBusy] = useState(false);
@@ -92,16 +120,22 @@ export function LocalModelsSection() {
     // it under 1s and stops one slow service from blocking the rest.
     // allSettled so one backend going down doesn't blank the other
     // three panels — operator still sees fresh state for what works.
-    const [s, w, p, k] = await Promise.allSettled([
+    const [s, w, p, k, d] = await Promise.allSettled([
       fetchOllamaStatus(),
       fetchWhisperStatus(),
       fetchPiperStatus(),
       fetchKokoroStatus(),
+      // Reads the artifact the launch pass wrote — no probing, no network.
+      fetchDependencies(),
     ]);
     if (s.status === 'fulfilled') setStatus(s.value);
     if (w.status === 'fulfilled') setWhisper(w.value);
     if (p.status === 'fulfilled') setPiper(p.value);
     if (k.status === 'fulfilled') setKokoro(k.value);
+    if (d.status === 'fulfilled') setDeps(d.value);
+    // `deps` is deliberately absent from the error check below: it is the
+    // newest of the five and the only one whose absence costs nothing on
+    // screen, so an install that predates it must not blank the panel.
     const failed = [s, w, p, k].find((r) => r.status === 'rejected') as
       | PromiseRejectedResult
       | undefined;
@@ -389,6 +423,7 @@ export function LocalModelsSection() {
         size="~1.6 GB"
         onDownload={onDownload}
       />
+      <DriftRow report={deps} dependency="whisper" />
       <div className="cost-row" style={{ marginTop: '0.75rem' }}>
         <label className="cost-row__label">Piper TTS</label>
         <span className="t-meta">
@@ -427,6 +462,7 @@ export function LocalModelsSection() {
         size="~65 MB"
         onDownload={onDownload}
       />
+      <DriftRow report={deps} dependency="piper" />
       <div className="cost-row" style={{ marginTop: '0.75rem' }}>
         <label className="cost-row__label">Kokoro TTS</label>
         <span className="t-meta">
@@ -471,6 +507,8 @@ export function LocalModelsSection() {
         size="~340 MB"
         onDownload={onDownload}
       />
+      <DriftRow report={deps} dependency="kokoro" />
+      <DriftRow report={deps} dependency="reranker" />
     </section>
   );
 }

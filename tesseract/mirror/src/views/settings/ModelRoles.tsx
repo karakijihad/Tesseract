@@ -8,6 +8,7 @@ import type {
   IdentityRoleStatus,
   ModelRefTarget,
   ProviderModelKind,
+  RoleMode,
 } from "../../lib/types";
 import { useIdentityStore } from "../../stores/identity";
 import { useWebSocketStore } from "../../stores/websocket";
@@ -104,16 +105,13 @@ export function ModelRolesSection() {
     }
   };
 
-  const toggleMode = async (
-    target: ModelRefTarget,
-    currentMode: "active" | "disabled",
-  ) => {
+  const toggleMode = async (target: ModelRefTarget, currentMode: RoleMode) => {
     setSavingTarget(target);
     setError(null);
     try {
       await postRoleModels({
         role: target,
-        mode: currentMode === "active" ? "disabled" : "active",
+        mode: currentMode === "active" ? "inactive" : "active",
       });
       await fetchIdentity();
       await reloadCatalog();
@@ -160,9 +158,7 @@ export function ModelRolesSection() {
             const status: IdentityRoleStatus | undefined = allow_toggle
               ? roles?.[target]
               : undefined;
-            const mode = (status?.mode || serverMode || "active") as
-              | "active"
-              | "disabled";
+            const mode = (status?.mode || serverMode || "active") as RoleMode;
             const isLoadBearing = load_bearing;
 
             return (
@@ -204,17 +200,17 @@ export function ModelRolesSection() {
                       disabled={saving || (isLoadBearing && mode === "active")}
                       title={
                         isLoadBearing
-                          ? "chat_brain is load-bearing — cannot be disabled"
+                          ? "chat_brain is load-bearing — cannot be set inactive"
                           : mode === "active"
-                            ? "click to disable"
-                            : "click to re-enable"
+                            ? "click to set inactive"
+                            : "click to set active"
                       }
                     >
                       {mode}
                     </button>
                   ) : (
                     // Lanes (embeddings / voice_stt / voice_tts) have no
-                    // disabled state — show a read-only "active" pill so the
+                    // toggle here — show a read-only "active" pill so the
                     // status column stays consistent across all rows.
                     // role="img" + aria-label makes screen readers announce
                     // it as informational rather than a non-functional control.

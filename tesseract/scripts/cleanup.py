@@ -4,7 +4,7 @@
     python -m tesseract.scripts.cleanup --dry-run  # report only
 
 Same sweep the supervisor boot and the `janitor_sweep` scheduled job
-run (Docs/Plan/janitor/PLAN.md)."""
+run."""
 
 from __future__ import annotations
 

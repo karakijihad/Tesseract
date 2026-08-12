@@ -12,7 +12,7 @@ description: >
 underlying_tool: delegate_agent_controller
 default_posture: ask
 inputs:
-  audit_path: string    # path to the audit file (Docs/Audit/codex/...)
+  audit_path: string    # path to the audit file
   scope: string         # path or directory the audit covered
 output:
   fixes_applied: string # commit SHA(s) + one-line summary per finding
@@ -40,7 +40,7 @@ You are a focused fix implementer. Read the structured audit file at `{{audit_pa
 
 5. **Verify each fix.** After each `delegate_agent_controller` call returns (inline, per the `background: false` above), use `file_read` to confirm the edit landed as intended. If a fix introduced a regression (evident from reading the changed code), revert and try a narrower approach.
 
-6. **Run tests.** After all fixes are applied, invoke `bash` to run the relevant test suite (`pytest tesseract/tests/...` scoped to the affected module). Do not commit until tests pass.
+6. **Run tests.** After all fixes are applied, invoke `bash` to run the relevant test suite, scoped to the affected module. Do not commit until tests pass.
 
 7. **Commit.** Stage only the files that were cited in audit findings. Commit with a message of the form:
    `fix(<scope>): resolve <N> audit finding(s) from <audit_path>`

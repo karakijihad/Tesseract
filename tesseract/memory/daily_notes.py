@@ -5,7 +5,6 @@ hooks (`[scheduler]`, `[session_end]`, `[auto_compact]`, `[reflect]`). All
 four layers share file format, idempotency semantics, and the librarian's
 80-char section-body floor, so they share one implementation.
 
-Contract lives in `Docs/Plan/scheduler/_shared/daily-tag-vocabulary.md`.
 """
 
 from __future__ import annotations

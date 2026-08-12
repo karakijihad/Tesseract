@@ -151,12 +151,11 @@ fn diff_and_reinstall_with(
 #[tauri::command]
 pub fn update_check(home: State<TesseractHome>) -> Result<UpdateStatus, String> {
     let dir = app_dir(&home.0);
-    let token = repo::github_token(&home.0);
     // check_behind fetches over the network; a libgit2/libcurl transport
     // error can echo the remote URL back verbatim, so scrub before it ever
     // reaches the frontend.
     let (behind, summaries) =
-        repo::check_behind(&dir, token).map_err(|e| provision::scrub_credentials(&e))?;
+        repo::check_behind(&dir).map_err(|e| provision::scrub_credentials(&e))?;
     // Best-effort: a divergence-reporting failure must not block reporting
     // behind/summaries/version, which are the primary purpose of this
     // command. `None` (rather than surfacing the error) also correctly
@@ -455,7 +454,7 @@ mod tests {
         drop(origin);
 
         let dest = base.join("dest");
-        repo::clone(&origin_path.to_string_lossy(), &dest, None).expect("clone dest");
+        repo::clone(&origin_path.to_string_lossy(), &dest).expect("clone dest");
         (origin_path, dest)
     }
 
@@ -492,7 +491,7 @@ mod tests {
                 "c2 bumps pyproject",
             );
         }
-        repo::check_behind(&dest, None).expect("fetch before fast_forward");
+        repo::check_behind(&dest).expect("fetch before fast_forward");
 
         let reinstalled = Cell::new(false);
         let sha = diff_and_reinstall_with(&dest, repo::fast_forward, || {
@@ -522,7 +521,7 @@ mod tests {
                 "c2 touches other.py only",
             );
         }
-        repo::check_behind(&dest, None).expect("fetch before fast_forward");
+        repo::check_behind(&dest).expect("fetch before fast_forward");
 
         let reinstalled = Cell::new(false);
         let sha = diff_and_reinstall_with(&dest, repo::fast_forward, || {
@@ -561,7 +560,7 @@ mod tests {
             let origin = Repository::open(&origin_path).unwrap();
             write_commit(&origin, "tesseract/other.py", "x = 3\n", "c2 on origin");
         }
-        repo::check_behind(&dest, None).expect("fetch before fast_forward");
+        repo::check_behind(&dest).expect("fetch before fast_forward");
 
         let reinstalled = Cell::new(false);
         let result = diff_and_reinstall_with(&dest, repo::fast_forward, || {
@@ -593,7 +592,7 @@ mod tests {
                 "c2 bumps pyproject",
             );
         }
-        repo::check_behind(&dest, None).expect("fetch before fast_forward");
+        repo::check_behind(&dest).expect("fetch before fast_forward");
         let expected_sha = {
             let origin = Repository::open(&origin_path).unwrap();
             drop(origin);
@@ -657,7 +656,7 @@ mod tests {
                 "c2 bumps pyproject",
             );
         }
-        repo::check_behind(&dest, None).expect("fetch before apply");
+        repo::check_behind(&dest).expect("fetch before apply");
         let expected_sha = repo::head_short(&origin_path).unwrap();
 
         let reinstall_calls = Cell::new(0u32);
@@ -697,7 +696,7 @@ mod tests {
                 "c2 touches other.py only",
             );
         }
-        repo::check_behind(&dest, None).expect("fetch before apply");
+        repo::check_behind(&dest).expect("fetch before apply");
         let expected_sha = repo::head_short(&origin_path).unwrap();
 
         let reinstall_calls = Cell::new(0u32);
@@ -745,7 +744,7 @@ mod tests {
             let origin = Repository::open(&origin_path).unwrap();
             write_commit(&origin, "tesseract/other.py", "x = 3\n", "c2 on origin");
         }
-        repo::check_behind(&dest, None).expect("fetch before apply");
+        repo::check_behind(&dest).expect("fetch before apply");
         let old_sha = repo::head_short(&dest).unwrap();
 
         let respawn_calls = Cell::new(0u32);
@@ -791,7 +790,7 @@ mod tests {
             let origin = Repository::open(&origin_path).unwrap();
             write_commit(&origin, "tesseract/other.py", "x = 3\n", "c2 on origin");
         }
-        repo::check_behind(&dest, None).expect("fetch before apply");
+        repo::check_behind(&dest).expect("fetch before apply");
         let old_sha = repo::head_short(&dest).unwrap();
 
         let result = apply_update(
@@ -825,7 +824,7 @@ mod tests {
                 "c2 bumps pyproject",
             );
         }
-        repo::check_behind(&dest, None).expect("fetch before apply");
+        repo::check_behind(&dest).expect("fetch before apply");
 
         let respawn_calls = Cell::new(0u32);
         let invalidate_calls = Cell::new(0u32);
@@ -866,7 +865,7 @@ mod tests {
                 "c2 bumps pyproject",
             );
         }
-        repo::check_behind(&dest, None).expect("fetch before apply");
+        repo::check_behind(&dest).expect("fetch before apply");
 
         let result = apply_update(
             &dest,
@@ -905,7 +904,7 @@ mod tests {
                 "c2 bumps pyproject",
             );
         }
-        repo::check_behind(&dest, None).expect("fetch before apply");
+        repo::check_behind(&dest).expect("fetch before apply");
 
         let respawn_calls = Cell::new(0u32);
         let invalidate_calls = Cell::new(0u32);
@@ -955,7 +954,7 @@ mod tests {
                 "c2 bumps pyproject",
             );
         }
-        repo::check_behind(&dest, None).expect("fetch before apply");
+        repo::check_behind(&dest).expect("fetch before apply");
 
         let respawn_calls = Cell::new(0u32);
         let invalidate_calls = Cell::new(0u32);
@@ -1000,7 +999,7 @@ mod tests {
                 "c2 bumps pyproject",
             );
         }
-        repo::check_behind(&dest, None).expect("fetch before apply");
+        repo::check_behind(&dest).expect("fetch before apply");
         let expected_sha = repo::head_short(&origin_path).unwrap();
 
         let invalidate_calls = Cell::new(0u32);
@@ -1051,7 +1050,7 @@ mod tests {
                 "c2 bumps pyproject on origin",
             );
         }
-        repo::check_behind(&dest, None).expect("fetch before apply");
+        repo::check_behind(&dest).expect("fetch before apply");
         let expected_sha = repo::head_short(&origin_path).unwrap();
 
         assert!(

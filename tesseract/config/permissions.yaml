@@ -88,7 +88,7 @@ tools:
   #
   # Kept ASK: `file_write` (path_overrides handle the DENY surfaces but
   # an unmatched path still warrants a prompt), kernel-lockdown adjacent
-  # tools (`agent_create` / `agent_promote` per the CLAUDE.md hard rule),
+  # tools (`agent_create` / `agent_promote`, always operator-approved),
   # schedule mutation, destructive session verbs.
   file_write: ask
   web_search: auto

@@ -53,6 +53,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -75,6 +77,12 @@ _SILENT_FLAGS = ("/VERYSILENT", "/NORESTART")
 _DOWNLOAD_TIMEOUT_S = 300.0
 _INSTALL_TIMEOUT_S = 600.0
 _PULL_TIMEOUT_S = 1800.0   # per model, cold network — not a budget for all of them
+
+# How much of the pull's output is taken per read, and how often the newest
+# line reaches the log. `ollama pull` redraws its progress line continuously,
+# so relaying every one would write hundreds of lines a second.
+_PULL_READ_BYTES = 4096
+_PULL_LOG_INTERVAL_S = 1.0
 
 
 def _download_installer(dest: Path) -> bool:
@@ -172,28 +180,101 @@ def _install_ollama() -> bool:
 
 
 def _pull_model(exe: str, model: str) -> bool:
-    """Pull one model. This is the step runtime deliberately refuses to take
-    on its own — here it is expected, and the operator is watching a progress
-    bar that says so."""
+    """Pull one model, relaying its progress instead of swallowing it.
+
+    This is the step runtime deliberately refuses to take on its own — here it
+    is expected, and the operator is watching. `ollama pull` redraws a single
+    progress line with carriage returns, so its output is split on `\\r` as
+    well as `\\n` and relayed at most once a second: unthrottled it would write
+    hundreds of lines a second into `shell.log`, and captured (as it was) a
+    multi-gigabyte pull looked identical to a hang.
+    """
     logger.info("pulling model %s", model)
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(  # noqa: S603 — exe comes from `ollama_exe()`
             [exe, "pull", model],
-            timeout=_PULL_TIMEOUT_S,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        logger.warning("`ollama pull %s` did not complete: %s", model, exc)
+    except OSError as exc:
+        logger.warning("`ollama pull %s` did not start: %s", model, exc)
+        return False
+
+    last = _relay_pull_output(proc, model, _PULL_TIMEOUT_S)
+    if last is None:
+        logger.warning(
+            "`ollama pull %s` exceeded %.0fs and was stopped", model, _PULL_TIMEOUT_S
+        )
         return False
     if proc.returncode != 0:
-        logger.warning(
-            "`ollama pull %s` exited %s: %s",
-            model,
-            proc.returncode,
-            proc.stderr.decode("utf-8", "replace").strip()[:400],
-        )
+        logger.warning("`ollama pull %s` exited %s: %s", model, proc.returncode, last)
         return False
     return True
+
+
+def _relay_pull_output(
+    proc: subprocess.Popen, model: str, timeout: float
+) -> str | None:
+    """Drain the pull's output to the log, returning its last line.
+
+    None means the timeout fired and the process was killed — the caller
+    reports that as its own outcome rather than as a non-zero exit, because
+    the two mean different things to someone reading the log.
+
+    The timeout is a watchdog thread rather than a deadline checked between
+    reads: a read on a stalled pipe blocks indefinitely, so a loop that only
+    checks the clock after each read cannot enforce anything. Killing the
+    process is what closes the pipe and ends the drain.
+
+    `read1` and not `read`: `read(n)` on a buffered pipe blocks until it has
+    all `n` bytes, which would hold a redrawing progress line back until
+    enough of them accumulated to fill the buffer.
+    """
+    timed_out = threading.Event()
+
+    def _stop() -> None:
+        timed_out.set()
+        proc.kill()
+
+    watchdog = threading.Timer(timeout, _stop)
+    watchdog.start()
+
+    pending = bytearray()
+    last_line = ""
+    last_logged = 0.0
+    stream = proc.stdout
+    assert stream is not None  # stdout=PIPE above
+    try:
+        while True:
+            block = stream.read1(_PULL_READ_BYTES)
+            if not block:
+                break
+            for byte in block:
+                if byte in (0x0A, 0x0D):
+                    line = pending.decode("utf-8", "replace").strip()
+                    pending.clear()
+                    if not line:
+                        continue
+                    last_line = line
+                    now = time.monotonic()
+                    if now - last_logged >= _PULL_LOG_INTERVAL_S:
+                        last_logged = now
+                        logger.info("ollama pull %s: %s", model, line)
+                else:
+                    pending.append(byte)
+        tail = pending.decode("utf-8", "replace").strip()
+        if tail:
+            last_line = tail
+            logger.info("ollama pull %s: %s", model, tail)
+        # Reaped INSIDE the guarded region, not after it. EOF on stdout is not
+        # the same event as the process exiting — a pull that closes its
+        # output while still running would otherwise leave this blocking with
+        # the deadline already cancelled, which is the unbounded wait the
+        # `subprocess.run(timeout=)` this replaced did not have.
+        proc.wait()
+    finally:
+        watchdog.cancel()
+    return None if timed_out.is_set() else last_line
 
 
 def _configured_models() -> tuple[list[str], str] | None:

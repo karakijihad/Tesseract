@@ -89,6 +89,74 @@ _WORK_NOTE_PATTERNS: tuple[re.Pattern[str], ...] = (
 # would be one more thing a pattern could match.
 _SELF_RELATIVE = Path("tesseract") / "scripts" / Path(__file__).name
 
+# References to things that exist only in the development repository. A reader
+# of the public tree cannot follow any of them: the docs tree, the agent
+# instruction files and the test suite are all excluded from the build by
+# `_production_manifest`, and a dated session id names a conversation nobody
+# outside the project ever had.
+#
+# This is a different failure from `_WORK_NOTE_PATTERNS` above, which catches
+# provenance *attribution*. These catch a pointer — a sentence that reads as
+# helpful ("see `CLAUDE.md` for the authoritative notes") and sends a stranger
+# to a file that is not there. A per-directory `README.md` written for us
+# rather than for them is the same defect at paragraph scale.
+# `AGENTS.md` is deliberately NOT here. It is a real filename this product
+# writes and reads — the assistant's own `workspace/AGENTS.md`, and the
+# conventions file `project_new` seeds into a user's repository. Flagging it
+# would be flagging the product.
+# Named so the allowlist below can exempt ONE pattern in a file rather than
+# the whole file — `config/permissions.yaml` legitimately names a test path in
+# a policy rule AND illegitimately cited the dev instruction file, and a
+# per-file exemption would have hidden the second while excusing the first.
+_INTERNAL_REF_PATTERNS: dict[str, re.Pattern[str]] = {
+    # Capital D: `Docs/` is this project's tree. Lowercase `docs/` is left
+    # alone because it is how the rest of the world spells a documentation URL.
+    "docs-tree": re.compile(r"\bDocs[/\\][A-Za-z]"),
+    "claude-md": re.compile(r"\bCLAUDE\.md\b"),
+    "test-tree": re.compile(r"\btesseract[/\\]tests\b"),
+    # A session id, as cited in comments: `session 2026-07-12-1818`.
+    "session-id": re.compile(r"\bsession \d{4}-\d{2}-\d{2}"),
+}
+
+# Where a pattern names a VALUE rather than citing an authority: code that
+# detects, writes, or excludes a file by that name, and policy rules scoped to
+# a path. Allowlisted explicitly because the distinction is semantic and no
+# regex draws it — "per CLAUDE.md hard rule" and
+# `_CONVENTION_FILES = ("AGENTS.md", "CLAUDE.md", ...)` are the same characters
+# doing opposite jobs.
+#
+# The cost is that a genuine citation added to one of these files, matching
+# that same pattern, slips through. Kept narrow to keep that cost small: the
+# path must be exact and the pattern must be named.
+_INTERNAL_REF_ALLOWED: dict[str, frozenset[str]] = {
+    # Detects a repository's conventions file by name.
+    "tesseract/orchestrator/projects/detect.py": frozenset({"claude-md"}),
+    # Names what memory must not store: the always-loaded instruction file.
+    "tesseract/memory/what_not_to_save.py": frozenset({"claude-md"}),
+    "tesseract/memory-store/WHAT_NOT_TO_SAVE.md": frozenset({"claude-md"}),
+    # The build itself: names the paths it excludes, then generates a fresh
+    # instruction file. Every match here is a path being acted on.
+    "tesseract/scripts/_production_manifest.py": frozenset({"claude-md", "test-tree"}),
+    "tesseract/scripts/build_production_tree.py": frozenset({"claude-md", "test-tree"}),
+    "tesseract/scripts/check_tree_invariants.py": frozenset({"claude-md", "test-tree"}),
+    # The prompt manifest lists the capability matrix as a readable pointer.
+    # `_pointer_exists` drops it when the file is absent, which is every
+    # production install — so the entry is dev-only by construction, not a
+    # dangling instruction.
+    "tesseract/brain/prompt_content.py": frozenset({"docs-tree"}),
+    # Names the generated instruction files the sealed-tree check exempts.
+    "tesseract/permissions/bash_security.py": frozenset({"claude-md"}),
+    # Product documentation about the coding CLIs and their init commands.
+    "tesseract/agents/cli-reference.md": frozenset({"claude-md"}),
+    # A path-scoped policy rule and the code reading it. The path is the value
+    # being matched at runtime, not a pointer for a reader to follow.
+    "tesseract/config/permissions.yaml": frozenset({"test-tree"}),
+    "tesseract/permissions/policy.py": frozenset({"test-tree"}),
+    "tesseract/permissions/readonly_commands.py": frozenset({"test-tree"}),
+    # A build-tool exclude glob.
+    "tesseract/mirror/vite.config.ts": frozenset({"test-tree"}),
+}
+
 _GENERIC_PATTERNS: tuple[re.Pattern[str], ...] = (
     EMAIL_RE,
     WINDOWS_USER_PATH_RE,
@@ -104,11 +172,19 @@ _GENERIC_PATTERNS: tuple[re.Pattern[str], ...] = (
 # production build). Exact-value only, never a pattern loosening.
 _KNOWN_SYNTHETIC_LITERALS = frozenset(
     {
-        # tesseract/mirror/src-tauri/src/provision.rs — a fake token embedded
-        # in a sample clone-error string to prove the Rust-side credential
-        # scrubber redacts it; the email-shaped pattern fires on the
-        # `<token>@github.com` userinfo run.
+        # A fake token in a URL userinfo segment, used by two `#[cfg(test)]`
+        # modules that ship inside their source files: `provision.rs` proves
+        # the Rust credential scrubber redacts it, and `exe_update.rs` proves
+        # `owner_repo` parses past userinfo instead of refusing the URL. The
+        # email-shaped pattern fires on the `<token>@github.com` run. One
+        # literal serves both so this allowlist does not grow per test.
         "ghp_supersecret@github.com",
+        # tesseract/mirror/src-tauri/src/provision.rs — a second synthetic
+        # credentialed URL, proving the scrubber also fires on streamed tool
+        # output. `example.invalid` is RFC 2606 reserved and can never resolve.
+        # The dev-side test allowlist has carried this since the fixture landed;
+        # this copy was missing it, which failed the build rather than the test.
+        "secret@example.invalid",
         # tesseract/mirror/{e2e,src}/**/*.test.ts(x) — synthetic POSIX
         # fixture username ("op") used in controller-transcript-path tests,
         # not a real operator home directory.
@@ -243,6 +319,37 @@ def scan_work_notes(root: Path) -> list[str]:
     return offenders
 
 
+def scan_internal_refs(root: Path) -> list[str]:
+    """Return one offender string per dangling internal reference found under
+    `root`; empty list means none shipped. See `_INTERNAL_REF_PATTERNS`.
+
+    Every hit is reported, not just the first per file: these arrive in
+    clusters (one README can carry a dozen), and fixing them one build at a
+    time is the slow way to do it.
+    """
+    offenders: list[str] = []
+    for path in root.rglob("*"):
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            continue
+        body = _decode_text(raw)
+        if body is None:
+            continue
+        rel = path.relative_to(root)
+        if rel == _SELF_RELATIVE:
+            continue
+        allowed = _INTERNAL_REF_ALLOWED.get(rel.as_posix(), frozenset())
+        for name, pattern in _INTERNAL_REF_PATTERNS.items():
+            if name in allowed:
+                continue
+            for match in dict.fromkeys(pattern.findall(body)):
+                offenders.append(f"{rel}: internal reference {match!r} ({name})")
+    return offenders
+
+
 def scan_all(root: Path, tokens_file: Path | None = None) -> list[str]:
     """Every check this module runs, composed. The single entry point both
     this module's CLI and `build_production_tree.main()` call — a caller
@@ -253,6 +360,7 @@ def scan_all(root: Path, tokens_file: Path | None = None) -> list[str]:
         *scan(root, tokens_file),
         *scan_test_surface(root),
         *scan_work_notes(root),
+        *scan_internal_refs(root),
     ]
 
 

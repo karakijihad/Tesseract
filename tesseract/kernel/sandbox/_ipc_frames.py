@@ -1,6 +1,6 @@
 """Length-prefixed JSON frame helpers for the MO-8-3 IPC bridge.
 
-Wire format per ``Docs/Plan/mission-orchestrator/MO-8/_shared/ipc-bridge.md``:
+Wire format:
 ``<4-byte little-endian uint32 length><utf-8 JSON bytes>``. Length excludes
 the 4-byte prefix itself. Frames cap at 8 MiB (``MAX_FRAME_BYTES``); over-size
 frames raise so a runaway candidate cannot drown the main process.

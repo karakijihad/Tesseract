@@ -270,6 +270,27 @@ class ChannelsConfig(BaseModel):
 # -- Loader ---------------------------------------------------------
 
 
+def channel_key_env(channel: str, default: str = "") -> str:
+    """The env var name `channels.yaml::<channel>.api_key_env` declares.
+
+    The typed model above ignores unknown keys, so this reads the raw file:
+    the declaration exists for the capability report and the first-run form,
+    and the runtime that actually reads the credential must resolve it from
+    the same place or the file is describing something it does not control.
+
+    Falls back to `default` when the block or the key is absent, so a config
+    predating the declaration still starts the channel.
+    """
+    try:
+        raw = yaml.safe_load(_channels_yaml_path().read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return default
+    block = raw.get(channel)
+    if not isinstance(block, dict):
+        return default
+    return str(block.get("api_key_env") or default)
+
+
 def _channels_yaml_path() -> Path:
     override = os.environ.get("TESSERACT_CHANNELS_YAML")
     if override:
@@ -301,8 +322,8 @@ def load_channels_config(path: Path | None = None) -> ChannelsConfig:
     """Read ``channels.yaml`` into a typed :class:`ChannelsConfig`.
 
     Missing file → built-in defaults. Malformed YAML / schema violations
-    raise ``RuntimeError`` so boot fails loudly (CLAUDE.md hard rule
-    against silent infrastructure defaults)."""
+    raise ``RuntimeError`` so boot fails loudly rather than running on
+    a silent infrastructure default."""
     target = path or _channels_yaml_path()
     if not target.exists():
         log.info("channels.yaml not found at %s — using built-in defaults", target)

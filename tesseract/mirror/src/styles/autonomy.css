@@ -5,8 +5,8 @@
  * from settings.css so spacing/typography stay consistent with the
  * Settings Runtime panel that the operator already knows.
  *
- * Hint text uses var(--text-meta) per the Mirror frontend HARD RULE
- * (CLAUDE.md §Mirror frontend). var(--text-dim) is forbidden for text.
+ * Hint text uses var(--text-meta) — a hard rule for this frontend.
+ * var(--text-dim) is forbidden for text.
  */
 
 .autonomy-view {

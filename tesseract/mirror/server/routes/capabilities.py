@@ -1,7 +1,7 @@
 """GET /api/capabilities — capability report, not a setup gate.
 
-Nothing in TESSERACT requires an API key or a specific provider (CLAUDE.md:
-"none of the api are requirement"). This route reports, per provider and per
+Nothing in TESSERACT requires an API key or a specific provider. This
+route reports, per provider and per
 chat_brain candidate, its `status` and — when not `ready` — WHY: no API key
 set, disabled via `providers.yaml`'s `enabled` bools, or (cli tier) the
 binary isn't on PATH or isn't signed in. It never gates the UI (no
@@ -17,7 +17,7 @@ provider in Settings -> Local Models, and a network probe does not belong
 in a settings-read endpoint). So:
   - "ready": actually checked and good (key present; or, cli tier, the
     binary was found on PATH AND the cached auth probe says signed in —
-    see `tesseract/brain/cli_auth.py` and `Docs/Plan/cli-auth/DESIGN.md`).
+    see `tesseract/brain/cli_auth.py`).
   - "unavailable": checked and NOT good (disabled, missing key, binary not
     found, or cli tier signed out / probe failed) — `reason` says which.
   - "unverified": enabled and nothing cheap here can confirm or deny it
@@ -52,6 +52,7 @@ of truth for resolution that can drift from the resolver itself.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 from datetime import datetime, timezone
@@ -62,17 +63,62 @@ from aiohttp import web
 from tesseract.lib.yaml_io import atomic_write_text, round_trip_yaml
 from tesseract.paths import config_dir, home_dir, runtime_dir
 
-# Integrations that aren't a `providers.yaml` provider block but are still
-# optional, key-gated features (tool availability, channel bridges). Kept
-# separate from `providers` below — these don't have an `enabled` bool of
-# their own, just "present or not".
-_INTEGRATIONS = (
-    ("web_search (Tavily)", "TAVILY_API_KEY"),
-    ("web_search (Brave)", "BRAVE_SEARCH_API_KEY"),
-    ("telegram_channel", "TELEGRAM_BOT_TOKEN"),
-)
+log = logging.getLogger(__name__)
+
+def _integrations() -> list[tuple[str, str, bool, str | None]]:
+    """`(label, key_name, enabled, service)` for every key-gated thing that
+    is not a model provider, read from the two files that declare them.
+    `service` is the `providers.yaml::services` block name, or None for a
+    channel — whose switch lives in its own file and is not written here.
+
+    It used to be a tuple here, which made this route a second registry
+    beside `providers.yaml` — and a third, since the first-run form kept its
+    own copy too. Now `providers.yaml::services` names the outside services
+    (Brave, Tavily) and each `channels.yaml` block names its own token, so
+    adding either kind is a config edit and this route follows.
+    """
+    pairs: list[tuple[str, str, bool, str | None]] = []
+
+    from tesseract.brain.boot import load_bundle
+
+    services = load_bundle().providers_raw.get("services") or {}
+    # The section switch gates every service under it, the way `api.enabled`
+    # gates every provider in its tier.
+    section_on = bool(services.get("enabled", True))
+    for name, block in services.items():
+        if not isinstance(block, dict) or not block.get("api_key_env"):
+            continue
+        unlocks = str(block.get("unlocks") or name)
+        enabled = section_on and bool(block.get("enabled", True))
+        pairs.append((f"{unlocks} ({name})", block["api_key_env"], enabled, name))
+
+    for name, key_name, enabled in _channel_keys():
+        # `None` for the service name: a channel's switch lives in
+        # channels.yaml and is not writable through the catalog route.
+        pairs.append((f"{name}_channel", key_name, enabled, None))
+    return pairs
+
+
+def _channel_keys() -> list[tuple[str, str, bool]]:
+    """`(channel, key_name, enabled)` for every channel declaring a key."""
+    import yaml
+
+    path = config_dir() / "channels.yaml"
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return []
+    return [
+        (name, block["api_key_env"], bool(block.get("enabled", True)))
+        for name, block in raw.items()
+        if name != "defaults" and isinstance(block, dict) and block.get("api_key_env")
+    ]
 
 _RESERVED_TIER_KEYS = frozenset({"enabled"})
+
+# Not a tier: key-gated services with no models. Writable through the same
+# switch route, because the operator flips it for the same reason.
+_SERVICES_SECTION = "services"
 
 # The three tier blocks in providers.yaml. Everything else at the top level
 # (`chain`, `cost_tracking`, `availability`) is not a tier and carries no
@@ -293,8 +339,16 @@ def _build_report() -> dict:
         "roles": _role_rows(),
         "notice_dismissed": _notice_dismissed(),
         "integrations": [
-            {"name": name, "key_name": key_name, "key_present": _key_present(key_name)}
-            for name, key_name in _INTEGRATIONS
+            {
+                "name": name,
+                "key_name": key_name,
+                "key_present": _key_present(key_name),
+                # Reported separately from the key: a service can be off with
+                # its key set, which is the whole point of the switch.
+                "enabled": enabled,
+                "service": service,
+            }
+            for name, key_name, enabled, service in _integrations()
         ],
     }
 
@@ -369,9 +423,13 @@ async def capabilities_set_provider_enabled(request: web.Request) -> web.Respons
     provider = body.get("provider")
     enabled = body.get("enabled")
 
-    if tier not in _TIERS:
+    # `services` is a section like a tier — same two switches, same writer.
+    # It is not IN `_TIERS`, because that tuple is what the provider report
+    # walks and a service has no models to walk.
+    if tier not in (*_TIERS, _SERVICES_SECTION):
         return web.json_response(
-            {"error": f"tier must be one of {', '.join(_TIERS)}"}, status=400
+            {"error": f"tier must be one of {', '.join((*_TIERS, _SERVICES_SECTION))}"},
+            status=400,
         )
     if not isinstance(enabled, bool):
         return web.json_response({"error": "enabled must be a boolean"}, status=400)
@@ -407,11 +465,151 @@ async def capabilities_set_provider_enabled(request: web.Request) -> web.Respons
             {"error": f"providers.yaml has no {exc}"}, status=404
         )
 
+    _record_consent_for(provider, enabled, tier=tier)
     return web.json_response(_build_report())
+
+
+#: Provider block name -> the dependency the reconciler knows it by. Only the
+#: ones that download something: flipping a switch with nothing behind it is
+#: not an answer to a question about disk space.
+_CONSENT_DEPENDENCIES = {
+    "whisper": "whisper",
+    "kokoro": "kokoro",
+    "piper": "piper",
+    "onnx_reranker": "reranker",
+    "ollama": "ollama",
+}
+
+
+def _record_consent_for(
+    provider: str | None, enabled: bool, *, tier: str | None = None
+) -> None:
+    """Turn a Settings toggle into a recorded answer.
+
+    Without this the ledger only ever fills from the first-run form, so a lane
+    switched on months later would stay `never_asked` — and the reconciler
+    would go on refusing to fetch what the operator had just asked for, which
+    reads as the toggle being broken.
+
+    A toggle is an ANSWER, so it outranks what the config implies. That is the
+    whole point of recording it: `enabled: false` alone cannot distinguish a
+    lane someone turned off from one nobody ever reached.
+
+    **A TIER switch answers for everything under it.** `provider is None` means
+    the operator flipped `local` itself, which disables every local provider at
+    once — and recording nothing for that left each one's earlier per-provider
+    consent standing as `granted`. Because a ledger answer outranks config, the
+    reconciler then went on treating lanes the operator had just switched off
+    as things it should repair. The tier answer is the more recent one and
+    covers the same ground, so it is written across the tier.
+
+    Best-effort. A ledger that cannot be written must not fail the toggle —
+    the switch itself already landed in `providers.yaml`, which is what the
+    runtime acts on.
+    """
+    if provider is None:
+        dependencies = tuple(
+            dep for name, dep in _CONSENT_DEPENDENCIES.items() if _in_tier(tier, name)
+        )
+    else:
+        single = _CONSENT_DEPENDENCIES.get(provider)
+        dependencies = (single,) if single else ()
+    if not dependencies:
+        return
+    try:
+        from tesseract.capability.consent import record
+        from tesseract.capability.state import Consent, ConsentOrigin
+
+        answer = Consent.GRANTED if enabled else Consent.DECLINED
+        record(
+            {dependency: answer for dependency in dependencies},
+            origin=ConsentOrigin.SETTINGS,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "capabilities: could not record consent for %s (%s)",
+            ", ".join(dependencies),
+            exc,
+        )
+
+
+def _in_tier(tier: str | None, provider: str) -> bool:
+    """Whether `provider` lives under `tier` in the live catalog.
+
+    Asked of the catalog rather than assumed: every entry in
+    `_CONSENT_DEPENDENCIES` happens to be under `local` today, and hardcoding
+    that would silently answer for the wrong providers the first time one
+    moves.
+    """
+    if not tier:
+        return False
+    try:
+        import yaml
+
+        doc = yaml.safe_load(_providers_yaml_path().read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001 — an unreadable catalog answers for nobody
+        return False
+    block = doc.get(tier)
+    return isinstance(block, dict) and provider in block
+
+
+async def capabilities_dependencies(request: web.Request) -> web.Response:
+    """GET /api/capabilities/dependencies — what the last launch pass found.
+
+    Reads the artifact; it does NOT reconcile. The pass runs at launch and on
+    demand, and a Settings tab polling this must not be able to start a
+    hardware probe on every refresh.
+
+    `?refresh=1` runs a real pass, for the operator who has just fixed
+    something and wants to see it reflected without relaunching.
+
+    The response leads with `attention` rather than the whole set, because
+    that is what a surface renders: a dependency that is fine has nothing to
+    say, and a list that is usually full is one people stop reading.
+    """
+    from tesseract.capability.reconcile import run
+    from tesseract.capability.state import read_state
+
+    refresh = request.query.get("refresh", "").lower() in ("1", "true", "yes")
+    state = None if refresh else read_state()
+    if state is None:
+        state = await run()
+
+    return web.json_response(
+        {
+            "checked_at": state.checked_at,
+            "attention": [
+                {
+                    "id": record.id,
+                    "state": record.state.value,
+                    "reason": record.reason,
+                    "size_mb": record.size_mb,
+                    "consent": record.consent.value,
+                }
+                for record in state.attention
+            ],
+            "advice": [
+                {"id": item.id, "text": item.text, "at": item.at}
+                for item in state.advice
+            ],
+            "dependencies": {
+                dep_id: {
+                    "state": record.state.value,
+                    "consent": record.consent.value,
+                    "consent_origin": record.consent_origin.value,
+                    "reason": record.reason,
+                    "size_mb": record.size_mb,
+                    "version": record.version,
+                }
+                for dep_id, record in state.dependencies.items()
+            },
+        }
+    )
 
 
 def register(app: web.Application) -> None:
     app.router.add_get("/api/capabilities", capabilities_status)
+    app.router.add_get("/api/capabilities/dependencies", capabilities_dependencies)
     app.router.add_post("/api/capabilities/reverify", capabilities_reverify)
     app.router.add_post("/api/capabilities/dismiss", capabilities_dismiss)
     app.router.add_post(
@@ -422,6 +620,7 @@ def register(app: web.Application) -> None:
 __all__ = [
     "register",
     "capabilities_status",
+    "capabilities_dependencies",
     "capabilities_reverify",
     "capabilities_dismiss",
     "capabilities_set_provider_enabled",

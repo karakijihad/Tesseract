@@ -26,15 +26,13 @@ from typing import TypeVar
 
 import yaml
 
-from tesseract.paths import CONFIG_DIR
+from tesseract.paths import config_dir
 
 logger = logging.getLogger(__name__)
 
 MAX_AGENDA_ITEMS = 5
 MAX_REFLECTIONS = 3
 _WHITESPACE_RUN = re.compile(r"\s+")
-
-MEMORY_YAML = CONFIG_DIR / "memory.yaml"
 
 _T = TypeVar("_T")
 
@@ -55,9 +53,10 @@ def load_autonomy_digest_config() -> AutonomyDigestConfig:
 
     Mirrors ``tesseract.brain.auto_recall.load_auto_recall_config``'s
     raise-loudly ``_require`` pattern — no ``.get(..., default)`` for an
-    infrastructure value (CLAUDE.md Hard Rules).
+    infrastructure value. The path resolves at call time for the same reason
+    ``load_auto_recall_config`` does.
     """
-    raw = yaml.safe_load(MEMORY_YAML.read_text(encoding="utf-8"))
+    raw = yaml.safe_load((config_dir() / "memory.yaml").read_text(encoding="utf-8"))
     section = _require(raw, "autonomy_digest", "memory.yaml")
     return AutonomyDigestConfig(
         max_age_days=float(_require(section, "max_age_days", "memory.yaml autonomy_digest")),

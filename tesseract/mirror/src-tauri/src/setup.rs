@@ -14,10 +14,12 @@
 //! `scripts/apply_first_run_setup.py` applies them once `tesseract` is
 //! importable, before the fetch stages that read from that config.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::{shell_log, TesseractHome};
 
@@ -45,6 +47,34 @@ pub struct SetupAnswers {
     pub tts: String,
     #[serde(default)]
     pub stt: bool,
+    /// Provider API keys, `ENV_NAME -> value`, every one of them optional.
+    ///
+    /// Staged rather than written straight to `.env`: that file does not
+    /// exist yet — `config_seed.ensure_env_seeded` creates it from the
+    /// shipped template, and the template is inside the source tree the
+    /// clone stage has not fetched. Writing a bare `.env` here first would
+    /// make the seeder skip its copy and cost the operator the documented
+    /// file every other key is described in.
+    ///
+    /// The Python side removes these from the staged file once they are in
+    /// `.env`, so the secrets do not survive in the archived record of what
+    /// this install was set up with.
+    #[serde(default)]
+    pub api_keys: BTreeMap<String, String>,
+    /// The step-2 download choices: `embeddings` / `reranker` / `gpu`, each a
+    /// bool. Deliberately a map and not a struct of three named fields — the
+    /// set of things the form offers is decided by the page and the Python
+    /// side, and a Rust struct would be a third copy of that list which has to
+    /// be edited in lockstep or silently drop whatever it does not know.
+    ///
+    /// **This field existing at all is the fix for a real defect.** The form
+    /// sent `optional` before this struct had anywhere to put it, and serde
+    /// drops unknown keys silently (there is no `deny_unknown_fields` here) —
+    /// so the operator's answers were discarded between the click and the
+    /// staged file, and every one of them read as "never asked" on the other
+    /// side. Nothing failed; the choices simply evaporated.
+    #[serde(default)]
+    pub optional: BTreeMap<String, bool>,
 }
 
 /// Where the answers wait for the Python side.
@@ -63,11 +93,10 @@ pub fn save_answers(home: &Path, answers: &SetupAnswers) -> std::io::Result<()> 
     std::fs::write(answers_path(home), body)
 }
 
-/// Invoked by the splash screen's setup form. Fire-and-forget, like the token
-/// prompt: provisioning runs on a background thread and reports back through
-/// `provision-progress` / `provision-needs-token` events, so the webview IPC
-/// call returns immediately rather than blocking for the several minutes a
-/// clone plus dependency install takes.
+/// Invoked by the splash screen's setup form. Fire-and-forget: provisioning
+/// runs on a background thread and reports back through `provision-progress`
+/// events, so the webview IPC call returns immediately rather than blocking
+/// for the several minutes a clone plus dependency install takes.
 #[tauri::command]
 pub fn submit_first_run_setup(
     app: AppHandle,
@@ -76,10 +105,13 @@ pub fn submit_first_run_setup(
 ) {
     let home_path = home.0.clone();
     // Logged without the names: they are the operator's, and shell.log is the
-    // first thing attached to a bug report.
+    // first thing attached to a bug report. The keys are counted, never named
+    // and never valued — how many were filled in is the whole diagnostic.
     shell_log::log(&format!(
-        "first-run setup submitted (tts={}, stt={}) — starting provisioning",
-        answers.tts, answers.stt
+        "first-run setup submitted (tts={}, stt={}, api keys={}) — starting provisioning",
+        answers.tts,
+        answers.stt,
+        answers.api_keys.values().filter(|v| !v.trim().is_empty()).count()
     ));
     if let Err(e) = save_answers(&home_path, &answers) {
         // Not fatal: provisioning still produces a working install on the
@@ -93,17 +125,46 @@ pub fn submit_first_run_setup(
     start_provisioning(app, home_path);
 }
 
+/// True once provisioning has been started, and never reset.
+///
+/// A second run is never wanted: two would race through the same
+/// `app.clone-tmp` staging directory, run the dependency and model stages
+/// concurrently, and share the single `ACTIVE_PID` slot that quit reads — so
+/// stopping the download would reach only whichever subprocess wrote to it
+/// last. `update.rs` already guards its analogous path with an
+/// `UpdateInProgress` flag; provisioning had no equivalent.
+///
+/// Never reset, deliberately: a failed provision is terminal for the run
+/// (there is no retry control on the splash), so "started once" is the whole
+/// lifetime this needs to cover.
+static PROVISIONING_STARTED: AtomicBool = AtomicBool::new(false);
+
 /// Runs `provision()` on a background thread and routes its outcome.
 ///
 /// Shared by the setup-form submit and by the fallback path that skips the
-/// form entirely, so both reach provisioning through exactly one code path.
+/// form entirely, so both reach provisioning through exactly one code path —
+/// which is also what makes one guard here enough.
 pub fn start_provisioning(app: AppHandle, home: PathBuf) {
+    if PROVISIONING_STARTED.swap(true, Ordering::SeqCst) {
+        shell_log::log("provisioning already running — ignoring a second start");
+        return;
+    }
     std::thread::spawn(move || {
-        // On a clone auth failure with no working token, `provision` returns
-        // `NeedsToken` instead of failing outright — `handle_provision_result`
-        // shows the in-app prompt rather than leaving the splash on a dead end.
         let result = crate::provision::provision(&app, &home);
-        crate::token::handle_provision_result(&app, &home, result);
+        match result {
+            Ok(_) => crate::finish_provisioning_success(&app, &home),
+            Err(crate::provision::ProvisionError(msg)) => {
+                // Scrubbed here rather than trusting the producer: clone-stage
+                // errors arrive pre-scrubbed via `classify_clone_error`, but
+                // every other stage forwards raw `uv`/`python` stderr, which
+                // can embed a credentialed URL from an index or proxy env var.
+                // This is the last point before the text reaches the log file
+                // and the screen.
+                let msg = crate::provision::scrub_credentials(&msg);
+                shell_log::log_error(&format!("provisioning failed: {msg}"));
+                let _ = app.emit("provision-progress", format!("Setup failed: {msg}"));
+            }
+        }
     });
 }
 
@@ -120,6 +181,11 @@ mod tests {
             gender: "female".to_string(),
             tts: "kokoro".to_string(),
             stt: true,
+            api_keys: BTreeMap::new(),
+            optional: BTreeMap::from([
+                ("embeddings".to_string(), true),
+                ("reranker".to_string(), false),
+            ]),
         }
     }
 
@@ -171,6 +237,8 @@ mod tests {
             gender: String::new(),
             tts: "none".to_string(),
             stt: false,
+            api_keys: BTreeMap::new(),
+            optional: BTreeMap::new(),
         };
 
         save_answers(base.path(), &empty).expect("an empty form must still stage");
@@ -178,6 +246,66 @@ mod tests {
         let text = std::fs::read_to_string(answers_path(base.path())).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(parsed["agent_name"], "");
+    }
+
+    /// The step-2 choices have to survive the hop, and this is the test that
+    /// would have caught them not doing so.
+    ///
+    /// `SetupAnswers` had no `optional` field and carries no
+    /// `deny_unknown_fields`, so serde dropped the whole block silently —
+    /// the form sent it, nothing errored, and the operator's download
+    /// decisions simply never reached the staged file.
+    #[test]
+    fn the_optional_download_choices_survive_staging() {
+        let base = TempDir::new("setup-optional");
+        save_answers(base.path(), &answers()).expect("save should succeed");
+
+        let text = std::fs::read_to_string(answers_path(base.path())).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed["optional"]["embeddings"], true);
+        assert_eq!(parsed["optional"]["reranker"], false);
+    }
+
+    /// A payload from a splash that predates step 2 must still stage.
+    #[test]
+    fn answers_without_an_optional_block_still_deserialize() {
+        let raw = r#"{"operator_name":"Jane Doe","tts":"piper","stt":true}"#;
+        let parsed: SetupAnswers = serde_json::from_str(raw).expect("must deserialize");
+        assert!(parsed.optional.is_empty());
+    }
+
+    /// The keys the operator typed on the form have to survive the trip to
+    /// Python intact — a mangled one reads as a rejected key from the
+    /// provider, which is the hardest kind of first-run failure to diagnose.
+    #[test]
+    fn save_answers_stages_api_keys_verbatim() {
+        let base = TempDir::new("setup-keys");
+        let mut with_keys = answers();
+        with_keys
+            .api_keys
+            .insert("OPENAI_API_KEY".to_string(), "sk-test-value".to_string());
+        with_keys
+            .api_keys
+            .insert("XAI_API_KEY".to_string(), String::new());
+
+        save_answers(base.path(), &with_keys).expect("save should succeed");
+
+        let text = std::fs::read_to_string(answers_path(base.path())).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed["api_keys"]["OPENAI_API_KEY"], "sk-test-value");
+        assert_eq!(parsed["api_keys"]["XAI_API_KEY"], "");
+    }
+
+    /// A form from a shell that predates the keys block, or a hand-written
+    /// answers file, must still deserialize — `api_keys` is `#[serde(default)]`
+    /// and an install that skipped the whole block is the common case.
+    #[test]
+    fn answers_deserialize_without_an_api_keys_field() {
+        let parsed: SetupAnswers = serde_json::from_str(
+            r#"{"operator_name":"Jane Doe","agent_name":"Ada","tts":"none","stt":false}"#,
+        )
+        .expect("a form without api_keys must still parse");
+        assert!(parsed.api_keys.is_empty());
     }
 
     /// `answers_path` must sit under `runtime/`, not `home/`: the operator's

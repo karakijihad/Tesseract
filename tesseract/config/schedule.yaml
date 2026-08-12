@@ -337,7 +337,7 @@ jobs:
       exempt_sources:
         - operator
 
-  # Janitor sweep (Docs/Plan/janitor/PLAN.md) — reaps fingerprinted orphan
+  # Janitor sweep — reaps fingerprinted orphan
   # processes, pytest scratch dirs, stale controller sessions, aged lane
   # archives. Kill policy fixed in janitor code (fingerprint AND orphan);
   # targets in config/janitor.yaml. Also runs at every supervisor boot.

@@ -241,7 +241,7 @@ class Tool(ABC):
 
     # AU-3 — risk class for autonomy admission. Every concrete subclass
     # MUST declare one of "autonomous" | "propose" | "operator_gate" |
-    # "absolute_deny" per `Docs/Plan/autonomy/_shared/risk-class-taxonomy.md`.
+    # "absolute_deny" in the risk-class taxonomy.
     # Boot raises if missing or invalid. The AgendaStore (AU-4) compares
     # the dispatched tool's class against the agenda item's class at
     # admission and rejects if the item is more permissive than the tool

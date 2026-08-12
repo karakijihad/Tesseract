@@ -8,6 +8,7 @@ from typing import Any
 from aiohttp import web
 
 from tesseract.brain.boot import rebuild_adapters
+from tesseract.config.loader import ROLE_MODES, ROLE_MODE_INACTIVE
 from tesseract.lib.yaml_io import round_trip_yaml
 from tesseract.mirror.server.ws import emit_stats
 
@@ -44,7 +45,7 @@ _MAX_CONFIG_BYTES = 200_000
 
 _VALID_POSTURES = frozenset({"auto", "ask", "deny"})
 
-_VALID_ROLE_MODES = frozenset({"active", "disabled"})
+_VALID_ROLE_MODES = ROLE_MODES
 # `chat_brain` is load-bearing — every session needs an active conversational
 # adapter. Allow operator to change which model serves the role; refuse to
 # leave the role mode-disabled (would brick new sessions).
@@ -118,6 +119,10 @@ def _providers_yaml_path(app: web.Application) -> Path:
 
 def _roles_yaml_path(app: web.Application) -> Path:
     return app["tesseract_dir"] / "config" / "roles.yaml"
+
+
+def _providers_yaml_path(app: web.Application) -> Path:
+    return app["tesseract_dir"] / "config" / "providers.yaml"
 
 
 # `_round_trip_yaml` is a thin alias to keep the existing call sites in this
@@ -334,7 +339,7 @@ async def set_session_caps(request: web.Request) -> web.Response:
     restart (mirrors the `set_compact_threshold` pattern).
 
     DENY rules from `permissions.yaml::bash_security` are intentionally
-    NOT exposed here — they're a CLAUDE.md hard-rule constant.
+    NOT exposed here — they are a fixed constant no policy can relax.
     """
     try:
         body = await request.json()
@@ -970,7 +975,7 @@ async def get_config_files(request: web.Request) -> web.Response:
 async def set_role_models(request: web.Request) -> web.Response:
     """Mutate a role's `mode` and/or promote a `resolution[]` entry to primary.
 
-    Body: `{role: str, mode?: 'active'|'disabled', primary_model?: str}`.
+    Body: `{role: str, mode?: 'active'|'inactive', primary_model?: str}`.
     Both edits are optional but at least one must be present.
 
     `primary_model` rotates the matching `resolution[]` entry to index 0 (the
@@ -1012,9 +1017,9 @@ async def set_role_models(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": f"mode must be one of {sorted(_VALID_ROLE_MODES)}"}, status=400
             )
-        if mode == "disabled" and role in _LOAD_BEARING_ROLES:
+        if mode == ROLE_MODE_INACTIVE and role in _LOAD_BEARING_ROLES:
             return web.json_response(
-                {"error": f"role '{role}' is load-bearing and cannot be disabled"},
+                {"error": f"role '{role}' is load-bearing and cannot be set inactive"},
                 status=400,
             )
 
@@ -1034,6 +1039,20 @@ async def set_role_models(request: web.Request) -> web.Response:
     # legacy (`resolution[*].model`) and split (`primary` + `fallbacks` refs).
     if primary_model is not None:
         candidates = _candidate_models_for_role(request.app, role)
+        if not candidates:
+            # An inactive role resolves to no refs at all, so there is nothing
+            # to validate against. Say that, rather than reporting the model
+            # unavailable against an empty list — the operator's next move is
+            # to switch the role on, and "candidates: []" does not suggest it.
+            return web.json_response(
+                {
+                    "error": (
+                        f"role={role} has no resolvable models — switch it "
+                        "active before picking one"
+                    )
+                },
+                status=400,
+            )
         if primary_model not in candidates:
             return web.json_response(
                 {
@@ -1048,7 +1067,9 @@ async def set_role_models(request: web.Request) -> web.Response:
     try:
         _round_trip_yaml(
             _roles_yaml_path(request.app),
-            lambda d: _apply_role_models_update(d, role, mode, primary_model),
+            lambda d: _apply_role_models_update(
+                d, role, mode, primary_model, _providers_yaml_path(request.app)
+            ),
         )
         _sync_in_memory_role_models(request.app, role, mode, primary_model)
         head = _primary_summary_for_role(request.app, role)
@@ -1101,7 +1122,12 @@ def _candidate_models_for_role(app: web.Application, role: str) -> list[str]:
         rc = bundle.role(role)
     except Exception:
         return []
-    return [r.model.model for r in (rc.primary, *rc.fallbacks)]
+    # `primary` is None for an inactive role — the loader keeps those as
+    # unresolved stubs. The `return` sits outside the `try` above, so a None
+    # here dereferences into an AttributeError and the handler answers 500.
+    # Reachable from the UI as soon as a switched-off role is asked for a
+    # model, which is an ordinary thing to do before switching it back on.
+    return [r.model.model for r in (rc.primary, *rc.fallbacks) if r is not None]
 
 
 def _primary_summary_for_role(app: web.Application, role: str) -> dict[str, Any]:
@@ -1166,7 +1192,11 @@ def _materialize_role_chain(doc: Any, role_cfg: Any) -> None:
 
 
 def _apply_role_models_update(
-    doc: Any, role: str, mode: str | None, primary_model: str | None
+    doc: Any,
+    role: str,
+    mode: str | None,
+    primary_model: str | None,
+    providers_path: Path,
 ) -> None:
     """Mutate `roles.yaml::roles.<role>` — toggle mode, promote a fallback
     ref to primary. The reference shape is `<tier>.<provider>.<model_id>`;
@@ -1190,10 +1220,12 @@ def _apply_role_models_update(
 
     # `_apply_role_models_update` runs inside _round_trip_yaml on roles.yaml
     # — providers.yaml is not in scope here. Read it once to resolve refs.
+    # The path comes from the caller, off the same app-scoped tree the roles
+    # file is being written to: reading a global CONFIG_DIR here would let a
+    # non-default tree validate the chosen model against one catalog and map
+    # its name against another.
     import yaml as _yaml
-    from tesseract.paths import CONFIG_DIR
 
-    providers_path = CONFIG_DIR / "providers.yaml"
     providers_doc = _yaml.safe_load(providers_path.read_text(encoding="utf-8")) or {}
 
     def _model_name_of(ref: str) -> str:
@@ -1385,31 +1417,31 @@ async def get_voice(request: web.Request) -> web.Response:
 
 
 async def get_system(request: web.Request) -> web.Response:
-    """GET /api/settings/system?refresh=1 — capability snapshot.
+    """GET /api/settings/system?refresh=1 — this machine's facts.
 
-    Reads the cached snapshot at `runtime/logs/capability-snapshot.json`.
-    With `?refresh=1` re-runs `check_dependencies.collect()` first.
+    Reads `runtime/capability-state.json`, which the reconcile pass writes on
+    every launch. With `?refresh=1` it runs a fresh pass first.
+
+    It used to keep its own cache at `runtime/logs/capability-snapshot.json`,
+    which was wrong twice over: that tree is the janitor's, pruned by age — so
+    a cache of machine state silently expired — and it made two writers of one
+    kind of fact. The reconcile pass is the single writer now; this route is a
+    reader of the artifact, and the response shape is unchanged because the
+    System tab is compiled into the installed `.exe` and does not reach an
+    install through update.
     """
-    from tesseract.scripts import check_dependencies
-
-    # `collect()` spawns subprocesses (node/pnpm/nvidia-smi, up to 5s each),
-    # probes pynvml, and enumerates audio devices via sounddevice — 10-15s of
-    # blocking work. Run it in a thread so it never stalls the Mirror event
-    # loop (a blocked loop times out concurrent requests AND starves the voice
-    # STT / chat turn path — CLAUDE.md §Event loop discipline).
-    def _collect_and_cache() -> dict[str, Any]:
-        snap = check_dependencies.collect()
-        check_dependencies.write_snapshot(snap)
-        return check_dependencies._to_dict(snap)
+    from tesseract.capability.reconcile import legacy_system_payload, run
+    from tesseract.capability.state import read_state
 
     refresh = request.query.get("refresh", "").lower() in ("1", "true", "yes")
-    if refresh:
-        payload = await asyncio.to_thread(_collect_and_cache)
-    else:
-        payload = check_dependencies.read_snapshot()
-        if payload is None:
-            payload = await asyncio.to_thread(_collect_and_cache)
-    return web.json_response(payload)
+    state = None if refresh else read_state()
+    if state is None:
+        # The pass already runs its blocking probes — `collect()` spawns
+        # nvidia-smi and enumerates audio devices, 10-15s of it — in threads,
+        # so nothing here stalls the Mirror event loop. A blocked loop times
+        # out concurrent requests AND starves the voice and chat turn paths.
+        state = await run()
+    return web.json_response(legacy_system_payload(state.hardware))
 
 
 # ── Phase 18 Task C — Session-resume policy ─────────────────────────
@@ -1761,7 +1793,7 @@ async def set_model_ref(request: web.Request) -> web.Response:
     # adapters bound to the old model and the next turn reverts visually.
     #
     # If rebuild fails, the YAML write has already committed (disk is canonical
-    # per CLAUDE.md). Return 200 with `live_update_failed: true` so the UI can
+    # already). Return 200 with `live_update_failed: true` so the UI can
     # surface a toast without misrepresenting that the swap was rejected — the
     # next session reopen will pick up the new YAML.
     rebuild_summary: dict[str, Any] = {}

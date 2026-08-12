@@ -1,6 +1,6 @@
 /* MO-9-11 Channels tab — Status + Logs panes.
  *
- * Hint text uses `var(--text-meta)` per CLAUDE.md hard rule. The pane
+ * Hint text uses `var(--text-meta)` — a hard rule here. The pane
  * shells inherit the cockpit center-slot flex contract used by the
  * other cockpit tabs. */
 

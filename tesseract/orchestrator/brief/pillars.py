@@ -7,7 +7,6 @@ they care about up front. Affinity ordering inside each pillar lives in
 :mod:`tesseract.orchestrator.brief.interests` and biases world-digest's
 pick order at render time.
 
-Contract: ``Docs/Plan/mission-orchestrator/MO-9/phase-MO-9-13-...md §2``.
 
 Plain frozen dataclasses, no YAML — the pillar set is part of the
 product, not config. Adding / renaming a pillar is a code change with a

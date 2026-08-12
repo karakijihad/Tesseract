@@ -6,7 +6,6 @@ entry to `tesseract/logs/sessions/YYYY-MM-DD.jsonl`. Deterministic (no
 LLM). Routed to the logs stream (M1 of memory-retune) so the librarian
 never promotes scheduler rollups into `reference/`.
 
-Contract: `Docs/Plan/scheduler/_shared/daily-tag-vocabulary.md` Layer 1.
 """
 
 from __future__ import annotations

@@ -20,7 +20,7 @@ emitted here, so the two halves never race over the frontend's
 Fast partials are client-side: the browser Web Speech API surfaces an
 interim transcript (`lib/voice/stt-stream.ts`); the backend `voice_partial`
 envelope was removed in the Phase-16-S1 simplification and is not
-reintroduced. See `Docs/Plan/cockpit/design/2026-06-18-voice-loop-spec.md`.
+reintroduced.
 
 The machine is pure + synchronous: each transition method mutates the
 state and returns the `voice_state` wire value to emit (or `None` when no

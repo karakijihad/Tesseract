@@ -10,8 +10,8 @@ import { useWebSocketStore } from './websocket';
 
 // F2 (terminal daily-driver 2026-07-05) — per-pane byte watermark, the
 // xterm.js-documented flow-control pattern (HIGH ceiling is a build-time
-// UI constant, not backend config — matches CLAUDE.md "frontend build-time
-// constants" carve-out for this tunable).
+// UI constant, not backend config — the frontend build-time carve-out
+// covers this tunable).
 export const WATERMARK_HIGH = 100_000;
 export const WATERMARK_LOW = 10_000;
 

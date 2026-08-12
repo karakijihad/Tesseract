@@ -1,6 +1,5 @@
 """Vault lint — five-pass wiki auditor (orphan, stale, contradict, missing-hub, scale).
 
-Phase 5 of `Docs/Plan/vault-librarian-rewire/`. Contract: `_shared/wiki-page-frontmatter.md`.
 Lint is proposal, not action; `VaultLinter.run()` returns a `VaultLintReport`.
 `dry_run=True` skips all filesystem writes.
 """

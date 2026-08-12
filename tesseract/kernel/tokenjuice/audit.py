@@ -1,7 +1,7 @@
 """TokenJuice audit log — JSONL append; one line per process() call.
 
 Resolves TESSERACT_HOME at call time so monkeypatched tests stay isolated
-from the production logs tree (CLAUDE.md hard rule §logs).
+from the production logs tree, which they may never write to.
 """
 
 from __future__ import annotations

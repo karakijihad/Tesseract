@@ -37,8 +37,8 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _LINK_FIELDS = ("auto_links", "links")
 # Per-machine operator-private directories (gitignored). Wikilinks pointing
 # inside them must not be flagged as broken on machines that don't have
-# the operator's workspace synced — see CLAUDE.md "Workspace files are
-# gitignored — operator-private per-machine."
+# the operator's workspace synced: those files are gitignored and
+# private to one machine.
 _WORKSPACE_PREFIXES = ("workshop", "workspace")
 
 

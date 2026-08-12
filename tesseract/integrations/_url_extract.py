@@ -69,9 +69,23 @@ async def extract_urls_to_context(urls: Iterable[str]) -> str:
     url_list = list(urls)
     if not url_list:
         return ""
-    api_key = (os.environ.get("TAVILY_API_KEY") or "").strip()
+    # This path reaches Tavily without going through the `tavily_extract`
+    # tool, so the catalog switch has to be honoured here too — otherwise
+    # `services.tavily.enabled: false` silently keeps paying for extractions
+    # on every inbound message carrying a link.
+    from tesseract.kernel.tools.web_providers import (
+        service_disabled_reason,
+        service_key_env,
+    )
+
+    disabled = service_disabled_reason("tavily")
+    if disabled is not None:
+        log.debug("url-extract: %s; skipping", disabled)
+        return ""
+    key_env = service_key_env("tavily", "TAVILY_API_KEY")
+    api_key = (os.environ.get(key_env) or "").strip()
     if not api_key:
-        log.debug("url-extract: TAVILY_API_KEY not set; skipping")
+        log.debug("url-extract: %s not set; skipping", key_env)
         return ""
 
     payload = {"urls": url_list, "extract_depth": "basic"}

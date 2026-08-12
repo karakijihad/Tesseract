@@ -838,7 +838,7 @@ export interface CatalogTargetMeta {
   kind: ProviderModelKind | null;
   allowed_kinds: ProviderModelKind[];
   current_ref: string | null;
-  mode: "active" | "disabled";
+  mode: RoleMode;
   allow_toggle: boolean;
   load_bearing: boolean;
 }
@@ -884,7 +884,10 @@ export interface IdentityRoleStatus {
   mode: string;
 }
 
-export type RoleMode = "active" | "disabled";
+/** The two values `roles.yaml` accepts. `inactive` is the config's own
+ *  spelling — the loader keeps such a role as an unresolved stub, and every
+ *  runtime consumer gates on it. Any other string is refused on write. */
+export type RoleMode = "active" | "inactive";
 
 export interface RoleModelsUpdateInput {
   role: string;
@@ -1126,6 +1129,69 @@ export interface Agent {
 
 export interface AgentDetail extends Agent {
   sections: Record<string, string>;
+}
+
+// API keys (P5). Read from `.env.example`, written to <TESSERACT_HOME>/.env.
+// No value is ever carried in either direction except the token the backend
+// generates, which comes back once in the response that creates it.
+
+export interface EnvKey {
+  name: string;
+  description: string;
+  signup_url: string | null;
+  // Set in the file / loaded in the running process. They disagree for
+  // exactly as long as it takes to restart, which is what `pending_restart`
+  // reports — `.env` is read once at boot, unlike the rest of config/.
+  in_file: boolean;
+  active: boolean;
+  pending_restart: boolean;
+}
+
+export interface EnvKeySection {
+  title: string;
+  advanced: boolean;
+  keys: EnvKey[];
+}
+
+export interface McpClientKey {
+  name: string;
+  token_env: string;
+  trust_tier: string;
+  in_file: boolean;
+  active: boolean;
+}
+
+export interface McpVerb {
+  verb: string;
+  posture: string;
+}
+
+export interface McpSurface {
+  clients: McpClientKey[];
+  verbs: McpVerb[];
+  endpoint: string | null;
+  error: string | null;
+}
+
+export interface EnvKeysResponse {
+  env_path: string;
+  sections: EnvKeySection[];
+  pending_restart: boolean;
+  mcp: McpSurface;
+}
+
+export interface EnvKeysWriteResponse {
+  written: string[];
+  report: EnvKeysResponse;
+}
+
+export interface EnvKeyTokenResponse {
+  name: string;
+  // The only secret this API returns, and only in the response that mints
+  // it: a bearer token the operator cannot read cannot be pasted into the
+  // client it exists for.
+  token: string;
+  report: EnvKeysResponse;
 }
 
 export interface AgentsListResponse {

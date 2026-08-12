@@ -11,7 +11,7 @@ anyio memory streams the session's own receive loop drains.
 
 Reconnect (Phase 2 deferred): a dropped session is detected by a periodic
 ``send_ping`` and re-established with exponential backoff, bounded by a circuit
-breaker (``MAX_CONSECUTIVE_FAILURES`` per CLAUDE.md). Tools stay registered
+breaker (the project-wide ``MAX_CONSECUTIVE_FAILURES``). Tools stay registered
 across a reconnect — the tool's ``session_provider`` reads the live
 ``holder.session``, which the supervise loop refreshes.
 
@@ -41,7 +41,7 @@ from tesseract.mcp_client.transport import open_transport
 log = logging.getLogger(__name__)
 
 _SHUTDOWN_GRACE_S = 5
-# Circuit breaker on the reconnect loop (CLAUDE.md: retry loops trip at 3).
+# Circuit breaker on the reconnect loop — every retry loop trips at 3.
 _MAX_CONSECUTIVE_FAILURES = 3
 _RECONNECT_BASE_S = 1.0
 
@@ -241,7 +241,7 @@ class MCPClientManager:
         new_enabled = {s.name: s for s in new_config.enabled_servers()}
 
         # Tear down removed/disabled/changed servers concurrently (independent
-        # per-server work — CLAUDE.md parallel-by-default), then reconcile the
+        # per-server work, so it runs in parallel), then reconcile the
         # holder list after the gather resolves (no await-during-mutation).
         to_remove = [
             h for h in list(self._holders)

@@ -1,6 +1,5 @@
 """Typed transcript event models.
 
-Contract: `Docs/Plan/terminal-controller/_shared/transcript-events.md`.
 Required fields on every event: `event_id`, `session_id`, `ts`, `kind`,
 `origin`. Kind-specific payload follows.
 

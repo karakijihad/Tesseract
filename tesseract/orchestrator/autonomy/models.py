@@ -1,4 +1,4 @@
-"""AgendaItem Pydantic v2 model — schema locked in ``Docs/Plan/autonomy/_shared/agenda-item-schema.md``."""
+"""AgendaItem Pydantic v2 model — the schema is locked; extend deliberately."""
 
 from __future__ import annotations
 

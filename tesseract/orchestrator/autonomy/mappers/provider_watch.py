@@ -1,6 +1,6 @@
 """Provider watch hits → AgendaItemDraft.
 
-AU-5 cross-ref (per ``Docs/Plan/autonomy/phase-AU-5`` §1): once AU-14
+AU-5 cross-ref: once AU-14
 ships the probe substrate and writes
 ``<TESSERACT_HOME>/logs/provider-health/*.jsonl``, the provider-watch
 publisher reads the rolling window and emits one

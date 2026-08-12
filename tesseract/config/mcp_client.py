@@ -3,12 +3,12 @@
 The curated allowlist of external MCP servers the assistant may connect OUT to. This is
 the inverse of ``config/mcp.py`` (which configures the inbound MCP *server*).
 
-Config-as-authority (CLAUDE.md hard rule): every key is required — the loader
+Config-as-authority: every key is required — the loader
 raises ``RuntimeError``/``KeyError`` on a missing or malformed value rather than
 substituting a hardcoded infrastructure default (timeouts included). Mirrors the
 raise-loudly convention of ``config/mcp.py``.
 
-Security invariants (see ``Docs/Plan/capability-growth/_shared/security-contract.md``):
+Security invariants:
   1. Curation, not discovery — only servers listed here are ever contacted.
   2. ``tool_prefix`` required and UNIQUE across servers (namespacing stops an
      external tool shadowing a core tool name).

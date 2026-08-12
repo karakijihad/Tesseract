@@ -193,7 +193,6 @@ class FallbackAdapter(ModelAdapter):
         (and vice-versa). The inner primary/fallback adapters are stateless
         wrappers around HTTP/subprocess and are safe to share — only the
         per-instance breaker state needs to be fresh. Audit reference:
-        Docs/Plan/workspace-parallel/audit.md §C.
         """
         return FallbackAdapter(
             chain=list(self._chain),

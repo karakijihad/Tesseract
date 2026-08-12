@@ -650,7 +650,7 @@ class BriefRenderer:
         Empty list when the log is absent, unparseable, or has no rows
         within ``since_hours``. ``status`` is ``"new"`` today; the
         librarian's log only records ingests, not updates — see the
-        plan in ``Docs/Plan/vault-autoingest/`` for the update-detection
+        plan for the update-detection
         roadmap.
         """
         if self._vault_wiki_dir is None:

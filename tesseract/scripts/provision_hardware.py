@@ -307,7 +307,14 @@ def gpu_packages_ready(extras: list[str] | None = None) -> bool:
     it is what fails, with error 126, when the CUDA majors disagree or when
     the CPU `onnxruntime` distribution has overwritten the GPU one.
     """
-    wanted = list(extras) if extras else list(_EXTRA_WHEEL_PACKAGES)
+    # `None` and `[]` are different questions. `None` is "unscoped — ask about
+    # everything"; `[]` is "this machine wants no GPU extras", which is
+    # satisfied by definition. Treating both as falsy sent a CPU machine
+    # through the full DLL probe and answered False, the exact
+    # reinstall-every-launch failure the scoping above exists to prevent. Both
+    # callers happen to guard against `[]` themselves, so it stayed invisible
+    # on any machine whose probe returned True anyway.
+    wanted = list(_EXTRA_WHEEL_PACKAGES) if extras is None else list(extras)
     packages: tuple[str, ...] = tuple(
         dict.fromkeys(
             pkg for extra in wanted for pkg in _EXTRA_WHEEL_PACKAGES.get(extra, ())
@@ -366,6 +373,22 @@ def wanted_extras(profile: Profile, cfg: HardwareConfig) -> list[str]:
     unchanged: this is an optimisation, and failing to read config is not a
     reason to leave a capable machine on the CPU path.
     """
+    # FIRST, before the config read, and the order is the fix. An explicit
+    # decline outranks every consumer switch — and it also has to outrank the
+    # config read FAILING, because that path returns the profile's extras
+    # unchanged. Checked after it, a "no" was silently ignored on exactly the
+    # machines whose config could not be read.
+    #
+    # Without this check at all, the first-run form's "GPU acceleration" row
+    # was decoration: the operator unticked it and ~2.2 GB of CUDA wheels
+    # installed anyway, because this function read only
+    # `local.<provider>.enabled` and the two consumers are the speech engines
+    # they answered separately. Consent cannot be expressed as a provider
+    # switch here, so it has to be read as consent.
+    if _acceleration_declined():
+        logger.info("%s: GPU acceleration was declined - installing no extras", _LABEL)
+        return []
+
     try:
         from tesseract.config.loader import load_config
 
@@ -388,6 +411,31 @@ def wanted_extras(profile: Profile, cfg: HardwareConfig) -> list[str]:
                 _LABEL, extra, "/".join(consumers),
             )
     return keep
+
+
+def _acceleration_declined() -> bool:
+    """Whether the operator said no to GPU acceleration.
+
+    Reads the consent ledger, which is the only place the answer exists —
+    there is no `local.<provider>` switch for acceleration, because the
+    providers it accelerates are the ones the operator chooses separately.
+
+    False on any failure, deliberately: an unreadable ledger must not silently
+    turn acceleration off on a machine that paid for a graphics card. The
+    failure direction that matters here is "keep the capability", because the
+    opposite is the 75-second spoken turn this whole plan started from.
+    """
+    try:
+        from tesseract.capability.consent import read_ledger
+        from tesseract.capability.state import AUTHORITATIVE_ORIGINS, Consent
+
+        answer = read_ledger().answers.get("gpu-acceleration")
+    except Exception as exc:  # noqa: BLE001
+        logger.info("%s: could not read the consent ledger (%s)", _LABEL, exc)
+        return False
+    if answer is None or answer.origin not in AUTHORITATIVE_ORIGINS:
+        return False
+    return answer.consent is Consent.DECLINED
 
 
 def ensure_packages(

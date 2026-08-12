@@ -50,6 +50,10 @@ EXCLUDE_PATHS = (
     # this is the belt to that braces, because a single accidental `git add -f`
     # would ship the operator's directory layout.
     "tesseract/projects",
+    # Writes the capability matrix into the docs tree, which production does
+    # not have. Its only consumers are CI and a dev test, so shipping it puts
+    # a script in a user's tree whose single action is to fail.
+    "tesseract/scripts/generate_capability_matrix.py",
     "CLAUDE.md",
     "AGENTS.md",
     ".github",

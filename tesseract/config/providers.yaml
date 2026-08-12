@@ -16,8 +16,19 @@
 # own machine (Ollama, Whisper, Piper), and `cli` rides your existing Claude
 # Code / Codex CLI subscription login instead of a per-token key.
 #
-# Hard rule (CLAUDE.md): edit infrastructure values here, never in code.
+# Hard rule: edit infrastructure values here, never in code.
 # Missing keys raise loudly. No `get(..., "default")` patterns in adapter code.
+#
+# Required on every chat model entry: `temperature`, `max_output_tokens`,
+# `context_window`. Every consumer that builds `AdapterOptions` requires
+# them by name rather than substituting a literal — a scheduler job once ran
+# at temperature 0.7 against an entry that said 1.0, and the model rejected
+# the request outright.
+#
+# Optional per-model quirks, absent meaning off: `use_responses_api`,
+# `reasoning_effort`, and `stream`. Set `stream: false` for an endpoint that
+# serves a model reliably only in one shot; absence means stream, which is
+# what nearly every entry wants.
 
 # ─── Circuit-breaker threshold ──────────────────────────────
 # Consulted by `tesseract/context/circuit_breaker.py::_default_max_failures`.
@@ -73,6 +84,39 @@ cost_tracking:
   warning_at_pct: 0.75    # one-shot warning toast at spent >= pct*cap, per scope
   log_file: "logs/cost-tracking.jsonl"
 
+# ─── Services ───────────────────────────────────────────────
+# Key-gated outside services that are NOT model providers: no `models`, no
+# role points at one, and nothing here is resolved as `<tier>.<provider>`.
+# They are listed here because this file is where an outside dependency and
+# the `.env` key it needs are declared — the settings view and the first-run
+# form both read this rather than each keeping their own copy.
+#
+# Not here: channels. A channel is ours (`channels.yaml` — telegram,
+# whatsapp), and its token is named in its own block there, so the thing and
+# its key stay in one place.
+#
+# Same switch shape as the tiers above: `services.enabled` gates ALL of
+# them, a per-service `enabled` gates one. Honoured at call time by the
+# tools themselves, which name the flag that is false rather than only
+# refusing — having the key and not wanting the capability is a real
+# position, and the switch is how you say it. Read per call, so the config
+# watcher's reload takes effect on the next turn without a restart.
+#
+# `api_key_env` and `unlocks` are bound to the runtime by
+# `tests/first_install_debugging/test_services_registry.py`: the key name
+# must equal the provider class's own constant, and every name in `unlocks`
+# must be a registered tool. A declaration nothing checks is a comment.
+services:
+  enabled: true
+  brave:
+    enabled: true
+    api_key_env: BRAVE_SEARCH_API_KEY
+    unlocks: "web_search"
+  tavily:
+    enabled: true
+    api_key_env: TAVILY_API_KEY
+    unlocks: "tavily_search, tavily_extract"
+
 # ─── API tier ───────────────────────────────────────────────
 # Pay-per-token providers. Each needs the `.env` key named by its
 # `api_key_env` before it can serve a role — an entry with no key configured
@@ -103,7 +147,6 @@ api:
         use_responses_api: true   # GPT-5 family — Responses API path (prompt cache + reasoning reuse)
         cost_per_mtok_in: 0.75
         cost_per_mtok_out: 4.50
-        # Native modalities — see Docs/Plan/multimodal/ for routing rules.
         # audio_input/output flagged false: Realtime API path is not wired
         # in the OpenAI adapter; we route audio through whisper STT + TTS roles.
         capabilities:
@@ -293,7 +336,6 @@ api:
         capabilities:
           text_to_image: true
           image_to_image: true
-
   # NVIDIA build tier — OpenAI-compatible, free with no payment method.
   # Every background role defaults here so unattended work stays off the
   # paid chat key.
@@ -474,7 +516,13 @@ local:
         candidate_cap: 30
         download:
           max_download_mb: 50
-          base_url: https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2/resolve/main
+          # Pinned to a commit, like every other download in this catalog. It
+          # was `resolve/main` — the one entry on a moving branch — which meant
+          # an upstream re-upload changed what this URL served while the
+          # digests below stayed put: the fetch would then fail its checksum
+          # and the reranker would silently stay off, with retrieval quietly
+          # dropping to pure RRF order and nothing able to repair it.
+          base_url: https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2/resolve/a09144355adeed5f58c8ed011d209bf8ee5a1fec
           # Keyed by on-disk name. The model is published under a different
           # path than it is loaded from, so it carries an explicit `source`.
           files:
@@ -493,6 +541,13 @@ local:
       # `model` carries the actual faster-whisper checkpoint name, and must be
       # one of the keys under `downloads:` below — anything else falls back to
       # faster-whisper's own unpinned HuggingFace download at first use.
+      #
+      # NOT purely a hand-edited value any more: on FIRST RUN
+      # `scripts/provision_hardware.py` resolves `hardware.yaml` against this
+      # machine and writes the size it should have here, before the fetch
+      # stage reads it. That happens exactly once and is then recorded, so
+      # any edit made afterwards — here or in Settings — stands. An edit made
+      # before the first launch does not.
       #
       # `large-v3-turbo` is the fresh-install default. Speech is the primary
       # input, and the wake gate matches `<prefix> <name>` against the

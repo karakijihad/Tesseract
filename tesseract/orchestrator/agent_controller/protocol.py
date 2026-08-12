@@ -9,11 +9,11 @@ messages surface as :class:`ErrorPush`.
 Wire format note (2026-05-27): the controller daemon and every shipped client
 (``ipc_client.ControllerClient``, the dispatcher, the mission worker) moved
 from the newline-delimited JSON of the 2026-05-24 TC-4 prototype to the
-length-prefixed framing primitive — see ``Docs/Doclog/2026-05-27.md §Controller
+length-prefixed framing primitive — see the ``Controller
 IPC migrated to length-prefixed framing``. Frames carry a 4-byte LE uint32
 length prefix (``<I``) so messages exceeding the asyncio StreamReader
 line-buffer limit (64 KiB) round-trip cleanly. The X-1 mission-worker
-migration (``Docs/Plan/cockpit/phase-X-1-stale-ipc-fix.md``) closed
+migration closed
 the last raw ``readline`` caller.
 """
 

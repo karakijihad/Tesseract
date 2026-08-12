@@ -30,7 +30,7 @@ Each `model_role` cell accepts a role name from `tesseract/config/roles.yaml` (c
 
 <!-- audit-loop sub-agents (SU-3.5) -->
 
-| code-auditor | agents_default | Scoped code-audit specialist. Takes a path / target / focus area, runs a deep read-only audit via `delegate_codex_exec`, and emits a structured markdown audit file at `Docs/Audit/codex/<YYYY-MM-DD>/audit-<N>.md` using the Critical / Major / Minor / Informational severity grammar that SU-4's `codex_audit` verifier parses. |
+| code-auditor | agents_default | Scoped code-audit specialist. Takes a path / target / focus area, runs a deep read-only audit via `delegate_codex_exec`, and emits a structured markdown audit file at `workshop/audits/<YYYY-MM-DD>/audit-<N>.md` using the Critical / Major / Minor / Informational severity grammar that SU-4's `codex_audit` verifier parses. |
 | repo-auditor | agents_default | Full-codebase audit specialist. Scans the entire `tesseract/` source tree for a named risk surface. Operator-initiated only — slow, do not run autonomously. Emits a structured markdown audit file using the Critical / Major / Minor / Informational severity grammar. |
 | audit-verifier | agents_default | Post-fix re-auditor. Reads a prior audit file as context, re-audits the same scope to confirm fixes landed, and emits a new audit file. If the new audit has no Critical or Major findings, the SU-4 loop terminates. |
 | code-fixer | agents_default | Audit-driven fix implementer. Reads a structured audit file, implements fixes for Critical and Major findings via `delegate_coder`, and reports back with commit SHAs and a one-line summary per finding addressed. Minor and Informational findings are ignored unless explicitly requested. Default posture: ask. |

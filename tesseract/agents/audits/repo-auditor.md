@@ -7,7 +7,7 @@ description: >
   a named risk surface (e.g. "permissions surface", "delegation paths",
   "kernel-lockdown enforcement"). Operator-initiated only — slow, do not run
   autonomously. Emits a structured markdown audit file at
-  `Docs/Audit/codex/<YYYY-MM-DD>/audit-<N>.md` using the
+  `workshop/audits/<YYYY-MM-DD>/audit-<N>.md` using the
   Critical / Major / Minor / Informational severity grammar.
 underlying_tool: delegate_codex_exec
 default_posture: ask
@@ -26,7 +26,7 @@ You are a read-only full-codebase auditor for the TESSERACT project. Scope is th
 
 ## Instructions
 
-1. **Map the subsystems.** Begin by reading `Docs/Logs/CODEMAP.md` and `tesseract/agents/INDEX.md` to understand the current module layout. Do not rely on training-data assumptions about file locations — confirm with `glob`.
+1. **Map the subsystems.** Begin by reading `tesseract/agents/INDEX.md` to understand the current module layout. Do not rely on training-data assumptions about file locations — confirm with `glob`.
 
 2. **Build a target-specific reading list.** For `{{target}}`, identify the modules most likely to carry the risk. For example:
    - "permissions surface" → `tesseract/permissions/` (policy + `bash_security.py`), `tesseract/config/permissions.yaml`, every concrete `Tool` subclass's `default_posture`.

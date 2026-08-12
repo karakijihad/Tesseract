@@ -11,9 +11,16 @@ from __future__ import annotations
 
 from typing import Any
 
+# `config.role_modes` only, never `config.loader` — this module is reached by
+# first-run provisioning, which imports nothing else from the package.
+from tesseract.config.role_modes import ROLE_MODE_ACTIVE, ROLE_MODE_INACTIVE
+
 
 def apply_tts_primary(doc: Any, ref: str) -> None:
     """Promote `ref` to ``voice.tts.primary``, demoting the old primary.
+
+    A lane that was `mode: inactive` is switched back on — see the comment
+    below.
 
     The displaced primary goes to the head of `fallbacks` so the lane the
     operator was just using stays the first thing that speaks when the new
@@ -26,8 +33,17 @@ def apply_tts_primary(doc: Any, ref: str) -> None:
     lane = voice.get("tts")
     if lane is None:
         raise KeyError("voice.tts")
+    # Picking a voice IS the request to use it, so a lane that was switched
+    # off comes back on. Without this the lane is a one-way door: the loader
+    # drops an inactive lane, the catalog then reports it as absent rather
+    # than off, and the operator's pick returns success while nothing speaks.
+    # Set before the already-primary early return, or re-picking the voice the
+    # lane already names leaves it off.
+    reactivated = lane.get("mode") == ROLE_MODE_INACTIVE
+    if reactivated:
+        lane["mode"] = ROLE_MODE_ACTIVE
     current = lane.get("primary")
-    if current == ref:
+    if current == ref and not reactivated:
         return
     fallbacks = [f for f in (lane.get("fallbacks") or []) if f != ref]
     if current:

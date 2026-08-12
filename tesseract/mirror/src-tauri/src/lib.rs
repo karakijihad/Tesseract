@@ -13,7 +13,6 @@ mod setup;
 mod shell_log;
 #[cfg(test)]
 mod test_support;
-mod token;
 mod update;
 use provision::{
     app_dir, hide_console, home_dir, is_provisioned, refresh_optional_assets, runtime_dir,
@@ -170,6 +169,21 @@ fn attach_supervisor_console(home: &Path, cmd: &mut Command) {
     }
 }
 
+/// `python -m tesseract.supervisor` exit code meaning "another supervisor
+/// already holds the pid file". Kept in sync by hand with
+/// `supervisor/__main__.py`'s refusal path — same pattern as
+/// `provision::DEPS_VERSION`, since the shell has no way to import it.
+const EXIT_ALREADY_RUNNING: i32 = 3;
+
+/// Poll interval and budget for deciding the supervisor actually started.
+///
+/// Polled rather than slept flat: a healthy launch — every launch that is not
+/// a double-start — pays one interval and moves on, instead of the whole
+/// window. The budget still has to cover the refusal path (a pid-file claim
+/// and a log line), which exits almost immediately.
+const SUPERVISOR_PROBE_INTERVAL_MS: u64 = 50;
+const SUPERVISOR_PROBE_ATTEMPTS: u32 = 8;
+
 fn spawn_supervisor(home: &PathBuf) -> std::io::Result<Child> {
     clear_stale_stop_request(home);
     clear_stale_crash_storm(home);
@@ -190,11 +204,65 @@ fn spawn_supervisor(home: &PathBuf) -> std::io::Result<Child> {
     attach_supervisor_console(home, &mut cmd);
     hide_console(&mut cmd);
     let result = cmd.spawn();
-    match &result {
-        Ok(child) => shell_log::log(&format!("supervisor spawned (pid {})", child.id())),
-        Err(e) => shell_log::log_error(&format!("failed to spawn supervisor: {e}")),
+    match result {
+        Ok(mut child) => {
+            shell_log::log(&format!("supervisor spawned (pid {})", child.id()));
+            // A successful spawn is not a successful start, and until now
+            // nothing here distinguished them: the splash closes immediately
+            // after this returns, so a supervisor that exits at once left a
+            // cockpit with no backend and no error anywhere the operator
+            // could see it. That was survivable while the only such exit was
+            // the losing side of a rare pid race; once that claim became
+            // atomic it is the GUARANTEED outcome of every double-launch, so
+            // the two changes have to travel together.
+            //
+            // EXIT_ALREADY_RUNNING (3) is the one code with a specific
+            // meaning; anything else non-zero is reported as an early death.
+            let mut exited = None;
+            for _ in 0..SUPERVISOR_PROBE_ATTEMPTS {
+                std::thread::sleep(std::time::Duration::from_millis(
+                    SUPERVISOR_PROBE_INTERVAL_MS,
+                ));
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        exited = Some(status);
+                        break;
+                    }
+                    // Still running: the normal path, and the common one.
+                    // Stop paying for the rest of the window.
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+            match exited {
+                Some(status) => {
+                    let code = status.code().unwrap_or(-1);
+                    if code == EXIT_ALREADY_RUNNING {
+                        shell_log::log_error(
+                            "supervisor refused to start: another supervisor is \
+                             already running. Close the other TESSERACT window, \
+                             or stop it before launching again.",
+                        );
+                    } else {
+                        shell_log::log_error(&format!(
+                            "supervisor exited immediately with code {code} — the \
+                             backend is not running; see runtime/logs/supervisor.log"
+                        ));
+                    }
+                    Err(std::io::Error::other(format!(
+                        "supervisor exited immediately (code {code})"
+                    )))
+                }
+                // Still running, or we could not tell — either way carry on
+                // rather than block the launch.
+                None => Ok(child),
+            }
+        }
+        Err(e) => {
+            shell_log::log_error(&format!("failed to spawn supervisor: {e}"));
+            Err(e)
+        }
     }
-    result
 }
 
 fn request_supervisor_stop(home: &Path, child: &mut Child) {
@@ -264,9 +332,9 @@ fn kill_process_tree(child: &mut Child) {
 
 /// Shared "provisioning just succeeded" tail: retries the voice-model fetch,
 /// starts the supervisor, and only then closes the splash and reveals the
-/// cockpit. Called for an already-provisioned launch, a first-run success,
-/// and a token-retry success (`token::submit_github_token`), so the three
-/// converge on identical behavior instead of duplicating it.
+/// cockpit. Called for both an already-provisioned launch and a first-run
+/// success, so the two converge on identical behavior instead of duplicating
+/// it.
 ///
 /// The window is revealed *after* the spawn succeeds, never before. Showing
 /// it first meant a failed spawn (missing interpreter, quarantined venv,
@@ -324,9 +392,11 @@ fn report_fatal(handle: &tauri::AppHandle, msg: &str) {
     let url = format!("splash.html?fatal={}", query_escape(msg));
     let _ = WebviewWindowBuilder::new(handle, "splash", WebviewUrl::App(url.into()))
         .title("TESSERACT — startup failed")
-        .inner_size(420.0, 280.0)
+        .inner_size(460.0, 340.0)
+        .min_inner_size(400.0, 260.0)
         .center()
-        .resizable(false)
+        .decorations(false)
+        .resizable(true)
         .build();
 }
 
@@ -369,6 +439,43 @@ fn focus_existing_window(app: &tauri::AppHandle) {
     }
 }
 
+/// The splash's close control.
+///
+/// It cannot simply close its own window: `main` is declared with
+/// `visible: false`, so on an already-provisioned launch it exists (hidden)
+/// from startup, and closing only the splash would leave that hidden window
+/// holding the process open with nothing on screen — worst of all on the
+/// failure path, which is exactly when the splash is being used as the error
+/// surface. Exiting through the app handle also runs the normal exit cleanup
+/// rather than dropping a provisioning run on the floor.
+/// Commands registered here are NOT covered by the capability system — that
+/// gates `core:*` and plugin permissions, not the app's own handlers — so this
+/// checks its caller rather than relying on `capabilities/splash.json` to
+/// scope it. Without that, the cockpit webview (which renders model-influenced
+/// HTML) could terminate the app, which is the opposite of what removing
+/// `allow-close` from its capability was for.
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle, window: tauri::Window) {
+    if window.label() != "splash" {
+        shell_log::log_error(&format!(
+            "quit_app refused: only the splash may call it, not '{}'",
+            window.label()
+        ));
+        return;
+    }
+    shell_log::log("splash close: quitting");
+    // Before the exit, not after: `RunEvent::Exit` stops the SUPERVISOR, and
+    // during a first run the supervisor does not exist yet — what is running
+    // is the provisioning thread's `uv`/`python` tree, which Windows does not
+    // reap when this process goes away. Left alone, a `uv` kept writing into
+    // the staging clone that the next launch would then decide whether to
+    // adopt.
+    if provision::stop_active() {
+        shell_log::log("splash close: stopped the provisioning download");
+    }
+    app.exit(0);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // As early as possible — before the log path is even known — so a panic
@@ -395,8 +502,8 @@ pub fn run() {
             update::app_info,
             exe_update::exe_update_check,
             exe_update::exe_update_apply,
-            token::submit_github_token,
-            setup::submit_first_run_setup
+            setup::submit_first_run_setup,
+            quit_app
         ])
         .setup(|app| {
             let home = tesseract_home(app.handle());
@@ -427,13 +534,24 @@ pub fn run() {
             // (`setup::submit_first_run_setup`), because the answers decide
             // what gets downloaded. Declining speech is only meaningful if it
             // happens before the model would have been fetched.
+            // Undecorated, so drag/minimise/close come from the page's own
+            // header strip. Opens at the tallest state (the setup form) so it
+            // fits without a scrollbar, and resizable rather than fixed.
+            //
+            // The minimum height must stay BELOW the shortest state the page
+            // resizes itself to (`HEIGHTS` in splash.html): Windows enforces a
+            // window's minimum through WM_GETMINMAXINFO on every resize,
+            // including a programmatic one, so a floor above those values
+            // silently clamps them and the short states keep the tall window.
+            // `set_size` still resolves, so nothing reports the failure.
             let splash =
                 WebviewWindowBuilder::new(app, "splash", WebviewUrl::App("splash.html".into()))
                     .title("Setting up TESSERACT")
-                    .inner_size(460.0, 620.0)
+                    .inner_size(460.0, 840.0)
+                    .min_inner_size(400.0, 280.0)
                     .center()
                     .decorations(false)
-                    .resizable(false)
+                    .resizable(true)
                     .build();
             if splash.is_err() {
                 // No window means no form and therefore no submit to wait for.
@@ -452,6 +570,11 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         if let RunEvent::Exit = event {
+            // Covers every exit route, not just the splash's close control:
+            // a first run that is killed from the taskbar or by a signal has
+            // the same abandoned-download problem, and this is the one handler
+            // all of them pass through.
+            provision::stop_active();
             let home = app_handle.state::<TesseractHome>().0.clone();
             let child = lock_or_recover(&app_handle.state::<SupervisorProc>().0).take();
             if let Some(mut child) = child {

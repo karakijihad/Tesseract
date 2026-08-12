@@ -14,7 +14,7 @@ recognizes. Layout::
     uploads/channels/<channel>/<chat_id>/<YYYY-MM-DD>/<message_id>/<filename>
     uploads/channels/_index/<channel>/<chat_id>.json
 
-The JSON index is newest-first per CLAUDE.md so the most recent media
+The JSON index is newest-first so the most recent media
 is one read away. ``save_channel_attachment`` is concurrency-safe via
 per-(channel, chat_id) ``asyncio.Lock``.
 
@@ -78,8 +78,8 @@ def _index_lock(channel: str, chat_id: str) -> asyncio.Lock:
 
 def _uploads_root() -> Path:
     """Resolve at call time so tests overriding ``TESSERACT_HOME`` via
-    ``monkeypatch.setenv`` land their writes under ``tmp_path``. CLAUDE.md
-    hard rule: zero test pollution under production state paths."""
+    ``monkeypatch.setenv`` land their writes under ``tmp_path``: zero
+    test pollution under production state paths."""
     home_env = os.environ.get("TESSERACT_HOME")
     base = Path(home_env) if home_env else TESSERACT_HOME
     return base / "uploads" / "channels"
@@ -239,7 +239,7 @@ async def save_channel_attachment(
                 entries = []
         else:
             entries = []
-        # Newest-first per CLAUDE.md so the most recent media is index[0].
+        # Newest-first, so the most recent media is index[0].
         entries.insert(0, rec.to_metadata_json())
         index_path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
 

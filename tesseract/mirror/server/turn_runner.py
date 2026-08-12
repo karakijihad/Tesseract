@@ -476,7 +476,7 @@ async def run_turns_concurrently(
 
     Returns the per-item results in order; a turn that raises lands as its
     Exception in that slot (``return_exceptions=True``) so one chat failing
-    never aborts the others (CLAUDE.md: parallel by default, failure isolation).
+    never aborts the others — parallel by default, with failure isolation.
     The per-provider semaphore in ``_run_chat_turn`` still bounds how many of
     these actually stream against one provider at a time.
     """

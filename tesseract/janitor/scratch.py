@@ -1,4 +1,4 @@
-"""Scratch-dir sweep — the CLAUDE.md pytest hard rule, automated.
+"""Scratch-dir sweep — the pytest scratch-dir rule, automated.
 
 Deletes matching dirs in the repo root and under `tesseract/`. Roots
 resolve at call time (repo root from `tesseract.paths.TESSERACT_DIR`)

@@ -25,7 +25,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
-from tesseract.kernel.tools._path_anchor import anchor_read_path
+from tesseract.kernel.tools._path_anchor import ReadPathRefused, anchor_read_path
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
 
 # Two formatters ship, and the second one is the supervisor's:
@@ -151,7 +151,10 @@ class LogTriageTool(Tool):
             else LogTriageInput(**tool_input.model_dump())
         )
 
-        path = anchor_read_path(inp.path, context.workspace_root)
+        try:
+            path = anchor_read_path(inp.path, context.workspace_root)
+        except ReadPathRefused as exc:
+            return ToolResult(output=str(exc), is_error=True)
         if not path.exists():
             return ToolResult(output=f"Log not found: {path}", is_error=True)
         if path.is_dir():

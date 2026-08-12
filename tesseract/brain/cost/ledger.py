@@ -346,7 +346,7 @@ class CostLedger:
 
         Production never lands here (``tesseract/config/models.yaml`` was
         deleted in the providers/roles split). Cost-ledger fixtures under
-        ``tesseract/tests/fix_pass_*`` keep using compact inline dicts
+        the older suites keep using compact inline dicts
         for readability; rather than rewrite each one to emit a
         providers.yaml + roles.yaml pair, we keep a small parser scoped
         to that shape.

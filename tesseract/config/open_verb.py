@@ -1,6 +1,6 @@
 """`open` verb config (``open_verb.yaml``).
 
-Config-as-authority (CLAUDE.md hard rule): every key is required — the loader
+Config-as-authority: every key is required — the loader
 raises on a missing or malformed value rather than substituting a hardcoded
 infrastructure default. Mirrors ``config/mcp.py`` and ``config/cockpit.py``.
 

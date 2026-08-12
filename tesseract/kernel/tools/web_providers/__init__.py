@@ -14,6 +14,18 @@ that consume these providers are thin shells — see `web_search.py`,
 
 from __future__ import annotations
 
-from tesseract.kernel.tools.web_providers.base import FetchOutcome, WebSearchProvider, fetch_json
+from tesseract.kernel.tools.web_providers.base import (
+    FetchOutcome,
+    WebSearchProvider,
+    fetch_json,
+    service_disabled_reason,
+    service_key_env,
+)
 
-__all__ = ["FetchOutcome", "WebSearchProvider", "fetch_json"]
+__all__ = [
+    "FetchOutcome",
+    "WebSearchProvider",
+    "fetch_json",
+    "service_disabled_reason",
+    "service_key_env",
+]

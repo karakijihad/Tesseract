@@ -6,7 +6,7 @@ not an API key — `providers.yaml`'s `auth_check` block (see
 This module owns the probe and the cache that `capabilities.py` (report) and
 the delegate call site (use-time invalidation) both read.
 
-See `Docs/Plan/cli-auth/DESIGN.md` for the full contract. Key rules:
+Key rules:
 
 - **PII (§6, non-negotiable).** `claude auth status` returns the operator's
   account email, org id, and org name in stdout. `_probe_one` evaluates
@@ -128,7 +128,7 @@ async def refresh(bundle: ConfigBundle | None = None) -> dict[str, CliAuthState]
 
     One provider's probe raising (should not happen — `_probe_one` never
     raises, but `asyncio.gather(return_exceptions=True)` is the belt-and-
-    suspenders backstop per CLAUDE.md's failure-isolation rule) never
+    suspenders backstop that keeps one failure isolated) never
     blocks the others.
     """
     if bundle is None:

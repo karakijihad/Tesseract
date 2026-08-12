@@ -15,7 +15,7 @@ Outcome vocabulary (Agent-Skills-agnostic):
 
 TESSERACT_HOME is resolved AT CALL TIME (never an import-time constant) so a
 test that sets ``TESSERACT_HOME`` before calling never writes to the
-production logs tree — the zero-tolerance rule in CLAUDE.md. All writes are
+production logs tree, which is a zero-tolerance rule. All writes are
 best-effort: telemetry must never break a `file_read`.
 """
 

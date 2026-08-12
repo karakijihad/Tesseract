@@ -27,7 +27,8 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
-from tesseract.kernel.tools._path_anchor import anchor_read_path
+from tesseract.kernel.tools._path_anchor import ReadPathRefused, anchor_read_path
+from tesseract.paths import secret_exclusion_globs
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
 
 # `<path>:<line>:<text>` for a match, `<path>-<line>-<text>` for a context
@@ -206,7 +207,10 @@ class GrepTool(Tool):
                 is_error=True,
             )
 
-        search_path = anchor_read_path(inp.path, context.workspace_root)
+        try:
+            search_path = anchor_read_path(inp.path, context.workspace_root)
+        except ReadPathRefused as exc:
+            return ToolResult(output=str(exc), is_error=True)
         if not search_path.exists():
             return ToolResult(output=f"Path not found: {search_path}", is_error=True)
 
@@ -218,6 +222,18 @@ class GrepTool(Tool):
             "--no-heading",
             "--glob", _translate_glob(inp.glob),
         ]
+        # ripgrep skips hidden and gitignored files by default, which already
+        # covers `.env` — but that is someone else's default, not this tool's
+        # decision, and it would stop holding the moment anyone adds `--hidden`
+        # or `--no-ignore` here. Stated explicitly so the guarantee survives
+        # that edit. Later globs win in rg, so these follow the caller's.
+        #
+        # `--iglob`, not `--glob`: rg matches globs case-sensitively, while
+        # `is_secret_filename` casefolds and NTFS preserves case. A file the
+        # operator created as `SECRETS.YAML` would otherwise be refused by
+        # every other read tool and searched by this one.
+        for secret in secret_exclusion_globs():
+            argv += ["--iglob", f"!{secret}"]
         if inp.context > 0:
             argv += ["--context", str(inp.context)]
         argv += ["--", inp.pattern, str(search_path)]

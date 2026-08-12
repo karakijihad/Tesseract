@@ -5,13 +5,13 @@
 #
 #   <tier>.<provider>.<model_id>     (e.g. api.openai.gpt54_mini)
 #
-# `primary` is required; `fallbacks` is an ordered list tried in order via
-# FallbackAdapter when the prior entry fails (network error, 5xx, rate limit).
-# Mid-turn failover is automatic. To swap a primary: edit `primary`. The Mirror
-# config watcher detects the change and calls `boot.rebuild_adapters` — no restart.
-#
-# A role may instead name a shared chain — `chain: <name>` in place of
-# `primary`/`fallbacks`, resolved against the `chains:` block below.
+# A role names its chain one of two ways, never both: `primary` (plus an
+# optional ordered `fallbacks` list), or `chain: <name>` resolved against the
+# `chains:` block below. Fallbacks are tried in order via FallbackAdapter when
+# the prior entry fails (network error, 5xx, rate limit), and mid-turn failover
+# is automatic. To swap a model: edit `primary`, or the chain if the role
+# follows one. The Mirror config watcher detects the change and calls
+# `boot.rebuild_adapters` — no restart.
 #
 # Fresh-install defaults split across two keys, both listed in `.env.example`:
 #
@@ -101,7 +101,7 @@ roles:
                                   # in a model with a smaller context window.
     summary_char_budget: 16000     # cap on the [Context from earlier...] block; oldest slice drops first when over
     tool_iteration_cap: 80    # hard cap on tool-call iterations per turn (runaway-loop guard)
-    consecutive_error_cap: 3  # adapter ERRORs in a row before the chat_brain circuit-breaker trips and surfaces a final ERROR (CLAUDE.md hard rule)
+    consecutive_error_cap: 3  # adapter ERRORs in a row before the chat_brain circuit-breaker trips and surfaces a final ERROR
     daily_budget_usd: 3.0     # role-level cap (in addition to global cap derived from sum of inner caps)
     notes: >-
       the assistant conversational layer. The primary is vision-capable, so image
@@ -290,11 +290,10 @@ voice:
       - api.google.gemini_flash_audio
     settings:
       local.whisper.local_whisper:
-        # Leaving this blank means auto-detect, and detection costs a fixed
-        # pass over the first 30 seconds on every call no matter how short
-        # the clip is — on a CPU-only machine that pass alone can be most of
-        # the transcription time. Pinned so speech-to-text stays responsive.
-        # Blank it to transcribe other languages, and pay the detect pass.
+        # Blank means auto-detect, which runs a fixed 30-second detection
+        # pass on every call however short the clip is — on CPU that pass
+        # can be most of the transcription time. Pinning the language skips
+        # it. Blank it to transcribe other languages and pay the pass back.
         language: en
         daily_budget_usd: 0.00
       api.google.gemini_flash_audio:
@@ -312,8 +311,9 @@ voice:
     # The primary ref names the voice — any `kind: tts` entry in the
     # catalog is selectable here. The two shipped by default are both
     # local: Kokoro leads on naturalness, Piper sits behind it as the
-    # lighter lane (several times faster than realtime on CPU, where
-    # Kokoro is close to 1x), so a slow machine still speaks. Both need
+    # lighter lane, so a slow machine still speaks. What decides that is
+    # time to the FIRST sentence rather than throughput: Piper reaches it
+    # fastest on CPU, Kokoro is quicker once a GPU is available. Both need
     # their model files fetched — see providers.yaml.
     primary: local.kokoro.af_heart
     fallbacks:

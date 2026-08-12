@@ -1,7 +1,7 @@
 """X-4 lane substrate — stream-resumable controller-owned coder/auditor lanes.
 
 `LaneManager` exposes the six-method `lane.*` contract documented in
-`Docs/Plan/cockpit/_shared/lane-contract.md`. The substrate composes
+the lane contract. The substrate composes
 existing primitives — `ClaudeStreamAdapter` / `CodexStreamAdapter` for
 headless transport. All lane state is file-canonical under
 `<TESSERACT_HOME>/controller/lanes/<id>/`; the brain holds no lane state.

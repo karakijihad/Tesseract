@@ -45,6 +45,10 @@ class ReapOutcome:
     reaped: tuple[int, ...] = ()
     swept: bool = True
     reason: str = ""
+    disabled: bool = False
+    """Told not to sweep, as opposed to unable to. A setting the operator
+    chose deliberately must not report itself as a degradation on every boot —
+    that is how a warning channel gets trained out of usefulness."""
 
 
 
@@ -99,6 +103,14 @@ def _enumerate_windows() -> tuple[list[tuple[int, str]], str]:
         return [], f"powershell process enumeration exceeded {_PS_TIMEOUT_S:.0f}s"
     except FileNotFoundError:
         return [], "powershell not found on PATH"
+    # A non-zero exit is the third way this fails, and it was the one still
+    # reporting success: `check=False` raises nothing, stdout comes back empty,
+    # and an empty process list is indistinguishable from "no orphans found" —
+    # the exact conflation this outcome type was introduced to end.
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip().splitlines()
+        reason = f"powershell process enumeration exited {result.returncode}"
+        return [], (f"{reason}: {detail[0][:200]}" if detail else reason)
     procs: list[tuple[int, str]] = []
     for line in result.stdout.splitlines():
         pid_str, sep, cmdline = line.partition("\t")
@@ -124,6 +136,11 @@ def _enumerate_posix() -> tuple[list[tuple[int, str]], str]:
         return [], f"ps process enumeration exceeded {_PS_TIMEOUT_S:.0f}s"
     except FileNotFoundError:
         return [], "ps not found on PATH"
+    # Same third failure mode as the Windows branch above.
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip().splitlines()
+        reason = f"ps process enumeration exited {result.returncode}"
+        return [], (f"{reason}: {detail[0][:200]}" if detail else reason)
     procs: list[tuple[int, str]] = []
     for line in result.stdout.splitlines():
         line = line.strip()
@@ -169,7 +186,11 @@ def reap_orphans() -> ReapOutcome:
     ``SUPERVISOR_DISABLE_REAP=1`` disables it entirely.
     """
     if os.environ.get("SUPERVISOR_DISABLE_REAP") == "1":
-        return ReapOutcome(swept=False, reason="disabled by SUPERVISOR_DISABLE_REAP")
+        return ReapOutcome(
+            swept=False,
+            reason="disabled by SUPERVISOR_DISABLE_REAP",
+            disabled=True,
+        )
     processes, failure = (
         _enumerate_windows() if sys.platform == "win32" else _enumerate_posix()
     )
