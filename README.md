@@ -1,6 +1,23 @@
-# TESSERACT
+<p align="center">
+  <img src="assets/icon.png" alt="" width="128" height="128">
+</p>
 
-TESSERACT is a personal assistant that runs on your own Windows machine. You name it, you talk to it, and it remembers — across days, not just within a conversation.
+<h1 align="center">TESSERACT</h1>
+
+<p align="center">
+  A personal assistant that runs on your own Windows machine.<br>
+  You name it, you talk to it, and it remembers — across days, not just within a conversation.
+</p>
+
+<p align="center">
+  <a href="../../releases/latest/download/TESSERACT-Installer.exe"><strong>Download</strong></a>
+  ·
+  <a href="CHANGELOG.md">Changelog</a>
+  ·
+  <a href="SETUP.md">Run from source</a>
+  ·
+  <a href="SECURITY.md">Security</a>
+</p>
 
 ## What it is
 
@@ -201,3 +218,7 @@ To report a vulnerability, open a private security advisory rather than a public
 Copyright © 2026 Jihad Karaki.
 
 TESSERACT is free software, licensed under the [GNU Affero General Public License v3.0](LICENSE). You may use, study, modify and share it. If you distribute a modified version — **including running one as a service others can reach over a network** — you must make your source available under the same license.
+
+Running it for yourself, however you like, obliges you to nothing. No registration, no telemetry, no notice to anyone.
+
+**If you do use it, I'd like to hear about it.** That is a request and not a condition — the license asks nothing of you and neither do I. But this was built for one person's machine and I have no way of knowing whether it is useful on anyone else's, so a note saying what you're using it for, or what broke, is genuinely worth more to me than a star. Open an issue, or say hello in Discussions.
