@@ -39,7 +39,7 @@
     "highlight.js": "^11.11.1",
     "html-to-image": "^1.11.13",
     "katex": "^0.18.1",
-    "pdfjs-dist": "^5.7.284",
+    "pdfjs-dist": "^6.2.108",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
