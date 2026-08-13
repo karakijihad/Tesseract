@@ -729,6 +729,20 @@ def _is_valid_slug(slug: str) -> bool:
     return all((c.isascii() and c.isalnum()) or c in "._-" for c in slug)
 
 
+def session_file(session_dir: Path, name: str) -> Path | None:
+    """Resolve a saved session's file, or None if `name` could name another one.
+
+    The `.json` suffix is optional, matching what the callers accepted before
+    this existed. `rename`, `duplicate` and `preview` have validated the same
+    string all along; `GET /api/sessions/{session_id}` and `/load` joined it
+    raw, and `{session_id}` excludes `/` and nothing else — so on the platform
+    this ships on `..\\` climbed out and `C:x` discarded the directory entirely.
+    """
+    if not _is_valid_slug(name.removesuffix(".json")):
+        return None
+    return session_dir / f"{name.removesuffix('.json')}.json"
+
+
 def rename_session(session_dir: Path, old_name: str, new_name: str) -> tuple[bool, str]:
     """Rename a saved session file in place.
 

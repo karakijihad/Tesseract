@@ -40,12 +40,35 @@ def agenda_index_path() -> Path:
     return agenda_root() / "index.jsonl"
 
 
+def _validate_segment(value: str, kind: str) -> str:
+    """Refuse anything that could name a file outside the bucket it is joined to.
+
+    An item id arrives from `/api/agenda/{id}` and from `agenda_comment`, an
+    AUTO-posture tool. aiohttp's default `{id}` pattern excludes `/` and nothing
+    else, which is not enough here: `\\` separates on Windows too, `C:x` is
+    drive-relative — NOT `is_absolute()` — yet joining it discards the agenda
+    directory outright, and `:` opens an NTFS alternate data stream.
+
+    Guarded in the path builders so every caller inherits it, the same placement
+    `agents/loader.py::_is_unsafe_agent_name` uses for the same class of sink.
+    """
+    if not value or value in (".", "..") or Path(value).name != value:
+        raise ValueError(f"invalid agenda {kind}: {value!r}")
+    if any(c in value for c in "/\\:\x00"):
+        raise ValueError(f"invalid agenda {kind}: {value!r}")
+    return value
+
+
 def agenda_item_path(item_id: str) -> Path:
-    return agenda_active_dir() / f"{item_id}.json"
+    return agenda_active_dir() / f"{_validate_segment(item_id, 'item id')}.json"
 
 
 def agenda_archive_path(item_id: str, month: str) -> Path:
-    return agenda_archive_dir() / month / f"{item_id}.json"
+    return (
+        agenda_archive_dir()
+        / _validate_segment(month, "archive bucket")
+        / f"{_validate_segment(item_id, 'item id')}.json"
+    )
 
 
 def agenda_comments_dir() -> Path:
@@ -56,7 +79,7 @@ def agenda_comments_dir() -> Path:
 
 
 def agenda_comments_path(item_id: str) -> Path:
-    return agenda_comments_dir() / f"{item_id}.jsonl"
+    return agenda_comments_dir() / f"{_validate_segment(item_id, 'item id')}.jsonl"
 
 
 def source_pauses_path() -> Path:

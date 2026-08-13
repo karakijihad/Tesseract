@@ -15,8 +15,6 @@ import { CommandTips } from '../components/chat/CommandTips';
 import { DisconnectedChip } from '../components/chat/DisconnectedChip';
 import { TodosCard } from '../components/chat/TodosCard';
 import { ActivityTaskbar } from '../components/chat/ActivityTaskbar';
-import { CostChip } from '../components/cockpit/hud/CostChip';
-import { VoiceCostChip } from '../components/cockpit/hud/VoiceCostChip';
 import { useCostStore } from '../stores/cost';
 import { useTasksStore } from '../stores/tasks';
 import { useStickToBottom } from '../hooks/useStickToBottom';
@@ -194,10 +192,6 @@ export function ChatView() {
         </div>
       )}
       <DisconnectedChip />
-      <div className="chat-cost-strip" role="group" aria-label="Chat cost today">
-        <CostChip role="chat_brain" shortLabel="chat" />
-        <VoiceCostChip />
-      </div>
       <ChatInput variant="inline" />
     </div>
   );

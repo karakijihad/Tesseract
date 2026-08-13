@@ -60,7 +60,9 @@ def safe_view(view: str) -> str | None:
 
 def read_view_blob(view: str) -> dict[str, Any] | None:
     """Return the saved canvas-state blob for a view, or None if absent /
-    unreadable / malformed."""
+    unreadable / malformed / not a legal view name."""
+    if safe_view(view) is None:
+        return None
     path = canvas_state_dir() / f"{view}.json"
     if not path.exists():
         return None
@@ -73,7 +75,18 @@ def read_view_blob(view: str) -> dict[str, Any] | None:
 
 
 def write_view_blob(view: str, blob: dict[str, Any]) -> None:
-    """Atomically write the full canvas-state blob for a view."""
+    """Atomically write the full canvas-state blob for a view.
+
+    Refuses a view name that fails `safe_view`. Enforced HERE and not only on
+    the `{view}` route segment, because the other caller is `surface_create` —
+    an AUTO-posture tool whose `view` field is free text the model writes. A
+    name is joined onto this directory for a WRITE, so an unguarded one puts a
+    JSON file of the model's choosing anywhere the join reaches, with no
+    `file_write` policy layer in between.
+    """
+    if safe_view(view) is None:
+        log.warning("canvas_state: refusing write for illegal view name %r", view)
+        return
     target_dir = canvas_state_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
     final = target_dir / f"{view}.json"

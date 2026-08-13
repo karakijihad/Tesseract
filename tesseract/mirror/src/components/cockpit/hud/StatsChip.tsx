@@ -1,16 +1,11 @@
 import { useSessionStore } from "../../../stores/session";
+import { colorBand } from "../../../lib/money";
 import { sendCommand } from "../../../lib/commands";
 import { Hint } from "../../ui/Hint";
 
 function formatTokens(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return `${n}`;
-}
-
-function colorBand(ratio: number): "ok" | "warn" | "bad" {
-  if (ratio < 0.6) return "ok";
-  if (ratio < 0.85) return "warn";
-  return "bad";
 }
 
 interface StatsChipProps {

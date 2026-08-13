@@ -194,9 +194,13 @@ class AgendaStore:
 
     def get(self, item_id: str) -> AgendaItem | None:
         """Read by id. Searches ``active/`` first, then archive buckets.
-        Returns None if absent; raises ValidationError on a malformed
-        record so corruption surfaces at the recovery boundary."""
-        path = agenda_item_path(item_id)
+        Returns None if absent or if the id could not name a file here;
+        raises ValidationError on a malformed record so corruption surfaces
+        at the recovery boundary."""
+        try:
+            path = agenda_item_path(item_id)
+        except ValueError:
+            return None
         if not path.exists():
             path = self._find_in_archive(item_id)
             if path is None:

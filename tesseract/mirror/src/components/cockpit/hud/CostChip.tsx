@@ -1,21 +1,10 @@
 import { useCostStore } from '../../../stores/cost';
 import { Hint } from '../../ui/Hint';
+import { formatUsd, colorBand } from '../../../lib/money';
 
 interface CostChipProps {
   role: 'chat_brain' | 'observer_agent';
   shortLabel: 'chat' | 'obs';
-}
-
-export function formatUsd(n: number): string {
-  if (n >= 100) return `$${n.toFixed(0)}`;
-  if (n >= 10) return `$${n.toFixed(1)}`;
-  return `$${n.toFixed(2)}`;
-}
-
-export function colorBand(ratio: number): 'ok' | 'warn' | 'bad' {
-  if (ratio < 0.60) return 'ok';
-  if (ratio < 0.85) return 'warn';
-  return 'bad';
 }
 
 export function CostChip({ role, shortLabel }: CostChipProps) {

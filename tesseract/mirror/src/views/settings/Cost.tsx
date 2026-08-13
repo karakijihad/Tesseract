@@ -3,11 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { postCostSettings, postVoiceCostSettings } from '../../lib/api';
 import { useCostStore } from '../../stores/cost';
 import { useIdentityStore } from '../../stores/identity';
-
-function formatUsd(n: number | null | undefined): string {
-  if (n === null || n === undefined || Number.isNaN(n)) return '—';
-  return `$${n.toFixed(2)}`;
-}
+import { formatUsd } from '../../lib/money';
 
 type VoiceKind = 'tts' | 'stt';
 

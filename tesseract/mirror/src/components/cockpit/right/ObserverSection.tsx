@@ -2,7 +2,6 @@ import { useObservationsStore } from '../../../stores/observations';
 import { Markdown } from '../../common/Markdown';
 import { useObserverStore } from '../../../stores/observer';
 import { useSuggestionsStore } from '../../../stores/suggestions';
-import { usePanelCollapse } from '../../../lib/usePanelCollapse';
 import { CostChip } from '../hud/CostChip';
 import { ObserverStatsChip } from './ObserverStatsChip';
 import { ObserverSuggestions } from './ObserverSuggestions';
@@ -25,7 +24,6 @@ export function ObserverSection() {
   const suggestions = useSuggestionsStore(s => s.suggestions);
   const resetSuggestions = useSuggestionsStore(s => s.reset);
   const armState = useObserverStore(s => s.state);
-  const [collapsed, toggle] = usePanelCollapse('panel.observations.collapsed', true);
 
   const newestFirst = [...observations].reverse();
   const isArmed = armState !== 'off';
@@ -39,22 +37,11 @@ export function ObserverSection() {
   return (
     <section className="right-section">
       <div className="right-section-header">
-        <button
-          type="button"
-          className="right-section-toggle t-meta"
-          onClick={toggle}
-          aria-expanded={!collapsed}
-        >
-          <span className="right-section-chevron">{collapsed ? '▸' : '▾'}</span>
-          Observer
-          {pending && <span className="right-section-spinner" aria-label="observer pending">◌</span>}
-        </button>
         <span className="t-caption obs-header-count">
           {observations.length} stored · {firesTotal} total fires
+          {pending && <span className="right-section-spinner" aria-label="observer pending">◌</span>}
         </span>
       </div>
-      {!collapsed && (
-        <>
           <div className="observer-arm-row t-meta">
             <span className="observer-arm-state">arm: {armState}</span>
             <div className="observer-arm-actions">
@@ -98,10 +85,8 @@ export function ObserverSection() {
               ))}
             </ul>
           )}
-          <div className="observer-suggestions-header t-meta">Suggestions</div>
-          <ObserverSuggestions />
-        </>
-      )}
+      <div className="observer-suggestions-header t-meta">Suggestions</div>
+      <ObserverSuggestions />
     </section>
   );
 }

@@ -24,6 +24,7 @@ from tesseract.brain.session_store import (
     list_sessions,
     load_session,
     save_session,
+    session_file,
 )
 from tesseract.mirror.server.envelope import make_envelope
 from tesseract.mirror.server.routes.system import soul_path
@@ -456,8 +457,8 @@ async def cmd_load(app: web.Application, session: ServerSession, arg: str | None
         ))
         return
     name = arg.removesuffix(".json")
-    path = SESSIONS_DIR / f"{name}.json"
-    state = load_session(path, strip_reasoning=True)
+    path = session_file(SESSIONS_DIR, name)
+    state = load_session(path, strip_reasoning=True) if path is not None else None
     if state is None:
         await send_envelope(session, make_envelope(
             "stream_error", "loop", session.session_id,
@@ -599,8 +600,8 @@ async def cmd_compact_file(app: web.Application, session: ServerSession, arg: st
         ))
         return
     name = arg.removesuffix(".json")
-    path = SESSIONS_DIR / f"{name}.json"
-    state = load_session(path, strip_reasoning=True)
+    path = session_file(SESSIONS_DIR, name)
+    state = load_session(path, strip_reasoning=True) if path is not None else None
     if state is None:
         await send_envelope(session, make_envelope(
             "stream_error", "loop", session.session_id,

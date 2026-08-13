@@ -12,6 +12,7 @@ from tesseract.brain.session_store import (
     load_session,
     preview_session,
     rename_session,
+    session_file,
 )
 from tesseract.paths import home_dir
 
@@ -66,7 +67,9 @@ async def list_archive_handler(request: web.Request) -> web.Response:
 
 async def get_session(request: web.Request) -> web.Response:
     session_id = request.match_info["session_id"]
-    path = _sessions_dir() / f"{session_id}.json"
+    path = session_file(_sessions_dir(), session_id)
+    if path is None:
+        return web.json_response({"error": "not_found"}, status=404)
     # Inspect/export path — no strip. Real resume goes through the WS
     # `cmd_load` / `cmd_compact_file` handlers, which already strip
     # stale reasoning before replacing chat history. Leaving this route

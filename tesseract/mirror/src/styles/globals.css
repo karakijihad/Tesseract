@@ -844,6 +844,91 @@ body {
   color: var(--text-meta);
   font-variant-numeric: tabular-nums;
 }
+
+/* Monitor panel tabs. NOT `.rail-tab` — canvas.css owns that name for the
+   collapsed vertical rail label, and reusing it rotated this rail sideways. One body at a time, so nothing below a section can be
+   pushed down when another opens — the panel's geometry is fixed and only
+   the content changes. Each tab carries its own headline figure, so the
+   summary survives the switch to tabs. */
+.monitor-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--panel-divider);
+}
+.monitor-tab {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex: 1 1 0;
+  min-width: 0;
+  justify-content: center;
+  padding: var(--space-sm) var(--space-xs);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  color: var(--text-meta);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+.monitor-tab:hover { color: var(--text-primary); }
+.monitor-tab.is-active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+}
+.monitor-tab-badge {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-meta);
+}
+.monitor-tab.is-active .monitor-tab-badge { color: var(--accent-bright); }
+.monitor-body { flex: 1 1 0; min-height: 0; }
+
+/* Today's spend. The figure is the answer to "what have I spent today", so
+   it is the largest thing in the section; the cap is context beside it. */
+.spend-total {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  color: var(--ok);
+}
+.spend-total--warn { color: var(--warn); }
+.spend-total--bad { color: var(--bad); }
+.spend-total.is-overage { color: var(--bad); }
+.spend-total-figure {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+.spend-total-cap { font-variant-numeric: tabular-nums; }
+.spend-bar {
+  display: block;
+  height: 3px;
+  margin: var(--space-xs) 0;
+  border-radius: var(--radius-xs);
+  background: var(--border);
+  overflow: hidden;
+}
+.spend-bar-fill {
+  display: block;
+  height: 100%;
+  background: currentColor;
+  color: inherit;
+}
+.spend-total--warn ~ .spend-bar .spend-bar-fill { background: var(--warn); }
+.spend-total--bad ~ .spend-bar .spend-bar-fill,
+.spend-total.is-overage ~ .spend-bar .spend-bar-fill { background: var(--bad); }
+.spend-total--ok ~ .spend-bar .spend-bar-fill { background: var(--ok); }
+.spend-breakdown { margin-top: var(--space-xs); }
+.spend-row-figure {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+.spend-date { margin-top: var(--space-xs); }
 .right-section-action {
   background: transparent;
   border: 1px solid var(--panel-divider);

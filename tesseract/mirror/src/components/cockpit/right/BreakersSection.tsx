@@ -1,6 +1,5 @@
 import { useEffect, useMemo } from 'react';
 import { useHealthStore, type Breaker } from '../../../stores/health';
-import { usePanelCollapse } from '../../../lib/usePanelCollapse';
 
 const REFRESH_MS = 60_000;
 
@@ -11,7 +10,6 @@ function dotClass(state: Breaker['state']): string {
 export function BreakersSection() {
   const breakers = useHealthStore(s => s.breakers);
   const fetchBreakers = useHealthStore(s => s.fetchBreakers);
-  const [collapsed, toggle] = usePanelCollapse('panel.breakers.collapsed', true);
 
   useEffect(() => {
     fetchBreakers();
@@ -28,20 +26,7 @@ export function BreakersSection() {
 
   return (
     <section className="right-section">
-      <div className="right-section-header">
-        <button
-          type="button"
-          className="right-section-toggle t-meta"
-          onClick={toggle}
-          aria-expanded={!collapsed}
-        >
-          <span className="right-section-chevron">{collapsed ? '▸' : '▾'}</span>
-          Breakers
-        </button>
-        <span className="t-caption right-section-count">{active.length}</span>
-      </div>
-      {!collapsed && (
-        active.length === 0 && history.length === 0 ? (
+      {active.length === 0 && history.length === 0 ? (
           <div className="t-caption right-section-empty">all closed</div>
         ) : (
           <>
@@ -70,8 +55,7 @@ export function BreakersSection() {
                 </ul>
               </>
             )}
-          </>
-        )
+        </>
       )}
     </section>
   );
