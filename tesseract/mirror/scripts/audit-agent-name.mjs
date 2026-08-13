@@ -11,10 +11,8 @@
  *
  * NOT flagged:
  *   - Comment lines — they document history and carry no pixels.
- *   - `.test.ts(x)` — a test asserting "this string is not 'the assistant'" has to
+ *   - `.test.ts(x)` — a test asserting "this string is not the default" has to
  *     name the string it is refusing.
- *   - `workshop` / the `tars` CLI entry point — identifiers with a
- *     rename cost beyond this point.
  *
  * Components read the name with `useEntityName()`; a store reads
  * `useIdentityStore.getState().name` and falls back to `ENTITY_FALLBACK`.
@@ -31,9 +29,16 @@ import { fileURLToPath } from 'url';
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SRC_DIR = join(__dirname, '..', 'src');
 
-// Word-bounded so TESSERACT (the runtime, which is not renameable) and
-// `workshop` do not match.
-const NAME_RE = /\bTARS\b/g;
+// The shipped default from `mirror.yaml::identity.name`. It used to be the
+// persona name; that name is retired, and this gate follows the value rather
+// than the word it happened to hold — otherwise it scans for a string nothing
+// can produce and passes forever.
+//
+// Word-bounded and case-sensitive, which is what keeps it quiet: TESSERACT is
+// the runtime and is not renameable, `role === 'assistant'` is a protocol
+// value, `ENTITY_FALLBACK = 'the assistant'` is lowercase, and an identifier
+// like `AssistantBubble` has no boundary after the match.
+const NAME_RE = /\bAssistant\b/g;
 
 function collectFiles(dir) {
   const results = [];
@@ -65,8 +70,8 @@ function collectFiles(dir) {
  * String CONTENT is kept: that is where rendered text lives and the whole
  * point of the gate. `https://…` survives because the `//` test only runs
  * outside a quote, which is stronger than the whitespace rule it replaces.
- * Escape sequences are dropped rather than copied, so `"\nTARS"` presents
- * `TARS` at a word boundary instead of hiding behind the escape's `n`.
+ * Escape sequences are dropped rather than copied, so `"\nAssistant"` presents
+ * `Assistant` at a word boundary instead of hiding behind the escape's `n`.
  */
 function stripComments(lines) {
   let inBlock = false;

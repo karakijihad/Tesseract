@@ -145,10 +145,63 @@ Stated because they are true, not because they are comfortable.
 ## Secrets
 
 API keys live in `.env` under your home directory, never in the code tree and
-never in the repository. The build that produces the public tree ships from
-hand-authored config templates rather than your live configuration, and runs a
-PII and secret audit against its own output before publishing.
+never in the repository. The build that produces the public tree ships config
+that is either a hand-authored template or a file deliberately declared
+identical for every install; a config file that is neither fails the build
+rather than falling back to the developer's live copy. The build then runs a PII
+and secret audit against its own output before publishing.
 
 Terminal output and provisioning logs are scrubbed for credential-shaped strings
 before being written or displayed, including credentials carried in URL userinfo
 and query strings.
+
+## Paths, and the names that build them
+
+A great many things here are stored under a name: a saved session, an agenda
+item, a canvas view, an agent card, an uploaded file. Every one of those names
+reaches a filesystem path, and several arrive from outside — a URL segment, a
+command you typed, or a tool call the model composed.
+
+Each is validated where the path is built rather than at each place it is used,
+so a caller cannot forget. A name that could denote a file somewhere else is
+refused, and the refusal reaches whoever supplied it instead of failing quietly:
+a bad name in a request is a 400 or a 404 that does not distinguish "blocked"
+from "absent", and a bad name from a tool call is an error the model can read
+and correct.
+
+The checks are written for the platform this ships on, which is stricter than it
+sounds. Excluding `/` is not enough on Windows: `\` separates there too, a
+drive-relative name like `C:x` discards whatever directory it is joined to
+without ever looking absolute, and `:` also opens an alternate data stream that
+passes a containment check performed on the parent.
+
+Where a path is served rather than stored — the file-read tools, the asset
+route — it is re-resolved and re-checked immediately before use, and credential
+files are refused by name wherever they sit.
+
+## Dependencies and scanning
+
+The public repository has GitHub's dependency alerts and code scanning enabled,
+and both run on every push to the default branch.
+
+Every alert is either fixed or dismissed with a stated reason recorded on the
+alert itself — never left open and never dismissed in bulk. A dismissal says
+which specific check makes the finding a false positive, or why the risk is
+accepted; static analysis cannot see a validator it does not model, and saying
+so per alert is what keeps the next reader from having to re-derive it.
+
+Automated dependency PRs are deliberately **off** for this repository and on for
+its development counterpart. The published tree is regenerated and pushed
+wholesale rather than committed to directly, so a merge here would be erased by
+the next release.
+
+## Known dependency exceptions
+
+Stated because a scanner will show them and silence would be worse:
+
+- **esbuild** — a development-server advisory. It is reachable only by someone
+  running the frontend dev server. Installed builds are static assets compiled
+  into the desktop shell; no dev server runs on a user's machine.
+- **glib** — reported against the lockfile but absent from the Windows build
+  graph entirely (`cargo tree -i glib --target x86_64-pc-windows-msvc` returns
+  nothing). It arrives through a GTK path this application does not build.

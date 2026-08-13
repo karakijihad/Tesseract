@@ -46,25 +46,25 @@ function withFile(name, body, fn) {
 }
 
 console.log('\nTest 1: a rendered string naming the agent fails');
-withFile('bad.tsx', 'export const L = <span>Ask TARS</span>;\n', (r) => {
+withFile('bad.tsx', 'export const L = <span>Ask Assistant</span>;\n', (r) => {
   assert('exit code 1', r.code === 1);
   assert('names the file', r.stderr.includes('bad.tsx'));
 });
 
 console.log('\nTest 2: the name in a comment is exempt');
-withFile('ok.tsx', '// TARS used to be hardcoded here\nexport const L = 1;\n', (r) => {
+withFile('ok.tsx', '// Assistant used to be hardcoded here\nexport const L = 1;\n', (r) => {
   assert('exit code 0', r.code === 0);
 });
 
 console.log('\nTest 3: a multi-line JSX block comment is exempt on every line');
 withFile(
   'block.tsx',
-  'const x = (\n  {/* captions of\n      what TARS said\n      under the orb */}\n);\n',
+  'const x = (\n  {/* captions of\n      what Assistant said\n      under the orb */}\n);\n',
   (r) => assert('exit code 0', r.code === 0),
 );
 
 console.log('\nTest 4: a trailing comment after code is exempt');
-withFile('trail.ts', 'export const m = 1; // TARS stays silent until asked\n', (r) =>
+withFile('trail.ts', 'export const m = 1; // Assistant stays silent until asked\n', (r) =>
   assert('exit code 0', r.code === 0),
 );
 
@@ -74,13 +74,13 @@ withFile('runtime.tsx', 'export const L = <span>Restart TESSERACT</span>;\n', (r
 );
 
 console.log('\nTest 6: a comment marker inside a string does not hide a violation');
-withFile('sneaky.ts', 'export const s = "path/* TARS lives here */more";\n', (r) => {
+withFile('sneaky.ts', 'export const s = "path/* Assistant lives here */more";\n', (r) => {
   assert('exit code 1', r.code === 1);
   assert('names the file', r.stderr.includes('sneaky.ts'));
 });
 
 console.log('\nTest 7: a // inside a template literal does not hide a violation');
-withFile('tpl.ts', 'export const s = `caption // TARS fallback`;\n', (r) => {
+withFile('tpl.ts', 'export const s = `caption // Assistant fallback`;\n', (r) => {
   assert('exit code 1', r.code === 1);
 });
 
@@ -90,12 +90,12 @@ withFile('url.ts', 'export const s = "https://example.com" + label;\nexport cons
 );
 
 console.log('\nTest 9: an escape sequence does not hide the name behind its letter');
-withFile('esc.ts', 'export const s = "\\nTARS is not available";\n', (r) => {
+withFile('esc.ts', 'export const s = "\\nAssistant is not available";\n', (r) => {
   assert('exit code 1', r.code === 1);
 });
 
 console.log('\nTest 10: .test.tsx files are exempt — they must name what they refuse');
-withFile('thing.test.tsx', 'expect(hint).not.toContain("TARS");\n', (r) =>
+withFile('thing.test.tsx', 'expect(hint).not.toContain("Assistant");\n', (r) =>
   assert('exit code 0', r.code === 0),
 );
 

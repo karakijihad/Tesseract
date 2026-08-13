@@ -1,5 +1,5 @@
 # Agenda mappers — maps each autonomy event source to how it turns into an
-# agenda item (a agent-visible proposal or task).
+# agenda item (an operator-visible proposal or task).
 #
 # Each block below is one mapper. Set `enabled: false` to stop a source from
 # generating agenda items.

@@ -140,6 +140,8 @@ interface PanelStore {
   hydratePanels: (saved: SavedPanel[]) => void;
   hydrateRails: (saved: SavedRail[]) => void;
   resetAll: () => void;
+  /** Put ONE rail back where it started, without touching the rest. */
+  resetRail: (kind: RailKind) => void;
 }
 
 const Z_BASE = 10;
@@ -412,6 +414,23 @@ export const usePanelStore = create<PanelStore>((set, get) => ({
       if (fresh.length === 0) return s;
       return { ...s, panels: [...s.panels, ...fresh] };
     }),
+
+  resetRail: (kind) => {
+    set((s) => ({
+      panels: s.panels.map((p) =>
+        p.kind === kind
+          ? {
+              ...p,
+              open: true,
+              dock: RAIL_HOME[kind],
+              placed: false,
+              maximized: false,
+              minimized: false,
+            }
+          : p,
+      ),
+    }));
+  },
 
   resetAll: () => {
     // Close every UNPINNED view panel; keep pinned panels; re-dock + re-show

@@ -170,37 +170,39 @@
 
 /* Resize from any edge or corner — 8 invisible handles overhanging the frame.
    Edges sit between the corners; corners come later in the DOM so they win the
-   shared region. Only the SE corner carries a faint visual affordance. */
+   shared region. No corner carries a visual affordance — the operator asked
+   for the SE triangle gone, and a grip drawn on one corner implies the other
+   seven do not exist. Widened from 8px to 10px so an edge is a real target. */
 .glass-panel__resize {
   position: absolute;
   z-index: 2;
 }
 .glass-panel__resize--n {
-  top: -3px;
+  top: -4px;
   left: 10px;
   right: 10px;
-  height: 8px;
+  height: 10px;
   cursor: ns-resize;
 }
 .glass-panel__resize--s {
-  bottom: -3px;
+  bottom: -4px;
   left: 10px;
   right: 10px;
-  height: 8px;
+  height: 10px;
   cursor: ns-resize;
 }
 .glass-panel__resize--e {
-  right: -3px;
+  right: -4px;
   top: 10px;
   bottom: 10px;
-  width: 8px;
+  width: 10px;
   cursor: ew-resize;
 }
 .glass-panel__resize--w {
-  left: -3px;
+  left: -4px;
   top: 10px;
   bottom: 10px;
-  width: 8px;
+  width: 10px;
   cursor: ew-resize;
 }
 .glass-panel__resize--ne {
@@ -230,12 +232,6 @@
   width: 16px;
   height: 16px;
   cursor: nwse-resize;
-  background: linear-gradient(
-    135deg,
-    transparent 50%,
-    hsl(var(--accent-hsl) / 0.45) 50%
-  );
-  border-bottom-right-radius: var(--radius-md);
 }
 
 @media (prefers-reduced-motion: reduce) {
