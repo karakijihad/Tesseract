@@ -13,8 +13,13 @@ from tesseract.scheduler.alarms import RecurrenceRule
 
 ALARM_HANDLER_DOTPATH = "tesseract.scheduler.tasks.alarm_handler.AlarmHandlerJob"
 
+# No `\s*` inside the pattern: the surrounding whitespace is stripped by the
+# caller instead. Leading and trailing `\s*` around three optional groups gives
+# the engine many ways to split a run of spaces, which is quadratic on input
+# that ends up not matching at all — and the input here is a token a model
+# produced.
 _RELATIVE_DURATION_RE = re.compile(
-    r"^\s*(?:(?P<h>\d+)h)?(?:(?P<m>\d+)m)?(?:(?P<s>\d+)s)?\s*$"
+    r"^(?:(?P<h>\d+)h)?(?:(?P<m>\d+)m)?(?:(?P<s>\d+)s)?$"
 )
 
 _WEEKDAY_MAP = {
@@ -69,7 +74,7 @@ def _parse_clock(token: str) -> time | None:
 
 def _parse_compact_duration(token: str) -> int | None:
     """'30s', '15m', '1h30m' → seconds. None on miss or zero."""
-    m = _RELATIVE_DURATION_RE.match(token)
+    m = _RELATIVE_DURATION_RE.match(token.strip())
     if not m or not any(m.group(g) for g in ("h", "m", "s")):
         return None
     seconds = (

@@ -95,6 +95,13 @@ function resolveAnsi(
   };
 }
 
+// xterm takes a resolved font string, not a CSS var, so the token is read at
+// construction. Same source as every other surface — tokens.css, never a
+// stack pasted into a component.
+export function monoFontStack(): string {
+  return cssVar('--font-mono') || 'ui-monospace, monospace';
+}
+
 export function resolveTheme(theme?: TerminalTheme | null): ITheme {
   const t = theme ?? MIRROR_DEFAULTS;
   const ansi = resolveAnsi(t.ansi, MIRROR_DEFAULTS.ansi!, {

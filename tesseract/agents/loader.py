@@ -17,7 +17,11 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+# `[^\S\n]*` rather than `\s*`: `\s` matches newlines too, so `\s*\n` lets a
+# run of blank lines be split many ways and a card that never closes its
+# frontmatter costs quadratic time. Horizontal whitespace is all the trailing
+# space on a `---` line was ever meant to allow.
+_FRONTMATTER_RE = re.compile(r"^---[^\S\n]*\n(.*?)\n---[^\S\n]*\n", re.DOTALL)
 _SECTION_RE = re.compile(r"^## (.+)$", re.MULTILINE)
 
 from tesseract.paths import agents_dir as _home_agents_dir
@@ -58,6 +62,28 @@ class AgentDefinition:
         return self.sections.get(section_name, "").strip()
 
 
+def _is_unsafe_agent_name(name: str) -> bool:
+    """Whether `name` could name a file outside the agents directory.
+
+    An agent name reaches here straight off a URL segment
+    (`/api/agents/{name}/source`, read AND write). aiohttp's default pattern
+    excludes `/` and nothing else, which is not enough on Windows: `\\` is a
+    separator there too, and `C:x` is drive-relative — NOT `is_absolute()`,
+    yet joining it discards the agents directory entirely. The same character
+    opens an NTFS alternate data stream.
+
+    Checked here rather than at each join, so every caller of
+    `_find_agent_path` and `resolve_agent_path` inherits it. Mirrors
+    `pinned_fetch._unsafe_filename_reason`, which reasons this out at length
+    for the same class of sink.
+    """
+    if not name or name in (".", ".."):
+        return True
+    if "/" in name or "\\" in name or ":" in name or "\x00" in name:
+        return True
+    return Path(name).name != name
+
+
 def _find_agent_path(directory: Path, name: str) -> Path | None:
     """Search for ``{name}.md`` in ``directory`` and one level of subdirectories.
 
@@ -66,7 +92,7 @@ def _find_agent_path(directory: Path, name: str) -> Path | None:
     such as ``audits/`` without requiring the caller to know the subfolder.
     Returns ``None`` when ``directory`` does not exist or no match is found.
     """
-    if not directory.exists():
+    if _is_unsafe_agent_name(name) or not directory.exists():
         return None
     top = directory / f"{name}.md"
     if top.exists():
@@ -227,7 +253,9 @@ def resolve_agent_path(name: str, agents_dir: Path | None = None, include_pendin
     found = _find_agent_path(directory, name)
     if found is not None:
         return found
-    if include_pending:
+    # The pending branch joins the name a SECOND time, so it needs the guard
+    # too — `_find_agent_path` returning None is not evidence the name was safe.
+    if include_pending and not _is_unsafe_agent_name(name):
         pending_path = directory / _PENDING_DIRNAME / f"{name}.md"
         if pending_path.exists():
             return pending_path

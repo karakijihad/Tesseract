@@ -4,7 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { fetchRecordingText } from '../api';
 import { useTerminalStore } from '../../stores/terminal';
-import { resolveTheme } from './theme';
+import { resolveTheme, monoFontStack } from './theme';
 
 interface AsciicastHeader {
   version: number;
@@ -67,7 +67,7 @@ export function RecordingPlayer({ recordingId, onClose }: RecordingPlayerProps) 
 
         term = new Terminal({
           theme: resolveTheme(themeCfg),
-          fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace",
+          fontFamily: monoFontStack(),
           fontSize: 14,
           lineHeight: 1.25,
           cursorBlink: false,

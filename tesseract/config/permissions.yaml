@@ -204,6 +204,7 @@ modes:
       tavily_search: auto
       tavily_extract: auto
       bash: auto
+      os_launch: auto
       invoke_agent: auto
       delegate_coder: auto
       delegate_auditor: auto

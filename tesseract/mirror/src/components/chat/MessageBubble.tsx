@@ -8,7 +8,7 @@ import { useConversationStore } from '../../stores/conversation';
 import { useIdentityStore } from '../../stores/identity';
 import { ENTITY_FALLBACK } from '../../hooks/useEntityName';
 import { useWebSocketStore } from '../../stores/websocket';
-import { ChatMarkdown } from './ChatMarkdown';
+import { Markdown } from '../common/Markdown';
 import { ChatPdfPreview } from './ChatPdfPreview';
 import { ModelBadge } from './ModelBadge';
 import { ToolCallPill } from './ToolCallPill';
@@ -186,7 +186,7 @@ function MessageBubbleImpl({ message, isLastAssistantComplete = false, previousU
                 : (
                   <>
                     {statusText && renderIntent(statusText, 'status-fallback')}
-                    {content && <ChatMarkdown>{content}</ChatMarkdown>}
+                    {content && <Markdown>{content}</Markdown>}
                   </>
                 )}
             </div>

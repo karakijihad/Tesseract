@@ -1,5 +1,5 @@
 import { useObservationsStore } from '../../../stores/observations';
-import { linkifyText } from '../../../lib/linkify';
+import { Markdown } from '../../common/Markdown';
 import { useObserverStore } from '../../../stores/observer';
 import { useSuggestionsStore } from '../../../stores/suggestions';
 import { usePanelCollapse } from '../../../lib/usePanelCollapse';
@@ -93,7 +93,7 @@ export function ObserverSection() {
                       </span>
                     )}
                   </div>
-                  <pre className="observation-text t-caption">{linkifyText(entry.observation)}</pre>
+                  <div className="observation-text t-caption"><Markdown>{entry.observation}</Markdown></div>
                 </li>
               ))}
             </ul>

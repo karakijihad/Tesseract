@@ -22,7 +22,7 @@
  */
 import { useState } from 'react';
 import { BACKEND_BASE } from '../../lib/endpoints';
-import { ChatMarkdown } from '../../components/chat/ChatMarkdown';
+import { Markdown } from '../../components/common/Markdown';
 
 const PILLAR_LABEL: Record<string, string> = {
   tech: 'Tech',
@@ -219,7 +219,7 @@ export function DailyBriefBody({ payload }: DailyBriefBodyProps) {
             {prose.map((p) => (
               <div key={p.key} className="brief-prose-row">
                 <span className="brief-prose-label t-meta">{p.label}</span>
-                <div className="brief-prose-md"><ChatMarkdown>{p.body}</ChatMarkdown></div>
+                <div className="brief-prose-md"><Markdown>{p.body}</Markdown></div>
               </div>
             ))}
           </div>
@@ -230,7 +230,7 @@ export function DailyBriefBody({ payload }: DailyBriefBodyProps) {
         <section className="brief-section brief-section--tight">
           <h3 className="brief-section-title">Vault</h3>
           <ul className="brief-vault-list">
-            {vault.map((line, i) => <li key={i}><ChatMarkdown>{line}</ChatMarkdown></li>)}
+            {vault.map((line, i) => <li key={i}><Markdown>{line}</Markdown></li>)}
           </ul>
         </section>
       )}
@@ -238,7 +238,7 @@ export function DailyBriefBody({ payload }: DailyBriefBodyProps) {
       {ecosystem && (
         <section className="brief-section brief-section--tight">
           <h3 className="brief-section-title">Ecosystem</h3>
-          <div className="brief-ecosystem-prose"><ChatMarkdown>{ecosystem}</ChatMarkdown></div>
+          <div className="brief-ecosystem-prose"><Markdown>{ecosystem}</Markdown></div>
         </section>
       )}
 
@@ -288,7 +288,7 @@ export function DailyBriefBody({ payload }: DailyBriefBodyProps) {
                           )}
                         </div>
                         {card.summary && (
-                          <div className="brief-news-summary"><ChatMarkdown>{cleanSummary(card.summary)}</ChatMarkdown></div>
+                          <div className="brief-news-summary"><Markdown>{cleanSummary(card.summary)}</Markdown></div>
                         )}
                         <div className="brief-news-meta t-meta">
                           {card.source && <span>{card.source}</span>}
@@ -310,7 +310,7 @@ export function DailyBriefBody({ payload }: DailyBriefBodyProps) {
         <section className="brief-section brief-section--tight">
           <h3 className="brief-section-title">Initiatives</h3>
           <ul className="brief-vault-list">
-            {initiatives.map((line, i) => <li key={i}><ChatMarkdown>{line}</ChatMarkdown></li>)}
+            {initiatives.map((line, i) => <li key={i}><Markdown>{line}</Markdown></li>)}
           </ul>
         </section>
       )}

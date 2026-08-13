@@ -1,8 +1,8 @@
-// Y-2 — markdown surface. Reuses the chat markdown renderer (react-markdown
-// + remark-gfm + rehype-highlight) so canvas markdown matches chat markdown
-// exactly. `props.text` (or `props.markdown`) is the source.
+// Markdown surface. Renders through the app's one markdown component, so a
+// canvas surface, a chat bubble and a journal row cannot drift apart.
+// `props.text` (or `props.markdown`) is the source.
 
-import { ChatMarkdown } from '../../components/chat/ChatMarkdown';
+import { Markdown } from '../../components/common/Markdown';
 import type { RendererProps } from './index';
 
 export function MarkdownRenderer({ descriptor }: RendererProps) {
@@ -10,7 +10,7 @@ export function MarkdownRenderer({ descriptor }: RendererProps) {
   const source = props.text ?? props.markdown;
   return (
     <div className="surface-markdown">
-      <ChatMarkdown>{typeof source === 'string' ? source : ''}</ChatMarkdown>
+      <Markdown>{typeof source === 'string' ? source : ''}</Markdown>
     </div>
   );
 }

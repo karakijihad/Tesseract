@@ -30,6 +30,8 @@
   scrollbar-width: none;
 }
 
+/* The one surface exempt from the global grabbable scrollbar: this is a tab
+   strip you navigate by its tabs, not a content panel you drag through. */
 .wt-tabs::-webkit-scrollbar { display: none; }
 
 .wt-tab {

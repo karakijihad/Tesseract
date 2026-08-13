@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
 import { copyToClipboard } from '../../lib/clipboard';
 import { ExpandOverlay } from '../common/ExpandOverlay';
 
-const LazyChatMarkdown = lazy(() =>
-  import('./ChatMarkdown').then((m) => ({ default: m.ChatMarkdown })),
+const LazyMarkdown = lazy(() =>
+  import('../common/Markdown').then((m) => ({ default: m.Markdown })),
 );
 
 interface Props {
@@ -98,7 +98,7 @@ export function ChatArtifact({ code, language }: Props) {
         kind === 'markdown' ? (
           <div className="chat-artifact-markdown bubble-md" aria-label="Markdown artifact preview">
             <Suspense fallback={<div className="chat-artifact-meta">Rendering…</div>}>
-              <LazyChatMarkdown>{code}</LazyChatMarkdown>
+              <LazyMarkdown>{code}</LazyMarkdown>
             </Suspense>
           </div>
         ) : (
@@ -122,7 +122,7 @@ export function ChatArtifact({ code, language }: Props) {
         {kind === 'markdown' ? (
           <div className="bubble-md">
             <Suspense fallback={<div className="chat-artifact-meta">Rendering…</div>}>
-              <LazyChatMarkdown>{code}</LazyChatMarkdown>
+              <LazyMarkdown>{code}</LazyMarkdown>
             </Suspense>
           </div>
         ) : (

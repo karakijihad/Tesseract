@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useEntityName } from '../../../hooks/useEntityName';
+import { useStickToBottom } from '../../../hooks/useStickToBottom';
 import { useConversationStore, EMPTY_MESSAGES, EMPTY_APPROVALS } from '../../../stores/conversation';
 import { useUIStore } from '../../../stores/ui';
 import { usePanelStore } from '../../../cockpit/panelStore';
@@ -29,7 +30,6 @@ import { lastQueuedPosition, queueChipLabel } from '../../../lib/chatQueue';
 import { canSteer } from '../../../lib/steer';
 
 const SCROLLBACK_LIMIT = 12;
-const SCROLL_LOCK_THRESHOLD_PX = 40;
 
 function isRenderable(m: ChatMessage): boolean {
   // Match MessageBubble's `hasBody` so the HUD doesn't silently drop
@@ -61,7 +61,6 @@ export function HudChatInput() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [isOpen, setIsOpen] = useState(false);
-  const [userScrolledUp, setUserScrolledUp] = useState(false);
   const [draft, setDraft] = useState('');
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
   const [isUploading, setIsUploading] = useState(false);
@@ -107,7 +106,7 @@ export function HudChatInput() {
     setUploadError(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
     setIsOpen(false);
-    setUserScrolledUp(false);
+    stickToLatest();
   };
 
   // Switching to the chat tab collapses the widget — chat tab IS the
@@ -136,21 +135,15 @@ export function HudChatInput() {
     return () => window.removeEventListener('keydown', handler);
   }, [isChatView, isOpen]);
 
-  // Auto-scroll the panel as new content arrives, but only if the operator
-  // hasn't manually scrolled up to read history. Mirror parity:
-  // ChatView.tsx uses the same userScrolledUp guard with a 40px threshold.
-  useEffect(() => {
-    if (!isOpen || userScrolledUp) return;
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [isOpen, messages, streamingText, pendingApprovals.length, userScrolledUp]);
-
-  const handleScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const distanceFromBottom = el.scrollHeight - el.clientHeight - el.scrollTop;
-    setUserScrolledUp(distanceFromBottom > SCROLL_LOCK_THRESHOLD_PX);
-  };
+  // Same rule as the chat tab, from the same hook — including the settle
+  // loop this panel never had. A single assignment landed short whenever
+  // markdown or an image finished measuring after the scroll.
+  const { onScroll: handleScroll, stickToLatest } = useStickToBottom(scrollRef, [
+    isOpen,
+    messages,
+    streamingText,
+    pendingApprovals.length,
+  ]);
 
   const uploadHelp = useMemo(() => describeUploadHelp(uploadConfig), [uploadConfig]);
   const uploadAccept = useMemo(

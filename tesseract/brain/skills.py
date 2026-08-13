@@ -28,7 +28,10 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+# Same shape, same reason as `agents/loader.py`: `\s` matches newlines, so
+# `\s*\n` makes a run of blank lines ambiguous and an unclosed frontmatter
+# quadratic. Skills are self-authored, so the input is generated too.
+_FRONTMATTER_RE = re.compile(r"^---[^\S\n]*\n(.*?)\n---[^\S\n]*\n", re.DOTALL)
 
 SKILL_FILENAME = "SKILL.md"
 

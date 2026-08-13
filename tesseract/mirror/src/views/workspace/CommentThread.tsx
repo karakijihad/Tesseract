@@ -2,8 +2,7 @@ import { useState } from 'react';
 import { useEntityName } from '../../hooks/useEntityName';
 import type { WorkspaceComment } from '../../stores/workspace';
 import { useWorkspaceStore } from '../../stores/workspace';
-import { linkifyText } from '../../lib/linkify';
-import { ChatMarkdown } from '../../components/chat/ChatMarkdown';
+import { Markdown } from '../../components/common/Markdown';
 
 interface Props {
   event_id: string;
@@ -71,7 +70,7 @@ export function CommentThread({ event_id, comments }: Props) {
                 <span className="workspace-comment-ts t-meta">{formatTs(c.ts)}</span>
               </div>
               <div className="workspace-comment-body">
-                {c.author === 'agent' ? <ChatMarkdown>{c.body}</ChatMarkdown> : linkifyText(c.body)}
+                <Markdown>{c.body}</Markdown>
               </div>
             </li>
           ))}

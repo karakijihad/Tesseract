@@ -27,6 +27,7 @@
 @import "./schedule.css";
 @import "./agents.css";
 @import "./chat.css";
+@import "./markdown.css";
 @import "./conscience.css";
 @import "./settings.css";
 @import "./autonomy.css";
@@ -912,29 +913,9 @@ body {
   padding: var(--space-sm);
   word-break: break-word;
 }
-.soul-block-body > :first-child { margin-top: 0; }
-.soul-block-body > :last-child { margin-bottom: 0; }
-.soul-block-body p { margin: 0 0 var(--space-xs); }
-.soul-block-body ul,
-.soul-block-body ol { margin: 0 0 var(--space-xs); padding-left: 1.4em; }
-.soul-block-body li { margin: 0; }
-.soul-block-body code {
-  font-family: var(--font-mono);
-  background: rgba(0,0,0,0.25);
-  padding: 0 2px;
-  border-radius: 2px;
-}
-.soul-block-body pre {
-  margin: 0 0 var(--space-xs);
-  padding: var(--space-xs);
-  background: rgba(0,0,0,0.25);
-  border-radius: var(--radius-xs);
-  white-space: pre-wrap;
-  overflow-x: hidden;
-  word-break: break-word;
-  overflow-wrap: anywhere;
-}
-.soul-block-body a { color: var(--accent-bright); }
+/* Element rules deleted: this was a second markdown stylesheet, with its own
+   spacing and two hard-coded rgba() shadows of the token palette. The card
+   keeps its typography above; `markdown.css` styles what is inside it. */
 
 /* === CENTER VIEWS === */
 .orb-view,
@@ -1112,11 +1093,38 @@ body {
 }
 
 
-/* === SCROLLBARS === */
-::-webkit-scrollbar { width: 3px; }
+/* === SCROLLBARS ===
+   A scrollbar is a pointer TARGET, not an indicator. Styling
+   `::-webkit-scrollbar` narrows the hit area to the painted width, and at 3px
+   the thumb could not be caught — so the bar is 12px and the thumb keeps its
+   slim look through a transparent border rather than by being thin. Padding
+   the thumb this way is what separates what you grab from what you see.
+   `min-height` matters as much as width: on a long panel the thumb shrinks
+   until there is nothing left to aim at.
+   Every scrolling surface in the app inherits this. A panel that overrides it
+   to something narrower is a review blocker — a bar that is grabbable in one
+   tab and hair-thin in the next is worse than both being thin, because the
+   first one teaches you to reach for it. */
+::-webkit-scrollbar { width: 12px; height: 12px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+::-webkit-scrollbar-thumb {
+  background: var(--border-visible);
+  background-clip: padding-box;
+  border: 4px solid transparent;
+  border-radius: 8px;
+  min-height: 32px;
+  min-width: 32px;
+}
+/* `background` is a shorthand and resets `background-clip`, so the hover
+   state has to restate it or the thumb swells over its own padding. */
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-meta);
+  background-clip: padding-box;
+}
+/* Deliberately NOT using the standard `scrollbar-width` / `scrollbar-color`:
+   in Chromium, setting either one makes it ignore every `::-webkit-scrollbar`
+   rule above and fall back to a native bar. The app runs in WebView2, so the
+   pseudo-elements are the ones that reach the operator. */
 
 /* === MOTION TEST PANEL (dev only, Ctrl+Shift+D or ?debug) === */
 .motion-test-panel {

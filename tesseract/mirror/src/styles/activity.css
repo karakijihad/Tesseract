@@ -72,14 +72,6 @@
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-width: thin;
-}
-.activity-map__body::-webkit-scrollbar {
-  width: 4px;
-}
-.activity-map__body::-webkit-scrollbar-thumb {
-  background: var(--border-visible);
-  border-radius: 2px;
 }
 .activity-map__group {
   margin-bottom: 8px;

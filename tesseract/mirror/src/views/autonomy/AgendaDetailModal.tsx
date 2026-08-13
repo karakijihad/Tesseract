@@ -15,6 +15,7 @@
 
 import React, { useEffect, useState } from 'react';
 import type { AgendaItem } from '../../lib/api';
+import { Markdown } from '../../components/common/Markdown';
 import { useAutonomyStore } from '../../stores/autonomy';
 
 interface AgendaDetailModalProps {
@@ -105,7 +106,7 @@ export function AgendaDetailModal({ item }: AgendaDetailModalProps): React.React
               <span className="autonomy-chip autonomy-chip--source">{item.source}</span>
               <span className="autonomy-row__score">score {item.priority_score.toFixed(1)}</span>
             </div>
-            <div style={{ marginTop: 6 }}>{item.goal}</div>
+            <div style={{ marginTop: 6 }}><Markdown variant="inline">{item.goal}</Markdown></div>
             <div className="t-meta t-mono" style={{ marginTop: 4 }}>{item.id}</div>
           </div>
           <button
@@ -121,7 +122,7 @@ export function AgendaDetailModal({ item }: AgendaDetailModalProps): React.React
         {item.rationale && (
           <div className="autonomy-modal__section">
             <div className="autonomy-modal__section-title">Rationale</div>
-            <div>{item.rationale}</div>
+            <Markdown>{item.rationale}</Markdown>
           </div>
         )}
 
@@ -159,7 +160,7 @@ export function AgendaDetailModal({ item }: AgendaDetailModalProps): React.React
                     </span>
                     <span className="autonomy-chip autonomy-chip--source">{g.kind}</span>
                   </div>
-                  <div className="autonomy-row__goal">{g.target}</div>
+                  <div className="autonomy-row__goal"><Markdown variant="inline">{g.target}</Markdown></div>
                   {g.fulfilled && g.fulfilled_at && (
                     <div className="t-meta">
                       fulfilled {_fmtIso(g.fulfilled_at)}
@@ -197,7 +198,7 @@ export function AgendaDetailModal({ item }: AgendaDetailModalProps): React.React
                     <span className="t-meta autonomy-row__score">{_fmtIso(t.at)}</span>
                   </div>
                   {t.reason && (
-                    <div className="autonomy-row__rationale t-meta">{t.reason}</div>
+                    <div className="autonomy-row__rationale t-meta"><Markdown variant="inline">{t.reason}</Markdown></div>
                   )}
                 </li>
               ))}
@@ -226,7 +227,7 @@ export function AgendaDetailModal({ item }: AgendaDetailModalProps): React.React
                     <span className="t-meta">{c.by}</span>
                     <span className="t-meta autonomy-row__score">{_fmtIso(c.at)}</span>
                   </div>
-                  <div className="autonomy-row__goal" style={{ whiteSpace: 'pre-wrap' }}>{c.body}</div>
+                  <div className="autonomy-row__goal"><Markdown>{c.body}</Markdown></div>
                 </li>
               ))}
             </ul>

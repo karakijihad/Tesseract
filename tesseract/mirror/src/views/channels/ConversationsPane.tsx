@@ -15,7 +15,7 @@
  * retention cap surfaced in the hint line). */
 import { useEffect, useMemo } from 'react';
 import { useEntityName } from '../../hooks/useEntityName';
-import { linkifyText } from '../../lib/linkify';
+import { Markdown } from '../../components/common/Markdown';
 import {
   useChannelsStore,
   selectUsersForChannel,
@@ -194,7 +194,7 @@ function ConversationList({ rows }: { rows: readonly ConversationRow[] }) {
               {row.direction === 'inbound' ? `→ ${entityName}` : `← ${entityName}`}
             </span>
           </div>
-          <span className="channel-conv-row-body">{linkifyText(row.body)}</span>
+          <span className="channel-conv-row-body"><Markdown variant="inline">{row.body}</Markdown></span>
         </div>
       ))}
     </div>

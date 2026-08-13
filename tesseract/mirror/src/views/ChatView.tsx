@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   useConversationStore,
@@ -19,8 +19,8 @@ import { CostChip } from '../components/cockpit/hud/CostChip';
 import { VoiceCostChip } from '../components/cockpit/hud/VoiceCostChip';
 import { useCostStore } from '../stores/cost';
 import { useTasksStore } from '../stores/tasks';
+import { useStickToBottom } from '../hooks/useStickToBottom';
 
-const SCROLL_LOCK_THRESHOLD_PX = 40;
 // `.chat-scroll` spaces in-flow rows with `gap: 14px` (chat.css). The
 // virtualized rows are position:absolute and never receive that flex gap, so
 // the spacing is baked into each measured row's padding-bottom instead —
@@ -39,14 +39,6 @@ export function ChatView() {
   const currentToolCallsLen = useConversationStore(s => s.getActiveSlice()?.currentToolCalls.length ?? 0);
   const currentToolResultsLen = useConversationStore(s => s.getActiveSlice()?.currentToolResults.length ?? 0);
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const [userScrolledUp, setUserScrolledUp] = useState(false);
-
-  // P5 — each chat opens pinned to its own latest message. Without this, a
-  // scroll-lock set in the chat we left would carry over and suppress the
-  // scroll-to-bottom for the chat we switched to.
-  useEffect(() => {
-    setUserScrolledUp(false);
-  }, [activeChatId]);
 
   const { lastAssistantCompleteIdx, previousUserByIdx, hasQueued } = useMemo(() => {
     let lastIdx = -1;
@@ -87,55 +79,28 @@ export function ChatView() {
     getItemKey: (index) => visibleRows[index].m.id,
   });
 
-  // Pin to the bottom while the operator hasn't scrolled up. With virtualized
-  // dynamic row heights a single scroll can't reach the true bottom of a
-  // freshly-loaded (still-unmeasured) history — rows measure incrementally as
-  // they scroll into view — so re-assert scroll-to-bottom across animation
-  // frames until the scroll height stabilizes: instant for live streaming
-  // (prior rows already measured), ~0.5s for a resumed session. Bounded by a
-  // frame budget so it can never spin.
+  // Pin to the bottom while the operator hasn't scrolled up. The rule, the
+  // threshold and the settle loop live in the hook, so this transcript and
+  // the HUD panel cannot disagree about what "at the bottom" means.
+  const { scrolledUp: userScrolledUp, onScroll: handleScroll, stickToLatest } =
+    useStickToBottom(scrollRef, [
+      activeChatId,
+      messages.length,
+      isStreaming,
+      pendingApprovals.length,
+      streamingTextLen,
+      streamingStatusTextLen,
+      currentToolCallsLen,
+      currentToolResultsLen,
+    ]);
+
+  // P5 — each chat opens pinned to its own latest message. Without this, a
+  // scroll-lock set in the chat we left would carry over and suppress the
+  // scroll-to-bottom for the chat we switched to.
   useEffect(() => {
-    if (userScrolledUp) return;
-    let raf = 0;
-    let frames = 0;
-    let lastHeight = -1;
-    const settle = () => {
-      const el = scrollRef.current;
-      if (!el) return;
-      el.scrollTop = el.scrollHeight;
-      frames += 1;
-      const h = el.scrollHeight;
-      if (h !== lastHeight && frames < 90) {
-        lastHeight = h;
-        raf = requestAnimationFrame(settle);
-      }
-    };
-    raf = requestAnimationFrame(settle);
-    return () => cancelAnimationFrame(raf);
-  }, [
-    activeChatId,
-    messages.length,
-    isStreaming,
-    pendingApprovals.length,
-    streamingTextLen,
-    streamingStatusTextLen,
-    currentToolCallsLen,
-    currentToolResultsLen,
-    userScrolledUp,
-  ]);
+    stickToLatest();
+  }, [activeChatId, stickToLatest]);
 
-  const handleScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const distanceFromBottom = el.scrollHeight - el.clientHeight - el.scrollTop;
-    setUserScrolledUp(distanceFromBottom > SCROLL_LOCK_THRESHOLD_PX);
-  };
-
-  const jumpToLatest = () => {
-    // Clearing the scroll-lock re-runs the pin effect above, which settles to
-    // the true bottom even through unmeasured virtual rows.
-    setUserScrolledUp(false);
-  };
 
   const isEmpty = messages.length === 0 && !isStreaming && pendingApprovals.length === 0;
   const todoCount = useTasksStore(s => s.items.length);
@@ -216,7 +181,7 @@ export function ChatView() {
         <button
           type="button"
           className="scroll-to-bottom-btn"
-          onClick={jumpToLatest}
+          onClick={stickToLatest}
           aria-label="Jump to latest"
         >
           ↓ Jump to latest

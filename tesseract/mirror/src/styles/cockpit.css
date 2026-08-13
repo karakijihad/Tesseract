@@ -382,15 +382,7 @@
   .hud-tabs {
     overflow-x: auto;
     overflow-y: hidden;
-    scrollbar-width: thin;
     scroll-snap-type: x proximity;
-  }
-  .hud-tabs::-webkit-scrollbar {
-    height: 4px;
-  }
-  .hud-tabs::-webkit-scrollbar-thumb {
-    background: var(--border-visible);
-    border-radius: 2px;
   }
 }
 

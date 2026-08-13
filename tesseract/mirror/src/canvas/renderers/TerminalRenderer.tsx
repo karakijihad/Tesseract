@@ -8,6 +8,7 @@
 // canvas) degrades to a <pre> fallback instead of crashing the canvas.
 
 import { useEffect, useRef, useState } from 'react';
+import { monoFontStack } from '../../lib/terminal/theme';
 
 import type { RendererProps } from './index';
 
@@ -30,7 +31,7 @@ export function TerminalRenderer({ descriptor }: RendererProps) {
         ]);
         if (cancelled) return;
         const t = new Terminal({
-          fontFamily: "'JetBrains Mono', 'Consolas', monospace",
+          fontFamily: monoFontStack(),
           fontSize: 13,
           disableStdin: true,
           convertEol: true,

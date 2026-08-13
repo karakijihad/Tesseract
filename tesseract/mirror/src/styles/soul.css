@@ -206,7 +206,8 @@
   border-radius: var(--radius-xs);
   padding: var(--space-xs) var(--space-sm);
   margin: 0;
-  white-space: pre-wrap;
+  /* No `white-space: pre-wrap`: the observation is rendered markdown now, so
+     preserving source newlines on top of it doubles every paragraph break. */
   word-break: break-word;
   line-height: 1.4;
 }

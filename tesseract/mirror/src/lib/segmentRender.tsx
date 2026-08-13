@@ -1,5 +1,5 @@
 import type { AssistantStreamSegment, ToolCall, ToolResult } from './types';
-import { ChatMarkdown } from '../components/chat/ChatMarkdown';
+import { Markdown } from '../components/common/Markdown';
 import { ToolCallPill } from '../components/chat/ToolCallPill';
 import { splitIntentLines } from './intentSplit';
 
@@ -17,7 +17,7 @@ export function renderAnswer(text: string, key: string) {
   if (!text) return null;
   return (
     <div className="bubble-md" key={key}>
-      <ChatMarkdown>{text}</ChatMarkdown>
+      <Markdown>{text}</Markdown>
     </div>
   );
 }

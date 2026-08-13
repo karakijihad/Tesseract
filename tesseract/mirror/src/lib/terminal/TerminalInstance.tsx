@@ -8,7 +8,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { SearchAddon } from '@xterm/addon-search';
 import { useTerminalStore } from '../../stores/terminal';
 import { useUIStore } from '../../stores/ui';
-import { resolveTheme } from './theme';
+import { resolveTheme, monoFontStack } from './theme';
 
 interface TerminalInstanceProps {
   paneId: string;
@@ -38,7 +38,7 @@ export function TerminalInstance({ paneId, containerRef }: TerminalInstanceProps
 
     const term = new Terminal({
       theme: resolveTheme(currentThemeConfig()),
-      fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace",
+      fontFamily: monoFontStack(),
       fontSize: 14,
       lineHeight: 1.25,
       cursorBlink: true,

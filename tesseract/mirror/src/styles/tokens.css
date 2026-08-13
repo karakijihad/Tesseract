@@ -149,7 +149,10 @@
      ----------------------------------------------------------- */
   --font-ui:      'Space Grotesk', system-ui, sans-serif;
   --font-body:    'Space Grotesk', system-ui, sans-serif;
-  --font-mono:    'Space Grotesk', system-ui, sans-serif;
+  /* A real monospace face. This read 'Space Grotesk' — the UI font — so every
+     code span, fence, path and t-mono chip rendered proportional while
+     JetBrains Mono was downloaded on every load and named by nothing. */
+  --font-mono:    'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
   --font-display: var(--font-ui);
 
   /* Type scale — 7 tiers */

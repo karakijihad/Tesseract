@@ -2,6 +2,7 @@
 
 import React from 'react';
 import type { OperatorJournalRow } from '../../lib/api';
+import { Markdown } from '../../components/common/Markdown';
 
 interface JournalPaneProps {
   rows: OperatorJournalRow[];
@@ -26,7 +27,9 @@ function _formatTs(iso: string): string {
 }
 
 function _renderDetail(row: OperatorJournalRow): React.ReactNode {
-  if (row.summary) return row.summary;
+  // The summary is model prose. It arrives with markdown in it and used to
+  // reach the DOM as a bare text node, asterisks and all.
+  if (row.summary) return <Markdown variant="inline">{row.summary}</Markdown>;
   if (row.event_type === 'dispatch' && row.worker_id) return `worker ${row.worker_id}`;
   if (row.event_type === 'outcome' && row.worker_id) {
     const status = typeof row.status === 'string' ? row.status : 'terminal';

@@ -235,8 +235,10 @@
   border-color: rgba(255, 107, 106, 0.30);
 }
 
+/* `--mono-stack` was never defined, so the class named "mono" rendered in the
+   UI face wherever it was used. */
 .t-mono {
-  font-family: var(--mono-stack);
+  font-family: var(--font-mono);
   font-size: 11px;
 }
 

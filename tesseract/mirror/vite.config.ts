@@ -47,9 +47,9 @@ export default defineConfig(async () => ({
   build: {
     rollupOptions: {
       output: {
-        // Deferred 2026-07-12 bundle-size debt: dynamic imports can't split
-        // (e.g. ChatMarkdown is statically imported in 6 places), so split
-        // the heavy vendors explicitly instead — each chunk caches
+        // Bundle-size debt: dynamic imports can't split the shared Markdown
+        // renderer, which is statically imported across many surfaces, so
+        // split the heavy vendors explicitly instead — each chunk caches
         // independently and the main app chunk drops below the warn line.
         manualChunks: {
           react: ["react", "react-dom"],

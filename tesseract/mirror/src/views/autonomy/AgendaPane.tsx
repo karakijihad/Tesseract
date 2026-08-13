@@ -10,6 +10,7 @@
 
 import React from 'react';
 import type { AgendaItem } from '../../lib/api';
+import { Markdown } from '../../components/common/Markdown';
 import { useAutonomyStore } from '../../stores/autonomy';
 
 interface AgendaPaneProps {
@@ -123,9 +124,9 @@ export function AgendaPane({ items, status, error }: AgendaPaneProps): React.Rea
                   </span>
                   <span className="autonomy-row__score">{_fmtScore(item.priority_score)}</span>
                 </div>
-                <div className="autonomy-row__goal">{item.goal}</div>
+                <div className="autonomy-row__goal"><Markdown variant="inline">{item.goal}</Markdown></div>
                 {item.rationale && (
-                  <div className="autonomy-row__rationale t-meta">{item.rationale}</div>
+                  <div className="autonomy-row__rationale t-meta"><Markdown variant="inline">{item.rationale}</Markdown></div>
                 )}
                 {Object.keys(item.score_components).length > 0 && (
                   <div className="autonomy-row__components t-meta">

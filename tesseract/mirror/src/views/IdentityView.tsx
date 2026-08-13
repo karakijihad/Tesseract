@@ -1,7 +1,5 @@
 import { useEffect, useMemo } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import remarkBreaks from 'remark-breaks';
+import { Markdown } from '../components/common/Markdown';
 import { useSoulStore } from '../stores/soul';
 import { sendCommand } from '../lib/commands';
 import { formatRelative } from '../lib/time';
@@ -68,7 +66,7 @@ export function IdentityView() {
               <section key={b.heading} className="identity-view-card soul-block">
                 <div className="soul-block-heading identity-view-card-heading t-meta">{b.heading}</div>
                 <div className="soul-block-body">
-                  <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{b.body}</ReactMarkdown>
+                  <Markdown>{b.body}</Markdown>
                 </div>
               </section>
             ))}

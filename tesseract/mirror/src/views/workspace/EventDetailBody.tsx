@@ -1,6 +1,6 @@
 import type { WorkspaceEvent } from '../../stores/workspace';
 import { linkifyText } from '../../lib/linkify';
-import { ChatMarkdown } from '../../components/chat/ChatMarkdown';
+import { Markdown } from '../../components/common/Markdown';
 import { DailyBriefBody } from './DailyBriefBody';
 import { PathPill } from './PathPill';
 
@@ -266,7 +266,7 @@ function ReflectionProposalBody({
                   <div>
                     <strong>{title}</strong>
                   </div>
-                  {content && <div className="workspace-detail-snippet t-meta"><ChatMarkdown>{content}</ChatMarkdown></div>}
+                  {content && <div className="workspace-detail-snippet t-meta"><Markdown>{content}</Markdown></div>}
                   {path && (
                     <div className="workspace-detail-meta-row">
                       <PathPill path={path} />

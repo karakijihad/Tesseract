@@ -13,13 +13,20 @@ import remarkMath from "remark-math";
 import rehypeHighlight from "rehype-highlight";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
-import { ChatArtifact, isPreviewableArtifact } from "./ChatArtifact";
+import { ChatArtifact, isPreviewableArtifact } from "../chat/ChatArtifact";
 import { copyToClipboard } from "../../lib/clipboard";
-import { ExpandOverlay } from "../common/ExpandOverlay";
+import { ExpandOverlay } from "./ExpandOverlay";
 import { backendAssetUrl } from "../../lib/endpoints";
 
 interface Props {
   children: string;
+  // `inline` flattens headings, paragraphs and lists to their text so a row
+  // that must stay one line stays one line, while bold/italic/code/links
+  // still render. Block constructs and math are dropped rather than shown.
+  variant?: "block" | "inline";
+  // While a reply streams, an emphasis run whose closing delimiter has not
+  // arrived yet is trimmed instead of being printed as literal syntax.
+  streaming?: boolean;
 }
 
 const components: Components = {
@@ -49,7 +56,7 @@ const components: Components = {
         src={resolvedSrc}
         alt={alt ?? ""}
         loading="lazy"
-        className="chat-md-image"
+        className="md-image"
       />
     );
   },
@@ -60,7 +67,7 @@ const components: Components = {
       return <ChatArtifact code={code} language={language} />;
     }
     return (
-      <div className="chat-md-codeblock">
+      <div className="md-codeblock">
         <CodeExpandButton code={code} language={language} />
         <CodeCopyButton code={code} />
         <pre {...props}>{children}</pre>
@@ -69,7 +76,7 @@ const components: Components = {
   },
   table({ node: _node, children, ...props }) {
     return (
-      <div className="chat-md-table-wrap">
+      <div className="md-table-wrap">
         <table {...props}>{children}</table>
       </div>
     );
@@ -84,16 +91,76 @@ const rehypePlugins = [
   [rehypeHighlight, { detect: true, ignoreMissing: true }],
 ] as const;
 
-export function ChatMarkdown({ children }: Props) {
+// Everything a one-line row may render. Anything else is unwrapped to its
+// text, so a heading or a list item contributes its words and not its bullet.
+const INLINE_ELEMENTS = ["a", "strong", "em", "code", "del"];
+
+export function Markdown({
+  children,
+  variant = "block",
+  streaming = false,
+}: Props) {
+  const source = streaming ? trimDanglingMarks(children) : children;
+
+  // The root class is emitted here, never by the caller. A surface gets the
+  // app's markdown by rendering this component; there is nothing to remember.
+  if (variant === "inline") {
+    return (
+      <span className="md-inline">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          allowedElements={INLINE_ELEMENTS}
+          unwrapDisallowed
+          components={components}
+        >
+          {source}
+        </ReactMarkdown>
+      </span>
+    );
+  }
+
   return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
-      rehypePlugins={rehypePlugins as never}
-      components={components}
-    >
-      {children}
-    </ReactMarkdown>
+    <div className="md">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
+        rehypePlugins={rehypePlugins as never}
+        components={components}
+      >
+        {source}
+      </ReactMarkdown>
+    </div>
   );
+}
+
+// Emphasis delimiters, longest first: `**` must be consumed before the single
+// `*` count is taken, or a complete bold pair reads as two odd singles.
+const STREAM_MARKS = ["**", "`", "*"] as const;
+
+function occurrences(text: string, mark: string): number {
+  return text.split(mark).length - 1;
+}
+
+/**
+ * Drop the last unpaired emphasis delimiter from a partially streamed reply.
+ *
+ * `**Intro` renders as `Intro` and thickens when the closing `**` arrives,
+ * rather than printing asterisks and re-laying-out a moment later. Text inside
+ * an open code fence is left exactly as it is: remark already renders an
+ * unclosed fence as a code block, and its contents are not prose.
+ *
+ * A lone `*` used as multiplication is trimmed too, for as long as the stream
+ * is open. It returns at the final render, which is not streaming.
+ */
+export function trimDanglingMarks(text: string): string {
+  if (occurrences(text, "```") % 2 === 1) return text;
+
+  let out = text;
+  for (const mark of STREAM_MARKS) {
+    if (occurrences(out, mark) % 2 === 0) continue;
+    const last = out.lastIndexOf(mark);
+    out = out.slice(0, last) + out.slice(last + mark.length);
+  }
+  return out;
 }
 
 function textFromNode(node: ReactNode): string {
@@ -128,7 +195,7 @@ function CodeExpandButton({
     <>
       <button
         type="button"
-        className="chat-md-expand"
+        className="md-expand"
         onClick={() => setOpen(true)}
         aria-label="Expand code"
       >
@@ -169,7 +236,7 @@ function CodeCopyButton({ code }: { code: string }) {
   return (
     <button
       type="button"
-      className="chat-md-copy"
+      className="md-copy"
       onClick={onCopy}
       aria-label="Copy code"
     >

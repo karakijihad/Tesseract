@@ -341,7 +341,23 @@ def gpu_packages_ready(extras: list[str] | None = None) -> bool:
         # path; there is no separate provider DLL to probe by hand.
         return "CUDAExecutionProvider" in ort.get_available_providers()
 
-    capi = Path(ort.__file__).parent / "capi"
+    # `__file__` is None when `onnxruntime` resolves as a NAMESPACE package —
+    # an empty directory left in site-packages with no distribution behind it.
+    # That is not a rare state: it is exactly what sits there between removing
+    # the CPU `onnxruntime` and installing the GPU build, which is the window
+    # this function is called in on a first install. `Path(None)` raises
+    # TypeError, `main`'s catch-all reports it as "CPU path kept", and a
+    # machine with a CUDA card silently keeps the CPU path forever — the
+    # profile record is never written, so every later launch repeats it.
+    #
+    # This probe decides whether to perform an install; it must be able to
+    # answer "no" without throwing. Same rule `_expected_bytes` follows in
+    # `pinned_fetch`: a check must never be able to cost the thing it checks.
+    origin = getattr(ort, "__file__", None)
+    if origin is None:
+        return False
+
+    capi = Path(origin).parent / "capi"
     provider_dll = capi / "onnxruntime_providers_cuda.dll"
     if not provider_dll.exists():
         return False
