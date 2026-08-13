@@ -586,10 +586,17 @@ def _stamp_born_at_if_empty() -> None:
     once so the prompt's "Age: day N" line isn't blank forever.
 
     Idempotent, and called on every boot rather than from a one-time seed
-    branch — under additive seeding there is no single fresh-seed moment."""
+    branch — under additive seeding there is no single fresh-seed moment.
+
+    Rewrites the one line rather than round-tripping the document. A YAML
+    round-trip re-emits the whole file, which reflows this one's aligned
+    flow-mappings (`morning: { start: "05:00", … }`) into a denser form and
+    drops their alignment. That was invisible while a hand-authored template
+    was what shipped; with one config tree it is the shipped file this reflows,
+    on the first boot of any machine that has one.
+    """
     import yaml
 
-    from tesseract.lib.yaml_io import round_trip_yaml
     from tesseract.paths import config_dir
 
     identity_path = config_dir() / "identity.yaml"
@@ -602,7 +609,13 @@ def _stamp_born_at_if_empty() -> None:
     from datetime import datetime
 
     now_iso = datetime.now().astimezone().isoformat()
-    round_trip_yaml(identity_path, lambda doc: doc.__setitem__("born_at", now_iso))
+    lines = identity_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if line.startswith("born_at:"):
+            eol = line[len(line.rstrip("\r\n")):]
+            lines[i] = f'born_at: "{now_iso}"{eol}'
+            identity_path.write_text("".join(lines), encoding="utf-8")
+            return
 
 
 def identity_values() -> dict[str, str]:

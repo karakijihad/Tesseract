@@ -6,7 +6,6 @@ import { useCostStore } from '../../stores/cost';
 import { useHealthStore } from '../../stores/health';
 import { useObservationsStore } from '../../stores/observations';
 import { formatUsd } from '../../lib/money';
-import { usePanelStore } from '../../cockpit/panelStore';
 
 // Tabs, not stacked collapsibles. Opening one section used to move the others
 // down the panel, so the thing you were reading walked away from the pointer.
@@ -34,7 +33,6 @@ function storedTab(): TabKey {
 
 export function RightPanel() {
   const [active, setActive] = useState<TabKey>(storedTab);
-  const resetRail = usePanelStore((s) => s.resetRail);
 
   const spent = useCostStore((s) => s.globalState?.spent_usd ?? null);
   const openBreakers = useHealthStore(
@@ -59,16 +57,6 @@ export function RightPanel() {
 
   return (
     <div className="right-panel-inner">
-      <div className="panel-head">
-        <span className="t-head left-panel-cat-title">Monitor</span>
-        <button
-          type="button"
-          className="panel-head-reset t-caption"
-          onClick={() => resetRail('lifeline')}
-        >
-          reset
-        </button>
-      </div>
       <div className="monitor-tabs" role="tablist" aria-label="Monitor sections">
         {TABS.map((tab) => {
           const count = badge(tab.key);

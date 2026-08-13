@@ -583,16 +583,18 @@ body {
   flex: 1 1 0;
 }
 
-/* Left panel weighting: Kernel is the canonical hierarchy view and
-   deserves the lion's share of the column. Pulse is fixed at the height
-   needed for its 3-row tail — never grows, never shrinks — so it always
-   shows exactly the last 3 events without stealing height from Kernel. */
+/* Left panel weighting: Kernel is the canonical hierarchy view and takes
+   everything the column has. Pulse is fixed at the height its 3-row tail
+   needs — never grows, never shrinks — so it cannot steal from Kernel.
+   Trimmed from 156px: the tail is three rows plus a header, and the rest
+   was empty space held back from the flows that needed it. */
 .left-panel-inner > .cat-section--kernel {
   flex: 1 1 auto;
+  min-height: 0;
 }
 .left-panel-inner > .cat-section--pulse {
   flex: 0 0 auto;
-  height: 156px;
+  height: 112px;
   overflow: hidden;
 }
 

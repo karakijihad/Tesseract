@@ -10,6 +10,7 @@ import { memo, useMemo, type PointerEvent as ReactPointerEvent } from "react";
 import {
   usePanelStore,
   isRailKind,
+  type RailKind,
   RAIL_W,
   type PanelState,
 } from "./panelStore";
@@ -45,6 +46,21 @@ function PinIcon({ filled }: { filled: boolean }) {
 }
 
 // A short underscore — collapse the panel off-stage (reachable from the HUD).
+function ResetIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+      <path
+        d="M13 8a5 5 0 1 1-1.6-3.7"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+      <polygon points="13.4,1.8 13.4,5.4 9.8,5.4" fill="currentColor" />
+    </svg>
+  );
+}
+
 function MinimizeIcon() {
   return (
     <svg
@@ -113,6 +129,7 @@ function GlassPanelImpl({ panel, maximizeRect, bounds }: GlassPanelProps) {
   const togglePin = usePanelStore((s) => s.togglePin);
   const toggleMaximize = usePanelStore((s) => s.toggleMaximize);
   const toggleMinimize = usePanelStore((s) => s.toggleMinimize);
+  const resetRail = usePanelStore((s) => s.resetRail);
 
   const content = useMemo(() => VIEW_REGISTRY[panel.kind](), [panel.kind]);
   const label = VIEW_LABELS[panel.kind];
@@ -248,6 +265,18 @@ function GlassPanelImpl({ panel, maximizeRect, bounds }: GlassPanelProps) {
           >
             <PinIcon filled={panel.pinned} />
           </button>
+          {isRail && (
+            <button
+              type="button"
+              className="glass-panel__btn"
+              aria-label={`Reset ${label} to its default position`}
+              title={`Reset ${label} to its default position`}
+              onPointerDown={stop}
+              onClick={() => resetRail(panel.kind as RailKind)}
+            >
+              <ResetIcon />
+            </button>
+          )}
           {!isRail && (
             <button
               type="button"

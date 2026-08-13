@@ -120,30 +120,6 @@ export const FLOWS: Flow[] = [
     ],
   },
   {
-    id: 'autonomy',
-    label: 'Autonomy',
-    trigger: 'a scheduled tick — no operator present',
-    blurb:
-      'Two gates stand between a proposal and any spend: the vetter, then the governor. Rejections are recorded, not deleted.',
-    source: 'orchestrator/autonomy/kernel.py · governor.py · prune_ledger.py',
-    nodes: [
-      { id: 'events', label: 'workspace events', kind: 'store', tone: 'info', signal: 'autonomy.events' },
-      { id: 'writes', label: 'memory writes', kind: 'store', tone: 'info', signal: 'autonomy.writes' },
-      { id: 'heartbeat', label: 'heartbeat', sub: 'reads since cursor', kind: 'stage', signal: 'autonomy.heartbeat' },
-      { id: 'vetter', label: 'vetter', sub: 'LLM verdict', kind: 'gate', tone: 'warn', signal: 'autonomy.vetter' },
-      { id: 'prune', label: 'prune ledger', sub: 'reject · merge', kind: 'store', depth: 1, tone: 'bad', signal: 'autonomy.prune' },
-      { id: 'agenda', label: 'agenda', sub: 'scored on save', kind: 'stage', signal: 'autonomy.agenda' },
-      { id: 'governor', label: 'governor', sub: 'paused? headroom?', kind: 'gate', tone: 'warn', signal: 'autonomy.governor' },
-      { id: 'worker', label: 'worker', sub: 'top-K only', kind: 'stage', tone: 'accent', signal: 'autonomy.worker' },
-      { id: 'journal', label: 'journal', sub: 'outcome', kind: 'store', tone: 'info', signal: 'autonomy.journal' },
-    ],
-    notes: [
-      { after: 'heartbeat', text: 'no delta → no model bill', tone: 'ok' },
-      { after: 'prune', text: '↳ recorded, not deleted', tone: 'bad' },
-      { after: 'journal', text: '↑ outcomes are events too — the loop closes' },
-    ],
-  },
-  {
     id: 'delegation',
     label: 'Delegates',
     trigger: 'the assistant calling a delegate tool',

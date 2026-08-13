@@ -1,28 +1,23 @@
-"""Build-time templater: emit the shipped default-config tree.
+"""Emit the shipped config tree: `tesseract/config/*.yaml`, verbatim.
 
-Every `tesseract/config/<name>.yaml` that ships is in exactly one of two
-states, and a file in neither is a hard build FAILURE:
+There used to be a second copy of every file under `config/_shipping/`,
+hand-authored, and the build shipped that instead. It existed because the dev
+tree held settings a stranger must not receive — `security_mode: headless`,
+this machine's `born_at`, the operator's own scheduled jobs and reading list.
 
-- **Templated** — a hand-authored `_shipping/<name>.yaml` ships verbatim,
-  because the dev file holds something a stranger must not receive. That is
-  usually a per-install value rather than a secret: `security_mode: headless`
-  is right for this machine and would be a serious regression shipped to
-  someone who has not yet seen the assistant work.
-- **Folded** — named in `FOLDED` below, and the dev file ships as it stands.
-  Most config never differed between the two trees except in comments written
-  for a maintainer of this repo rather than a user of the app; keeping a second
-  copy of those files bought nothing and drifted, so production shipped stale
-  settings while the template looked maintained.
+**Production is the truth now, and the dev tree carries it.** The values that
+differed are gone from here: the config in this repo is the config a user
+receives, so there is nothing left to template and no second copy to drift.
+Anything genuinely per-machine lives in the installed app's own config, which
+first-run setup writes and the operator owns from then on — never here.
 
-The list is explicit on purpose. The rule this module exists to enforce is that
-the operator's live config never reaches production by *accident* — a silent
-fallback for any file missing a template is precisely the leak path the
-templating replaced. Folding is a deliberate, reviewed declaration that one
-named file is the same for everyone; it is not a default.
-
-`audit_release_tree.scan_all` still runs over the built tree and hard-fails on
-PII, secrets or work notes, so a folded file that later grows something private
-fails the build rather than shipping.
+What that trades away is worth naming. The old rule was that a file with no
+template failed the build rather than falling back to the live one, so nothing
+could leak by accident. With one tree that guard has nothing to compare, and
+what stops a private value shipping is `audit_release_tree.scan_all`, which
+runs over the built output and hard-fails on PII, secrets and work notes.
+**So the discipline moved rather than disappeared: a setting that must not
+reach a user's machine does not belong in this directory at all.**
 
 Never touches the source directory; this is a one-way, read-src/write-out step.
 """
@@ -32,49 +27,14 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-# Config that is identical for this machine and every install, so the dev file
-# IS the shipped file. Add a name here only after checking the two are the same
-# but for comments — `diff <(grep -v '^\\s*#' a) <(grep -v '^\\s*#' b)` empty.
-FOLDED = frozenset({
-    "agenda-mappers.yaml",
-    "hardware.yaml",
-    "janitor.yaml",
-    "mcp_servers.yaml",
-    "memory.yaml",
-    "open_verb.yaml",
-    "providers.yaml",
-    "roles.yaml",
-    "runtime.yaml",
-    "terminal.yaml",
-    "tokenjuice.yaml",
-})
-
 
 def build_shipping_config(src_dir: Path, out_dir: Path) -> None:
-    """Write the shipped config tree into `out_dir`.
-
-    A templated file ships from `src_dir/_shipping/<name>.yaml`; a `FOLDED`
-    one ships from `src_dir/<name>.yaml`. Anything else is a hard build
-    failure — never a silent fallback to the operator's live file.
-    """
+    """Copy every `src_dir/*.yaml` into `out_dir` byte-for-byte."""
     if src_dir.resolve() == out_dir.resolve():
         raise ValueError(f"build_shipping_config: src_dir and out_dir must differ (both resolve to {src_dir.resolve()})")
     out_dir.mkdir(parents=True, exist_ok=True)
-    shipping_dir = src_dir / "_shipping"
     for src_file in src_dir.glob("*.yaml"):
-        name = src_file.name
-        template = shipping_dir / name
-        if template.is_file():
-            shutil.copy2(template, out_dir / name)
-        elif name in FOLDED:
-            shutil.copy2(src_file, out_dir / name)
-        else:
-            raise RuntimeError(
-                f"build_shipping_config: {name} has no shipping template "
-                f"(expected {template}) and is not in FOLDED — refusing to "
-                "fall back to the operator's live config. Either write the "
-                "template or fold the file deliberately."
-            )
+        shutil.copy2(src_file, out_dir / src_file.name)
 
 
 if __name__ == "__main__":

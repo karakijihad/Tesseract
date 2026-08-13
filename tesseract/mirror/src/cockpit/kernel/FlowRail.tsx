@@ -1,58 +1,51 @@
 import type { Flow, FlowNode } from './flows';
 import { useFlowActivity } from './useFlowActivity';
 
-// The vertical rail the Kernel panel has always used: a hairline spine, a dot
-// per stage, indentation for nesting. It reads in a 280px column, which a
-// left-to-right schematic does not.
-//
-// Kind is carried by the dot, not by a second colour system: a gate is
-// hollow (it can refuse), a store is square (it holds something), a seat is
-// dashed (a role fills it).
+// The synapse column, unchanged — same markup, same `.syn-*` classes, same
+// stylesheet. Only what it draws is new: five flows instead of the chat turn
+// alone. A second visual language was tried here and removed; the old one
+// reads better in a 280px rail, and reusing it literally is what keeps the
+// new tabs from drifting away from it.
 
-function dotClass(node: FlowNode): string {
+function depthClass(depth: 0 | 1 | 2 | undefined): string {
+  if (depth === 1) return 'd1';
+  if (depth === 2) return 'd2';
+  return '';
+}
+
+function nodeClass(node: FlowNode, lit: boolean, flashing: boolean): string {
   return [
-    'krn-dot',
-    `krn-dot--${node.kind}`,
-    `krn-tone--${node.tone ?? 'default'}`,
-  ].join(' ');
+    'syn-node',
+    depthClass(node.depth),
+    lit ? 'is-active' : '',
+    lit && flashing ? 'is-flashing' : '',
+    node.kind === 'gate' ? 'is-decision' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
 }
 
 interface Props {
   flow: Flow;
-  /** Per-node live values, replacing the static sub-label when present. */
-  counts?: Record<string, string>;
 }
 
-export function FlowRail({ flow, counts }: Props) {
+export function FlowRail({ flow }: Props) {
   const { active, flashing } = useFlowActivity(flow.id);
   const anyActive = flow.nodes.some((n) => active.has(n.id));
 
   return (
-    <div className={`krn-rail${anyActive ? ' has-activity' : ''}`}>
+    <div className={`syn-flow${anyActive ? ' has-activity' : ''}`}>
       {flow.nodes.map((node) => {
         const lit = active.has(node.id);
-        const sub = counts?.[node.id] ?? node.sub;
-        const notes = flow.notes?.filter((n) => n.after === node.id) ?? [];
         return (
-          <div key={node.id}>
-            <div
-              className={`krn-node krn-d${node.depth ?? 0}${lit ? ' is-lit' : ''}${
-                lit && flashing ? ' is-flashing' : ''
-              }`}
-              data-signal={node.signal}
-            >
-              <span className={dotClass(node)} aria-hidden="true" />
-              <span className="krn-label">{node.label}</span>
-              {sub && <span className="krn-sub">{sub}</span>}
-            </div>
-            {notes.map((note) => (
-              <div
-                key={note.text}
-                className={`krn-note krn-d${node.depth ?? 0} krn-tone--${note.tone ?? 'default'}`}
-              >
-                {note.text}
-              </div>
-            ))}
+          <div
+            key={node.id}
+            className={nodeClass(node, lit, flashing)}
+            data-kind={node.kind}
+            data-signal={node.signal}
+          >
+            <span className="syn-dot" aria-hidden="true" />
+            <span className="syn-lbl">{node.label}</span>
           </div>
         );
       })}

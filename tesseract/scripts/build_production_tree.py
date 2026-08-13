@@ -1,9 +1,11 @@
 """Generate the sanitized production tree users download.
 
-Reads the dev repo, writes a clean tree: only git-TRACKED files, config
-shipped from hand-authored templates via make_shipping_config (Task 8b),
-state dirs created empty, a small belt-and-braces glob denylist per
-_production_manifest. NEVER writes into the source tree.
+Reads the dev repo, writes a clean tree: only git-TRACKED files, config copied
+verbatim by make_shipping_config, state dirs created empty, a small
+belt-and-braces glob denylist per _production_manifest. Two values that the
+runtime writes into tracked files are reset in the OUTPUT afterwards
+(`_reset_entities`, `_blank_born_at`) — the source cannot hold them blank
+because booting the app fills them back in. NEVER writes into the source tree.
 """
 
 from __future__ import annotations
@@ -134,6 +136,36 @@ def _reset_entities(out_root: Path) -> None:
         yaml.dump(data, f)
 
 
+def _blank_born_at(out_root: Path) -> None:
+    """Clear `born_at` in the shipped `config/identity.yaml`.
+
+    It cannot be guaranteed at the source. `config_seed._stamp_born_at_if_empty`
+    runs on every boot and writes this machine's birth time into the file the
+    moment it is blank — which is correct behaviour, and the reason the value
+    ships empty in the first place. So a developer who has ever started the app
+    has a stamped `identity.yaml`, and with one config tree that file is the one
+    that would ship.
+
+    Blanked in the OUTPUT, after the copy, exactly like `_reset_entities` — the
+    only place the guarantee can hold no matter what the source tree looks like.
+
+    Rewritten as a single line rather than through a YAML round-trip: ruamel
+    re-emits the whole document, which reflows this file's aligned flow-mappings
+    and drops its quoting style. The shipped config is read by people, so a
+    one-value reset must not reformat the file around it.
+    """
+    path = out_root / "tesseract" / "config" / "identity.yaml"
+    if not path.is_file():
+        return
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if line.startswith("born_at:"):
+            newline = line[len(line.rstrip("\r\n")):]
+            lines[i] = f'born_at: ""{newline}'
+            path.write_text("".join(lines), encoding="utf-8")
+            return
+
+
 def build(src_root: Path, out_root: Path, files: Iterable[str] | None = None) -> None:
     """Copy the shippable tracked files of `src_root` into a fresh `out_root`.
 
@@ -210,6 +242,7 @@ def build(src_root: Path, out_root: Path, files: Iterable[str] | None = None) ->
         _write_state_dir_gitignore(out_dir)
 
     _reset_entities(out_root)
+    _blank_born_at(out_root)
 
     # Voice model dirs: weights now land in `runtime/models/voice/`, outside
     # the clone entirely, so this no longer guards the common case. It stays

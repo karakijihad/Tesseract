@@ -80,14 +80,11 @@ EXCLUDE_GLOBS = (
 )
 
 # Full-relative-path globs (matched against the whole posix path, not just
-# the filename — unlike EXCLUDE_GLOBS above). Task 8b: config ships from
-# hand-authored templates only (tesseract/config/_shipping/*.yaml), never
-# from the operator's live tesseract/config/*.yaml. This one pattern
-# excludes both the live top-level yaml files AND the _shipping/*.yaml
-# templates themselves from the raw tracked-file copy — the templates map
-# onto config/*.yaml via make_shipping_config.build_shipping_config, they
-# never appear as their own tesseract/config/_shipping/ subfolder in the
-# output tree.
+# the filename — unlike EXCLUDE_GLOBS above). Config is excluded from the raw
+# tracked-file copy and written by `make_shipping_config` instead, which is a
+# verbatim copy of `tesseract/config/*.yaml`. The indirection survives the fold
+# that deleted the `_shipping/` twin because the build still needs ONE place
+# that decides what config the output gets — `_blank_born_at` runs after it.
 EXCLUDE_PATH_GLOBS = (
     "tesseract/config/*.yaml",
     # Task 11f: workspace ships from hand-authored templates only
