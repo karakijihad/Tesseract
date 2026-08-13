@@ -168,8 +168,10 @@ def save_session(
     *,
     index_work: bool = True,
 ) -> Path:
+    path = session_file(session_dir, name)
+    if path is None:
+        raise ValueError(f"invalid session name: {name!r}")
     session_dir.mkdir(parents=True, exist_ok=True)
-    path = session_dir / f"{name}.json"
     state = SessionState(
         started_at=started_at,
         ended_at=_now_iso(),
@@ -690,13 +692,16 @@ def delete_session(session_dir: Path, name: str) -> tuple[bool, str]:
     """Delete a saved session file.
 
     Returns (ok, reason):
-      (True,  "")          — deleted
-      (False, "not_found") — no file at that path (operator typo or already gone)
-      (False, "io_error")  — unlink raised OSError
+      (True,  "")             — deleted
+      (False, "invalid_name") — the name could name a file outside session_dir
+      (False, "not_found")    — no file at that path (operator typo or already gone)
+      (False, "io_error")     — unlink raised OSError
     The reason discriminates so the Mirror can surface a warning toast for
     not_found (operator-recoverable) vs an error toast for io_error.
     """
-    path = session_dir / f"{name}.json"
+    path = session_file(session_dir, name)
+    if path is None:
+        return False, "invalid_name"
     if not path.exists():
         return False, "not_found"
     try:

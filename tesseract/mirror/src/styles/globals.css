@@ -928,6 +928,11 @@ body {
   font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
 }
+/* The ceiling is context for the figure, so it reads quieter than it. */
+.spend-row-cap {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
 .spend-date { margin-top: var(--space-xs); }
 .right-section-action {
   background: transparent;

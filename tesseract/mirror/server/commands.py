@@ -435,13 +435,26 @@ async def cmd_save(app: web.Application, session: ServerSession, arg: str | None
         ))
         return
     name = _resolve_save_name(session, arg)
-    path = save_session(
-        SESSIONS_DIR,
-        name,
-        opts.model,
-        session.started_at,
-        list(session.chat_session.history),
-    )
+    try:
+        path = save_session(
+            SESSIONS_DIR,
+            name,
+            opts.model,
+            session.started_at,
+            list(session.chat_session.history),
+        )
+    except ValueError:
+        await send_envelope(session, make_envelope(
+            "command_result", "command_result", session.session_id,
+            {
+                "command": "save",
+                "ok": False,
+                "reason": f"not a usable session name: {name}",
+                "reason_code": "invalid_name",
+                "severity": "warning",
+            },
+        ))
+        return
     session.save_name = name
     await send_envelope(session, make_envelope(
         "session_saved", "session", session.session_id,
@@ -654,10 +667,12 @@ async def cmd_delete(session: ServerSession, arg: str | None) -> None:
         # not_found → warning (operator typo, recoverable, orb stays normal).
         # io_error → error (filesystem fault, orb red). Discriminator in
         # `severity` field per F2 phase plan §5b.
-        severity = "warning" if reason == "not_found" else "error"
+        severity = "warning" if reason in ("not_found", "invalid_name") else "error"
         human = (
             f"session not found: {name}"
             if reason == "not_found"
+            else f"not a usable session name: {name}"
+            if reason == "invalid_name"
             else f"delete failed for {name}: {reason}"
         )
         await send_envelope(session, make_envelope(

@@ -123,12 +123,6 @@ _DEFAULT_KIND_FOR_RISK: dict[RiskClass, WorkerKind] = {
     RiskClass.OPERATOR_GATE: WorkerKind.CODER_SEAT,
 }
 
-# Sources whose goals are built from a fixed template rather than written by
-# a model. They are exempt from FUZZY dedupe only — exact dedupe and the caps
-# still apply. See the reasoning at the fuzzy check in `_persist_draft`.
-_TEMPLATE_GOAL_SOURCES: frozenset[AgendaSource] = frozenset({AgendaSource.OPERATOR_VIEW})
-
-
 def _kind_for_item(item: AgendaItem) -> WorkerKind | None:
     """Resolve an agenda item to a concrete WorkerKind.
 
@@ -265,6 +259,14 @@ class MapperConfig:
     source: AgendaSource
     default_risk_class: RiskClass
     dedupe_window_hours: int
+    # False for a source whose goals come from a fixed template rather than
+    # from a model. Exempts FUZZY dedupe only — exact dedupe and the caps still
+    # apply. It lives here, beside `dedupe_window_hours`, because that is where
+    # a mapper author configures dedupe and therefore the only place they will
+    # look; it used to be a code-side frozenset they had no reason to know
+    # about. See the fuzzy check in `_persist_draft` for what goes wrong when a
+    # template goal is fuzzy-matched.
+    fuzzy_dedupe: bool = True
 
     @classmethod
     def from_yaml(cls, raw: dict[str, Any]) -> "MapperConfig | None":
@@ -281,6 +283,7 @@ class MapperConfig:
             source=source,
             default_risk_class=risk,
             dedupe_window_hours=int(raw.get("dedupe_window_hours", 24)),
+            fuzzy_dedupe=bool(raw.get("fuzzy_dedupe", True)),
         )
 
 
@@ -916,18 +919,18 @@ class AutonomyKernel:
             # since inception — Deferred 2026-07-12), else the kernel-wide
             # fuzzy_window_hours.
             #
-            # Skipped for sources whose goals come from a fixed template.
-            # Fuzzy matching exists to catch LLM re-phrasings of the same
-            # intent; a template cannot re-phrase itself, so all it can do
-            # here is merge goals that differ only by the short variable the
-            # template interpolates. Measured at threshold 0.9: the view-dwell
-            # goal scores 0.913 chat-vs-autonomy and 0.920 chat-vs-orb (both
-            # wrongly pruned) but 0.891 chat-vs-settings (kept) — so which
-            # distinct views survive is decided by the character length of
-            # their names. Exact dedupe already covers this source correctly
-            # now that its goals are stable.
-            if draft.source not in _TEMPLATE_GOAL_SOURCES:
-                mapper_cfg = self._mapper_configs.get(draft.source)
+            # Skipped for a mapper configured `fuzzy_dedupe: false` — a source
+            # whose goals come from a fixed template. Fuzzy matching exists to
+            # catch LLM re-phrasings of the same intent; a template cannot
+            # re-phrase itself, so all it can do here is merge goals that differ
+            # only by the short variable the template interpolates. Measured at
+            # threshold 0.9: the view-dwell goal scores 0.913 chat-vs-autonomy
+            # and 0.920 chat-vs-orb (both wrongly pruned) but 0.891
+            # chat-vs-settings (kept) — so which distinct views survive is
+            # decided by the character length of their names. Exact dedupe
+            # already covers such a source correctly.
+            mapper_cfg = self._mapper_configs.get(draft.source)
+            if mapper_cfg is None or mapper_cfg.fuzzy_dedupe:
                 window_hours = (
                     mapper_cfg.dedupe_window_hours
                     if mapper_cfg is not None

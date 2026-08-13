@@ -21,11 +21,17 @@ mappers:
 
   # Fires when the Mirror UI detects sustained operator attention on one
   # view (a long dwell time or repeated switching back to it).
+  # `fuzzy_dedupe: false` because this mapper's goal is a fixed template with
+  # one interpolated view name. Fuzzy matching catches a model re-phrasing the
+  # same intent; a template cannot re-phrase itself, so at threshold 0.9 it
+  # merges genuinely distinct views on the length of their names alone. Exact
+  # dedupe still applies, as do the caps.
   operator_view:
     enabled: true
     source: operator_view
     default_risk_class: propose
     dedupe_window_hours: 24
+    fuzzy_dedupe: false
 
   # Fires from the periodic self-reflection heartbeat.
   self_reflection:

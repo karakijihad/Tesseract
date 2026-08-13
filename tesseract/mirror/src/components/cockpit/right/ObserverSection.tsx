@@ -2,7 +2,6 @@ import { useObservationsStore } from '../../../stores/observations';
 import { Markdown } from '../../common/Markdown';
 import { useObserverStore } from '../../../stores/observer';
 import { useSuggestionsStore } from '../../../stores/suggestions';
-import { CostChip } from '../hud/CostChip';
 import { ObserverStatsChip } from './ObserverStatsChip';
 import { ObserverSuggestions } from './ObserverSuggestions';
 
@@ -45,7 +44,6 @@ export function ObserverSection() {
           <div className="observer-arm-row t-meta">
             <span className="observer-arm-state">arm: {armState}</span>
             <div className="observer-arm-actions">
-              <CostChip role="observer_agent" shortLabel="obs" />
               <button
                 type="button"
                 className="observer-trigger t-caption"

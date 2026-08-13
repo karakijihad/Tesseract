@@ -51,6 +51,15 @@ def _validate_segment(value: str, kind: str) -> str:
 
     Guarded in the path builders so every caller inherits it, the same placement
     `agents/loader.py::_is_unsafe_agent_name` uses for the same class of sink.
+
+    A denylist, where `surfaces/persistence.py::safe_view` and
+    `session_store.py::_is_valid_slug` are charset allowlists — deliberately,
+    and this is the one place the asymmetry is correct. `mint_agenda_id` builds
+    an id from a goal fragment with `str.isalnum`, which is Unicode-aware, so a
+    goal in any script mints a legal id that an ASCII allowlist would refuse —
+    and ids already on disk would stop resolving. Traversal is what this has to
+    stop, and the separators plus the `Path(value).name` comparison stop it on
+    both platforms.
     """
     if not value or value in (".", "..") or Path(value).name != value:
         raise ValueError(f"invalid agenda {kind}: {value!r}")

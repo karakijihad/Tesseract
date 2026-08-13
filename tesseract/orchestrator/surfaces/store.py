@@ -31,6 +31,7 @@ from tesseract.orchestrator.surfaces.persistence import (
     persist_surfaces,
     read_default_layout,
     read_view_blob,
+    safe_view,
 )
 
 log = logging.getLogger(__name__)
@@ -52,7 +53,15 @@ class SurfaceStore:
         ids, so a re-seed on the next boot is idempotent, and the first
         operator interaction persists the layout (`apply_event` → `_persist`).
         A view whose file *exists* (even with an empty `surfaces`) is never
-        re-seeded — the operator may have deliberately closed every card."""
+        re-seeded — the operator may have deliberately closed every card.
+
+        An illegal view name gets a throwaway dict and is NOT registered.
+        `create` refuses one outright, but `apply_event` and `list_for_view`
+        take a view straight off a canvas event, and registering it would grow
+        `_views`/`_hydrated` by one entry per distinct name for a view that can
+        never load or persist."""
+        if safe_view(view) is None:
+            return {}
         if view in self._hydrated:
             return self._views.setdefault(view, {})
         self._hydrated.add(view)
@@ -148,6 +157,18 @@ class SurfaceStore:
         mode: str = "embedded",
         title: str | None = None,
     ) -> str:
+        if safe_view(view) is None:
+            # Refused here and not only at the sink. `write_view_blob` returns
+            # without writing, and nothing on this path reads that: the card
+            # would go into `self._views`, publish `surface_created` and hand
+            # the caller an id, while persisting nothing and vanishing on the
+            # next boot. `surface_create` is AUTO posture, so the caller is
+            # usually the model — it has to be told the name is unusable, or it
+            # cannot correct it.
+            raise ValueError(
+                f"invalid canvas view {view!r}: letters, digits, underscore and "
+                f"dash only, up to 64 characters"
+            )
         surfaces = self._ensure_view(view)
         now = utc_now_iso()
         next_z = (max((d.z for d in surfaces.values()), default=0)) + 1

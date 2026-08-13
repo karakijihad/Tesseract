@@ -40,16 +40,53 @@ export function SpendSection() {
   const globalState = useCostStore((s) => s.globalState);
   const perRole = useCostStore((s) => s.perRole);
   const overageUnlocked = useCostStore((s) => s.overageUnlocked);
+  const voiceProviders = useCostStore((s) => s.voiceProviders);
 
   const totals = new Map<string, number>();
+  // A group's ceiling is the sum of the sub-caps its roles carry. Roles
+  // without one contribute nothing, and a group with no capped role at all
+  // shows its figure alone rather than an invented denominator.
+  const caps = new Map<string, number | null>();
   for (const [role, entry] of Object.entries(perRole)) {
     const key = groupFor(role);
     totals.set(key, (totals.get(key) ?? 0) + (entry?.role_total_usd ?? 0));
+    const cap = entry?.role_cap_usd ?? null;
+    if (cap !== null) caps.set(key, (caps.get(key) ?? 0) + cap);
+    else if (!caps.has(key)) caps.set(key, null);
   }
+  // Voice ceilings are not role sub-caps — they sit per LANE, in
+  // `roles.yaml voice.{stt,tts}.<lane>.daily_budget_usd`, and reach the store
+  // as `voice_providers`. Without this the two voice rows were the only ones
+  // with no denominator, which read as an oversight rather than a fact.
+  //
+  // A zero budget is still a budget: an all-local lane reads `$0.00 / $0.00`
+  // rather than dropping its denominator, so the row keeps the same shape it
+  // will have the day a paid lane is switched on. Only genuinely unknown
+  // lanes — nothing reported at all — go without one.
+  const laneCap = (lanes: Record<string, { cap_usd: number }> | undefined) => {
+    const entries = Object.values(lanes ?? {});
+    if (entries.length === 0) return null;
+    return entries.reduce((sum, lane) => sum + lane.cap_usd, 0);
+  };
+  const speechCap = laneCap(voiceProviders?.tts);
+  const listeningCap = laneCap(voiceProviders?.stt);
+  const addCap = (key: string, extra: number | null) => {
+    if (extra === null) return;
+    caps.set(key, (caps.get(key) ?? 0) + extra);
+  };
+  addCap('speech', speechCap);
+  addCap('listening', listeningCap);
+
   const rows = [
-    ...GROUPS.map((g) => ({ label: g.label, spent: totals.get(g.key) ?? 0 })),
-    { label: 'other', spent: totals.get('other') ?? 0 },
-  ].filter((r) => r.spent > 0);
+    ...GROUPS.map((g) => ({ key: g.key, label: g.label })),
+    { key: 'other', label: 'other' },
+  ]
+    .map((g) => ({
+      label: g.label,
+      spent: totals.get(g.key) ?? 0,
+      cap: caps.get(g.key) ?? null,
+    }))
+    .filter((r) => r.spent > 0);
 
   const ratio =
     globalState && globalState.cap_usd > 0
@@ -90,6 +127,12 @@ export function SpendSection() {
                     <span className="t-meta">{r.label}</span>
                     <span className="t-caption spend-row-figure">
                       {formatUsd(r.spent)}
+                      {r.cap !== null && (
+                        <span className="t-meta spend-row-cap">
+                          {' / '}
+                          {formatUsd(r.cap)}
+                        </span>
+                      )}
                     </span>
                   </li>
                 ))}

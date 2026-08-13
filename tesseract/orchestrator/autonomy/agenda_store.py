@@ -44,6 +44,7 @@ AgendaBroadcastHook = Callable[[str, AgendaItem, Mapping[str, Any]], None]
 from tesseract.orchestrator.autonomy.paths import (
     agenda_active_dir,
     agenda_archive_dir,
+    agenda_archive_path,
     agenda_index_path,
     agenda_item_path,
     agenda_root,
@@ -369,7 +370,7 @@ class AgendaStore:
                 f"({item.status.value})"
             )
         month = item.updated_at.astimezone(timezone.utc).strftime("%Y-%m")
-        dst = agenda_archive_dir() / month / f"{item.id}.json"
+        dst = agenda_archive_path(item.id, month)
         dst.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write_json(dst, item.model_dump(mode="json"))
         # Remove the active copy after the archive write commits.
