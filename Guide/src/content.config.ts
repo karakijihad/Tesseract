@@ -14,7 +14,7 @@ export const collections = {
   docs: defineCollection({
     loader: glob({
       base: '.',
-      pattern: '{README,start/**/*,anatomy/**/*,mechanisms/**/*,reference/**/*}.md',
+      pattern: '{README,start/**/*,anatomy/**/*,mechanisms/**/*,reference/**/*,about/**/*}.md',
       generateId: ({ entry }) =>
         entry === 'README.md' ? 'index' : entry.replace(/\.md$/, ''),
     }),

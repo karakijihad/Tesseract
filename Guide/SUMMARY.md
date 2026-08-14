@@ -6,6 +6,7 @@
 
 - [What it is](start/what-it-is.md)
 - [Install](start/install.md)
+- [Setting up](about/setup.md)
 - [Your first hour](start/first-hour.md)
 
 ## How it works
@@ -31,3 +32,9 @@
 - [Models and roles](reference/models-and-roles.md)
 - [Configuration](reference/config.md)
 - [Costs](reference/costs.md)
+
+## The project
+
+- [Security](about/security.md)
+- [Changelog](about/changelog.md)
+- [License](about/license.md)

@@ -3,12 +3,18 @@ title: Install
 description: The installer sets up a shell and a package manager, then clones the app itself.
 ---
 
-The installer sets up a shell and a package manager, then clones the app itself
-from the public repository. Updates come the same way, so the app you install
-today is the one that keeps itself current.
+**[Download TESSERACT-Installer.exe](https://github.com/karakijihad/Tesseract/releases/latest/download/TESSERACT-Installer.exe)** — Windows, and the
+link always gives you the current version, so bookmark it rather than a release
+page. The [source is on GitHub](https://github.com/karakijihad/Tesseract) if you
+would rather read it first.
 
-Full setup instructions, including prerequisites and the first-run
-walkthrough, live in `SETUP.md` alongside the code.
+The installer sets up a shell and a package manager, then clones the app itself
+from that repository. It installs for your Windows user account alone, so it
+does not ask for admin permission. Updates come the same way, so the app you
+install today is the one that keeps itself current.
+
+[Setting up](../about/setup.md) is the rest of it: what each key does, what
+happens when one is missing, and how to point TESSERACT at a different model.
 
 ## What first run does
 

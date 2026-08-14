@@ -23,8 +23,19 @@ What the assistant is allowed to spend in a day, per role. At the warning mark y
 | `feedback_consolidator` | $0.50 |
 | `observer_agent` | $1.00 |
 
+## Speaking and listening are capped too
+
+Voice is billed by the character spoken or the hour heard rather than by the token, so each lane carries its own cap rather than drawing on a role's. A lane that runs on your machine costs nothing and is capped at zero to say so; only a cloud lane can spend.
+
+| Lane | Runs | Daily cap |
+| --- | --- | --- |
+| `af_heart` | on your machine | $0.00 |
+| `hfc_female` | on your machine | $0.00 |
+| `gemini_flash_audio` | in the cloud | $1.00 |
+| `local_whisper` | on your machine | $0.00 |
+
 ## The global cap is derived, not configured
 
-There is no separate global budget line to drift out of step. The ceiling is the **sum of every inner cap** — currently **$7.00** — computed in `brain/cost/ledger.py::CostLedger.cap_usd`. Add a role with a cap and the global ceiling rises by exactly that much.
+There is no separate global budget line to drift out of step. The ceiling is the **sum of every inner cap** — the $6.00 of role caps above plus the $1.00 of voice caps, so **$7.00** — computed in `brain/cost/ledger.py::CostLedger.cap_usd`. Add a role or a lane with a cap and the global ceiling rises by exactly that much.
 
 Autonomy's real ceiling is therefore **$1.50**, spread across its roles rather than held in one place.

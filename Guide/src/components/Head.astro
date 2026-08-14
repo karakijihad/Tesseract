@@ -1,0 +1,17 @@
+---
+// Starlight's own <head>, plus Vercel's analytics beacon.
+//
+// The override renders the default first and appends to it rather than
+// replacing it: everything Starlight puts in the head — canonical URL, Open
+// Graph tags, the favicon, the search index hooks — is still wanted, and a
+// replacement that quietly dropped them would look identical in a browser.
+//
+// The beacon counts page views and nothing else: no cookies, no cross-site
+// identifier, no personalisation. It is script-injected by the component and
+// so is inert during local `astro dev`; it reports only from the deployment.
+import Default from '@astrojs/starlight/components/Head.astro';
+import Analytics from '@vercel/analytics/astro';
+---
+
+<Default><slot /></Default>
+<Analytics />
