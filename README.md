@@ -12,7 +12,7 @@
 <p align="center">
   <a href="../../releases/latest/download/TESSERACT-Installer.exe"><strong>Download</strong></a>
   ·
-  <a href="Guide/">Documentation</a>
+  <a href="https://tesseract.metaengineershub.com">Documentation</a>
   ·
   <a href="CHANGELOG.md">Changelog</a>
   ·
