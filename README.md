@@ -12,6 +12,8 @@
 <p align="center">
   <a href="../../releases/latest/download/TESSERACT-Installer.exe"><strong>Download</strong></a>
   ·
+  <a href="Guide/">Documentation</a>
+  ·
   <a href="CHANGELOG.md">Changelog</a>
   ·
   <a href="SETUP.md">Run from source</a>
