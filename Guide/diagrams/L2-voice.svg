@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="936" height="330" viewBox="0 0 936 330" role="img" aria-label="Voice: microphone through voice activity detection to streaming speech-to-text, then a fuzzy wake gate either discards the utterance or commits it as a turn, whose sentences are synthesised back to audio; speech during playback cancels it."><title>L2-voice</title><desc>Voice: microphone through voice activity detection to streaming speech-to-text, then a fuzzy wake gate either discards the utterance or commits it as a turn, whose sentences are synthesised back to audio; speech during playback cancels it.</desc><rect x="0" y="0" width="936" height="330" fill="#0b0b16"/>
+      <defs>
+        <marker id="v-arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#868692"/>
+        </marker>
+        <marker id="v-arw-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#ff6b6b"/>
+        </marker>
+        <marker id="v-arw-v" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#7c6cf0"/>
+        </marker>
+        <linearGradient id="v-node" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#16162a"/><stop offset="100%" stop-color="#101020"/>
+        </linearGradient>
+      </defs>
+
+      <rect x="0" y="34" width="936" height="96" rx="4" fill="rgba(255,255,255,0.016)"/>
+      <rect x="0" y="176" width="936" height="88" rx="4" fill="rgba(255,255,255,0.016)"/>
+      <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" letter-spacing="1.4" fill="rgba(234,234,248,0.38)">
+        <text x="8" y="26">HEAR</text>
+        <text x="8" y="168">SPEAK</text>
+      </g>
+
+      <g stroke="rgba(234,234,248,0.55)" stroke-width="1" fill="url(#v-node)">
+        <rect x="16" y="56" width="120" height="46" rx="3"/>
+        <rect x="176" y="56" width="120" height="46" rx="3"/>
+        <rect x="336" y="56" width="120" height="46" rx="3"/>
+      </g>
+      <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="12" fill="#f5f5fa" text-anchor="middle">
+        <text x="76" y="78">microphone</text>
+        <text x="236" y="78">hears speech</text>
+        <text x="396" y="78">writes it down</text>
+      </g>
+      <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="10" fill="rgba(234,234,248,0.55)" text-anchor="middle">
+        <text x="76" y="94">raw audio</text>
+        <text x="236" y="94">VAD</text>
+        <text x="396" y="94">STT · streaming</text>
+      </g>
+      <g stroke="rgba(234,234,248,0.55)" stroke-width="1.1" marker-end="url(#v-arw)">
+        <line x1="136" y1="79" x2="172" y2="79"/>
+        <line x1="296" y1="79" x2="332" y2="79"/>
+        <line x1="456" y1="79" x2="500" y2="79"/>
+      </g>
+
+      <polygon points="508,79 534,45 626,45 652,79 626,113 534,113" fill="url(#v-node)" stroke="#ffb454" stroke-width="1.4"/>
+      <text x="580" y="72" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#ffb454" text-anchor="middle">wake gate</text>
+      <text x="580" y="88" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#ffb454" text-anchor="middle">is it for us?</text>
+      <text x="580" y="101" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#ffb454" text-anchor="middle">fuzzy match</text>
+
+      <rect x="516" y="196" width="128" height="42" rx="3" fill="url(#v-node)" stroke="#ff6b6b" stroke-width="1.2"/>
+      <text x="580" y="215" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#ff6b6b" text-anchor="middle">discarded</text>
+      <text x="580" y="229" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="rgba(234,234,248,0.55)" text-anchor="middle">never becomes a turn</text>
+      <line x1="580" y1="113" x2="580" y2="192" stroke="#ff6b6b" stroke-width="1.2" marker-end="url(#v-arw-r)"/>
+      <rect x="592.6" y="149.8" width="70.8" height="11.0" fill="#0b0b16"/><text x="628" y="158" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#ff6b6b" text-anchor="middle">below score</text>
+
+      <rect x="700" y="56" width="132" height="46" rx="3" fill="url(#v-node)" stroke="#7c6cf0" stroke-width="1.5"/>
+      <text x="766" y="78" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#9d8fff" text-anchor="middle">Agent</text>
+      <text x="766" y="94" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="rgba(234,234,248,0.55)" text-anchor="middle">L1 · system context</text>
+      <line x1="652" y1="79" x2="696" y2="79" stroke="rgba(234,234,248,0.55)" stroke-width="1.1" marker-end="url(#v-arw)"/>
+      <rect x="649.2" y="37.8" width="53.7" height="11.0" fill="#0b0b16"/><text x="676" y="46" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="rgba(234,234,248,0.55)" text-anchor="middle">accepted</text>
+
+      <rect x="700" y="196" width="132" height="42" rx="3" fill="url(#v-node)" stroke="rgba(234,234,248,0.55)"/>
+      <text x="766" y="215" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#f5f5fa" text-anchor="middle">speaks the reply</text>
+      <text x="766" y="229" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="rgba(234,234,248,0.55)" text-anchor="middle">per sentence</text>
+      <line x1="766" y1="102" x2="766" y2="192" stroke="#7c6cf0" stroke-width="1.2" marker-end="url(#v-arw-v)"/>
+      <rect x="763.5" y="142.8" width="145.0" height="11.0" fill="#0b0b16"/><text x="836" y="151" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#9d8fff" text-anchor="middle">first sentence, not last</text>
+
+      <rect x="866" y="196" width="54" height="42" rx="3" fill="url(#v-node)" stroke="rgba(234,234,248,0.55)"/>
+      <text x="893" y="221" font-family="JetBrains Mono, ui-monospace, monospace" font-size="10" fill="#f5f5fa" text-anchor="middle">audio</text>
+      <line x1="832" y1="217" x2="862" y2="217" stroke="rgba(234,234,248,0.55)" stroke-width="1.1" marker-end="url(#v-arw)"/>
+
+      <path d="M893 242 L893 288 L236 288 L236 106" fill="none" stroke="#ff6b6b" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#v-arw-r)"/>
+      <rect x="439.4" y="283.8" width="259.2" height="11.0" fill="#0b0b16"/><text x="569" y="292" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#ff6b6b" text-anchor="middle">barge-in — speech during playback cancels it</text>
+    </svg>

@@ -1,0 +1,58 @@
+/* The site takes its palette from the drawings rather than the other way round.
+   Every hex here is one the SVGs already use, so a diagram sits on the page
+   without a seam: the same ground, the same violet, the same amber gate. */
+
+:root {
+  --sl-color-accent-low: #241f4d;
+  --sl-color-accent: #7c6cf0;
+  --sl-color-accent-high: #b9adff;
+
+  --sl-color-white: #f2f2f8;
+  --sl-color-gray-1: #e9e9f6;
+  --sl-color-gray-2: rgba(233, 233, 246, 0.72);
+  --sl-color-gray-3: rgba(233, 233, 246, 0.5);
+  --sl-color-gray-4: #2a2a3e;
+  --sl-color-gray-5: #1d1d2e;
+  --sl-color-gray-6: #0e0e1a;
+  --sl-color-black: #07070d;
+
+  --sl-color-bg: #07070d;
+  --sl-color-bg-nav: #0b0b16;
+  --sl-color-bg-sidebar: #0b0b16;
+  --sl-color-hairline: rgba(255, 255, 255, 0.055);
+  --sl-color-hairline-light: rgba(255, 255, 255, 0.09);
+
+  --sl-font: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --sl-font-mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+
+  --sl-content-width: 50rem;
+}
+
+/* Diagrams are wide and detailed. Give them room, their own frame, and a
+   horizontal scroll of their own so the page body never scrolls sideways. */
+.sl-markdown-content img[src*='/diagrams/'],
+.sl-markdown-content img[src$='.svg'] {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 1.75rem 0;
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 6px;
+  background: #0b0b16;
+}
+
+/* Tables in the generated reference run long; keep them scrollable in place. */
+.sl-markdown-content table {
+  display: block;
+  overflow-x: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.sl-markdown-content code {
+  font-size: 0.875em;
+  color: var(--sl-color-accent-high);
+}
+
+.sl-markdown-content blockquote {
+  border-inline-start-color: var(--sl-color-accent);
+}

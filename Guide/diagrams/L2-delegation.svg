@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="936" height="246" viewBox="0 0 936 246" role="img" aria-label="Delegation: a delegate tool call passes the permission gate and fills a seat, coder or auditor, with whatever the role points at — CLI or API; the lane streams its transcript to a surface, and its completion is injected into a later turn rather than awaited inline."><title>L2-delegation</title><desc>Delegation: a delegate tool call passes the permission gate and fills a seat, coder or auditor, with whatever the role points at — CLI or API; the lane streams its transcript to a surface, and its completion is injected into a later turn rather than awaited inline.</desc><rect x="0" y="0" width="936" height="246" fill="#0b0b16"/>
+      <defs>
+        <marker id="d-arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#868692"/>
+        </marker>
+        <marker id="d-arw-v" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#7c6cf0"/>
+        </marker>
+        <linearGradient id="d-node" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#16162a"/><stop offset="100%" stop-color="#101020"/>
+        </linearGradient>
+      </defs>
+
+      <rect x="0" y="70" width="936" height="88" rx="4" fill="rgba(255,255,255,0.016)"/>
+      <text x="8" y="62" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" letter-spacing="1.4" fill="rgba(234,234,248,0.38)">HAND OFF</text>
+
+      <rect x="16" y="90" width="128" height="48" rx="3" fill="url(#d-node)" stroke="rgba(234,234,248,0.55)"/>
+      <text x="80" y="112" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#f5f5fa" text-anchor="middle">the Agent</text>
+      <text x="80" y="128" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="rgba(234,234,248,0.55)" text-anchor="middle">tool call</text>
+
+      <polygon points="188,114 206,90 302,90 320,114 302,138 206,138" fill="url(#d-node)" stroke="#ffb454" stroke-width="1.3"/>
+      <text x="254" y="111" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#ffb454" text-anchor="middle">permission</text>
+      <text x="254" y="126" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#ffb454" text-anchor="middle">gate</text>
+      <line x1="144" y1="114" x2="184" y2="114" stroke="rgba(234,234,248,0.55)" stroke-width="1.1" marker-end="url(#d-arw)"/>
+
+      <rect x="364" y="90" width="152" height="48" rx="3" fill="url(#d-node)" stroke="#7c6cf0" stroke-width="1.4" stroke-dasharray="4 3"/>
+      <text x="440" y="110" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#9d8fff" text-anchor="middle">a role, not an app</text>
+      <text x="440" y="126" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="rgba(234,234,248,0.55)" text-anchor="middle">coder · auditor</text>
+      <line x1="320" y1="114" x2="360" y2="114" stroke="rgba(234,234,248,0.55)" stroke-width="1.1" marker-end="url(#d-arw)"/>
+      <text x="440" y="176" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="rgba(234,234,248,0.38)" text-anchor="middle">whoever the role ref names — cli.* or api.*, plus fallbacks</text>
+
+      <rect x="560" y="90" width="152" height="48" rx="3" fill="url(#d-node)" stroke="rgba(234,234,248,0.55)"/>
+      <text x="636" y="110" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#f5f5fa" text-anchor="middle">you watch it work</text>
+      <text x="636" y="126" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="rgba(234,234,248,0.55)" text-anchor="middle">streams while it runs</text>
+      <line x1="516" y1="114" x2="556" y2="114" stroke="rgba(234,234,248,0.55)" stroke-width="1.1" marker-end="url(#d-arw)"/>
+
+      <rect x="756" y="90" width="164" height="48" rx="3" fill="url(#d-node)" stroke="#7c6cf0" stroke-width="1.5"/>
+      <text x="838" y="110" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#9d8fff" text-anchor="middle">completion</text>
+      <text x="838" y="126" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="rgba(234,234,248,0.55)" text-anchor="middle">injected next turn</text>
+      <line x1="712" y1="114" x2="752" y2="114" stroke="#7c6cf0" stroke-width="1.2" marker-end="url(#d-arw-v)"/>
+
+      <path d="M838 90 L838 46 L80 46 L80 86" fill="none" stroke="#7c6cf0" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#d-arw-v)"/>
+      <rect x="283.7" y="41.8" width="350.6" height="11.0" fill="#0b0b16"/><text x="459" y="50" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#9d8fff" text-anchor="middle">not awaited inline — the turn ends, the result arrives later</text>
+
+      <text x="468" y="216" font-family="JetBrains Mono, ui-monospace, monospace" font-size="10" fill="rgba(234,234,248,0.38)" text-anchor="middle">stalled and lost lanes get their own injected notices</text>
+    </svg>

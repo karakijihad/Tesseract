@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="936" height="268" viewBox="0 0 936 268" role="img" aria-label="Memory retrieval: an exact name match short-circuits every later stage; otherwise a prefilter narrows the candidates, keyword and meaning search run over the full index, and a reranker re-orders what survives — but only when its model and runtime are installed."><title>L2-memory</title><desc>Memory retrieval: an exact name match short-circuits every later stage; otherwise a prefilter narrows the candidates, keyword and meaning search run over the full index, and a reranker re-orders what survives — but only when its model and runtime are installed.</desc><rect x="0" y="0" width="936" height="268" fill="#0b0b16"/>
+      <defs>
+        <marker id="m-arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#868692"/>
+        </marker>
+        <marker id="m-arw-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#4ade80"/>
+        </marker>
+        <linearGradient id="m-node" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#16162a"/><stop offset="100%" stop-color="#101020"/>
+        </linearGradient>
+      </defs>
+
+      <rect x="0" y="84" width="936" height="104" rx="4" fill="rgba(255,255,255,0.016)"/>
+      <text x="8" y="76" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" letter-spacing="1.4" fill="rgba(234,234,248,0.38)">RETRIEVE</text>
+
+      <g stroke="rgba(234,234,248,0.55)" stroke-width="1" fill="url(#m-node)">
+        <rect x="16" y="112" width="104" height="46" rx="3"/>
+        <rect x="160" y="112" width="120" height="46" rx="3"/>
+        <rect x="320" y="112" width="120" height="46" rx="3"/>
+        <rect x="632" y="112" width="136" height="46" rx="3"/>
+      </g>
+      <g stroke="#22d3ee" stroke-width="1.2" fill="url(#m-node)">
+        <rect x="480" y="88" width="120" height="40" rx="3"/>
+        <rect x="480" y="146" width="120" height="40" rx="3"/>
+      </g>
+      <line x1="486" y1="88" x2="486" y2="128" stroke="#22d3ee" stroke-width="1.2"/>
+      <line x1="486" y1="146" x2="486" y2="186" stroke="#22d3ee" stroke-width="1.2"/>
+
+      <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="12" fill="#f5f5fa" text-anchor="middle">
+        <text x="68" y="140">query</text>
+        <text x="220" y="134">exact name</text>
+        <text x="380" y="134">narrows it down</text>
+        <text x="540" y="112">keyword search</text>
+        <text x="540" y="170">meaning search</text>
+        <text x="700" y="134">re-orders them</text>
+      </g>
+      <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="rgba(234,234,248,0.55)" text-anchor="middle">
+        <text x="220" y="149">stage 0</text>
+        <text x="380" y="149">stage A</text>
+        <text x="700" y="149">stage C · if installed</text>
+      </g>
+
+      <g stroke="rgba(234,234,248,0.55)" stroke-width="1.1" marker-end="url(#m-arw)">
+        <line x1="120" y1="135" x2="156" y2="135"/>
+        <line x1="280" y1="135" x2="316" y2="135"/>
+        <line x1="600" y1="108" x2="628" y2="126"/>
+        <line x1="600" y1="166" x2="628" y2="144"/>
+      </g>
+      <path d="M440 135 L460 135 L460 108 L476 108" fill="none" stroke="rgba(234,234,248,0.55)" stroke-width="1.1" marker-end="url(#m-arw)"/>
+      <path d="M440 135 L460 135 L460 166 L476 166" fill="none" stroke="rgba(234,234,248,0.55)" stroke-width="1.1" marker-end="url(#m-arw)"/>
+      <rect x="516.0" y="131.8" width="48.0" height="11.0" fill="#0b0b16"/><text x="540" y="140" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="rgba(234,234,248,0.55)" text-anchor="middle">stage B</text>
+
+      <rect x="800" y="112" width="120" height="46" rx="3" fill="url(#m-node)" stroke="#4ade80" stroke-width="1.4"/>
+      <text x="860" y="132" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#4ade80" text-anchor="middle">what gets used</text>
+      <text x="860" y="147" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="9" fill="rgba(234,234,248,0.55)" text-anchor="middle">recalled_memories</text>
+      <line x1="768" y1="135" x2="796" y2="135" stroke="#4ade80" stroke-width="1.2" marker-end="url(#m-arw-g)"/>
+
+      <path d="M220 112 L220 48 L860 48 L860 108" fill="none" stroke="#4ade80" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#m-arw-g)"/>
+      <rect x="407.5" y="43.8" width="264.9" height="11.0" fill="#0b0b16"/><text x="540" y="52" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#4ade80" text-anchor="middle">an exact name match skips everything after it</text>
+
+      <text x="468" y="232" font-family="JetBrains Mono, ui-monospace, monospace" font-size="10" fill="rgba(234,234,248,0.38)" text-anchor="middle">injected once, for one turn — never appended to history</text>
+    </svg>

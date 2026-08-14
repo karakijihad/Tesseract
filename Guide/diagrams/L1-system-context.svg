@@ -1,0 +1,135 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="936" height="380" viewBox="0 0 936 380" role="img" aria-label="TESSERACT system context. One operator enters by text or voice, voice passing a wake gate that can refuse, and the turn replies back to the same operator. The turn loops with the tool registry inside a single turn, loops with delegate seats whose completions return on a later turn, and is watched by the observer. Across turns, autonomy runs on its own clock and writes to memory alongside the observer's suggestions, while the turn recalls from memory."><title>L1-system-context</title><desc>TESSERACT system context. One operator enters by text or voice, voice passing a wake gate that can refuse, and the turn replies back to the same operator. The turn loops with the tool registry inside a single turn, loops with delegate seats whose completions return on a later turn, and is watched by the observer. Across turns, autonomy runs on its own clock and writes to memory alongside the observer's suggestions, while the turn recalls from memory.</desc>
+  <defs>
+    <marker id="s-arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#868692"/>
+    </marker>
+    <marker id="s-arw-v" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#7c6cf0"/>
+    </marker>
+    <marker id="s-arw-c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#22d3ee"/>
+    </marker>
+    <marker id="s-arw-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#ffb454"/>
+    </marker>
+    <linearGradient id="s-node" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#16162a"/><stop offset="100%" stop-color="#101020"/>
+    </linearGradient>
+    <linearGradient id="s-core" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#241f4d"/><stop offset="100%" stop-color="#141129"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="936" height="380" fill="#0b0b16"/>
+
+  <text x="16" y="26" font-family="JetBrains Mono, ui-monospace, monospace" font-size="10.5" letter-spacing="2.2" fill="#9d8fff">TESSERACT · SYSTEM CONTEXT</text>
+  <text x="16" y="44" font-family="JetBrains Mono, ui-monospace, monospace" font-size="10" fill="rgba(234,234,248,0.38)">every loop that touches a turn, and which of them outlive it</text>
+
+  <!-- everything inside this band outlives a single turn -->
+  <rect x="0" y="236" width="936" height="92" rx="4" fill="rgba(34,211,238,0.03)"/>
+  <text x="16" y="230" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" letter-spacing="1.4" fill="rgba(234,234,248,0.38)">ACROSS TURNS</text>
+
+  <!-- one operator, two modalities -->
+  <rect x="16" y="96" width="120" height="72" rx="3" fill="url(#s-node)" stroke="rgba(234,234,248,0.55)" stroke-width="1"/>
+  <text x="76" y="126" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#f5f5fa" text-anchor="middle">operator</text>
+  <text x="76" y="144" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9" fill="rgba(234,234,248,0.55)" text-anchor="middle">text or voice</text>
+
+  <!-- the gate sits on the inbound path; only voice can be refused by it -->
+  <polygon points="178,116 204,94 256,94 282,116 256,138 204,138" fill="url(#s-node)" stroke="#ffb454" stroke-width="1.3"/>
+  <text x="230" y="113" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#ffb454" text-anchor="middle">wake gate</text>
+  <text x="230" y="127" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9" fill="#ffb454" text-anchor="middle">voice only</text>
+
+  <!-- the core -->
+  <rect x="330" y="64" width="260" height="140" rx="4" fill="url(#s-core)" stroke="#7c6cf0" stroke-width="1.6"/>
+  <text x="460" y="115" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="20" font-weight="600" fill="#9d8fff" text-anchor="middle" letter-spacing="0.5">Agent</text>
+  <g stroke="rgba(157,143,255,0.45)" stroke-width="1" fill="rgba(255,255,255,0.03)">
+    <rect x="339" y="139" width="78" height="34" rx="3"/>
+    <rect x="421" y="139" width="78" height="34" rx="3"/>
+    <rect x="503" y="139" width="78" height="34" rx="3"/>
+  </g>
+  <g font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="rgba(234,234,248,0.78)" text-anchor="middle">
+    <text x="378" y="160">assemble</text>
+    <text x="460" y="160">generate</text>
+    <text x="542" y="160">persist</text>
+  </g>
+
+  <!-- the three things the turn loops with, ordered by how long the loop lives -->
+  <rect x="740" y="60" width="132" height="44" rx="3" fill="url(#s-node)" stroke="rgba(234,234,248,0.55)" stroke-width="1"/>
+  <text x="806" y="80" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#f5f5fa" text-anchor="middle">tools</text>
+  <text x="806" y="95" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9" fill="rgba(234,234,248,0.55)" text-anchor="middle">118 registered</text>
+
+  <rect x="740" y="124" width="132" height="44" rx="3" fill="url(#s-node)" stroke="#7c6cf0" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <text x="806" y="144" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#9d8fff" text-anchor="middle">delegates</text>
+  <text x="806" y="159" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9" fill="rgba(234,234,248,0.55)" text-anchor="middle">coder · auditor</text>
+
+  <rect x="740" y="188" width="132" height="44" rx="3" fill="url(#s-node)" stroke="#22d3ee" stroke-width="1.2"/>
+  <line x1="746" y1="188" x2="746" y2="232" stroke="#22d3ee" stroke-width="1.2"/>
+  <text x="806" y="208" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#22d3ee" text-anchor="middle">observer</text>
+  <text x="806" y="223" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9" fill="rgba(234,234,248,0.55)" text-anchor="middle">watches the turn</text>
+
+  <!-- across turns -->
+  <rect x="150" y="254" width="150" height="44" rx="3" fill="url(#s-node)" stroke="#ffb454" stroke-width="1.2"/>
+  <text x="225" y="274" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#ffb454" text-anchor="middle">autonomy</text>
+  <text x="225" y="290" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9" fill="rgba(234,234,248,0.55)" text-anchor="middle">its own clock</text>
+
+  <rect x="400" y="254" width="150" height="44" rx="3" fill="url(#s-node)" stroke="#22d3ee" stroke-width="1.2"/>
+  <line x1="406" y1="254" x2="406" y2="298" stroke="#22d3ee" stroke-width="1.2"/>
+  <text x="475" y="274" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#22d3ee" text-anchor="middle">memory</text>
+  <text x="475" y="290" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9" fill="rgba(234,234,248,0.55)" text-anchor="middle">decays · consolidates</text>
+
+  <!-- inbound, and the outbound edge of every loop -->
+  <g stroke="rgba(234,234,248,0.55)" stroke-width="1.1" marker-end="url(#s-arw)">
+    <line x1="136" y1="116" x2="174" y2="116"/>
+    <line x1="282" y1="116" x2="326" y2="116"/>
+    <line x1="594" y1="74" x2="736" y2="74"/>
+    <line x1="594" y1="136" x2="736" y2="136"/>
+    <line x1="594" y1="196" x2="736" y2="196"/>
+  </g>
+
+  <!-- the reply closes the operator loop: the agent answers whoever asked -->
+  <path d="M326 160 L140 160" fill="none" stroke="rgba(234,234,248,0.55)" stroke-width="1.1" marker-end="url(#s-arw)"/>
+  <rect x="183.3" y="144.8" width="99.4" height="11.0" fill="#0b0b16"/><text x="233" y="153" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="rgba(234,234,248,0.55)" text-anchor="middle">reply · streamed</text>
+
+  <!-- solid return: a tool result re-enters the same turn rather than ending it -->
+  <path d="M736 92 L594 92" fill="none" stroke="rgba(234,234,248,0.55)" stroke-width="1.1" marker-end="url(#s-arw)"/>
+  <rect x="603.9" y="103.8" width="122.2" height="11.0" fill="#0b0b16"/><text x="665" y="112" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="rgba(234,234,248,0.55)" text-anchor="middle">re-enters · up to 80</text>
+
+  <!-- dashed return: the same shape one turn later -->
+  <path d="M736 154 L594 154" fill="none" stroke="#7c6cf0" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#s-arw-v)"/>
+  <rect x="598.2" y="167.8" width="133.6" height="11.0" fill="#0b0b16"/><text x="665" y="176" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#9d8fff" text-anchor="middle">completion · next turn</text>
+
+  <!-- memory is read inside the turn, written across turns -->
+  <line x1="475" y1="250" x2="475" y2="208" stroke="rgba(234,234,248,0.55)" stroke-width="1.1" marker-end="url(#s-arw)"/>
+  <rect x="483.0" y="225.8" width="42.3" height="11.0" fill="#0b0b16"/><text x="487" y="234" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="rgba(234,234,248,0.55)">recall</text>
+
+  <line x1="300" y1="276" x2="396" y2="276" stroke="#ffb454" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#s-arw-a)"/>
+  <rect x="326.9" y="259.8" width="42.3" height="11.0" fill="#0b0b16"/><text x="348" y="268" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#ffb454" text-anchor="middle">writes</text>
+
+  <path d="M806 236 L806 276 L554 276" fill="none" stroke="#22d3ee" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#s-arw-c)"/>
+  <rect x="626.6" y="259.8" width="70.8" height="11.0" fill="#0b0b16"/><text x="662" y="268" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#22d3ee" text-anchor="middle">suggestions</text>
+
+  <!-- the notation every later diagram reuses -->
+  <line x1="16" y1="340" x2="920" y2="340" stroke="rgba(255,255,255,0.06)"/>
+  <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="rgba(234,234,248,0.55)">
+    <rect x="16" y="352" width="26" height="14" rx="2" fill="url(#s-node)" stroke="rgba(234,234,248,0.55)"/>
+    <text x="50" y="363">stage</text>
+
+    <polygon points="107,359 113.5,352 126.5,352 133,359 126.5,366 113.5,366" fill="url(#s-node)" stroke="#ffb454"/>
+    <text x="141" y="363">gate — can refuse</text>
+
+    <rect x="256" y="352" width="26" height="14" rx="2" fill="url(#s-node)" stroke="#22d3ee"/>
+    <line x1="261" y1="352" x2="261" y2="366" stroke="#22d3ee"/>
+    <text x="290" y="363">store</text>
+
+    <rect x="348" y="352" width="26" height="14" rx="2" fill="url(#s-node)" stroke="#7c6cf0" stroke-dasharray="3 2"/>
+    <text x="382" y="363">seat — role-filled</text>
+
+    <line x1="492" y1="359" x2="516" y2="359" stroke="rgba(234,234,248,0.55)"/>
+    <polygon points="516,355 524,359 516,363" fill="rgba(234,234,248,0.55)"/>
+    <text x="532" y="363">solid — inside one turn</text>
+
+    <line x1="686" y1="359" x2="710" y2="359" stroke="rgba(234,234,248,0.55)" stroke-dasharray="4 3"/>
+    <polygon points="710,355 718,359 710,363" fill="rgba(234,234,248,0.55)"/>
+    <text x="726" y="363">dashed — crosses turns</text>
+  </g>
+</svg>
