@@ -1,6 +1,14 @@
-"""Rolling transcript + memory-delta buffer for the stateful observer.
+"""Rolling transcript per conversation + the machine's PTY buffer.
 
-Instance state is in-memory only; reset on observer disarm or server restart.
+Two shapes, two owners. `ObservationTranscript` is a conversation's own
+rolling window and lives on the `ChatSession` — every entry point that
+builds one gets a transcript by construction, so two conversations can
+never interleave into one. `PtyBuffer` is the machine's terminal
+context: panes belong to the host, not to a chat, so one buffer is held
+by the `Observer` and rendered into every prompt.
+
+Instance state is in-memory only; reset on observer disarm, on the
+conversation ending, or on server restart.
 """
 
 from __future__ import annotations
@@ -36,11 +44,10 @@ class PtyLine(TypedDict):
 
 @dataclass
 class ObservationTranscript:
+    """One conversation's rolling window. Owned by its `ChatSession`."""
+
     chat_turns: Deque[dict[str, Any]] = field(
         default_factory=lambda: deque(maxlen=CHAT_TURN_CAP)
-    )
-    pty_buffer: Deque[PtyLine] = field(
-        default_factory=lambda: deque(maxlen=PTY_LINE_CAP)
     )
 
     def append_chat_turns(self, new_turns: list[dict[str, Any]]) -> int:
@@ -63,7 +70,24 @@ class ObservationTranscript:
             added += 1
         return added
 
-    def append_pty_lines(self, lines: list[PtyLine]) -> int:
+    def reset(self) -> None:
+        self.chat_turns.clear()
+
+
+@dataclass
+class PtyBuffer:
+    """The machine's terminal context. Owned by the `Observer`.
+
+    A pane belongs to the host rather than to a conversation, so this is
+    one buffer whatever is being observed, and `drop_pane` — a consent
+    revoke — has to clear it everywhere at once to mean anything.
+    """
+
+    lines: Deque[PtyLine] = field(
+        default_factory=lambda: deque(maxlen=PTY_LINE_CAP)
+    )
+
+    def append_lines(self, lines: list[PtyLine]) -> int:
         """Strip ANSI escape sequences and cap line length before
         buffering. PTY output is sent verbatim to the observer's LLM
         prompt; keeping raw escapes + unbounded length would (a) waste
@@ -85,18 +109,17 @@ class ObservationTranscript:
                 continue
             if len(cleaned) > PTY_LINE_MAX_CHARS:
                 cleaned = cleaned[:PTY_LINE_MAX_CHARS]
-            self.pty_buffer.append({**line, "text": cleaned})
+            self.lines.append({**line, "text": cleaned})
             added += 1
         return added
 
-    def drop_pty_lines_for_pane(self, pane_id: str) -> int:
-        kept = [line for line in self.pty_buffer if line.get("pane_id") != pane_id]
-        dropped = len(self.pty_buffer) - len(kept)
+    def drop_pane(self, pane_id: str) -> int:
+        kept = [line for line in self.lines if line.get("pane_id") != pane_id]
+        dropped = len(self.lines) - len(kept)
         if dropped:
-            self.pty_buffer.clear()
-            self.pty_buffer.extend(kept)
+            self.lines.clear()
+            self.lines.extend(kept)
         return dropped
 
     def reset(self) -> None:
-        self.chat_turns.clear()
-        self.pty_buffer.clear()
+        self.lines.clear()

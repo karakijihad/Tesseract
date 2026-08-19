@@ -696,7 +696,6 @@ export interface ObserverStats {
   last_fired_at: string | null;
   circuit_breaker_state: "green" | "yellow" | "red";
   pending_suggestion_count: number;
-  transcript_turns: number;
 }
 
 // ── Schedule (S5) ────────────────────────────────────────

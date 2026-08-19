@@ -103,7 +103,6 @@ async def _dispatch(app: web.Application, session: ServerSession, raw: str) -> N
 # `_autosave` resolves them via ws_connection's own module globals.
 from tesseract.mirror.server.ws_connection import (  # noqa: E402
     _activity_events_pump,
-    _attach_observer_subscriber_if_armed,
     _autosave,
     _emit_cost_state,
     _emit_entity_signals,

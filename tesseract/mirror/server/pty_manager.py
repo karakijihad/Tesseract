@@ -246,28 +246,16 @@ class PTYManager:
         if detached:
             log.info("pty: cleanup_for_ws detached %d pty(s) pending reattach", len(detached))
         if self._app is not None and not any(p.detached_at is None for p in self._ptys.values()):
-            # Single-operator deployment: detach the now-dead subscriber so
-            # the next WS connect can re-attach it via
-            # `_attach_observer_subscriber_if_armed`. Owner request
-            # 2026-04-29 follow-up — DO NOT reset `observer_state` to
-            # "off" here. The boot-armed default (`_on_startup`) only
-            # fires once per backend boot; resetting on WS disconnect
-            # meant every browser refresh dropped the operator's
-            # implicit consent until they manually re-armed. Keep
-            # `observer_state` as it is (typically "armed" or
-            # "observing") so reconnection re-attaches automatically.
+            # The panes are gone, so the consent that covered them is too and
+            # the buffered terminal context is stale. The subscriber is NOT
+            # disarmed: a channel conversation is still live and still being
+            # observed after the cockpit's socket closes. Owner request
+            # 2026-04-29 follow-up — DO NOT reset `observer_state` to "off"
+            # here either. The boot-armed default (`_on_startup`) only fires
+            # once per backend boot; resetting on WS disconnect meant every
+            # browser refresh dropped the operator's implicit consent until
+            # they manually re-armed.
             self._app["observer_consented_panes"] = set()
-            subscriber = self._app.get("observer_subscriber")
-            if subscriber is not None:
-                for session in self._app.get("server_sessions", {}).values():
-                    try:
-                        session.chat_session.detach_observer_subscriber()
-                    except Exception:
-                        log.exception("detach_observer_subscriber on ws cleanup failed")
-                try:
-                    await subscriber.detach()
-                except Exception:
-                    log.exception("observer_subscriber.detach on ws cleanup failed")
             observer = self._app.get("observer")
             if observer is not None:
                 try:
@@ -988,9 +976,9 @@ class PTYManager:
         if pane_id not in app.get("observer_consented_panes", set()):
             return
         try:
-            await observer.observe_incremental(new_turns=[line])
+            await observer.feed_pty([line])
         except Exception:
-            log.exception("observer.observe_incremental failed for PTY line")
+            log.exception("observer.feed_pty failed for PTY line")
 
     # ── reader loop ───────────────────────────────────────────────────
 

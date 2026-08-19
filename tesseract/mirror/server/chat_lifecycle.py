@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from aiohttp import web
 
@@ -84,50 +83,6 @@ def detach_deleted_chat(app: web.Application, chat_id: str) -> None:
         srv.chat_meta.pop(chat_id, None)
 
 
-def _detach_outgoing_observer(
-    app: web.Application, session: ServerSession, outgoing: Any
-) -> None:
-    """P4 — drop the observer back-reference on the chat we're leaving, SYNCHRONOUSLY,
-    before the switch/archive envelope is sent.
-
-    The subscriber follows ``active_chat_id`` (governance rule #7: the observer is
-    session-global, fires on the active chat only). ``_detach_subscriber`` only
-    clears whatever ``session.chat_session`` currently points at — the NEW active
-    chat post-switch — so the chat we just left keeps its back-reference and, because
-    the singleton stays ``is_active`` after re-attach, its next background turn would
-    bleed an observation into the new chat. Clearing it here closes that window. The
-    slow half (cancel in-flight tasks + re-attach) is deferred to
-    ``_spawn_observer_reattach`` so a tab switch doesn't stall. No-op when off."""
-    if app.get("observer_state") not in {"armed", "observing"}:
-        return
-    if app.get("observer_subscriber") is None:
-        return
-    if outgoing is not None and outgoing is not session.chat_session:
-        try:
-            outgoing.detach_observer_subscriber()
-        except Exception:
-            log.exception("observer outgoing-detach failed")
-
-
-def _spawn_observer_reattach(app: web.Application, session: ServerSession) -> None:
-    """P4 — re-attach the observer subscriber to the now-active chat in the
-    background. ``_attach_observer_subscriber_if_armed`` awaits ``subscriber.detach()``
-    (up to ``_DETACH_TIMEOUT_S`` cancelling in-flight observer tasks cleanly, so they
-    can't emit against the new chat); running it OFF the WS dispatch path keeps the
-    switch responsive — the ``chat_switched`` envelope is already sent by now."""
-    if app.get("observer_state") not in {"armed", "observing"}:
-        return
-    # Lazy: `_spawn_tracked`/`_attach_observer_subscriber_if_armed` still live
-    # in ws.py, which re-exports this module's handlers — a module-level
-    # import here would cycle with that re-export.
-    from tesseract.mirror.server import ws as _ws
-    _ws._spawn_tracked(
-        app,
-        _ws._attach_observer_subscriber_if_armed(app, session),
-        f"observer_rewire:{session.session_id}",
-    )
-
-
 def _open_chats_payload(session: ServerSession) -> list[dict[str, str]]:
     """The open-chat list for `session_created` (P3 reload hydration).
 
@@ -169,14 +124,12 @@ async def _handle_chat_create(app: web.Application, session: ServerSession, data
     meta = session.chat_meta[chat_id]
     # P5 — creating a chat FOCUSES it: switch the backend active chat to the new
     # one so the operator's next `chat_message` (no chat_id → runs on
-    # `active_chat_id`, ws.py turn dispatch) and the observer land in the new chat,
-    # not the previously-active one. The frontend already makes it active on
+    # `active_chat_id`, ws.py turn dispatch) lands in the new chat, not the
+    # previously-active one. The frontend already makes it active on
     # `chat_created`; this keeps the backend in lock-step. Mirror the switch path:
-    # cut the outgoing chat's voice (D8) and re-wire the observer to follow.
-    outgoing = session.chat_session
+    # cut the outgoing chat's voice (D8).
     session.switch_chat(chat_id)
     _cancel_tts_output(session)
-    _detach_outgoing_observer(app, session, outgoing)
     # Persist immediately so a freshly-created (empty) chat is in the library
     # even if the connection drops before its first turn.
     try:
@@ -187,14 +140,12 @@ async def _handle_chat_create(app: web.Application, session: ServerSession, data
         "chat_created", "chat", session.session_id,
         {"chat_id": chat_id, "title": meta.title, "created_at": meta.created_at},
     ))
-    _spawn_observer_reattach(app, session)
 
 
 async def _handle_chat_switch(app: web.Application, session: ServerSession, data: dict) -> None:
     chat_id = data.get("chat_id")
     if not isinstance(chat_id, str):
         return
-    outgoing = session.chat_session
     try:
         session.switch_chat(chat_id)
     except KeyError:
@@ -209,11 +160,6 @@ async def _handle_chat_switch(app: web.Application, session: ServerSession, data
     # the already-queued sentences from trailing on after the switch. The
     # frontend's own audio stop + speaking_back clear ride with the P3 switch UI.
     _cancel_tts_output(session)
-    # P4 — the observer follows the active chat. Clear the outgoing chat NOW (so a
-    # background turn on it can't bleed into the new chat), then re-attach in the
-    # background AFTER the switch UI is sent — the re-attach's task-cancel can take
-    # up to ~2s and must not stall the tab switch.
-    _detach_outgoing_observer(app, session, outgoing)
     meta = session.chat_meta[chat_id]
     # Sanitize (drop attachment bytes) so a chat that processed a vision/tool
     # attachment doesn't push multi-MB base64 into the switch frame; matches
@@ -223,14 +169,12 @@ async def _handle_chat_switch(app: web.Application, session: ServerSession, data
         "chat_switched", "chat", session.session_id,
         {"chat_id": chat_id, "title": meta.title, "history": history},
     ))
-    _spawn_observer_reattach(app, session)
 
 
 async def _handle_chat_archive(app: web.Application, session: ServerSession, data: dict) -> None:
     chat_id = data.get("chat_id")
     if not isinstance(chat_id, str):
         return
-    outgoing = session.chat_session
     try:
         session.archive_chat(chat_id)
     except KeyError:
@@ -245,12 +189,6 @@ async def _handle_chat_archive(app: web.Application, session: ServerSession, dat
             {"chat_id": chat_id, "reason": "last_open_chat"},
         ))
         return
-    # P4 — archiving the active chat switches active away (archive_chat → switch_chat);
-    # the observer follows. No-op when a background chat was archived. Sync detach
-    # before the envelope, background re-attach after (see _handle_chat_switch).
-    active_changed = session.chat_session is not outgoing
-    if active_changed:
-        _detach_outgoing_observer(app, session, outgoing)
     try:
         chat_store.persist_session_chats(session)
     except Exception:
@@ -261,8 +199,6 @@ async def _handle_chat_archive(app: web.Application, session: ServerSession, dat
         "chat_archived", "chat", session.session_id,
         {"chat_id": chat_id, "active_chat_id": session.active_chat_id},
     ))
-    if active_changed:
-        _spawn_observer_reattach(app, session)
 
 
 def _restore_failed(session: ServerSession, chat_id: object, reason: str) -> dict:
@@ -277,8 +213,8 @@ async def _handle_chat_restore(app: web.Application, session: ServerSession, dat
 
     Two cases: a chat archived THIS session is still in `session.chats` (re-add in
     place); a chat archived in a PRIOR session is gone from the live registry and is
-    rebuilt from its persisted record. Focusing it mirrors the switch path (TTS cut +
-    observer re-wire). Restoring an already-open chat is a `not_archived` contract
+    rebuilt from its persisted record. Focusing it mirrors the switch path (TTS
+    cut). Restoring an already-open chat is a `not_archived` contract
     error (mirror of the REST restore guard)."""
     chat_id = data.get("chat_id")
     if not isinstance(chat_id, str):
@@ -286,7 +222,6 @@ async def _handle_chat_restore(app: web.Application, session: ServerSession, dat
     if chat_id in session.chat_order:
         await send_envelope(session, _restore_failed(session, chat_id, "not_archived"))
         return
-    outgoing = session.chat_session
     if chat_id in session.chats:
         session.reopen_chat(chat_id)
     else:
@@ -342,7 +277,6 @@ async def _handle_chat_restore(app: web.Application, session: ServerSession, dat
     except Exception:
         log.exception("chat.restore: un-archive on disk failed for %s", chat_id)
     _cancel_tts_output(session)
-    _detach_outgoing_observer(app, session, outgoing)
     try:
         chat_store.persist_session_chats(session)
     except Exception:
@@ -354,7 +288,6 @@ async def _handle_chat_restore(app: web.Application, session: ServerSession, dat
         {"chat_id": chat_id, "title": meta.title, "history": history,
          "active_chat_id": session.active_chat_id},
     ))
-    _spawn_observer_reattach(app, session)
 
 
 async def _handle_chat_rename(app: web.Application, session: ServerSession, data: dict) -> None:

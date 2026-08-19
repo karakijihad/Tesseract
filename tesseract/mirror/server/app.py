@@ -108,7 +108,7 @@ def create_app(config: ServerConfig) -> web.Application:
     app["tool_registry"] = None
     app["mood"] = None  # MoodState | None — populated by _on_startup; bridged to frontend via entity_signals
     app["observer"] = None
-    app["observer_subscriber"] = None  # ObserverSubscriber | None — built alongside observer; attaches on arm
+    app["observer_subscriber"] = None  # ObserverSubscriber | None — built alongside observer; every ChatSession attaches to it at build
     app["observer_state"] = "off"  # off | armed | observing — set via /api/observer/{arm,disarm}
     app["observer_consented_panes"] = set()  # pane_ids granted PTY observation; cleared on disarm/pane close/disconnect
     app["adapter"] = None
@@ -684,8 +684,10 @@ async def _prepare_observer(app: web.Application) -> None:
         return
     from tesseract.brain.observer_subscriber import ObserverSubscriber
 
-    app["observer_subscriber"] = ObserverSubscriber(observer)
+    subscriber = ObserverSubscriber(observer)
+    app["observer_subscriber"] = subscriber
     # Owner request 2026-04-29 — observer arms by default on boot.
+    subscriber.arm()
     app["observer_state"] = "armed"
     log.info("observer: armed-by-default at boot")
 
@@ -1131,9 +1133,10 @@ async def _on_shutdown(app: web.Application) -> None:
     subscriber = app.get("observer_subscriber")
     if subscriber is not None:
         try:
-            await subscriber.detach()
+            subscriber.disarm()
+            await subscriber.cancel_in_flight()
         except Exception:
-            log.exception("observer_subscriber.detach on shutdown failed")
+            log.exception("observer_subscriber shutdown cancel failed")
     await _drain_warmup_tasks(app)
     _unload_local_whisper(app)
     _unload_kokoro(app)

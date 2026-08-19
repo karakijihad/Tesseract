@@ -26,8 +26,9 @@ trees:
     keep_days: 14
     action: delete
 
-  # The live drawer holds a working week; everything older moves to
-  # sessions/archive/YYYY-MM/ and is fetched on demand. Never deleted —
+  # The live drawer holds a working week; a conversation older than that is
+  # marked archived where it is — same file, same id, same creation date —
+  # and stays reachable from the drawer's archive view. Never deleted:
   # removing a conversation is your own act, through the app.
   sessions:
     keep_days: 7

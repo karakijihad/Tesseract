@@ -1902,49 +1902,36 @@ def rebuild_adapters(app: Any) -> dict[str, Any]:
         logger.exception("rebuild_adapters: observer rebuild failed")
         observer = app.get("observer")  # keep old handle on failure
     if observer is not app.get("observer"):
-        # Detach the old subscriber before swapping so the new observer
-        # can be attached on the next /observe arm. Failure to detach is
-        # not fatal — we log and continue.
-        old_sub = app.get("observer_subscriber")
-        if old_sub is not None:
-            try:
-                # ObserverSubscriber.detach is async — we cannot await
-                # here without making this whole helper async. Schedule
-                # the detach if a loop is running; otherwise drop.
-                import asyncio
-
-                try:
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(old_sub.detach())
-                except RuntimeError:
-                    pass
-            except Exception:
-                logger.exception("rebuild_adapters: observer detach scheduling failed")
         app["observer"] = observer
-        if observer is not None:
+        subscriber = app.get("observer_subscriber")
+        if subscriber is not None:
+            # The subscriber is NOT rebuilt. Every live ChatSession — the
+            # cockpit's and a channel's alike — holds a back-reference taken
+            # when it was built, so replacing it would orphan every
+            # conversation the runtime is holding, and a channel session is
+            # rebuilt by no reconnect. Pointing it at the new observer keeps
+            # them all. Rebuilding it is what silently killed the observer on
+            # every providers/roles edit (found live 2026-07-30: zero fires
+            # all evening).
+            if observer is None:
+                subscriber.disarm()
+                app["observer_subscriber"] = None
+            else:
+                subscriber.set_observer(observer)
+        elif observer is not None:
             from tesseract.brain.observer_subscriber import ObserverSubscriber
 
-            app["observer_subscriber"] = ObserverSubscriber(observer)
-            # Re-attach immediately when armed. The detach above flips the
-            # OLD subscriber inactive while live chat sessions still point
-            # at it, and nothing re-arms after a config reload — so every
-            # providers/roles edit silently killed the observer until the
-            # next WS reconnect (found live 2026-07-30: zero fires all
-            # evening). Late import: same mirror-layer precedent as
-            # `_build_voice_runtime` below.
+            subscriber = ObserverSubscriber(observer)
             if app.get("observer_state") in {"armed", "observing"}:
-                try:
-                    from tesseract.mirror.server.routes.observer_consent import (
-                        _attach_to_active_sessions,
-                    )
-
-                    summary["observer_reattached_sessions"] = (
-                        _attach_to_active_sessions(app)
-                    )
-                except Exception:
-                    logger.exception("rebuild_adapters: observer re-attach failed")
-        else:
-            app["observer_subscriber"] = None
+                subscriber.arm()
+            app["observer_subscriber"] = subscriber
+            # Sessions that already exist were built when there was no
+            # subscriber to attach to, so they carry none. Only conversations
+            # opened from here on are observed.
+            logger.info(
+                "rebuild_adapters: observer subscriber created after boot — "
+                "conversations already open are not observed"
+            )
         summary["observer"] = "rebuilt"
 
     # Voice runtime — delegate to the Mirror app's existing helper so the

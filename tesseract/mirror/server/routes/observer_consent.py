@@ -52,34 +52,22 @@ def _make_emit_fn(server_session):
     return emit
 
 
-def _attach_to_active_sessions(app: web.Application) -> int:
-    subscriber = app.get("observer_subscriber")
-    if subscriber is None:
-        return 0
-    sessions = list(app.get("server_sessions", {}).values())
-    if not sessions:
-        return 0
-    # Single-operator deployment — one WS session in practice; attach to
-    # the newest if more than one exists.
-    target = sessions[-1]
-    target.chat_session.attach_observer_subscriber(subscriber)
-    subscriber.attach(target.chat_session, _make_emit_fn(target))
-    return 1
+async def _disarm_subscriber(app: web.Application) -> None:
+    """Stop firing and cancel what is in flight.
 
-
-async def _detach_subscriber(app: web.Application) -> None:
+    Nothing is detached: a session attaches when it is BUILT and stays
+    attached for as long as it exists, so arming is one flag rather than a
+    walk over the sessions the cockpit happens to know about — a walk a
+    channel's headless session was never in.
+    """
     subscriber = app.get("observer_subscriber")
     if subscriber is None:
         return
-    for session in app.get("server_sessions", {}).values():
-        try:
-            session.chat_session.detach_observer_subscriber()
-        except Exception:
-            log.exception("detach_observer_subscriber failed")
+    subscriber.disarm()
     try:
-        await subscriber.detach()
+        await subscriber.cancel_in_flight()
     except Exception:
-        log.exception("observer_subscriber.detach failed")
+        log.exception("observer_subscriber.cancel_in_flight failed")
     # Cancel any in-flight PTY-push tasks scheduled by pty_manager. These
     # escape the subscriber's own _tasks set because they are scheduled
     # from a different call site.
@@ -103,12 +91,11 @@ async def _detach_subscriber(app: web.Application) -> None:
 async def arm(request: web.Request) -> web.Response:
     if request.app.get("observer") is None:
         return _no_observer()
-    # Idempotent: if a prior arm left a subscriber attached (double-POST,
-    # reconnect race, pre-existing state), tear it down first so the fresh
-    # attach below points at the current session with no stale references.
-    await _detach_subscriber(request.app)
+    # Idempotent: a double-POST re-raises a flag that is already up.
+    subscriber = request.app.get("observer_subscriber")
+    if subscriber is not None:
+        subscriber.arm()
     request.app["observer_state"] = "armed"
-    attached = _attach_to_active_sessions(request.app)
     # Phase 6 (terminal-control 2026-05-16) — observer-always-on. Bulk-
     # grant consent for every live pane so re-arming immediately resumes
     # PTY observation without waiting for the operator to spawn fresh
@@ -118,11 +105,7 @@ async def arm(request: web.Request) -> web.Response:
     granted = pty.grant_consent_for_all_live() if pty is not None else 0
     if granted:
         request.app["observer_state"] = "observing"
-    log.info(
-        "observer: armed (subscriber attached to %d session(s), "
-        "%d live pane(s) auto-consented)",
-        attached, granted,
-    )
+    log.info("observer: armed (%d live pane(s) auto-consented)", granted)
     return web.json_response({"state": request.app["observer_state"]})
 
 
@@ -130,11 +113,11 @@ async def disarm(request: web.Request) -> web.Response:
     observer = request.app.get("observer")
     if observer is None:
         return _no_observer()
-    await _detach_subscriber(request.app)
+    await _disarm_subscriber(request.app)
     observer.reset()
     request.app["observer_state"] = "off"
     request.app["observer_consented_panes"] = set()
-    log.info("observer: disarmed (subscriber detached, transcript + PTY buffer cleared, consents cleared)")
+    log.info("observer: disarmed (PTY buffer + breaker cleared, consents cleared)")
     return web.json_response({"state": "off"})
 
 

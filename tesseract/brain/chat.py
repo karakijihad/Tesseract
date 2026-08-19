@@ -37,6 +37,7 @@ from tesseract.brain.compaction import RUNNING_SUMMARY_PREFIX, compact_history
 from tesseract.brain.completion_store import CompletionRecord, record_from_handle
 from tesseract.brain.cost import BudgetExhausted, CostLedger, CostUsage
 from tesseract.brain.memory_suggestion import MemorySuggestion, format_for_injection
+from tesseract.brain.observation_transcript import ObservationTranscript
 from tesseract.brain.spawns import SpawnRegistry
 from tesseract.orchestrator.agent_controller.interactive.registry import InteractiveSessionRegistry
 from tesseract.brain.tools import AskFn, ToolRegistry, execute_tool
@@ -1041,6 +1042,17 @@ class ChatSession:
     _turn_injection: str = field(default="", repr=False)
     _observer_subscriber: Any | None = field(default=None, repr=False)
     _observer_last_index: int = field(default=0, repr=False)
+    # This conversation's own rolling window into the observer. It lives here
+    # rather than on the observer so every entry point that builds a session
+    # gets one by construction, and two conversations observed at once cannot
+    # interleave. Dies with the session — nothing evicts it.
+    _observer_transcript: ObservationTranscript = field(
+        default_factory=ObservationTranscript, repr=False
+    )
+    # The cockpit's suggestion chip. A channel has no counterpart and leaves
+    # this `None`; the injection into the next turn is surface-independent and
+    # happens either way.
+    _observer_emit: Any | None = field(default=None, repr=False)
     # Adapter-error circuit breaker (Layer 2, 2026-05-05). Bumped on each
     # ERROR chunk from the chat_brain chain, reset on any successful STOP.
     # When it crosses `self.max_consecutive_adapter_errors` the outer send()
@@ -1283,6 +1295,18 @@ class ChatSession:
 
     def detach_observer_subscriber(self) -> None:
         self._observer_subscriber = None
+        self._observer_emit = None
+
+    def set_observer_emit(self, emit_fn: Any | None) -> None:
+        self._observer_emit = emit_fn
+
+    @property
+    def observer_transcript(self) -> ObservationTranscript:
+        return self._observer_transcript
+
+    @property
+    def observer_emit(self) -> Any | None:
+        return self._observer_emit
 
     def ingest_memory_suggestion(self, suggestion: MemorySuggestion) -> bool:
         """Queue a suggestion for injection on the next turn.
@@ -2274,10 +2298,14 @@ class ChatSession:
 
     def _notify_observer_turn_end(self) -> None:
         sub = self._observer_subscriber
-        if sub is None or not getattr(sub, "is_active", False):
-            return
+        # The watermark advances whether or not the observer is armed. A
+        # session attaches when it is BUILT, so a disarmed stretch would
+        # otherwise bank its turns and flood the first pass after re-arming
+        # with a conversation the operator never asked it to read.
         start = self._observer_last_index
         self._observer_last_index = len(self.history)
+        if sub is None or not getattr(sub, "is_active", False):
+            return
         new_turns = [
             {"role": m["role"], "content": m["content"]}
             for m in self.history[start:]
@@ -2288,7 +2316,7 @@ class ChatSession:
         if not new_turns:
             return
         try:
-            sub.on_loop_end(new_turns)
+            sub.on_loop_end(new_turns, self)
         except Exception:
             logger.exception("observer subscriber on_loop_end raised")
 

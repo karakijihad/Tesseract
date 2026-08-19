@@ -35,6 +35,30 @@ from tesseract.orchestrator.agent_controller.lanes.principals import (
 log = logging.getLogger(__name__)
 
 
+def _wire_cockpit_observer_emit(
+    server_session: ServerSession, chat_session: ChatSession
+) -> None:
+    """Give a cockpit chat the WS chip that surfaces its suggestions.
+
+    Every chat is observed and every chat injects its own suggestion into
+    its own next turn — that half needs no surface. What stays session-
+    global is the Mirror's suggestion panel, so the emit fn asks whether
+    this chat is the one the operator is looking at rather than being
+    rewired on every tab switch. A background chat still observes, and
+    still streams silently.
+    """
+    from tesseract.mirror.server.routes.observer_consent import _make_emit_fn
+
+    emit = _make_emit_fn(server_session)
+
+    async def emit_if_active(suggestion) -> None:
+        if server_session.chat_session is not chat_session:
+            return
+        await emit(suggestion)
+
+    chat_session.set_observer_emit(emit_if_active)
+
+
 def _lane_manager_provider() -> IpcLaneManager:
     """Mirror chat brain drives controller-owned lanes over IPC (conductor).
 
@@ -81,6 +105,7 @@ def create_server_session(app: web.Application, ws: web.WebSocketResponse) -> Se
         started_at=now.isoformat(),
         last_turn_at=now,
     )
+    _wire_cockpit_observer_emit(server_session, chat_session)
     app["event_logs"][session_id] = event_log
     app["sessions"][session_id] = ws
     app["server_sessions"][session_id] = server_session
@@ -117,9 +142,11 @@ def new_chat_session(
     )
     cli_sink = _make_cli_sink(session.ws, session.session_id, session.event_log)
     status_emit = _make_status_emit(session.ws, session.session_id, session.event_log)
-    return _build_chat_session(
+    chat_session = _build_chat_session(
         app, session.session_id, ask_fn, cli_sink, overage_ask_fn, status_emit, kind=kind,
     )
+    _wire_cockpit_observer_emit(session, chat_session)
+    return chat_session
 
 
 def _build_chat_session(
@@ -200,4 +227,16 @@ def _build_chat_session(
         spawn_stall_seconds=app.get("spawn_stall_seconds"),
         spawn_max_concurrent=app.get("max_concurrent_spawns_per_session"),
     )
-    return build_chat_session(wiring)
+    chat_session = build_chat_session(wiring)
+    # AR-7b item 12 — the observer attaches where a conversation is BUILT, not
+    # where a socket opens. This function is the seam both doors come through
+    # (`create_server_session` / `new_chat_session` for the cockpit,
+    # `TelegramBridge._build_headless_session` for a channel), so a channel
+    # gets an observer by construction rather than by a second wiring.
+    # Attachment is unconditional: `on_loop_end` reads the arm flag, so
+    # arm/disarm stays one switch instead of a walk over the sessions the
+    # cockpit happens to know about.
+    subscriber = app.get("observer_subscriber")
+    if subscriber is not None:
+        chat_session.attach_observer_subscriber(subscriber)
+    return chat_session

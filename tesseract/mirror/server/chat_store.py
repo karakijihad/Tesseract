@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import threading
 from collections.abc import Callable, Iterator
@@ -39,6 +38,7 @@ from tesseract.brain.session_store import (
     sanitize_history_for_persistence,
 )
 from tesseract.lib.yaml_io import atomic_write_text
+from tesseract.paths import home_dir
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +59,11 @@ def _is_valid_chat_id(chat_id: str) -> bool:
 def chats_dir() -> Path:
     """Return ``<TESSERACT_HOME>/sessions/chats``, resolving env at call time.
 
-    Matches the canonical env-or-default home pattern (env override wins so
-    test fixtures using ``monkeypatch.setenv`` get an isolated dir).
+    ``paths.home_dir()`` rather than a local copy of the env-or-default rule:
+    that module exists because deeper modules used to hand-roll it and never
+    honored the env var, and this file had three copies of its own.
     """
-    return _home() / "sessions" / "chats"
+    return home_dir() / "sessions" / "chats"
 
 
 def _now_iso() -> str:
@@ -119,27 +120,13 @@ def _chat_path(chat_id: str) -> Path:
     return chats_dir() / f"{chat_id}.json"
 
 
-def _home() -> Path:
-    """``TESSERACT_HOME``, resolved at call time.
-
-    Env override wins so a test fixture's ``monkeypatch.setenv`` reaches the
-    derived stores this module writes to, not the operator's.
-    """
-    override = os.environ.get("TESSERACT_HOME")
-    if override:
-        return Path(override).resolve()
-    from tesseract.paths import TESSERACT_HOME
-
-    return TESSERACT_HOME
-
-
 def metadata_index_path() -> Path:
     """``<TESSERACT_HOME>/chat_metadata.sqlite``, resolved at call time.
 
-    Same env-or-default home pattern as ``chats_dir`` — a test fixture setting
+    Resolved at call time like ``chats_dir``, so a test fixture setting
     ``TESSERACT_HOME`` gets an isolated index rather than the operator's.
     """
-    return _home() / "chat_metadata.sqlite"
+    return home_dir() / "chat_metadata.sqlite"
 
 
 def _with_index(action: Callable[[Any], _T], default: _T) -> _T:
@@ -235,19 +222,32 @@ def _meta_row(record: ChatRecord, path: Path) -> Any:
     )
 
 
+def _rows_from_disk() -> tuple[list[Any], int]:
+    """Every record the walker can parse, and how many files it could not.
+
+    The second number is what keeps the day view's completeness check honest.
+    A file that will not parse is not a row anybody could have written, so
+    counting it as a missing row would condemn the index for a record that
+    does not exist.
+    """
+    rows: list[Any] = []
+    unreadable = 0
+    for path in iter_history_files():
+        record = load_chat(path.stem)
+        if record is None:
+            unreadable += 1
+            continue
+        rows.append(_meta_row(record, path))
+    return rows, unreadable
+
+
 def rebuild_metadata_index() -> int:
     """Rebuild the derived index from the records on disk. Returns the count.
 
     The walk is this module's, not the index's — one owner of the directory,
-    which is what ``GOVERNANCE.md`` §3 asks for and what the retiring index
-    broke by globbing ``sessions/`` itself.
+    rather than one reader per consumer.
     """
-    rows = []
-    for path in iter_history_files():
-        record = load_chat(path.stem)
-        if record is None:
-            continue
-        rows.append(_meta_row(record, path))
+    rows, _ = _rows_from_disk()
     return _with_index(lambda index: index.replace_all(rows), 0)
 
 
@@ -447,30 +447,66 @@ def _index_headers(
 ) -> list[dict[str, Any]] | None:
     """The day view's rows from the index, or ``None`` to read the records.
 
-    ``None`` when the index is unreachable, empty, or does not hold exactly one
-    row per record file. That last check is what makes the fast path safe to
-    trust: nothing rebuilds this index on a schedule, so a row that never
-    arrived — a burst left uncommitted by a kill, a file dropped in by hand —
-    would hide a conversation from the drawer indefinitely, and a fallback on
-    an EMPTY result cannot see a listing that is merely short. Counting the
-    files is a directory listing; the parse is what the index exists to avoid.
+    ``None`` when the index is unreachable, empty, or short of the records on
+    disk. That last check is what makes the fast path safe to trust: nothing
+    rebuilds this index on a schedule, so a row that never arrived — a burst
+    left uncommitted by a kill, a file dropped in by hand — would hide a
+    conversation from the drawer indefinitely, and a fallback on an EMPTY
+    result cannot see a listing that is merely short. Counting the files is a
+    directory listing; the parse is what the index exists to avoid.
+
+    A shortfall is REPAIRED rather than merely detected. The first version fell
+    back forever, and a single unparseable file — which no rebuild can turn
+    into a row — left the drawer parsing every transcript on every open, with
+    a warning line and no way back. So a mismatch rebuilds once and asks the
+    rebuild what it could actually see: when the index then holds every record
+    that exists, the remaining difference is unreadable files, and the index is
+    as complete as anything can make it.
     """
-    def _read(index: Any) -> tuple[int, list[dict[str, Any]]]:
-        return index.count(), index.list_headers(
+    def _read(index: Any) -> tuple[set[str], list[dict[str, Any]]]:
+        return index.chat_ids(), index.list_headers(
             include_archived=include_archived, archived_only=archived_only
         )
 
-    rows, headers = _with_index(_read, (0, []))
-    if not rows:
-        return None
-    on_disk = sum(1 for _ in iter_history_files())
-    if rows != on_disk:
-        logger.warning(
-            "chat_metadata: %d rows against %d records — reading the records",
-            rows, on_disk,
+    def _headers(index: Any) -> list[dict[str, Any]]:
+        return index.list_headers(
+            include_archived=include_archived, archived_only=archived_only
         )
+
+    indexed, headers = _with_index(_read, (set(), []))
+    if not indexed:
         return None
-    return headers
+    on_disk = {path.stem for path in iter_history_files()}
+
+    ghosts = indexed - on_disk
+    if ghosts:
+        _with_index(lambda index: [index.delete(cid) for cid in ghosts], None)
+
+    missing = on_disk - indexed
+    if not ghosts and not missing:
+        return headers
+
+    # Repair only what is missing, never the whole corpus — the whole point of
+    # the index is not to parse the corpus. A stem that STILL will not parse is
+    # not a record anybody could have written a row for, so it stays absent and
+    # this settles: the next call re-attempts one failed json parse rather than
+    # re-reading every transcript.
+    repaired = 0
+    for stem in missing:
+        record = load_chat(stem)
+        if record is None:
+            continue
+        path = _chat_path(stem)
+        _with_index(lambda index: index.upsert(_meta_row(record, path)), None)
+        repaired += 1
+    if repaired < len(missing):
+        logger.warning(
+            "chat_metadata: %d chat record(s) could not be read and are absent "
+            "from the drawer", len(missing) - repaired,
+        )
+    if not repaired and not ghosts:
+        return headers
+    return _with_index(_headers, None)
 
 
 def _header(record: ChatRecord) -> dict[str, Any]:
@@ -805,7 +841,7 @@ def _forget_work_chunks(path: Path) -> None:
     try:
         from tesseract.memory.work_index import WorkIndex
 
-        index = WorkIndex(_home() / "work_index.sqlite")
+        index = WorkIndex(home_dir() / "work_index.sqlite")
     except Exception:  # noqa: BLE001
         return
     try:

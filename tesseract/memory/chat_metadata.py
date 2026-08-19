@@ -202,6 +202,16 @@ class ChatMetadataIndex:
             ) in cursor
         ]
 
+    def chat_ids(self) -> set[str]:
+        """Every id the index holds. One column, no parse — what the day view
+        reconciles against the record files before it trusts itself."""
+        try:
+            return {row[0] for row in self._conn.execute(
+                "SELECT chat_id FROM chat_metadata"
+            )}
+        except sqlite3.OperationalError:
+            return set()
+
     def count(self) -> int:
         try:
             cursor = self._conn.execute("SELECT COUNT(*) FROM chat_metadata")

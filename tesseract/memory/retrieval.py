@@ -16,7 +16,7 @@ import json
 import logging
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -683,6 +683,7 @@ class RetrievalPipeline:
                         mem_type=fm.type,
                         provenance=("prefilter",),
                         confidence=fm.confidence,
+                        source_deleted=fm.source_deleted_at is not None,
                     ))
             if top_a_results:
                 d_task = asyncio.create_task(
@@ -720,6 +721,7 @@ class RetrievalPipeline:
                         mem_type=fm.type,
                         provenance=("prefilter",),
                         confidence=fm.confidence,
+                        source_deleted=fm.source_deleted_at is not None,
                     ))
 
         # Stage C-post: LLM evaluate/rerank (if selector available)
@@ -758,14 +760,10 @@ class RetrievalPipeline:
             for nbr in neighbors:
                 if nbr.memory_id in result_ids:
                     results = [
-                        RetrievalResult(
-                            memory_id=r.memory_id,
-                            title=r.title,
-                            body=r.body,
+                        replace(
+                            r,
                             score=r.score + _OVERLAP_BOOST,
-                            mem_type=r.mem_type,
                             provenance=tuple(dict.fromkeys((*r.provenance, "neighbor"))),
-                            confidence=r.confidence,
                         ) if r.memory_id == nbr.memory_id else r
                         for r in results
                     ]
@@ -780,14 +778,10 @@ class RetrievalPipeline:
             for zr in zero_results:
                 if zr.memory_id in result_ids:
                     results = [
-                        RetrievalResult(
-                            memory_id=r.memory_id,
-                            title=r.title,
-                            body=r.body,
+                        replace(
+                            r,
                             score=max(r.score, zr.score),
-                            mem_type=r.mem_type,
                             provenance=tuple(dict.fromkeys((*zr.provenance, *r.provenance))),
-                            confidence=r.confidence,
                         ) if r.memory_id == zr.memory_id else r
                         for r in results
                     ]
@@ -861,14 +855,14 @@ class RetrievalPipeline:
             if cross is None:
                 out.append(r)
                 continue
-            out.append(RetrievalResult(
-                memory_id=r.memory_id,
-                title=r.title,
-                body=r.body,
+            # `replace` rather than a field list: rebuilding by hand is how
+            # `source_deleted` came to be dropped here the day it was added,
+            # and every result passes through this stage when a reranker is
+            # configured — which is the default.
+            out.append(replace(
+                r,
                 score=_RERANK_SCORE_CEIL * cross * r.confidence,
-                mem_type=r.mem_type,
                 provenance=tuple(dict.fromkeys((*r.provenance, "reranked"))),
-                confidence=r.confidence,
             ))
         out.sort(key=lambda r: r.score, reverse=True)
         return out

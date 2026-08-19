@@ -1,12 +1,11 @@
 """ChatDigestJob — nightly transcript summarizer for memory-retune M3.
 
-Walks `tesseract/sessions/*.json` for files whose `ended_at` maps to
-yesterday (UTC), filters `history` to user+assistant turns, asks the
-chat_brain adapter for a 3-8 sentence digest, and appends a
+Reads every chat record whose span covers yesterday (LOCAL — see
+`_chat_window`), keeps the user+assistant turns actually said on that day, asks
+the chat_brain adapter for a 3-8 sentence digest, and appends a
 `## [chat_digest] <YYYY-MM-DD>` section to
 `memory-store/daily/<YYYY-MM-DD>.md`. Idempotent — the header itself is
 the probe, so re-firing on the same day is a no-op.
-
 """
 
 from __future__ import annotations
@@ -14,14 +13,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import date, datetime, time as dtime, timedelta, timezone
+from datetime import date, datetime, time as dtime, timezone
 from pathlib import Path
 
 from tesseract.paths import TESSERACT_HOME
 from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
 from tesseract.memory.daily_notes import append_section, section_exists
-from tesseract.mirror.server import chat_store
 from tesseract.mirror.server.chat_store import ChatRecord
+from tesseract.scheduler.tasks._chat_window import (
+    records_covering,
+    target_day,
+    turns_on,
+)
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.brain.cost.metered_adapter import meter_chain
 from tesseract.scheduler.role_chain import build_chain_for_role, resolve_role_name
@@ -48,14 +51,14 @@ class ChatDigestJob(BaseJob):
     async def run(self, ctx: JobContext) -> JobResult:
         t0 = time.monotonic()
         try:
-            target_date = (ctx.fired_at - timedelta(days=1)).date()
+            target_date = target_day(ctx.fired_at)
             # No directory to resolve: `chat_store` owns the records and
             # reads TESSERACT_HOME at call time, so a test scopes its writes
             # with the env var rather than with a config key nothing shipped
             # ever set.
             # Off the loop: reads + fully parses every active session file
             # (up to 10k) to find yesterday's.
-            sessions = await asyncio.to_thread(_collect_sessions, target_date)
+            sessions = await asyncio.to_thread(records_covering, target_date)
             if not sessions:
                 return JobResult(
                     job_name=ctx.job_name,
@@ -227,89 +230,29 @@ def _resolve_adapter_chain(ctx: JobContext) -> list[tuple[ModelAdapter, AdapterO
     return [(adapter, app.get("adapter_options") or AdapterOptions())]
 
 
-def _collect_sessions(target: date) -> list[ChatRecord]:
-    """Return every chat record whose wall-clock span covers `target`.
-
-    Reads the chat records, which are the only session record there is.
-    ARCHIVED ONES INCLUDED, deliberately: this job runs the morning after the
-    day it summarises, and the first connection of a new day archives every
-    chat left open on the previous one — so filtering them out would make the
-    digest read an empty tree exactly when it has the most to say. Archiving
-    is a shelf, not a retraction.
-
-    Pre-fix, sessions were bucketed by a single `ended_at or started_at`
-    stamp, so a session that crossed midnight (e.g. 23:30 D -> 00:10 D+1)
-    landed entirely in D+1's digest, and D's digest missed the content.
-    We now include a record if `target` falls within `[start.date(), end.date()]`.
-    Cross-midnight conversations therefore appear in both D's and D+1's digest;
-    the LLM is told the target date so each summary stays focused.
-    """
-    kept: list[ChatRecord] = []
-    for record in chat_store.list_records(include_archived=True):
-        start_dt = _parse_stamp(record.started_at)
-        end_dt = _parse_stamp(record.ended_at) or start_dt
-        if start_dt is None:
-            continue
-        start_d = start_dt.astimezone(timezone.utc).date()
-        end_d = (end_dt or start_dt).astimezone(timezone.utc).date()
-        if start_d <= target <= end_d:
-            kept.append(record)
-    return kept
-
-
-def _parse_stamp(stamp: str | None) -> datetime | None:
-    if not stamp:
-        return None
-    try:
-        return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
-def _message_date(msg: dict) -> date | None:
-    stamp = msg.get("timestamp")
-    if not isinstance(stamp, str) or not stamp.strip():
-        return None
-    dt = _parse_stamp(stamp)
-    if dt is None:
-        return None
-    return dt.astimezone(timezone.utc).date()
-
-
 def _build_transcript(
     sessions: list[ChatRecord],
     max_chars: int,
     target: date,
 ) -> str:
+    """The turns actually said on `target`, across every record covering it.
+
+    Bounded by `max_chars` — a day spent entirely in one conversation must not
+    cost the model its whole window.
+    """
     parts: list[str] = []
     total = 0
-    for s in sessions:
-        has_message_timestamps = any(
-            _message_date(msg) is not None
-            for msg in s.history
-            if msg.get("role") in ("user", "assistant")
-        )
-        for msg in s.history:
-            if msg.get("_reasoning"):
-                continue
-            role = msg.get("role")
-            if role not in ("user", "assistant"):
-                continue
-            msg_day = _message_date(msg)
-            if msg_day is not None and msg_day != target:
-                continue
-            if msg_day is None and has_message_timestamps:
-                continue
+    for record in sessions:
+        for msg in turns_on(record, target):
             content = msg.get("content") or ""
             if not isinstance(content, str) or not content.strip():
                 continue
-            line = f"{role.upper()}: {content.strip()}\n"
+            line = f"{msg['role'].upper()}: {content.strip()}\n"
             if total + len(line) > max_chars:
                 return "".join(parts)
             parts.append(line)
             total += len(line)
     return "".join(parts)
-
 
 async def _summarize_with_fallback(
     transcript: str,

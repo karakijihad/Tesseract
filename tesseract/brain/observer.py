@@ -1,9 +1,14 @@
-"""Observer — peripheral awareness over the chat session.
+"""Observer — peripheral awareness over any conversation the runtime holds.
 
 Two entry points: `observe(history, mode)` stateless one-shot, and
-`observe_incremental(new_turns, mode)` stateful (rolling transcript,
-3-strike circuit breaker, prompts sourced from the `observer` agent
-definition).
+`observe_incremental(new_turns, transcript, mode)` stateful (3-strike
+circuit breaker, prompts sourced from the `observer` agent definition).
+
+The rolling transcript is the CALLER's — one per conversation, held by
+its `ChatSession` — so the cockpit and a channel are observed by the same
+instance without interleaving. What the observer owns is what belongs to
+the machine rather than to a conversation: the PTY buffer, the breaker
+and the counters.
 """
 
 from __future__ import annotations
@@ -24,7 +29,7 @@ from tesseract.brain.memory_suggestion import (
     next_observation_id,
     parse_suggestion,
 )
-from tesseract.brain.observation_transcript import ObservationTranscript, PtyLine
+from tesseract.brain.observation_transcript import ObservationTranscript, PtyBuffer, PtyLine
 from tesseract.brain.observer_budget import CircuitBreaker
 from tesseract.kernel.adapters.base import AdapterOptions, ChunkType, ModelAdapter
 from tesseract.paths import home_dir, log_dir
@@ -119,7 +124,7 @@ class Observer:
         self._config = config
         self._agent_def = agent_def
         self._cost_ledger = cost_ledger
-        self._transcript = ObservationTranscript()
+        self._pty = PtyBuffer()
         self._circuit_breaker = CircuitBreaker()
         self._fires_total = 0
         self._tokens_used_total = 0
@@ -131,11 +136,12 @@ class Observer:
         self._lock = asyncio.Lock()
 
     def reset(self) -> None:
-        """Clear transcript + PTY buffer + memory deltas + breaker + pending
-        suggestion marker. Used by disarm — disarm/rearm must restore a
-        clean observer. Counters (fires_total, tokens_used_total,
-        last_fired_at) persist across arm/disarm by design."""
-        self._transcript.reset()
+        """Clear PTY buffer + breaker + pending suggestion marker. Used by
+        disarm — disarm/rearm must restore a clean observer. Counters
+        (fires_total, tokens_used_total, last_fired_at) persist across
+        arm/disarm by design, and a conversation's transcript is its own:
+        it dies with the conversation rather than with an arm cycle."""
+        self._pty.reset()
         self._circuit_breaker.reset()
         self._last_suggestion_observation_id = None
 
@@ -147,12 +153,11 @@ class Observer:
             "last_fired_at": self._last_fired_at,
             "circuit_breaker_state": self._circuit_breaker.state(),
             "pending_suggestion_count": 1 if self._last_suggestion_observation_id else 0,
-            "transcript_turns": len(self._transcript.chat_turns),
         }
 
     def drop_pty_for_pane(self, pane_id: str) -> int:
         """Revoke buffered PTY content for a pane (consent revoke / pane close)."""
-        return self._transcript.drop_pty_lines_for_pane(pane_id)
+        return self._pty.drop_pane(pane_id)
 
     @property
     def options(self) -> AdapterOptions:
@@ -253,33 +258,42 @@ class Observer:
             _append_observation_log(mode=mode, session_id=session_id, text=out)
         return out
 
+    async def feed_pty(self, lines: list[PtyLine]) -> None:
+        """Buffer terminal output as context for the next observation.
+
+        A pane belongs to the machine rather than to a conversation, so
+        this names none and never fires the model on its own — it enriches
+        whatever is observed next, wherever that happens.
+        """
+        if not lines:
+            return
+        async with self._lock:
+            self._pty.append_lines(lines)
+
     async def observe_incremental(
         self,
-        new_turns: list[dict[str, Any] | PtyLine],
+        new_turns: list[dict[str, Any]],
+        transcript: ObservationTranscript,
         mode: ObserverMode = "meta",
     ) -> MemorySuggestion | None:
-        """Stateful — accumulates turns and PTY lines; returns a typed suggestion
-        or `None` (breaker open / nothing new / parse failure / PTY-only feed).
+        """Stateful over the CALLER's transcript; returns a typed suggestion
+        or `None` (breaker open / nothing new / parse failure).
 
-        Items with ``role == "pty"`` go to the PTY buffer; all others are chat
-        turns. PTY-only feeds enrich context but do not trigger an LLM call.
+        `transcript` is the conversation's own rolling window, handed in by
+        whoever owns the conversation, so a cockpit chat and a Telegram
+        chat observed in the same second cannot bleed into each other.
+        PTY context is the machine's and arrives via `feed_pty`.
         """
         async with self._lock:
             if self._circuit_breaker.is_open():
                 return None
 
-            chat_items = [t for t in new_turns if t.get("role") != "pty"]
-            pty_items = [t for t in new_turns if t.get("role") == "pty"]
-
-            if pty_items:
-                self._transcript.append_pty_lines(pty_items)
-
-            added = self._transcript.append_chat_turns(chat_items) if chat_items else 0
+            added = transcript.append_chat_turns(new_turns)
             if added == 0:
                 return None
 
-            start = max(0, len(self._transcript.chat_turns) - DEFAULT_CONTEXT_TURNS)
-            window = list(self._transcript.chat_turns)[start:]
+            start = max(0, len(transcript.chat_turns) - DEFAULT_CONTEXT_TURNS)
+            window = list(transcript.chat_turns)[start:]
 
             observation_id = next_observation_id()
             messages = self._compose_messages(
@@ -366,7 +380,7 @@ class Observer:
         transcript_text = "\n".join(
             f"{t['role']}: {t['content']}" for t in transcript_turns
         ) or "(empty)"
-        pty_context_text = _render_pty_lines(self._transcript.pty_buffer)
+        pty_context_text = _render_pty_lines(self._pty.lines)
 
         filled = (
             template

@@ -430,6 +430,85 @@ class TelegramBridge:
         self._inflight_handlers.add(task)
         task.add_done_callback(self._inflight_handlers.discard)
 
+    async def _poll_loop(self) -> None:
+        assert self._api is not None
+        backoff = _BACKOFF_INITIAL_SECONDS
+        while not self._stop_event.is_set():
+            try:
+                offset = None
+                if self._state.poll_state.last_update_id is not None:
+                    offset = self._state.poll_state.last_update_id + 1
+                updates = await self._api.get_updates(
+                    offset=offset,
+                    timeout=_POLL_TIMEOUT_SECONDS,
+                    # Declared at the call site because this loop is what
+                    # decides which kinds it can dispatch, and Telegram
+                    # filters the rest SERVER-side: an update type missing
+                    # here is never delivered and leaves no trace anywhere
+                    # to notice it by. `callback_query` carries the approval
+                    # keyboard's taps, and its absence meant every ✓ Approve
+                    # since the button shipped was swallowed before it
+                    # reached the bridge — while the handler's unit tests
+                    # passed, because they call it directly.
+                    allowed_updates=("message", "callback_query"),
+                )
+                self._last_poll_at = datetime.now(timezone.utc).isoformat()
+                backoff = _BACKOFF_INITIAL_SECONDS
+            except asyncio.CancelledError:
+                raise
+            except TelegramAPIError as exc:
+                self._error_count += 1
+                log.warning("telegram: getUpdates failed (%s); retrying in %.1fs", exc, backoff)
+                await self._sleep_or_stop(backoff)
+                backoff = min(backoff * 2.0, _BACKOFF_MAX_SECONDS)
+                continue
+            except Exception:
+                self._error_count += 1
+                log.exception("telegram: poll loop crashed; retrying in %.1fs", backoff)
+                await self._sleep_or_stop(backoff)
+                backoff = min(backoff * 2.0, _BACKOFF_MAX_SECONDS)
+                continue
+
+            for raw in updates:
+                update_id = raw.get("update_id") if isinstance(raw, dict) else None
+                if isinstance(update_id, int):
+                    self._state.poll_state.last_update_id = update_id
+                # 2026-05-17 — inline-keyboard callbacks from ASK prompts
+                # arrive under `callback_query`, not `message`. Dispatch
+                # them inline (they're cheap — one approval token write +
+                # one editMessageText) rather than through the per-chat
+                # task pool. Approval state must be applied BEFORE the
+                # next inbound that hashes the same args, so synchronous
+                # is the right choice.
+                if isinstance(raw, dict) and isinstance(raw.get("callback_query"), dict):
+                    try:
+                        await self._handle_callback_query(raw["callback_query"])
+                    except Exception:
+                        log.exception("telegram: callback_query handler crashed")
+                    continue
+                message = parse_message_update(raw) if isinstance(raw, dict) else None
+                if message is None:
+                    # DIAGNOSTIC (MO-10-followup) — dump the top-level keys
+                    # of any update parse-rejected so we can see whether
+                    # voice messages arrive under `message` or under
+                    # `edited_message`/`business_message`/some other kind.
+                    if isinstance(raw, dict):
+                        log.warning(
+                            "telegram: parse_message_update returned None for update_id=%s keys=%s",
+                            update_id, sorted(raw.keys()),
+                        )
+                        msg_node = raw.get("message") if isinstance(raw.get("message"), dict) else None
+                        if msg_node is not None:
+                            log.warning(
+                                "telegram: parse-rejected message keys=%s chat=%s",
+                                sorted(msg_node.keys()),
+                                (msg_node.get("chat") or {}).get("type"),
+                            )
+                    continue
+                self._spawn_handler(message)
+            with self._state.with_lock():
+                save_state(self._state.state_path, self._state.poll_state)
+
     async def _handle_message_guarded(self, message: TelegramMessage) -> None:
         """Acquire the per-chat lock then delegate to ``_handle_message``.
 

@@ -37,41 +37,6 @@ log = logging.getLogger(__name__)
 ENTITY_SIGNALS_PUMP_INTERVAL_S = 2.0
 
 
-async def _attach_observer_subscriber_if_armed(app: web.Application, session: ServerSession) -> None:
-    """Attach the boot-armed observer subscriber to a freshly-connected WS.
-
-    `arm()` in `routes/observer_consent.py` does the canonical attach via
-    `_attach_to_active_sessions`, but it can only see sessions that exist
-    when it runs. When observer is armed at boot (`app.py:_on_startup`),
-    no WS is connected yet — the subscriber sits idle until something
-    re-arms. This wires a fresh WS to the already-armed subscriber so the
-    operator gets observer suggestions on first connect without having to
-    click `disarm/arm`.
-    """
-    if app.get("observer_state") not in {"armed", "observing"}:
-        return
-    subscriber = app.get("observer_subscriber")
-    if subscriber is None:
-        return
-    try:
-        from tesseract.mirror.server.routes.observer_consent import (
-            _detach_subscriber,
-            _make_emit_fn,
-        )
-        # Reviewer follow-up: `is_active` flips True on any prior `attach()`
-        # and stays True if the previous WS closed without a clean disarm
-        # (e.g. browser refresh). Skipping on `is_active` would silently
-        # leave the subscriber pointing at the dead session's emit_fn —
-        # the new session would receive no suggestions. Detach first,
-        # mirroring `routes/observer_consent.arm()`.
-        if subscriber.is_active:
-            await _detach_subscriber(app)
-        session.chat_session.attach_observer_subscriber(subscriber)
-        subscriber.attach(session.chat_session, _make_emit_fn(session))
-    except Exception:
-        log.exception("observer subscriber attach-on-connect failed")
-
-
 def _spawn_tracked(app: web.Application, coro, name: str) -> asyncio.Task:
     """Route a fire-and-forget task through `scheduler.spawn_tracked_task` so
     engine shutdown can join/cancel it cleanly. Falls back to a bare
@@ -132,11 +97,6 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
         },
     ))
     await _announce_replaced_config(session)
-    # Owner request 2026-04-29 — observer arms by default at boot
-    # (`app.py:_on_startup`). Subscriber attachment normally happens in
-    # `/api/observer/arm`, but at boot there's no WS yet. The first WS
-    # connection after a boot-armed observer needs to attach itself.
-    await _attach_observer_subscriber_if_armed(request.app, session)
     await _emit_cost_state(request.app, session)
     await _emit_entity_signals(request.app, session)
     await _flush_stt_fallback_notice(request.app, session)

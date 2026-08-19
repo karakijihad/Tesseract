@@ -1,6 +1,6 @@
 """FeedbackSweepJob — Layer C of the feedback durability plan.
 
-Daily sweep over yesterday's session transcripts + chat digest, looking for
+Daily sweep over yesterday's chat records + chat digest, looking for
 directive-shaped operator statements ("always", "never", "from now on",
 "don't", "stop X-ing", "remember to") that didn't get reflected on. Returns
 *proposals* to the operator via the Workspace Inbox — never auto-writes a
@@ -18,15 +18,19 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
 from tesseract.memory.store import MemoryStore
 from tesseract.paths import TESSERACT_HOME, log_dir
-from tesseract.mirror.server import chat_store
 from tesseract.mirror.server.chat_store import ChatRecord
+from tesseract.scheduler.tasks._chat_window import (
+    records_covering,
+    target_day,
+    turns_on,
+)
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.scheduler.role_chain import build_chain_for_job
 from tesseract.scheduler.types import JobContext, JobResult
@@ -66,17 +70,24 @@ class FeedbackSweepJob(BaseJob):
     async def run(self, ctx: JobContext) -> JobResult:
         t0 = time.monotonic()
         try:
-            target_date = (ctx.fired_at - timedelta(days=1)).date()
-            # No directory to resolve — see `chat_digest`; `chat_store`
-            # owns the records and resolves TESSERACT_HOME at call time.
-            # Off the loop: reads + fully parses every active session file
-            # (up to 10k) to find yesterday's.
-            sessions = await asyncio.to_thread(_collect_sessions, target_date)
+            target_date = target_day(ctx.fired_at)
+            # Off the loop: reads and fully parses every chat record to find
+            # the ones covering yesterday.
+            sessions = await asyncio.to_thread(records_covering, target_date)
             if not sessions:
                 return _ok(ctx, t0, target_date, 0, 0, "no sessions to sweep")
 
             store_dir = _resolve_store_dir(ctx)
             existing = _existing_feedback_summary(store_dir)
+
+            # Attribute from what SURVIVED the per-message filter. `ended_at`
+            # is re-stamped for every open chat on every autosave tick, so the
+            # covering set includes conversations with nothing in them that
+            # day — and a proposal traced back to one of those names a chat
+            # the operator never touched.
+            sessions = [s for s in sessions if turns_on(s, target_date)]
+            if not sessions:
+                return _ok(ctx, t0, target_date, 0, 0, "nothing said on that day")
 
             transcript = _build_transcript(
                 sessions,
@@ -211,93 +222,29 @@ def _build_prompt(
     )
 
 
-def _collect_sessions(target: Any) -> list[ChatRecord]:
-    """Every chat record whose wall-clock span covers `target`.
-
-    Archived records included — this runs the morning after the day it reads,
-    and the first connection of a new day archives what was left open on the
-    previous one. Same shape and same reason as `chat_digest._collect_sessions`.
-    """
-    kept: list[ChatRecord] = []
-    for record in chat_store.list_records(include_archived=True):
-        start = _parse_stamp(record.started_at)
-        end = _parse_stamp(record.ended_at) or start
-        if start is None:
-            continue
-        start_d = start.astimezone(timezone.utc).date()
-        end_d = (end or start).astimezone(timezone.utc).date()
-        if start_d <= target <= end_d:
-            kept.append(record)
-    return kept
-
-
-def _parse_stamp(stamp: str | None) -> datetime | None:
-    if not stamp:
-        return None
-    try:
-        return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
-def _message_date(msg: dict) -> Any:
-    """The local calendar date one turn was said on, or None if unstamped."""
-    stamp = msg.get("timestamp")
-    if not isinstance(stamp, str) or not stamp.strip():
-        return None
-    dt = _parse_stamp(stamp)
-    if dt is None:
-        return None
-    return dt.astimezone(timezone.utc).date()
-
-
 def _build_transcript(
     sessions: list[ChatRecord],
     max_chars: int,
-    target_date: Any,
+    target_date: date,
 ) -> str:
-    """The turns actually said on `target_date`, across every record covering it.
+    """The turns actually said on `target`, across every record covering it.
 
-    Filtered per MESSAGE, not per record, and that is load-bearing now: a
-    record is a whole conversation for its whole life, where the file this used
-    to read was one connection's snapshot. A chat the operator keeps open for a
-    week covers every day in it, so without this the sweep would hand the model
-    the entire history each night, stamped as one day's — and re-propose the
-    same directives from it every night after.
-
-    A record with no stamped messages at all contributes all of them, the same
-    fallback `chat_digest` makes: an unstamped turn is old history, and losing
-    it is worse than dating it loosely.
+    Bounded by `max_chars` — a day spent entirely in one conversation must not
+    cost the model its whole window.
     """
     parts: list[str] = []
     total = 0
-    for s in sessions:
-        has_message_timestamps = any(
-            _message_date(msg) is not None
-            for msg in s.history
-            if msg.get("role") in ("user", "assistant")
-        )
-        for msg in s.history:
-            if msg.get("_reasoning"):
-                continue
-            role = msg.get("role")
-            if role not in ("user", "assistant"):
-                continue
-            msg_day = _message_date(msg)
-            if msg_day is not None and msg_day != target_date:
-                continue
-            if msg_day is None and has_message_timestamps:
-                continue
+    for record in sessions:
+        for msg in turns_on(record, target_date):
             content = msg.get("content") or ""
             if not isinstance(content, str) or not content.strip():
                 continue
-            line = f"{role.upper()}: {content.strip()}\n"
+            line = f"{msg['role'].upper()}: {content.strip()}\n"
             if total + len(line) > max_chars:
                 return "".join(parts)
             parts.append(line)
             total += len(line)
     return "".join(parts)
-
 
 async def _call_with_fallback(
     prompt: str,

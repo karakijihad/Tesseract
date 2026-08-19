@@ -78,8 +78,19 @@ def sessions(keep_days: int, action: Action) -> Swept:
     it moved files, so an operator's `retention.yaml` window is unchanged.
     Counted as `moved` because that is this table's word for "aged out but
     still here" — nothing is deleted, and the count is chats, not files.
+
+    `may_delete` is False on this tree, so `action` can only be ARCHIVE. It is
+    still read rather than assumed, for the reason `approvals_ledger` gives:
+    a sweep that ignores its argument keeps ignoring it after somebody edits
+    the registry.
     """
     from tesseract.mirror.server import chat_store
+
+    if action is not Action.ARCHIVE:
+        raise ValueError(
+            "a conversation is archived, never deleted — "
+            "`may_delete=False` should have refused this at load"
+        )
 
     if not chat_store.chats_dir().is_dir():
         return Swept()

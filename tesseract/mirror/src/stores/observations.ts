@@ -16,7 +16,6 @@ const EMPTY_STATS: ObserverStats = {
   last_fired_at: null,
   circuit_breaker_state: 'green',
   pending_suggestion_count: 0,
-  transcript_turns: 0,
 };
 
 interface ObservationsState {
