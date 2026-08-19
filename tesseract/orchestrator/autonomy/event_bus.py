@@ -84,6 +84,30 @@ class AutonomyEventBus:
             lambda: deque(maxlen=buffer_size)
         )
         self._buffer_size = buffer_size
+        self._wake: Callable[[], None] | None = None
+
+    def set_wake(self, wake: Callable[[], None] | None) -> None:
+        """Register what to call when an event lands, or `None` to clear.
+
+        **The wake belongs here rather than to each publisher.** An event
+        arriving IS the thing that should wake the kernel, and this is the one
+        place every event passes through — so a new publisher wakes it by
+        construction instead of by remembering to. Before this, `poke()`
+        existed and nothing outside the kernel ever called it: the tick
+        interval was not a fallback, it was the only wake there was.
+        """
+        self._wake = wake
+
+    def _woken(self) -> None:
+        """Never raises into a publisher. A wake that fails costs the fallback
+        interval; a wake that propagates costs the caller's own work."""
+        wake = self._wake
+        if wake is None:
+            return
+        try:
+            wake()
+        except Exception:
+            log.exception("autonomy bus: wake raised")
 
     def subscribe(self, source: AgendaSource, handler: Handler) -> SubscriptionToken:
         token = uuid.uuid4().hex[:12]
@@ -101,6 +125,7 @@ class AutonomyEventBus:
         exceptions are logged and swallowed — one broken bridge cannot
         starve the kernel."""
         self._buffers[event.source].append(event)
+        self._woken()
         for handler in list(self._handlers.get(event.source, {}).values()):
             try:
                 await handler(event)
@@ -114,6 +139,7 @@ class AutonomyEventBus:
         job result). The kernel drains via :meth:`drain` on its next
         tick; sync publishers should NEVER block on handlers."""
         self._buffers[event.source].append(event)
+        self._woken()
 
     def drain(self, source: AgendaSource | None = None) -> list[AutonomyEvent]:
         """Pop every buffered event (FIFO). Pass ``source`` to drain a

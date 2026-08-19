@@ -77,6 +77,7 @@ def _restore_persisted_chats(app: web.Application, session: ServerSession) -> No
             started_at=record.started_at,
             archived=False,
             turn_count=record.turn_count,
+            model=record.model,
         )
         chat_order.append(record.chat_id)
     if not chats:

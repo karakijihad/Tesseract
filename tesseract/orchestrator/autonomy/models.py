@@ -12,18 +12,31 @@ from tesseract.orchestrator.workers.record import RiskClass
 
 
 class AgendaSource(str, Enum):
+    # Live sources. A value here has a mapper AND a producer; the pairing is
+    # declared in `mappers/__init__.py::SOURCE_PRODUCERS` and checked at boot.
     OPERATOR = "operator"
-    OPERATOR_VIEW = "operator_view"
-    MISSION_REFLECTION = "mission_reflection"  # historical records only — mission engine deleted
     PROVIDER_WATCH = "provider_watch"
-    REPO_HEALTH = "repo_health"  # historical records only — mapper deleted P4 prune wave 2
-    MEMORY_SIGNAL = "memory_signal"  # historical records only — mapper deleted P4 prune wave 2
-    VAULT_SIGNAL = "vault_signal"
     RECOVERY = "recovery"
-    SELF_REFLECTION = "self_reflection"
-    STRATEGIST = "strategist"
-    REPO_UPGRADE = "repo_upgrade"
-    SCOUT = "scout"
+    # Written straight to the store by `follow_up_mapper` when a finished
+    # delegation's summary reads as actionable. No bus event and so no mapper —
+    # it names what produced the item, which is what a source is for. It rode
+    # `self_reflection` until that source was deleted, which would have left the
+    # one live follow-up path labelled with a retired heartbeat's name.
+    FOLLOW_UP = "follow_up"
+
+    # Historical records only — the mapper and the producer are both gone, and
+    # the value survives so an archived item written under it still loads. A
+    # value in this block must never gain a mapper: reviving one means deciding
+    # again, not un-deleting.
+    OPERATOR_VIEW = "operator_view"  # ambient presence telemetry
+    MISSION_REFLECTION = "mission_reflection"  # the mission engine
+    REPO_HEALTH = "repo_health"
+    MEMORY_SIGNAL = "memory_signal"
+    VAULT_SIGNAL = "vault_signal"  # never had a publisher at all
+    REPO_UPGRADE = "repo_upgrade"  # proposed changes to the sealed app tree
+    SCOUT = "scout"  # same
+    SELF_REFLECTION = "self_reflection"  # a model asked what might be worth doing
+    STRATEGIST = "strategist"  # same, on a longer horizon
 
 
 class AgendaStatus(str, Enum):
@@ -122,9 +135,9 @@ class AgendaItem(BaseModel):
     priority_score: float = 0.0
     score_components: dict[str, float] = Field(default_factory=dict)
     score_computed_at: datetime | None = None
-    # Task 2B — agent-vetter usefulness score (0-1), set by
-    # AutonomyVetterJob on PROMOTE before the item leaves UNVETTED.
-    # Folded into priority_score via AgendaWeights.vet_weight.
+    # Historical. A vetting job set this 0-1 usefulness score on promotion out
+    # of UNVETTED; both the job and the weight that read this are gone. Kept as
+    # a field so an item written while it existed still loads.
     vet_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
     # Budget

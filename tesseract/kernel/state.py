@@ -42,6 +42,13 @@ class ToolCall:
     id: str
     name: str
     input: dict[str, Any]
+    # An opaque token the provider issued WITH this call and requires back
+    # when the call is replayed in history. Base64 text, so it survives the
+    # session file and the wire; empty for every provider that asks for
+    # nothing. Gemini 3 is why it exists: it returns a `thought_signature` on
+    # each functionCall part and rejects the follow-up request without it, so
+    # a tool loop that dropped this could complete exactly one turn.
+    provider_signature: str = ""
 
 
 @dataclass(frozen=True)

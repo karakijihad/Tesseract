@@ -3,65 +3,24 @@
 #
 # Each block below is one mapper. Set `enabled: false` to stop a source from
 # generating agenda items.
+#
+# One mapper besides the operator's own entry point, and that is the shape this
+# file is meant to have: a source that reports something that HAPPENED. The
+# self-reflection heartbeat, the strategist, the operator-view watcher, the
+# vault signal that never had a publisher, and the two research jobs that
+# proposed changes to a tree an update replaces wholesale were all deleted with
+# their producers. Between them they wrote most of the agenda items this machine
+# has ever held, and no outcome worth keeping.
+#
+# A mapper added here needs a producer declared in
+# `orchestrator/autonomy/mappers/__init__.py::SOURCE_PRODUCERS`, and boot checks
+# that the producer exists and is enabled.
 
 mappers:
-  # Fires when a provider watch signal exists.
+  # Fires when the daily provider probe records a role whose primary did not
+  # answer — a fact about this machine, not an inference about the operator.
   provider_watch:
     enabled: true
     source: provider_watch
     default_risk_class: propose
     dedupe_window_hours: 168
-
-  # Fires on vault ingest signals worth surfacing.
-  vault_signals:
-    enabled: true
-    source: vault_signal
-    default_risk_class: autonomous
-    dedupe_window_hours: 24
-
-  # Fires when the Mirror UI detects sustained operator attention on one
-  # view (a long dwell time or repeated switching back to it).
-  # `fuzzy_dedupe: false` because this mapper's goal is a fixed template with
-  # one interpolated view name. Fuzzy matching catches a model re-phrasing the
-  # same intent; a template cannot re-phrase itself, so at threshold 0.9 it
-  # merges genuinely distinct views on the length of their names alone. Exact
-  # dedupe still applies, as do the caps.
-  operator_view:
-    enabled: true
-    source: operator_view
-    default_risk_class: propose
-    dedupe_window_hours: 24
-    fuzzy_dedupe: false
-
-  # Fires from the periodic self-reflection heartbeat.
-  self_reflection:
-    enabled: true
-    source: self_reflection
-    default_risk_class: propose
-    dedupe_window_hours: 24
-
-  # Fires from the autonomy strategist's portfolio review. Always
-  # operator-attended — every draft requires explicit approval regardless of
-  # risk_class. dedupe_window_hours matches the strategist's own lookback
-  # window so a re-run inside that window doesn't duplicate proposals.
-  strategist:
-    enabled: true
-    source: strategist
-    default_risk_class: propose
-    dedupe_window_hours: 336
-
-  # Fires from the read-only repo-upgrade research job. Vetter-gated (see
-  # agenda.yaml::vetter.vet_required) — drafts start hidden until vetted.
-  repo_upgrade:
-    enabled: true
-    source: repo_upgrade
-    default_risk_class: propose
-    dedupe_window_hours: 24
-
-  # Fires from the identity-anchored discovery job (web search / feeds).
-  # Vetter-gated — drafts start hidden until vetted.
-  scout:
-    enabled: true
-    source: scout
-    default_risk_class: propose
-    dedupe_window_hours: 24

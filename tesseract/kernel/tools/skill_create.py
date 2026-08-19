@@ -94,6 +94,18 @@ class SkillCreateTool(Tool):
     # attribute can flip it.
     headless_quarantine_write: ClassVar[bool] = True
 
+    group: ClassVar[str] = "extending-yourself"
+    summary: ClassVar[str] = "Draft a new markdown skill into the pending quarantine."
+    use_when: ClassVar[str] = (
+        "Use to propose a brand-new skill for a repeated chore. Writes to "
+        "skills/pending/ and files an approval card; not surfaced until "
+        "promoted."
+    )
+    not_when: ClassVar[str] = (
+        "to activate a drafted skill, use `skill_promote`; to improve an "
+        "existing active skill, use `skill_refine`."
+    )
+
     def __init__(
         self,
         skills_dir: Path,
@@ -112,16 +124,6 @@ class SkillCreateTool(Tool):
     @property
     def name(self) -> str:
         return "skill_create"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Draft a new markdown skill under workspace/skills/. Attended: "
-            "operator approves before the write. Unattended: the draft lands "
-            "in the skills/pending/ quarantine and a proposal card is filed in "
-            "the operator's Workspace Inbox — never surfaced in the prompt "
-            "manifest until promoted. Never edits or deletes existing skills."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

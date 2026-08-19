@@ -77,9 +77,9 @@ class SpawnCapExceeded(RuntimeError):
 
 class SpawnDepthExceeded(SpawnCapExceeded):
     """Raised by `SpawnRegistry.register` when the owning session already sits
-    at `runtime.yaml::max_spawn_depth` nesting levels (OpenClaw
-    maxSpawnDepth analog, the structural backstop against spawn-inside-spawn
-    runaways). Subclasses `SpawnCapExceeded` so every existing background-
+    at `runtime.yaml::max_spawn_depth` nesting levels — the structural
+    backstop against spawn-inside-spawn runaways, which a width cap alone
+    cannot catch. Subclasses `SpawnCapExceeded` so every existing background-
     capable call site handles it without changes."""
 
     def __init__(self, depth: int, cap: int) -> None:
@@ -162,6 +162,22 @@ class ToolContext:
     # "path", "mode", "default", "tool", "mission". Empty when no
     # decision has been resolved yet.
     posture_source: str = ""
+    # Written BY an ask_fn implementation on its way out, so a caller that
+    # reports to a person can tell the two events a `False` return covers
+    # apart: the operator said no, and nobody answered. The ledger has kept
+    # them separate since it was written (`result: deny` vs `result:
+    # timeout`); every surface downstream of the bool used to collapse them
+    # and tell the operator they had declined something they never saw.
+    # One of the ledger's own values — "allow_once", "deny", "timeout",
+    # "cancelled", "park_timeout". Empty means the asker made no claim, and
+    # a caller must then name both possibilities rather than pick one.
+    ask_outcome: str = ""
+    # Shared CostLedger singleton, threaded so a tool that makes a PAID
+    # call of its own can bill it. `JobContext` has carried this since the
+    # 2026-06-28 cost-ledger gap; tools had no equivalent, so `screen_look`
+    # shipped a metered vision call that reached no ledger row and counted
+    # against no cap. None for REPL/test contexts — metering is a no-op.
+    cost_ledger: Optional[Any] = field(default=None, compare=False, repr=False)
     cli_sink: Optional[CliSink] = field(default=None, repr=False)
     pty_dispatcher: Optional[PtyDispatcher] = field(default=None, repr=False)
     scheduler_provider: Optional[SchedulerProvider] = field(default=None, repr=False)
@@ -268,13 +284,52 @@ class Tool(ABC):
     # to "extended".
     tier: ClassVar[str] = "extended"
 
+    # ── The tool contract ────────────────────────────────────────────────
+    # Four fields that answer, in order, the questions asked when choosing a
+    # tool: which section, what is this, is this the one, what outranks it.
+    # `description` composes from them, so the disambiguation lands on the
+    # ONE surface the model always reads — the schema — rather than in prose
+    # a prompt mode may or may not inline.
+    #
+    # `group` is a slug from `taxonomy.py::GROUPS`; boot raises on anything
+    # else. `summary` is capped at 90 chars because the glossary renders one
+    # per tool on every turn and has a budget. `use_when` and `not_when` are
+    # uncapped and reach the API description.
+
+    group: ClassVar[str] = ""
+
+    # One sentence, ≤90 chars: what this is. Renders in the glossary.
+    summary: ClassVar[str] = ""
+
+    # When this tool is the right answer.
+    use_when: ClassVar[str] = ""
+
+    # What outranks it, naming the SIBLING TOOL rather than a category.
+    # "Not for large files" is not a `not_when`; "use `glob` when you want
+    # paths rather than contents" is. A tool that genuinely competes with
+    # nothing may set "", but it must set it — the empty string is a decision
+    # on the record, and the missing field is an oversight the boot guard
+    # refuses. This is the field the P11 regression needed and did not have:
+    # the disambiguating sentence existed, in a file the prompt never loaded,
+    # while the schema carried the sentence that misled.
+    not_when: ClassVar[str] = ""
+
     @property
     @abstractmethod
     def name(self) -> str: ...
 
     @property
-    @abstractmethod
-    def description(self) -> str: ...
+    def description(self) -> str:
+        """What the model is told this tool is, composed from the contract.
+
+        A tool that still authors its own `description` overrides this — that
+        is the migration path, one taxonomy group at a time, and the boot
+        guard is what eventually makes the composed form the only form.
+        """
+        parts = [self.summary, self.use_when]
+        if self.not_when:
+            parts.append(f"Not for: {self.not_when}")
+        return " ".join(p for p in parts if p)
 
     @property
     @abstractmethod
@@ -298,3 +353,47 @@ class Tool(ABC):
             "description": self.description,
             "input_schema": self.input_schema.model_json_schema(),
         }
+
+
+def check_tool_contract(tool: Tool) -> None:
+    """Every tool declares what it is, when to use it, and what outranks it.
+
+    Called from `brain/boot.py::_wire_tool_defaults`, beside the posture and
+    risk-class checks, so boot fails on an under-declared tool exactly as it
+    already fails on one with no `default_posture`.
+
+    The guard exists because the alternative was prose. The sentence that
+    disambiguated two tools lived in a workspace file the prompt inlines in one
+    mode out of two, so it reached a payload on no turns at all while the
+    schema kept saying something else. A field the runtime refuses to boot
+    without cannot decay that way.
+
+    `not_when` may be `""` — a tool that genuinely competes with nothing says
+    so, and the empty string is a decision on the record rather than an
+    oversight. The other three may not be empty. An unknown `group` raises
+    rather than warns: the glossary renders by group, so a typo'd slug is a
+    tool that silently appears in no section of it.
+    """
+    from tesseract.kernel.tools.taxonomy import GROUPS
+
+    cls = type(tool)
+    missing = [
+        field
+        for field in ("group", "summary", "use_when")
+        if not str(getattr(cls, field, "") or "").strip()
+    ]
+    if not isinstance(getattr(cls, "not_when", None), str):
+        missing.append("not_when")
+    if missing:
+        raise RuntimeError(
+            f"tool '{tool.name}' (class {cls.__name__}) is missing "
+            f"tool-contract field(s) {sorted(missing)}. Declare them at the "
+            f"class level — `description` composes from them."
+        )
+    if cls.group not in GROUPS:
+        raise RuntimeError(
+            f"tool '{tool.name}' (class {cls.__name__}) declares "
+            f"group={cls.group!r}, which is not a taxonomy slug. Use one of "
+            f"{sorted(GROUPS)}, or add the group to "
+            f"tesseract/kernel/tools/taxonomy.py."
+        )

@@ -17,6 +17,11 @@ import React, { useEffect, useState } from 'react';
 import type { AgendaItem } from '../../lib/api';
 import { Markdown } from '../../components/common/Markdown';
 import { useAutonomyStore } from '../../stores/autonomy';
+import { Hint } from '../../components/ui/Hint';
+import { Button } from '../../components/common/Button';
+import { Textarea } from '../../components/common/Textarea';
+import { CloseButton } from '../../components/common/CloseButton';
+import { Modal } from '../../components/common/Modal';
 
 interface AgendaDetailModalProps {
   item: AgendaItem;
@@ -49,14 +54,6 @@ export function AgendaDetailModal({ item }: AgendaDetailModalProps): React.React
   const [posting, setPosting] = useState(false);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeDetail();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [closeDetail]);
-
-  useEffect(() => {
     // Always refetch on (re)open — the WS broadcast covers live
     // sessions but a comment posted by another operator while this
     // modal was closed would otherwise stay invisible.
@@ -84,18 +81,13 @@ export function AgendaDetailModal({ item }: AgendaDetailModalProps): React.React
     item.status === 'abandoned' ||
     item.status === 'superseded';
   return (
-    <div
-      className="autonomy-modal-backdrop"
-      onClick={closeDetail}
+    <Modal
+      onClose={closeDetail}
+      ariaLabel="agenda item detail"
+      ariaLabelledBy="autonomy-modal-title"
+      className="autonomy-modal"
+      testId="autonomy-detail-modal"
     >
-      <div
-        className="autonomy-modal"
-        onClick={(e) => e.stopPropagation()}
-        data-testid="autonomy-detail-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="autonomy-modal-title"
-      >
         <div className="autonomy-modal__head">
           <div className="autonomy-modal__title" id="autonomy-modal-title">
             <div className="autonomy-row__head">
@@ -109,14 +101,7 @@ export function AgendaDetailModal({ item }: AgendaDetailModalProps): React.React
             <div style={{ marginTop: 6 }}><Markdown variant="inline">{item.goal}</Markdown></div>
             <div className="t-meta t-mono" style={{ marginTop: 4 }}>{item.id}</div>
           </div>
-          <button
-            type="button"
-            className="autonomy-modal__close"
-            onClick={closeDetail}
-            aria-label="close detail"
-          >
-            ✕
-          </button>
+          <CloseButton onClick={closeDetail} ariaLabel="close detail" />
         </div>
 
         {item.rationale && (
@@ -234,9 +219,11 @@ export function AgendaDetailModal({ item }: AgendaDetailModalProps): React.React
           )}
           {!isTerminal && (
             <div style={{ marginTop: 8 }}>
-              <textarea
+              {/* The inline style was three of the four properties the
+                  shared field already sets, plus a width the flow gives it. */}
+              <Textarea
                 value={draft}
-                onChange={(e) => setDraft(e.target.value)}
+                onChange={setDraft}
                 onKeyDown={(e) => {
                   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                     e.preventDefault();
@@ -246,17 +233,15 @@ export function AgendaDetailModal({ item }: AgendaDetailModalProps): React.React
                 placeholder="Ask a clarifying question or leave a note. Cmd/Ctrl-Enter to send."
                 rows={3}
                 disabled={posting}
-                style={{ width: '100%', resize: 'vertical', fontFamily: 'inherit', fontSize: 'inherit' }}
               />
               <div className="autonomy-row__actions" style={{ marginTop: 4 }}>
-                <button
-                  type="button"
-                  className="autonomy-btn autonomy-btn--primary"
+                <Button
+                  tone="primary"
                   onClick={() => void onSubmitComment()}
                   disabled={posting || !draft.trim()}
                 >
                   {posting ? 'Posting…' : 'Post comment'}
-                </button>
+                </Button>
               </div>
             </div>
           )}
@@ -266,54 +251,47 @@ export function AgendaDetailModal({ item }: AgendaDetailModalProps): React.React
           <div className="autonomy-modal__section">
             <div className="autonomy-row__actions" style={{ marginTop: 0 }}>
               {isAwaiting && (
-                <button
-                  type="button"
-                  className="autonomy-btn autonomy-btn--primary"
+                <Button
+                  tone="primary"
                   onClick={() => void approveItem(item.id)}
                   disabled={busy}
                 >
                   Approve
-                </button>
+                </Button>
               )}
               {isBlocked && (
-                <button
-                  type="button"
-                  className="autonomy-btn autonomy-btn--primary"
-                  onClick={() => void resumeItem(item.id)}
-                  disabled={busy}
-                  title="Re-queue this item — kernel dispatches a fresh worker on next tick. Raise agenda.yaml::worker_timeouts first if the prior worker hit its wallclock budget."
-                >
-                  Resume
-                </button>
+                <Hint label="Re-queue this item — kernel dispatches a fresh worker on next tick. Raise agenda.yaml::worker_timeouts first if the prior worker hit its wallclock budget.">
+                  <Button
+                    tone="primary"
+                    onClick={() => void resumeItem(item.id)}
+                    disabled={busy}
+                  >
+                    Resume
+                  </Button>
+                </Hint>
               )}
-              <button
-                type="button"
-                className="autonomy-btn"
+              <Button
                 onClick={() => void boostItem(item.id)}
                 disabled={busy}
               >
                 Boost
-              </button>
-              <button
-                type="button"
-                className="autonomy-btn"
+              </Button>
+              <Button
                 onClick={() => void snoozeItem(item.id)}
                 disabled={busy}
               >
                 Snooze
-              </button>
-              <button
-                type="button"
-                className="autonomy-btn autonomy-btn--danger"
+              </Button>
+              <Button
+                tone="danger"
                 onClick={() => void cancelItem(item.id)}
                 disabled={busy}
               >
                 Cancel
-              </button>
+              </Button>
             </div>
           </div>
         )}
-      </div>
-    </div>
+    </Modal>
   );
 }

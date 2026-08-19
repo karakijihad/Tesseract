@@ -3,18 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
 
 from aiohttp import WSCloseCode, WSMsgType, web
 
-from tesseract.brain.boot import SESSIONS_DIR
 from tesseract.paths import TESSERACT_HOME, log_dir
-from tesseract.brain.session_store import (
-    default_session_name,
-    save_session,
-)
 from tesseract.memory.log_notes import append_log_entry
 from tesseract.mirror.server.envelope import (
     make_cost_state,
@@ -22,7 +18,7 @@ from tesseract.mirror.server.envelope import (
     make_envelope,
     make_voice_instruction,
 )
-from tesseract.mirror.server import chat_store, spawn_wake
+from tesseract.mirror.server import chat_store, session_autosave, spawn_wake
 from tesseract.mirror.server.chat_lifecycle import _open_chats_payload
 from tesseract.mirror.server.cors import origin_is_allowed
 from tesseract.mirror.server.session import (
@@ -32,7 +28,7 @@ from tesseract.mirror.server.session import (
     create_server_session,
     send_envelope,
 )
-from tesseract.mirror.server.voice_io import _accumulate_voice_pcm, note_voice_audio
+from tesseract.mirror.server.voice_io import note_voice_audio
 
 log = logging.getLogger(__name__)
 
@@ -135,6 +131,7 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
             "chats": _open_chats_payload(session),
         },
     ))
+    await _announce_replaced_config(session)
     # Owner request 2026-04-29 — observer arms by default at boot
     # (`app.py:_on_startup`). Subscriber attachment normally happens in
     # `/api/observer/arm`, but at boot there's no WS yet. The first WS
@@ -158,6 +155,11 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
         _activity_events_pump(request.app, session),
         f"activity_events_pump:{session.session_id}",
     )
+    session.autosave_task = _spawn_tracked(
+        request.app,
+        session_autosave.autosave_pump(request.app, session),
+        f"autosave_pump:{session.session_id}",
+    )
     # Spawn push Stage 2 — wrap every open chat's spawn completion notifier so a
     # background spawn finishing while that chat is idle starts a proactive turn.
     spawn_wake.install(request.app, session)
@@ -174,11 +176,14 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
             if msg.type == WSMsgType.TEXT:
                 await _ws._dispatch(request.app, session, msg.data)
             elif msg.type == WSMsgType.BINARY:
-                _accumulate_voice_pcm(session, msg.data)
-                # SC-5 — first PCM frame of an utterance drives the voice loop
-                # to `listening` (turn-gated, deduped — cheap on later frames).
+                # Buffering, wake decoding and the voice loop, in the order
+                # they have to happen — one call, because splitting them is
+                # how the frame reached the accumulator but not the decoder.
                 await note_voice_audio(
-                    session, turn_active=session.current_turn_task is not None
+                    request.app,
+                    session,
+                    msg.data,
+                    turn_active=session.current_turn_task is not None,
                 )
             elif msg.type == WSMsgType.ERROR:
                 log.warning("ws error: %s", ws.exception())
@@ -188,6 +193,9 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
         await _cancel_entity_signals_pump(session)
         await _cancel_surface_events_pump(session)
         await _cancel_activity_events_pump(session)
+        # Before the teardown save below: both write the same files, and the
+        # last word must be the complete save.
+        await _cancel_autosave_pump(session)
         try:
             await request.app["pty_manager"].cleanup_for_ws(ws)
         finally:
@@ -196,6 +204,53 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
             finally:
                 cleanup_session(request.app, session)
     return ws
+
+
+async def _announce_replaced_config(session: ServerSession) -> None:
+    """Tell the operator this release replaced their config, once.
+
+    Boot is where the replacement happens and there is no WS open then, so
+    the notice waits here for the first connection and the marker is cleared
+    as it fires — an operator told on every launch that their settings were
+    replaced learns to dismiss the message, which is the one message that
+    must not become furniture.
+
+    Rides the existing `config_reloaded` envelope rather than inventing one:
+    the file really did change under the running process, so bumping the
+    frontend's reload counter and refetching the dependent panels is exactly
+    right.
+    """
+    from tesseract.config_seed import config_replaced_marker_path
+    from tesseract.mirror.server.envelope import make_config_reloaded
+
+    marker = config_replaced_marker_path()
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    files = [str(name) for name in (payload.get("files") or [])]
+    if not files:
+        return
+    backup_dir = str(payload.get("backup_dir") or "")
+    try:
+        await send_envelope(session, make_config_reloaded(
+            session.session_id,
+            file="Settings",
+            summary=(
+                f"this update replaced {len(files)} config file"
+                f"{'' if len(files) == 1 else 's'} — your previous copy is in "
+                f"{backup_dir}"
+            ),
+            detail={"files": files, "backup_dir": backup_dir},
+            ok=True,
+        ))
+    except Exception:
+        log.exception("could not announce the config replacement")
+        return
+    try:
+        marker.unlink(missing_ok=True)
+    except OSError:
+        log.exception("could not clear the config-replaced marker")
 
 
 async def _flush_stt_fallback_notice(app: web.Application, session: ServerSession) -> None:
@@ -428,6 +483,20 @@ async def _cancel_activity_events_pump(session: ServerSession) -> None:
     session.activity_events_task = None
 
 
+async def _cancel_autosave_pump(session: ServerSession) -> None:
+    task = session.autosave_task
+    if task is None or task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        log.exception("autosave pump exit raised for %s", session.session_id)
+    session.autosave_task = None
+
+
 def _envelope_for_channel(payload: Any, channel: str) -> bool:
     if not isinstance(payload, dict):
         return False
@@ -466,12 +535,15 @@ async def _autosave(app: web.Application, session: ServerSession) -> None:
         )
     except Exception:
         log.exception("logs/sessions [session_end] append failed for %s", session.session_id)
-    # mirror-multi-chat P1 — flush every chat to its own
-    # sessions/chats/<chat_id>.json (open + archived) so multi-chat state
-    # survives a restart. Independent of the legacy active-chat save below;
-    # best-effort so a chat-store fault never blocks the session autosave.
+    # Flush every chat to its own sessions/chats/<chat_id>.json (open +
+    # archived) so multi-chat state survives a restart. `skip_empty` stays
+    # False here — archive state belongs on disk for a chat that was never
+    # typed in. `save_chat` stamps `ended_at`, so this write is also what
+    # closes the record.
     try:
-        n = chat_store.persist_session_chats(session)
+        n = chat_store.persist_session_chats(
+            session, model=getattr(opts, "model", "") or "",
+        )
         if n:
             log.info("autosaved %d chat(s) for session %s", n, session.session_id)
         # Index every chat into the work-index for recall — not just the active
@@ -481,24 +553,3 @@ async def _autosave(app: web.Application, session: ServerSession) -> None:
             log.info("recall-indexed %d chat(s) for session %s", indexed, session.session_id)
     except Exception:
         log.exception("chat-store autosave failed for %s", session.session_id)
-    if opts is None:
-        return
-    if not session.chat_session.history:
-        return
-    name = session.save_name or default_session_name()
-    try:
-        # index_work=False: each chat is recall-indexed above by its own
-        # chats/<chat_id>.json. This legacy snapshot of the active chat is kept
-        # only for back-compat (resume, the session drawer's disk glob); indexing
-        # it too would double-index the active chat's recall.
-        save_session(
-            SESSIONS_DIR,
-            name,
-            opts.model,
-            session.started_at,
-            list(session.chat_session.history),
-            index_work=False,
-        )
-        log.info("autosaved session %s to %s.json", session.session_id, name)
-    except Exception:
-        log.exception("autosave failed for %s", session.session_id)

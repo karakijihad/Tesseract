@@ -107,7 +107,18 @@ class ModelAdapter(ABC):
         yield  # type: ignore[misc]
 
     @abstractmethod
-    def count_tokens(self, messages: list[dict[str, Any]]) -> int: ...
+    def count_tokens(self, messages: list[dict[str, Any]]) -> int:
+        """Estimate the prompt's size, for compaction and the chain's guard.
+
+        Declared on the instance because two implementations genuinely need
+        one — `FallbackAdapter` delegates to its primary and `MeteredAdapter`
+        to what it wraps. Every concrete PROVIDER adapter is a `staticmethod`
+        instead: their estimates are pure functions of the messages, and the
+        chain's context-window guard has to ask a fallback entry for one
+        WITHOUT constructing it, which is a 0.6–1.6 s client build for an
+        entry that will usually never run.
+        """
+        ...
 
     @abstractmethod
     async def check_available(self) -> bool: ...

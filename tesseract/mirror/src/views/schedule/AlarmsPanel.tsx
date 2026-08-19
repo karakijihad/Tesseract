@@ -1,3 +1,7 @@
+import { Button } from '../../components/common/Button';
+import { Note } from '../../components/common/Note';
+import { Block } from '../../components/common/Block';
+import { CloseButton } from '../../components/common/CloseButton';
 import { useEffect, useState } from 'react';
 
 import { Hint } from '../../components/ui/Hint';
@@ -53,22 +57,16 @@ function AlarmRow({ alarm, now, onCancel, onSnooze }: RowProps) {
           fires in {firesIn(alarm.run_at, now)}
         </span>
         <Hint label="Snooze 10 minutes" position="bottom">
-          <button
-            type="button"
-            className="schedule-header-btn"
-            onClick={() => onSnooze(alarm.label)}
-          >
+          <Button onClick={() => onSnooze(alarm.label)} ariaLabel={`snooze ${alarm.label}`}>
             snooze
-          </button>
+          </Button>
         </Hint>
         <Hint label="Cancel this alarm" position="bottom">
-          <button
-            type="button"
-            className="schedule-remove-btn"
+          <CloseButton
+            size="inline"
             onClick={() => onCancel(alarm.label)}
-          >
-            ×
-          </button>
+            ariaLabel={`Cancel ${alarm.label}`}
+          />
         </Hint>
       </div>
       {alarm.message && (
@@ -99,40 +97,38 @@ export function AlarmsPanel() {
     return () => window.clearInterval(id);
   }, []);
 
+  // Its own head would be a second one inside the section head `RailView`
+  // already renders — so the pending count and the two controls ride the
+  // block's meta line instead.
   return (
-    <div className="schedule-view">
-      <div className="schedule-header">
-        <span className="schedule-header-title">Alarms</span>
-        <span className="schedule-header-meta">{alarms.length} pending</span>
-        <div className="schedule-header-actions">
+    <Block
+      title="Pending alarms"
+      meta={
+        <>
+          {alarms.length} pending
           <Hint label="Add a new alarm" position="bottom">
-            <button
-              type="button"
+            <Button
               onClick={() => setAdding((v) => !v)}
-              className="schedule-header-btn"
+              ariaExpanded={adding}
+              ariaLabel="add an alarm"
             >
               {adding ? '× cancel' : '+ add'}
-            </button>
+            </Button>
           </Hint>
           <Hint label="Re-fetch pending alarms" position="bottom">
-            <button
-              type="button"
-              onClick={() => fetchAlarmsFn()}
-              className="schedule-header-btn"
-            >
+            <Button onClick={() => fetchAlarmsFn()} ariaLabel="refresh alarms">
               refresh
-            </button>
+            </Button>
           </Hint>
-        </div>
-      </div>
+        </>
+      }
+    >
       {adding && <AddAlarmForm onClose={() => setAdding(false)} />}
-      {lastError && <div className="schedule-error">{lastError}</div>}
+      {lastError && <Note tone="bad">{lastError}</Note>}
+      {alarms.length === 0 && !loading && (
+        <Note>No pending alarms — click + add, /alarm_set, or just ask.</Note>
+      )}
       <div className="schedule-list">
-        {alarms.length === 0 && !loading && (
-          <div className="schedule-empty">
-            <span className="t-meta">No pending alarms — click + add, /alarm_set, or just ask.</span>
-          </div>
-        )}
         {alarms.map((alarm) => (
           <AlarmRow
             key={alarm.id}
@@ -143,6 +139,6 @@ export function AlarmsPanel() {
           />
         ))}
       </div>
-    </div>
+    </Block>
   );
 }

@@ -119,18 +119,18 @@ class LogTriageTool(Tool):
     # must not enter chat history as though it were.
     untrusted_source: ClassVar[bool] = True
 
+    group: ClassVar[str] = "files-on-disk"
+    summary: ClassVar[str] = "Summarise a log file's shape: counts, span, levels, and repeated messages."
+    use_when: ClassVar[str] = (
+        "The question is 'what is wrong in this log' rather than 'does this "
+        "exact string appear' — reads the whole file and groups repeats so one "
+        "failing request does not read as many distinct problems."
+    )
+    not_when: ClassVar[str] = "Use `grep` when you already know the exact string to find."
+
     @property
     def name(self) -> str:
         return "log_triage"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Summarise a log file: record count and time span, counts by level "
-            "and by logger, and the most frequent distinct messages with their "
-            "newest occurrence. Use instead of grep when the question is 'what "
-            "is wrong in this log' rather than 'does this exact string appear'."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

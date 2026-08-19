@@ -11,7 +11,7 @@ class Finding:
     "killed" / "removed" / "closed" / "pruned" on success, "would-<verb>"
     under dry-run, "failed" when the attempt errored (detail says why)."""
 
-    sweep: str  # "processes" | "scratch" | "sessions" | "archives"
+    sweep: str  # "processes" | "scratch" | "sessions"
     target: str
     action: str
     detail: str = ""

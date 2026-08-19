@@ -1,0 +1,1062 @@
+/* =============================================================
+   UI — shared primitives every view is built from.
+
+   `ViewHeader` (the head of a view), `Block` (a titled card),
+   `Note` (an aside) and `Button` (a small action). Keyed off the
+   classes those components emit, like `nav.css` and
+   `markdown.css`: a surface gets the app's grouping and the app's
+   asides by rendering the component, not by remembering a class.
+   ============================================================= */
+
+/* Present to a screen reader, absent to a pointer — for the text a visual
+   encoding stands in for (a chart's own numbers). */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: calc(var(--space-1) * -1);
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── ViewHeader — the head of a view ─────────────────────────── */
+
+.view-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-md);
+  padding: var(--space-sm) var(--space-14);
+  border-bottom: var(--stroke-1) solid var(--panel-border);
+  flex-shrink: 0;
+}
+
+/* Rank comes from `.t-sub` on the element — a view outranks the blocks it
+   contains, and that one step is the whole hierarchy. */
+.view-head__title {
+  font-weight: 600;
+  margin: 0;
+}
+
+.view-head__meta {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.view-head__actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+}
+
+/* ── Button — the one small action ───────────────────────────── */
+
+/* CASE IS EMPHASIS, AND THE LIBRARY DECIDES IT — operator direction,
+   2026-08-15: "buttons that require important action can have capslock … of
+   course not all buttons would have the same color, but this is controlled by
+   the library."
+
+   Every button used to be uppercase, which made uppercase mean nothing. It is
+   now the mark of a tone: `primary` (the one action a pane is FOR), `good`
+   (accept) and `danger` (stop or destroy) shout; the quiet default does not.
+   A caller never types `SAVE` — it passes `Save` and the tone decides whether
+   it is spoken loudly. */
+.btn {
+  font-family: var(--font-ui);
+  font-size: var(--t-caption-size);
+  padding: var(--space-4) var(--space-10);
+  border-radius: var(--radius-xs);
+  background: var(--bg-card);
+  border: var(--stroke-1) solid var(--panel-border);
+  color: var(--text-meta);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    color var(--motion-fast),
+    border-color var(--motion-fast),
+    background var(--motion-fast);
+}
+
+.btn--primary,
+.btn--good,
+.btn--danger {
+  font-size: var(--t-meta-size);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.btn:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--accent-dim);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn.is-active {
+  color: var(--accent-bright);
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+/* `inline` — a control that lives inside a line of text rather than beside it.
+   It takes the line's size and colour and gives up the card ground, so the
+   sentence stays the thing being read and the action stays available.
+
+   This shape existed as `.key-row__clear` and was lost when that row moved to
+   the shared button: a caption-size filled card appeared beside every set key,
+   and eight of them down one column made clearing a credential the loudest
+   offer on the pane. The shape belonged in the library, not in the row. */
+.btn--inline {
+  font-size: inherit;
+  padding: 0 var(--space-xs);
+  background: transparent;
+  color: inherit;
+}
+
+.btn--inline:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.btn--danger {
+  color: var(--bad);
+}
+
+.btn--danger:hover:not(:disabled) {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
+.btn--danger.is-active {
+  color: var(--bad);
+  border-color: var(--bad);
+  background: var(--bad-dim);
+}
+
+/* `primary` — the one action a pane is FOR, filled rather than outlined.
+   `cost-row__save` was this, privately, as a violet slab with its own
+   padding and radius. */
+.btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--ink-100);
+}
+
+.btn--primary:hover:not(:disabled) {
+  color: var(--ink-100);
+  background: var(--accent-bright);
+  border-color: var(--accent-bright);
+}
+
+/* `good` — accepting something. The MCP approvals row drew this out of a raw
+   rgba, which the token audit does not read. */
+.btn--good {
+  color: var(--ok);
+}
+
+.btn--good:hover:not(:disabled) {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+/* ── RailView — a rail of sections and one pane ──────────────── */
+
+/* The view itself never scrolls — only the section body does, so the rail
+   stays where the pointer left it. */
+/* THE RAIL AND ITS CONTENT ARE ONE HIERARCHY — operator direction,
+   2026-08-15: "left rail sizes and right view should have the same sizes,
+   each within its own hierarchy level."
+
+   This rule already anchored the text COLOUR for every railed view; it now
+   anchors the tier as well, and for the same reason. Nothing under here set a
+   base size, so panes inherited the document's 14px unless they remembered to
+   step down — which is why a row label read 14px in Tools, Cost, API keys,
+   Model roles and Compaction, and 11px in Session policy and Raw config, while
+   the rail beside all of them was 11px.
+
+   `caption` is the body tier of a dense instrument panel, and it is what the
+   rail rows already are. Anything that needs to be louder says so: a section
+   title takes `t-ui`, a view head `t-sub`, and the shared inputs carry their
+   own size. The default no longer has to be remembered. */
+.rail-view {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  color: var(--text-primary);
+  font-size: var(--t-caption-size);
+}
+
+.rail-view__pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.rail-view__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+/* A view with a rail but nothing to put in it — the empty state stands where
+   the rail and pane would have been. */
+.rail-view__empty {
+  padding: var(--space-md);
+}
+
+/* ── IconButton — the one title-bar button ───────────────────── */
+
+.icon-btn {
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  line-height: 1;
+  font-size: var(--t-ui-size);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-meta);
+  cursor: pointer;
+  transition:
+    color var(--motion-fast) var(--ease-out),
+    background var(--motion-fast) var(--ease-out);
+}
+
+.icon-btn:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.icon-btn.is-active {
+  color: var(--accent-bright);
+}
+
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ── CloseButton (inline) — a dismissal inside a row ─────────── */
+
+/* The default close is `IconButton` above; this is the smaller one, for the
+   places a 1.5rem title-bar button would crowd the row it sits in — a terminal
+   tab, an attachment chip, a suggestion row, a schedule entry.
+
+   Hover goes to `--bad` rather than `--text-primary`: an inline close removes
+   the row it sits in, and three of the twelve hand-rolled ones it replaced had
+   already reached that conclusion separately.
+
+   Placement and reveal-on-hover are NOT here. A pane close is absolutely
+   positioned and a tab close fades in with its tab; both belong to the parent's
+   layout, and the parent wraps this in a slot of its own rather than reaching
+   across a file boundary to repaint a shared control. */
+.close-btn-inline {
+  width: 1.25rem;
+  height: 1.25rem;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  line-height: 1;
+  font-size: var(--t-ui-size);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-xs);
+  color: var(--text-meta);
+  cursor: pointer;
+  transition:
+    color var(--motion-fast) var(--ease-out),
+    background var(--motion-fast) var(--ease-out);
+}
+
+.close-btn-inline:hover:not(:disabled) {
+  color: var(--bad);
+  background: var(--bg-hover);
+}
+
+.close-btn-inline:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ── EdgeTab — a hidden surface's way back ───────────────────── */
+
+/* The bottom HUD's tab and the side rails' tabs were the same control drawn
+   twice; the second one's comment even said so. The short side is always 16px
+   and the long one 52px, so the three read as one family turned three ways. */
+.edge-tab {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--glass-deep);
+  border: var(--stroke-1) solid var(--accent-glow);
+  color: var(--accent);
+  font-size: var(--t-meta-size);
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease-out);
+}
+
+.edge-tab:hover {
+  background: var(--accent-dim);
+}
+
+.edge-tab--bottom {
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  width: 52px;
+  height: 16px;
+  border-bottom: none;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+
+.edge-tab--left,
+.edge-tab--right {
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 52px;
+}
+
+.edge-tab--left {
+  left: 0;
+  border-left: none;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.edge-tab--right {
+  right: 0;
+  border-right: none;
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+
+/* ── ComposerButton — a verb at the end of a composer ────────── */
+
+/* Two composers, two sets of these: the chat bar filled them, the HUD bar
+   drew the same four flat and transparent, so stopping a turn from the HUD
+   looked like nothing in particular. Colour follows the verb — `hud-chat.css`
+   already said so in a comment about redirect, and then only redirect
+   matched. */
+.composer-btn {
+  flex-shrink: 0;
+  min-width: 34px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--space-10);
+  border: var(--stroke-1) solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--ink-100);
+  font-family: var(--font-ui);
+  font-size: var(--t-ui-size);
+  line-height: 1;
+  cursor: pointer;
+  transition: filter var(--motion-fast) var(--ease-out);
+}
+
+.composer-btn:hover:not(:disabled) {
+  filter: brightness(1.12);
+}
+
+.composer-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Attaching is not a turn verb — it is the quiet one, and the only one that
+   does not spend anything. */
+.composer-btn--attach {
+  background: var(--bg-card);
+  border-color: var(--border);
+  color: var(--text-secondary);
+}
+
+.composer-btn--steer {
+  background: var(--warn);
+  border-color: var(--warn);
+}
+
+.composer-btn--stop {
+  background: var(--bad);
+  border-color: var(--bad);
+}
+
+/* ── Switch — on or off, taking effect as it moves ───────────── */
+
+.switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 16px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-surface);
+  border: var(--stroke-1) solid var(--panel-border);
+  cursor: pointer;
+  transition:
+    background var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out);
+}
+
+.switch.is-on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.switch__knob {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 12px;
+  height: 12px;
+  border-radius: var(--radius-pill);
+  background: var(--text-dim);
+  transition:
+    transform var(--motion-fast) var(--ease-out),
+    background var(--motion-fast) var(--ease-out);
+}
+
+.switch.is-on .switch__knob {
+  transform: translateX(12px);
+  background: var(--bg-surface);
+}
+
+.switch:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Segmented — pick one of a few ───────────────────────────── */
+
+/* Seven private versions of the same control. The uppercase is the majority
+   and it is right here for the reason `Button` gives for the opposite: these
+   are terse mode labels, a word each, and the caps are what separate them
+   from the prose around them. */
+.segmented {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  width: fit-content;
+  max-width: 100%;
+}
+
+.segment {
+  flex: 0 0 auto;
+  padding: var(--space-4) var(--space-12);
+  background: transparent;
+  border: var(--stroke-1) solid var(--panel-border);
+  border-radius: var(--radius-xs);
+  color: var(--text-meta);
+  font-family: var(--font-ui);
+  font-size: var(--t-meta-size);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition:
+    color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out),
+    background var(--motion-fast) var(--ease-out);
+}
+
+.segment:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--accent-dim);
+}
+
+.segment.is-active {
+  color: var(--accent-bright);
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.segment:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Chip — a compact token you can click ────────────────────── */
+
+/* Seven private versions: radii of 3px, 10px, 999px and two token values;
+   hover was a border colour in four and a background in two; one dimmed
+   itself and the rest lit up. The base carries only what every chip is —
+   clickable, and bordered by something. The look is the variant's. */
+.chip {
+  border: var(--stroke-1) solid transparent;
+  cursor: pointer;
+  transition:
+    color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out),
+    background var(--motion-fast) var(--ease-out),
+    opacity var(--motion-fast) var(--ease-out);
+}
+
+.chip--outline {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  max-width: 100%;
+  padding: var(--space-3) var(--space-8);
+  border-color: var(--panel-border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
+  font-size: var(--t-meta-size);
+  text-align: left;
+}
+
+.chip--outline:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.chip--outline.is-active {
+  color: var(--accent-bright);
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+/* A state rather than a choice — the context meter as it fills, a model role
+   that is or is not carrying traffic. Each is filled, because a state is
+   read at a glance and an outline is not enough to catch the eye. */
+.chip--good { color: var(--ok);   border-color: var(--ok-strong);   background: var(--ok-soft); }
+.chip--warn { color: var(--warn); border-color: var(--warn-strong); background: var(--warn-soft); }
+.chip--bad  { color: var(--bad);  border-color: var(--bad-strong);  background: var(--bad-soft); }
+
+/* A chip coloured by what it labels: the pulse categories carry their own
+   background everywhere in the app, so switching one off dims it rather than
+   repainting it. */
+.chip--tag:not(.is-active) {
+  opacity: 0.25;
+  border-color: var(--border-subtle);
+}
+
+.chip--tag:hover:not(:disabled) {
+  opacity: 1;
+}
+
+.chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Disclosure — showing more, and putting it away ──────────── */
+
+/* Nine hand-rolled versions, no two alike: two accent links, an uppercase
+   meta header, a mono toggle, a plain meta line, and four section heads with
+   three different hovers. It is one quiet line now — the loudness belonged to
+   what it reveals, never to the offer. */
+.disclosure {
+  padding: var(--space-4) 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-xs);
+  color: var(--text-meta);
+  font-family: var(--font-ui);
+  font-size: var(--t-caption-size);
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--motion-fast) var(--ease-out);
+}
+
+.disclosure:hover:not(:disabled) {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
+/* The head of a section that opens under it — full width, so the whole line
+   is the target rather than the words in it. */
+.disclosure--row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  width: 100%;
+  padding: var(--space-6) var(--space-10);
+  color: var(--text-secondary);
+  transition:
+    background var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
+}
+
+.disclosure--row:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  text-decoration: none;
+}
+
+.disclosure:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ── MenuItem — one choice in a list of them ─────────────────── */
+
+/* Ten lists, ten answers to "what does pointing at a row look like". Hover
+   was `--bg-hover` three times, `--accent-dim` twice, a border colour twice,
+   `--bg-surface` once and a raw `color-mix` once — so the same gesture read
+   as a different promise depending on which menu was open. It is one gesture
+   now, and the row that is already the case is the only one that stays lit.
+
+   Chrome only. A row's columns, its icon and its trailing meta are children
+   of it, and the surface that owns those still owns them. */
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  width: 100%;
+  padding: var(--space-5) var(--space-sm);
+  background: transparent;
+  border: var(--stroke-1) solid transparent;
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
+  font-size: var(--t-caption-size);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
+}
+
+.menu-item:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* The choice already in force — lit, and lit whether or not the pointer is
+   near it, which is the whole difference between "this one" and "this one if
+   you click". */
+.menu-item.is-active {
+  background: var(--accent-dim);
+  border-color: var(--accent-dim);
+  color: var(--text-primary);
+}
+
+/* Where a keyboard cursor is. It borrows the active fill and adds the border
+   the pointer never draws, so a list being walked by arrow keys and a list
+   showing its current value are not the same picture. */
+.menu-item.is-focused {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.menu-item:disabled {
+  cursor: default;
+}
+
+/* A row disabled BECAUSE it is the current choice must stay fully legible —
+   only one that is genuinely unavailable dims. */
+.menu-item:disabled:not(.is-active) {
+  opacity: 0.5;
+}
+
+/* ── Row — an activatable surface that carries its own controls ── */
+
+/* `.menu-item` is a `<button>`, so a row with a Cancel in it cannot be one.
+   Six surfaces built the other kind by hand and disagreed on whether it was
+   reachable at all: the autonomy rows shipped `role`, `tabIndex` and an
+   Enter/Space handler, the terminal tabs shipped none of the three.
+
+   What a row is MADE of stays with the surface — a bordered card, a bare line
+   and a tab cannot share one ground or one hover, and pretending otherwise
+   would make this rule unsatisfiable rather than shared. What every row does
+   agree on is that it can be reached, and what focus looks like when it is.
+   Which shapes exist is declared in `ROW_CLASSES` in
+   `scripts/audit-hardcoded-tokens.mjs`. */
+.row {
+  cursor: pointer;
+}
+
+.row:focus-visible {
+  outline: var(--stroke-2) solid var(--accent);
+  outline-offset: 1px;
+}
+
+.row[aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* The controls a row carries. Pressing one is not pressing the row — six
+   surfaces each wrote that stopPropagation wrapper, under three names. */
+.row__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+}
+
+/* ── Modal — a panel over a dimmed app ──────────────────────── */
+
+/* Four surfaces drew this themselves and each got a different subset right:
+   all four dimmed with a backdrop `div` no keyboard could reach, all four then
+   needed the panel to swallow a click so the backdrop under it did not close,
+   and two closed on Escape. The scrim is the app's `Scrim` now, so the dimming
+   and the stacking order are decided where every other overlay's are — and the
+   panel sits on its own layer above it, which is why nothing swallows a click
+   any more. */
+.modal-layer {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: var(--space-lg);
+  /* The scrim's own level + 1, per the stacking order below. */
+  z-index: 1001;
+  /* The layer fills the viewport but only the panel is a target, so a click
+     beside the panel reaches the scrim and dismisses. */
+  pointer-events: none;
+}
+
+.modal {
+  pointer-events: auto;
+  max-width: 100%;
+  max-height: 100%;
+  overflow: auto;
+  background: var(--bg-card);
+  border: var(--stroke-1) solid var(--panel-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 32px var(--scrim-lg);
+}
+
+/* ── Scrim — the click-catcher behind an overlay ─────────────── */
+
+/* Three surfaces each drew this: fixed, inset 0, no border, pointer cursor,
+   and a dimming that was `--bg-overlay` twice and `--scrim-lg` once — so how
+   far away the app looked depended on which overlay was open. One darkness,
+   and one place the stacking order is written down. */
+.scrim {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-overlay);
+  border: 0;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+/* The whole stacking order of the app's overlays, in the order they cover
+   each other: an expanded preview sits over a view, a drawer over that, a
+   modal over everything. Each panel takes its scrim's level + 1. */
+.scrim--panel  { z-index: 100; }
+.scrim--drawer { z-index: 800; }
+.scrim--dialog { z-index: 1000; }
+
+/* ── ResizeHandles — the eight edges of a floating card ──────── */
+
+/* The targets overhang the card so the pointer can catch an edge that is one
+   pixel wide, and the corners are laid after the edges so they win the
+   overlap. Moved out of `cockpit.css`: the Routing panel needs the same eight
+   and copying them is how the app grew nine of everything else. */
+.resize-handle {
+  position: absolute;
+  z-index: 3;
+}
+
+/* Edges: a 10px target overhanging the card by 4, so the pointer catches the
+   border rather than having to land inside it. */
+.resize-handle--n {
+  top: -4px;
+  left: 10px;
+  right: 10px;
+  height: 10px;
+  cursor: ns-resize;
+}
+.resize-handle--s {
+  bottom: -4px;
+  left: 10px;
+  right: 10px;
+  height: 10px;
+  cursor: ns-resize;
+}
+.resize-handle--e {
+  right: -4px;
+  top: 10px;
+  bottom: 10px;
+  width: 10px;
+  cursor: ew-resize;
+}
+.resize-handle--w {
+  left: -4px;
+  top: 10px;
+  bottom: 10px;
+  width: 10px;
+  cursor: ew-resize;
+}
+.resize-handle--ne {
+  top: -3px;
+  right: -3px;
+  width: 16px;
+  height: 16px;
+  cursor: nesw-resize;
+}
+.resize-handle--nw {
+  top: -3px;
+  left: -3px;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+}
+.resize-handle--sw {
+  bottom: -3px;
+  left: -3px;
+  width: 16px;
+  height: 16px;
+  cursor: nesw-resize;
+}
+
+/* The diagonal grip tells an operator the card resizes at all — but it was
+   painted always, on every resizable surface, so the corner mark was part of
+   the app's resting state rather than an answer to the pointer being there
+   (operator: "why is this visible in all surfaces"). It appears when the
+   pointer is on the card it belongs to.
+   `:hover > ` and not `:has()`: the direct parent IS the card, and hovering
+   anywhere inside a card puts `:hover` on it, so this reads the same for a
+   glass panel, a surface card and the Routing pane without any of them
+   naming themselves here. */
+.resize-handle--se {
+  bottom: 0;
+  right: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+}
+
+:hover > .resize-handle--se {
+  background: linear-gradient(
+    135deg,
+    transparent 0 50%,
+    var(--border-visible) 50% 100%
+  );
+}
+
+/* A card that clips its overflow would hide an overhanging target, so those
+   sit just inside the edge instead. Same widths — the affordance does not get
+   worse because the card has a radius. */
+.resize-handle.is-inset {
+  inset: auto;
+}
+.resize-handle--n.is-inset { top: 0; left: 10px; right: 10px; height: 8px; }
+.resize-handle--s.is-inset { bottom: 0; left: 10px; right: 10px; height: 8px; }
+/* 6px, not 8: an inset edge handle sits ON the scroll gutter, and at 8 it
+   covered two thirds of the 12px scrollbar — pointer-down landed on a resize
+   and the thumb could not be dragged at all in any floating panel. 6 leaves
+   half the bar to the scrollbar and still catches a pointer aimed at the
+   edge. */
+.resize-handle--e.is-inset { right: 0; top: 10px; bottom: 10px; width: 6px; }
+.resize-handle--w.is-inset { left: 0; top: 10px; bottom: 10px; width: 6px; }
+.resize-handle--ne.is-inset { top: 0; right: 0; width: 14px; height: 14px; }
+.resize-handle--nw.is-inset { top: 0; left: 0; width: 14px; height: 14px; }
+.resize-handle--sw.is-inset { bottom: 0; left: 0; width: 14px; height: 14px; }
+.resize-handle--se.is-inset { bottom: 0; right: 0; width: 14px; height: 14px; }
+
+/* ── Select — the one dropdown ───────────────────────────────── */
+
+.select {
+  font-family: var(--font-ui);
+  font-size: var(--t-meta-size);
+  padding: var(--space-4) var(--space-22) var(--space-4) var(--space-10);
+  border-radius: var(--radius-xs);
+  background: var(--bg-card);
+  border: var(--stroke-1) solid var(--panel-border);
+  color: var(--text-primary);
+  cursor: pointer;
+  max-width: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  /* The caret, drawn from two gradients rather than an inline SVG — the
+     native one goes with `appearance: none`, and an asset would be a second
+     place the palette is written. */
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-meta) 50%),
+    linear-gradient(135deg, var(--text-meta) 50%, transparent 50%);
+  background-position: calc(100% - 12px) 55%, calc(100% - 8px) 55%;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+  transition:
+    border-color var(--motion-fast),
+    color var(--motion-fast);
+}
+
+.select:hover:not(:disabled) {
+  border-color: var(--accent-dim);
+}
+
+.select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.select--ok   { color: var(--ok); border-color: var(--ok); }
+.select--warn { color: var(--warn); border-color: var(--warn); }
+.select--bad  { color: var(--bad); border-color: var(--bad); }
+
+/* `<option>` rendering is OS-controlled; these declarations re-skin the popup
+   so its resting palette tracks the app instead of coming back system blue.
+   Selected/hover states still belong to the OS. */
+.select option {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+/* ── Block — the one grouping unit ───────────────────────────── */
+
+.block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  border: var(--stroke-1) solid var(--panel-border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+}
+
+/* Tone marks the state of what the block describes. Left edge only — a whole
+   card in a state colour reads as an alert the operator cannot dismiss. */
+.block--warn {
+  border-left: var(--stroke-2) solid var(--warn);
+}
+
+.block--bad {
+  border-left: var(--stroke-2) solid var(--bad);
+}
+
+.block__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+/* Type comes from `.t-ui` on the element. This rule only weights it — a
+   block heading outranks its rows without changing rank in the scale. */
+.block__title {
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+/* The `ⓘ` beside a title that needs explaining. Meta colour, normal weight —
+   it is an offer of help, not part of the heading. */
+.block__title-hint {
+  color: var(--text-meta);
+  font-weight: 400;
+  cursor: help;
+  line-height: 1;
+}
+
+.block__title-hint:hover {
+  color: var(--text-secondary);
+}
+
+/* Meta with no title beside it sits where the title would have been, rather
+   than floating against the right edge of a card with nothing on its left. */
+.block__head--meta-only {
+  justify-content: flex-start;
+}
+
+/* Inline-flex so a block's meta can carry a `Button` beside its figure without
+   the button sitting on the text baseline. */
+.block__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.block__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+/* ── Note — the one aside ────────────────────────────────────── */
+
+.note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-10);
+  border-radius: var(--radius-xs);
+  border-left: var(--stroke-2) solid var(--panel-divider);
+  background: var(--bg-deep);
+  /* Sentence case, not the uppercase 10px that made an explanation read like
+     a label. Caption rank: below the control it explains, above nothing. */
+  font-family: var(--font-ui);
+  font-size: var(--t-caption-size);
+  line-height: 1.5;
+  color: var(--text-secondary);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.note--warn {
+  border-left-color: var(--warn);
+}
+
+.note--bad {
+  border-left-color: var(--bad);
+}
+
+.note__marker {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-top: var(--space-1);
+  border-radius: var(--radius-pill);
+  border: var(--stroke-1) solid currentColor;
+  color: var(--text-meta);
+  font-family: var(--font-ui);
+  font-size: var(--t-meta-size);
+  font-weight: 600;
+  line-height: 1;
+}
+
+.note--warn .note__marker {
+  color: var(--warn);
+}
+
+.note--bad .note__marker {
+  color: var(--bad);
+}
+
+.note__body {
+  min-width: 0;
+}
+
+.note__body code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  color: var(--text-primary);
+}
+
+.note__body a {
+  color: var(--accent-bright);
+}

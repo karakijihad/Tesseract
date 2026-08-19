@@ -1,3 +1,4 @@
+import { Select } from '../../components/common/Select';
 import { useEffect, useMemo, useState } from 'react';
 
 import { Hint } from '../../components/ui/Hint';
@@ -9,12 +10,20 @@ import {
 import { useToastStore } from '../../stores/toasts';
 import { useScheduleStore } from '../../stores/schedule';
 import { CadencePicker } from './CadencePicker';
+import { Checkbox } from '../../components/common/Checkbox';
+import { Input } from '../../components/common/Input';
+import { Button } from '../../components/common/Button';
 
 interface Props {
   onClose: () => void;
 }
 
 const SLUG_RE = /^[a-z0-9_]+$/;
+
+// The backend's floor, restated here only so the button can say no before the
+// round trip. The rule itself lives in `SchedulerEngine.add_job_runtime`, which
+// both creation doors go through.
+const MIN_SUMMARY_CHARS = 20;
 
 const ON_FAILURE_OPTIONS: Array<{ value: 'log' | 'alert' | 'disable'; label: string }> = [
   { value: 'log', label: 'log' },
@@ -28,6 +37,7 @@ export function AddJobForm({ onClose }: Props) {
   const [name, setName] = useState('');
   const [cadence, setCadence] = useState('1h');
   const [handler, setHandler] = useState('');
+  const [summary, setSummary] = useState('');
   const [enabled, setEnabled] = useState(true);
   const [onFailure, setOnFailure] = useState<'log' | 'alert' | 'disable'>('log');
   const [submitting, setSubmitting] = useState(false);
@@ -49,7 +59,9 @@ export function AddJobForm({ onClose }: Props) {
 
   const nameValid = useMemo(() => SLUG_RE.test(name), [name]);
   const cadenceValid = cadence.trim().length > 0;
-  const canSubmit = nameValid && cadenceValid && handler && !submitting;
+  const summaryValid = summary.trim().length >= MIN_SUMMARY_CHARS;
+  const canSubmit =
+    nameValid && cadenceValid && summaryValid && handler && !submitting;
 
   async function submit() {
     setSubmitting(true);
@@ -59,6 +71,7 @@ export function AddJobForm({ onClose }: Props) {
         name,
         cadence,
         handler,
+        summary,
         enabled,
         on_failure: onFailure,
       });
@@ -76,16 +89,28 @@ export function AddJobForm({ onClose }: Props) {
     <div className="schedule-add-form" role="form" aria-label="Add scheduled job">
       <div className="schedule-add-row">
         <label className="schedule-add-label">name</label>
-        <input
-          type="text"
+        <Input
           className="schedule-add-input"
           value={name}
-          onChange={(e) => setName(e.target.value)}
+          onChange={setName}
           placeholder="vault_lint_4h"
-          aria-invalid={name.length > 0 && !nameValid}
+          ariaInvalid={name.length > 0 && !nameValid}
         />
         <Hint label="Lowercase letters, digits, underscores. Must be unique among scheduled jobs.">
           <span className="schedule-add-hint">slug</span>
+        </Hint>
+      </div>
+      <div className="schedule-add-row">
+        <label className="schedule-add-label">what it does</label>
+        <Input
+          className="schedule-add-input"
+          value={summary}
+          onChange={setSummary}
+          placeholder="Checks the vault for broken links every four hours"
+          ariaInvalid={summary.length > 0 && !summaryValid}
+        />
+        <Hint label="One line, for you. It is what this row says about itself in WHAT-RUNS.md and in this tab months from now.">
+          <span className="schedule-add-hint">summary</span>
         </Hint>
       </div>
       <div className="schedule-add-row schedule-add-row-picker">
@@ -102,58 +127,37 @@ export function AddJobForm({ onClose }: Props) {
       </div>
       <div className="schedule-add-row">
         <label className="schedule-add-label">handler</label>
-        <select
-          className="schedule-add-input"
+        <Select
           value={handler}
-          onChange={(e) => setHandler(e.target.value)}
-        >
-          {handlers.map((h) => (
-            <option key={h.dotpath} value={h.dotpath}>
-              {h.label}
-            </option>
-          ))}
-        </select>
+          options={handlers.map((h) => ({ value: h.dotpath, label: h.label }))}
+          onChange={setHandler}
+          ariaLabel="Job handler"
+        />
       </div>
       <div className="schedule-add-row">
         <label className="schedule-add-label">on_failure</label>
-        <select
-          className="schedule-add-input"
+        <Select
           value={onFailure}
-          onChange={(e) => setOnFailure(e.target.value as 'log' | 'alert' | 'disable')}
-        >
-          {ON_FAILURE_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-        <label className="schedule-add-checkbox">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(e) => setEnabled(e.target.checked)}
-          />
-          enabled
-        </label>
+          options={ON_FAILURE_OPTIONS}
+          onChange={(v) => setOnFailure(v as 'log' | 'alert' | 'disable')}
+          ariaLabel="On failure"
+        />
+        <Checkbox checked={enabled} onChange={setEnabled} label="enabled" />
       </div>
       {error && <div className="schedule-add-error">{error}</div>}
       <div className="schedule-add-actions">
-        <button
-          type="button"
-          className="schedule-add-cancel"
+        <Button
           onClick={onClose}
           disabled={submitting}
         >
           cancel
-        </button>
-        <button
-          type="button"
-          className="schedule-add-submit"
+        </Button>
+        <Button
           onClick={submit}
           disabled={!canSubmit}
         >
           {submitting ? 'adding…' : 'add job'}
-        </button>
+        </Button>
       </div>
     </div>
   );

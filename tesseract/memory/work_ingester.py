@@ -181,17 +181,21 @@ def _iso_from_mtime(path: Path) -> str:
 def backfill(
     index: WorkIndex,
     *,
-    sessions_dir: Path | None = None,
+    chat_files: Iterable[Path] | None = None,
     workshop_dir: Path | None = None,
 ) -> dict[str, int]:
-    """Walk both corpora end-to-end. Returns ``{"sessions": N, "workshop": M}``.
+    """Walk both corpora end-to-end. Returns ``{"chats": N, "workshop": M}``.
     Idempotent — repeated calls produce the same row count (per-path delete
     on each ingest).
+
+    The conversations arrive as paths rather than as a directory to glob. They
+    live in ``sessions/chats/`` now and ``chat_store`` owns that walk — this
+    used to take the legacy ``sessions/`` directory and glob it non-
+    recursively, which meant it never saw a chat conversation at all.
     """
-    out = {"sessions": 0, "workshop": 0}
-    if sessions_dir and sessions_dir.exists():
-        for path in sorted(sessions_dir.glob("*.json")):
-            out["sessions"] += index_session_file(index, path)
+    out = {"chats": 0, "workshop": 0}
+    for path in chat_files or ():
+        out["chats"] += index_session_file(index, path)
     if workshop_dir and workshop_dir.exists():
         for path in sorted(workshop_dir.rglob("*.md")):
             out["workshop"] += index_workshop_file(index, path)

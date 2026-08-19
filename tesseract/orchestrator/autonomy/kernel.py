@@ -16,8 +16,9 @@ follows the deterministic 9-step flow in
    S1 stops here: transitions selected items to ``SELECTED`` so the
    dashboard renders the selection without spinning up a worker.
 8. (S2) Outbound notify.
-9. Sleep until: tick interval elapsed OR explicit ``poke`` from a
-   publisher.
+9. Sleep until an event lands, a worker finishes, or the fallback
+   interval elapses. The bus wakes this loop directly (``set_wake``),
+   so a publisher does not need to know the kernel exists.
 
 S1 ships steps 1-6 + the lifecycle scaffolding (start / stop /
 quiesce / resume). S2 wires rationale generation, worker dispatch,
@@ -66,6 +67,8 @@ from tesseract.orchestrator.autonomy.rationale import (
     UNAVAILABLE_MARKER,
     generate_rationale,
 )
+from tesseract.orchestrator.autonomy.spend_ledger import day_spend, record_spend
+from tesseract.orchestrator.outcome import RunOutcome
 from tesseract.orchestrator.autonomy.text_quality import is_degenerate_goal
 from tesseract.orchestrator.autonomy.worker_dispatch import (
     WorkerRunner,
@@ -73,6 +76,7 @@ from tesseract.orchestrator.autonomy.worker_dispatch import (
     default_runner,
 )
 from tesseract.orchestrator.autonomy import journal as operator_journal
+from tesseract.orchestrator.workers.liveness import announce_stale_workers
 from tesseract.orchestrator.workers.lane import (
     AdmissionDecision,
     AdmissionResult,
@@ -99,20 +103,19 @@ from tesseract.orchestrator.activity.hooks import (
 log = logging.getLogger(__name__)
 
 
-DEFAULT_TICK_SECONDS = 30.0
+# The FALLBACK wake, not a poll: every event that reaches the bus wakes the
+# kernel, and so does a worker finishing. This covers only what no event
+# announces — a daily cap lifting at midnight, an item parked by a crash, a
+# wake lost to a publisher that failed. `agenda.yaml::kernel` is the authority;
+# this is what a config missing the key falls back to.
+DEFAULT_TICK_SECONDS = 300.0
 DEFAULT_TOP_K = 3
 DEFAULT_MAX_CONCURRENT_TOTAL = 8
 DEFAULT_MAX_OPEN_TOTAL = 40
 DEFAULT_MAX_OPEN_PER_SOURCE = 8
 DEFAULT_FUZZY_THRESHOLD = 0.9
 DEFAULT_FUZZY_WINDOW_HOURS = 24
-DEFAULT_MAX_UNVETTED_HOURS = 24
 DEFAULT_MAX_RESUME_ATTEMPTS = 2
-DEFAULT_VET_REQUIRED: tuple[str, ...] = (
-    "self_reflection",
-    "memory_signal",
-    "vault_signal",
-)
 
 # Risk class → worker kind. Used in S1 to pick a lane for an
 # admission *check* (selection only); S2 swaps in real per-item
@@ -122,6 +125,28 @@ _DEFAULT_KIND_FOR_RISK: dict[RiskClass, WorkerKind] = {
     RiskClass.PROPOSE: WorkerKind.MARKDOWN_AGENT,
     RiskClass.OPERATOR_GATE: WorkerKind.CODER_SEAT,
 }
+
+def _completed_work(record: Any) -> bool:
+    """Did this worker actually finish the item's work?
+
+    ``DONE`` alone does not answer it. The runner marks a ``degraded`` run DONE
+    — it produced output below its declared contract — and closing an item on
+    that would count it as completed work in the completion rate beside runs
+    that succeeded. Every path that closes an item from worker state asks here,
+    so a restart cannot upgrade what the live reconciler refused.
+    """
+    return (
+        record.status is WorkerStatus.DONE
+        and getattr(record, "outcome", None) is not RunOutcome.DEGRADED
+    )
+
+
+def _offender_label(record: Any) -> str:
+    """How to name the worker that kept an item open."""
+    if getattr(record, "outcome", None) is RunOutcome.DEGRADED:
+        return RunOutcome.DEGRADED.value
+    return record.status.value
+
 
 def _kind_for_item(item: AgendaItem) -> WorkerKind | None:
     """Resolve an agenda item to a concrete WorkerKind.
@@ -188,8 +213,9 @@ class KernelConfig:
     observer, voice, autonomy), not an autonomy-only subtotal. The kernel
     reads that total via an injected ``daily_usd_spent`` accessor
     (``CostLedger.snapshot()['global']['spent_usd']``); when no accessor is
-    wired (test fixtures) the USD cap is skipped, never silently faked.
-    ``AgendaStore.today_spend()`` still supplies the tokens/seconds totals."""
+    wired (test fixtures) the USD cap is skipped, never silently faked. The
+    tokens/seconds totals come from ``spend_ledger.day_spend()``, which counts
+    what each worker actually cost as it finished."""
 
     tick_interval_seconds: float = DEFAULT_TICK_SECONDS
     top_k: int = DEFAULT_TOP_K
@@ -202,24 +228,29 @@ class KernelConfig:
     max_open_per_source: int = DEFAULT_MAX_OPEN_PER_SOURCE
     fuzzy_threshold: float = DEFAULT_FUZZY_THRESHOLD
     fuzzy_window_hours: int = DEFAULT_FUZZY_WINDOW_HOURS
-    vet_enabled: bool = False
-    vet_required: frozenset[AgendaSource] = field(default_factory=frozenset)
-    max_unvetted_hours: int = DEFAULT_MAX_UNVETTED_HOURS
     max_resume_attempts: int = DEFAULT_MAX_RESUME_ATTEMPTS
+    # ``agenda.yaml::budget_defaults``, keyed by risk class as
+    # ``(tokens_cap, seconds_cap)``. Stamped onto every item the kernel
+    # persists; a draft naming its own caps keeps them.
+    budget_defaults: dict[RiskClass, tuple[int, int]] = field(default_factory=dict)
 
     @classmethod
     def from_yaml_dict(cls, raw: dict[str, Any]) -> "KernelConfig":
         kernel_block = raw.get("kernel") or {}
         caps = raw.get("daily_caps") or {}
+        budget_defaults: dict[RiskClass, tuple[int, int]] = {}
+        for class_name, block in (raw.get("budget_defaults") or {}).items():
+            try:
+                risk = RiskClass(class_name)
+            except ValueError:
+                log.warning("agenda.yaml: unknown budget_defaults class %r", class_name)
+                continue
+            budget_defaults[risk] = (
+                int((block or {}).get("tokens_cap", 0)),
+                int((block or {}).get("seconds_cap", 0)),
+            )
         admission = raw.get("admission") or {}
         fuzzy = admission.get("fuzzy_dedupe") or {}
-        vetter = raw.get("vetter") or {}
-        vet_required: set[AgendaSource] = set()
-        for name in vetter.get("vet_required", DEFAULT_VET_REQUIRED):
-            try:
-                vet_required.add(AgendaSource(name))
-            except ValueError:
-                log.warning("autonomy: vetter.vet_required unknown source %r", name)
         return cls(
             tick_interval_seconds=float(
                 kernel_block.get("tick_interval_seconds", DEFAULT_TICK_SECONDS)
@@ -242,14 +273,10 @@ class KernelConfig:
             fuzzy_window_hours=int(
                 fuzzy.get("window_hours", DEFAULT_FUZZY_WINDOW_HOURS)
             ),
-            vet_enabled=bool(vetter.get("enabled", False)),
-            vet_required=frozenset(vet_required),
-            max_unvetted_hours=int(
-                vetter.get("max_unvetted_hours", DEFAULT_MAX_UNVETTED_HOURS)
-            ),
             max_resume_attempts=int(
                 kernel_block.get("max_resume_attempts", DEFAULT_MAX_RESUME_ATTEMPTS)
             ),
+            budget_defaults=budget_defaults,
         )
 
 
@@ -302,6 +329,20 @@ def load_mapper_configs(path: Path) -> dict[AgendaSource, MapperConfig]:
     return out
 
 
+@dataclass(frozen=True)
+class DaySpend:
+    """What today has cost, as read at ONE point in a wake.
+
+    `usd` is optional because a missing or broken ledger accessor means "not
+    known", which must not read as zero: a cap compared against an unknown
+    number is a cap that silently stopped being enforced.
+    """
+
+    tokens: int = 0
+    seconds: float = 0.0
+    usd: float | None = None
+
+
 @dataclass
 class KernelTickResult:
     """Operator-facing record of one tick's decisions. The dashboard
@@ -313,6 +354,7 @@ class KernelTickResult:
     items_deduped: int = 0
     selected: list[str] = field(default_factory=list)
     rejections: list[dict[str, Any]] = field(default_factory=list)
+    stale_workers: list[str] = field(default_factory=list)
     paused: bool = False
     pause_reason: str | None = None
     at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -472,48 +514,19 @@ class AutonomyKernel:
         except Exception:
             log.exception("autonomy: stale-agenda repair raised — continuing boot")
         self._stopping.clear()
+        # An event landing is what should wake this loop. Registered on the bus
+        # rather than called by each publisher: the bus is the one place every
+        # event passes through, so a publisher added later wakes the kernel by
+        # construction. Until this, `poke()` existed and nothing outside the
+        # kernel called it — the interval below was not a fallback, it was the
+        # only wake there was.
+        self._bus.set_wake(self.poke)
         self._loop_task = asyncio.create_task(self._run_loop(), name="autonomy-kernel")
         log.info(
-            "autonomy: kernel started (tick=%.1fs top_k=%d)",
+            "autonomy: kernel started (fallback wake=%.1fs top_k=%d)",
             self._config.tick_interval_seconds,
             self._config.top_k,
         )
-
-    def _promote_stale_unvetted_items(self) -> dict[str, int]:
-        """**UNVETTED staleness escape valve.** ``agenda.yaml::vetter.enabled``
-        and ``schedule.yaml::jobs.autonomy_vetter.enabled`` are separate
-        toggles. If the scheduled vetter job is off (or wedged) while
-        ``vetter.enabled`` stays true, UNVETTED items would otherwise be
-        invisible to selection forever — nothing else promotes them.
-        This sweep runs here, in the kernel, independent of the vetter
-        job's own schedule: any UNVETTED item older than
-        ``config.max_unvetted_hours`` is promoted to ``PROPOSED`` so it
-        re-enters the selection loop regardless of the job's state.
-
-        Called both from :meth:`repair_stale_agenda_items` (one-shot at
-        boot) AND every :meth:`tick` — the vetter job can be disabled at
-        any point during a long-running kernel process, not just before
-        boot, so a boot-only check would miss staleness introduced
-        later. Cheap: no worker-record I/O, just an ``iter_active`` pass
-        plus a config comparison.
-        """
-        now = self._clock()
-        max_unvetted_hours = self._config.max_unvetted_hours
-        checked = promoted = 0
-        for item in list(self._agenda.iter_active()):
-            if item.status is not AgendaStatus.UNVETTED:
-                continue
-            checked += 1
-            if max_unvetted_hours <= 0:
-                continue
-            age_hours = (now - item.created_at).total_seconds() / 3600.0
-            if age_hours >= max_unvetted_hours:
-                self._agenda.transition(
-                    item, AgendaStatus.PROPOSED,
-                    reason="vet_timeout", by="kernel",
-                )
-                promoted += 1
-        return {"unvetted_checked": checked, "unvetted_promoted": promoted}
 
     def _resolve_resume_queued_items(self) -> dict[str, int]:
         """**RESUME_QUEUED terminus.** Recovery parks interrupted items in
@@ -536,8 +549,9 @@ class AutonomyKernel:
         status means this boot is running it — leave it alone.
 
         Called every :meth:`tick` and once from
-        :meth:`repair_stale_agenda_items` at boot, same as the UNVETTED
-        escape valve above.
+        :meth:`repair_stale_agenda_items` at boot: an item parked mid-tick by a
+        worker crash or a kernel restart must not wait for the next boot to be
+        re-derived.
         """
         from tesseract.orchestrator.workers.record import load_record
 
@@ -562,9 +576,7 @@ class AutonomyKernel:
             if any(r.status not in WORKER_TERMINAL_STATUSES for r in records):
                 continue  # a live worker owns this item right now
 
-            if not lost and records and all(
-                r.status is WorkerStatus.DONE for r in records
-            ):
+            if not lost and records and all(_completed_work(r) for r in records):
                 self._agenda.transition(
                     item, AgendaStatus.DONE, reason=REASON_RESUME_ALL_DONE,
                 )
@@ -609,10 +621,9 @@ class AutonomyKernel:
         ``items_with_missing_worker`` counter and a per-item WARNING
         log so the operator can triage manually.
 
-        Also runs :meth:`_promote_stale_unvetted_items` and
-        :meth:`_resolve_resume_queued_items` (see their docstrings) so
-        both escape valves fire once at boot — right after recovery has
-        parked interrupted items — in addition to every tick.
+        Also runs :meth:`_resolve_resume_queued_items` (see its docstring) so
+        the escape valve fires once at boot — right after recovery has parked
+        interrupted items — in addition to every tick.
 
         Returns a small summary dict for logging.
         """
@@ -624,10 +635,7 @@ class AutonomyKernel:
             "reconciled_blocked": 0,
             "no_workers": 0,
             "items_with_missing_worker": 0,
-            "unvetted_checked": 0,
-            "unvetted_promoted": 0,
         }
-        summary.update(self._promote_stale_unvetted_items())
         summary.update(self._resolve_resume_queued_items())
         for item in list(self._agenda.iter_active()):
             if item.status not in (AgendaStatus.RUNNING, AgendaStatus.SELECTED):
@@ -661,10 +669,13 @@ class AutonomyKernel:
                 continue
             if not all(r.status in WORKER_TERMINAL_STATUSES for r in records):
                 continue
-            # Pick the "worst" worker for the blocked_reason — DONE wins
-            # only if every worker is DONE; otherwise the first non-DONE
-            # terminal drives the BLOCKED transition.
-            all_done = all(r.status is WorkerStatus.DONE for r in records)
+            # Pick the "worst" worker for the blocked_reason — the item closes
+            # only if every worker actually completed work; otherwise the first
+            # offender drives the BLOCKED transition. A DEGRADED worker is
+            # terminal and DONE, and is deliberately not completed work — the
+            # live reconciler treats it the same way, and a restart must not
+            # quietly upgrade it.
+            all_done = all(_completed_work(r) for r in records)
             if all_done:
                 self._agenda.transition(
                     item, AgendaStatus.DONE,
@@ -672,11 +683,12 @@ class AutonomyKernel:
                 )
                 summary["reconciled_done"] += 1
             else:
-                offender = next(r for r in records if r.status is not WorkerStatus.DONE)
-                item.blocked_reason = f"stale_repair:worker_{offender.status.value}:{offender.id}"
+                offender = next(r for r in records if not _completed_work(r))
+                label = _offender_label(offender)
+                item.blocked_reason = f"stale_repair:worker_{label}:{offender.id}"
                 self._agenda.transition(
                     item, AgendaStatus.BLOCKED,
-                    reason=f"stale_repair:worker_{offender.status.value}:{offender.id}",
+                    reason=f"stale_repair:worker_{label}:{offender.id}",
                 )
                 summary["reconciled_blocked"] += 1
         if any(summary[k] for k in ("reconciled_done", "reconciled_blocked")):
@@ -698,6 +710,9 @@ class AutonomyKernel:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.STOP_DRAIN_BUDGET_SECONDS
         self._stopping.set()
+        # Cleared before the loop is cancelled so a publisher firing mid-teardown
+        # cannot poke a task that is already going away.
+        self._bus.set_wake(None)
         self._poke.set()
         task = self._loop_task
         self._loop_task = None
@@ -755,33 +770,47 @@ class AutonomyKernel:
         twice with no new events MUST yield zero new items the second
         time (dedupe holds)."""
         result = KernelTickResult()
+        # DECIDE ONCE (operator ruling, 2026-08-16). The day's spend is read
+        # here, before anything in this wake can await, and the whole wake
+        # selects against this number. A worker finishing mid-wake moves the
+        # ledger; reading it live would let the ground shift under a decision
+        # already being made, and the accepted cost of not doing so is an
+        # overshoot bounded by one wake's dispatch. What it buys is a scheduler
+        # that behaves the same way on the same input, which is also what makes
+        # it safe to put the store's own reads behind an await at all.
+        spend = self._read_day_spend()
         events = self._bus.drain()
         result.events_drained = len(events)
 
-        # Steps 2 + 3: events → drafts → items.
-        for event in events:
-            drafts = self._run_mapper(event)
-            result.drafts_emitted += len(drafts)
-            for draft in drafts:
-                created, deduped = self._persist_draft(draft)
-                if created:
-                    result.items_created += 1
-                elif deduped:
-                    result.items_deduped += 1
+        # Steps 2 + 3: events → drafts → items. OFF THE LOOP — see `_ingest`.
+        if events:
+            emitted, created, deduped = await asyncio.to_thread(self._ingest, events)
+            result.drafts_emitted += emitted
+            result.items_created += created
+            result.items_deduped += deduped
 
-        # Fix 1 escape valve — run every tick, not just at boot, so an
-        # UNVETTED item does not depend on the vetter job's schedule
-        # staying enabled for the lifetime of a long-running kernel.
-        self._promote_stale_unvetted_items()
-        # Same reasoning for RESUME_QUEUED: an item parked mid-tick (worker
+        # RESUME_QUEUED escape valve — run every tick, not just at boot: an item parked mid-tick (worker
         # crash, kernel restart under a live process) must not wait for the
-        # next boot to be re-derived.
-        self._resolve_resume_queued_items()
+        # next boot to be re-derived. Also off the loop: it walks the active
+        # set and loads a worker record per parked item.
+        await asyncio.to_thread(self._resolve_resume_queued_items)
+
+        # Worker liveness. It rides this wake rather than a `*/5` row of its
+        # own: the walk above already loads worker records, and the fallback
+        # wake is the same five minutes with every event making it sooner.
+        # Before the cap checks, because a kernel that has stopped selecting
+        # is exactly when a stalled worker matters most — and off the loop and
+        # inside its own guard, because reporting a stale heartbeat must never
+        # be able to cost this wake its dispatch.
+        try:
+            result.stale_workers = await asyncio.to_thread(announce_stale_workers)
+        except Exception:
+            log.exception("autonomy: worker-liveness walk raised — continuing tick")
 
         # Step 5: daily caps + global concurrency. If we're paused for
         # the day we still drained + persisted (recovery resumes the
         # work later) but we do not select anything new.
-        cap_block = self._check_daily_caps()
+        cap_block = self._check_daily_caps(spend)
         if cap_block:
             result.paused = True
             result.pause_reason = cap_block
@@ -801,6 +830,38 @@ class AutonomyKernel:
         # injected runner as a background task.
         result.selected, result.rejections = await self._select_and_dispatch()
         return result
+
+    def _ingest(self, events: list[AutonomyEvent]) -> tuple[int, int, int]:
+        """Map, dedupe and persist one drain. Returns `(emitted, created,
+        deduped)`. Runs in a worker thread — every call in here is file IO or
+        pure CPU, and none of it awaits.
+
+        **The active set is read ONCE for the whole drain, not once per draft.**
+        `_persist_draft` used to call `iter_active()` itself and then four store
+        scanners each walked it again, so a tick draining ten events paid about
+        fifty walks of every item on disk. Measured at 120 items, where one walk
+        is 24 ms: ~1.24 s of blocked loop, against 71 ms after the hoist and
+        nothing at all now that this runs off it.
+
+        **This is what the 2026-08-09 revert was about, and what makes it safe
+        now.** A thread hop is an await point, and the cap check used to read
+        the day's spend AFTER it — so a worker finishing mid-tick could move
+        the ledger under a decision already in progress. The wake reads its
+        spend once, before this line, so there is no longer a number for the
+        hop to shift.
+        """
+        emitted = created = deduped = 0
+        active = list(self._agenda.iter_active())
+        for event in events:
+            drafts = self._run_mapper(event)
+            emitted += len(drafts)
+            for draft in drafts:
+                made, duped = self._persist_draft(draft, active=active)
+                if made:
+                    created += 1
+                elif duped:
+                    deduped += 1
+        return emitted, created, deduped
 
     # -- Mapper dispatch ---------------------------------------------
 
@@ -833,22 +894,30 @@ class AutonomyKernel:
             return []
         return drafts
 
-    def _persist_draft(self, draft: AgendaItemDraft) -> tuple[bool, bool]:
+    def _persist_draft(
+        self, draft: AgendaItemDraft, *, active: list[AgendaItem] | None = None
+    ) -> tuple[bool, bool]:
         """Returns ``(created, deduped)``. ``absolute_deny`` drafts are
         rejected at the store layer; we treat that as ``(False, False)``
-        and log."""
+        and log.
+
+        ``active`` is the tick's one read of the active set. Omitted, this
+        reads its own — the callers that persist a single draft outside a
+        drain, and every existing test.
+        """
+        if active is None:
+            active = list(self._agenda.iter_active())
         # Dedupe by (source, source_event_id) first so the same event
         # replayed doesn't create new items. Then fall back to the
         # (source, normalised goal) dedupe the store ships with.
         if draft.source_event_id:
-            for existing in self._agenda.iter_active():
+            for existing in active:
                 # BOTH halves, which is what the comment above has always
-                # claimed and the code did not do. Six mappers mint
-                # `source_event_id` as the bare `event.event_id`
-                # (operator, provider_watch, repo_upgrade, scout,
-                # self_reflection, strategist, vault_signal), so comparing the
-                # id alone lets one source's item suppress another's whenever
-                # the ids coincide — a cross-source drop that reads as a replay.
+                # claimed and the code did not do. Mappers mint
+                # `source_event_id` as the bare `event.event_id`, so comparing
+                # the id alone lets one source's item suppress another's
+                # whenever the ids coincide — a cross-source drop that reads
+                # as a replay.
                 if (
                     existing.source is draft.source
                     and existing.source_event_id == draft.source_event_id
@@ -867,7 +936,7 @@ class AutonomyKernel:
                         )
                     )
                     return False, True
-        existing = self._agenda.find_dedupe(draft.goal, draft.source)
+        existing = self._agenda.find_dedupe(draft.goal, draft.source, items=active)
         if existing is not None:
             # Record it. Every other drop in this function writes a prune row;
             # this branch never did, and stabilising the operator_view goal
@@ -942,16 +1011,17 @@ class AutonomyKernel:
                     threshold=self._config.fuzzy_threshold,
                     window_hours=window_hours,
                     now=now,
+                    items=active,
                 )
                 if dup is not None:
                     _prune(PruneStage.DUPLICATE, f"fuzzy dup of {dup.id}")
                     return False, True
             # 3. caps
-            if self._agenda.count_open_total() >= self._config.max_open_total:
+            if self._agenda.count_open_total(items=active) >= self._config.max_open_total:
                 _prune(PruneStage.CAPPED, "max_open_total reached")
                 return False, True
             if (
-                self._agenda.count_open_by_source(draft.source)
+                self._agenda.count_open_by_source(draft.source, items=active)
                 >= self._config.max_open_per_source
             ):
                 _prune(
@@ -960,15 +1030,25 @@ class AutonomyKernel:
                 )
                 return False, True
 
-        status = AgendaStatus.PROPOSED
-        if self._config.vet_enabled and draft.source in self._config.vet_required:
-            status = AgendaStatus.UNVETTED
-        item = draft.to_item(now=self._clock(), status=status)
+        # Every admitted draft is PROPOSED. A vetting gate used to hold some
+        # sources in UNVETTED until a scheduled job judged them; the job and
+        # every source it gated are deleted, and a gate whose only remaining
+        # behaviour is a 24-hour delay before promoting anyway is worse than
+        # no gate. The status survives for items written while it existed.
+        item = draft.to_item(
+            now=self._clock(),
+            status=AgendaStatus.PROPOSED,
+            budget_defaults=self._config.budget_defaults,
+        )
         try:
             self._agenda.add(item)
         except ValueError as exc:
             log.warning("autonomy: agenda.add refused draft: %s", exc)
             return False, False
+        # The tick's view of what is active includes what this tick has just
+        # admitted — without this, two drafts of the same goal in one drain
+        # both pass every dedupe gate and land as two items.
+        active.append(item)
         return True, False
 
     # -- Selection + dispatch ----------------------------------------
@@ -982,7 +1062,10 @@ class AutonomyKernel:
         durable :class:`WorkerRecord` is written *before* the runner
         starts so recovery sees a complete picture even if the runner
         crashes mid-spawn."""
-        ranked = self._agenda.ranked()
+        # Off the loop: a walk of every active item plus a score recomputation
+        # for each. Safe after the cap check, which read its spend before any
+        # await in this wake.
+        ranked = await asyncio.to_thread(self._agenda.ranked)
         selected: list[str] = []
         rejections: list[dict[str, Any]] = []
         running_total = self._running_worker_total()
@@ -1034,7 +1117,11 @@ class AutonomyKernel:
                 rejections.append(self._reject_row(item, decision))
                 continue
 
-            await self._dispatch_item(item, kind=kind)
+            # `ranked` again, not re-read: the rationale's peer list is the
+            # same queue this loop is walking, and reading it per dispatched
+            # item made the cost of a busy tick the product of top_k and the
+            # store's size.
+            await self._dispatch_item(item, kind=kind, peers=ranked)
             # Audit-1 follow-up (2026-05-24): ``_dispatch_item`` may halt
             # the item in BLOCKED without spawning a worker (worktree
             # fail-closed). Account for that here so the tick result
@@ -1050,14 +1137,20 @@ class AutonomyKernel:
             running_total += 1
         return selected, rejections
 
-    async def _dispatch_item(self, item: AgendaItem, *, kind: WorkerKind) -> None:
+    async def _dispatch_item(
+        self,
+        item: AgendaItem,
+        *,
+        kind: WorkerKind,
+        peers: list[AgendaItem] | None = None,
+    ) -> None:
         """Transition the item to ``RUNNING`` via the ``SELECTED``
         intermediate, mint + persist the WorkerRecord, link it on the
         item, then spawn the runner as a tracked background task.
         Rationale generation is best-effort — failure falls through to
         :data:`UNAVAILABLE_MARKER` so dispatch never hinges on the
         model layer."""
-        peers = self._agenda.ranked()
+        peers = peers if peers is not None else self._agenda.ranked()
         rationale = await generate_rationale(
             item, peers, adapter=self._rationale_adapter
         )
@@ -1184,6 +1277,11 @@ class AutonomyKernel:
                     "autonomy: agenda reconcile raised for worker %s (item %s)",
                     record.id, record.agenda_item_id,
                 )
+            # Two facts the next selection should see at once rather than at
+            # the fallback interval: this worker's lane has headroom again, and
+            # what it spent is now on the day's ledger. A finished worker is an
+            # event in every sense except that it does not pass through the bus.
+            self.poke()
         finally:
             # HUD runs-surface fix (2026-07-02): must run on every exit path,
             # including asyncio.CancelledError (task cancellation / shutdown),
@@ -1221,6 +1319,8 @@ class AutonomyKernel:
         if record.status not in WORKER_TERMINAL_STATUSES:
             return
 
+        self._record_spend(record)
+
         # Record outcome before agenda reconciliation; advice_only also fires
         # when the worker produced a summary but no artifacts (silent-advisor).
         artifacts_count = len(record.artifacts or [])
@@ -1231,6 +1331,8 @@ class AutonomyKernel:
                 "agenda_item_id": record.agenda_item_id or None,
                 "worker_id": record.id,
                 "status": record.status.value,
+                "outcome": record.outcome.value if record.outcome else None,
+                "outcome_reason": record.outcome_reason or None,
                 "summary": summary or None,
                 "artifacts": artifacts_count,
             },
@@ -1264,6 +1366,12 @@ class AutonomyKernel:
         if not item_id:
             return
         item = self._agenda.get(item_id)
+        if item is not None and not item.is_terminal():
+            # The item's own headroom, which `scoring.budget_remaining_weight`
+            # reads. Accrued before the transition below so the archived copy
+            # carries what the work cost.
+            item.budget_tokens_spent += int(record.tokens_in) + int(record.tokens_out)
+            item.budget_seconds_spent += int(record.duration_seconds)
         if item is None:
             log.warning(
                 "autonomy: worker %s references unknown agenda item %s — skipping reconcile",
@@ -1274,6 +1382,17 @@ class AutonomyKernel:
             return
 
         if record.status is WorkerStatus.DONE:
+            # A degraded run produced output below its declared contract. The
+            # worker is done with it; the ITEM is not, and closing it as DONE
+            # would count it in the completion rate beside work that actually
+            # succeeded. The operator decides whether to retry.
+            if record.outcome is RunOutcome.DEGRADED:
+                item.blocked_reason = f"worker_degraded:{record.id}"
+                self._agenda.transition(
+                    item, AgendaStatus.BLOCKED,
+                    reason=f"worker_degraded:{record.id}",
+                )
+                return
             self._agenda.transition(
                 item, AgendaStatus.DONE,
                 reason=f"worker_done:{record.id}",
@@ -1288,6 +1407,23 @@ class AutonomyKernel:
             item, AgendaStatus.BLOCKED,
             reason=f"worker_{record.status.value}:{record.id}",
         )
+
+    @staticmethod
+    def _record_spend(record) -> None:
+        """Add a terminal worker's spend to today's ledger.
+
+        Best-effort: the day's accounting must not be able to block the
+        reconcile that closes the item. A failed write leaves the cap reading
+        low, which is the same behaviour as before the ledger existed.
+        """
+        tokens = int(record.tokens_in or 0) + int(record.tokens_out or 0)
+        seconds = float(record.duration_seconds or 0.0)
+        if tokens <= 0 and seconds <= 0:
+            return
+        try:
+            record_spend(record.id, tokens=tokens, seconds=seconds)
+        except OSError:
+            log.exception("autonomy: spend ledger write failed for %s", record.id)
 
     @staticmethod
     def _reject_row(item: AgendaItem, decision: AdmissionResult) -> dict[str, Any]:
@@ -1317,32 +1453,50 @@ class AutonomyKernel:
 
     # -- Daily caps --------------------------------------------------
 
-    def _check_daily_caps(self) -> str | None:
+    def _read_day_spend(self) -> DaySpend:
+        """The one read per wake. Called before any await in `tick`.
+
+        Today's spend is what each worker recorded when it FINISHED. The
+        store's own per-item totals cannot serve: an item is archived the
+        moment it terminates, so summing live items measured only work in
+        flight and no ceiling could ever be reached.
+
+        A broken USD accessor must not wedge the kernel, so a failed read is
+        logged and the USD ceiling sits this wake out — `None` means "not
+        known", which is different from zero and is why the field is optional.
+        """
+        totals = day_spend()
+        usd: float | None = None
+        if self._daily_usd_spent is not None:
+            try:
+                usd = float(self._daily_usd_spent())
+            except Exception:
+                log.exception(
+                    "autonomy: daily USD accessor failed — skipping the USD cap this wake"
+                )
+        return DaySpend(
+            tokens=int(totals.get("tokens", 0)),
+            seconds=float(totals.get("seconds", 0)),
+            usd=usd,
+        )
+
+    def _check_daily_caps(self, spend: DaySpend) -> str | None:
         """Return a pause reason string when a cap has been hit, else
-        ``None``. The kernel does NOT halt event ingestion — it stops
-        emitting selections so in-flight workers complete cleanly.
+        ``None``. Pure over the wake's snapshot — the kernel does NOT halt
+        event ingestion, it stops emitting selections so in-flight workers
+        complete cleanly.
         """
         tokens_cap = self._config.daily_tokens_cap
         seconds_cap = self._config.daily_seconds_cap
         usd_cap = self._config.daily_usd_cap
         if tokens_cap <= 0 and seconds_cap <= 0 and usd_cap <= 0:
             return None
-        spend = self._agenda.today_spend()
-        if tokens_cap > 0 and spend.get("tokens", 0) >= tokens_cap:
+        if tokens_cap > 0 and spend.tokens >= tokens_cap:
             return REASON_DAILY_CAP_PAUSE
-        if seconds_cap > 0 and spend.get("seconds", 0) >= seconds_cap:
+        if seconds_cap > 0 and spend.seconds >= seconds_cap:
             return REASON_DAILY_CAP_PAUSE
-        # F6 — global daily USD ceiling. Only enforced when both a cap and a
-        # ledger accessor are present; a broken accessor must not wedge the
-        # kernel, so a failed read is logged and treated as "under cap".
-        if usd_cap > 0 and self._daily_usd_spent is not None:
-            try:
-                spent_usd = self._daily_usd_spent()
-            except Exception:
-                log.exception("autonomy: daily USD accessor failed — skipping USD cap this tick")
-            else:
-                if spent_usd >= usd_cap:
-                    return REASON_DAILY_CAP_PAUSE
+        if usd_cap > 0 and spend.usd is not None and spend.usd >= usd_cap:
+            return REASON_DAILY_CAP_PAUSE
         return None
 
 
@@ -1395,6 +1549,7 @@ def build_kernel_from_configs(
 __all__ = [
     "AutonomyKernel",
     "DEFAULT_MAX_CONCURRENT_TOTAL",
+    "DaySpend",
     "DEFAULT_TICK_SECONDS",
     "DEFAULT_TOP_K",
     "KernelConfig",

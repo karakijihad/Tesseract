@@ -1,6 +1,6 @@
 .controller-mirror {
-  margin-top: 8px;
-  border: 1px solid var(--border);
+  margin-top: var(--space-8);
+  border: var(--stroke-1) solid var(--border);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -8,29 +8,29 @@
 .controller-mirror__handoff {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  background: var(--bg-2);
-  border-bottom: 1px solid var(--border);
-  font-size: 12px;
+  gap: var(--space-8);
+  padding: var(--space-6) var(--space-10);
+  background: var(--bg-elevated);
+  border-bottom: var(--stroke-1) solid var(--border);
+  font-size: var(--t-caption-size);
   flex-wrap: wrap;
 }
 
 .controller-mirror__handoff-label {
   font-weight: 600;
-  color: var(--text-1);
+  color: var(--text-primary);
   white-space: nowrap;
 }
 
 .controller-mirror__session-id {
-  font-family: var(--font-mono);
+  font-family: var(--font-ui);
   color: var(--text-meta);
-  font-size: 11px;
+  font-size: var(--t-caption-size);
 }
 
 .controller-mirror__hint {
   color: var(--text-meta);
-  font-size: 11px;
+  font-size: var(--t-caption-size);
   margin-left: auto;
   white-space: nowrap;
 }
@@ -38,12 +38,12 @@
 .controller-mirror__thinking {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  background: var(--bg-2);
-  border-bottom: 1px solid var(--border);
+  gap: var(--space-6);
+  padding: var(--space-4) var(--space-10);
+  background: var(--bg-elevated);
+  border-bottom: var(--stroke-1) solid var(--border);
   color: var(--text-meta);
-  font-size: 11px;
+  font-size: var(--t-caption-size);
   font-style: italic;
 }
 
@@ -53,7 +53,7 @@
   height: 6px;
   border-radius: 50%;
   background: var(--text-meta);
-  animation: controller-pulse 1.2s ease-in-out infinite;
+  animation: controller-pulse var(--motion-beat) ease-in-out infinite;
 }
 
 @keyframes controller-pulse {
@@ -64,63 +64,63 @@
 .controller-mirror__transcript {
   max-height: 300px;
   overflow-y: auto;
-  padding: 6px 10px;
-  background: var(--bg-1);
+  padding: var(--space-6) var(--space-10);
+  background: var(--bg-surface);
 }
 
 .controller-mirror__transcript:empty::after {
   content: 'Waiting for output…';
   color: var(--text-meta);
-  font-size: 11px;
+  font-size: var(--t-caption-size);
   font-style: italic;
 }
 
 .controller-mirror__event {
-  margin-bottom: 4px;
-  font-size: 12px;
+  margin-bottom: var(--space-4);
+  font-size: var(--t-caption-size);
   line-height: 1.5;
 }
 
 .controller-mirror__event--text {
-  color: var(--text-1);
+  color: var(--text-primary);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 .controller-mirror__event--tool {
   color: var(--text-meta);
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-ui);
+  font-size: var(--t-caption-size);
 }
 
 .controller-mirror__event--system {
   color: var(--text-meta);
-  font-size: 11px;
+  font-size: var(--t-caption-size);
   font-style: italic;
 }
 
 .controller-mirror__error {
-  padding: 6px 10px;
+  padding: var(--space-6) var(--space-10);
   color: var(--bad);
-  font-size: 12px;
-  background: var(--bg-1);
+  font-size: var(--t-caption-size);
+  background: var(--bg-surface);
 }
 
 .controller-mirror__status {
-  padding: 6px 10px;
+  padding: var(--space-6) var(--space-10);
   color: var(--text-meta);
-  font-size: 11px;
+  font-size: var(--t-caption-size);
   font-style: italic;
-  background: var(--bg-2);
-  border-top: 1px solid var(--border);
+  background: var(--bg-elevated);
+  border-top: var(--stroke-1) solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-2);
 }
 
 .controller-mirror__status-path {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--t-meta-size);
   font-style: normal;
   white-space: nowrap;
   overflow: hidden;

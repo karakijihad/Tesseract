@@ -97,6 +97,34 @@ _READ_PATH_TOOLS: dict[str, tuple[str, ...]] = {
 
 logger = logging.getLogger(__name__)
 
+#: The two shapes a gated call comes back to the model in. Named here because
+#: `workspace/OPERATING.md` teaches the model to tell them apart, and that
+#: paragraph is generated from these two constants rather than transcribed —
+#: a reworded refusal used to leave the document describing a sentence the
+#: runtime had stopped sending.
+DENIED_PREFIX = "permission denied"
+#: NOT "declined". `ask_fn` returns one bool for two different events and the
+#: ledger keeps them apart (`result: deny` vs `result: timeout, actor:
+#: timeout`), so asserting a decline contradicts the runtime's own record
+#: whenever the prompt simply expired. Live case, 2026-08-09T15:13:58: the
+#: operator approved a heredoc into `python -`, the ask had already timed out,
+#: and this line told them they had declined it. They then reported an approval
+#: that failed to round-trip; the approval path was fine, this sentence was
+#: not. Name both possibilities rather than guess wrong.
+#: Why the call did not run, as one clause. Named separately because
+#: `OPERATING.md`'s generated region quotes THIS and nothing else — reading it
+#: out of the full sentence meant splitting on an em-dash and a full stop, so
+#: adding either to the wording below would have silently truncated the
+#: document the model reads every turn.
+NOT_APPROVED_CAUSE = (
+    "the operator declined it, or the approval prompt expired before it was "
+    "answered"
+)
+NOT_APPROVED_TEMPLATE = (
+    "{tool} was not approved — " + NOT_APPROVED_CAUSE + ". Say what you "
+    "intended, and offer to retry it or take a different approach."
+)
+
 
 async def evaluate(
     tool: Tool,
@@ -128,7 +156,7 @@ async def evaluate(
         )
         hint = getattr(tool, "security_deny_hint", "")
         return ToolResult(
-            output=f"permission denied: {tool.name}" + (f" — {hint}" if hint else ""),
+            output=f"{DENIED_PREFIX}: {tool.name}" + (f" — {hint}" if hint else ""),
             is_error=True,
             denied_hard=True,
             deny_reason="security layer (tool.check_permissions DENY)",
@@ -160,7 +188,7 @@ async def evaluate(
                     actor="system",
                 )
                 return ToolResult(
-                    output=f"permission denied: path validation failed for {tool.name}: {reason}",
+                    output=f"{DENIED_PREFIX}: path validation failed for {tool.name}: {reason}",
                     is_error=True,
                     denied_hard=True,
                     deny_reason=f"path_validator: {reason}",
@@ -184,7 +212,7 @@ async def evaluate(
                 actor="system",
             )
             return ToolResult(
-                output=f"permission denied by policy: {tool.name}",
+                output=f"{DENIED_PREFIX} by policy: {tool.name}",
                 is_error=True,
                 denied_hard=True,
                 deny_reason="policy default deny",
@@ -248,7 +276,7 @@ async def evaluate(
                 )
                 return ToolResult(
                     output=(
-                        f"permission denied: {tool.name} requires operator approval, "
+                        f"{DENIED_PREFIX}: {tool.name} requires operator approval, "
                         "but no approval channel is wired in this context. "
                         "An operator-attended session is required for this tool."
                     ),
@@ -260,28 +288,47 @@ async def evaluate(
             # ask_fn implementations write the operator/timeout row themselves
             # (they own the timeout vs decline distinction). decide.evaluate
             # only handles the hard-DENY paths above.
+            #
+            # Cleared first, and this is the one place that can: the context
+            # arrives here already built, and `chat.py` builds it with
+            # `dataclasses.replace` off a session-lifetime object — so a value
+            # written to that object would be copied into every later call and
+            # read as a claim about the call in hand. Empty means the asker
+            # made no claim, and that has to be true at the start of each ask
+            # rather than merely true so far.
+            context.ask_outcome = ""
             approved = await ask_fn(tool, validated, context)
             if not approved:
-                # NOT "declined". `ask_fn` returns one bool for two different
-                # events and the ledger keeps them apart (`result: deny` vs
-                # `result: timeout, actor: timeout`) — so asserting a decline
-                # here contradicts the runtime's own record whenever the
-                # prompt simply expired. Live case, 2026-08-09T15:13:58: the
-                # operator approved a heredoc into `python -`, the ask had
-                # already timed out, and this line told them they had declined
-                # it. They then reported an approval that failed to
-                # round-trip; the approval path was fine, this sentence was
-                # not. Name both possibilities rather than guess wrong.
                 return ToolResult(
-                    output=(
-                        f"{tool.name} was not approved — the operator declined it, "
-                        "or the approval prompt expired before it was answered. "
-                        "Say what you intended, and offer to retry it or take a "
-                        "different approach."
-                    ),
+                    output=NOT_APPROVED_TEMPLATE.format(tool=tool.name),
                     is_error=True,
                 )
+        # An ASK that was approved is recorded by the `ask_fn` implementation,
+        # which owns the decline-vs-timeout distinction. Falling through here
+        # must not write a second row for the same call.
+        return None
 
+    # Everything that reaches this line ran without anyone being asked.
+    #
+    # It used to write nothing, on the reasoning that nothing was approved so
+    # there was no approval to log. That holds right up against
+    # `permissions.yaml`, which puts `memory_save`, `web_search` and
+    # `delegate_coder` on AUTO, and against autonomy, which runs unattended:
+    # the combination is mutating, outbound action with no durable record
+    # anywhere, which is the exact class a ledger exists to catch.
+    #
+    # `result="auto"` rather than `allow_once` keeps "a person said yes" and
+    # "nobody was asked" apart — see the `Result` literal for why that matters
+    # more than it looks.
+    await approval_log.record_ask(
+        session_id=context.session_id,
+        call_id=context.current_call_id,
+        tool_name=tool.name,
+        input_summary=summary,
+        posture_source=posture_source,
+        result="auto",
+        actor="system",
+    )
     return None
 
 

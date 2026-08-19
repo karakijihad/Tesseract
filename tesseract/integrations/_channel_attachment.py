@@ -63,6 +63,26 @@ _STATUS_ALLOWED: frozenset[str] = frozenset(
     {"ready", "no_handler", "extract_failed", "too_large", "denied"}
 )
 
+#: What each status means to the assistant reading the block, in its words.
+#: Here rather than in the prompt because a status added to the Literal above
+#: with no line here fails the channel document's generated region — the model
+#: met `too_large` and `denied` for weeks after they were added, with nothing
+#: anywhere telling it what they were.
+#:
+#: `ready` is absent deliberately: the decoded text is simply present, which
+#: needs no instruction.
+STATUS_MEANING: dict[str, str] = {
+    "no_handler": (
+        "the operator has not wired a decoder for that input kind yet. "
+        "Nothing was read"
+    ),
+    "extract_failed": (
+        "a decoder ran and threw. The `<error>` payload is your breadcrumb"
+    ),
+    "too_large": "the file was over the fetch ceiling, so nothing was fetched",
+    "denied": "the file was refused before any decoder ran",
+}
+
 
 @dataclass(frozen=True)
 class ChannelAttachment:

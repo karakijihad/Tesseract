@@ -68,18 +68,27 @@ class OpenInput(BaseModel):
 class OpenTool(Tool):
     default_posture = "auto"
     risk_class: ClassVar[str] = "autonomous"
+    group: ClassVar[str] = "showing-the-operator"
+    summary: ClassVar[str] = (
+        "Show the operator anything that exists — a URL, file, folder, app, or search."
+    )
+    use_when: ClassVar[str] = (
+        "One argument, and the runtime picks the surface: it renders in the "
+        "cockpit where it can and hands off to the owning application where it "
+        "cannot. The result says which way it went — relay that, and never "
+        "claim a card appeared without reading it."
+    )
+    not_when: ClassVar[str] = (
+        "You are authoring the content yourself — that is `surface_create`; "
+        "this shows a thing that exists, that one brings a thing into "
+        "existence. And `browser_navigate` is not this verb however much its "
+        "description sounds like it: it renders a screenshot, a still image, "
+        "not a live page. \"Show me this\" is always `open`."
+    )
 
     @property
     def name(self) -> str:
         return "open"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Open anything: a URL, a file, a folder, an application, or a "
-            "search. Renders it in the cockpit when it can and opens it in the "
-            "owning application when it can't. Returns what it did."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

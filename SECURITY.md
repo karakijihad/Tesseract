@@ -34,12 +34,75 @@ Everything binds loopback. There is no default path from another machine.
 | Surface | Binding | Notes |
 | --- | --- | --- |
 | Mirror backend (HTTP + WebSocket) | `127.0.0.1:8000` | API only. No frontend is served over HTTP. |
-| MCP gateway | `127.0.0.1` | Local-only by configuration, bearer-token gated per client. |
+| MCP gateway | `127.0.0.1` | **Off by default.** Local-only by configuration, bearer-token gated per client. |
 | Ollama | `127.0.0.1:11434` | Your own local service; TESSERACT may start it. |
 
 Changing `mirror.host` to `0.0.0.0` exposes an unauthenticated API to your
 network. There is no authentication layer on the Mirror backend, because it
 assumes loopback. Do not bind it publicly.
+
+### Why no frontend is served over HTTP
+
+That table row is a decision, not an omission, and it is worth stating because
+the obvious feature request runs straight into it.
+
+The interface is compiled into the desktop application and served by the app
+shell from its own private origin. Nothing publishes it on the network. The
+tempting shortcut — serve the interface from the backend so a browser can load
+it — would put a **web origin on a port that has no authentication**, and that
+origin would then have to be permitted to make state-changing calls. Anything
+that could convince a browser it was on that origin would inherit full control
+of the runtime: conversation, tools, file writes, the terminal.
+
+Loopback is not a wall on its own here. Requests still reach the port from your
+own machine, so the backend adds two more checks: state-changing methods must
+carry a permitted `Origin`, and the handful of endpoints that restart the
+backend or run a vendor installer verify the caller is local at the handler.
+Reads are not origin-gated — a cross-site page can send one, but cannot read
+the reply, because the response carries no header permitting it to.
+
+The same reasoning shapes how the assistant looks at your screen. Reading what
+a panel *contains* needs no network path at all — the assistant runs inside the
+backend process and shares its state directly.
+
+Seeing what a panel *looks like* is a separate capability with its own gate.
+`screen_look` photographs a screen, sends the frame to a vision-capable model,
+and returns an answer in words. What that means for you:
+
+- **It prompts every time.** A picture of your screen is data leaving the
+  machine the moment it reaches a model that is not local, which makes it an
+  outbound action under the rule above. Unattended (`headless`) operation is
+  the one mode that auto-allows it, and that is a deliberate choice you make by
+  selecting that mode.
+- **It captures one display — the one the application is on — and everything
+  else that is on that display with it.** Not a crop of the application window:
+  if a password manager, a private conversation or another person's message is
+  open on the same screen, it is in the frame. Your other monitors are not.
+  This is the honest reading of what "look at my screen" means, and it is why
+  the prompt above is the important control rather than this one.
+- **The frame is never written to disk.** It goes from the screen to the vision
+  model in memory and is discarded. A picture of your screen may hold a key, a
+  private conversation, or an unrelated application, and a file that survives
+  until the next capture is a file that may survive indefinitely.
+- **The assistant receives words, not the picture.** It asks a question, a
+  vision model answers it, and the frame is not added to the conversation.
+- **The answer is treated as untrusted.** Your screen can show text nobody here
+  wrote — a web page, a terminal, an incoming message — so what the vision
+  model reads back is wrapped before the assistant sees it, the same as any
+  other outside content.
+
+### Spend has one ceiling, not one per door
+
+Chatting in the app, messaging the Telegram bridge, speaking to it, and asking
+it to look at your screen are different doors into the same assistant, and they
+draw on the same daily budget. The bridge runs inside the backend, so it shares
+that accounting outright; the agent controller runs as its own process and
+reconciles against the shared spend log before each paid call. Adding another
+entry point does not add another allowance.
+
+Every paid path checks the cap *before* spending, not after — including image
+understanding, which until 2026-08-15 recorded what it spent without being able
+to refuse.
 
 ## Tool authority
 
@@ -51,12 +114,22 @@ Every tool call resolves to one of three postures before it runs:
   subprocess execution.
 - **deny** — refused, non-negotiable.
 
+That holds for work the runtime starts on your behalf as well, not only for
+calls the assistant composes: a link you send over Telegram is fetched under the
+same posture as if it had asked to read that page itself.
+
 `tesseract/config/permissions.yaml` is the authority. The shipped default is
 `security_mode: max`, under which writes, outbound calls and subprocess
 execution all prompt. Two other modes exist — `standard` for daily use once you
 trust the setup, and `headless` for unattended operation, which auto-allows file
 writes, bash, and agent creation. `headless` hands over materially more than the
 other two; the config says so at the point where you would switch it.
+
+If you have loosened a tool's posture and want it back, Settings → Tools has
+**Reset to defaults**: it restores every posture to what your installed version
+ships with, reading the untouched copy inside the sealed application tree. It
+reaches the baseline postures only — mode overrides, path overrides, and the
+shell check list below are separate and are not touched.
 
 Three rules sit underneath the policy and are not reachable from it:
 
@@ -65,7 +138,21 @@ Three rules sit underneath the policy and are not reachable from it:
   `permissions.yaml`. Most are absolute denials covering audit evasion and
   attacks on the runtime and host; the rest force an operator prompt that no
   configuration can downgrade to auto. No hook, plugin, skill, or agent can
-  relax them.
+  relax them. **The whole list is readable in the app** — Settings → Loop
+  limits — with what each check refuses and whether it refuses outright, asks
+  you, or does both depending on which pattern matched. Checks are identified
+  by number rather than by name, in the app and in the audit log, so a refusal
+  record does not describe the pattern that produced it.
+
+  **The assistant is told what the list refuses, in classes.** Its operating
+  document carries the same descriptions the app shows you — which classes
+  prompt you and which are refused outright — rendered from the check list
+  rather than written alongside it, so the two cannot disagree. It is told no
+  patterns: a description of the shape a check matches would be a map around
+  it, and the same reasoning that keeps patterns out of the audit log keeps
+  them out of the prompt. Telling it which commands will reach you is a
+  usability decision, not a permission one — it changes what the assistant can
+  predict, never what it may do.
 - **Kernel lockdown.** The assistant cannot write source under
   `tesseract/kernel/`. New tools are drafted by the assistant, reviewed by the
   operator, and installed by the operator.
@@ -75,6 +162,44 @@ Three rules sit underneath the policy and are not reachable from it:
 
 When no operator is present to answer a prompt, read-only tools auto-allow and
 everything else denies. Absence of an approver is treated as refusal.
+
+### What gets recorded
+
+Every tool call that passes the gate is appended to
+`runtime/logs/approvals.jsonl` — one JSON line carrying the time, the tool, a
+truncated summary of its input, which policy layer decided, and the outcome.
+The file is append-only and survives restarts.
+
+**Including the ones nobody was asked about.** An `auto` posture writes a row
+marked `"result": "auto"` rather than writing nothing. Until 2026-08-14 it wrote
+nothing at all, on the reasoning that an unapproved call has no approval to
+record — which left the tools most able to act unattended as the ones leaving no
+trace. `auto` is kept distinct from `allow_once` deliberately: the first means
+nobody was asked, the second means you were asked and said yes, and a ledger
+that conflated them would answer "did the operator approve this?" with yes for
+actions no operator ever saw.
+
+One limit worth knowing: the ledger records *decisions*, not outcomes — a row
+says a tool was allowed to run, not what it did or whether it succeeded.
+
+**It is archived, never deleted.** Rows older than the window in
+`config/retention.yaml` move once a night into a dated file beside the ledger
+(`approvals-archive/approvals-YYYY-MM.jsonl`); nothing removes them. You can
+widen or narrow the window, and you cannot turn the archive into a deletion —
+the retention table refuses `action: delete` for this file and for your saved
+conversations, and refuses at startup rather than quietly archiving instead.
+Two things make that safe rather than merely intended. The sweep holds the same
+lock the ledger's own writer holds, so a decision recorded while it is running
+waits and then lands in the rewritten file — without that, a row appended
+between reading the file and replacing it would be in neither the archive nor
+the ledger. And rows are moved only after they are written to the archive, so
+an interruption mid-sweep can duplicate a row and cannot lose one. A row whose
+timestamp will not parse stays in the live file rather than being aged on a
+guess.
+
+That is a deliberate answer to a real trade: rows removed to save disk are rows
+unavailable to the next forensic question. The window bounds how much the live
+file carries, not how long the evidence exists.
 
 ## Prompt injection
 
@@ -120,6 +245,70 @@ processes, and are only reachable if you list them in `mcp_servers.yaml`.
 TESSERACT does not auto-discover them. A server you add can do anything your
 user account can.
 
+### TESSERACT as an MCP server
+
+The same protocol runs in the other direction: TESSERACT can expose itself, so
+another program can search its memory and vault, watch what it is doing, and
+ask it to act. **That surface ships switched off.** Turning it on is a single
+control in Settings → Keys → MCP, and it takes effect on the next start.
+
+While it is on, a request is refused unless its bearer token matches a client
+declared in `mcp.yaml`. There are four identities and they are not equals:
+
+- **`operator`** is the only one you ever handle. Its token is generated in
+  Settings, shown once, and is what an outside tool is given.
+- **`lane-claude`, `lane-codex`, `terminal-manual`** belong to the runtime.
+  TESSERACT mints them for itself on first start and hands each process it
+  spawns exactly one of them, stripping the others from that process's
+  environment. This is what stops a CLI TESSERACT started from calling back in
+  as *you*: work on the lane surface is owned by the identity the token
+  resolves to, and a spawned process holding every token could pick which
+  owner to be.
+
+What any of them may call is `mcp.yaml`'s verb allowlist — default-deny, and
+capped again by the client's trust tier. Settings lists every verb and its
+posture next to the token, because a bearer token is not something you can
+consent to without seeing what it opens.
+
+The switch is not only about outside tools. The CLIs in TESSERACT's own
+terminal reach it through this same surface, so switching it off takes their
+access to memory and vault away too. Both facts are on the control.
+
+## The microphone, and the wake word
+
+The microphone is armed by you and by nothing else. There is no path that
+opens capture on the assistant's behalf, and a muted microphone is muted —
+there is no low-power listening path behind it. That is a deliberate choice
+rather than a missing feature: a mute that is not a mute is a claim you cannot
+walk back.
+
+**The wake word decides from audio, before transcription.** It runs a speech
+recogniser restricted to your phrase and nothing else, so an utterance that
+was not addressed to the assistant is never sent to a speech engine at all.
+This matters because speech-to-text has a cloud fallback: with the wake word
+armed, speech it rejects does not reach that fallback, because it is discarded
+before any transcription is attempted.
+
+What the check stores is your phrase and two sensitivity numbers. The
+recordings themselves are decoded in memory and dropped — never written to
+disk, never uploaded. There is nothing stored from which speech could be
+reconstructed.
+
+The check endpoints write, so they are refused off loopback rather than
+relying on the bind alone: replacing the stored setting would change what
+wakes the assistant in a way you did not choose and could not see.
+
+**With the wake word off or not yet checked, none of the above applies** —
+every utterance is transcribed as normal, and the speech-to-text fallback is
+whatever `roles.yaml` configures. The gate is what creates the guarantee;
+without it there is no filtering to reason about. It stays open on every
+failure by design, including a missing model or a phrase the recogniser has no
+sounds for, because a gate that fails closed is a microphone that has silently
+stopped working.
+
+**It is not a speaker check.** Anyone who says the phrase wakes it. Voice is
+not treated as an authentication factor anywhere in this system.
+
 ## Known limits
 
 Stated because they are true, not because they are comfortable.
@@ -142,18 +331,46 @@ Stated because they are true, not because they are comfortable.
 - **The application is not code-signed.** Windows SmartScreen will warn on
   first run. Verify you obtained the installer from the official releases page.
 
+## What the first run downloads
+
+The first run has two halves, and the split is where consent sits.
+
+The first half installs the app itself — the source tree, a Python runtime, and
+the dependency set. It is shown as progress rather than asked about, because
+there is no working install without it, and it downloads nothing optional.
+
+The second half is everything you are asked about: speech recognition, the
+voice, search models, the browser engine. Setup asks before any of it is
+fetched, and the answers are recorded rather than inferred — a lane you switch
+off downloads nothing, now or later, and turning it back on in Settings is what
+makes it download. Every model artifact is pinned to an upstream revision plus a
+per-file SHA-256, verified before it is installed; a file that fails
+verification is discarded and never retried, because the same bytes would fail
+the same check.
+
+If the setup window cannot open, or the questions it should ask cannot be
+worked out for your machine, the app installs and nothing optional does — no
+speech models, no search models, no third-party installer runs. The app then
+tells you it happened and leaves the choices to you in Settings, on the
+principle that a question nobody could ask is not an answer.
+
 ## Secrets
 
 API keys live in `.env` under your home directory, never in the code tree and
-never in the repository. The build that produces the public tree ships config
-that is either a hand-authored template or a file deliberately declared
-identical for every install; a config file that is neither fails the build
-rather than falling back to the developer's live copy. The build then runs a PII
-and secret audit against its own output before publishing.
+never in the repository. There is one config tree, and it is the one that ships:
+the same files this project runs on are copied verbatim into the public tree,
+so a setting added for a developer is a setting every install receives. What may
+never reach you — a permissive security mode, an empty domain watchlist, a
+scheduled job nobody asked for — is named in the build's own tests, which fail
+if one comes back. The build then runs a PII and secret audit against its own
+output before publishing.
 
 Terminal output and provisioning logs are scrubbed for credential-shaped strings
 before being written or displayed, including credentials carried in URL userinfo
-and query strings.
+and query strings. The assistant's own log lines are filtered the same way, on
+the console as well as in the durable files — some APIs put their token in the
+request path, which a library that logs every request URL would otherwise print
+onto any surface capturing that output.
 
 ## Paths, and the names that build them
 

@@ -2,6 +2,17 @@
 name = "tesseract"
 version = "1.1.1"
 description = "TESSERACT kernel — local-first AI entity runtime"
+# Declared here as well as in the repo-root LICENSE, because they are read by
+# different things: GitHub and humans read the file, while pip, SBOM tools and
+# dependency scanners read only this field. Without it an installed TESSERACT
+# reports no licence at all, which for an AGPL project is the one claim that
+# must not go missing.
+#
+# A bare SPDX string is PEP 639 and needs setuptools >= 77.0.3 — see the
+# matching floor under [build-system]. The two move together; raising this
+# without that produces an install that fails on the user's machine.
+license = "AGPL-3.0-or-later"
+license-files = ["../LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     # Core — Mirror server runs on aiohttp; httpx is the async HTTP client
@@ -23,7 +34,7 @@ dependencies = [
     "faiss-cpu>=1.8.0",
     "numpy>=1.26.0",
     # Reranker tokenization (~7 MB Rust wheel). The ONNX runtime itself comes
-    # transitively via piper-tts; model files are fetched separately
+    # transitively via kokoro-onnx; model files are fetched separately
     # (scripts/fetch_reranker_model.py) and absent files degrade cleanly.
     "tokenizers>=0.20",
 
@@ -39,6 +50,12 @@ dependencies = [
     "nvidia-ml-py>=12.555",
 
     # Tool deps
+    # Pillow backs `screen_look`'s capture (ImageGrab reads the composited
+    # desktop; the tool crops to the app window). It arrives transitively via
+    # python-pptx today, which is exactly the shape that has bitten this file
+    # before — a dependency nobody declared going missing is a silent failure,
+    # and here the failure is the assistant quietly losing its eyes.
+    "pillow>=10.0.0",
     "pypdf>=5.0.0",  # pdf_read tool
     "python-pptx>=1.0.0",  # vault_indexer .pptx slide+notes extraction (AU-22)
     "playwright>=1.40",  # P4-2 browser automation — headless Chromium via BrowserManager
@@ -74,18 +91,18 @@ dependencies = [
     # storm on a fresh install). Linux/Mac use stdlib `pty`.
     "pywinpty>=2.0.13; sys_platform == 'win32'",
 
-    # Local TTS runtime — both shipped engines must be core, because the
-    # provisioner installs bare `-e` with no extras: an engine parked in an
-    # extra is never installed on a packaged app, and the failure is silent
-    # (the lane just latches disabled). That is how Piper shipped mute
+    # Local TTS runtime — core, not an extra, because the provisioner
+    # installs bare `-e` with no extras: an engine parked in an extra is
+    # never installed on a packaged app, and the failure is silent (the lane
+    # just latches disabled). A shipped engine went mute exactly that way
     # once already, found live 2026-07-30.
     #
-    # Kokoro is the default voice (`roles.yaml::voice.tts.primary`), Piper
-    # the fallback; both download their model files on first run. CPU
-    # onnxruntime arrives transitively via either. GPU acceleration stays
-    # in the opt-in [voice-local] extra — it is a speedup, not a
-    # requirement, and Kokoro falls back to CPU cleanly without it.
-    "piper-tts>=1.2.0",
+    # Kokoro is the default voice (`roles.yaml::voice.tts.primary`) and
+    # downloads its model files on first run; CPU onnxruntime arrives
+    # transitively with it. GPU acceleration stays in the opt-in
+    # [voice-local] extra — it is a speedup, not a requirement, and Kokoro
+    # falls back to CPU cleanly without it. The lane behind Kokoro is the
+    # cloud one, which needs no package at all.
     "kokoro-onnx>=0.5.0",
 ]
 
@@ -102,11 +119,11 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "pytest-httpx>=0.30.0",
 ]
-# GPU acceleration for the local TTS engines — opt-in only. Both engines
-# themselves are core dependencies (see above) and run on CPU without any
-# of this; the CUDA 12 wheels are here so Kokoro's CUDAExecutionProvider
-# can resolve its DLLs on Windows. Voice models are downloaded into
-# `runtime/models/voice/{piper,kokoro}/`; pip only ships the runtime.
+# GPU acceleration for the local TTS engine — opt-in only. The engine
+# itself is a core dependency (see above) and runs on CPU without any of
+# this; the CUDA 12 wheels are here so Kokoro's CUDAExecutionProvider can
+# resolve its DLLs on Windows. Voice models are downloaded into
+# `runtime/models/voice/kokoro/`; pip only ships the runtime.
 #
 # Installing this extra is NOT sufficient on its own, for two reasons, both
 # measured rather than assumed:
@@ -116,7 +133,7 @@ dev = [
 #    beside it do not provide; the session then falls back to CPU silently,
 #    reporting CUDAExecutionProvider as *available* the whole time. 1.26 is
 #    the last CUDA 12 build — verified against this catalog's Kokoro model.
-# 2. `onnxruntime` (CPU) arrives transitively via piper-tts/kokoro-onnx and
+# 2. `onnxruntime` (CPU) arrives transitively via kokoro-onnx and
 #    unpacks into the same `onnxruntime/` directory. Resolvers treat it as a
 #    separate distribution, so it is reinstalled by any later editable
 #    install and whichever landed last wins. It has to be REMOVED after the
@@ -146,7 +163,11 @@ voice-local = [
 agent = "tesseract.scripts.agent_cli:main"
 
 [build-system]
-requires = ["setuptools>=75.0"]
+# >= 77.0.3 is what understands PEP 639's `license = "<SPDX>"` string above.
+# Older setuptools rejects it outright, and this file is what the installer
+# runs `pip install -e .` against on every user's machine — so the floor and
+# the field are one change, never two.
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]

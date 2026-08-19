@@ -25,17 +25,18 @@ class OsOpenUrlInput(BaseModel):
 class OsOpenUrlTool(Tool):
     default_posture = "auto"
     risk_class: ClassVar[str] = "autonomous"
+    group: ClassVar[str] = "showing-the-operator"
+    summary: ClassVar[str] = "Internal primitive: open an http(s) URL in the operator's default browser."
+    use_when: ClassVar[str] = (
+        "Called by `open` after it resolves a target to a URL destination. Not for direct use."
+    )
+    not_when: ClassVar[str] = (
+        "Model callers use `open` — it resolves the target and dispatches here itself."
+    )
 
     @property
     def name(self) -> str:
         return "os_open_url"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Open an http(s) URL in the operator's default browser. Internal "
-            "primitive — callers use `open`."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

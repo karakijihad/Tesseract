@@ -4,6 +4,8 @@ import { Hint } from '../../components/ui/Hint';
 import { useAlarmsStore } from '../../stores/alarms';
 import { useToastStore } from '../../stores/toasts';
 import { AlarmWhenPicker } from './AlarmWhenPicker';
+import { Input } from '../../components/common/Input';
+import { Button } from '../../components/common/Button';
 
 interface Props {
   onClose: () => void;
@@ -46,13 +48,12 @@ export function AddAlarmForm({ onClose }: Props) {
     <div className="schedule-add-form" role="form" aria-label="Add alarm">
       <div className="schedule-add-row">
         <label className="schedule-add-label">label</label>
-        <input
-          type="text"
+        <Input
           className="schedule-add-input"
           value={label}
-          onChange={(e) => setLabel(e.target.value)}
+          onChange={setLabel}
           placeholder="standup"
-          aria-invalid={label.length > 0 && !labelValid}
+          ariaInvalid={label.length > 0 && !labelValid}
         />
         <Hint label="Letters, digits, spaces, underscores, hyphens. Must be unique among pending alarms.">
           <span className="schedule-add-hint">name</span>
@@ -71,32 +72,27 @@ export function AddAlarmForm({ onClose }: Props) {
       </div>
       <div className="schedule-add-row">
         <label className="schedule-add-label">message</label>
-        <input
-          type="text"
+        <Input
           className="schedule-add-input"
           value={message}
-          onChange={(e) => setMessage(e.target.value)}
+          onChange={setMessage}
           placeholder="optional — what to surface when it fires"
         />
       </div>
       {error && <div className="schedule-add-error">{error}</div>}
       <div className="schedule-add-actions">
-        <button
-          type="button"
-          className="schedule-add-cancel"
+        <Button
           onClick={onClose}
           disabled={submitting}
         >
           cancel
-        </button>
-        <button
-          type="button"
-          className="schedule-add-submit"
+        </Button>
+        <Button
           onClick={submit}
           disabled={!canSubmit}
         >
           {submitting ? 'adding…' : 'add alarm'}
-        </button>
+        </Button>
       </div>
     </div>
   );

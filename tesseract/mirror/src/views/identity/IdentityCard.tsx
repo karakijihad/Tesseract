@@ -1,10 +1,15 @@
 import { useEffect, useState } from "react";
 
+import { Block } from "../../components/common/Block";
+import { Note } from "../../components/common/Note";
+
 import { useIdentityStore } from "../../stores/identity";
 import { useWebSocketStore } from "../../stores/websocket";
 import { useFetchRetryTick } from "../../lib/useFetchRetry";
 import { fetchIdentity, fetchVoiceSettings, saveIdentity } from "../../lib/api";
 import type { IdentitySavePatch } from "../../lib/types";
+import { Input } from "../../components/common/Input";
+import { Button } from "../../components/common/Button";
 
 /** The names, and the wake phrase built from one of them.
  *
@@ -24,22 +29,14 @@ export function IdentityCard() {
 
   const [name, setName] = useState(storeName);
   const [operator, setOperator] = useState(storeOperator);
-  // Read-only facts from the same `/api/identity` response the names come
-  // from, rather than from the store — the store is filled on WS connect,
-  // and reading it here rendered an empty bordered box until that landed.
-  const [facts, setFacts] = useState<
-    { version: string; model: string; provider: string; mode: string } | null
-  >(null);
-  const [wakeEnabled, setWakeEnabled] = useState(false);
-  const [wakePrefix, setWakePrefix] = useState("");
-  const [wakeThreshold, setWakeThreshold] = useState<number | null>(null);
   const [saved, setSaved] = useState<{
     name: string;
     operator: string;
-    wakeEnabled: boolean;
-    wakePrefix: string;
   } | null>(null);
   const [saving, setSaving] = useState(false);
+  // Read-only here: the phrase is half this name, so the card shows what
+  // it currently is. Editing it lives with the rest of voice.
+  const [wakePrefixText, setWakePrefixText] = useState("hey");
   const [error, setError] = useState<string | null>(null);
 
   // The broadcast landing (this window's own save, or another window's)
@@ -78,20 +75,10 @@ export function IdentityCard() {
       .then(([ident, voice]) => {
         setName(ident.name);
         setOperator(ident.operator_name);
-        setFacts({
-          version: ident.version,
-          model: ident.model_name,
-          provider: ident.provider,
-          mode: ident.security_mode,
-        });
-        setWakeEnabled(voice.wake_word_enabled);
-        setWakePrefix(voice.wake_word_prefix);
-        setWakeThreshold(voice.wake_word_threshold);
+        setWakePrefixText(voice.wake_word_prefix);
         setSaved({
           name: ident.name,
           operator: ident.operator_name,
-          wakeEnabled: voice.wake_word_enabled,
-          wakePrefix: voice.wake_word_prefix,
         });
       })
       .catch((err) =>
@@ -102,27 +89,19 @@ export function IdentityCard() {
 
   const trimmedName = name.trim();
   const trimmedOperator = operator.trim();
-  const trimmedPrefix = wakePrefix.trim();
   const dirty =
     saved !== null &&
     (trimmedName !== saved.name ||
-      trimmedOperator !== saved.operator ||
-      wakeEnabled !== saved.wakeEnabled ||
-      trimmedPrefix !== saved.wakePrefix);
+      trimmedOperator !== saved.operator);
   // The backend refuses a blank name or prefix; disabling save says so
   // before the round trip instead of surfacing a 400 for a typo.
-  const valid = trimmedName !== "" && trimmedOperator !== "" && trimmedPrefix !== "";
+  const valid = trimmedName !== "" && trimmedOperator !== "";
 
   const save = async () => {
     if (!saved || !dirty || !valid) return;
     const patch: IdentitySavePatch = {};
     if (trimmedName !== saved.name) patch.name = trimmedName;
     if (trimmedOperator !== saved.operator) patch.operator_name = trimmedOperator;
-    const wake: Partial<{ enabled: boolean; prefix: string }> = {};
-    if (wakeEnabled !== saved.wakeEnabled) wake.enabled = wakeEnabled;
-    if (trimmedPrefix !== saved.wakePrefix) wake.prefix = trimmedPrefix;
-    if (Object.keys(wake).length > 0) patch.wake_word = wake;
-
     setSaving(true);
     setError(null);
     try {
@@ -130,11 +109,7 @@ export function IdentityCard() {
       setSaved({
         name: applied.name,
         operator: applied.operator_name,
-        wakeEnabled: applied.wake_word.enabled,
-        wakePrefix: applied.wake_word.prefix,
       });
-      setWakeEnabled(applied.wake_word.enabled);
-      setWakePrefix(applied.wake_word.prefix);
       // The `identity_changed` broadcast re-seeds the name inputs and every
       // other surface; this only closes the loop for the saving window if
       // its own socket happens to be down.
@@ -146,25 +121,24 @@ export function IdentityCard() {
     }
   };
 
-  const phrase = `${trimmedPrefix} ${trimmedName}`.trim();
+  const phrase = `${wakePrefixText} ${trimmedName}`.trim();
 
   return (
-    <section className="identity-view-card identity-panel">
-      <div className="identity-view-card-heading t-meta">Identity</div>
+    <Block title={null}>
       <div className="identity-panel-body">
-        {error && <div className="settings-error">{error}</div>}
+        {error && <Note tone="bad">{error}</Note>}
 
         <div className="identity-field">
           <label className="identity-field-label t-meta" htmlFor="identity-name">
             name
           </label>
-          <input
+          <Input
             id="identity-name"
             className="identity-input"
             value={name}
             maxLength={40}
             disabled={saved === null}
-            onChange={(e) => setName(e.target.value)}
+            onChange={setName}
             onKeyDown={(e) => e.key === "Enter" && void save()}
           />
           <span className="t-meta identity-field-hint">
@@ -177,13 +151,13 @@ export function IdentityCard() {
           <label className="identity-field-label t-meta" htmlFor="identity-operator">
             operator
           </label>
-          <input
+          <Input
             id="identity-operator"
             className="identity-input"
             value={operator}
             maxLength={40}
             disabled={saved === null}
-            onChange={(e) => setOperator(e.target.value)}
+            onChange={setOperator}
             onKeyDown={(e) => e.key === "Enter" && void save()}
           />
           <span className="t-meta identity-field-hint">
@@ -191,71 +165,32 @@ export function IdentityCard() {
           </span>
         </div>
 
+        {/* Voice lives in Settings → Voice, all of it: which voice speaks,
+            the wake word, and training it. The name above is half the wake
+            phrase, which is why this points across rather than staying
+            silent — but splitting one subject across two tabs is what made
+            "how it sounds" and "what wakes it" two separate journeys. */}
         <div className="identity-field">
-          <label className="identity-field-label t-meta" htmlFor="identity-wake">
-            wake word
-          </label>
-          <div className="identity-wake-row">
-            <input
-              id="identity-wake"
-              type="checkbox"
-              checked={wakeEnabled}
-              disabled={saved === null}
-              onChange={(e) => setWakeEnabled(e.target.checked)}
-            />
-            <input
-              className="identity-input identity-input--short"
-              value={wakePrefix}
-              maxLength={40}
-              disabled={saved === null}
-              aria-label="wake word prefix"
-              onChange={(e) => setWakePrefix(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && void save()}
-            />
-            <span className="t-meta">
-              {wakeEnabled
-                ? `Command and Speak act only on speech starting with “${phrase}”.`
-                : `Off — every utterance dispatches. On, only “${phrase}” does.`}
-            </span>
-          </div>
-          <span className="t-meta identity-field-hint">
-            Transcribe and Terminal are never gated. Match tolerance is{" "}
-            <code>identity.wake_word.match_threshold</code> in{" "}
-            <code>mirror.yaml</code>
-            {wakeThreshold !== null && <> (currently {wakeThreshold})</>}.
+          <span className="identity-field-label t-meta">voice</span>
+          <span className="t-meta">
+            How it sounds and what wakes it are in Settings → Voice. The wake
+            phrase is “{phrase}” — the second word is the name above, so
+            renaming changes it.
           </span>
         </div>
 
-        {facts && (
-          <dl className="soul-identity-grid t-caption identity-facts">
-            <dt>version</dt>
-            <dd>{facts.version}</dd>
-            <dt>model</dt>
-            <dd>
-              {facts.model}
-              {facts.provider && (
-                <span className="t-meta soul-identity-provider">{` · ${facts.provider}`}</span>
-              )}
-            </dd>
-            <dt>mode</dt>
-            <dd>{facts.mode}</dd>
-          </dl>
-        )}
-
         <div className="identity-actions">
-          <button
-            type="button"
-            className="identity-save"
+          <Button
             onClick={() => void save()}
             disabled={!dirty || !valid || saving}
           >
             {saving ? "saving…" : "save"}
-          </button>
+          </Button>
           {dirty && !valid && (
             <span className="t-meta">Name, operator and prefix cannot be blank.</span>
           )}
         </div>
       </div>
-    </section>
+    </Block>
   );
 }

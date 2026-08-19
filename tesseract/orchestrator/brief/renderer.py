@@ -33,6 +33,7 @@ Renderer flow per ``_shared/brief-renderer-spec.md`` (updated):
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -65,23 +66,18 @@ logger = logging.getLogger(__name__)
 
 SECTION_ORDER: tuple[tuple[str, str], ...] = (
     ("workspace-digest", "## Yesterday in TESSERACT"),
+    # AR-4 — the watchman's last sweep. Renderer-only (no sub-agent, no
+    # model): the findings are already counted and written, and a digester
+    # asked to summarise them could only add a way for them to be wrong.
+    # Dropped entirely when the runtime was quiet, which is most mornings.
+    ("runtime-report", "## What broke"),
     ("mission-digest", "## Yesterday with you"),
     ("memory-digest", "## What I learned"),
     ("vault-digest", "## Vault"),
     ("ecosystem-digest", "## Ecosystem"),
     ("world-digest", "## World"),
-    # AU-23 — strategist initiatives. Renderer-only (no sub-agent):
-    # `_collect_strategist_block` reads the most recent
-    # `strategist_summary` workspace event and emits the block verbatim.
-    # Section is dropped when no batch exists in the lookback window.
-    ("strategist-initiatives", "## Initiatives"),
 )
 
-
-# AU-23 — how far back the renderer searches for a `strategist_summary`
-# workspace event. Defaults to 72h so a 3-day strategist cadence reliably
-# lands in the next brief; widen if the scheduler runs less often.
-DEFAULT_STRATEGIST_LOOKBACK_HOURS = 72
 
 _SINCE_24H_PAYLOAD: dict[str, object] = {"since_hours": 24}
 
@@ -155,7 +151,6 @@ class BriefRenderer:
         librarian_compile: LibrarianCompile | None = None,
         ecosystem_home: Path | None = None,
         ecosystem_since_days: int = ECOSYSTEM_DEFAULT_SINCE_DAYS,
-        strategist_lookback_hours: int = DEFAULT_STRATEGIST_LOOKBACK_HOURS,
     ) -> None:
         self._briefs_dir = Path(briefs_dir)
         self._pillars = tuple(pillars)
@@ -196,11 +191,6 @@ class BriefRenderer:
         # the all-empty vault rule.
         self._ecosystem_home = Path(ecosystem_home) if ecosystem_home is not None else None
         self._ecosystem_since_days = int(ecosystem_since_days)
-        # AU-23 — strategist batch lookback. Reads only the most recent
-        # `strategist_summary` workspace event within this window so
-        # the brief surfaces the current portfolio without reaching
-        # into the agenda store.
-        self._strategist_lookback_hours = int(strategist_lookback_hours)
 
     async def render(
         self,
@@ -239,14 +229,8 @@ class BriefRenderer:
 
         section_bodies: dict[str, str] = {}
         for slug, _header in SECTION_ORDER:
-            if slug == "strategist-initiatives":
-                # Renderer-only section, no sub-agent. Skip if no recent
-                # batch — `_assemble_body` drops empty sections.
-                section_bodies[slug] = _collect_strategist_block(
-                    event_store=self._event_store,
-                    lookback_hours=self._strategist_lookback_hours,
-                    now=datetime.now(timezone.utc),
-                )
+            if slug == "runtime-report":
+                section_bodies[slug] = _collect_runtime_block()
                 continue
             if slug == "world-digest":
                 payload: dict[str, object] = {
@@ -794,7 +778,6 @@ def _build_workspace_payload(
     """
     vault_body = (section_bodies.get("vault-digest") or "").strip()
     ecosystem_body = (section_bodies.get("ecosystem-digest") or "").strip()
-    initiatives_body = (section_bodies.get("strategist-initiatives") or "").strip()
     return {
         "kind": "daily_brief",
         "date": target_date.isoformat(),
@@ -808,11 +791,6 @@ def _build_workspace_payload(
             # paragraph string. Empty when the digester returned nothing
             # or the renderer skipped the section for absent signal.
             "ecosystem": ecosystem_body,
-            # AU-23 — strategist initiatives. Bullet list per
-            # `_collect_strategist_block`; surfaced as the same flat-
-            # bullet shape as the vault section so the React card can
-            # render them as `<li>` rows without re-parsing prose.
-            "initiatives": _split_vault_bullets(initiatives_body),
             "world": {
                 pillar: [_to_world_card(hit) for hit in (world_results.get(pillar) or [])]
                 for pillar in pillar_names
@@ -820,6 +798,37 @@ def _build_workspace_payload(
         },
         "cost_cap_reached": bool(cost_cap_reached),
     }
+
+
+def _collect_runtime_block() -> str:
+    """The watchman's last sweep, as bullets. Empty when it was quiet.
+
+    Reads the artifact rather than re-reading the logs: the counting has
+    already happened, and a second reader of the same logs is a second answer
+    that can disagree with the first.
+    """
+    from tesseract.orchestrator.watchman.report import watchman_dir
+
+    path = watchman_dir() / "latest.json"
+    if not path.exists():
+        return ""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        logger.exception("brief: watchman latest.json unreadable")
+        return ""
+    findings = [f for f in (payload.get("findings") or []) if isinstance(f, dict)]
+    if not findings:
+        return ""
+    lines = [
+        f"- {f.get('source')} — {f.get('summary')}"
+        for f in findings
+        if f.get("summary")
+    ]
+    observed = str(payload.get("observed_at") or "")
+    if observed:
+        lines.append(f"\n_As of {observed}._")
+    return "\n".join(lines)
 
 
 def _split_vault_bullets(text: str) -> list[str]:
@@ -840,86 +849,6 @@ def _split_vault_bullets(text: str) -> list[str]:
         else:
             bullets.append(stripped)
     return bullets
-
-
-def _collect_strategist_block(
-    *,
-    event_store: Any | None,
-    lookback_hours: int,
-    now: datetime,
-) -> str:
-    """Render the most recent strategist batch as voice-safe prose for the
-    `## Initiatives` brief section.
-
-    Returns the empty string when no event store is wired, when no
-    `strategist_summary` workspace event exists, or when the most recent
-    one falls outside the lookback window — `_assemble_body` drops empty
-    sections so the operator sees nothing instead of a blank header.
-    """
-    if event_store is None:
-        return ""
-    try:
-        events = event_store.list_events(
-            kinds=("strategist_summary",),
-            limit=5,
-        )
-    except Exception:  # noqa: BLE001
-        logger.exception("brief: strategist_summary lookup failed")
-        return ""
-    if not events:
-        return ""
-    cutoff = now - timedelta(hours=max(1, int(lookback_hours)))
-    most_recent = events[0]
-    ts_raw = str(getattr(most_recent, "ts", ""))
-    if not ts_raw:
-        return ""
-    try:
-        ev_ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
-    except ValueError:
-        logger.warning("brief: strategist_summary ts unparseable: %r", ts_raw)
-        return ""
-    if ev_ts.tzinfo is None:
-        ev_ts = ev_ts.replace(tzinfo=timezone.utc)
-    if ev_ts < cutoff:
-        return ""
-    payload = getattr(most_recent, "payload", {}) or {}
-    initiatives = payload.get("initiatives") or []
-    if not isinstance(initiatives, list) or not initiatives:
-        return ""
-    lines: list[str] = []
-    for raw in initiatives:
-        if not isinstance(raw, dict):
-            continue
-        goal = str(raw.get("goal") or "").strip()
-        if not goal:
-            continue
-        rationale = str(raw.get("rationale") or "").strip()
-        risk = str(raw.get("suggested_risk_class") or "").strip()
-        try:
-            confidence = float(raw.get("confidence") or 0.0)
-        except (TypeError, ValueError):
-            confidence = 0.0
-        try:
-            horizon = int(raw.get("horizon_days") or 0)
-        except (TypeError, ValueError):
-            horizon = 0
-        # Voice-safe (per daily-brief.md anti-output rules): no bold, no
-        # links. Lead with the goal; trail with the why and a small
-        # confidence/horizon clause.
-        bullet = f"- {goal}"
-        if rationale:
-            bullet += f" — {rationale[:280]}"
-        meta_bits: list[str] = []
-        if risk:
-            meta_bits.append(risk)
-        if confidence:
-            meta_bits.append(f"confidence {confidence:.0%}")
-        if horizon:
-            meta_bits.append(f"horizon {horizon}d")
-        if meta_bits:
-            bullet += f" (" + ", ".join(meta_bits) + ")"
-        lines.append(bullet)
-    return "\n".join(lines).strip()
 
 
 def _to_world_card(hit: dict) -> dict:

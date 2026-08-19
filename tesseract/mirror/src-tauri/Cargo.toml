@@ -32,3 +32,15 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 ureq = { version = "2", features = ["json"] }
 sha2 = "0.10"
 
+# A Job Object with kill-on-close, so a crash or an end-task takes the
+# provisioning downloads with it — the one case no exit handler can cover.
+# Already in the tree transitively at this version; named here so the three
+# symbols `job.rs` needs are guaranteed rather than inherited.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",       # `CreateJobObjectW` names SECURITY_ATTRIBUTES
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+

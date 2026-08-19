@@ -5,12 +5,10 @@ import type {
   SessionCreatedData,
   SessionDeletedData,
   SessionListData,
-  SessionLoadedData,
   SessionSavedData,
   SessionStatsData,
   SoulUpdatedData,
 } from "../../lib/types";
-import { rehydrateHistory } from "../../lib/chatHistory";
 import { useChannelsStore } from "../channels";
 import { useConversationStore } from "../conversation";
 import { useEntityStore } from "../entity";
@@ -53,36 +51,27 @@ export function handleSession(env: Envelope): void {
       useUIStore.getState().setDrawerOpen(true);
       break;
     }
-    case "session_loaded": {
-      const data = env.data as unknown as SessionLoadedData;
-      const { messages, modelById, statsById } = rehydrateHistory(data.history);
-      chat.loadHistory(env.chat_id ?? null, messages, { modelById, statsById });
-      sessions.setSaveName(data.save_name);
-      // Observer panels are per-session — drop the prior session's
-      // suggestions/observations so the loaded session starts clean.
-      useSuggestionsStore.getState().reset();
-      useObservationsStore.getState().reset();
-      toasts.push(`Loaded ${data.save_name}`);
-      break;
-    }
     case "session_saved": {
       const data = env.data as unknown as SessionSavedData;
-      sessions.setSaveName(data.save_name);
-      toasts.push(`Saved as ${data.save_name}`);
+      sessions.setLastChatId(data.chat_id);
+      toasts.push(`Saved as ${data.title}`);
       break;
     }
     case "session_reset": {
       const data = env.data as
-        | { autosaved?: boolean; save_name?: string | null }
+        | { autosaved?: boolean; chat_id?: string | null; title?: string | null }
         | undefined;
       chat.reset(env.chat_id ?? null);
-      sessions.setSaveName(null);
+      // The conversation that was reset is archived, not gone — but it is not
+      // the one to auto-resume into either. The fresh chat becomes the target
+      // on its first save.
+      sessions.setLastChatId(null);
       useSuggestionsStore.getState().reset();
       useObservationsStore.getState().reset();
       useTasksStore.getState().reset();
       toasts.push(
-        data?.autosaved && data.save_name
-          ? `Session reset · saved as ${data.save_name}`
+        data?.autosaved && data.title
+          ? `New conversation · ${data.title} archived`
           : "Session reset",
       );
       break;
@@ -112,18 +101,18 @@ export function handleSession(env: Envelope): void {
     }
     case "session_deleted": {
       const data = env.data as unknown as SessionDeletedData;
-      if (sessions.saveName === data.save_name) {
-        sessions.setSaveName(null);
+      if (sessions.lastChatId === data.chat_id) {
+        sessions.setLastChatId(null);
       }
       sessions.fetchList();
-      toasts.push(`Deleted ${data.save_name}`);
+      toasts.push(`Deleted ${data.title}`);
       break;
     }
     case "session_compact_file": {
       const data = env.data as unknown as SessionCompactFileData;
       sessions.fetchList();
       toasts.push(
-        `Compacted ${data.save_name}: ${data.tokens_before} → ${data.tokens_after} tok`,
+        `Compacted ${data.title}: ${data.tokens_before} → ${data.tokens_after} tok`,
       );
       break;
     }

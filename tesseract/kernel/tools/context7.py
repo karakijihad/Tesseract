@@ -15,10 +15,12 @@ Endpoints (v2):
 from __future__ import annotations
 
 import os
+from typing import ClassVar
 
 import httpx
 from pydantic import BaseModel, Field
 
+from tesseract import http_client
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
 
 _BASE = "https://context7.com/api"
@@ -49,16 +51,21 @@ class Context7LookupTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "searching-the-web"
+    summary: ClassVar[str] = "Fetches current library or framework API docs from Context7 by name or ID."
+    use_when: ClassVar[str] = (
+        "Use for any library or framework API question instead of guessing from training "
+        "knowledge — resolves a name to a Context7 ID and fetches docs scoped by topic."
+    )
+    not_when: ClassVar[str] = (
+        "Use `web_search` or `tavily_search` for anything outside library documentation, "
+        "such as news or general topics."
+    )
+
     @property
     def name(self) -> str:
         return "context7_lookup"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Fetch up-to-date library docs from Context7. Pass a library name (or Context7 ID) "
-            "and optional topic. Use for any library API question instead of guessing from training knowledge."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:
@@ -79,7 +86,7 @@ class Context7LookupTool(Tool):
         headers = _auth_headers()
         query = inp.topic or inp.library
 
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        async with http_client.async_client(timeout=_TIMEOUT) as client:
             library_id = await self._resolve_id(client, inp.library, query, headers)
             if isinstance(library_id, ToolResult):
                 return library_id

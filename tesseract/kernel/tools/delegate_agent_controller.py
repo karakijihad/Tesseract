@@ -108,21 +108,24 @@ class DelegateAgentControllerTool(Tool):
     default_posture: ClassVar[str] = "ask"
     risk_class: ClassVar[str] = "operator_gate"
 
+    group: ClassVar[str] = "handing-work-off"
+    summary: ClassVar[str] = (
+        "Dispatches a task to a fresh agent controller session running the "
+        "full assistant brain."
+    )
+    use_when: ClassVar[str] = (
+        "Use when a task needs its own chat brain to orchestrate delegation "
+        "seats and agents across multiple steps, not a single one-shot "
+        "hand-off."
+    )
+    not_when: ClassVar[str] = (
+        "A single seat call — use `delegate_coder` or `delegate_auditor`. "
+        "A markdown sub-agent task — use `invoke_agent`."
+    )
+
     @property
     def name(self) -> str:
         return "delegate_agent_controller"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Dispatch a task to a fresh agent controller session. The "
-            "controller's chat brain orchestrates delegation seats "
-            "and agents to complete the work. Backgrounds by default: "
-            "returns a spawn_handle immediately; the accumulated "
-            "assistant_text reply arrives via spawn_check / spawn_await "
-            "or the completion note. With background=false, blocks and "
-            "returns the reply inline."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

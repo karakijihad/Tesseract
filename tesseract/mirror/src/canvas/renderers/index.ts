@@ -8,7 +8,7 @@
 
 import type { ComponentType } from 'react';
 
-import type { SurfaceDescriptor, OperatorEvent } from '../protocol/types';
+import type { SurfaceDescriptor, OperatorEvent, ReportRender } from '../protocol/types';
 import { FolderRenderer } from './FolderRenderer';
 import { FileRenderer } from './FileRenderer';
 import { WebViewRenderer } from './WebViewRenderer';
@@ -32,6 +32,14 @@ export interface RendererProps {
   descriptor: SurfaceDescriptor;
   // Emit a state-change / interaction event back to the tool layer.
   dispatch: (event: OperatorEvent, detail?: Record<string, unknown>) => void;
+  // Say what happened when this renderer tried to draw, so `surface_list` can
+  // report *mounted / degraded / errored* instead of *exists*. A renderer that
+  // already knows it failed — an unsupported codec, a pdf that would not open,
+  // an embedded player the sandbox will paint black — calls this with the same
+  // reason it puts on the card. Optional: a renderer mounted outside a
+  // SurfaceCard (tests, previews) has nobody to report to. The card reports
+  // `mounted` on its own, so silence from a renderer means "no failure known".
+  report?: ReportRender;
 }
 
 export type RendererComponent = ComponentType<RendererProps>;

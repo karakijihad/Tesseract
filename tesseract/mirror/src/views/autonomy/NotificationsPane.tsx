@@ -6,6 +6,7 @@
 // stays hand-edited). One-off polled fetch on mount + after each toggle;
 // no WS envelope yet (mute state changes are rare, this is fine).
 
+import { Block } from '../../components/common/Block';
 import { useCallback, useEffect, useState } from 'react';
 import { useWebSocketStore } from '../../stores/websocket';
 import { useToastStore } from '../../stores/toasts';
@@ -17,6 +18,8 @@ import {
   type NotificationsConfig,
   type NotificationsRatesRow,
 } from '../../lib/api';
+import { Hint } from '../../components/ui/Hint';
+import { Checkbox } from '../../components/common/Checkbox';
 
 const CHANNEL = 'telegram';
 
@@ -86,13 +89,7 @@ export function NotificationsPane(): React.ReactElement {
   );
 
   return (
-    <div className="runtime-block notifications-pane">
-      <div className="runtime-block__title">
-        Notifications
-        <span className="t-meta" style={{ marginLeft: 8 }}>
-          Telegram · sliding 1h window
-        </span>
-      </div>
+    <Block title={null} meta="Telegram · sliding 1h window">
       {loading && <p className="t-meta">Loading…</p>}
       {error && !loading && <p className="t-meta">Failed: {error}</p>}
       {!loading && !error && rows.length === 0 && (
@@ -104,9 +101,11 @@ export function NotificationsPane(): React.ReactElement {
             <li key={row.category} className="notifications-pane__row">
               <span className="notifications-pane__cat">{row.category}</span>
               {row.exempt && (
-                <span className="t-meta" title="bypasses rate cap">
-                  exempt
-                </span>
+                <Hint label="bypasses rate cap">
+                  <span className="t-meta">
+                    exempt
+                  </span>
+                </Hint>
               )}
               {!row.exempt && (
                 <span className="t-meta">
@@ -119,49 +118,25 @@ export function NotificationsPane(): React.ReactElement {
                 const label = row.mutedByYaml
                   ? 'muted in YAML'
                   : on ? 'on' : 'off';
+                // This was a `button` wrapping a `span` drawn to look like a
+                // checkbox, with its own tick path and its own on/off colours
+                // — a control the keyboard could reach only as a button and a
+                // screen reader never heard as checked. It is the app's box.
                 return (
-                  <button
-                    type="button"
-                    className={
-                      'notifications-pane__toggle' +
-                      (on ? ' is-on' : ' is-off') +
-                      (locked ? ' is-locked' : '')
-                    }
-                    aria-pressed={on}
-                    aria-label={`${on ? 'mute' : 'unmute'} ${row.category}`}
+                  <Checkbox
+                    checked={on}
                     disabled={locked}
-                    onClick={() => void onToggle(row.category, on)}
-                  >
-                    <span
-                      className="notifications-pane__toggle-box"
-                      aria-hidden="true"
-                    >
-                      {on && (
-                        <svg
-                          viewBox="0 0 12 12"
-                          width="10"
-                          height="10"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        >
-                          <polyline points="2.5 6.5 5 9 9.5 3.5" />
-                        </svg>
-                      )}
-                    </span>
-                    <span className="notifications-pane__toggle-label">
-                      {label}
-                    </span>
-                  </button>
+                    onChange={() => void onToggle(row.category, on)}
+                    label={label}
+                    tone="state"
+                  />
                 );
               })()}
             </li>
           ))}
         </ul>
       )}
-    </div>
+    </Block>
   );
 }
 

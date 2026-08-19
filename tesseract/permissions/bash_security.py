@@ -37,9 +37,14 @@ def check(command: str) -> tuple[int, str] | None:
     """Run all 26 security checks. Returns (check_num, posture) on failure.
 
     ``posture`` is ``"blocked"`` for the 20 absolute DENY checks
-    (1-7, 9, 11-14, 16, 19-23, 25, 26) and ``"ask"`` for the 6 forced-ASK
-    checks (8, 10, 15, 17, 18, 24). Returns ``None`` when every check
-    passes.
+    (1-7, 9, 11-14, 16, 19-23, 25, 26) and ``"ask"`` for the forced-ASK
+    checks (10, 15, 17, 18, 24). Returns ``None`` when every check passes.
+
+    **Check 8 returns both**, and is the only one that does: ``eval`` /
+    ``source`` / ``. script`` are ``"ask"``, while the ``printf '\\xNN' | sh``
+    decode-to-exec pattern in the same check is ``"blocked"``. Counting it
+    with the ASK group — as this docstring did, and as `RULES` did before it
+    gained a ``"mixed"`` posture — understates what the gate refuses.
 
     A ``blocked`` result wins over an ``ask`` from any checker, wherever each
     sits in ``_CHECKS``. Returning the first match instead let an ASK trigger
@@ -808,3 +813,78 @@ _CHECKS: list = [
     _check_21, _check_22, _check_23, _check_26, _check_24,
     _check_25,
 ]
+
+
+# What each check refuses, in a sentence an operator can act on.
+#
+# Here rather than in the panel that renders it, for the same reason
+# `Guide/reference/` is generated: a hand-written copy of this list in a
+# `.tsx` file has no mechanism keeping it true, and the one that existed said
+# "24-check" while this module had grown to 26. The numbers stay deliberately
+# vague about the exact pattern — a check that prints its own regex is an
+# attack hint in the audit log — so each line says what class of thing is
+# refused, not how the match is made.
+# `posture` is one of "blocked", "ask" — or "mixed", for a check whose
+# branches do BOTH. Only check 8 is mixed today, and it needs the third value
+# rather than a rounding: labelling it `ask` on the panel told an operator that
+# a printf-decoded pipe into a shell would prompt them, when it is refused
+# outright and no answer lets it through. On a security surface, understating
+# what is refused is the worse of the two errors.
+RULES: dict[int, tuple[str, str]] = {
+    1: ("blocked", "Null bytes in a command"),
+    2: ("blocked", "Non-ASCII whitespace that slips past tokenising"),
+    3: ("blocked", "IFS injection — redefining the field separator to re-parse a command"),
+    4: ("blocked", "zmodload — loading arbitrary shell modules"),
+    5: ("blocked", "sysopen — raw file-descriptor manipulation"),
+    6: ("blocked", "ztcp — opening raw TCP from the shell"),
+    7: ("blocked", "Zsh equals-expansion, which resolves a name to a path and walks around a deny rule"),
+    8: (
+        "mixed",
+        "eval, source and `.` — running text assembled at runtime — ask; "
+        "a printf-decoded pipe into a shell is refused outright",
+    ),
+    9: ("blocked", "Backtick substitution; `$()` does the same thing and can be audited"),
+    10: ("ask", "Process substitution that hides what is being run"),
+    11: ("blocked", "Fork bombs"),
+    12: ("blocked", "Hex and octal escapes encoding a command"),
+    13: ("blocked", "base64 decoded straight into execution"),
+    14: ("blocked", "dd writing to a raw device"),
+    15: ("ask", "curl or wget piped into a shell — the install-script shape"),
+    16: ("blocked", "Reverse-shell patterns"),
+    17: ("ask", "python/perl/ruby one-liners reaching os, system or exec"),
+    18: ("ask", "crontab changes"),
+    19: ("blocked", "Privilege escalation"),
+    20: ("blocked", "Environment changes that alter how child processes run"),
+    21: ("blocked", "Disk and filesystem operations"),
+    22: ("blocked", "Service and systemd manipulation"),
+    23: ("blocked", "Malformed-token injection through variable names"),
+    24: ("ask", "Recursive-destructive verbs — rm -rf, del /s, git push --force"),
+    25: ("blocked", "Writes to permissions.yaml, roles.yaml, providers.yaml or mirror.yaml"),
+    26: ("blocked", "Writes into the sealed app/ or runtime/ trees, including after a cd into one"),
+}
+
+def declared_checks() -> set[int]:
+    """The check numbers `_CHECKS` actually runs, read off the functions."""
+    return {int(fn.__name__.rsplit("_", 1)[-1]) for fn in _CHECKS}
+
+
+def rules() -> list[dict[str, object]]:
+    """The DENY/ASK list, ordered by check number, for the operator panel.
+
+    Reports the rows it has. A check with no row would be a gap in the panel
+    and a row with no check would describe a rule that does not run — both are
+    real drift, and both are caught by
+    `tests/first_install_debugging/test_config_defaults_and_deny_rules.py`,
+    which is where an invariant about DOCUMENTATION belongs.
+
+    Deliberately not an import-time raise. This module is imported by
+    `kernel/tools/bash_tool.py` and by `routes/settings.py`, so a guard here
+    would mean an unfinished table stops the backend booting: an operator who
+    updated into that release would get an app that will not start, over a
+    missing sentence in a settings pane. The gate refuses commands whether or
+    not anything describes it.
+    """
+    return [
+        {"check": n, "posture": RULES[n][0], "refuses": RULES[n][1]}
+        for n in sorted(RULES)
+    ]

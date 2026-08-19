@@ -4,6 +4,10 @@
  *           channel registry via GET /api/channels; mutating endpoints live
  *           inside the sub-panes that own them. */
 import { useEffect, useState } from 'react';
+import { Button } from '../../components/common/Button';
+import { Tabs, type TabItem } from '../../components/common/Tabs';
+import { Note } from '../../components/common/Note';
+import { RailView, type RailGroup } from '../../components/common/RailView';
 import { useChannelsStore, selectChannelByName } from '../../stores/channels';
 import { StatusPane } from './StatusPane';
 import { LogsPane } from './LogsPane';
@@ -12,6 +16,17 @@ import { ConversationsPane } from './ConversationsPane';
 import './channels.css';
 
 type SubPane = 'status' | 'logs' | 'users' | 'conversations';
+
+const PANE_TABS: TabItem<SubPane>[] = [
+  { key: 'status', label: 'Status', testId: 'channels-pane-status' },
+  { key: 'users', label: 'Users', testId: 'channels-pane-users' },
+  {
+    key: 'conversations',
+    label: 'Conversations',
+    testId: 'channels-pane-conversations',
+  },
+  { key: 'logs', label: 'Logs', testId: 'channels-pane-logs' },
+];
 
 export function ChannelsTab() {
   const channels = useChannelsStore((s) => s.channels);
@@ -30,119 +45,57 @@ export function ChannelsTab() {
     void fetchChannels();
   }, [fetchChannels]);
 
-  return (
-    <div className="channels-view" data-testid="channels-view">
-      <header className="channels-view-head">
-        <span className="channels-view-title">Channels</span>
-        <span className="channels-view-count t-meta">
-          {channels.length} channel{channels.length === 1 ? '' : 's'} registered
-        </span>
-        <button
-          type="button"
-          className="channels-view-btn"
-          onClick={() => fetchChannels()}
-          disabled={loading}
-          data-testid="channels-refresh-btn"
-          aria-label="refresh channel list"
-        >
-          {loading ? 'refreshing…' : 'refresh'}
-        </button>
-      </header>
-
-      <div className="channels-body">
-        <nav className="channels-rail" aria-label="registered channels">
-          {channels.length === 0 ? (
-            <div className="channels-empty">
-              {loading ? 'loading…' : 'No channels registered.'}
-            </div>
-          ) : (
-            channels.map((c) => (
-              <button
-                key={c.name}
-                type="button"
-                className={`channels-rail-btn${
-                  c.name === selectedName ? ' is-active' : ''
-                }`}
-                onClick={() => selectChannel(c.name)}
-                data-testid={`channels-rail-${c.name}`}
-                aria-current={c.name === selectedName ? 'page' : undefined}
-              >
-                {c.name}
-              </button>
-            ))
-          )}
-        </nav>
-
-        <div className="channels-panes">
-          <div className="channels-pane-tabs" role="tablist" aria-label="pane">
-            <PaneTabButton
-              id="status"
-              label="Status"
-              active={subPane === 'status'}
+  const groups: RailGroup[] = [
+    {
+      label: 'Registered',
+      sections: channels.map((c) => ({
+        key: c.name,
+        label: c.name,
+        render: () => (
+          <>
+            <Tabs
+              items={PANE_TABS}
+              active={subPane}
               onSelect={setSubPane}
+              label="Channel panes"
             />
-            <PaneTabButton
-              id="users"
-              label="Users"
-              active={subPane === 'users'}
-              onSelect={setSubPane}
-            />
-            <PaneTabButton
-              id="conversations"
-              label="Conversations"
-              active={subPane === 'conversations'}
-              onSelect={setSubPane}
-            />
-            <PaneTabButton
-              id="logs"
-              label="Logs"
-              active={subPane === 'logs'}
-              onSelect={setSubPane}
-            />
-          </div>
-          <div className="channels-pane-body">
-            {!selected && (
-              <div className="channels-empty">
-                Select a channel to inspect.
-              </div>
-            )}
-            {selected && subPane === 'status' && (
-              <StatusPane channel={selected} />
-            )}
-            {selected && subPane === 'users' && (
-              <UsersPane channel={selected.name} />
-            )}
+            {selected && subPane === 'status' && <StatusPane channel={selected} />}
+            {selected && subPane === 'users' && <UsersPane channel={selected.name} />}
             {selected && subPane === 'conversations' && (
               <ConversationsPane channel={selected.name} />
             )}
-            {selected && subPane === 'logs' && (
-              <LogsPane channel={selected.name} />
-            )}
-          </div>
-        </div>
+            {selected && subPane === 'logs' && <LogsPane channel={selected.name} />}
+          </>
+        ),
+      })),
+    },
+  ];
+
+  if (channels.length === 0) {
+    return (
+      <div className="rail-view__empty" data-testid="channels-view">
+        <Note>{loading ? 'Loading…' : 'No channels registered.'}</Note>
       </div>
-    </div>
-  );
-}
+    );
+  }
 
-interface PaneTabButtonProps {
-  id: SubPane;
-  label: string;
-  active: boolean;
-  onSelect: (id: SubPane) => void;
-}
-
-function PaneTabButton({ id, label, active, onSelect }: PaneTabButtonProps) {
   return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      className={`channels-pane-tab${active ? ' is-active' : ''}`}
-      onClick={() => onSelect(id)}
-      data-testid={`channels-pane-${id}`}
-    >
-      {label}
-    </button>
+    <RailView
+      groups={groups}
+      label="Registered channels"
+      initial={selectedName ?? undefined}
+      onSectionChange={selectChannel}
+      meta={`${channels.length} channel${channels.length === 1 ? '' : 's'} registered`}
+      actions={
+        <Button
+          onClick={() => fetchChannels()}
+          disabled={loading}
+          testId="channels-refresh-btn"
+          ariaLabel="refresh channel list"
+        >
+          {loading ? 'refreshing…' : 'refresh'}
+        </Button>
+      }
+    />
   );
 }

@@ -27,6 +27,23 @@ class _BrowserTool(Tool):
         default card-reuse."""
 
     async def run(self, tool_input: BaseModel, context: ToolContext) -> ToolResult:
+        # The engine is ~700 MB and declinable, so "off" is an ordinary state
+        # rather than a fault. Say which switch is false and what still works
+        # — `os_open_url` hands a link to the machine's own browser and needs
+        # none of this, so the alternative is one sentence away rather than a
+        # reinstall. Read per call, so switching it back on takes effect on
+        # the next turn.
+        from tesseract.kernel.tools.web_providers.base import service_disabled_reason
+
+        off = service_disabled_reason("browser")
+        if off is not None:
+            return ToolResult(
+                output=(
+                    f"{self.name}: the browser engine is {off} To open a link in "
+                    f"the operator's own browser instead, use `open`."
+                ),
+                is_error=True,
+            )
         manager = get_browser_manager()
         session_id = getattr(context, "session_id", "") or ""
         try:
@@ -52,21 +69,24 @@ class BrowserNavigateInput(BaseModel):
 
 class BrowserNavigateTool(_BrowserTool):
     default_posture: ClassVar[str] = "ask"
+    group: ClassVar[str] = "driving-a-web-page"
+    summary: ClassVar[str] = (
+        "Drive a headless browser and show a screenshot of the page on the canvas."
+    )
+    use_when: ClassVar[str] = (
+        "You need to interact with a site — click, fill a form, log in, read the "
+        "DOM — or to capture how a page looks, including sites that refuse to be "
+        "framed. Reuses this session's browser card by default, so a browsing "
+        "flow is repeated calls rather than a pile of cards; new_card=true opens "
+        "a second one on purpose. Returns context_id."
+    )
+    not_when: ClassVar[str] = (
+        "The operator wants to SEE a link. Use `open` — it gives a live card with "
+        "working controls where this gives a still image of one, and it costs a "
+        "browser engine to do it. \"Show me this\" is always `open`."
+    )
     @property
     def name(self) -> str: return "browser_navigate"
-    @property
-    def description(self) -> str:
-        return (
-            "Open a URL in a headless browser and render it as a live image card "
-            "on the Mirror canvas (auto-captures a screenshot on open). This is how "
-            "you SHOW ANY WEBSITE in-canvas — including ones that refuse to embed in "
-            "a webview surface (Google, LinkedIn, X, banks, most logged-in sites). "
-            "By DEFAULT this REUSES the session's current browser card (navigating "
-            "it to the new URL) — call it repeatedly for a browsing flow without "
-            "piling up cards. Pass context_id to target a specific card, or "
-            "new_card=true to open a second one on purpose. "
-            "Use browser_screenshot to refresh it. Returns context_id."
-        )
     @property
     def input_schema(self) -> type[BaseModel]: return BrowserNavigateInput
     async def _act(self, inp, manager, session_id):
@@ -87,10 +107,17 @@ class BrowserContextInput(BaseModel):
 class BrowserSnapshotTool(_BrowserTool):
     default_posture: ClassVar[str] = "auto"
     risk_class: ClassVar[str] = "autonomous"
+    group: ClassVar[str] = "looking-for-yourself"
+    summary: ClassVar[str] = "Read the accessibility tree of an open browser page."
+    use_when: ClassVar[str] = (
+        "You need the page's structure — what elements exist and their roles — "
+        "to pick a selector or confirm something rendered."
+    )
+    not_when: ClassVar[str] = (
+        "`browser_screenshot` for how it LOOKS; a tree cannot show you a blank pane."
+    )
     @property
     def name(self) -> str: return "browser_snapshot"
-    @property
-    def description(self) -> str: return "Read the accessibility-tree snapshot of the context's current page (read-only)."
     @property
     def input_schema(self) -> type[BaseModel]: return BrowserContextInput
     async def _act(self, inp, manager, session_id):
@@ -104,10 +131,17 @@ class BrowserClickInput(BaseModel):
 
 class BrowserClickTool(_BrowserTool):
     default_posture: ClassVar[str] = "ask"
+    group: ClassVar[str] = "driving-a-web-page"
+    summary: ClassVar[str] = "Click the element matching a selector on an open browser page."
+    use_when: ClassVar[str] = (
+        "You are driving a page and need to press something. Selectors are "
+        "Playwright: CSS, `text=`, `role=`."
+    )
+    not_when: ClassVar[str] = (
+        "`browser_navigate` first — it returns the context_id this takes."
+    )
     @property
     def name(self) -> str: return "browser_click"
-    @property
-    def description(self) -> str: return "Click the element matching the Playwright selector."
     @property
     def input_schema(self) -> type[BaseModel]: return BrowserClickInput
     async def _act(self, inp, manager, session_id):
@@ -125,10 +159,14 @@ class BrowserFillFormInput(BaseModel):
 
 class BrowserFillFormTool(_BrowserTool):
     default_posture: ClassVar[str] = "ask"
+    group: ClassVar[str] = "driving-a-web-page"
+    summary: ClassVar[str] = "Type values into form fields on an open browser page."
+    use_when: ClassVar[str] = (
+        "A login, a search box, a multi-field form. One call fills every field."
+    )
+    not_when: ClassVar[str] = "`browser_click` presses controls; this types into them."
     @property
     def name(self) -> str: return "browser_fill_form"
-    @property
-    def description(self) -> str: return "Fill form fields by Playwright selector."
     @property
     def input_schema(self) -> type[BaseModel]: return BrowserFillFormInput
     async def _act(self, inp, manager, session_id):
@@ -138,10 +176,16 @@ class BrowserFillFormTool(_BrowserTool):
 
 class BrowserScreenshotTool(_BrowserTool):
     default_posture: ClassVar[str] = "ask"
+    group: ClassVar[str] = "looking-for-yourself"
+    summary: ClassVar[str] = "Capture an open browser page and refresh its card."
+    use_when: ClassVar[str] = (
+        "The page changed after a click or a fill and you need to see the result."
+    )
+    not_when: ClassVar[str] = (
+        "The operator's own screen is `screen_look` — this only sees a headless page."
+    )
     @property
     def name(self) -> str: return "browser_screenshot"
-    @property
-    def description(self) -> str: return "Capture the context's viewport and refresh its cockpit card."
     @property
     def input_schema(self) -> type[BaseModel]: return BrowserContextInput
     async def _act(self, inp, manager, session_id):
@@ -152,10 +196,17 @@ class BrowserScreenshotTool(_BrowserTool):
 class BrowserNetworkRequestsTool(_BrowserTool):
     default_posture: ClassVar[str] = "auto"
     risk_class: ClassVar[str] = "autonomous"
+    group: ClassVar[str] = "looking-for-yourself"
+    summary: ClassVar[str] = "Read the network-request log of an open browser page."
+    use_when: ClassVar[str] = (
+        "A page misbehaves and you need what it actually asked for — a failed "
+        "call, a redirect, an asset that never arrived."
+    )
+    not_when: ClassVar[str] = (
+        "`browser_snapshot` reads the rendered result; this reads the traffic behind it."
+    )
     @property
     def name(self) -> str: return "browser_network_requests"
-    @property
-    def description(self) -> str: return "Read the captured network-request log for the context (read-only)."
     @property
     def input_schema(self) -> type[BaseModel]: return BrowserContextInput
     async def _act(self, inp, manager, session_id):
@@ -166,10 +217,17 @@ class BrowserNetworkRequestsTool(_BrowserTool):
 class BrowserCloseTool(_BrowserTool):
     default_posture: ClassVar[str] = "auto"
     risk_class: ClassVar[str] = "autonomous"
+    group: ClassVar[str] = "driving-a-web-page"
+    summary: ClassVar[str] = "Close a browser context and remove its card from the canvas."
+    use_when: ClassVar[str] = (
+        "You are finished with a page and the operator does not need its card. "
+        "A context holds a browser engine open."
+    )
+    not_when: ClassVar[str] = (
+        "Switching pages does not need it — `browser_navigate` reuses this session's card."
+    )
     @property
     def name(self) -> str: return "browser_close"
-    @property
-    def description(self) -> str: return "Close a browser context and remove its cockpit card."
     @property
     def input_schema(self) -> type[BaseModel]: return BrowserContextInput
     async def _act(self, inp, manager, session_id):

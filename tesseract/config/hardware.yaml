@@ -47,14 +47,14 @@ profiles:
 
   - name: cpu
     # The floor, and the reason its match is deliberately empty. A smaller
-    # model here because there is no card to absorb the cost, and the note
-    # points at the lighter of the two voices — the heavier one synthesises
-    # close to the speed it speaks on a processor, so the first sentence
-    # takes noticeably longer to start.
+    # model here because there is no card to absorb the cost. The local
+    # voice still works on a processor — it just takes noticeably longer to
+    # start speaking, because it synthesises close to the speed it talks.
+    # The cloud lane is the way out of that, and it needs a key.
     match: {}
     stt_model: base
     pip_extras: []
-    tts_note: piper-preferred
+    tts_note: kokoro-cpu
 
 # Packages to remove after the graphics extras are installed. The processor
 # build of the speech runtime is pulled in automatically as a dependency of

@@ -181,6 +181,22 @@ async def reload_models(app: web.Application) -> None:
         if result.get("voice"):
             summary_parts.append("voice runtime reloaded")
             detail["voice"] = result["voice"]
+            # A rebuilt engine is a new chain, so the "a different voice is
+            # speaking" notice has to be able to fire against it. The latch is
+            # per session and outlives the engine that set it, which would
+            # otherwise leave an operator who changed their primary voice
+            # hearing nothing about the NEW chain falling through — for the
+            # rest of the session, describing lanes that are no longer in it.
+            # Guarded on its own: clearing a notice is a courtesy, and an
+            # import failure here would be caught by the reload's own handler
+            # and reported to the operator as "models NOT reloaded" — a worse
+            # and wrong message about a reload that succeeded.
+            try:
+                from tesseract.mirror.server.tts import clear_fallback_notices
+
+                clear_fallback_notices(app)
+            except Exception as exc:  # noqa: BLE001
+                log.info("config: could not reset the voice fallback notice (%s)", exc)
         # Keyed on presence, not truthiness: `reranker: None` is the valid
         # "operator cleared the role" result, and reporting it by falsiness
         # renders a real change as "no live changes". A failure has to reach
@@ -216,12 +232,29 @@ async def reload_models(app: web.Application) -> None:
     await _emit_reloaded(app, "providers.yaml", summary, detail)
 
 
+async def _skipped(app: web.Application, file: str, subsystem: str) -> None:
+    """Say that a save landed on disk and reached nothing live.
+
+    A reload whose subsystem never started used to `return` before either
+    toast, so the operator's save looked like it had worked. It had — the file
+    is written and the next process start reads it — but nothing in the
+    running app changed, and the two are not the same thing. Logged as well as
+    toasted, because the toast is behind a setting and this is not.
+    """
+    log.warning(
+        "config_watcher: %s saved, but %s is not running — the change applies "
+        "when it starts, not now", file, subsystem,
+    )
+    await _emit_failed(app, file, f"{subsystem} is not running — applies on next start")
+
+
 async def reload_mcp_servers(app: web.Application) -> None:
     """`mcp_servers.yaml` → diff the outbound MCP-client allowlist and
-    connect/disconnect servers in place (capability-growth Phase 2). No-op when
-    the client manager never built (registry unavailable)."""
+    connect/disconnect servers in place (capability-growth Phase 2). Reports a
+    skip when the client manager never built (registry unavailable)."""
     manager = app.get("mcp_clients")
     if manager is None:
+        await _skipped(app, "mcp_servers.yaml", "the outbound MCP client manager")
         return
     try:
         from tesseract.config.mcp_client import load_mcp_client_config
@@ -245,6 +278,7 @@ async def reload_permissions(app: web.Application) -> None:
     """`permissions.yaml` → rebuild PermissionPolicy in place."""
     config = app.get("config")
     if config is None or config.permissions is None:
+        await _skipped(app, "permissions.yaml", "the permission policy")
         return
     try:
         from tesseract.mirror.server.config import PERMISSIONS_YAML
@@ -272,6 +306,7 @@ async def reload_schedule(app: web.Application) -> None:
     """`schedule.yaml` → tell the engine to diff + re-arm without restart."""
     scheduler = app.get("scheduler")
     if scheduler is None:
+        await _skipped(app, "schedule.yaml", "the scheduler")
         return
     try:
         result = scheduler.reload_jobs()

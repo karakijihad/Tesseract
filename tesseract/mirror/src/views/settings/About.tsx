@@ -1,8 +1,14 @@
+import { Note } from "../../components/common/Note";
 import { useEffect, useState } from "react";
 
 import { isTauri } from "../../lib/endpoints";
 import { appInfo, type AppInfo, type Divergence } from "../../lib/update";
 import { useUpdateStore } from "../../stores/update";
+import { Block } from "../../components/common/Block";
+import { ModeSection } from "./Mode";
+import { RuntimeSection } from "./Runtime";
+import { Button } from "../../components/common/Button";
+import { Modal } from "../../components/common/Modal";
 
 // Always-rendered version block (2026-07-29). The old version row lived
 // inside SystemSection, whose entire render waited on the backend's
@@ -97,7 +103,7 @@ export function AboutSection() {
 
   return (
     <section className="settings-section">
-      <h3 className="settings-section__title">About</h3>
+      <Block title="Version">
       <div className="system-grid">
         <div className="system-row">
           <span className="system-label t-meta">version</span>
@@ -136,15 +142,13 @@ export function AboutSection() {
                       up to date{" "}
                     </span>
                   )}
-                <button
-                  type="button"
-                  className="system-redetect"
+                <Button
                   onClick={() => void check()}
                   disabled={checking || applying || exeApplying}
                 >
                   {checking ? "checking…" : "check for updates"}
-                </button>
-                {error && <div className="settings-error">{error}</div>}
+                </Button>
+                {error && <Note tone="bad">{error}</Note>}
               </>
             ) : (
               <span className="system-update-note t-meta">
@@ -161,14 +165,12 @@ export function AboutSection() {
                 TESSERACT {exeVersion} is available — downloads, verifies, and
                 restarts the app{" "}
               </span>
-              <button
-                type="button"
-                className="system-redetect"
+              <Button
                 onClick={() => void exeApply()}
                 disabled={exeApplying}
               >
                 {exeApplying ? "downloading…" : "download & restart"}
-              </button>
+              </Button>
             </span>
           </div>
         )}
@@ -180,54 +182,46 @@ export function AboutSection() {
                 local history diverged from origin/main —{" "}
                 {describeDivergence(divergence)}
               </span>{" "}
-              <button
-                type="button"
-                className="system-redetect"
+              <Button
                 onClick={() => setConfirmingDiscard(true)}
               >
                 discard local changes & update
-              </button>
+              </Button>
             </span>
           </div>
         )}
       </div>
+      </Block>
+      <ModeSection />
+      <RuntimeSection />
       {confirmingDiscard && divergence && (
-        <div
-          className="mode-modal"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="update-discard-title"
+        <Modal
+          onClose={() => setConfirmingDiscard(false)}
+          ariaLabel="discard local changes"
+          ariaLabelledBy="update-discard-title"
+          className="confirm-modal"
         >
-          <div className="mode-modal__card">
-            <h4 id="update-discard-title" className="mode-modal__title">
-              Discard local changes?
-            </h4>
-            <p className="mode-modal__body">
-              This will permanently discard {divergenceSummary(divergence)} and
-              reset to origin/main, then update TESSERACT to the latest version.
-              Untracked files on disk are left in place.
-            </p>
-            <div className="mode-modal__actions">
-              <button
-                type="button"
-                className="mode-modal__btn"
-                onClick={() => setConfirmingDiscard(false)}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="mode-modal__btn mode-modal__btn--primary"
-                onClick={() => {
-                  setConfirmingDiscard(false);
-                  void forceApply();
-                }}
-              >
-                Discard &amp; update
-              </button>
-            </div>
+          <h4 id="update-discard-title" className="confirm-modal__title">
+            Discard local changes?
+          </h4>
+          <p className="confirm-modal__body">
+            This will permanently discard {divergenceSummary(divergence)} and
+            reset to origin/main, then update TESSERACT to the latest version.
+            Untracked files on disk are left in place.
+          </p>
+          <div className="confirm-modal__actions">
+            <Button onClick={() => setConfirmingDiscard(false)}>Cancel</Button>
+            <Button
+              tone="primary"
+              onClick={() => {
+                setConfirmingDiscard(false);
+                void forceApply();
+              }}
+            >
+              Discard &amp; update
+            </Button>
           </div>
-        </div>
+        </Modal>
       )}
     </section>
   );

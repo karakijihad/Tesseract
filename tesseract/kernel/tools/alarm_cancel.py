@@ -21,19 +21,23 @@ class AlarmCancelTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "time"
+    summary: ClassVar[str] = "Cancels and deletes a pending alarm entirely, one-time or recurring."
+    use_when: ClassVar[str] = (
+        "Use when the operator wants an alarm gone for good. Call `alarm_list` first if unsure of the label."
+    )
+    not_when: ClassVar[str] = (
+        "postponing an alarm's next fire, which is `alarm_snooze`; removing a scheduler job, "
+        "which is `schedule_remove`."
+    )
+
     def __init__(self, alarm_registry: AlarmRegistry) -> None:
         self._registry = alarm_registry
 
     @property
     def name(self) -> str:
         return "alarm_cancel"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Cancel and delete an alarm. Removes one-shot and recurring alarms "
-            "alike. Call `alarm_list` first if you aren't sure of the exact label."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

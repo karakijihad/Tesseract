@@ -1,11 +1,9 @@
 import type {
-  CodeDriftDetectedData,
   ConfigReloadedData,
   Envelope,
   EntitySignalsData,
   EntityStateSetData,
 } from "../../lib/types";
-import { useCodeDriftStore } from "../codeDrift";
 import { useConversationStore } from "../conversation";
 import { useEntityStore } from "../entity";
 import { useOrbVisibilityStore } from "../orbVisibility";
@@ -26,27 +24,6 @@ export function handleEntity(env: Envelope, signals: Signals | null): void {
     const data = env.data as unknown as ConfigReloadedData;
     const body = `${data.file} — ${data.summary}`;
     useToastStore.getState().push(body, data.ok ? "info" : "error");
-    return;
-  }
-  if (env.type === "code_drift_detected") {
-    const data = env.data as unknown as CodeDriftDetectedData;
-    const count = data.paths.length;
-    useCodeDriftStore.getState().pushDrift({
-      classification: data.classification,
-      paths: data.paths,
-      headSha: data.head_sha,
-      detectedAt: env.timestamp,
-    });
-    // One short transient nudge per drift envelope; the toast store's
-    // prefix dedup folds bursts into "(xN)". The chip menu is the
-    // durable surface — it carries the full timestamped history.
-    const kind: "info" | "warning" =
-      data.classification === "restart_required" ? "warning" : "info";
-    const what =
-      data.classification === "restart_required"
-        ? `Backend drift (${count} file${count === 1 ? "" : "s"})`
-        : `Frontend edits (${count} file${count === 1 ? "" : "s"})`;
-    useToastStore.getState().push(`${what} — see code chip`, kind);
     return;
   }
   if (env.type === "orb_visibility") {

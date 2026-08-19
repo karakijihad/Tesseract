@@ -204,7 +204,7 @@ class WorkIndex:
     def prune_orphans(self) -> int:
         """Drop every chunk whose ``source_path`` no longer exists on disk.
 
-        Mirrors :meth:`SessionMetadataIndex.prune_orphans` — the daily
+        Mirrors :meth:`ChatMetadataIndex.prune_orphans` — the daily
         sweep calls both. Walks DISTINCT source_paths (one stat per
         file, not per chunk), then deletes by path. Files canonical;
         the index catches up to disk truth without a full rebuild.

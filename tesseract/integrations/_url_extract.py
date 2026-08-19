@@ -17,9 +17,11 @@ import asyncio
 import logging
 import os
 import re
-from typing import Iterable
+from typing import Any, Iterable
 
 import httpx
+
+from tesseract import http_client
 
 log = logging.getLogger(__name__)
 
@@ -57,17 +59,69 @@ def find_urls(text: str | None) -> list[str]:
     return out
 
 
-async def extract_urls_to_context(urls: Iterable[str]) -> str:
+async def _gate_allows(url_list: list[str], context: Any, ask_fn: Any, policy: Any) -> bool:
+    """Put this fetch through the same decision `tavily_extract` gets.
+
+    The extraction below is not a tool call, so nothing about it reached
+    `permissions/decide.py::evaluate` — the posture in `permissions.yaml`, the
+    audit row, the operator's ASK channel, all skipped. It resolves to `auto`
+    today for every caller, so this changes no outcome; what it changes is that
+    a future posture on `tavily_extract` applies here as well, instead of one
+    call site quietly keeping the old answer.
+
+    The decision is taken over the tool's real input, so a policy that reads
+    the urls (`path_overrides`) sees what will actually be fetched.
+    """
+    from tesseract.kernel.tools.tavily_extract import (
+        TavilyExtractInput,
+        TavilyExtractTool,
+    )
+    from tesseract.permissions.decide import evaluate
+
+    if context is None:
+        # No context is no decision, and an outbound call nobody could have
+        # refused is exactly what this function exists to prevent.
+        log.warning("url-extract: no tool context to decide against; skipping")
+        return False
+
+    raw = {"urls": url_list, "extract_depth": "basic"}
+    denial = await evaluate(
+        tool=TavilyExtractTool(),
+        validated=TavilyExtractInput(**raw),
+        raw_input=raw,
+        context=context,
+        ask_fn=ask_fn,
+        policy=policy,
+    )
+    if denial is not None:
+        log.debug("url-extract: gate refused (%s)", denial.output)
+        return False
+    return True
+
+
+async def extract_urls_to_context(
+    urls: Iterable[str],
+    *,
+    context: Any,
+    ask_fn: Any = None,
+    policy: Any = None,
+) -> str:
     """Call Tavily extract for ``urls`` and format the results as a
     ``<url_content>`` context block ready to inject above the user body.
 
-    Returns an empty string when ``TAVILY_API_KEY`` is unset, the call
-    fails, or all extractions came back empty. Per-URL content is
-    capped at :data:`_MAX_CHARS_PER_URL` so a long article doesn't
-    swamp the chat turn's token budget.
+    Returns an empty string when the permission gate refuses, when
+    ``TAVILY_API_KEY`` is unset, when the call fails, or when all extractions
+    came back empty. Per-URL content is capped at :data:`_MAX_CHARS_PER_URL` so
+    a long article doesn't swamp the chat turn's token budget.
+
+    ``context`` is required rather than optional: a caller with nothing to
+    decide against would skip the gate, which is the hole this parameter
+    exists to close.
     """
     url_list = list(urls)
     if not url_list:
+        return ""
+    if not await _gate_allows(url_list, context, ask_fn, policy):
         return ""
     # This path reaches Tavily without going through the `tavily_extract`
     # tool, so the catalog switch has to be honoured here too — otherwise
@@ -94,7 +148,7 @@ async def extract_urls_to_context(urls: Iterable[str]) -> str:
         "Content-Type": "application/json",
     }
     try:
-        async with httpx.AsyncClient(timeout=_TAVILY_TIMEOUT) as client:
+        async with http_client.async_client(timeout=_TAVILY_TIMEOUT) as client:
             response = await client.post(
                 _TAVILY_ENDPOINT, headers=headers, json=payload,
             )

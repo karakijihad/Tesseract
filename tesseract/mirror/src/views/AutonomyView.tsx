@@ -18,23 +18,21 @@
 // scheduled work is the Schedule tab's responsibility; surfacing it
 // here doubled the operator's cognitive load without adding signal.
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
+import { Button } from '../components/common/Button';
+import { RailView, type RailGroup } from '../components/common/RailView';
 import { useAutonomyStore } from '../stores/autonomy';
 import { AgendaDetailModal } from './autonomy/AgendaDetailModal';
 import { AgendaPane } from './autonomy/AgendaPane';
 import { ApprovalsPane } from './autonomy/ApprovalsPane';
 import { BlockedPane } from './autonomy/BlockedPane';
-import { CodeDriftChip } from './autonomy/CodeDriftChip';
 import { DecisionLogPane } from './autonomy/DecisionLogPane';
 import { JournalPane } from './autonomy/JournalPane';
 import { NotificationsPane } from './autonomy/NotificationsPane';
 import { PrunedPane } from './autonomy/PrunedPane';
 import { RecoveryPane, type RecoverySummaryPayload } from './autonomy/RecoveryPane';
-import { RuntimeSection } from './settings/Runtime';
 import { WorkerDetailModal } from './autonomy/WorkerDetailModal';
 import { WorkersPane } from './autonomy/WorkersPane';
-
-const SHUTDOWN_KEY = 'runtime:shutdown';
 
 // `workers/active/` retains terminal records (done/failed/cancelled/…)
 // until the archive janitor sweeps them. The header count is meant as a
@@ -56,20 +54,6 @@ export function AutonomyView(): React.ReactElement {
   const fetchAll = useAutonomyStore((s) => s.fetchAll);
   const selectedAgendaId = useAutonomyStore((s) => s.selectedAgendaId);
   const closeDetail = useAutonomyStore((s) => s.closeDetail);
-  const runtimeShutdown = useAutonomyStore((s) => s.runtimeShutdown);
-  const pending = useAutonomyStore((s) => s.pendingActions);
-  const shutdownBusy = pending.has(SHUTDOWN_KEY);
-
-  // Confirm-then-fire: first click arms the button, second click within
-  // 6s actually calls /api/runtime/shutdown. Inline rather than a
-  // separate modal — keeps the chrome lean and the action is rare.
-  const [shutdownArmed, setShutdownArmed] = useState(false);
-  useEffect(() => {
-    if (!shutdownArmed) return;
-    const t = setTimeout(() => setShutdownArmed(false), 6000);
-    return () => clearTimeout(t);
-  }, [shutdownArmed]);
-
   // The store self-hydrates on WS connect (websocket.ts onopen). The
   // manual refresh below covers a hard refresh that lands on this view
   // before the WS has opened. Idempotent — Promise.allSettled internally.
@@ -97,81 +81,92 @@ export function AutonomyView(): React.ReactElement {
     }
   }, [selectedAgendaId, selectedItem, closeDetail]);
 
-  const onShutdownClick = () => {
-    if (shutdownBusy) return;
-    if (!shutdownArmed) {
-      setShutdownArmed(true);
-      return;
-    }
-    setShutdownArmed(false);
-    void runtimeShutdown();
-  };
-
-  let shutdownLabel = 'shutdown';
-  if (shutdownBusy) shutdownLabel = 'shutting down…';
-  else if (shutdownArmed) shutdownLabel = 'confirm shutdown';
-
   const liveWorkerCount = workers.data.filter((w) =>
     LIVE_WORKER_STATUSES.has(w.status),
   ).length;
 
+  const groups: RailGroup[] = [
+    {
+      label: 'Now',
+      sections: [
+        {
+          key: 'overview',
+          label: 'Overview',
+          // The dashboard stays one screen: AU-7 exists so the six governance
+          // questions are answered without clicking, and splitting it into
+          // six rail rows would undo exactly that. The rail carries the long
+          // tail that used to compete with it for the same column.
+          render: () => (
+            <div className="autonomy-grid">
+              <div className="autonomy-grid__col autonomy-grid__col--primary">
+                <AgendaPane items={agenda.data} status={agenda.status} error={agenda.error} />
+                <WorkersPane workers={workers.data} status={workers.status} error={workers.error} />
+                <DecisionLogPane items={agenda.data} lastTick={governor.data?.last_tick ?? null} />
+              </div>
+              <div className="autonomy-grid__col autonomy-grid__col--side">
+                <ApprovalsPane items={agenda.data} status={agenda.status} error={agenda.error} />
+                <RecoveryPane summary={recoveryPayload} recoveryState={recoveryState} />
+              </div>
+            </div>
+          ),
+        },
+        {
+          key: 'blocked',
+          label: 'Blocked & paused',
+          render: () => (
+            <BlockedPane
+              items={agenda.data}
+              pauses={governor.data?.pauses ?? []}
+              itemsStatus={agenda.status}
+              governorStatus={governor.status}
+              itemsError={agenda.error}
+              governorError={governor.error}
+            />
+          ),
+        },
+      ],
+    },
+    {
+      label: 'Record',
+      sections: [
+        {
+          key: 'journal',
+          label: 'Journal',
+          title: 'Operator journal',
+          render: () => (
+            <JournalPane rows={journal.data} status={journal.status} error={journal.error} />
+          ),
+        },
+        { key: 'pruned', label: 'Pruned', render: () => <PrunedPane /> },
+        {
+          key: 'notifications',
+          label: 'Notifications',
+          render: () => <NotificationsPane />,
+        },
+      ],
+    },
+  ];
+
   return (
     <div className="autonomy-view" data-testid="autonomy-view">
-      <header className="autonomy-view__head">
-        <span className="autonomy-view__title">Autonomy</span>
-        <span className="t-meta">
-          {governor.data?.running ? 'governor running' : 'governor offline'}
-          {' · '}
-          {liveWorkerCount} worker{liveWorkerCount === 1 ? '' : 's'}
-          {' · '}
-          {agenda.data.length} agenda
-        </span>
-        <CodeDriftChip />
-        <button
-          type="button"
-          className="autonomy-view__refresh"
-          onClick={() => void fetchAll()}
-          aria-label="refresh autonomy state"
-        >
-          refresh
-        </button>
-        <button
-          type="button"
-          className={`autonomy-view__shutdown${shutdownArmed ? ' is-armed' : ''}`}
-          onClick={onShutdownClick}
-          disabled={shutdownBusy}
-          aria-label="shutdown backend"
-          title="Operator-initiated clean shutdown (operator_quit intent — supervisor will not respawn)"
-          data-testid="autonomy-shutdown"
-        >
-          {shutdownLabel}
-        </button>
-      </header>
-
-      <RuntimeSection />
-
-      <div className="autonomy-grid">
-        <div className="autonomy-grid__col autonomy-grid__col--primary">
-          <AgendaPane items={agenda.data} status={agenda.status} error={agenda.error} />
-          <WorkersPane workers={workers.data} status={workers.status} error={workers.error} />
-          <DecisionLogPane items={agenda.data} lastTick={governor.data?.last_tick ?? null} />
-        </div>
-        <div className="autonomy-grid__col autonomy-grid__col--side">
-          <ApprovalsPane items={agenda.data} status={agenda.status} error={agenda.error} />
-          <PrunedPane />
-          <JournalPane rows={journal.data} status={journal.status} error={journal.error} />
-          <BlockedPane
-            items={agenda.data}
-            pauses={governor.data?.pauses ?? []}
-            itemsStatus={agenda.status}
-            governorStatus={governor.status}
-            itemsError={agenda.error}
-            governorError={governor.error}
-          />
-          <RecoveryPane summary={recoveryPayload} recoveryState={recoveryState} />
-          <NotificationsPane />
-        </div>
-      </div>
+      <RailView
+        groups={groups}
+        label="Autonomy sections"
+        meta={
+          <>
+            {governor.data?.running ? 'governor running' : 'governor offline'}
+            {' · '}
+            {liveWorkerCount} worker{liveWorkerCount === 1 ? '' : 's'}
+            {' · '}
+            {agenda.data.length} agenda
+          </>
+        }
+        actions={
+          <Button onClick={() => void fetchAll()} ariaLabel="refresh autonomy state">
+            refresh
+          </Button>
+        }
+      />
 
       {selectedItem && <AgendaDetailModal item={selectedItem} />}
       <WorkerDetailModal />

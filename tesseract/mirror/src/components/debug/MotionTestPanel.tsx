@@ -3,6 +3,10 @@ import { useEntityStore } from '../../stores/entity';
 import { getController } from '../../lib/entity/registry';
 import { FAKE_CHAT_SCRIPTS, playFakeChat } from '../../lib/entity/fakeChat';
 import type { EntityState } from '../../lib/types';
+import { Button } from '../common/Button';
+import { Input } from '../common/Input';
+import { Range } from '../common/Range';
+import { Hint } from '../ui/Hint';
 
 const STATES: EntityState[] = [
   'idle',
@@ -129,22 +133,18 @@ export function MotionTestPanel() {
     <div className="motion-test-panel">
       <div className="mtp-header">
         <span className="mtp-title">Motion Test Harness</span>
-        <span className="mtp-intensity" title="live computeIntensity(state)">
-          i = {intensity.toFixed(2)}
-        </span>
+        <Hint label="live computeIntensity(state)">
+          <span className="mtp-intensity">i = {intensity.toFixed(2)}</span>
+        </Hint>
       </div>
 
       <div className="mtp-section">
         <div className="mtp-label">State</div>
         <div className="mtp-state-grid">
           {STATES.map((s) => (
-            <button
-              key={s}
-              className={`mtp-btn ${state === s ? 'active' : ''}`}
-              onClick={() => setState(s)}
-            >
+            <Button key={s} active={state === s} onClick={() => setState(s)}>
               {s}
-            </button>
+            </Button>
           ))}
         </div>
       </div>
@@ -153,15 +153,15 @@ export function MotionTestPanel() {
         <div className="mtp-label">Fake chat</div>
         <div className="mtp-row">
           {FAKE_CHAT_SCRIPTS.map((s) => (
-            <button
-              key={s.id}
-              className={`mtp-btn ${playing === s.id ? 'active' : ''}`}
-              onClick={() => runScript(s.id)}
-              disabled={playing !== null}
-              title={s.description}
-            >
-              {s.label}
-            </button>
+            <Hint key={s.id} label={s.description}>
+              <Button
+                active={playing === s.id}
+                onClick={() => runScript(s.id)}
+                disabled={playing !== null}
+              >
+                {s.label}
+              </Button>
+            </Hint>
           ))}
         </div>
       </div>
@@ -169,27 +169,28 @@ export function MotionTestPanel() {
       <div className="mtp-section">
         <div className="mtp-label">Manual phrase</div>
         <div className="mtp-row">
-          <input
+          <Input
             className="mtp-input"
             value={manual}
-            onChange={(e) => setManual(e.target.value)}
+            ariaLabel="Manual phrase"
+            onChange={setManual}
             onKeyDown={(e) => {
               if (e.key === 'Enter') runManual();
             }}
             placeholder="Type a sentence, Enter to replay…"
           />
-          <button className="mtp-btn" onClick={runManual} disabled={playing !== null}>
+          <Button onClick={runManual} disabled={playing !== null}>
             play
-          </button>
+          </Button>
         </div>
       </div>
 
       <div className="mtp-section">
         <div className="mtp-label">Signals</div>
         <div className="mtp-row">
-          <button className="mtp-btn" onClick={triggerStep}>onStep</button>
-          <button className="mtp-btn" onClick={triggerError}>onError</button>
-          <button className="mtp-btn" onClick={resetSignals}>reset</button>
+          <Button onClick={triggerStep}>onStep</Button>
+          <Button onClick={triggerError}>onError</Button>
+          <Button onClick={resetSignals}>reset</Button>
         </div>
       </div>
 
@@ -199,10 +200,11 @@ export function MotionTestPanel() {
           {BACKEND_SLIDERS.map(({ key, min, max, step, format }) => (
             <label key={key} className="mtp-slider">
               <span>{key}</span>
-              <input
-                type="range" min={min} max={max} step={step}
+              <Range
+                min={min} max={max} step={step}
                 value={backend[key]}
-                onChange={(e) => updateBackend({ [key]: Number(e.target.value) })}
+                ariaLabel={key}
+                onChange={(next) => updateBackend({ [key]: next })}
               />
               <span className="mtp-val">
                 {format ? format(backend[key]) : backend[key]}

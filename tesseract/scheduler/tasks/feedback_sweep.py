@@ -59,7 +59,9 @@ _DIRECTIVE_PROMPT = (
 
 class FeedbackSweepJob(BaseJob):
     uses_llm = True
-    default_model_role = "feedback_consolidator"
+    # A chain, not a role: the role this named existed only to hold its budget
+    # line, and the line moved onto the `consolidate` manifest entry.
+    default_model_chain = "chain_2"
 
     async def run(self, ctx: JobContext) -> JobResult:
         t0 = time.monotonic()
@@ -85,12 +87,13 @@ class FeedbackSweepJob(BaseJob):
 
             chain = build_chain_for_job(
                 ctx,
-                default_role=FeedbackSweepJob.default_model_role,
+                default_role=None,
+                default_chain=FeedbackSweepJob.default_model_chain,
                 log_label="feedback_sweep",
             )
             if not chain:
                 return _ok(ctx, t0, target_date, len(sessions), 0,
-                           "role unavailable — skipped")
+                           "no model reachable — skipped")
 
             prompt = _build_prompt(transcript, existing, target_date)
             raw = await _call_with_fallback(prompt, chain, DEFAULT_TIMEOUT_S)

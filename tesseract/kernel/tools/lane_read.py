@@ -40,17 +40,19 @@ class LaneReadTool(Tool):
     # path left the other two open.
     untrusted_source: ClassVar[bool] = True
 
+    group: ClassVar[str] = "long-running-collaborators"
+    summary: ClassVar[str] = "Pull a lane's events since a cursor — read-only tail, sends nothing."
+    use_when: ClassVar[str] = (
+        "Use to catch up on what a lane produced after a prior lane_send, or to keep polling a long turn."
+    )
+    not_when: ClassVar[str] = (
+        "sending a new message, which is `lane_send`; sending and waiting for the reply in one "
+        "call, which is `lane_turn`."
+    )
+
     @property
     def name(self) -> str:
         return "lane_read"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Pull lane events since the last cursor. Idempotent — same "
-            "cursor returns the same events until a new append lands. "
-            "Returns events + next_cursor."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

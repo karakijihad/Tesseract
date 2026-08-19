@@ -12,6 +12,11 @@ import { useEffect, useRef, useState } from 'react';
 import { useLanesStore, type LaneEvent } from '../../stores/lanes';
 import { useSurfacesStore } from '../../stores/surfaces';
 import type { RendererProps } from './index';
+import { Hint } from '../../components/ui/Hint';
+import { IconButton } from '../../components/common/IconButton';
+import { Button } from '../../components/common/Button';
+import { Input } from '../../components/common/Input';
+import { Textarea } from '../../components/common/Textarea';
 
 const POLL_MS = 1500;
 
@@ -129,11 +134,12 @@ export function LaneRenderer({ descriptor }: RendererProps) {
       <header className="lane-card__head">
         <span className={`lane-card__dot lane-card__dot--${kind}`} aria-hidden="true" />
         {editing ? (
-          <input
+          <Input
             className="lane-card__title-edit"
             value={titleDraft}
             autoFocus
-            onChange={(e) => setTitleDraft(e.target.value)}
+            ariaLabel={`Rename ${name}`}
+            onChange={setTitleDraft}
             onBlur={saveTitle}
             onKeyDown={(e) => {
               if (e.key === 'Enter') saveTitle();
@@ -151,17 +157,30 @@ export function LaneRenderer({ descriptor }: RendererProps) {
           <span className="lane-card__queue t-meta">+{status.queue_depth} queued</span>
         ) : null}
         <div className="lane-card__actions">
-          <button type="button" title="Edit name" aria-label="Edit name"
-            onClick={() => { setTitleDraft(descriptor.title ?? name); setEditing(true); }}>✎</button>
-          <button type="button" title="Clear transcript" aria-label="Clear transcript"
-            onClick={() => clearLane(laneId)}>⌫</button>
-          <button type="button" title={expanded ? 'Collapse' : 'Expand'} aria-label="Expand"
-            onClick={toggleExpand}>{expanded ? '⤡' : '⤢'}</button>
-          <button type="button"
-            className={`lane-card__delete${confirmDelete ? ' is-armed' : ''}`}
-            title={confirmDelete ? 'Confirm — terminate lane' : 'Delete lane'}
-            aria-label="Delete lane"
-            onClick={() => void onDelete()}>{confirmDelete ? 'confirm' : '🗑'}</button>
+          <Hint label="Edit name">
+            <IconButton
+              ariaLabel="Edit name"
+              onClick={() => { setTitleDraft(descriptor.title ?? name); setEditing(true); }}
+            >✎</IconButton>
+          </Hint>
+          <Hint label="Clear transcript">
+            <IconButton ariaLabel="Clear transcript" onClick={() => clearLane(laneId)}>⌫</IconButton>
+          </Hint>
+          <Hint label={expanded ? 'Collapse' : 'Expand'}>
+            <IconButton ariaLabel="Expand" active={expanded} onClick={toggleExpand}>
+              {expanded ? '⤡' : '⤢'}
+            </IconButton>
+          </Hint>
+          {/* Armed, it asks again as a tick rather than growing into a word —
+              the row is four icons wide and a fifth shape in it reads as a
+              different control appearing. */}
+          <Hint label={confirmDelete ? 'Confirm — terminate lane' : 'Delete lane'}>
+            <IconButton
+              ariaLabel={confirmDelete ? 'Confirm terminate lane' : 'Delete lane'}
+              active={confirmDelete}
+              onClick={() => void onDelete()}
+            >{confirmDelete ? '✓' : '🗑'}</IconButton>
+          </Hint>
         </div>
       </header>
       {lane?.reattachedAt ? (
@@ -178,13 +197,14 @@ export function LaneRenderer({ descriptor }: RendererProps) {
         ) : null}
       </div>
       <div className="lane-card__input">
-        <textarea
+        <Textarea
           className="lane-card__draft"
           placeholder={gone ? 'lane closed — no longer reachable' : `Message ${name}…`}
           value={draft}
+          ariaLabel={`Message ${name}`}
           rows={2}
           disabled={gone}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={setDraft}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
@@ -192,14 +212,13 @@ export function LaneRenderer({ descriptor }: RendererProps) {
             }
           }}
         />
-        <button
-          type="button"
-          className="lane-card__send"
+        <Button
+          tone="primary"
           disabled={gone || sending || !draft.trim()}
           onClick={() => void onSend()}
         >
           {sending ? '…' : 'Send'}
-        </button>
+        </Button>
       </div>
     </div>
   );

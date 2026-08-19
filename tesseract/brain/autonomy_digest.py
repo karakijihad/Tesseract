@@ -1,18 +1,15 @@
-"""Autonomy -> chat cross-feed digest (lean-agent-os P1 Task 4).
+"""Autonomy -> chat cross-feed digest.
 
-Background thinking — open agenda items (the AU-5 kernel's queue) and
-recent self-reflection observations (the ``autonomy_heartbeat`` scheduler
-job) — currently only reaches the operator through dashboard polling or a
-tool call the assistant has to think to make. This module renders a compact digest
-of both into the "Right now" temporal block of the system prompt so that
-awareness reaches every turn for free.
+Open agenda items and ambient failure signal otherwise reach the assistant only
+through dashboard polling or a tool call it has to think to make. This module
+renders a compact digest of both into the "Right now" temporal block of the
+system prompt so that awareness reaches every turn for free.
 
-Pure function over injected readers: ``tesseract.brain.prompt`` wires the
-live ``AgendaStore`` / conscience-memory readers; tests inject fakes so no
-real ``TESSERACT_HOME`` store is needed. Readers are responsible for
-filtering (which statuses count as "open", which memories are heartbeat
-observations) and ordering (most relevant/most recent first) — this module
-only caps, formats, and fails safe.
+Pure function over injected readers: ``tesseract.brain.prompt`` wires the live
+``AgendaStore`` reader; tests inject fakes so no real ``TESSERACT_HOME`` store
+is needed. Readers are responsible for filtering (which statuses count as
+"open") and ordering (most relevant first) — this module only caps, formats,
+and fails safe.
 """
 
 from __future__ import annotations
@@ -31,7 +28,6 @@ from tesseract.paths import config_dir
 logger = logging.getLogger(__name__)
 
 MAX_AGENDA_ITEMS = 5
-MAX_REFLECTIONS = 3
 _WHITESPACE_RUN = re.compile(r"\s+")
 
 _T = TypeVar("_T")
@@ -74,15 +70,6 @@ class AgendaEntry:
 
 
 @dataclass(frozen=True)
-class ReflectionEntry:
-    """One self-reflection observation. Caller's reader has already
-    sorted newest-first."""
-
-    text: str
-    created_at: datetime
-
-
-@dataclass(frozen=True)
 class FailuresSnapshot:
     """P6 Task 3 §G4 — ambient failure signal for the digest.
 
@@ -108,54 +95,44 @@ class FailuresSnapshot:
 
 
 AgendaReader = Callable[[], Sequence[AgendaEntry]]
-ReflectionReader = Callable[[], Sequence[ReflectionEntry]]
-UnvettedCountReader = Callable[[], int]
 FailuresReader = Callable[[], FailuresSnapshot]
 
 
 def render_digest(
     agenda_reader: AgendaReader,
-    reflection_reader: ReflectionReader,
     *,
-    unvetted_count_reader: UnvettedCountReader | None = None,
     failures_reader: FailuresReader | None = None,
     max_age_days: float | None = None,
     now: datetime | None = None,
 ) -> str:
-    """Render the digest, or ``""`` when both sources are empty.
+    """Render the digest, or ``""`` when every source is empty.
 
     Failure isolation: a reader raising, or a single entry failing to
     format, is caught and skipped (warning-logged) — never raised. This
     runs on every chat turn as part of prompt assembly; a corrupt agenda
-    record or a missing conscience directory must never break the turn.
+    record must never break the turn.
 
-    ``max_age_days`` (lean-agent-os P1 follow-up, Q4 — see
-    ``memory.yaml::autonomy_digest.max_age_days``), when given, excludes
-    agenda entries older than that many days BEFORE the top-N cap below,
-    so stale autonomy-generated noise (e.g. weeks-old ``resume_queued``
-    items) doesn't crowd out fresh ones. ``None`` (the default) applies
-    no filter — used by callers/tests that don't care about recency.
-    Reflections are already capped at the 3 latest and are exempt.
+    ``max_age_days`` (see ``memory.yaml::autonomy_digest.max_age_days``), when
+    given, excludes agenda entries older than that many days BEFORE the top-N
+    cap below, so stale autonomy-generated noise (e.g. weeks-old
+    ``resume_queued`` items) doesn't crowd out fresh ones. ``None`` (the
+    default) applies no filter — used by callers/tests that don't care about
+    recency.
 
-    UNVETTED agenda items are never itemized by ``agenda_reader`` (they
-    haven't cleared the vetter gate), but a non-zero
-    ``unvetted_count_reader`` result adds one ``unvetted: N awaiting
-    vetter`` line so the backlog isn't silently invisible. That line
-    counts toward the 8-line budget (5 agenda + 3 reflection): when
-    present, the agenda itemized cap drops from 5 to 4 so the total never
-    exceeds 8 — the count line deterministically displaces the 5th
-    agenda item rather than growing the budget.
+    ``failures_reader``, when given, appends at most ~4 ambient lines — tripped
+    circuit breakers, stalled-spawn count, vanished-spawn count, consecutive
+    same-tool error streak. Absent or all-empty → no lines, no extra section
+    (same fail-quiet contract as the agenda reader).
 
-    ``failures_reader`` (P6 Task 3 §G4, extended P6 Task 5), when given,
-    appends at most ~4 ambient lines — tripped circuit breakers,
-    stalled-spawn count, vanished-spawn count, consecutive same-tool error
-    streak — after the reflections. Absent or all-empty → no lines, no
-    extra section (same fail-quiet contract as the other readers).
+    **Two feeds were removed rather than left rendering a frozen set.** The
+    self-reflection block read CONSCIENCE memories written by the autonomy
+    heartbeat, and the ``unvetted: N awaiting vetter`` line counted items held
+    by the vetter. Both jobs were deleted, so both feeds could only ever have
+    replayed the last thing their producer wrote — a prompt block that goes
+    stale but never empty is worse than one that is gone, because it keeps
+    costing tokens while quietly ceasing to be true.
     """
     clock = now or datetime.now(timezone.utc)
-
-    unvetted_count = _safe_count(unvetted_count_reader) if unvetted_count_reader else 0
-    agenda_cap = MAX_AGENDA_ITEMS - 1 if unvetted_count > 0 else MAX_AGENDA_ITEMS
 
     agenda_entries = _safe_read(agenda_reader, "agenda")
     if max_age_days is not None:
@@ -165,16 +142,8 @@ def render_digest(
         ]
 
     lines: list[str] = []
-    for entry in agenda_entries[:agenda_cap]:
+    for entry in agenda_entries[:MAX_AGENDA_ITEMS]:
         line = _format_agenda_line(entry, clock)
-        if line:
-            lines.append(line)
-
-    if unvetted_count > 0:
-        lines.append(f"unvetted: {unvetted_count} awaiting vetter")
-
-    for entry in _safe_read(reflection_reader, "reflection")[:MAX_REFLECTIONS]:
-        line = _format_reflection_line(entry, clock)
         if line:
             lines.append(line)
 
@@ -190,14 +159,6 @@ def _safe_read(reader: Callable[[], Sequence[_T]], label: str) -> Sequence[_T]:
     except Exception:
         logger.warning("autonomy_digest: %s reader failed", label, exc_info=True)
         return []
-
-
-def _safe_count(reader: UnvettedCountReader) -> int:
-    try:
-        return max(int(reader()), 0)
-    except Exception:
-        logger.warning("autonomy_digest: unvetted count reader failed", exc_info=True)
-        return 0
 
 
 def _safe_failures(reader: FailuresReader) -> FailuresSnapshot:
@@ -244,16 +205,6 @@ def _format_agenda_line(entry: AgendaEntry, clock: datetime) -> str:
         return f"Agenda: {title} · {entry.status} · {age}"
     except Exception:
         logger.warning("autonomy_digest: skipping malformed agenda entry", exc_info=True)
-        return ""
-
-
-def _format_reflection_line(entry: ReflectionEntry, clock: datetime) -> str:
-    try:
-        text = _sanitize(entry.text)
-        age = _format_age(entry.created_at, clock)
-        return f"Reflection: {text} · {age}"
-    except Exception:
-        logger.warning("autonomy_digest: skipping malformed reflection entry", exc_info=True)
         return ""
 
 
@@ -304,9 +255,7 @@ __all__ = [
     "AgendaEntry",
     "AutonomyDigestConfig",
     "FailuresSnapshot",
-    "ReflectionEntry",
     "MAX_AGENDA_ITEMS",
-    "MAX_REFLECTIONS",
     "load_autonomy_digest_config",
     "render_digest",
 ]

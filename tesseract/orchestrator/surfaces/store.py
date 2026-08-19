@@ -10,6 +10,13 @@ view's ``surfaces`` array (merge-preserving the frontend's tldraw snapshot),
 and publish a ``surface`` event so live operators re-render. Operator-origin
 events (``apply_event``) persist but do NOT re-publish — the originating
 client already moved the card; echoing it back is redundant.
+
+Render reports (``record_render``) are the one piece of state here that is
+deliberately NOT persisted: they describe what a *client* currently has on
+screen, so writing them to the canvas-state file would let a stale ``mounted``
+outlive the browser that reported it and survive a restart with nothing
+rendering at all. That is precisely the over-claim this channel exists to
+close, so absence has to stay readable as absence.
 """
 
 from __future__ import annotations
@@ -36,12 +43,25 @@ from tesseract.orchestrator.surfaces.persistence import (
 
 log = logging.getLogger(__name__)
 
+# What a client may say about a card it is holding. `mounted` is the weakest
+# of the four and is documented as such everywhere it is surfaced: it means a
+# renderer mounted and reported no failure, NOT that the pixels are right.
+# `degraded` is the P10 shape — it drew, and a known part of it cannot work.
+RENDER_STATUSES = frozenset({"mounted", "degraded", "errored", "unmounted"})
+
+# A renderer's reason is a caption, not a log line — it goes into a tool
+# result the model reads, so it is bounded here rather than at the sink.
+_DETAIL_CAP = 300
+
 
 class SurfaceStore:
     def __init__(self) -> None:
         # view -> {surface_id -> descriptor}
         self._views: dict[str, dict[str, SurfaceDescriptor]] = {}
         self._hydrated: set[str] = set()
+        # surface_id -> {status, detail, at}. In-memory by design (see module
+        # docstring); a report never outlives the process that heard it.
+        self._render: dict[str, dict[str, str]] = {}
 
     # -- hydration ---------------------------------------------------------
 
@@ -143,6 +163,40 @@ class SurfaceStore:
     def get(self, surface_id: str) -> dict[str, Any] | None:
         found = self._get(surface_id)
         return found[1].model_dump(mode="json") if found else None
+
+    # -- render reports (client → tool) ------------------------------------
+
+    def record_render(
+        self, surface_id: str, *, status: str, detail: str = ""
+    ) -> dict[str, str] | None:
+        """Record what a client says it did with this card.
+
+        Returns the stored report, or None when the surface is unknown — a
+        report for a card the store never had is dropped rather than kept,
+        so `surface_list` cannot grow rows for surfaces that do not exist.
+        Raises ValueError on an unknown status; the caller is a route that
+        turns that into a 400.
+        """
+        if status not in RENDER_STATUSES:
+            raise ValueError(
+                f"unknown render status {status!r}: expected one of "
+                f"{', '.join(sorted(RENDER_STATUSES))}"
+            )
+        if self._get(surface_id) is None:
+            return None
+        report = {
+            "status": status,
+            "detail": detail[:_DETAIL_CAP],
+            "at": utc_now_iso(),
+        }
+        self._render[surface_id] = report
+        return report
+
+    def render_report(self, surface_id: str) -> dict[str, str] | None:
+        """The last report for this card, or None if no client ever said
+        anything. None is meaningful: nothing is holding it on screen, or
+        nothing has since this process started."""
+        return self._render.get(surface_id)
 
     # -- verbs (tool → canvas) --------------------------------------------
 
@@ -249,6 +303,7 @@ class SurfaceStore:
             return None
         view, _ = found
         del self._views[view][surface_id]
+        self._render.pop(surface_id, None)
         self._persist(view)
         return view
 

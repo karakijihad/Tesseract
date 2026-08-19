@@ -35,7 +35,8 @@ class NullChatAdapter(ModelAdapter):
         raise RuntimeError(self._reason)
         yield  # pragma: no cover — unreachable; keeps this an async generator
 
-    def count_tokens(self, messages: list[dict[str, Any]]) -> int:
+    @staticmethod
+    def count_tokens(messages: list[dict[str, Any]]) -> int:
         return 0
 
     async def check_available(self) -> bool:

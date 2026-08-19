@@ -29,13 +29,13 @@
   pointer-events: auto;
   /* Frosted-glass cockpit card (chrome pass): translucent dark surface over
      the atmosphere/orb, accent-tinted edge + depth glow, backdrop blur. */
-  background: hsl(248 30% 9% / 0.62);
-  border: 1px solid hsl(var(--accent-hsl) / 0.22);
+  background: var(--glass-sheer);
+  border: var(--stroke-1) solid hsl(var(--accent-hsl) / 0.22);
   border-radius: var(--radius-md);
   box-shadow:
-    0 24px 70px -18px rgba(0, 0, 0, 0.7),
+    0 24px 70px -18px var(--scrim-xl),
     0 0 0 1px hsl(var(--accent-hsl) / 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    inset 0 1px 0 var(--wash-sm);
   backdrop-filter: blur(22px) saturate(1.25);
   -webkit-backdrop-filter: blur(22px) saturate(1.25);
   overflow: hidden;
@@ -52,7 +52,7 @@
   min-height: 0;
 }
 .surface-card--minimized .surface-card__body,
-.surface-card--minimized .surface-card__rh {
+.surface-card--minimized .resize-handle {
   display: none;
 }
 
@@ -68,32 +68,16 @@
 .surface-card__actions {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-2);
   flex: 0 0 auto;
 }
 
-.surface-card__action {
-  flex: 0 0 auto;
-  width: 1.4rem;
-  height: 1.4rem;
-  line-height: 1;
-  font-size: 0.7rem;
-  color: var(--text-meta);
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-.surface-card__action:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-}
 
 .surface-card--highlight {
   border-color: var(--accent);
   box-shadow:
     0 0 0 2px var(--accent-glow),
-    0 8px 28px rgba(0, 0, 0, 0.45);
+    0 8px 28px var(--scrim-md);
 }
 
 .surface-card__bar {
@@ -103,7 +87,7 @@
   gap: var(--space-xs);
   padding: var(--space-xs) var(--space-sm);
   background: hsl(var(--accent-hsl) / 0.07);
-  border-bottom: 1px solid hsl(var(--accent-hsl) / 0.14);
+  border-bottom: var(--stroke-1) solid hsl(var(--accent-hsl) / 0.14);
   cursor: grab;
   user-select: none;
 }
@@ -114,33 +98,15 @@
 
 .surface-card__title {
   font-family: var(--font-ui);
-  font-size: 0.82rem;
+  font-size: var(--t-body-size);
   color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.surface-card__close {
-  flex: 0 0 auto;
-  width: 1.4rem;
-  height: 1.4rem;
-  line-height: 1;
-  font-size: 1.1rem;
-  color: var(--text-meta);
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-
-.surface-card__close:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-}
-
 .surface-card__lock {
-  font-size: 0.8rem;
+  font-size: var(--t-body-size);
 }
 
 .surface-card__body {
@@ -166,75 +132,8 @@
   max-height: none;
 }
 
-/* 8-way resize handles. Kept just inside the card edge (the card clips
-   overflow, so negative offsets would be invisible). Corners sit after the
-   edges in the DOM, so they win the shared overlap zone. The SE corner keeps
-   the classic diagonal-grip texture as the visible resize affordance. */
-.surface-card__rh {
-  position: absolute;
-  z-index: 3;
-}
-.surface-card__rh--n {
-  top: 0;
-  left: 10px;
-  right: 10px;
-  height: 6px;
-  cursor: ns-resize;
-}
-.surface-card__rh--s {
-  bottom: 0;
-  left: 10px;
-  right: 10px;
-  height: 6px;
-  cursor: ns-resize;
-}
-.surface-card__rh--e {
-  top: 10px;
-  right: 0;
-  bottom: 10px;
-  width: 6px;
-  cursor: ew-resize;
-}
-.surface-card__rh--w {
-  top: 10px;
-  left: 0;
-  bottom: 10px;
-  width: 6px;
-  cursor: ew-resize;
-}
-.surface-card__rh--ne {
-  top: 0;
-  right: 0;
-  width: 12px;
-  height: 12px;
-  cursor: nesw-resize;
-}
-.surface-card__rh--nw {
-  top: 0;
-  left: 0;
-  width: 12px;
-  height: 12px;
-  cursor: nwse-resize;
-}
-.surface-card__rh--se {
-  bottom: 0;
-  right: 0;
-  width: 14px;
-  height: 14px;
-  cursor: nwse-resize;
-  background: linear-gradient(
-    135deg,
-    transparent 0 50%,
-    var(--border-visible) 50% 100%
-  );
-}
-.surface-card__rh--sw {
-  bottom: 0;
-  left: 0;
-  width: 12px;
-  height: 12px;
-  cursor: nesw-resize;
-}
+/* The eight handles are `ResizeHandles` — see `ui.css`. A surface card clips
+   its overflow, so it renders them inset. */
 
 /* -- Y-3 views-as-canvases ---------------------------------------------- */
 
@@ -285,8 +184,8 @@
 
 .surface-folder {
   padding: var(--space-xs) 0;
-  font-family: var(--font-mono);
-  font-size: 0.82rem;
+  font-family: var(--font-ui);
+  font-size: var(--t-body-size);
 }
 
 .surface-folder__root {
@@ -298,24 +197,6 @@
 
 .surface-folder__list {
   list-style: none;
-}
-
-.surface-folder__entry {
-  display: flex;
-  align-items: center;
-  gap: var(--space-xs);
-  width: 100%;
-  padding: 2px var(--space-sm);
-  text-align: left;
-  background: transparent;
-  border: none;
-  color: var(--text-primary);
-  font: inherit;
-  cursor: pointer;
-}
-
-.surface-folder__entry:hover {
-  background: var(--bg-hover);
 }
 
 .surface-folder__icon {
@@ -333,7 +214,7 @@
   margin: 0;
   padding: var(--space-sm);
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: var(--t-body-size);
   line-height: 1.4;
   white-space: pre-wrap;
   word-break: break-word;
@@ -353,7 +234,7 @@
 
 .surface-file--pdf {
   padding: var(--space-sm);
-  font-size: 0.85rem;
+  font-size: var(--t-ui-size);
 }
 
 .surface-image {
@@ -375,12 +256,12 @@
 
 .surface-image--empty {
   color: var(--text-meta);
-  font-size: 0.85rem;
+  font-size: var(--t-ui-size);
 }
 
 .surface-markdown {
   padding: var(--space-sm) var(--space-md);
-  font-size: 0.88rem;
+  font-size: var(--t-ui-size);
 }
 
 .surface-webview,
@@ -401,6 +282,21 @@
   padding: var(--space-sm);
 }
 
+/* An html surface that embeds another site keeps its frame — the note sits
+   above it, so a card that is about to paint black says why first. */
+.surface-html-nested {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  height: 100%;
+  padding: var(--space-xs);
+}
+
+.surface-html-nested .surface-html {
+  flex: 1;
+  min-height: 0;
+}
+
 .surface-extlink {
   display: flex;
   flex-direction: column;
@@ -415,9 +311,9 @@
 .surface-extlink__btn {
   display: inline-block;
   padding: var(--space-sm) var(--space-md);
-  border: 1px solid var(--border);
+  border: var(--stroke-1) solid var(--border);
   border-radius: var(--radius-sm, 6px);
-  font-size: 0.95rem;
+  font-size: var(--t-sub-size);
   text-decoration: none;
   color: var(--text-primary);
   background: var(--bg-elevated);
@@ -428,7 +324,7 @@
 }
 
 .surface-extlink__url {
-  font-size: 0.8rem;
+  font-size: var(--t-body-size);
   word-break: break-all;
 }
 
@@ -440,9 +336,9 @@
 }
 
 .surface-terminal__bound {
-  padding: 2px var(--space-sm);
+  padding: var(--space-2) var(--space-sm);
   color: var(--accent);
-  font-size: 0.72rem;
+  font-size: var(--t-caption-size);
 }
 
 .surface-terminal__host {
@@ -456,18 +352,18 @@
 
 .surface-json__badge {
   margin-bottom: var(--space-xs);
-  padding: 2px var(--space-xs);
+  padding: var(--space-2) var(--space-xs);
   display: inline-block;
-  font-size: 0.72rem;
+  font-size: var(--t-caption-size);
   color: var(--accent-error);
-  border: 1px solid var(--accent-error);
+  border: var(--stroke-1) solid var(--accent-error);
   border-radius: var(--radius-sm);
 }
 
 .surface-json__body {
   margin: 0;
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
+  font-family: var(--font-ui);
+  font-size: var(--t-body-size);
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--text-secondary);
@@ -487,7 +383,7 @@
   align-items: center;
   gap: var(--space-xs);
   padding: var(--space-xs) var(--space-sm);
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: var(--stroke-1) solid var(--border-subtle);
 }
 
 .lane-card__dot {
@@ -506,71 +402,42 @@
 
 .lane-card__name {
   font-family: var(--font-ui);
-  font-size: 0.82rem;
+  font-size: var(--t-body-size);
   color: var(--text-primary);
 }
 .lane-card__model {
-  font-size: 0.72rem;
+  font-size: var(--t-caption-size);
 }
 .lane-card__state {
   margin-left: auto;
-  font-size: 0.72rem;
+  font-size: var(--t-caption-size);
   color: var(--text-meta);
 }
 .lane-card__state.is-busy {
   color: var(--accent);
 }
 .lane-card__queue {
-  font-size: 0.7rem;
+  font-size: var(--t-caption-size);
 }
 
 .lane-card__reattach {
-  padding: 2px var(--space-sm);
-  font-size: 0.7rem;
+  padding: var(--space-2) var(--space-sm);
+  font-size: var(--t-caption-size);
   color: var(--accent);
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: var(--stroke-1) solid var(--border-subtle);
 }
 
 .lane-card__actions {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-2);
   margin-left: var(--space-xs);
 }
-.lane-card__actions button {
-  width: 1.5rem;
-  height: 1.5rem;
-  display: grid;
-  place-items: center;
-  font-size: 0.8rem;
-  line-height: 1;
-  color: var(--text-meta);
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-.lane-card__actions button:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-}
-.lane-card__delete.is-armed {
-  width: auto;
-  padding: 0 6px;
-  font-size: 0.68rem;
-  color: var(--accent-error);
-  background: hsl(0 60% 50% / 0.12);
-}
+/* PLACEMENT ONLY — the field is `.input`; it stands in for the card's title
+   and takes the width the title had. */
 .lane-card__title-edit {
   flex: 1 1 auto;
   min-width: 0;
-  background: var(--bg-base);
-  border: 1px solid var(--accent);
-  border-radius: var(--radius-sm);
-  color: var(--text-primary);
-  font: inherit;
-  font-size: 0.82rem;
-  padding: 1px 5px;
 }
 
 .lane-card__stream {
@@ -578,7 +445,7 @@
   min-height: 0;
   overflow-y: auto;
   padding: var(--space-xs) var(--space-sm);
-  font-size: 0.8rem;
+  font-size: var(--t-body-size);
   line-height: 1.4;
 }
 
@@ -595,28 +462,28 @@
   margin-left: auto;
   max-width: 82%;
   width: fit-content;
-  padding: 4px 9px;
+  padding: var(--space-4) var(--space-9);
   border-radius: 10px 10px 2px 10px;
   background: hsl(var(--accent-hsl) / 0.16);
-  border: 1px solid hsl(var(--accent-hsl) / 0.28);
+  border: var(--stroke-1) solid hsl(var(--accent-hsl) / 0.28);
   color: var(--text-primary);
   white-space: pre-wrap;
 }
 .lane-ev--tool,
 .lane-ev--result,
 .lane-ev--ask {
-  font-family: var(--font-mono);
-  font-size: 0.74rem;
+  font-family: var(--font-ui);
+  font-size: var(--t-caption-size);
   color: var(--text-secondary);
 }
 .lane-ev__tag {
   display: inline-block;
-  padding: 0 4px;
-  margin-right: 4px;
+  padding: 0 var(--space-4);
+  margin-right: var(--space-4);
   border-radius: var(--radius-xs);
   background: var(--bg-elevated);
   color: var(--text-meta);
-  font-size: 0.66rem;
+  font-size: var(--t-caption-size);
   text-transform: uppercase;
 }
 .lane-ev--ask .lane-ev__tag {
@@ -624,7 +491,7 @@
 }
 .lane-ev__io {
   display: block;
-  margin-top: 2px;
+  margin-top: var(--space-2);
   color: var(--text-meta);
   white-space: pre-wrap;
 }
@@ -634,40 +501,21 @@
 .lane-ev--turn,
 .lane-ev--closed,
 .lane-card__empty {
-  font-size: 0.72rem;
+  font-size: var(--t-caption-size);
 }
 
 .lane-card__input {
   display: flex;
   gap: var(--space-xs);
   padding: var(--space-xs) var(--space-sm);
-  border-top: 1px solid var(--border-subtle);
+  border-top: var(--stroke-1) solid var(--border-subtle);
 }
+/* PLACEMENT ONLY — the field is `.textarea`. A lane card is a fixed height,
+   so its composer fills what is left rather than growing. */
 .lane-card__draft {
   flex: 1 1 auto;
+  min-height: 0;
   resize: none;
-  background: var(--bg-base);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  color: var(--text-primary);
-  font: inherit;
-  font-size: 0.8rem;
-  padding: 4px 6px;
-}
-.lane-card__send {
-  flex: 0 0 auto;
-  align-self: flex-end;
-  padding: 4px 10px;
-  background: var(--accent);
-  color: var(--bg-void);
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  font-size: 0.8rem;
-}
-.lane-card__send:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 
 /* ── open-verb surfaces: pdf, video, audio, table ─────────────────────────
@@ -695,7 +543,7 @@
 }
 
 .surface-media__label {
-  font-size: 0.8rem;
+  font-size: var(--t-body-size);
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -704,7 +552,7 @@
 
 .surface-media--empty {
   color: var(--text-meta);
-  font-size: 0.85rem;
+  font-size: var(--t-ui-size);
   text-align: center;
   line-height: 1.5;
 }
@@ -731,29 +579,16 @@
   justify-content: center;
   gap: var(--space-sm);
   padding: var(--space-xs) var(--space-sm);
-  border-top: 1px solid var(--border-muted);
-  font-size: 0.8rem;
+  border-top: var(--stroke-1) solid var(--border-muted);
+  font-size: var(--t-body-size);
 }
 
-.surface-pdf__bar button {
-  background: none;
-  border: 1px solid var(--border-muted);
-  border-radius: 4px;
-  color: inherit;
-  cursor: pointer;
-  padding: 0 var(--space-sm);
-  line-height: 1.6;
-}
 
-.surface-pdf__bar button:disabled {
-  color: var(--text-meta);
-  cursor: default;
-}
 
 .surface-pdf--empty {
   padding: var(--space-sm);
   color: var(--text-meta);
-  font-size: 0.85rem;
+  font-size: var(--t-ui-size);
 }
 
 .surface-table {
@@ -772,15 +607,15 @@
 
 .surface-table table {
   border-collapse: collapse;
-  font-size: 0.82rem;
+  font-size: var(--t-body-size);
   width: max-content;
   min-width: 100%;
 }
 
 .surface-table th,
 .surface-table td {
-  border: 1px solid var(--border-muted);
-  padding: 2px var(--space-xs);
+  border: var(--stroke-1) solid var(--border-muted);
+  padding: var(--space-2) var(--space-xs);
   text-align: left;
   white-space: nowrap;
 }
@@ -795,6 +630,6 @@
 .surface-table__note,
 .surface-table--empty {
   padding: var(--space-xs) var(--space-sm);
-  font-size: 0.78rem;
+  font-size: var(--t-body-size);
   color: var(--text-meta);
 }

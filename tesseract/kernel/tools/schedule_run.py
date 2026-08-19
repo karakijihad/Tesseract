@@ -23,17 +23,19 @@ class ScheduleRunTool(Tool):
 
     risk_class: ClassVar[str] = "propose"
 
+    group: ClassVar[str] = "time"
+    summary: ClassVar[str] = "Fires a registered scheduler job immediately, off its configured cadence."
+    use_when: ClassVar[str] = (
+        "Use to test or force a job to run now, including a disabled one, without changing its schedule."
+    )
+    not_when: ClassVar[str] = (
+        "changing the job's cadence or enabled state, which is `schedule_update`; a one-time "
+        "reminder, which is `alarm_set`."
+    )
+
     @property
     def name(self) -> str:
         return "schedule_run"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Fire a registered scheduler job immediately, off-schedule. "
-            "ASK-gated. Same execution path as the tick loop — produces "
-            "the standard run record + broadcast envelope."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:
@@ -52,7 +54,7 @@ class ScheduleRunTool(Tool):
                 is_error=True,
             )
         try:
-            result = await scheduler.run_now(inp.name)
+            result = await scheduler.run_now(inp.name, trigger="assistant")
         except KeyError:
             return ToolResult(output=f"job {inp.name!r} is not registered", is_error=True)
         return ToolResult(

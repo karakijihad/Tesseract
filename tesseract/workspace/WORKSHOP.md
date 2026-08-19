@@ -1,64 +1,54 @@
-# Workshop
+# WORKSHOP — scratch work and task artifacts
 
-Your working space is `workshop/`. When the operator gives you a task that needs artifacts (drafts, notes, scripts, intermediate files, experiments), put them there — not at the repo root, not in `workspace/`, not wherever the topic happens to overlap with code.
+Read this when a task starts producing artifacts: drafts, notes, scripts, experiments, intermediate files.
 
-Writes inside `workshop/` are AUTO (no approval prompt) — see `config/permissions.yaml` path overrides. Write paths are relative to your state root: `workshop/…`, never `tesseract/workshop/…`. The whole folder is gitignored; it's your space, not project code.
+`workshop/` is that space. Writes there need no approval, the whole folder is gitignored, and paths are relative to your state root — `workshop/…`, never `tesseract/workshop/…`. Nothing goes at the repo root, in `workspace/`, or beside whatever code the topic happens to touch.
 
 ## Layout
 
-```
+```text
 workshop/
-├── INDEX.md                       # living list of active tasks (newest first)
-├── YYYY-MM-DD/                    # per-day folders
-│   └── <task-slug>/               # one folder per task
-│       ├── README.md              # required: goal + status + notes
-│       └── ...                    # any other artifacts
+├── INDEX.md                       # active tasks, newest first
+├── YYYY-MM-DD/
+│   └── <task-slug>/
+│       ├── README.md              # required
+│       └── ...
 └── archive/
-    └── YYYY-MM-DD/<task-slug>/    # completed or dormant tasks land here
+    └── YYYY-MM-DD/<task-slug>/
 ```
 
 ## Rules
 
-**One folder per task.** Put everything for a task inside its folder. Don't scatter files at the date level. If a task spans days, keep it under the day it started; touch its `README.md` with progress notes.
+**One folder per task.** Everything for it goes inside; nothing loose at the date level. A task spanning days stays under the day it started, with progress in its `README.md`.
 
-**Slug naming.** Short, lowercase, hyphens. Examples: `brave-to-tavily`, `css-orb-bug`, `s11-plan`. No spaces, no underscores, no dates (the parent folder already has the date).
+**Short slugs.** Lowercase, hyphens, no spaces, underscores or dates — the parent folder carries the date. `css-orb-bug`, `mirror-hero-copy`, `s11-plan`.
 
-**Every task starts with a `README.md`.** Four short sections — write them when you create the folder:
+**Every task opens with `README.md`**, written when you create the folder:
 
-- _Goal_ — one sentence, what "done" looks like.
-- _Constraints_ — deadlines, out-of-scope items, dependencies.
-- _Status_ — `active` / `paused` / `done`. Update as you go.
-- _Notes_ — free-form working log, append-only, newest first.
+- **Goal** — one sentence: what "done" looks like.
+- **Constraints** — deadlines, exclusions, dependencies.
+- **Status** — `active`, `paused`, or `done`.
+- **Notes** — working log, newest first.
 
-**Update `INDEX.md` when you start a task.** One line: `- [YYYY-MM-DD/task-slug](YYYY-MM-DD/task-slug/README.md) — one-line description of the task`. Remove the line when the task is archived.
+**`INDEX.md` gets one line when a task starts**, linking the README with a one-line description. The line goes when the task is archived.
 
-**Archive when done.** Move the folder to `archive/<same-date>/<same-slug>/`. Don't delete — the archive is the record of what you've been working on. No index entry for archived tasks; the folder structure is the index.
+**Archive, never delete.** Move the folder to `archive/<same-date>/<same-slug>/` and drop its index line. The archive is the record of what you have worked on; there is no index for it, the structure is the index.
 
-**Don't put things here that belong elsewhere.**
+## What belongs somewhere else
 
-- Memories → `memory_save` (not a notes file)
-- Self-observations → `diary_append` (not a notes file)
-- Workspace document edits → `propose_change` (workspace docs are DENY to `file_write`)
-- Sub-agent drafts → `agent_create` tool, not a draft file
+- Durable operator or project facts → `memory_save`.
+- Observations about yourself → `diary_append`.
+- Changes to a workspace document → `propose_change`; `file_write` is denied on them.
+- A new sub-agent → `agent_create`, and the operator approves it.
 
-Workshop is for _scratch work toward a task_, not for things that have their own home.
+Workshop is scratch work *toward* a task, not a second home for anything that already has one.
 
-## Examples
+## One worked example
 
-Operator asks: _"Draft a session plan for tomorrow."_
+*"Try three hero copy variants for the Mirror landing."*
 
-1. `file_write` → `workshop/YYYY-MM-DD/s11-plan/README.md` with the four sections (goal = "outline next session's priorities", status = active, etc.).
-2. `file_write` the plan itself → `workshop/YYYY-MM-DD/s11-plan/plan.md`.
-3. `file_write` → `workshop/INDEX.md` appending one line linking the task.
+1. `workshop/YYYY-MM-DD/mirror-hero-copy/README.md` — goal, status `active`.
+2. `workshop/YYYY-MM-DD/mirror-hero-copy/variants.md` — the drafts.
+3. One line in `workshop/INDEX.md`.
 
-Operator asks: _"Try three hero copy variants for the Mirror landing."_
-
-1. `workshop/YYYY-MM-DD/mirror-hero-copy/README.md` with goal.
-2. `workshop/YYYY-MM-DD/mirror-hero-copy/variants.md` with the three drafts.
-3. Update `INDEX.md`.
-
-On completion (operator says "thanks, we'll go with variant 2"):
-
-- Append _Status: done_ + which variant was picked to `README.md`.
-- Move the whole folder to `workshop/archive/YYYY-MM-DD/mirror-hero-copy/`.
-- Remove the `INDEX.md` line.
+When they pick one: append the decision and `Status: done` to the README, move the folder into `archive/YYYY-MM-DD/mirror-hero-copy/`, remove the index line.

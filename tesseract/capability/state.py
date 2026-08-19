@@ -131,10 +131,18 @@ class DependencyRecord(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    #: Stable identifier: `whisper`, `kokoro`, `piper`, `reranker`, `ollama`,
-    #: `embedding-model`, `gpu-wheels`, `venv`, `browser-engine`.
+    #: Stable identifier. Not enumerated here: the producers are
+    #: `capability/models.py` (the pinned-file lanes) and `capability/
+    #: system.py` (everything else), and a list in this docstring drifted from
+    #: both — it named `gpu-wheels`, which nothing produces, and omitted
+    #: `ollama-models`, which two callers do.
     id: str
-    #: What kind of thing it is, which decides which probe answers for it.
+    #: What kind of thing it is, which decides which probe answers for it —
+    #: and, through `consent._DEFERRABLE_KINDS`, whether a config-derived
+    #: answer survives on an install whose setup form never opened. That
+    #: second use is why the value is a decision rather than a label: the
+    #: browser engine sat at `runtime` after it became optional, and its
+    #: shipped `enabled: true` went on reading as consent.
     kind: str
     state: DependencyState
     consent: Consent = Consent.NEVER_ASKED
@@ -217,7 +225,7 @@ class HardwareFacts(BaseModel):
     #: The profile `provision_hardware` resolved this machine to, so a change
     #: is detectable without reading a second file.
     profile: str | None = None
-    #: The profile's speech-synthesis advice (`kokoro-gpu` / `piper-preferred`).
+    #: The profile's speech-synthesis advice (`kokoro-gpu` / `kokoro-cpu`).
     #: Written to `hardware-profile.json` since P1.5 and read by nobody until
     #: now, which is why a machine that lost its graphics card went on
     #: recommending the voice it could no longer keep up with.

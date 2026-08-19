@@ -722,10 +722,15 @@ def _redact_view_snapshot(value: Any) -> Any:
 def _format_view_snapshot(snapshot: dict[str, Any]) -> str:
     """Render a Mirror view-context snapshot as a one-shot system aside.
 
-    Shape from the Mirror: ``{"view": "<id>", "view_state": {...}}``.
+    Shape from the Mirror:
+    ``{"view": "<id>", "view_state": {...}, "layers": {...}}``.
     Output format the chat brain can read at a glance:
-        ``[current_view] <id>\\n[view_state] <json>``
+        ``[current_view] <id>\\n[view_state] <json>\\n[layers] <json>``
     Empty ``view`` is treated as "no snapshot" — the block is omitted.
+
+    ``layers`` is optional and older clients do not send it — the frontend
+    ships compiled into the app and updates on a different cadence to this
+    file, so its absence is a version skew, not an error.
     """
     view = snapshot.get("view")
     if not isinstance(view, str) or not view:
@@ -737,7 +742,16 @@ def _format_view_snapshot(snapshot: dict[str, Any]) -> str:
         rendered = json.dumps(redacted, sort_keys=True)
     except (TypeError, ValueError):
         rendered = "{}"
-    return f"[current_view] {view}\n[view_state] {rendered}"
+    block = f"[current_view] {view}\n[view_state] {rendered}"
+    raw_layers = snapshot.get("layers")
+    if isinstance(raw_layers, dict) and raw_layers:
+        try:
+            layers = json.dumps(_redact_view_snapshot(raw_layers), sort_keys=True)
+        except (TypeError, ValueError):
+            layers = ""
+        if layers:
+            block += f"\n[layers] {layers}"
+    return block
 
 
 def _summarize_spawn(handle: Any) -> str:
@@ -958,7 +972,7 @@ class ChatSession:
     ask_fn: AskFn | None = None  # operator approval callback for ASK-permission tools
     policy: PermissionPolicy | None = None  # config-driven per-tool posture
     # When set, called per turn to re-assemble the system prompt — lets
-    # SOUL.md / IDENTITY.md edits land inside the active session instead of
+    # SOUL.md edits land inside the active session instead of
     # waiting for the next one. If unset, the frozen `system_prompt` is used.
     # CR-3 — channel sessions plumb a channel-aware builder here from
     # ``_build_chat_session``; the channel overlay is inlined inside the
@@ -2301,6 +2315,19 @@ class ChatSession:
                         "name": tc.name,
                         "arguments": json.dumps(tc.input),
                     },
+                    # Carried only when the provider issued one, so the shape
+                    # is unchanged for every other provider and for history
+                    # written before this existed. It has to live on the
+                    # message rather than in the adapter, because the adapter
+                    # instance is rebuilt on a config change and the history
+                    # outlives the process — a resumed session replays these
+                    # calls, and Gemini 3 rejects the request if the signature
+                    # it issued does not come back with them.
+                    **(
+                        {"provider_signature": tc.provider_signature}
+                        if tc.provider_signature
+                        else {}
+                    ),
                 }
                 for tc in pending_calls
             ]

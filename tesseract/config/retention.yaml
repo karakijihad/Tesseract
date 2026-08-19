@@ -1,0 +1,91 @@
+# TESSERACT retention — everything this machine ages, in one table.
+#
+# Read it as the answer to "what does this machine throw away, and when".
+# Four policies used to live in three files: two schedule.yaml config blocks,
+# two janitor.yaml keys, and — for the approval ledger — nothing at all.
+#
+# WHEN it runs is not here. Every row below is swept by the `retention` stage
+# of the nightly `consolidate` row, so the anchor in schedule.yaml is the only
+# clock involved.
+#
+# `keep_days` is yours. `action` is yours where the tree allows it — two do
+# not, and the loader refuses `delete` on those rather than quietly archiving
+# instead. What each key means, and whether it may be deleted from at all,
+# lives in tesseract/retention/policy.py, because a window is a number an
+# operator should change and what a sweep DOES to a file is not.
+#
+# A key here that the code does not implement fails at load, and so does a
+# tree the code implements that is missing here — a policy nothing enforces
+# and a tree ageing on an unwritten default are the same defect.
+
+trees:
+  # One line per turn the assistant watched. Deleted: these are working notes
+  # the observer has already turned into memory suggestions, and it is the
+  # single most frequently written file in the system.
+  observer_logs:
+    keep_days: 14
+    action: delete
+
+  # The live drawer holds a working week; everything older moves to
+  # sessions/archive/YYYY-MM/ and is fetched on demand. Never deleted —
+  # removing a conversation is your own act, through the app.
+  sessions:
+    keep_days: 7
+    action: archive
+
+  # controller/lanes-archive/<month>/<lane>/ — one directory per finished
+  # delegation. Aged on the newest file inside, so a lane still being written
+  # to is never taken.
+  lane_archives:
+    keep_days: 60
+    action: delete
+
+  # One file per backend launch, so the set grows with launches rather than
+  # with use. The aggregate <process>.log beside them is bounded by size
+  # rotation instead and is deliberately not swept here.
+  backend_logs:
+    keep_days: 60
+    action: delete
+
+  # One row per background job run. It is the biggest log this machine keeps
+  # and the one the nightly rollup reads whole. Deleted rather than archived
+  # because the summary already exists: `daily_writer` writes a per-day table
+  # of runs, ok, failed and average duration into the daily log layer every
+  # night, and a day with NO rollup keeps its rows regardless of this window.
+  # Set `archive` instead if you want the raw rows kept in runs-archive/.
+  scheduler_runs:
+    keep_days: 30
+    action: delete
+
+  # One report per hourly sweep, plus a file per finding under evidence/.
+  # The report IS the summary of the logs it read, and those logs have their
+  # own windows above, so this is derived twice over. `latest.json` — the
+  # pointer the morning brief reads — is never swept.
+  watchman_reports:
+    keep_days: 30
+    action: delete
+
+  # Every permission decision the runtime has made — the record an
+  # investigation reads. Rows older than the window move to a dated file in
+  # approvals-archive/ and are never dropped; `delete` is refused at load.
+  # 90 days is the window, not the lifetime: nothing here shortens how long
+  # the evidence exists, only how much of it the live file carries.
+  approvals_ledger:
+    keep_days: 90
+    action: archive
+
+  # One row per tool call: at_utc, tool, session_id. It is the gauge the
+  # working set is set from, and every question it answers is about a window —
+  # the last week, the last fortnight. Deleted rather than archived: the row
+  # carries no inputs and no outputs, so an old one holds nothing a new one
+  # does not, and there is no investigation that would want it back.
+  usage_ledger:
+    keep_days: 90
+    action: delete
+
+# Deliberately not swept, so their absence is a decision rather than an
+# oversight: runtime/logs/audit/*.jsonl, governor/pauses.jsonl and
+# provider-health/*.jsonl are written per event and are small enough that a
+# window would cost more than it saves. The aggregate <process>.log files are
+# bounded by size rotation. If one of these starts growing, it gets a row
+# here rather than a special case somewhere else.

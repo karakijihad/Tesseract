@@ -1,3 +1,4 @@
+import { Note } from '../../components/common/Note';
 import { useCallback, useEffect, useState } from 'react';
 
 import {
@@ -5,26 +6,45 @@ import {
   fetchDependencies,
   fetchKokoroStatus,
   fetchOllamaStatus,
-  fetchPiperStatus,
   fetchWhisperStatus,
   postKokoroAction,
   postModelDownload,
   postOllamaAction,
-  postPiperAction,
   postWhisperAction,
   type DependencyReport,
   type KokoroStatusResponse,
   type ModelFilesStatus,
   type ModelLane,
   type OllamaStatusResponse,
-  type PiperStatusResponse,
   type WhisperStatusResponse,
 } from '../../lib/api';
+import { Button } from '../../components/common/Button';
 
 // Status-chip cadence only — chat/voice never touch these endpoints. 30s
 // keeps the ollama /api/tags probe (and its TIME_WAIT sockets) off the hot
 // path; a dead service shows red at most 30s late.
 const POLL_INTERVAL_MS = 30_000;
+
+/** Last good state, outliving the component that fetched it.
+ *
+ * The same reasoning as `useCachedFetch`'s cache, which this panel cannot use
+ * because it is four endpoints behind one `allSettled` rather than one fetch.
+ * The rail mounts one section at a time, so leaving this row and coming back
+ * unmounted it and took its `useState` with it — and the panel is gated on
+ * `status`, so the whole thing went back to `(loading…)` and refetched from
+ * zero every visit. Nothing here has changed in the two seconds you were
+ * elsewhere; the poll below revalidates.
+ *
+ * Written unconditionally in `refresh`, not through a mount-scoped effect: a
+ * response is worth keeping whoever asked for it, including a visit switched
+ * away from before its fetch landed.
+ */
+const SNAPSHOT: {
+  status: OllamaStatusResponse | null;
+  whisper: WhisperStatusResponse | null;
+  kokoro: KokoroStatusResponse | null;
+  deps: DependencyReport | null;
+} = { status: null, whisper: null, kokoro: null, deps: null };
 
 // `device: auto` resolves per machine at model load, so the configured value
 // is a placeholder until something is cached. Report what actually loaded —
@@ -63,15 +83,13 @@ function ModelFilesRow({
           ? files.download_error
           : `${label} files are not downloaded — this lane stays silent until they are (${size}).`}
       </span>
-      <button
-        type="button"
-        className="cost-row__save"
+      <Button
         onClick={() => onDownload(lane)}
         disabled={files.downloading}
-        style={{ marginLeft: '0.5rem' }}
+        tone="primary"
       >
         {files.downloading ? 'Downloading…' : 'Download'}
-      </button>
+      </Button>
     </div>
   );
 }
@@ -102,14 +120,18 @@ function DriftRow({
 }
 
 export function LocalModelsSection() {
-  const [status, setStatus] = useState<OllamaStatusResponse | null>(null);
-  const [whisper, setWhisper] = useState<WhisperStatusResponse | null>(null);
-  const [piper, setPiper] = useState<PiperStatusResponse | null>(null);
-  const [kokoro, setKokoro] = useState<KokoroStatusResponse | null>(null);
-  const [deps, setDeps] = useState<DependencyReport | null>(null);
+  const [status, setStatus] = useState<OllamaStatusResponse | null>(
+    SNAPSHOT.status,
+  );
+  const [whisper, setWhisper] = useState<WhisperStatusResponse | null>(
+    SNAPSHOT.whisper,
+  );
+  const [kokoro, setKokoro] = useState<KokoroStatusResponse | null>(
+    SNAPSHOT.kokoro,
+  );
+  const [deps, setDeps] = useState<DependencyReport | null>(SNAPSHOT.deps);
   const [busy, setBusy] = useState(false);
   const [whisperBusy, setWhisperBusy] = useState(false);
-  const [piperBusy, setPiperBusy] = useState(false);
   const [kokoroBusy, setKokoroBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -119,24 +141,26 @@ export function LocalModelsSection() {
     // them sequentially stretches the cycle to ~4s; parallel keeps
     // it under 1s and stops one slow service from blocking the rest.
     // allSettled so one backend going down doesn't blank the other
-    // three panels — operator still sees fresh state for what works.
-    const [s, w, p, k, d] = await Promise.allSettled([
+    // panels — operator still sees fresh state for what works.
+    const [s, w, k, d] = await Promise.allSettled([
       fetchOllamaStatus(),
       fetchWhisperStatus(),
-      fetchPiperStatus(),
       fetchKokoroStatus(),
       // Reads the artifact the launch pass wrote — no probing, no network.
       fetchDependencies(),
     ]);
+    if (s.status === 'fulfilled') SNAPSHOT.status = s.value;
+    if (w.status === 'fulfilled') SNAPSHOT.whisper = w.value;
+    if (k.status === 'fulfilled') SNAPSHOT.kokoro = k.value;
+    if (d.status === 'fulfilled') SNAPSHOT.deps = d.value;
     if (s.status === 'fulfilled') setStatus(s.value);
     if (w.status === 'fulfilled') setWhisper(w.value);
-    if (p.status === 'fulfilled') setPiper(p.value);
     if (k.status === 'fulfilled') setKokoro(k.value);
     if (d.status === 'fulfilled') setDeps(d.value);
     // `deps` is deliberately absent from the error check below: it is the
-    // newest of the five and the only one whose absence costs nothing on
+    // newest of them and the only one whose absence costs nothing on
     // screen, so an install that predates it must not blank the panel.
-    const failed = [s, w, p, k].find((r) => r.status === 'rejected') as
+    const failed = [s, w, k].find((r) => r.status === 'rejected') as
       | PromiseRejectedResult
       | undefined;
     if (failed) {
@@ -228,26 +252,12 @@ export function LocalModelsSection() {
     try {
       await postWhisperAction('unload');
       const fresh = await fetchWhisperStatus();
+      SNAPSHOT.whisper = fresh;
       setWhisper(fresh);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'whisper unload failed');
     } finally {
       setWhisperBusy(false);
-    }
-  };
-
-  const onPiperAction = async (action: 'unload' | 'warm') => {
-    if (!piper || piperBusy) return;
-    setPiperBusy(true);
-    setError(null);
-    try {
-      await postPiperAction(action);
-      const fresh = await fetchPiperStatus();
-      setPiper(fresh);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : `piper ${action} failed`);
-    } finally {
-      setPiperBusy(false);
     }
   };
 
@@ -271,6 +281,7 @@ export function LocalModelsSection() {
     try {
       await postKokoroAction(action);
       const fresh = await fetchKokoroStatus();
+      SNAPSHOT.kokoro = fresh;
       setKokoro(fresh);
     } catch (err) {
       setError(err instanceof Error ? err.message : `kokoro ${action} failed`);
@@ -282,7 +293,6 @@ export function LocalModelsSection() {
   if (!status) {
     return (
       <section className="settings-section">
-        <h3 className="settings-section__title">Local models — Ollama</h3>
         <div className="t-meta">{error ?? '(loading…)'}</div>
       </section>
     );
@@ -321,7 +331,6 @@ export function LocalModelsSection() {
 
   return (
     <section className="settings-section">
-      <h3 className="settings-section__title">Local models — Ollama</h3>
       <div className="t-meta" style={{ marginBottom: '0.5rem' }}>
         {status.embedding_model
           ? `Embedding model ${status.embedding_model} runs on Ollama at ${status.base_url}. Required for memory dedupe + retrieval. Toggle to start or stop.`
@@ -346,51 +355,45 @@ export function LocalModelsSection() {
       </div>
       <div className="cost-row cost-row--actions">
         {status.binary_present ? (
-          <button
-            type="button"
-            className="cost-row__save"
+          <Button
             onClick={() => void onOllamaAction(status.running ? 'stop' : 'start')}
             disabled={busy}
+            tone="primary"
           >
             {busy ? '…' : status.running ? 'Stop' : 'Start'}
-          </button>
+          </Button>
         ) : (
           // The recovery path for a first run whose silent install was blocked
           // or declined. The per-launch retry runs `--no-install` on purpose,
           // so without this button the only way back was a typed command.
-          <button
-            type="button"
-            className="cost-row__save"
+          <Button
             onClick={() => void onOllamaAction('install')}
             disabled={busy || status.installing}
+            tone="primary"
           >
             {status.installing ? 'Installing…' : 'Install Ollama'}
-          </button>
+          </Button>
         )}
         {status.running && !status.embedding_present && (
-          <button
-            type="button"
-            className="cost-row__save"
+          <Button
             onClick={() => void onOllamaAction('install')}
             disabled={busy || status.installing}
-            style={{ marginLeft: '0.5rem' }}
+            tone="primary"
           >
             {status.installing ? 'Pulling…' : 'Pull embedding model'}
-          </button>
+          </Button>
         )}
-        <button
-          type="button"
-          className="cost-row__save"
+        <Button
           onClick={() => {
             void refresh();
           }}
           disabled={busy}
-          style={{ marginLeft: '0.5rem' }}
+          tone="primary"
         >
           Refresh
-        </button>
+        </Button>
       </div>
-      {error && <div className="settings-error">{error}</div>}
+      {error && <Note tone="bad">{error}</Note>}
       <div className="cost-row" style={{ marginTop: '0.75rem' }}>
         <label className="cost-row__label">Whisper STT</label>
         <span className="t-meta">
@@ -407,14 +410,13 @@ export function LocalModelsSection() {
         </span>
       </div>
       <div className="cost-row cost-row--actions">
-        <button
-          type="button"
-          className="cost-row__save"
+        <Button
           onClick={onUnloadWhisper}
           disabled={whisperBusy || (!whisper?.loaded && !whisper?.disabled)}
+          tone="primary"
         >
           {whisperBusy ? '…' : whisper?.disabled ? 'Reset Whisper' : 'Unload Whisper'}
-        </button>
+        </Button>
       </div>
       <ModelFilesRow
         files={whisper}
@@ -424,45 +426,6 @@ export function LocalModelsSection() {
         onDownload={onDownload}
       />
       <DriftRow report={deps} dependency="whisper" />
-      <div className="cost-row" style={{ marginTop: '0.75rem' }}>
-        <label className="cost-row__label">Piper TTS</label>
-        <span className="t-meta">
-          {piper?.configured
-            ? `${piper.model_path.split(/[\\/]/).pop() || piper.model_path} · ${piper.sample_rate ?? '?'} Hz`
-            : 'not configured'}
-        </span>
-        <span className="cost-row__spend t-meta">
-          {piper?.disabled
-            ? `disabled: ${piper.disabled_reason}`
-            : piper?.loaded
-              ? `loaded · presets: ${piper.presets.join(', ') || '—'}`
-              : 'lazy-loads on first synthesis'}
-        </span>
-      </div>
-      <div className="cost-row cost-row--actions">
-        <button
-          type="button"
-          className="cost-row__save"
-          onClick={() => void onPiperAction(piper?.disabled || !piper?.loaded ? 'warm' : 'unload')}
-          disabled={piperBusy || !piper?.configured}
-        >
-          {piperBusy
-            ? '…'
-            : piper?.disabled
-              ? 'Reset Piper'
-              : piper?.loaded
-                ? 'Unload Piper'
-                : 'Load Piper'}
-        </button>
-      </div>
-      <ModelFilesRow
-        files={piper}
-        lane="piper"
-        label="Piper voice"
-        size="~65 MB"
-        onDownload={onDownload}
-      />
-      <DriftRow report={deps} dependency="piper" />
       <div className="cost-row" style={{ marginTop: '0.75rem' }}>
         <label className="cost-row__label">Kokoro TTS</label>
         <span className="t-meta">
@@ -483,13 +446,12 @@ export function LocalModelsSection() {
         </span>
       </div>
       <div className="cost-row cost-row--actions">
-        <button
-          type="button"
-          className="cost-row__save"
+        <Button
           onClick={() =>
             void onKokoroAction(kokoro?.disabled || !kokoro?.loaded ? 'warm' : 'unload')
           }
           disabled={kokoroBusy || !kokoro?.configured}
+          tone="primary"
         >
           {kokoroBusy
             ? '…'
@@ -498,7 +460,7 @@ export function LocalModelsSection() {
               : kokoro?.loaded
                 ? 'Unload Kokoro'
                 : 'Load Kokoro'}
-        </button>
+        </Button>
       </div>
       <ModelFilesRow
         files={kokoro}

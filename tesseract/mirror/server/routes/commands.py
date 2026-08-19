@@ -17,7 +17,7 @@ from tesseract.mirror.server.commands_registry import serialize_specs
 async def list_commands(request: web.Request) -> web.Response:
     registry = request.app.get("command_registry")
     if registry is None:
-        # Stage-3 of `_init_background` hasn't built the registry yet — a 200
+        # The boot graph's `wiring` layer hasn't built it yet — a 200
         # with an empty list used to be cached as "loaded with zero commands"
         # by the frontend, so every `/save` and `/reset` looked nonexistent
         # until the page reloaded. 503 lets the frontend distinguish "not

@@ -19,6 +19,7 @@ preserving operator comments and key order.
 
 from __future__ import annotations
 
+import copy
 import os
 import re
 from dataclasses import dataclass, field
@@ -309,7 +310,7 @@ class ConfigBundle:
                 if prov_name in _TIER_RESERVED_KEYS:
                     continue
                 conn = _build_connection(tier, prov_name, prov_block, tier_on)
-                for model_id, _model_block in (prov_block.get("models") or {}).items():
+                for model_id in _expanded_models(tier, prov_name, prov_block):
                     ref = f"{tier}.{prov_name}.{model_id}"
                     resolved = _resolve_ref(ref, self.providers_raw)
                     out.append((ref, conn, resolved.model))
@@ -408,10 +409,59 @@ def _build_connection(
     )
 
 
+def _expanded_models(
+    tier: str, prov_name: str, prov_block: Mapping[str, Any]
+) -> dict[str, Mapping[str, Any]]:
+    """The provider's model map, with any ``voices:`` container expanded.
+
+    A model block carrying ``voices:`` is a shared settings block rather than
+    an entry of its own — one model, several voices over it, and the settings
+    written once. Each voice inherits the parent's fields and overrides only
+    what it names, so the reference shape stays ``<tier>.<provider>.<voice>``
+    and nothing downstream learns a fourth segment.
+    """
+    out: dict[str, Mapping[str, Any]] = {}
+
+    def _claim(entry_id: str, block: Mapping[str, Any], where: str) -> None:
+        if entry_id in out:
+            raise ConfigError(f"duplicate model id '{entry_id}' in {where}")
+        out[entry_id] = block
+
+    where = f"providers.yaml {tier}.{prov_name}.models"
+    for model_id, block in (prov_block.get("models") or {}).items():
+        if not isinstance(block, Mapping) or "voices" not in block:
+            _claim(model_id, block, where)
+            continue
+        shared = {k: v for k, v in block.items() if k != "voices"}
+        voices = block.get("voices") or {}
+        if not voices:
+            raise ConfigError(f"{where}.{model_id} declares an empty `voices:` block")
+        for voice_id, overrides in voices.items():
+            _claim(voice_id, {**shared, **(overrides or {})}, f"{where}.{model_id}.voices")
+    return out
+
+
+#: What a model entry may claim it is good for. Advisory: this is what the
+#: picker shows an operator choosing a model, never a gate. `kind` decides
+#: what a role will accept, and `capabilities` decides what the image and
+#: attachment routers will send — a hint that could refuse a wiring would be
+#: a third authority disagreeing with those two.
+GOOD_FOR_TAGS = frozenset({
+    "brain", "tools", "vision", "audio", "video", "pdf",
+    "image_generation", "tts", "stt", "embedding", "rerank",
+})
+
+
 def _build_model(tier: str, prov_name: str, model_id: str, block: Mapping[str, Any]) -> ProviderModel:
     where = f"providers.yaml {tier}.{prov_name}.models.{model_id}"
     model_name = str(require_field(block, "model", where))
     kind = str(block.get("kind", "chat"))
+    unknown = sorted(set(block.get("good_for") or ()) - GOOD_FOR_TAGS)
+    if unknown:
+        raise ConfigError(
+            f"{where}.good_for has unknown tag(s) {unknown} — "
+            f"pick from {sorted(GOOD_FOR_TAGS)}"
+        )
     fields = {k: v for k, v in block.items() if k not in ("model", "kind")}
     return ProviderModel(id=model_id, model=model_name, kind=kind, fields=fields)
 
@@ -437,7 +487,7 @@ def _resolve_ref(ref: str, providers_raw: Mapping[str, Any]) -> ResolvedRef:
     if not tier_block or prov_name not in tier_block or prov_name in _TIER_RESERVED_KEYS:
         raise ConfigError(f"provider '{tier}.{prov_name}' missing from providers.yaml")
     prov_block = tier_block[prov_name]
-    models = prov_block.get("models") or {}
+    models = _expanded_models(tier, prov_name, prov_block)
     if model_id not in models:
         raise ConfigError(f"model '{model_id}' missing from providers.yaml {tier}.{prov_name}.models")
     return ResolvedRef(
@@ -447,7 +497,63 @@ def _resolve_ref(ref: str, providers_raw: Mapping[str, Any]) -> ResolvedRef:
     )
 
 
-def _chain_refs(
+#: Kinds a chain may mix. A chain is a failover order, so every entry has to
+#: be able to answer the same request — the runtime hands the next one the
+#: call the last one refused. `stt` and `audio_stt` are the one real pair:
+#: both transcribe, they differ only in where.
+_CHAIN_KIND_FAMILIES: tuple[frozenset[str], ...] = (
+    frozenset({"stt", "audio_stt"}),
+)
+
+
+def _chain_kind_family(kind: str) -> frozenset[str]:
+    for family in _CHAIN_KIND_FAMILIES:
+        if kind in family:
+            return family
+    return frozenset({kind})
+
+
+def chain_kind(refs: list[str], providers_raw: Mapping[str, Any]) -> str:
+    """The one kind every entry in `refs` serves. Assumes validated input."""
+    return _resolve_ref(refs[0], providers_raw).model.kind
+
+
+def _validate_chain_kinds(
+    chains: Mapping[str, Any], providers_raw: Mapping[str, Any]
+) -> None:
+    """Refuse a chain whose entries do not all serve the same kind.
+
+    A chain is a failover order: when an entry errors, the next one is handed
+    the same call. A tts model sitting behind a chat model is not a fallback,
+    it is a request that cannot be answered — and because it is only reached
+    when something has already gone wrong, the failure surfaces at the worst
+    possible moment rather than at boot.
+
+    It is also what lets a chain be OFFERED coherently. The picker can only
+    say which chains a role may follow if a chain has one answer to "what is
+    this for".
+    """
+    for name, raw_refs in chains.items():
+        if not isinstance(raw_refs, list) or not raw_refs:
+            continue  # shape is `chain_refs`' to report, per role, with context
+        kinds: dict[str, str] = {}
+        for ref in raw_refs:
+            try:
+                kinds[str(ref)] = _resolve_ref(str(ref), providers_raw).model.kind
+            except ConfigError:
+                continue  # a broken ref is reported by the role that names it
+        family = _chain_kind_family(next(iter(kinds.values()), ""))
+        stray = {ref: kind for ref, kind in kinds.items() if kind not in family}
+        if stray:
+            listed = ", ".join(f"{ref} is {kind}" for ref, kind in sorted(stray.items()))
+            raise ConfigError(
+                f"roles.yaml chains.{name} mixes kinds — its first entry serves "
+                f"'{next(iter(kinds.values()))}' but {listed}. A chain is a "
+                f"failover order, so every entry must answer the same request."
+            )
+
+
+def chain_refs(
     name: str, block: Mapping[str, Any], chains: Mapping[str, Any]
 ) -> tuple[str, list[str]]:
     """The role's ordered chain as raw refs: ``(primary, fallbacks)``.
@@ -456,6 +562,12 @@ def _chain_refs(
     shared `chain`. Both together is refused rather than resolved by
     precedence — the point of the alias is that one edit moves every role on
     the chain, and a role quietly overriding it defeats that silently.
+
+    Public because it is the ONE place that knows both shapes. Anything asking
+    "which model does this role actually run" — the loader, the Kernel rail's
+    manifest, a future panel — goes through here rather than reading `primary`
+    off the block, which is correct until the role moves onto a chain and then
+    silently is not.
     """
     where = f"roles.yaml roles.{name}"
     chain_name = block.get("chain")
@@ -527,7 +639,7 @@ def _build_role(
         primary = None
         fallbacks: tuple[ResolvedRef, ...] = ()
     else:
-        primary_ref, fallback_refs = _chain_refs(name, block, chains or {})
+        primary_ref, fallback_refs = chain_refs(name, block, chains or {})
         primary = _resolve_ref(primary_ref, providers_raw)
         fallbacks = tuple(_resolve_ref(r, providers_raw) for r in fallback_refs)
     overrides = {
@@ -635,6 +747,31 @@ def _build_voice(block: Mapping[str, Any] | None, providers_raw: Mapping[str, An
 # ── Public entry point ───────────────────────────────────
 
 
+#: Parsed YAML, keyed by the file's identity on disk. Parsing is the bulk of
+#: what `load_config` costs; the resolve below it is the remainder and is
+#: re-run on every call, so no caller ever holds a resolved view another
+#: caller can mutate. `stat` is free, so freshness is not traded away: a
+#: changed file misses the key on the next call, which is what
+#: `brain/boot.py::load_bundle`'s hot-reload contract relies on.
+_PARSE_CACHE: dict[tuple[Path, int, int], Any] = {}
+
+
+def _parse_cached(path: Path) -> Any:
+    """The file's parsed contents — a fresh copy, parsed only when it changed."""
+    st = path.stat()
+    key = (path, st.st_mtime_ns, st.st_size)
+    hit = _PARSE_CACHE.get(key)
+    if hit is None:
+        hit = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        # One entry per path: a config file has one current version, and an
+        # unbounded map keyed on mtime would grow for the life of the process
+        # every time the watcher saw a save.
+        for stale in [k for k in _PARSE_CACHE if k[0] == path]:
+            del _PARSE_CACHE[stale]
+        _PARSE_CACHE[key] = hit
+    return copy.deepcopy(hit)
+
+
 def load_config(
     providers_path: Path | None = None,
     roles_path: Path | None = None,
@@ -652,8 +789,8 @@ def load_config(
     if not rp.exists():
         raise ConfigError(f"roles.yaml missing at {rp}")
 
-    providers_raw = yaml.safe_load(pp.read_text(encoding="utf-8")) or {}
-    roles_raw = yaml.safe_load(rp.read_text(encoding="utf-8")) or {}
+    providers_raw = _parse_cached(pp)
+    roles_raw = _parse_cached(rp)
 
     embeddings_block = roles_raw.get("embeddings") or {}
     embeddings_ref = str(require_field(embeddings_block, "primary", "roles.yaml embeddings"))
@@ -674,6 +811,7 @@ def load_config(
             f"roles.yaml chains must be a mapping of name -> list of refs, got "
             f"{type(chains_block).__name__}"
         )
+    _validate_chain_kinds(chains_block, providers_raw)
     roles = {
         name: _build_role(name, block, providers_raw, chains_block)
         for name, block in roles_block.items()

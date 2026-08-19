@@ -49,12 +49,6 @@ def _fetch_kokoro(*, force: bool) -> bool:
     return ensure_kokoro_models(force=force)
 
 
-def _fetch_piper(*, force: bool) -> bool:
-    from tesseract.scripts.fetch_piper_voice import ensure_configured_voices
-
-    return ensure_configured_voices(force=force)
-
-
 def _fetch_reranker(*, force: bool) -> bool:
     from tesseract.scripts.fetch_reranker_model import main as fetch_reranker
 
@@ -73,13 +67,16 @@ def _ensure_ollama(*, force: bool) -> bool:
 
 
 #: Dependency id -> what repairs it. Absent from this map means nothing here
-#: can fix it: `venv` and `browser-engine` are the shell's, and
-#: `gpu-acceleration` is handled by the hardware stage below, which has to run
-#: before the pass anyway.
+#: can fix it: `venv` is the shell's, `gpu-acceleration` is handled by the
+#: hardware stage below (which has to run before the pass anyway), and
+#: `browser-engine` is fetched by the Mirror's own boot warm-up —
+#: `orchestrator/browser/provision.py::ensure_browsers_if_wanted`, which checks
+#: both the `services.browser` switch AND, on an install whose setup never ran,
+#: the consent ledger. It is the one optional artifact this pass does not
+#: repair, so its gate has to live where it is fetched rather than here.
 REPAIRS: dict[str, Callable[..., bool]] = {
     "whisper": _fetch_whisper,
     "kokoro": _fetch_kokoro,
-    "piper": _fetch_piper,
     "reranker": _fetch_reranker,
     "ollama": _ensure_ollama,
     "ollama-models": _ensure_ollama,

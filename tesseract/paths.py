@@ -1,6 +1,7 @@
 """Canonical filesystem anchors for the runtime.
 
-Two distinct roots, deliberately separated for Phase 17 portability:
+Two distinct roots, deliberately separated so state can move between
+machines without the code coming with it:
 
 - ``TESSERACT_DIR``: the source-code package directory (where this file
   lives). Always anchored via ``__file__`` so it follows the install.
@@ -30,7 +31,8 @@ TESSERACT_HOME = Path(os.environ.get("TESSERACT_HOME") or TESSERACT_DIR).resolve
 # consumers imported once at process start (e.g. `brain/boot.py`,
 # `mirror/server/config.py`) that don't need to follow a later env change.
 # New call-time code should use `config_dir()` below instead (see module
-# docstring — same reasoning as `home_dir()`/`workspace_dir()`/`agents_dir()`).
+# docstring — same reasoning as `home_dir()`/`workspace_dir()`/
+# `user_agents_dir()`).
 CONFIG_DIR = TESSERACT_HOME / "config"
 
 
@@ -55,8 +57,28 @@ def workspace_dir() -> Path:
     return _home_at_call_time() / "workspace"
 
 
-def agents_dir() -> Path:
-    """Agent cards — operator-created agents are state, not code."""
+def system_agents_dir() -> Path:
+    """Shipped agent cards, read from the sealed app tree and never copied.
+
+    An update replaces `app/`, so a card improved here reaches every install
+    on the next update. Copying it into `home/` once — which is what the
+    runtime used to do — froze every shipped card at whatever the operator
+    installed, forever.
+
+    Anchored on `TESSERACT_DIR` rather than `app_dir()`: this package IS the
+    shipped tree, so the anchor holds in a dev checkout, in a packaged
+    install, and in a test that points `TESSERACT_HOME` somewhere else.
+    """
+    return TESSERACT_DIR / "agents"
+
+
+def user_agents_dir() -> Path:
+    """Agent cards the assistant built for the operator — state, not code.
+
+    In a dev checkout `home_dir()` IS `TESSERACT_DIR`, so this and
+    `system_agents_dir()` are one directory. Callers that merge the two must
+    compare resolved paths rather than assume they are distinct.
+    """
     return _home_at_call_time() / "agents"
 
 
@@ -64,6 +86,19 @@ def config_dir() -> Path:
     """Config tree — call-time so a `TESSERACT_HOME` change is honored
     without a fresh import, unlike the frozen `CONFIG_DIR` constant above."""
     return _home_at_call_time() / "config"
+
+
+def system_config_dir() -> Path:
+    """The shipped config tree, in the sealed app tree.
+
+    Most of `config/` is seeded into `home/` and merged key-by-key from here,
+    which works. `schedule.yaml::jobs` is the exception the merge cannot
+    reach — it is a LIST, and `migrate_config_keys` copies a list whole or not
+    at all, so a job added in a release lands on no existing install. The
+    scheduler therefore reads its system rows from here directly, the same way
+    agent cards are read from `system_agents_dir()`.
+    """
+    return TESSERACT_DIR / "config"
 
 
 def install_root() -> Path:
@@ -104,6 +139,11 @@ _HOME_LOG_DIRS = frozenset(
     {
         "sessions", "observer", "conscience", "autonomy", "consolidator",
         "feedback-sweep", "skills", "schedule", "channels", "workspace",
+        # Which tools actually get called, and in how many sessions. The
+        # operator's own working habits rather than a machine's — the answer
+        # decides which schemas ride every turn, and it should be the same
+        # answer on the second PC.
+        "usage",
     }
 )
 _RUNTIME_LOG_DIRS = frozenset(
@@ -132,7 +172,7 @@ _RUNTIME_LOG_DIRS = frozenset(
 # Prefixes, not bare directory names, because the write side is not uniform.
 # `permissions.yaml` grants `file_write` AUTO on `logs/sessions/` but on no
 # other part of `logs/`, and on `vault/raw/` but not the wiki; `workspace/`
-# carries thirteen DENY rules over the operator's own identity files. Matching
+# carries a DENY rule over every one of the operator's own documents. Matching
 # whole segments off a directory name would either miss the one writable log
 # surface — leaving exactly the write-then-read asymmetry this list exists to
 # remove — or hand the read tools paths the write side explicitly refuses.
@@ -143,9 +183,9 @@ _RUNTIME_LOG_DIRS = frozenset(
 #      ASK posture for `downloads/` and `uploads/`, which are artifact sinks
 #      the operator is handed paths to.
 #   2. It must contain no path carrying a DENY or narrower override. This is
-#      why `workspace` is absent: `workspace/SOUL.md`, `IDENTITY.md`,
-#      `USER.md`, `VOICE.md` and nine more are DENY for write, and a read
-#      allowlist entry would reach every one of them.
+#      why `workspace` is absent: every document in it — `SOUL.md`,
+#      `USER.md`, `OPERATING.md`, `WORKSHOP.md`, `DIARY.md` — is DENY for
+#      write, and a read allowlist entry would reach all five.
 #
 # Kept as data here, beside the log-category split above, for the same reason:
 # a new state path is a decision made in this file rather than guessed at a
@@ -164,6 +204,15 @@ READABLE_STATE_PREFIXES: tuple[str, ...] = (
     "workshop",
     "vault/raw",
     "logs/sessions",
+    # The runtime's own account of itself: the watchman's hourly reports, the
+    # evidence files behind them, and `WHAT-RUNS.md`. Added when the tracker
+    # was built (AR-7b item 11), for a reason the other entries share — the
+    # runtime writes a path and then tells the assistant to read it, and a
+    # pointer to a file the read tools cannot open is worse than no pointer.
+    # Nothing under it is a secret or an operator document; it is derived
+    # output, regenerated every pass, and the write side is at the default
+    # posture rather than DENY.
+    "autonomy",
 )
 
 

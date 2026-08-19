@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import { backendAssetUrl } from '../../lib/endpoints';
 import type { RendererProps } from './index';
+import { IconButton } from '../../components/common/IconButton';
 
 type LoadState = 'loading' | 'ready' | 'error';
 
@@ -23,7 +24,7 @@ async function loadPdfjs() {
   return pdfjs;
 }
 
-export function PdfRenderer({ descriptor }: RendererProps) {
+export function PdfRenderer({ descriptor, report }: RendererProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
   const [state, setState] = useState<LoadState>('loading');
@@ -82,6 +83,12 @@ export function PdfRenderer({ descriptor }: RendererProps) {
     };
   }, [url, page]);
 
+  useEffect(() => {
+    if (!report) return;
+    if (!url) report('errored', 'no pdf: props.url is missing or not a string');
+    else if (state === 'error') report('errored', 'pdf.js could not render this document');
+  }, [report, url, state]);
+
   if (!url) {
     return <div className="surface-pdf surface-pdf--empty t-meta">no pdf</div>;
   }
@@ -101,23 +108,23 @@ export function PdfRenderer({ descriptor }: RendererProps) {
         <canvas ref={canvasRef} />
       </div>
       <div className="surface-pdf__bar">
-        <button
-          type="button"
+        <IconButton
           onClick={() => setPage((p) => Math.max(1, p - 1))}
           disabled={page <= 1}
+          ariaLabel="Previous page"
         >
           ‹
-        </button>
+        </IconButton>
         <span className="t-meta">
           {state === 'loading' ? 'loading…' : `page ${page} of ${total}`}
         </span>
-        <button
-          type="button"
+        <IconButton
           onClick={() => setPage((p) => Math.min(total, p + 1))}
           disabled={pageCount === null || page >= total}
+          ariaLabel="Next page"
         >
           ›
-        </button>
+        </IconButton>
       </div>
     </div>
   );

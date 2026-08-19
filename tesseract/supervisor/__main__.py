@@ -20,7 +20,8 @@ import sys
 from pathlib import Path
 
 from tesseract.config_seed import (
-    ensure_agents_seeded,
+    unseed_copied_agents,
+    unseed_copied_jobs,
     ensure_config_seeded,
     ensure_env_seeded,
     ensure_memory_store_seeded,
@@ -117,7 +118,8 @@ def main(argv: list[str] | None = None) -> int:
 
     ensure_config_seeded()
     ensure_workspace_seeded()
-    ensure_agents_seeded()
+    unseed_copied_agents()
+    unseed_copied_jobs()
     ensure_env_seeded()
     ensure_memory_store_seeded()
     ensure_vault_seeded()

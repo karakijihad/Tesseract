@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { Note } from "../../components/common/Note";
+import { useState } from "react";
 
 import { Hint } from "../../components/ui/Hint";
 import { fetchSystem, type CapabilitySnapshot } from "../../lib/api";
-import { useWebSocketStore } from "../../stores/websocket";
-import { useFetchRetryTick } from "../../lib/useFetchRetry";
+import { useCachedFetch } from "../../lib/useCachedFetch";
+import { Button } from "../../components/common/Button";
 
 function fmtMaybe(v: string | null | undefined, suffix = ""): string {
   if (v == null || v === "") return "unknown";
@@ -16,22 +17,17 @@ function fmtNum(v: number | null | undefined, suffix = ""): string {
 }
 
 export function SystemSection() {
-  const [snap, setSnap] = useState<CapabilitySnapshot | null>(null);
+  const {
+    data: snap,
+    error,
+    setError,
+    set: setSnap,
+  } = useCachedFetch<CapabilitySnapshot>(
+    "settings.system",
+    () => fetchSystem(false),
+  );
   const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  // Re-runs on every WS (re)connection: a backend restart must replace a
-  // pre-restart "Failed to fetch" with fresh data (2026-07-30).
-  const wsGeneration = useWebSocketStore((s) => s.generation);
-  const retryTick = useFetchRetryTick(error !== null);
-  useEffect(() => {
-    setError(null);
-    fetchSystem(false)
-      .then(setSnap)
-      .catch((err) =>
-        setError(err instanceof Error ? err.message : String(err)),
-      );
-  }, [wsGeneration, retryTick]);
 
   const refresh = async () => {
     setRefreshing(true);
@@ -49,7 +45,6 @@ export function SystemSection() {
   if (!snap) {
     return (
       <section className="settings-section">
-        <h3 className="settings-section__title">System</h3>
         <div className="t-meta">{error ?? "(loading…)"}</div>
       </section>
     );
@@ -62,13 +57,12 @@ export function SystemSection() {
 
   return (
     <section className="settings-section">
-      <h3 className="settings-section__title">System</h3>
-      <div className="settings-hint t-meta">
-        Capability snapshot from{" "}
-        <code>tesseract/scripts/check_dependencies.py</code>. Phase 17 reuses
-        this as a pre-flight gate for the bootstrap installer.
-      </div>
-      {error && <div className="settings-error">{error}</div>}
+      <Note>
+        What this machine can do, detected rather than assumed. The installer
+        reads the same answers before it sets anything up, so what you see here
+        is what it decided from.
+      </Note>
+      {error && <Note tone="bad">{error}</Note>}
       <div className="system-grid">
         <div className="system-row">
           <span className="system-label t-meta">platform</span>
@@ -117,14 +111,12 @@ export function SystemSection() {
         </div>
       </div>
       <div className="system-actions">
-        <button
-          type="button"
-          className="system-redetect"
+        <Button
           onClick={refresh}
           disabled={refreshing}
         >
           {refreshing ? "re-detecting…" : "re-detect"}
-        </button>
+        </Button>
       </div>
     </section>
   );

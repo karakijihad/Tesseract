@@ -16,6 +16,32 @@ from tesseract.mirror.server.stream_parser import _extract_channel_reply
 log = logging.getLogger(__name__)
 
 
+
+# Exception-shaped fragments. A message carrying one is an internal failure
+# leaking its own guts — class name, interpolated path, whatever the raise
+# site happened to include — and it goes to the log, not down a channel that
+# transits someone else's servers. Anything else is the runtime's own words
+# ("tool iteration cap reached"), which is exactly what the operator needs in
+# order to know what to do next, so it goes through.
+#
+# Deliberately a shape check and not a scrubber: partially cleaning an
+# exception string leaves you guessing which half was the secret. An adapter
+# crash arriving as a stream ERROR envelope looks identical to one arriving as
+# a raised exception, so the test cannot be "where did this come from".
+_LEAKY_ERROR_MARKERS = ("Error", "Exception", "Traceback", "/", "\\")
+
+_CHANNEL_SAFE_FALLBACK = "I hit an error processing that. Try again?"
+
+
+def _channel_safe_error(text: str) -> str:
+    """The error text as it may leave the machine over a channel."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return _CHANNEL_SAFE_FALLBACK
+    if any(marker in stripped for marker in _LEAKY_ERROR_MARKERS):
+        return _CHANNEL_SAFE_FALLBACK
+    return stripped
+
 async def _start_channel_turn(
     app: web.Application,
     session: ServerSession,
@@ -106,10 +132,39 @@ async def _start_channel_turn(
 
     async def _drive() -> None:
         from tesseract.integrations._channel_progress import ProgressEvent
+        from tesseract.mirror.server.stream_parser import _parse_tagged_stream
+
+        # Incremental tag parse, purely so `<intent>` can reach the channel
+        # while the turn is still running. The reply itself is still assembled
+        # from the raw text at the end — this reads the same stream, it does
+        # not consume it.
+        parse_state = "outside"
+        carry = ""
+        intent_buf: list[str] = []
+
+        async def _flush_intent() -> None:
+            text = "".join(intent_buf).strip()
+            intent_buf.clear()
+            if text:
+                await _safe_progress(ProgressEvent(kind="intent", text=text))
+
         try:
             async for chunk in session.chat_session.send(body):
                 if chunk.type == ChunkType.TEXT and chunk.text:
                     reply_holder.append(chunk.text)
+                    if on_progress is not None:
+                        pieces, next_state, carry = _parse_tagged_stream(
+                            carry + chunk.text, parse_state
+                        )
+                        for kind, text in pieces:
+                            if kind == "intent":
+                                intent_buf.append(text)
+                        # The block closed: the sentence is whole, so it can be
+                        # said. Emitting per piece would send it a word at a
+                        # time as the provider streams it.
+                        if parse_state == "intent" and next_state != "intent":
+                            await _flush_intent()
+                        parse_state = next_state
                 elif chunk.type == ChunkType.TOOL_CALL_START:
                     if on_progress is not None and chunk.tool_call is not None:
                         tc = chunk.tool_call
@@ -216,18 +271,17 @@ async def _start_channel_turn(
         # channel users with the bridge's generic "(no reply produced
         # this turn)" message. Append the error text to whatever partial
         # reply we have so the user sees something concrete and knows
-        # to retry / rephrase. Friend-tier sessions get a redacted
-        # suffix so an exception message can't leak operator-internal
-        # paths or tool names (reviewer P1-1) — full text stays in the
-        # backend log.
+        # to retry / rephrase.
         log.warning("channel turn error for %s: %s", session.session_id, error_holder[0])
         if error_out is not None:
             error_out.extend(error_holder)
-        channel_tier = getattr(session, "channel_tier", "operator")
-        if channel_tier == "operator":
-            suffix = error_holder[0].strip()
-        else:
-            suffix = "I hit an error processing that. Try again?"
+        # Redaction keys off the SHAPE of the message, not off who is reading.
+        # It used to key off `channel_tier`, and the tier is gone (2026-08-15 —
+        # single-operator install), but the protection was never really about
+        # the reader: a channel reply transits a third party's servers, so
+        # exception text carrying internal paths does not belong in it whoever
+        # holds the phone.
+        suffix = _channel_safe_error(error_holder[0])
         if reply:
             reply = f"{reply}\n\n⚠ {suffix}"
         else:

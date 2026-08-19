@@ -39,19 +39,22 @@ class ConscienceStatusTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "checking-your-state"
+    summary: ClassVar[str] = "Check the most recent behavioural-drift report."
+    use_when: ClassVar[str] = (
+        "Use when asked how you're holding up, when something feels off, or "
+        "before a long-running task — signal statuses, worst-status summary, "
+        "how long ago it was scraped."
+    )
+    not_when: ClassVar[str] = (
+        "for machine health (GPU, models, breakers, disk) rather than "
+        "behavioural drift, use `system_diagnose` instead."
+    )
+
     @property
     def name(self) -> str:
         return "conscience_status"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Check your own drift / conscience state. Returns the most recent "
-            "rule-based report from the scheduled conscience_heartbeat job: signal "
-            "statuses (ok/warn/bad), worst-status summary, and how long ago it was "
-            "scraped. Use when asked how you're holding up, when something feels off, "
-            "or before a long-running task. Pass verbose=true for per-signal detail."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

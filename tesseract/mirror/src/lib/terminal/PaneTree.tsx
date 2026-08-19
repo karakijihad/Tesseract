@@ -2,6 +2,8 @@ import { useRef, useCallback } from 'react';
 import type { PaneNode, PaneLeaf, PaneSplit } from '../types';
 import { useTerminalStore } from '../../stores/terminal';
 import { TerminalInstance } from './TerminalInstance';
+import { Hint } from '../../components/ui/Hint';
+import { CloseButton } from '../../components/common/CloseButton';
 
 // ── Resize Handle ───────────────────────────────────────
 
@@ -56,8 +58,7 @@ function TerminalPane({ pane }: { pane: PaneLeaf }) {
     useTerminalStore.getState().setFocusedPane(pane.id);
   };
 
-  const onClose = (e: React.MouseEvent) => {
-    e.stopPropagation();
+  const onClose = () => {
     useTerminalStore.getState().closePane(pane.id);
   };
 
@@ -73,18 +74,27 @@ function TerminalPane({ pane }: { pane: PaneLeaf }) {
 
   return (
     <div className={`wt-pane${isFocused ? ' is-focused' : ''}`}>
-      <button
-        type="button"
-        className="wt-pane-close"
-        onClick={onClose}
-        aria-label="Close pane"
-        title="Close pane (Alt+Shift+X)"
-      >
-        ×
-      </button>
-      <div className={`wt-pane-header t-meta ${ownerTone}`} title={`pane ${pane.id}`}>
-        {ownerLabel}
-      </div>
+      <Hint label="Close pane (Alt+Shift+X)">
+        {/* brand-exempt: not a control — a slot that keeps its close button's
+            click off the pane's focus handler. `RowActions` is the same shape
+            but belongs to a `Row`, and a pane is not one: the pane is not
+            activatable, only the canvas inside it takes focus. */}
+        <span
+          className="wt-pane-close-slot"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <CloseButton size="inline" onClick={onClose} ariaLabel="Close pane" />
+        </span>
+      </Hint>
+      <Hint label={`pane ${pane.id}`}>
+        <div className={`wt-pane-header t-meta ${ownerTone}`}>
+          {ownerLabel}
+        </div>
+      </Hint>
+      {/* brand-exempt: not a control — clicking anywhere in a terminal moves
+          focus there, the way clicking a text field does. It has no state to
+          toggle and nothing to announce, and the keyboard reaches it through
+          the terminal's own bindings rather than by tabbing to a button. */}
       <div className="wt-canvas" ref={containerRef} onClick={onFocus}>
         {pane.ptyStatus === 'running' || pane.ptyStatus === 'starting' ? (
           <TerminalInstance paneId={pane.id} containerRef={containerRef} />

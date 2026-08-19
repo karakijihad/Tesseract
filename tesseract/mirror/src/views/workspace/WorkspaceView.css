@@ -19,8 +19,8 @@
   display: flex;
   align-items: center;
   gap: var(--space-md);
-  padding: var(--space-sm) 14px;
-  border-bottom: 1px solid var(--panel-border);
+  padding: var(--space-sm) var(--space-14);
+  border-bottom: var(--stroke-1) solid var(--panel-border);
   flex-shrink: 0;
 }
 .workspace-view-title-row {
@@ -30,28 +30,28 @@
   min-width: 0;
 }
 .workspace-view-title {
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font-family: var(--font-ui);
+  font-size: var(--t-caption-size);
   font-weight: 600;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.045em;
   text-transform: uppercase;
   color: var(--text-meta);
   margin: 0;
 }
 .workspace-view-meta {
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-ui);
+  font-size: var(--t-caption-size);
   color: var(--text-meta);
 }
 .workspace-view-refresh {
-  font-family: var(--font-mono);
-  font-size: 10px;
+  font-family: var(--font-ui);
+  font-size: var(--t-meta-size);
   text-transform: uppercase;
-  letter-spacing: 0.4px;
-  padding: 4px 10px;
+  letter-spacing: 0.04em;
+  padding: var(--space-4) var(--space-10);
   border-radius: var(--radius-xs);
   background: var(--bg-card);
-  border: 1px solid var(--panel-border);
+  border: var(--stroke-1) solid var(--panel-border);
   color: var(--text-meta);
   cursor: pointer;
   margin-left: auto;
@@ -67,69 +67,12 @@
 }
 
 /* Filter chips ----------------------------------------------------------- */
-.workspace-view-filters {
-  display: flex;
-  gap: var(--space-xs);
-  flex-wrap: wrap;
-  flex-shrink: 0;
-}
-.workspace-filter {
-  background: transparent;
-  border: 1px solid var(--panel-divider);
-  border-radius: 999px;
-  color: var(--text-meta);
-  font-family: var(--font-ui);
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  padding: 3px 10px;
-  cursor: pointer;
-}
-.workspace-filter:hover {
-  color: var(--text-primary);
-}
-.workspace-filter.is-active {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--accent-dim);
-}
-.workspace-filter-count {
-  margin-left: 4px;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: var(--panel-divider);
-  color: var(--text-meta);
-  font-size: 9px;
-  letter-spacing: 0;
-  text-transform: none;
-}
-.workspace-filter.is-active .workspace-filter-count {
-  background: var(--accent);
-  color: var(--bg-panel);
-}
-.workspace-view-kind-chips {
-  display: flex;
-  gap: var(--space-xs);
-  flex-wrap: wrap;
-  flex-shrink: 0;
-  margin-top: 2px;
-}
 
 /* Banners and states ---------------------------------------------------- */
-.workspace-attention-banner {
-  background: rgba(255, 180, 84, 0.08);
-  border: 1px solid var(--warn);
-  border-radius: var(--radius-xs);
-  color: var(--warn);
-  padding: var(--space-xs) var(--space-sm);
-  flex-shrink: 0;
-}
+/* PLACEMENT ONLY — both are `Note`; the inbox is a flex column and neither
+   aside may be squeezed by the list under it. */
+.workspace-attention-banner,
 .workspace-error {
-  color: var(--bad);
-  border: 1px solid var(--bad);
-  background: var(--bad-dim);
-  border-radius: var(--radius-xs);
-  padding: var(--space-sm);
   flex-shrink: 0;
 }
 .workspace-empty {
@@ -148,12 +91,19 @@
   flex-direction: column;
   gap: var(--space-sm);
 }
+/* A grid, so the selection box gets a column of its own and the trigger keeps
+   the full width it had. `is-selected` tints the whole row rather than only
+   the box — a ticked checkbox 900px from the verb that acts on it is not
+   enough to see what a bulk Delete is about to touch. */
 .workspace-event {
   position: relative;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: var(--space-sm);
   padding: var(--space-sm) var(--space-md);
   border-radius: var(--radius-xs);
-  border: 1px solid var(--panel-divider);
-  border-left-width: 2px;
+  border: var(--stroke-1) solid var(--panel-divider);
+  border-left-width: var(--stroke-2);
   background: var(--bg-card);
 }
 .workspace-event:hover {
@@ -165,22 +115,28 @@
 .workspace-event.is-unread {
   border-left-color: var(--accent);
 }
+.workspace-event.is-selected {
+  background: var(--accent-dim);
+  border-color: var(--accent-glow);
+}
+.workspace-event-select {
+  display: flex;
+  align-items: flex-start;
+  padding-top: var(--space-2);
+}
+/* The actions row and the expanded body span both columns — only the trigger
+   sits beside the box. */
+.workspace-event-actions,
+.workspace-event-expanded {
+  grid-column: 2;
+}
+/* Layout only — the trigger IS the card's body, several stacked rows of it,
+   so it stacks rather than sitting in a line. */
 .workspace-event-trigger {
   display: block;
-  width: 100%;
-  margin: 0;
+  /* brand-exempt: the card supplies the inset; a second one from the control
+     would indent every event's text away from its own checkbox. */
   padding: 0;
-  background: transparent;
-  border: none;
-  text-align: left;
-  cursor: pointer;
-  color: inherit;
-  font: inherit;
-}
-.workspace-event-trigger:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: var(--radius-xs);
 }
 .workspace-event-meta {
   display: flex;
@@ -202,18 +158,18 @@
 .workspace-event-prio {
   color: var(--warn);
   font-family: var(--font-ui);
-  font-size: 10px;
+  font-size: var(--t-meta-size);
   font-weight: 600;
   letter-spacing: 0.04em;
 }
 .workspace-event-status {
   font-family: var(--font-ui);
-  font-size: 10px;
+  font-size: var(--t-meta-size);
   font-weight: 600;
   letter-spacing: 0.04em;
-  padding: 1px 6px;
+  padding: var(--space-1) var(--space-6);
   border-radius: 999px;
-  border: 1px solid currentColor;
+  border: var(--stroke-1) solid currentColor;
 }
 .workspace-event-status--approved { color: var(--ok); }
 .workspace-event-status--rejected { color: var(--bad); }
@@ -222,7 +178,7 @@
 .workspace-event-title {
   color: var(--text-primary);
   font-family: var(--font-ui);
-  font-size: 13px;
+  font-size: var(--t-body-size);
   font-weight: 500;
   line-height: 1.4;
   margin-bottom: var(--space-xs);
@@ -230,7 +186,7 @@
 .workspace-event-summary {
   color: var(--text-secondary);
   font-family: var(--font-body);
-  font-size: 12px;
+  font-size: var(--t-caption-size);
   line-height: 1.5;
   margin-bottom: var(--space-sm);
   white-space: pre-wrap;
@@ -239,40 +195,6 @@
   display: flex;
   gap: var(--space-xs);
   flex-wrap: wrap;
-}
-.workspace-action {
-  background: transparent;
-  border: 1px solid var(--panel-divider);
-  border-radius: var(--radius-xs);
-  color: var(--text-meta);
-  cursor: pointer;
-  font-family: var(--font-ui);
-  font-size: 11px;
-  padding: 3px 10px;
-}
-.workspace-action:hover:not(:disabled) {
-  color: var(--text-primary);
-  border-color: var(--accent);
-}
-.workspace-action:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.workspace-action--approve:hover:not(:disabled) {
-  border-color: var(--ok);
-  color: var(--ok);
-}
-.workspace-action--reject:hover:not(:disabled) {
-  border-color: var(--bad);
-  color: var(--bad);
-}
-.workspace-action--resolve:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-.workspace-action--delete:hover:not(:disabled) {
-  border-color: var(--bad);
-  color: var(--bad);
 }
 .workspace-comment-count {
   color: var(--text-meta);
@@ -283,7 +205,7 @@
   margin-top: var(--space-sm);
   padding: var(--space-sm);
   background: var(--bg-elevated);
-  border: 1px solid var(--panel-divider);
+  border: var(--stroke-1) solid var(--panel-divider);
   border-radius: var(--radius-xs);
 }
 .workspace-thread-empty {
@@ -301,7 +223,7 @@
   padding: var(--space-xs) var(--space-sm);
   border-radius: var(--radius-xs);
   background: var(--bg-card);
-  border-left: 2px solid var(--panel-divider);
+  border-left: var(--stroke-2) solid var(--panel-divider);
 }
 .workspace-comment--operator {
   border-left-color: var(--accent);
@@ -312,12 +234,12 @@
 .workspace-comment-head {
   display: flex;
   gap: var(--space-sm);
-  margin-bottom: 2px;
+  margin-bottom: var(--space-2);
 }
 .workspace-comment-body {
   color: var(--text-primary);
   font-family: var(--font-body);
-  font-size: 12px;
+  font-size: var(--t-caption-size);
   line-height: 1.5;
   white-space: pre-wrap;
 }
@@ -325,15 +247,15 @@
   white-space: normal;
 }
 .workspace-comment--agent .workspace-comment-body p {
-  margin: 0 0 6px;
+  margin: 0 0 var(--space-6);
 }
 .workspace-comment--agent .workspace-comment-body p:last-child {
   margin-bottom: 0;
 }
 .workspace-comment--agent .workspace-comment-body ul,
 .workspace-comment--agent .workspace-comment-body ol {
-  margin: 4px 0;
-  padding-left: 18px;
+  margin: var(--space-4) 0;
+  padding-left: var(--space-18);
 }
 
 .workspace-comment--pending .workspace-comment-body {
@@ -341,7 +263,7 @@
 }
 .workspace-thread-pending-dots {
   display: inline-flex;
-  gap: 3px;
+  gap: var(--space-3);
   align-items: center;
 }
 .workspace-thread-pending-dots span {
@@ -350,30 +272,19 @@
   border-radius: 50%;
   background: var(--text-meta);
   opacity: 0.4;
-  animation: workspace-thread-dot 1.2s infinite ease-in-out both;
+  animation: workspace-thread-dot var(--motion-beat) infinite ease-in-out both;
 }
-.workspace-thread-pending-dots span:nth-child(2) { animation-delay: 0.15s; }
-.workspace-thread-pending-dots span:nth-child(3) { animation-delay: 0.30s; }
+.workspace-thread-pending-dots span:nth-child(2) { animation-delay: var(--motion-fast); }
+.workspace-thread-pending-dots span:nth-child(3) { animation-delay: var(--motion-med); }
 @keyframes workspace-thread-dot {
   0%, 80%, 100% { opacity: 0.2; transform: scale(0.7); }
   40%           { opacity: 1;   transform: scale(1);   }
 }
 
+/* Width only — the field itself is `.textarea`. */
 .workspace-thread-form textarea {
   width: 100%;
-  background: var(--bg-card);
-  border: 1px solid var(--panel-divider);
-  border-radius: var(--radius-xs);
-  color: var(--text-primary);
-  padding: var(--space-xs) var(--space-sm);
-  font-family: var(--font-ui);
-  font-size: 12px;
-  resize: vertical;
   box-sizing: border-box;
-}
-.workspace-thread-form textarea:focus {
-  outline: none;
-  border-color: var(--accent);
 }
 .workspace-thread-form-row {
   display: flex;
@@ -381,23 +292,6 @@
   justify-content: flex-end;
   gap: var(--space-sm);
   margin-top: var(--space-xs);
-}
-.workspace-thread-form button {
-  background: transparent;
-  border: 1px solid var(--accent);
-  border-radius: var(--radius-xs);
-  color: var(--accent);
-  cursor: pointer;
-  font-family: var(--font-ui);
-  font-size: 11px;
-  padding: 4px 12px;
-}
-.workspace-thread-form button:hover:not(:disabled) {
-  background: var(--accent-dim);
-}
-.workspace-thread-form button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 .workspace-thread-error {
   color: var(--bad);
@@ -413,23 +307,23 @@
 .workspace-detail-body {
   padding: var(--space-sm);
   background: var(--bg-card);
-  border: 1px solid var(--panel-divider);
+  border: var(--stroke-1) solid var(--panel-divider);
   border-radius: var(--radius-xs);
 }
 .workspace-detail-dl {
   display: grid;
   grid-template-columns: max-content 1fr;
   column-gap: var(--space-sm);
-  row-gap: 4px;
+  row-gap: var(--space-4);
   margin: 0;
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--t-caption-size);
 }
 .workspace-detail-dl dt {
   color: var(--text-meta);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  font-size: 10px;
+  font-size: var(--t-meta-size);
   align-self: center;
 }
 .workspace-detail-dl dd {
@@ -459,15 +353,15 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-2);
   font-family: var(--font-mono, monospace);
-  font-size: 11px;
+  font-size: var(--t-caption-size);
 }
 .workspace-detail-list-item {
   color: var(--text-primary);
 }
 .workspace-detail-snippet {
-  margin-top: 2px;
+  margin-top: var(--space-2);
   white-space: pre-wrap;
 }
 .workspace-detail-snippet p {
@@ -477,22 +371,22 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-xs);
-  margin-top: 4px;
+  margin-top: var(--space-4);
   align-items: center;
 }
 .workspace-detail-id {
   font-family: var(--font-mono, monospace);
-  font-size: 10px;
+  font-size: var(--t-meta-size);
 }
 .workspace-detail-status {
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  font-size: 10px;
+  font-size: var(--t-meta-size);
 }
 .workspace-detail-section-head {
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  font-size: 10px;
+  font-size: var(--t-meta-size);
   margin: var(--space-sm) 0 var(--space-xs) 0;
   color: var(--text-meta);
   font-family: var(--font-ui);
@@ -504,7 +398,7 @@
   background: var(--bg-elevated);
   border-radius: var(--radius-xs);
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--t-caption-size);
   line-height: 1.5;
   color: var(--text-primary);
   white-space: pre-wrap;
@@ -512,38 +406,20 @@
   max-height: 480px;
   overflow-y: auto;
 }
+/* Layout only — a path is one long unbroken word and has to be allowed to
+   break mid-token rather than push the card wider. */
 .workspace-path-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 6px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--panel-divider);
-  border-radius: var(--radius-xs);
-  color: var(--text-secondary);
-  font-family: var(--font-mono, monospace);
-  font-size: 10px;
-  cursor: pointer;
-  max-width: 100%;
   word-break: break-all;
-  text-align: left;
-}
-.workspace-path-pill:hover {
-  border-color: var(--text-meta);
-  color: var(--text-primary);
-}
-.workspace-path-pill.is-copied {
-  border-color: var(--accent, var(--text-meta));
 }
 .workspace-path-pill-hint {
-  font-size: 9px;
+  font-size: var(--t-meta-size);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   flex-shrink: 0;
 }
 .workspace-detail-raw {
   font-family: var(--font-ui);
-  font-size: 11px;
+  font-size: var(--t-caption-size);
 }
 .workspace-detail-raw summary {
   cursor: pointer;
@@ -555,7 +431,7 @@
   background: var(--bg-elevated);
   border-radius: var(--radius-xs);
   font-family: var(--font-mono, monospace);
-  font-size: 11px;
+  font-size: var(--t-caption-size);
   color: var(--text-secondary);
   overflow-x: hidden;
   white-space: pre-wrap;
@@ -566,10 +442,10 @@
   margin: var(--space-sm) 0 0 0;
   padding: var(--space-xs) var(--space-sm);
   background: var(--bg-elevated);
-  border: 1px solid var(--panel-divider);
+  border: var(--stroke-1) solid var(--panel-divider);
   border-radius: var(--radius-xs);
   font-family: var(--font-mono, monospace);
-  font-size: 11px;
+  font-size: var(--t-caption-size);
   line-height: 1.5;
   overflow-x: hidden;
   white-space: pre-wrap;
@@ -582,11 +458,11 @@
 }
 .workspace-diff-line.is-add {
   color: var(--ok);
-  background: rgba(64, 192, 96, 0.08);
+  background: var(--ok-wash);
 }
 .workspace-diff-line.is-del {
   color: var(--bad);
-  background: rgba(224, 80, 80, 0.08);
+  background: var(--bad-wash);
 }
 .workspace-diff-line.is-hunk {
   color: var(--accent);
@@ -602,46 +478,11 @@
   align-items: flex-start;
   flex-shrink: 0;
 }
-.workspace-new-thread-trigger,
-.workspace-voice-trigger,
-.workspace-voice-send,
-.workspace-modal-send {
-  background: transparent;
-  border: 1px solid var(--accent);
-  border-radius: var(--radius-xs);
-  color: var(--accent);
-  cursor: pointer;
-  font-family: var(--font-ui);
-  font-size: 11px;
-  padding: 4px 12px;
-  white-space: nowrap;
-}
-.workspace-new-thread-trigger:hover:not(:disabled),
-.workspace-voice-trigger:hover:not(:disabled),
-.workspace-voice-send:hover:not(:disabled),
-.workspace-modal-send:hover:not(:disabled) {
-  background: var(--accent-dim);
-}
-.workspace-new-thread-trigger:disabled,
-.workspace-voice-trigger:disabled,
-.workspace-voice-send:disabled,
-.workspace-modal-send:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
 .workspace-voice {
   display: flex;
   flex-direction: column;
   gap: var(--space-xs);
   align-items: flex-end;
-}
-.workspace-voice-trigger.is-listening {
-  border-color: var(--bad);
-  color: var(--bad);
-}
-.workspace-voice-trigger.is-disabled {
-  border-color: var(--panel-divider);
-  color: var(--text-meta);
 }
 .workspace-voice-panel {
   display: flex;
@@ -652,12 +493,12 @@
 .workspace-voice-text {
   width: 100%;
   background: var(--bg-card);
-  border: 1px solid var(--panel-divider);
+  border: var(--stroke-1) solid var(--panel-divider);
   border-radius: var(--radius-xs);
   color: var(--text-primary);
   padding: var(--space-xs) var(--space-sm);
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--t-caption-size);
   resize: vertical;
   box-sizing: border-box;
 }
@@ -685,49 +526,31 @@
   align-items: center;
   gap: var(--space-xs);
 }
-.workspace-control-select {
-  background: var(--bg-card);
-  border: 1px solid var(--panel-divider);
+/* Select-all leads the row, so it gets the separator rather than a gap of its
+   own — the date pair after it is a different kind of control. */
+.workspace-control--select-all {
+  padding-right: var(--space-md);
+  border-right: var(--stroke-1) solid var(--panel-divider);
+}
+
+/* Only rendered while something is selected, so it is allowed to be loud: it
+   is the one bar on this surface whose buttons act on many rows at once. */
+.workspace-bulk-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border: var(--stroke-1) solid var(--accent-glow);
   border-radius: var(--radius-xs);
-  color: var(--text-primary);
-  font-family: var(--font-ui);
-  font-size: 11px;
-  padding: 2px var(--space-xs);
-  cursor: pointer;
+  background: var(--accent-dim);
+  flex-shrink: 0;
 }
-.workspace-control-select:focus {
-  outline: none;
-  border-color: var(--accent);
+.workspace-bulk-bar__count {
+  margin-right: var(--space-4);
 }
-.workspace-control-date {
-  background: var(--bg-card);
-  border: 1px solid var(--panel-divider);
-  border-radius: var(--radius-xs);
-  color: var(--text-primary);
-  font-family: var(--font-ui);
-  font-size: 11px;
-  padding: 2px var(--space-xs);
-  color-scheme: dark;
-  cursor: pointer;
-}
-.workspace-control-date:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-.workspace-control-clear {
-  background: transparent;
-  border: 1px solid var(--panel-divider);
-  border-radius: var(--radius-xs);
-  color: var(--text-meta);
-  cursor: pointer;
-  font-family: var(--font-ui);
-  font-size: 10px;
-  padding: 2px 8px;
-}
-.workspace-control-clear:hover {
-  color: var(--text-primary);
-  border-color: var(--accent);
-}
+/* The page-size dropdown is `Select` and the date filters are `Input` — see
+   `ui.css` and `globals.css`. */
 .workspace-control-count {
   margin-left: auto;
 }
@@ -739,69 +562,26 @@
   flex-shrink: 0;
   padding-top: var(--space-sm);
 }
-.workspace-pagination-btn {
-  background: transparent;
-  border: 1px solid var(--panel-divider);
-  border-radius: var(--radius-xs);
-  color: var(--text-primary);
-  cursor: pointer;
-  font-family: var(--font-ui);
-  font-size: 11px;
-  padding: 4px 12px;
-}
-.workspace-pagination-btn:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-.workspace-pagination-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
 
 /* New-thread modal ------------------------------------------------------ */
-.workspace-modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 50;
-}
+/* SIZE ONLY — the ground, the border and the scrim behind it are `Modal`'s. */
 .workspace-modal {
   width: min(560px, calc(100vw - 2 * var(--space-lg)));
-  background: var(--bg-elevated);
-  border: 1px solid var(--panel-divider);
-  border-radius: var(--radius-xs);
   padding: var(--space-md);
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
 }
 .workspace-modal-title {
   margin: 0;
 }
+/* Width only — the fields are `.input` and `.textarea`. This block set a
+   different ground, a different size and a THIRD font from the same two
+   controls elsewhere in the app. */
 .workspace-modal-input,
 .workspace-modal-textarea {
   width: 100%;
-  background: var(--bg-card);
-  border: 1px solid var(--panel-divider);
-  border-radius: var(--radius-xs);
-  color: var(--text-primary);
-  padding: var(--space-xs) var(--space-sm);
-  font-family: var(--font-ui);
-  font-size: 13px;
   box-sizing: border-box;
-}
-.workspace-modal-textarea {
-  resize: vertical;
-  font-family: var(--font-body);
-}
-.workspace-modal-input:focus,
-.workspace-modal-textarea:focus {
-  outline: none;
-  border-color: var(--accent);
 }
 .workspace-modal-row {
   display: flex;
@@ -813,94 +593,35 @@
   color: var(--bad);
   margin-right: auto;
 }
-.workspace-modal-cancel {
-  background: transparent;
-  border: 1px solid var(--panel-divider);
-  border-radius: var(--radius-xs);
-  color: var(--text-meta);
-  cursor: pointer;
-  font-family: var(--font-ui);
-  font-size: 11px;
-  padding: 4px 12px;
-}
-.workspace-modal-cancel:hover:not(:disabled) {
-  color: var(--text-primary);
-  border-color: var(--accent);
-}
-.workspace-modal-cancel:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
 
-/* Workspace tab shell — Inbox + Daily Brief. The original WorkspaceView
-   was a single InboxPanel; the shell wraps it so the brief gets a
-   chrome-free surface (no Resolve/Delete strip, no event title bar). */
-.workspace-shell {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-}
-.workspace-tabs {
-  display: flex;
-  gap: 4px;
-  padding: 8px 12px 0;
-  border-bottom: 1px solid var(--panel-divider);
-  flex: 0 0 auto;
-}
-.workspace-tab {
-  background: transparent;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  color: var(--text-meta);
-  font-family: var(--font-ui);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  padding: 6px 10px;
-  cursor: pointer;
-  margin-bottom: -1px;
-}
-.workspace-tab:hover { color: var(--text-primary); }
-.workspace-tab.is-active {
-  color: var(--text-primary);
-  border-bottom-color: var(--accent);
-}
-.workspace-tab-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
 .brief-tab {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 16px 20px 24px;
+  padding: var(--space-16) var(--space-20) var(--space-24);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-12);
 }
 .brief-tab--empty { justify-content: center; align-items: center; }
-.brief-tab-empty-msg { padding: 24px; text-align: center; }
+.brief-tab-empty-msg { padding: var(--space-24); text-align: center; }
 .brief-tab-head {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--panel-divider);
+  gap: var(--space-2);
+  padding-bottom: var(--space-8);
+  border-bottom: var(--stroke-1) solid var(--panel-divider);
 }
 .brief-tab-title {
   margin: 0;
   font-family: var(--font-ui);
-  font-size: 18px;
+  font-size: var(--t-head-size);
   font-weight: 600;
   color: var(--text-primary);
   letter-spacing: -0.01em;
 }
 .brief-tab-date {
-  font-size: 11px;
+  font-size: var(--t-caption-size);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
@@ -910,16 +631,16 @@
 .brief-body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-12);
 }
 .brief-section {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-4);
 }
 .brief-section-title {
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--t-caption-size);
   font-weight: 600;
   color: var(--text-meta);
   margin: 0;
@@ -928,24 +649,24 @@
 }
 .brief-vault-list {
   margin: 0;
-  padding-left: 18px;
+  padding-left: var(--space-18);
   color: var(--text-primary);
 }
 .brief-vault-list li p {
   margin: 0;
 }
 .brief-cap-warn {
-  margin: 0 0 4px;
+  margin: 0 0 var(--space-4);
 }
 .brief-pillar {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-top: 6px;
+  gap: var(--space-4);
+  margin-top: var(--space-6);
 }
 .brief-pillar-title {
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--t-caption-size);
   font-weight: 600;
   color: var(--text-primary);
   margin: 0;
@@ -956,26 +677,26 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-8);
 }
 .brief-card {
-  border: 1px solid var(--panel-divider);
+  border: var(--stroke-1) solid var(--panel-divider);
   border-radius: var(--radius-xs);
-  padding: 8px 10px;
+  padding: var(--space-8) var(--space-10);
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  background: rgba(255, 255, 255, 0.02);
+  gap: var(--space-4);
+  background: var(--wash-xs);
 }
 .brief-card-title {
   font-family: var(--font-ui);
-  font-size: 13px;
+  font-size: var(--t-body-size);
   font-weight: 600;
   color: var(--text-primary);
 }
 .brief-card-summary {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--t-caption-size);
   line-height: 1.45;
   color: var(--text-primary);
 }
@@ -994,33 +715,12 @@
 }
 .brief-card-actions {
   display: flex;
-  gap: 6px;
+  gap: var(--space-6);
   align-items: center;
-}
-.brief-card-action {
-  background: transparent;
-  border: 1px solid var(--panel-divider);
-  border-radius: var(--radius-xs);
-  color: var(--text-meta);
-  cursor: pointer;
-  font-size: 13px;
-  padding: 2px 8px;
-}
-.brief-card-action:hover:not(:disabled) {
-  color: var(--text-primary);
-  border-color: var(--accent);
-}
-.brief-card-action.is-done {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-.brief-card-action:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
 }
 .brief-card-err,
 .brief-card-thanks {
-  margin-left: 4px;
+  margin-left: var(--space-4);
 }
 
 /* MO-9-14b — newsletter variant: collapsed prose + bulleted world rows
@@ -1028,53 +728,53 @@
    scannable rows; the original card layout is preserved above for the
    markdown export view. */
 .brief-body--newsletter {
-  gap: 10px;
+  gap: var(--space-10);
 }
 .brief-section--tight {
-  gap: 2px;
+  gap: var(--space-2);
 }
 .brief-prose {
-  border: 1px solid var(--panel-divider);
+  border: var(--stroke-1) solid var(--panel-divider);
   border-radius: var(--radius-xs);
-  padding: 4px 10px;
-  background: rgba(255, 255, 255, 0.02);
+  padding: var(--space-4) var(--space-10);
+  background: var(--wash-xs);
 }
 .brief-prose-summary {
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--t-caption-size);
   font-weight: 600;
   color: var(--text-primary);
   cursor: pointer;
   display: flex;
-  gap: 8px;
+  gap: var(--space-8);
   align-items: baseline;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  padding: 4px 0;
+  padding: var(--space-4) 0;
 }
 .brief-prose-summary::-webkit-details-marker { display: none; }
 .brief-prose-summary::marker { content: ''; }
 .brief-prose-body {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 6px 0 8px;
+  gap: var(--space-10);
+  padding: var(--space-6) 0 var(--space-8);
 }
 .brief-prose-row {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-2);
 }
 .brief-prose-row p {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--t-caption-size);
   line-height: 1.5;
   color: var(--text-primary);
 }
 .brief-prose-label {
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  font-size: 10px;
+  font-size: var(--t-meta-size);
 }
 .brief-news-list {
   list-style: none;
@@ -1085,9 +785,9 @@
 }
 .brief-news-row {
   display: flex;
-  gap: 10px;
-  padding: 8px 0;
-  border-top: 1px solid var(--panel-divider);
+  gap: var(--space-10);
+  padding: var(--space-8) 0;
+  border-top: var(--stroke-1) solid var(--panel-divider);
 }
 .brief-news-row:first-child { border-top: 0; }
 .brief-news-thumb {
@@ -1096,7 +796,7 @@
   height: 64px;
   border-radius: var(--radius-xs);
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--wash-sm);
   display: block;
 }
 .brief-news-thumb img {
@@ -1110,11 +810,11 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-2);
 }
 .brief-news-title {
   font-family: var(--font-ui);
-  font-size: 13px;
+  font-size: var(--t-body-size);
   font-weight: 600;
   line-height: 1.35;
 }
@@ -1128,7 +828,7 @@
 }
 .brief-news-summary {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--t-caption-size);
   line-height: 1.4;
   color: var(--text-primary);
   display: -webkit-box;
@@ -1146,44 +846,44 @@
   display: flex;
   gap: 0;
   align-items: center;
-  font-size: 11px;
+  font-size: var(--t-caption-size);
 }
 
 /* MO-10-2 yaml_change_proposal meta — chip + path under the title */
 .workspace-event-yaml-meta {
   display: flex;
-  gap: 8px;
+  gap: var(--space-8);
   align-items: center;
-  margin-top: 6px;
+  margin-top: var(--space-6);
 }
 .workspace-event-chip {
   display: inline-block;
-  padding: 1px 8px;
+  padding: var(--space-1) var(--space-8);
   border-radius: 10px;
-  background: var(--accent-soft, rgba(255, 200, 100, 0.12));
+  background: var(--accent-dim);
   color: var(--accent);
-  font-size: 11px;
+  font-size: var(--t-caption-size);
   font-weight: 500;
 }
 .workspace-event-path {
-  font-family: var(--mono, monospace);
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: var(--t-caption-size);
   color: var(--text-meta);
 }
 /* Stage 10 — agent_approval proposal card */
 .workspace-event-agent-meta {
   display: flex;
-  gap: 8px;
+  gap: var(--space-8);
   align-items: center;
-  margin-top: 6px;
+  margin-top: var(--space-6);
 }
 .workspace-event-agent-pre {
-  margin: 6px 0 0;
-  padding: 8px 10px;
-  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  margin: var(--space-6) 0 0;
+  padding: var(--space-8) var(--space-10);
+  border: var(--stroke-1) solid var(--border, var(--border-muted));
   border-radius: 6px;
-  font-family: var(--mono, monospace);
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: var(--t-caption-size);
   line-height: 1.5;
   max-height: 320px;
   overflow: auto;

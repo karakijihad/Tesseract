@@ -28,6 +28,17 @@ class VaultSearchTool(Tool):
     # Audit-3 M9 — see VaultQueryTool.untrusted_source.
     untrusted_source: ClassVar[bool] = True
 
+    group: ClassVar[str] = "research-library"
+    summary: ClassVar[str] = "Hybrid BM25 + vector search over raw vault source chunks."
+    use_when: ClassVar[str] = (
+        "Use to find the exact passage where something was said — returns matching chunks "
+        "with source paths, from PDFs, articles, data files, and web snapshots."
+    )
+    not_when: ClassVar[str] = (
+        "Use `vault_query` when you want a synthesized answer from the compiled wiki instead "
+        "of raw chunks."
+    )
+
     def __init__(
         self,
         embeddings: EmbeddingIndex | None,
@@ -46,10 +57,6 @@ class VaultSearchTool(Tool):
     @property
     def name(self) -> str:
         return "vault_search"
-
-    @property
-    def description(self) -> str:
-        return "Search raw source material in the vault (PDFs, articles, data files, web snapshots). Returns matching chunks with source paths."
 
     @property
     def input_schema(self) -> type[BaseModel]:

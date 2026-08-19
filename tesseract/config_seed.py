@@ -8,8 +8,15 @@ template files the install does not have, and records what it copied in
 That manifest is what lets "missing" and "deliberately deleted" be told
 apart. Without it the only safe rule is "seed once, never again", which is
 what the old sentinel gate did — and it meant a default added in a later
-release never reached an existing install. The operator's copy always wins
-over the template, and a file they delete stays deleted.
+release never reached an existing install. A file the operator deletes
+stays deleted.
+
+Config yaml is the exception: it is REPLACED from the templates on every
+release that changed one, with the operator's previous copy kept under
+``home/config-backup/``. Merging a release's new keys into their file only
+ever adds, so a template whose shape changed leaves both spellings in place
+and the runtime cannot tell which was meant. See
+`replace_config_from_templates`.
 
 The manifest lives under ``runtime/`` because it describes what *this*
 machine has done; it must not travel with ``home/`` to another PC.
@@ -88,18 +95,6 @@ def load_seeded() -> set[str]:
     return {str(entry) for entry in paths} if isinstance(paths, list) else set()
 
 
-def load_seeded_keys() -> set[str]:
-    """Config key paths this install has already had migrated in.
-
-    Same contract as `load_seeded`, one level finer: the manifest is what
-    lets "the operator never had this key" and "the operator deleted this
-    key" be told apart. Entries look like
-    ``providers.yaml::local.kokoro.download``.
-    """
-    keys = _load_manifest().get("keys")
-    return {str(entry) for entry in keys} if isinstance(keys, list) else set()
-
-
 def load_seeded_digests() -> dict[str, str]:
     """Digest of each seeded file's contents *as this install received them*.
 
@@ -119,9 +114,7 @@ def load_seeded_digests() -> dict[str, str]:
     return {str(key): str(value) for key, value in digests.items()}
 
 
-def _write_manifest(
-    *, paths: set[str], keys: set[str], digests: Mapping[str, str]
-) -> None:
+def _write_manifest(*, paths: set[str], digests: Mapping[str, str]) -> None:
     """Written temp-then-rename so a power loss mid-write leaves the previous
     manifest intact rather than a half-written one."""
     from tesseract.paths import home_dir
@@ -132,7 +125,6 @@ def _write_manifest(
         {
             "home": str(home_dir()),
             "paths": sorted(paths),
-            "keys": sorted(keys),
             "digests": dict(sorted(digests.items())),
         },
         indent=2,
@@ -147,23 +139,7 @@ def record_seeded(paths: Iterable[str]) -> None:
     added = set(paths)
     if not added:
         return
-    _write_manifest(
-        paths=load_seeded() | added,
-        keys=load_seeded_keys(),
-        digests=load_seeded_digests(),
-    )
-
-
-def record_seeded_keys(keys: Iterable[str]) -> None:
-    """Merge `keys` into the manifest's config-key list."""
-    added = set(keys)
-    if not added:
-        return
-    _write_manifest(
-        paths=load_seeded(),
-        keys=load_seeded_keys() | added,
-        digests=load_seeded_digests(),
-    )
+    _write_manifest(paths=load_seeded() | added, digests=load_seeded_digests())
 
 
 def record_seeded_digests(digests: Mapping[str, str]) -> None:
@@ -172,13 +148,38 @@ def record_seeded_digests(digests: Mapping[str, str]) -> None:
         return
     _write_manifest(
         paths=load_seeded(),
-        keys=load_seeded_keys(),
         digests={**load_seeded_digests(), **digests},
     )
 
 
 def digest_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def is_safe_seed_target(target: Path, home: Path) -> bool:
+    """Whether `target` is a real file inside `home`, reached without a link.
+
+    `seed_tree` already refuses to FOLLOW a symlink on the way in (its
+    `path.is_symlink()` skip, for the same reason stated there); this is that
+    rule on the way out, and it matters more. `refresh_seeded_docs` ends in
+    `write_text`, which writes THROUGH a link: a symlink planted at
+    `home/workspace/OPERATING.md` and pointed anywhere the process can write turns
+    a later shipped correction into an overwrite of that file instead. The
+    path stays inside `home` the whole time, so a `relative_to` check does not
+    see it — only resolving does.
+
+    `kernel/tools/_path_anchor.within_root` is the same rule for the read
+    tools. It is not imported here because config seeding must not depend on
+    the kernel; the duplication is one comparison and the alternative is a
+    layering inversion.
+    """
+    try:
+        if target.is_symlink() or not target.is_file():
+            return False
+        target.resolve(strict=True).relative_to(home.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return True
 
 
 # Pronouns are derived from `identity.gender` rather than configured beside
@@ -333,7 +334,7 @@ def _digests_for(keys: Iterable[str]) -> dict[str, str]:
     """Digest the just-seeded markdown among `keys`, skipping what won't read.
 
     Only ``.md`` is digested because only prose documents are refreshable —
-    yaml has `migrate_config_keys` and binaries have no merge story at all.
+    yaml is replaced wholesale and binaries have no merge story at all.
     """
     from tesseract.paths import home_dir
 
@@ -356,8 +357,8 @@ def refresh_seeded_docs(
 
     Seeding is per-FILE and only ever adds, so a document improved in a later
     release never reaches an install that already has it. For config yaml
-    `migrate_config_keys` is the per-key answer to that; this is the markdown
-    one, and it is deliberately narrower. Prose cannot be merged key-by-key,
+    config yaml answers that by being replaced wholesale; this is the markdown
+    answer, and it is deliberately narrower. Prose cannot be merged key-by-key,
     so the only safe question is whether the file is still exactly what was
     seeded:
 
@@ -406,7 +407,12 @@ def refresh_seeded_docs(
         except ValueError:
             continue  # outside home: not ours to reason about
         recorded = digests.get(key)
-        if key not in seeded or recorded is None or not target.is_file():
+        if key not in seeded or recorded is None:
+            continue
+        if not is_safe_seed_target(target, home):
+            # Covers "not a file" and "reached through a link". The write below
+            # would follow one out of the tree; refusing is the same
+            # conservative branch an unknown digest already takes.
             continue
         try:
             current = target.read_text(encoding="utf-8")
@@ -436,94 +442,62 @@ def ensure_config_seeded() -> None:
     from tesseract.paths import config_dir
 
     _seed_from_templates("config", config_dir())
-    migrate_config_keys()
+    replace_config_from_templates()
     _stamp_born_at_if_empty()
 
 
-def _missing_key_paths(
-    template: Mapping, current: Mapping, parents: tuple[str, ...] = ()
-) -> list[tuple[str, ...]]:
-    """Key paths present in `template` but absent from `current`.
+#: Where a replaced config file is kept. One folder, rewritten each time a
+#: release changes something — the operator gets the copy their own edits
+#: were in, not an archive of every release they ever ran.
+CONFIG_BACKUP_DIRNAME = "config-backup"
 
-    Recurses only where BOTH sides are mappings — that is what makes this a
-    key merge rather than a value merge. A key the operator already has is
-    never looked inside for a value comparison, so a knob they retuned is
-    invisible to this function and cannot be reverted by it. A key whose
-    value is a list is copied whole or not at all: merging into a list has
-    no correct answer (append? prepend? dedupe?), and every list in these
-    files is an ordered operator decision.
+#: Written beside the runtime manifest so a surface can tell the operator
+#: their config was replaced, and where the previous one went.
+CONFIG_REPLACED_MARKER = "config-replaced.json"
 
-    Paths are tuples of key names, never a joined string. Config keys can
-    contain dots themselves — `roles.yaml::voice.tts.settings` is keyed by
-    catalog refs like `local.kokoro.af_heart` — so splitting a dotted path
-    back into parts would address the wrong node and write into the wrong
-    place.
+
+def _template_digest_key(filename: str) -> str:
+    """Manifest key for a config template's digest.
+
+    Namespaced so it cannot collide with `refresh_seeded_docs`' entries, which
+    are home-relative paths of documents on disk. This one describes the
+    TEMPLATE a release shipped, not the file the operator ended up with.
     """
-    found: list[tuple[str, ...]] = []
-    for key, value in template.items():
-        name = str(key)
-        path = (*parents, name)
-        if name not in current:
-            found.append(path)
-            continue
-        existing = current[name]
-        if isinstance(value, Mapping) and isinstance(existing, Mapping):
-            found.extend(_missing_key_paths(value, existing, path))
-    return found
+    return f"config-template::{filename}"
 
 
-def _set_key_path(doc: Any, path: tuple[str, ...], value: Any) -> None:
-    for part in path[:-1]:
-        doc = doc[part]
-    doc[path[-1]] = value
+def config_backup_dir() -> Path:
+    from tesseract.paths import home_dir
+
+    return home_dir() / CONFIG_BACKUP_DIRNAME
 
 
-def _template_value(template: Mapping, path: tuple[str, ...]) -> Any:
-    value: Any = template
-    for part in path:
-        value = value[part]
-    return value
+def config_replaced_marker_path() -> Path:
+    from tesseract.paths import runtime_dir
+
+    return runtime_dir() / CONFIG_REPLACED_MARKER
 
 
-def _manifest_key(filename: str, path: tuple[str, ...]) -> str:
-    """The manifest entry for one migrated key.
+def replace_config_from_templates() -> list[str]:
+    """Replace the operator's config with the shipped templates, keeping one
+    backup of what was there.
 
-    ``\\x1f`` (unit separator) joins the parts rather than ``.`` so a key
-    containing a dot cannot collide with a nested path that spells the same
-    string — the entry has to identify exactly one node to make a deletion
-    stick to exactly one key.
+    The alternative — merging the release's new keys into the file the
+    operator has — cannot survive a template whose SHAPE changes. It only
+    ever adds, so a block that moved leaves both the old and the new spelling
+    in place and the runtime cannot tell which the operator meant. Every
+    update replaces the sealed app tree wholesale; config now follows the
+    same rule, and the operator's previous file is kept intact beside it.
+
+    The trigger is **a release that changed the template**, never "their file
+    differs from ours". This runs on every boot, and their file differs the
+    moment they change a setting — so comparing the two would undo every
+    Settings edit on the next launch and make the panes read-only. What is
+    compared instead is the template against the last template this install
+    was given, recorded in ``runtime/seeded.json``.
+
+    Returns the filenames replaced.
     """
-    return f"{filename}::" + "\x1f".join(path)
-
-
-def migrate_config_keys() -> list[str]:
-    """Add config keys the shipped templates gained since this install seeded.
-
-    Seeding is per-FILE: a yaml the operator already has is never touched
-    again, so a key added to a template in a later release never reaches an
-    existing install. That is how an install that predates the Kokoro entry
-    or the model download pins ends up running a config the runtime has
-    outgrown, with no path forward short of deleting the file.
-
-    This is the per-key half of the same contract, and it only ever ADDS.
-    An existing key is left exactly as the operator left it, whatever its
-    value — including `false`, `null`, and empty. Nothing is reordered, no
-    comment is lost (ruamel round-trip), and a file that needs no keys is
-    not rewritten at all.
-
-    Deletions are respected the same way `seed_tree` respects a deleted
-    file: every key added here is recorded in ``runtime/seeded.json``, so an
-    operator who removes one afterwards keeps it removed. A key they deleted
-    BEFORE this manifest existed returns once and then stays gone — the same
-    one-time behaviour file-level seeding already has, rather than a second
-    rule to reason about.
-
-    Returns the key paths added, newest install state on disk.
-    """
-    import yaml
-    from ruamel.yaml.error import YAMLError as RuamelError
-
-    from tesseract.lib.yaml_io import load_round_trip, round_trip_yaml
     from tesseract.paths import TESSERACT_DIR, config_dir
 
     src = TESSERACT_DIR / "config"
@@ -531,53 +505,188 @@ def migrate_config_keys() -> list[str]:
     if dest.resolve() == src.resolve():
         return []  # dev: the operator's config IS the template
 
-    already = load_seeded_keys()
-    added: list[str] = []
+    delivered = load_seeded_digests()
+    replaced: list[str] = []
+    fresh: dict[str, str] = {}
+    backup_dir = config_backup_dir()
     for template_path in sorted(src.glob("*.yaml")):
         target = dest / template_path.name
         if not target.exists():
-            continue  # seeding owns whole files; nothing to merge into
+            continue  # seeding owns whole files; a deleted one stays deleted
+        key = _template_digest_key(template_path.name)
         try:
-            # Round-trip, not `safe_load`: the value inserted below is the
-            # template's own node, so loading it this way is what carries the
-            # block's comments and quote styles across with it. A `kokoro:`
-            # entry that arrives in an operator's file stripped of the prose
-            # explaining what `mix` does is a worse config than one that never
-            # arrived — these files exist to be read and hand-edited.
-            template = load_round_trip(template_path)
-            current = yaml.safe_load(target.read_text(encoding="utf-8"))
-        except (OSError, yaml.YAMLError, RuamelError):
-            # A config the operator has broken is theirs to fix. Rewriting it
-            # from a template would discard their work at the exact moment
-            # they are least able to notice.
-            continue
-        if not isinstance(template, Mapping) or not isinstance(current, Mapping):
-            continue
-
-        pending = [
-            path
-            for path in _missing_key_paths(template, current)
-            if _manifest_key(template_path.name, path) not in already
-        ]
-        if not pending:
+            shipped = template_path.read_bytes()
+            shipped_digest = hashlib.sha256(shipped).hexdigest()
+            if delivered.get(key) == shipped_digest:
+                continue  # this release ships the template they already have
+            if target.read_bytes() != shipped:
+                carried = _read_preserved(target, template_path.name)
+                backup_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(target, backup_dir / template_path.name)
+                target.write_bytes(shipped)
+                _restore_preserved(target, carried)
+                replaced.append(template_path.name)
+            fresh[key] = shipped_digest
+        except OSError:
+            logger.exception("config replace failed for %s", template_path.name)
             continue
 
-        # Both defaults bind the loop variables into the closure: without
-        # them every deferred call would see whatever the last iteration
-        # left behind.
-        def _apply(
-            doc: Any,
-            pending: list[tuple[str, ...]] = pending,
-            template: Mapping = template,
-        ) -> None:
-            for path in pending:
-                _set_key_path(doc, path, _template_value(template, path))
+    if fresh:
+        record_seeded_digests(fresh)
 
+    if replaced:
+        _forget_hardware_profile_if_needed(replaced)
+        _write_backup_readme(replaced, backup_dir)
+        _write_config_replaced_marker(replaced, backup_dir)
+    return replaced
+
+
+_BACKUP_README = """# Your previous settings
+
+This update shipped new versions of the configuration files below, and
+replaced yours with them. The copies in this folder are what you had
+immediately before that happened.
+
+{files}
+
+Your assistant's name, your name, and its birth date were carried across —
+they are not settings, so an update does not have an opinion about them.
+
+Everything else was replaced. If you had changed a model, a voice, a
+schedule or a permission, set it again in Settings. The files here are
+plain YAML: open the one you want and copy the value across by hand if
+that is easier than clicking.
+
+This folder holds only the most recent previous copy. The next update that
+changes these files overwrites what is here, so move anything you want to
+keep permanently somewhere else.
+"""
+
+
+def _write_backup_readme(replaced: list[str], backup_dir: Path) -> None:
+    """A toast is gone in seconds; this folder is where they will actually
+    look, so the explanation belongs in it."""
+    listing = "\n".join(f"- `{name}`" for name in sorted(replaced))
+    try:
+        (backup_dir / "README.md").write_text(
+            _BACKUP_README.format(files=listing), encoding="utf-8"
+        )
+    except OSError:
+        logger.exception("could not write the config backup README")
+
+
+#: The only values that survive a replacement, and they are not settings.
+#: A model pick or a schedule is configuration and the release may have a
+#: better opinion about it; the assistant's name, the operator's name, its
+#: gender and its birth time are not opinions the shipped template holds at
+#: all — it carries a placeholder for each. Replacing them would rename
+#: someone's assistant and reset its age to day one, which "it is in the
+#: backup" does not answer, because getting it back means hand-editing yaml.
+_PRESERVED_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("mirror.yaml", ("identity", "name")),
+    ("mirror.yaml", ("identity", "operator_name")),
+    ("mirror.yaml", ("identity", "gender")),
+    ("identity.yaml", ("born_at",)),
+)
+
+
+def _read_preserved(target: Path, filename: str) -> list[tuple[tuple[str, ...], Any]]:
+    """The operator's values for `filename`'s preserved keys, before the write.
+
+    A key that is absent, blank, or unreadable yields nothing to carry — the
+    shipped default then stands, which is the correct answer for an install
+    that never set one.
+    """
+    paths = [path for name, path in _PRESERVED_KEYS if name == filename]
+    if not paths:
+        return []
+    import yaml
+
+    try:
+        doc = yaml.safe_load(target.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return []
+    if not isinstance(doc, Mapping):
+        return []
+
+    carried: list[tuple[tuple[str, ...], Any]] = []
+    for path in paths:
+        node: Any = doc
+        for part in path:
+            if not isinstance(node, Mapping) or part not in node:
+                node = None
+                break
+            node = node[part]
+        if node is None or node == "":
+            continue
+        carried.append((path, node))
+    return carried
+
+
+def _restore_preserved(
+    target: Path, carried: list[tuple[tuple[str, ...], Any]]
+) -> None:
+    """Write the carried values back into the freshly replaced file.
+
+    Round-trip so the shipped comments explaining each key survive the write.
+    A path the new template no longer has is skipped rather than created: a
+    release that moved a key has a reason to, and inventing the old spelling
+    beside the new one is the merge failure this whole mechanism avoids.
+    """
+    if not carried:
+        return
+    from tesseract.lib.yaml_io import round_trip_yaml
+
+    def _apply(doc: Any) -> None:
+        for path, value in carried:
+            node = doc
+            for part in path[:-1]:
+                if part not in node:
+                    return
+                node = node[part]
+            if path[-1] in node:
+                node[path[-1]] = value
+
+    try:
         round_trip_yaml(target, _apply)
-        added.extend(_manifest_key(template_path.name, path) for path in pending)
+    except Exception:  # noqa: BLE001 — a carried value must never fail a boot
+        logger.exception("could not carry identity across the config replace")
 
-    record_seeded_keys(added)
-    return added
+
+def _forget_hardware_profile_if_needed(replaced: Iterable[str]) -> None:
+    """Drop the recorded hardware profile when `providers.yaml` was replaced.
+
+    The speech model this machine can carry is written into `providers.yaml`,
+    but `provision_hardware` only revisits that choice when the MACHINE
+    changes — and its record lives under `runtime/`, which an update does not
+    touch. So without this the install silently falls back to the shipped
+    default and never recovers, on the one setting the operator has no way to
+    correct from the UI.
+    """
+    if "providers.yaml" not in set(replaced):
+        return
+    from tesseract.paths import runtime_dir
+
+    record = runtime_dir() / "hardware-profile.json"
+    try:
+        record.unlink(missing_ok=True)
+    except OSError:
+        logger.exception("could not clear the hardware profile record")
+
+
+def _write_config_replaced_marker(replaced: list[str], backup_dir: Path) -> None:
+    path = config_replaced_marker_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {"files": sorted(replaced), "backup_dir": str(backup_dir)},
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        logger.exception("could not write the config-replaced marker")
 
 
 def _stamp_born_at_if_empty() -> None:
@@ -721,13 +830,204 @@ def ensure_env_seeded() -> None:
     shutil.copy2(TESSERACT_DIR / ".env.example", dest)
 
 
-def ensure_agents_seeded() -> None:
-    from tesseract.paths import TESSERACT_DIR, agents_dir
+_AGENT_MIGRATION_MARKER = "agents-unseeded.json"
 
-    src = TESSERACT_DIR / "agents"
-    if not src.exists():
+
+def _agent_cards(root: Path) -> dict[str, Path]:
+    """Every card under ``root``, keyed by its root-relative POSIX path.
+
+    Top level plus one level of subdirectories — the loader's own search
+    depth, so a card this cannot see is a card the loader cannot load either.
+    `pending/`, `provisional/` and `rejected/` are excluded: they are the
+    operator's queues, never shipped, and nothing in them was ever seeded.
+    """
+    if not root.exists():
+        return {}
+    skip = {"pending", "provisional", "rejected", "__pycache__"}
+    found: dict[str, Path] = {}
+    for path in sorted(root.glob("*.md")):
+        found[path.name] = path
+    for sub in sorted(root.iterdir()):
+        if not sub.is_dir() or sub.name in skip:
+            continue
+        for path in sorted(sub.glob("*.md")):
+            found[f"{sub.name}/{path.name}"] = path
+    return found
+
+
+def unseed_copied_agents() -> dict[str, list[str]]:
+    """Remove the copies an older install made of shipped agent cards.
+
+    Until this phase the runtime copied `tesseract/agents/` into
+    `home/agents/` once and never again, which froze every shipped card at
+    whatever the operator installed. Cards are now READ from the app tree, so
+    the copies are not merely redundant — each one shadows the shipped card it
+    was made from and pins it forever.
+
+    A copy byte-identical to what the app ships today is removed. One that
+    differs is **kept**, as a user agent, and named in the return value so the
+    operator is told once rather than silently losing an edit.
+
+    That comparison cannot distinguish "the operator edited this" from "we
+    improved the shipped card since they installed" — `ensure_agents_seeded`
+    recorded no digest to compare against, unlike `refresh_seeded_docs`. The
+    ambiguity resolves toward keeping, because a wrongly-kept card is visible
+    in the report and one command to delete, while a wrongly-removed edit is
+    gone. It is also bounded: nothing is copied from here on, so this runs
+    once per install and never has a second chance to be wrong.
+    """
+    from tesseract.paths import runtime_dir, system_agents_dir, user_agents_dir
+
+    report: dict[str, list[str]] = {"removed": [], "kept": []}
+    system, user = system_agents_dir(), user_agents_dir()
+    if not system.exists() or user.resolve() == system.resolve():
+        return report  # dev: home IS the source tree, so there is no copy
+
+    marker = runtime_dir() / _AGENT_MIGRATION_MARKER
+    if marker.exists():
+        return report
+
+    shipped = _agent_cards(system)
+    for relative, path in _agent_cards(user).items():
+        origin = shipped.get(relative)
+        if origin is None:
+            continue  # the operator's own card — not ours to touch
+        try:
+            identical = path.read_bytes() == origin.read_bytes()
+        except OSError:
+            logger.exception("unseed_copied_agents: could not compare %s", relative)
+            continue
+        if not identical:
+            report["kept"].append(relative)
+            continue
+        try:
+            path.unlink()
+        except OSError:
+            logger.exception("unseed_copied_agents: could not remove %s", relative)
+            continue
+        report["removed"].append(relative)
+
+    _prune_empty_subdirs(user)
+    for relative in report["kept"]:
+        logger.info(
+            "agents: kept your edited %s as a user agent — it now shadows the "
+            "shipped card and stops following updates. Delete %s to follow "
+            "the shipped one again.",
+            relative, user / relative,
+        )
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    except OSError:
+        # The marker is an optimisation, not the contract: a second run finds
+        # the removals already done and the kept cards still differing, and
+        # reports the same thing again.
+        logger.exception("unseed_copied_agents: could not write %s", marker)
+    return report
+
+
+_JOB_MIGRATION_MARKER = "schedule-unseeded.json"
+
+
+def unseed_copied_jobs() -> dict[str, list[str]]:
+    """Reduce copied shipped job rows in the operator's `schedule.yaml` to
+    the fields they actually changed.
+
+    The config seed copied the whole file once. Every shipped row therefore
+    sits in `home/config/schedule.yaml` as a full copy, and a full copy states
+    every field — so it overrides every field, and a cadence corrected in a
+    release reaches nobody. Stripping each row down to its differences is what
+    reconnects it: what the operator set stays set, everything else follows
+    the app again.
+
+    A row identical to the shipped one is removed outright. A row for a job
+    the app does not ship is theirs and is untouched.
+
+    Safe to run before or after the merge — it is a normalisation, not a
+    prerequisite. `load_schedule_config` reads a full copy as a full override
+    and boots correctly either way, which is why this can be a cleanup rather
+    than a migration the install cannot start without.
+    """
+    import yaml
+
+    from tesseract.lib.yaml_io import round_trip_yaml
+    from tesseract.paths import config_dir, runtime_dir, system_config_dir
+
+    report: dict[str, list[str]] = {"reconnected": [], "removed": [], "kept": []}
+    user_dir, system_dir = config_dir(), system_config_dir()
+    if user_dir.resolve() == system_dir.resolve():
+        return report  # dev: one tree, so no copy exists
+
+    user_path, system_path = user_dir / "schedule.yaml", system_dir / "schedule.yaml"
+    if not user_path.exists() or not system_path.exists():
+        return report
+
+    marker = runtime_dir() / _JOB_MIGRATION_MARKER
+    if marker.exists():
+        return report
+
+    try:
+        shipped_raw = yaml.safe_load(system_path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        logger.exception("unseed_copied_jobs: could not read %s", system_path)
+        return report
+    shipped = {
+        row["name"]: row for row in (shipped_raw.get("jobs") or [])
+        if isinstance(row, dict) and row.get("name")
+    }
+
+    def _apply(doc: Any) -> None:
+        rows = doc.get("jobs")
+        if rows is None:
+            return
+        for index in range(len(rows) - 1, -1, -1):
+            row = rows[index]
+            origin = shipped.get(row.get("name"))
+            if origin is None:
+                report["kept"].append(str(row.get("name")))
+                continue
+            # `handler` goes unconditionally: it is never overridable, and a
+            # copy of the shipped value would now be a hard error on load.
+            differing = [
+                key for key in list(row)
+                if key not in ("name", "handler") and row.get(key) != origin.get(key)
+            ]
+            if not differing:
+                del rows[index]
+                report["removed"].append(str(origin["name"]))
+                continue
+            for key in list(row):
+                if key not in ("name", *differing):
+                    del row[key]
+            report["reconnected"].append(str(origin["name"]))
+
+    try:
+        round_trip_yaml(user_path, _apply)
+    except (OSError, ValueError):
+        logger.exception("unseed_copied_jobs: could not rewrite %s", user_path)
+        return report
+
+    for name in report["reconnected"]:
+        logger.info(
+            "schedule: %s follows the app again except for what you changed", name,
+        )
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    except OSError:
+        logger.exception("unseed_copied_jobs: could not write %s", marker)
+    return report
+
+
+def _prune_empty_subdirs(root: Path) -> None:
+    """Drop subdirectories the unseed emptied (e.g. `audits/`). Never `root`
+    itself — the operator's tree stays, empty or not."""
+    if not root.exists():
         return
-    dest = agents_dir()
-    if dest.resolve() == src.resolve() or dest.exists():
-        return
-    shutil.copytree(src, dest, ignore=shutil.ignore_patterns("__pycache__", "*.py", "*.pyc"))
+    for sub in sorted(root.iterdir()):
+        if not sub.is_dir() or any(sub.iterdir()):
+            continue
+        try:
+            sub.rmdir()
+        except OSError:
+            logger.exception("unseed_copied_agents: could not remove empty %s", sub)

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Fullscreen for the cockpit, and only that. The main window is OS-decorated, so maximise and minimise come from the titlebar and need no grant at all — a capability gates JS calls, not the chrome Windows draws. Fullscreen is the one thing no titlebar offers, so it is the one thing granted. Its own file rather than a line in default.json because default.json covers both windows: the splash is undecorated and draws its own strip, and it must not gain the ability to go fullscreen on a first run. The cockpit renders model-influenced HTML, which is why every grant here stays this narrow.",
+  "windows": ["main"],
+  "permissions": ["core:window:allow-set-fullscreen", "core:window:allow-is-fullscreen"]
+}

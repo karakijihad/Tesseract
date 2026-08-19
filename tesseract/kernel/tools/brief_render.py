@@ -4,7 +4,7 @@ Wraps :class:`tesseract.orchestrator.brief.renderer.BriefRenderer`. The
 ``/brief`` REPL alias resolves to this tool. Synchronous overwrite is
 the contract — a re-run on the same day replaces today's file (matches
 the `/brief` slash semantics in `_shared/brief-renderer-spec.md`). The
-scheduled cron path (``DailyBriefJob``) calls the renderer directly with
+the nightly `brief_render` stage calls the renderer directly with
 ``overwrite=False`` so a missed slot does not double-write.
 
 ASK-gated. The renderer fires Tavily searches and writes to
@@ -22,6 +22,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
+from tesseract import http_client
 from tesseract.agents.loader import load_agent
 from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
@@ -29,7 +30,6 @@ from tesseract.memory.store import MemoryStore
 from tesseract.orchestrator.brief.pillars import DEFAULT_PILLARS, Pillar
 from tesseract.orchestrator.brief.renderer import BriefRenderer, CostCaps
 from tesseract.paths import TESSERACT_HOME
-from tesseract.paths import agents_dir as _home_agents_dir
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,18 @@ class BriefRenderTool(Tool):
     default_posture: ClassVar[str] = "ask"
 
     risk_class: ClassVar[str] = "propose"
+
+    group: ClassVar[str] = "checking-your-state"
+    summary: ClassVar[str] = "Render today's daily brief by running the digester sub-agents."
+    use_when: ClassVar[str] = (
+        "Use when the operator asks to build or refresh the daily brief. "
+        "Writes to memory-store/daily/briefs/ and searches the web."
+    )
+    not_when: ClassVar[str] = (
+        "to read a brief that already exists, use `brief_read` instead — it "
+        "has no side effects."
+    )
+
     def __init__(
         self,
         *,
@@ -86,7 +98,11 @@ class BriefRenderTool(Tool):
         self._adapter_options = adapter_options or AdapterOptions()
         self._memory_store = memory_store
         self._cost_caps = cost_caps or CostCaps()
-        self._agents_dir = agents_dir or _home_agents_dir()
+        # `None` means the live pair of agent roots (AR-6): the digester
+        # cards are shipped, so they resolve out of the app tree unless the
+        # operator shadows one. Naming a directory here restricts the load
+        # to it, which is what the tests want and production does not.
+        self._agents_dir = agents_dir
         self._briefs_dir = briefs_dir or (home / "memory-store" / "daily" / "briefs")
         self._pillars = pillars
         self._interests_path = interests_path or (
@@ -101,16 +117,6 @@ class BriefRenderTool(Tool):
     @property
     def name(self) -> str:
         return "brief_render"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Render the daily brief by orchestrating the six digester "
-            "sub-agents (workspace, mission, memory, vault, ecosystem, "
-            "world) and writing the result to "
-            "memory-store/daily/briefs/<iso-date>.md. "
-            "Voice-friendly markdown. ASK-gated."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:
@@ -195,7 +201,7 @@ def _parse_target_date(raw: str) -> date | None:
 def _make_digester_invoker(
     adapter: ModelAdapter | None,
     options: AdapterOptions,
-    agents_dir: Path,
+    agents_dir: Path | None,
 ):
     """Return an ``invoke_digester(name, payload)`` coroutine that loads
     the agent's Role/Inputs/Rules sections as a system prompt and calls
@@ -262,7 +268,7 @@ def _make_tavily_fetcher(_context: ToolContext):
             "Content-Type": "application/json",
         }
         try:
-            async with httpx.AsyncClient(timeout=timeout_s) as client:
+            async with http_client.async_client(timeout=timeout_s) as client:
                 r = await client.post(endpoint, headers=headers, json=payload)
         except httpx.HTTPError as exc:
             logger.info("brief: tavily query %r failed (%s)", query, exc)
@@ -280,11 +286,14 @@ def _make_tavily_fetcher(_context: ToolContext):
     return _fetch
 
 
-def _load_agent_system_prompt(name: str, agents_dir: Path) -> str:
+def _load_agent_system_prompt(name: str, agents_dir: Path | None) -> str:
     try:
         agent = load_agent(name, agents_dir=agents_dir)
     except FileNotFoundError:
-        logger.warning("brief: agent %r not found under %s", name, agents_dir)
+        logger.warning(
+            "brief: agent %r not found under %s", name,
+            agents_dir or "the shipped and operator agent roots",
+        )
         return ""
     sections = ["Role", "Inputs", "Output structure", "Rules", "Anti-output"]
     parts: list[str] = []

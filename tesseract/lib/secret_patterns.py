@@ -30,6 +30,11 @@ CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bAIza[A-Za-z0-9_-]{35}\b"),               # Google API key
     re.compile(r"\btvly-[A-Za-z0-9_-]{10,}"),               # Tavily
     re.compile(r"\bgsk_[A-Za-z0-9]{20,}"),                  # Groq
-    re.compile(r"\b\d{6,10}:AA[A-Za-z0-9_-]{30,}"),         # Telegram bot token
+    # Telegram bot token. No `\b` on the left: the Bot API carries it in the
+    # URL PATH (`/bot<TOKEN>/getUpdates`), where the preceding character is a
+    # letter and a word boundary never fires — the one place it actually
+    # appears in a log line. `(?<!\d)` still anchors the digit count, and the
+    # `:AA` + 30-char tail is what keeps this off ordinary text.
+    re.compile(r"(?<!\d)\d{6,10}:AA[A-Za-z0-9_-]{30,}"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),      # PEM private key header
 )

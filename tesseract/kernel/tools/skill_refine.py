@@ -51,6 +51,18 @@ class SkillRefineTool(Tool):
     default_posture: ClassVar[str] = "ask"
     risk_class: ClassVar[str] = "propose"
 
+    group: ClassVar[str] = "extending-yourself"
+    summary: ClassVar[str] = "Propose a revised body for an existing active skill."
+    use_when: ClassVar[str] = (
+        "Use when a live skill's instructions are stale, wrong, or caused "
+        "repeated failures. Files a card; the live skill is unchanged until "
+        "the operator approves."
+    )
+    not_when: ClassVar[str] = (
+        "for a skill that does not exist yet, use `skill_create` instead — "
+        "this tool only refines an already-active one."
+    )
+
     def __init__(
         self,
         skills_dir: Path,
@@ -65,15 +77,6 @@ class SkillRefineTool(Tool):
     @property
     def name(self) -> str:
         return "skill_refine"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Propose a revised SKILL.md for an existing active skill. Files a "
-            "skill_refinement card in the operator's Workspace Inbox — the live "
-            "skill is NOT changed until the operator approves. Use when a "
-            "skill's instructions are stale, wrong, or caused repeated failures."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

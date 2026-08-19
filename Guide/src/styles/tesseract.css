@@ -56,3 +56,24 @@
 .sl-markdown-content blockquote {
   border-inline-start-color: var(--sl-color-accent);
 }
+
+/* The version beside the site name, and the build stamp under the footer.
+   Both are metadata about the page rather than part of it, so they take the
+   dimmest text the palette has and the smallest size, and neither competes
+   with the name it sits next to. */
+.tesseract-version {
+  color: var(--sl-color-gray-3);
+  font-size: var(--sl-text-xs);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  margin-inline-start: 0.5rem;
+  white-space: nowrap;
+}
+
+.tesseract-stamp {
+  border-top: 1px solid var(--sl-color-hairline);
+  color: var(--sl-color-gray-3);
+  font-size: var(--sl-text-xs);
+  margin-block-start: 1.5rem;
+  padding-block-start: 1rem;
+}

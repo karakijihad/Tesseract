@@ -30,21 +30,22 @@ class AlarmSetTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "time"
+    summary: ClassVar[str] = "Queues a one-time or recurring alarm that fires as a Mirror toast."
+    use_when: ClassVar[str] = (
+        "Use for a time-bound reminder the operator asks for, whether a single fire or a recurring one."
+    )
+    not_when: ClassVar[str] = (
+        "backend automation that runs on a cadence, which is `schedule_create`."
+    )
+
     def __init__(self, alarm_registry: AlarmRegistry) -> None:
         self._registry = alarm_registry
 
     @property
     def name(self) -> str:
         return "alarm_set"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Queue an alarm that fires as a Mirror toast. Use for time-bound "
-            "reminders the operator asks for ('remind me in 20 minutes to ...', "
-            "'every weekday at 9am tell me to stand up'). Returns the alarm id "
-            "so you can cancel or snooze it later."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

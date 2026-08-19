@@ -11,7 +11,7 @@ import hashlib
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -38,6 +38,17 @@ class VaultIngestTool(Tool):
     default_posture = "ask"
 
     risk_class: ClassVar[str] = "propose"
+
+    group: ClassVar[str] = "research-library"
+    summary: ClassVar[str] = "Files a local document or URL into the immutable vault and indexes it."
+    use_when: ClassVar[str] = (
+        "Use to add a new source to the vault. Call once without confirmed_path for a "
+        "suggested filing location, then again with confirmed_path to execute."
+    )
+    not_when: ClassVar[str] = (
+        "reading what the vault already holds — that is `vault_query` or `vault_search`."
+    )
+
     def __init__(
         self,
         vault_manager: VaultManager,
@@ -51,14 +62,6 @@ class VaultIngestTool(Tool):
     @property
     def name(self) -> str:
         return "vault_ingest"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Ingest a file into the immutable vault for permanent storage. "
-            "Call first without confirmed_path to get a suggested location. "
-            "Then call again with confirmed_path to execute the ingestion."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

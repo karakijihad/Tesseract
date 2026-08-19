@@ -49,7 +49,7 @@ concepts:
   notes: identity layer (IDENTITY/SOUL/USER/AGENTS/HEARTBEAT/...). Gitignored.
 - name: soul
   aliases: [SOUL, personality]
-  notes: evolving operational commitments (4 OpenClaw sections). Self-edit 
+  notes: evolving operational commitments, in four sections. Self-edit 
     transparency rule applies.
 - name: heartbeat
   aliases: [HEARTBEAT, consolidation pass]

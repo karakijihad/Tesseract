@@ -68,7 +68,7 @@ tools:
   # inbox; operator approves there. No chat ASK — workspace is the gate.
   soul_growth_propose: auto
   # Generic operator-gated proposal for any operator-owned workspace .md
-  # file (SOUL, IDENTITY, FOUNDATION, …). Same pattern: writes a
+  # file (SOUL, USER, OPERATING, …). Same pattern: writes a
   # `change_proposal` inbox event; commit happens on workspace Approve.
   propose_change: auto
 
@@ -177,6 +177,12 @@ tools:
   browser_screenshot: auto
   browser_network_requests: auto
   browser_close: auto
+  # ASK, unlike every browser verb above it. Those photograph a web page the
+  # assistant navigated to; this photographs the OPERATOR'S OWN SCREEN and
+  # sends it to a vision model that may not be local. That is an outbound
+  # call under the standing rule, and the operator is sitting in front of the
+  # thing being photographed.
+  screen_look: ask
   tool_search: auto
   orb_visibility: auto
   work_send: auto
@@ -209,6 +215,7 @@ modes:
       delegate_coder: auto
       delegate_auditor: auto
       image_generate: auto
+      screen_look: auto             # operator decision — unattended runs may look
 
       agent_create: auto            # kernel-lockdown hard rule — operator-attended
       agent_promote: auto           # moves an agent .md from draft to active — operator-visible like agent_create
@@ -245,37 +252,16 @@ path_overrides:
     - path_prefix: workspace/SOUL.md
       posture: deny
       reason: "the assistant routes via propose_change; operator approves in workspace"
-    - path_prefix: workspace/IDENTITY.md
-      posture: deny
-      reason: "the assistant routes via propose_change; operator approves in workspace"
-    - path_prefix: workspace/FOUNDATION.md
-      posture: deny
-      reason: "the assistant routes via propose_change; operator approves in workspace"
     - path_prefix: workspace/USER.md
       posture: deny
       reason: "the assistant routes via propose_change; operator approves in workspace"
-    - path_prefix: workspace/VOICE.md
-      posture: deny
-      reason: "the assistant routes via propose_change; operator approves in workspace"
-    - path_prefix: workspace/AGENTS.md
-      posture: deny
-      reason: "the assistant routes via propose_change; operator approves in workspace"
-    - path_prefix: workspace/HEARTBEAT.md
-      posture: deny
-      reason: "the assistant routes via propose_change; operator approves in workspace"
-    - path_prefix: workspace/MCP.md
-      posture: deny
-      reason: "the assistant routes via propose_change; operator approves in workspace"
-    - path_prefix: workspace/TOOLS.md
+    - path_prefix: workspace/OPERATING.md
       posture: deny
       reason: "the assistant routes via propose_change; operator approves in workspace"
     - path_prefix: workspace/WORKSHOP.md
       posture: deny
       reason: "the assistant routes via propose_change; operator approves in workspace"
     - path_prefix: workspace/DIARY.md
-      posture: deny
-      reason: "the assistant routes via propose_change; operator approves in workspace"
-    - path_prefix: workspace/BOOT.md
       posture: deny
       reason: "the assistant routes via propose_change; operator approves in workspace"
 
@@ -292,8 +278,7 @@ path_overrides:
       reason: "memory store is the assistant's canonical interior"
     - path_prefix: logs/sessions/
       posture: auto
-      reason: "bookkeeping log stream (reflect/session_end/auto_compact/scheduler
-        JSONL)"
+      reason: "bookkeeping log stream (reflect/session_end/auto_compact/scheduler JSONL)"
     - path_prefix: workshop/
       posture: auto
       reason: "the assistant's working space — task drafts, notes, scratch work (gitignored)"
@@ -315,8 +300,7 @@ path_overrides:
       reason: "chat/loop source — edits go through delegate_*"
     - path_prefix: memory/
       posture: deny
-      reason: "memory subsystem source (not the memory-store/) — edits go through
-        delegate_*"
+      reason: "memory subsystem source (not the memory-store/) — edits go through delegate_*"
     - path_prefix: permissions/
       posture: deny
       reason: "permission engine source — DENY by design"
@@ -346,19 +330,16 @@ path_overrides:
     # first, and the assistant could widen its own permissions at ASK. ───
     - path_prefix: config/permissions.yaml
       posture: deny
-      reason: "the assistant must not widen its own permissions; operator edits by hand or
-        in Settings"
+      reason: "the assistant must not widen its own permissions; operator edits by hand or in Settings"
     - path_prefix: config/mirror.yaml
       posture: deny
       reason: "Mirror server config — operator-owned"
     - path_prefix: config/mcp.yaml
       posture: deny
-      reason: "MCP verb postures — the sole authority since the source-side
-        floors were removed; the assistant must not widen its own reach"
+      reason: "MCP verb postures — the sole authority since the source-side floors were removed; the assistant must not widen its own reach"
     - path_prefix: config/
       posture: ask
-      reason: "providers/roles/schedule/identity — a delegate may edit, operator
-        approves each write"
+      reason: "providers/roles/schedule/identity — a delegate may edit, operator approves each write"
     # Anything not matched above falls through to the MODE override, then to
     # `tools.file_write`. That is ASK in the shipped `max` mode, but AUTO in
     # `headless` — add the rule; do not rely on the fallthrough.

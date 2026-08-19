@@ -13,7 +13,8 @@ from pathlib import Path
 from aiohttp import web
 
 from tesseract.config_seed import (
-    ensure_agents_seeded,
+    unseed_copied_agents,
+    unseed_copied_jobs,
     ensure_config_seeded,
     ensure_env_seeded,
     ensure_memory_store_seeded,
@@ -170,7 +171,8 @@ def _watch_stack_dump_requests() -> None:
 def main() -> None:
     ensure_config_seeded()
     ensure_workspace_seeded()
-    ensure_agents_seeded()
+    unseed_copied_agents()
+    unseed_copied_jobs()
     ensure_env_seeded()
     ensure_memory_store_seeded()
     ensure_vault_seeded()
@@ -180,10 +182,14 @@ def main() -> None:
     # supervisor's console; crash forensics need a file (logsetup.py).
     from tesseract.logsetup import (
         attach_file_logging,
+        redact_credentials_in_logs,
         suppress_proactor_disconnect_noise,
     )
 
     attach_file_logging("mirror-backend")
+    # After both handlers exist — the filter is attached per handler, so
+    # anything armed later is not covered.
+    redact_credentials_in_logs()
     suppress_proactor_disconnect_noise()
     # After logging is attached, not before: `ensure_alarms_state_migrated()`
     # logs its outcome, and a log call before any handler exists falls

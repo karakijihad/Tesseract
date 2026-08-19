@@ -193,23 +193,73 @@ def _synthesize_voice_cost_block(bundle: ConfigBundle) -> dict[str, Any]:
         return out
     tts_chain = bundle.voice.tts.chain() if bundle.voice.tts is not None else ()
     stt_chain = bundle.voice.stt.chain() if bundle.voice.stt is not None else ()
-    for kind_in, entries, rate_key in (
-        ("tts", tts_chain, "cost_per_million_chars"),
-        ("stt", stt_chain, "cost_per_audio_hour"),
+    # A TTS lane prices in one of two units and the KEY is what says
+    # which. Reading only the per-character one used to be safe because
+    # every TTS lane was local and free; a cloud lane that bills per
+    # second of produced speech would be dropped here, and dropping it is
+    # not cosmetic — its daily cap counts toward `CostLedger.cap_usd`, so
+    # a lane missing from this view makes the global cap on screen
+    # disagree with the one actually enforced.
+    for kind_in, entries, rate_keys in (
+        ("tts", tts_chain, ("cost_per_million_chars", "cost_per_audio_hour")),
+        ("stt", stt_chain, ("cost_per_audio_hour",)),
     ):
         for entry in entries:
             cap = float(entry.daily_budget_usd or 0)
             if cap <= 0:
                 continue
             model = entry.ref.model
-            rate_raw = model.fields.get(rate_key)
-            if rate_raw is None:
+            rate_key = next(
+                (k for k in rate_keys if model.fields.get(k) is not None), None,
+            )
+            if rate_key is None:
                 continue
             out[kind_in][model.id] = {
-                rate_key: float(rate_raw),
+                rate_key: float(model.fields[rate_key]),
                 "daily_budget_usd": cap,
             }
     return out
+
+
+#: Which catalog rate field a voice lane priced in each unit carries, and
+#: the label a reader should put beside the number.
+VOICE_RATE_FIELDS: dict[str, str] = {
+    "cost_per_million_chars": "chars",
+    "cost_per_audio_hour": "audio_hour",
+}
+
+
+def project_voice_cost_view(
+    voice_cfg: dict[str, Any] | None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Flatten the legacy voice cost block into `{rate, rate_unit, cap_usd}`.
+
+    `/api/identity` and `/api/system` both hand this shape to the cost
+    panel, and both used to build it inline with the per-character field
+    hard-coded — which is how the same defect came to exist twice. The
+    unit rides along because the two rates differ by five orders of
+    magnitude, and a panel that labels a per-audio-hour price as dollars
+    per million characters is not merely unhelpful, it reads as free.
+    """
+    def _side(block: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {}
+        for provider, fields in (block or {}).items():
+            cap = fields.get("daily_budget_usd")
+            if cap is None:
+                continue
+            for key, unit in VOICE_RATE_FIELDS.items():
+                if fields.get(key) is None:
+                    continue
+                out[provider] = {
+                    "rate": float(fields[key]),
+                    "rate_unit": unit,
+                    "cap_usd": float(cap),
+                }
+                break
+        return out
+
+    cfg = voice_cfg or {}
+    return _side(cfg.get("tts")), _side(cfg.get("stt"))
 
 
 def synthesize_legacy_models_dict(bundle: ConfigBundle) -> dict[str, Any]:

@@ -61,6 +61,19 @@ class SoulGrowthProposeTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "remembering"
+    summary: ClassVar[str] = "Queue a distilled SOUL.md Growth bullet for operator approval."
+    use_when: ClassVar[str] = (
+        "Use sparingly for a stable, distilled pattern about you-with-this-"
+        "operator. Queues a workspace-inbox proposal; SOUL.md updates only on "
+        "operator approve."
+    )
+    not_when: ClassVar[str] = (
+        "use `diary_append` for a single session's observation; use "
+        "`memory_save` for facts about the operator or project."
+    )
+
     """Queue a SOUL.md Growth bullet for operator approval (workspace inbox)."""
 
     def __init__(self, repo_root: Path) -> None:
@@ -69,18 +82,6 @@ class SoulGrowthProposeTool(Tool):
     @property
     def name(self) -> str:
         return "soul_growth_propose"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Queue a distilled observation for the SOUL.md Growth section. "
-            "Use sparingly — Growth is a distillate (3-5 bullets total), "
-            "not a log. Each bullet should be a stable pattern about "
-            "you-with-this-operator. The bullet is NOT written immediately: "
-            "it appears in the workspace inbox as a change_proposal row "
-            "for the operator to Approve/Reject. On Approve, SOUL.md is "
-            "updated and `soul_updated` fires."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

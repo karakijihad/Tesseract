@@ -1,6 +1,6 @@
 /* MO-9-14 — newsletter renderer for the `daily_brief` workspace event.
  *
- * Payload shape (MO-9-14 baseline + AU-23 initiatives + AU-24 ecosystem):
+ * Payload shape:
  *   {
  *     kind: 'daily_brief',
  *     date: 'YYYY-MM-DD',
@@ -10,7 +10,6 @@
  *       what_i_learned:         '<voice-prose paragraph>',
  *       vault:                  ['<bullet>'],
  *       ecosystem:              '<voice-prose paragraph>',  // AU-24
- *       initiatives:            ['<bullet>'],               // AU-23
  *       world: { tech: [card], science: [card], politics: [card] },
  *     },
  *     cost_cap_reached: boolean,
@@ -23,6 +22,8 @@
 import { useState } from 'react';
 import { BACKEND_BASE } from '../../lib/endpoints';
 import { Markdown } from '../../components/common/Markdown';
+import { Hint } from '../../components/ui/Hint';
+import { IconButton } from '../../components/common/IconButton';
 
 const PILLAR_LABEL: Record<string, string> = {
   tech: 'Tech',
@@ -156,20 +157,19 @@ function ReactionRow({ date, pillar, card }: ReactionRowProps) {
   return (
     <div className="brief-card-actions">
       {(['interested', 'not_for_me', 'dig_deeper', 'commented'] as Signal[]).map((s) => (
-        <button
-          key={s}
-          type="button"
-          className={`brief-card-action${isDone(s) ? ' is-done' : ''}`}
-          title={tip(s)}
-          aria-label={tip(s)}
-          disabled={busy !== null || done !== null}
-          onClick={() => fire(s)}
-        >
-          {s === 'interested' && '👍'}
-          {s === 'not_for_me' && '👎'}
-          {s === 'dig_deeper' && '⛏'}
-          {s === 'commented' && '💬'}
-        </button>
+        <Hint key={s} label={tip(s)}>
+          <IconButton
+            active={isDone(s)}
+            ariaLabel={tip(s)}
+            disabled={busy !== null || done !== null}
+            onClick={() => fire(s)}
+          >
+            {s === 'interested' && '👍'}
+            {s === 'not_for_me' && '👎'}
+            {s === 'dig_deeper' && '⛏'}
+            {s === 'commented' && '💬'}
+          </IconButton>
+        </Hint>
       ))}
       {err && <span className="t-meta brief-card-err">{err}</span>}
       {done && !err && <span className="t-meta brief-card-thanks">noted</span>}
@@ -193,9 +193,6 @@ export function DailyBriefBody({ payload }: DailyBriefBodyProps) {
     ? sectionsRaw.vault.filter((x): x is string => typeof x === 'string')
     : [];
   const ecosystem = asString(sectionsRaw.ecosystem);
-  const initiatives = Array.isArray(sectionsRaw.initiatives)
-    ? sectionsRaw.initiatives.filter((x): x is string => typeof x === 'string')
-    : [];
   const worldRaw = (typeof sectionsRaw.world === 'object' && sectionsRaw.world !== null)
     ? (sectionsRaw.world as Record<string, unknown>)
     : {};
@@ -306,14 +303,6 @@ export function DailyBriefBody({ payload }: DailyBriefBodyProps) {
         })}
       </section>
 
-      {initiatives.length > 0 && (
-        <section className="brief-section brief-section--tight">
-          <h3 className="brief-section-title">Initiatives</h3>
-          <ul className="brief-vault-list">
-            {initiatives.map((line, i) => <li key={i}><Markdown>{line}</Markdown></li>)}
-          </ul>
-        </section>
-      )}
     </div>
   );
 }

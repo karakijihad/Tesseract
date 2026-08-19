@@ -124,7 +124,7 @@ def _read_memory_signals(home: Path, cutoff: datetime) -> list[dict[str, Any]]:
                 "kind": kind,
                 "goal": goal,
                 "rationale": rationale,
-                # Provenance — strategist / digester needs a citable URL.
+                # Provenance — the digester needs a citable URL.
                 # Memory signals don't carry a structured URL field;
                 # scan the rationale (which may embed one) and fall
                 # back to empty string when none is present.

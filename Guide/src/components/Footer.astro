@@ -1,0 +1,26 @@
+---
+// Starlight's footer, with the date these pages were built under it.
+//
+// Not Starlight's own `lastUpdated`, which reads each page's last commit out
+// of git: the host clones shallowly, so that history is not there to read and
+// the date it prints would be the deploy's rather than the page's — the same
+// number this line states, arrived at misleadingly.
+//
+// The build date is the honest claim. The site is rebuilt whenever the
+// repository changes, so it answers what a reader is actually asking: is this
+// current, or am I reading something abandoned a year ago.
+import Default from '@astrojs/starlight/components/Footer.astro';
+import site from '../site.json';
+
+const built = new Intl.DateTimeFormat('en-GB', {
+  day: 'numeric',
+  month: 'short',
+  year: 'numeric',
+  timeZone: 'UTC',
+}).format(new Date());
+---
+
+<Default><slot /></Default>
+<p class="tesseract-stamp">
+  TESSERACT v{site.version} — documentation built {built}
+</p>

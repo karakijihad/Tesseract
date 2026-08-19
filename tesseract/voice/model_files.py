@@ -95,6 +95,7 @@ def migrate_legacy_models() -> list[str]:
 
     moved: list[str] = []
     destination_root = models_root()
+    scaffold_restored: list[str] = []
     try:
         lanes = sorted(p for p in legacy.iterdir() if p.is_dir())
     except OSError:
@@ -187,6 +188,8 @@ def migrate_legacy_models() -> list[str]:
                     target,
                     exc_info=True,
                 )
+        if _restore_scaffold(lane, target):
+            scaffold_restored.append(lane.name)
         moved.append(lane.name)
 
     if moved:
@@ -196,11 +199,68 @@ def migrate_legacy_models() -> list[str]:
             ", ".join(moved),
             destination_root,
         )
+    if scaffold_restored:
+        logger.debug(
+            "voice models: kept the tracked scaffold for %s in the app tree",
+            ", ".join(scaffold_restored),
+        )
     return moved
 
 
+#: A lane file the app tree TRACKS rather than fetches: documentation, and the
+#: suffix-less `.gitignore` the production build writes beside it. The same
+#: predicate the scaffold check above uses to decide a lane is not worth
+#: moving, so the two cannot disagree about what counts as a weight.
+def _is_scaffold(child: Path) -> bool:
+    return child.is_file() and child.suffix in (".md", "")
+
+
+def _restore_scaffold(lane: Path, target: Path) -> bool:
+    """Put the lane's TRACKED files back where git expects them.
+
+    The move takes the whole directory, which is right for weights and wrong
+    for the two files in it that git owns. `tesseract/voice/models/<lane>/`
+    ships a README, and `build_production_tree` writes each lane a `.gitignore`
+    *because* that README makes the directory exist in the output tree — the
+    ignore rule being what stops an install that updates across the weights
+    move reporting "local history diverged" (observed live 2026-07-30).
+
+    So a migration that carries both away deletes two tracked files from every
+    installed clone and re-creates the very divergence the ignore rule exists
+    to prevent. It also leaves a dev checkout permanently dirty, which is how
+    this was noticed.
+
+    Best-effort, like everything else here: the weights are already safe at the
+    destination, and a scaffold that could not be restored is a `git checkout`
+    away rather than a lost model. Returns True when anything was put back.
+    """
+    try:
+        scaffold = [c for c in target.iterdir() if _is_scaffold(c)]
+    except OSError:
+        return False
+    if not scaffold:
+        return False
+    try:
+        lane.mkdir(parents=True, exist_ok=True)
+        for child in scaffold:
+            # Copied, not moved. The destination is what the runtime reads and
+            # a stray README there costs nothing, while a failure half way
+            # through a move would strip the app tree of the file it is trying
+            # to preserve.
+            shutil.copy2(child, lane / child.name)
+    except OSError:
+        logger.warning(
+            "voice models: could not restore the tracked scaffold in %s — the "
+            "app tree will report uncommitted deletions until it is checked out",
+            lane,
+            exc_info=True,
+        )
+        return False
+    return True
+
+
 def lane_dir(lane: str) -> Path:
-    """The model directory for one engine (``piper`` / ``kokoro`` /
+    """The model directory for one engine (``kokoro`` /
     ``whisper``)."""
     return models_root() / lane
 

@@ -74,20 +74,24 @@ class ChannelNotifyTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "reaching-the-operator"
+    summary: ClassVar[str] = "Start a conversation with the operator on an external channel."
+    use_when: ClassVar[str] = (
+        "Use when the operator may be away from the Mirror and you have something "
+        "they should see now — a finished thought, a result, an alert, a check-in. "
+        "Pass `chat_ref` to target a specific chat, or omit it to fan to every "
+        "operator-tier chat in the allowlist. Be selective — this is a tap on the "
+        "shoulder, not a stream."
+    )
+    not_when: ClassVar[str] = (
+        "the operator is already in the Mirror — answer them there with an ordinary "
+        "reply or a surface card, not a channel message."
+    )
+
     @property
     def name(self) -> str:
         return "channel_notify"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Start a conversation with the operator on an external channel "
-            "(Telegram by default). Use when you have something they should "
-            "see right now and they may be away from the Mirror. Pass "
-            "`chat_ref` to target a specific chat, or omit it to fan to "
-            "every operator-tier chat in the allowlist. Be selective — "
-            "this is a tap on the shoulder, not a stream."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

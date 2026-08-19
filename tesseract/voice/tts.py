@@ -2,9 +2,10 @@
 
 The chain comes from `roles.yaml::voice.tts` (primary + fallbacks); the
 engine holds one config slot per adapter and tries them in that order.
-Two adapters ship by default, both local (`voice/providers/`), so a
-fresh install speaks with no key and no bill. Adding another is a
-provider module plus a slot here — the chain shape doesn't change.
+Two adapters ship by default: a local one first, so a fresh install
+speaks with no key and no bill, and a cloud one behind it so a machine
+that never downloaded the local model still has a voice. Adding another
+is a provider module plus a slot here — the chain shape doesn't change.
 
 When every configured lane is down the engine raises and the caller
 degrades the reply to text.
@@ -29,18 +30,44 @@ chunk before calling so envelopes stream in order.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import io
 import logging
+import wave
 from dataclasses import dataclass
 
 from tesseract.brain.cost import CostLedger, TtsUsage
 from tesseract.voice.providers import (
+    gemini_tts as gemini_tts_provider,
     kokoro_tts as kokoro_tts_provider,
-    piper_tts as piper_tts_provider,
 )
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PRESET = "answer"
+
+
+def _audio_seconds(audio: bytes) -> float:
+    """Duration of a WAV payload, or 0.0 if it cannot be read.
+
+    Every lane hands back WAV, so the duration is in the envelope and
+    needs no per-lane sample-rate plumbing. It is only *billed* on a lane
+    priced per audio-hour; measuring it on the free local lanes costs a
+    header read and keeps the ledger's zero-rows honest about what they
+    produced.
+
+    Never raises: a lane that spoke must not fail because its output
+    could not be measured. An unreadable envelope bills as zero, which is
+    the direction that cannot overcharge.
+    """
+    if not audio:
+        return 0.0
+    with contextlib.suppress(Exception):
+        with wave.open(io.BytesIO(audio), "rb") as w:
+            rate = w.getframerate()
+            if rate > 0:
+                return w.getnframes() / float(rate)
+    return 0.0
 
 
 class NoTTSLaneAvailable(RuntimeError):
@@ -59,32 +86,17 @@ class TTSEngine:
     of `None` means "not in the operator's chain", not "failed"."""
 
     cost_ledger: CostLedger | None
-    piper_config: piper_tts_provider.PiperTTSConfig | None = None
     kokoro_config: kokoro_tts_provider.KokoroTTSConfig | None = None
+    gemini_config: gemini_tts_provider.GeminiTTSConfig | None = None
     provider_key: str = ""
-    piper_provider_key: str = ""
     kokoro_provider_key: str = ""
-    piper_disabled_reason: str = ""
+    gemini_provider_key: str = ""
     kokoro_disabled_reason: str = ""
-
-    def piper_status(self) -> dict:
-        """Mirror Settings shape for the LocalModels panel — same envelope
-        as `STTEngine.local_status()`."""
-        status = piper_tts_provider.status(self.piper_config)
-        status["disabled"] = bool(self.piper_disabled_reason)
-        status["disabled_reason"] = self.piper_disabled_reason
-        status["provider_key"] = self.piper_provider_key
-        return status
-
-    def unload_piper(self) -> None:
-        """Clear the cached PiperVoice handle and any latched failure
-        reason. Operator-driven from Settings."""
-        piper_tts_provider.unload_models()
-        self.piper_disabled_reason = ""
+    gemini_disabled_reason: str = ""
 
     def kokoro_status(self) -> dict:
         """Mirror Settings shape for the LocalModels panel — same envelope
-        as `piper_status()`."""
+        as `STTEngine.local_status()`."""
         status = kokoro_tts_provider.status(self.kokoro_config)
         status["disabled"] = bool(self.kokoro_disabled_reason)
         status["disabled_reason"] = self.kokoro_disabled_reason
@@ -97,6 +109,20 @@ class TTSEngine:
         Mirror shutdown to release the GPU arena cleanly."""
         kokoro_tts_provider.unload_models()
         self.kokoro_disabled_reason = ""
+
+    def gemini_status(self) -> dict:
+        """Mirror Settings shape — same envelope as `kokoro_status()`.
+
+        There is no `unload_gemini()` counterpart: unload exists to free a
+        loaded model and clear a latch, and this lane holds no model. Its
+        latch clears on the next `_build_voice_runtime`, which is what a
+        config edit already triggers.
+        """
+        status = gemini_tts_provider.status(self.gemini_config)
+        status["disabled"] = bool(self.gemini_disabled_reason)
+        status["disabled_reason"] = self.gemini_disabled_reason
+        status["provider_key"] = self.gemini_provider_key
+        return status
 
     async def warm_up_kokoro(self) -> None:
         """Eager-load the Kokoro model + blend on boot so the first
@@ -129,42 +155,15 @@ class TTSEngine:
             self.kokoro_disabled_reason = str(exc)[:300]
             raise
 
-    async def warm_up_piper(self) -> None:
-        """Eager-load the Piper voice on boot so the first sentence
-        doesn't pay the ONNX init latency. On failure the engine latches
-        a `disabled_reason` and the chain falls through to the next lane —
-        the next reload through Settings clears the latch."""
-        if self.piper_config is None:
-            return
-        # From config, like Kokoro's. A fixed 60 here ignored the
-        # `timeout_seconds: 30` the shipped `roles.yaml` declares, so the
-        # lane's preload ran for twice the cap the operator had written.
-        timeout = float(self.piper_config.timeout_seconds)
-        try:
-            await asyncio.wait_for(
-                piper_tts_provider.warm_up(self.piper_config),
-                timeout=timeout,
-            )
-        except asyncio.TimeoutError:
-            # Same reasoning as Kokoro above: a slow preload is not a broken
-            # lane, and Piper is the lane that still speaks when the heavier
-            # one cannot. Latching it off over a timing accident removes the
-            # fallback precisely on the machines most likely to need it.
-            logger.warning(
-                "Piper preload timed out after %.1fs — leaving the lane "
-                "available; the first sentence will load it lazily",
-                timeout,
-            )
-            return
-        except Exception as exc:
-            self.piper_disabled_reason = str(exc)[:300]
-            raise
-
     def _lane_order(self) -> list[str]:
         """Primary first, then every other configured lane. Dedup keeps a
         lane from being tried twice when it *is* the primary."""
         order: list[str] = []
-        for key in (self.provider_key, self.kokoro_provider_key, self.piper_provider_key):
+        for key in (
+            self.provider_key,
+            self.kokoro_provider_key,
+            self.gemini_provider_key,
+        ):
             if key and key not in order:
                 order.append(key)
         return order
@@ -172,8 +171,8 @@ class TTSEngine:
     def _lane_ready(self, lane: str) -> bool:
         if lane == self.kokoro_provider_key:
             return self.kokoro_config is not None and not self.kokoro_disabled_reason
-        if lane == self.piper_provider_key:
-            return self.piper_config is not None and not self.piper_disabled_reason
+        if lane == self.gemini_provider_key:
+            return self.gemini_config is not None and not self.gemini_disabled_reason
         return False
 
     async def _synthesize_on(self, lane: str, text: str, preset: str) -> bytes:
@@ -181,16 +180,16 @@ class TTSEngine:
             return await kokoro_tts_provider.synthesize(
                 text, self.kokoro_config, preset=preset,
             )
-        return await piper_tts_provider.synthesize(
-            text, self.piper_config, preset=preset,
+        return await gemini_tts_provider.synthesize(
+            text, self.gemini_config, preset=preset,
         )
 
     def _latch_disabled(self, lane: str, exc: Exception) -> None:
         reason = str(exc)[:300]
         if lane == self.kokoro_provider_key:
             self.kokoro_disabled_reason = reason
-        elif lane == self.piper_provider_key:
-            self.piper_disabled_reason = reason
+        elif lane == self.gemini_provider_key:
+            self.gemini_disabled_reason = reason
 
     async def synthesize(
         self,
@@ -230,7 +229,9 @@ class TTSEngine:
                 continue
             if self.cost_ledger is not None:
                 self.cost_ledger.record_voice(
-                    "tts", lane, TtsUsage(char_count=char_count),
+                    "tts",
+                    lane,
+                    TtsUsage(char_count=char_count, seconds=_audio_seconds(audio)),
                 )
             return audio, lane
 
@@ -238,5 +239,5 @@ class TTSEngine:
             "no TTS lane available — configured lanes: "
             f"{self._lane_order() or ['(none)']}; "
             f"kokoro={self.kokoro_disabled_reason or 'ok'}, "
-            f"piper={self.piper_disabled_reason or 'ok'}"
+            f"gemini={self.gemini_disabled_reason or 'ok'}"
         )

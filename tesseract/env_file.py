@@ -35,8 +35,9 @@ from typing import Iterable, Mapping
 
 from dotenv import dotenv_values, set_key, unset_key
 
-# `# ── 1. Chat — the one key that ... ──────` in `.env.example`. The number
-# and the prose are one caption; the box-drawing rules around it are not.
+# `# ── API keys ──────` in `.env.example`. The caption is the whole match;
+# the box-drawing rules around it are not. Each caption is a tab in
+# Settings → Keys, which is why they are short nouns and not sentences.
 _SECTION_RE = re.compile(r"^#\s*[─-]{2,}\s*(.+?)\s*[─-]{2,}\s*$")
 # Only for reading `.env.example`'s own layout, which is written by this repo
 # and always tight. Values in a real `.env` are never matched with this —
@@ -49,11 +50,6 @@ _URL_RE = re.compile(r"https?://\S+")
 # — this file holds credentials, not shell — so every read and the boot-time
 # load turn interpolation off, and a value means itself.
 INTERPOLATE = False
-
-# Section 7 of `.env.example`. Its keys are not signup keys — a log level and
-# four bearer tokens the operator generates — so the view groups them apart
-# from the ones that start with a visit to a provider's website.
-_ADVANCED_SECTION_PREFIX = "7."
 
 # How many bytes of entropy a generated MCP bearer token carries. 32 bytes is
 # the `secrets` module's own documented floor for a token nobody should be
@@ -69,7 +65,6 @@ class EnvKeySpec:
     section: str
     description: str
     signup_url: str | None
-    advanced: bool
 
 
 @dataclass(frozen=True)
@@ -163,7 +158,6 @@ def parse_example(path: Path | None = None) -> list[EnvKeySpec]:
                     section=section,
                     description=description,
                     signup_url=url,
-                    advanced=section.startswith(_ADVANCED_SECTION_PREFIX),
                 )
             )
             comments = []

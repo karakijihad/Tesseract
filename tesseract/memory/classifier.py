@@ -18,7 +18,7 @@ import re
 
 from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
 from tesseract.memory.types import MemoryType
-from tesseract.paths import agents_dir
+from tesseract.agents.loader import resolve_agent_path
 
 logger = logging.getLogger(__name__)
 
@@ -44,11 +44,15 @@ def _load_agent_prompt() -> str:
     Re-read on every call — no cache. `classify_section` only calls this
     for unprefixed daily sections during a librarian pass (rare, and the
     file is a few hundred bytes), so the read cost is negligible; caching
-    would mean an operator's edit to `<home>/agents/memory-classifier.md`
-    is silently ignored for the rest of the process's life, the same
-    failure mode this call-time rewrite exists to close.
+    would mean an operator's edit to the card is silently ignored for the
+    rest of the process's life, the same failure mode this call-time
+    rewrite exists to close.
+
+    Resolved through the loader rather than joined onto a directory: the card
+    is a shipped one, so it lives in the app tree, and an operator shadow of
+    the same slug has to win here as it does everywhere else.
     """
-    path = agents_dir() / "memory-classifier.md"
+    path = resolve_agent_path("memory-classifier")
     text = path.read_text(encoding="utf-8")
     if text.startswith("---"):
         end = text.find("\n---", 3)

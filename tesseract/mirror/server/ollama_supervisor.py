@@ -23,6 +23,7 @@ from typing import Any
 
 import httpx
 
+from tesseract import http_client
 from tesseract.brain.boot import ollama_up
 from tesseract.memory.ollama_boot import (
     _is_localhost,
@@ -81,7 +82,7 @@ class OllamaSupervisor:
         # caller that uses the shared client without passing an explicit
         # `timeout=` per request. A hung Ollama (rare but possible during
         # a model load) cannot block this pool indefinitely.
-        self._client = httpx.AsyncClient(
+        self._client = http_client.async_client(
             limits=_OLLAMA_CLIENT_LIMITS,
             timeout=httpx.Timeout(5.0),
         )

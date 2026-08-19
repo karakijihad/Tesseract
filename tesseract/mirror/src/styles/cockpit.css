@@ -59,13 +59,13 @@
   box-sizing: border-box;
   min-width: 340px;
   min-height: 240px;
-  background: hsl(248 30% 9% / 0.62);
-  border: 1px solid hsl(var(--accent-hsl) / 0.22);
+  background: var(--glass-sheer);
+  border: var(--stroke-1) solid hsl(var(--accent-hsl) / 0.22);
   border-radius: var(--radius-md);
   box-shadow:
-    0 24px 70px -18px rgba(0, 0, 0, 0.7),
+    0 24px 70px -18px var(--scrim-xl),
     0 0 0 1px hsl(var(--accent-hsl) / 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    inset 0 1px 0 var(--wash-sm);
   backdrop-filter: blur(22px) saturate(1.25);
   -webkit-backdrop-filter: blur(22px) saturate(1.25);
   /* NOT `overflow: hidden` — that would clip the 7 edge/corner resize handles
@@ -93,7 +93,7 @@
   gap: var(--space-xs);
   padding: var(--space-xs) var(--space-sm);
   background: hsl(var(--accent-hsl) / 0.07);
-  border-bottom: 1px solid hsl(var(--accent-hsl) / 0.14);
+  border-bottom: var(--stroke-1) solid hsl(var(--accent-hsl) / 0.14);
   border-radius: var(--radius-md) var(--radius-md) 0 0;
   cursor: grab;
   user-select: none;
@@ -104,7 +104,7 @@
 
 .glass-panel__title {
   font-family: var(--font-display, var(--font-ui));
-  font-size: 0.74rem;
+  font-size: var(--t-caption-size);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-secondary);
@@ -119,35 +119,8 @@
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-2);
 }
-.glass-panel__btn {
-  width: 1.5rem;
-  height: 1.5rem;
-  display: grid;
-  place-items: center;
-  line-height: 1;
-  font-size: 0.85rem;
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-sm);
-  color: var(--text-meta);
-  cursor: pointer;
-  transition:
-    color 0.15s ease,
-    background 0.15s ease;
-}
-.glass-panel__btn:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-}
-.glass-panel__btn.is-active {
-  color: var(--accent-bright);
-}
-.glass-panel__close {
-  font-size: 1.1rem;
-}
-
 /* Body reproduces the `.view-pane.is-active` parent contract verbatim — flex
    column, min-height/width:0, hard `overflow:hidden` slot boundary, and the
    defensive `* { min-width:0 }` — so every whole view renders intact inside a
@@ -173,67 +146,6 @@
    shared region. No corner carries a visual affordance — the operator asked
    for the SE triangle gone, and a grip drawn on one corner implies the other
    seven do not exist. Widened from 8px to 10px so an edge is a real target. */
-.glass-panel__resize {
-  position: absolute;
-  z-index: 2;
-}
-.glass-panel__resize--n {
-  top: -4px;
-  left: 10px;
-  right: 10px;
-  height: 10px;
-  cursor: ns-resize;
-}
-.glass-panel__resize--s {
-  bottom: -4px;
-  left: 10px;
-  right: 10px;
-  height: 10px;
-  cursor: ns-resize;
-}
-.glass-panel__resize--e {
-  right: -4px;
-  top: 10px;
-  bottom: 10px;
-  width: 10px;
-  cursor: ew-resize;
-}
-.glass-panel__resize--w {
-  left: -4px;
-  top: 10px;
-  bottom: 10px;
-  width: 10px;
-  cursor: ew-resize;
-}
-.glass-panel__resize--ne {
-  top: -3px;
-  right: -3px;
-  width: 16px;
-  height: 16px;
-  cursor: nesw-resize;
-}
-.glass-panel__resize--nw {
-  top: -3px;
-  left: -3px;
-  width: 16px;
-  height: 16px;
-  cursor: nwse-resize;
-}
-.glass-panel__resize--sw {
-  bottom: -3px;
-  left: -3px;
-  width: 16px;
-  height: 16px;
-  cursor: nesw-resize;
-}
-.glass-panel__resize--se {
-  bottom: 0;
-  right: 0;
-  width: 16px;
-  height: 16px;
-  cursor: nwse-resize;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .glass-panel {
     transition: none;
@@ -244,16 +156,20 @@
    the lower third of the stage (under the orb). Pointer-transparent so it never
    blocks the orb or panels; sits below the panel layer. Fades via opacity. */
 .orb-captions {
-  position: absolute;
+  /* Under the top HUD rather than under the orb (operator, 2026-08-13): a
+     reply belongs beside who is speaking, and the lower third was where the
+     panels are. Fixed, not absolute — the pill it hangs from is fixed too. */
+  position: fixed;
   left: 50%;
-  bottom: 22%;
+  top: 58px;
   transform: translateX(-50%);
   z-index: 2;
   max-width: min(54ch, 76%);
   padding: 0.5rem 1rem;
-  border-radius: var(--radius-md);
-  background: hsl(248 30% 7% / 0.42);
-  border: 1px solid hsl(var(--accent-hsl) / 0.14);
+  /* A speech bubble: one corner squared off toward the pill above it. */
+  border-radius: var(--radius-md) var(--radius-md) var(--radius-md) var(--radius-xs);
+  background: var(--glass-thin);
+  border: var(--stroke-1) solid hsl(var(--accent-hsl) / 0.14);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
   pointer-events: none;
@@ -270,10 +186,10 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
   color: var(--text-primary);
-  font-size: 0.92rem;
+  font-size: var(--t-ui-size);
   line-height: 1.45;
   letter-spacing: 0.01em;
-  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6);
+  text-shadow: 0 1px 8px var(--scrim-lg);
 }
 @media (prefers-reduced-motion: reduce) {
   .orb-captions {
@@ -288,7 +204,7 @@
 }
 .hud-rail-toggle {
   font-family: var(--font-display, var(--font-ui));
-  font-size: 0.74rem;
+  font-size: var(--t-caption-size);
   font-weight: 600;
   letter-spacing: 0.04em;
 }
@@ -314,10 +230,10 @@
   margin: 0;
   padding: var(--space-xs);
   list-style: none;
-  background: hsl(248 30% 9% / 0.82);
-  border: 1px solid hsl(var(--accent-hsl) / 0.22);
+  background: var(--glass-solid);
+  border: var(--stroke-1) solid hsl(var(--accent-hsl) / 0.22);
   border-radius: var(--radius-md);
-  box-shadow: 0 18px 50px -16px rgba(0, 0, 0, 0.7);
+  box-shadow: 0 18px 50px -16px var(--scrim-xl);
   backdrop-filter: blur(22px) saturate(1.25);
   -webkit-backdrop-filter: blur(22px) saturate(1.25);
 }
@@ -336,7 +252,7 @@
   border: none;
   border-radius: var(--radius-sm);
   color: var(--text-primary);
-  font-size: 0.8rem;
+  font-size: var(--t-body-size);
   text-align: left;
   cursor: pointer;
 }
@@ -344,7 +260,7 @@
   background: hsl(var(--accent-hsl) / 0.12);
 }
 .hud-panes__tag {
-  font-size: 0.66rem;
+  font-size: var(--t-caption-size);
   letter-spacing: 0.03em;
 }
 .hud-panes__close {
@@ -355,7 +271,7 @@
   border: none;
   border-radius: var(--radius-sm);
   color: var(--text-meta);
-  font-size: 1rem;
+  font-size: var(--t-sub-size);
   line-height: 1;
   cursor: pointer;
 }
@@ -399,7 +315,7 @@
 }
 .hud-section.is-live {
   color: var(--ok);
-  border-color: rgba(74, 222, 128, 0.3);
+  border-color: var(--ok-strong);
 }
 
 .hud-section-stack {
@@ -410,10 +326,10 @@
   flex-direction: column-reverse;
   gap: var(--space-xs);
   padding: var(--space-xs);
-  background: hsl(248 30% 9% / 0.82);
-  border: 1px solid hsl(var(--accent-hsl) / 0.22);
+  background: var(--glass-solid);
+  border: var(--stroke-1) solid hsl(var(--accent-hsl) / 0.22);
   border-radius: var(--radius-md);
-  box-shadow: 0 18px 50px -16px rgba(0, 0, 0, 0.7);
+  box-shadow: 0 18px 50px -16px var(--scrim-xl);
   backdrop-filter: blur(22px) saturate(1.25);
   -webkit-backdrop-filter: blur(22px) saturate(1.25);
 }
@@ -428,6 +344,18 @@
 .hud-collapse {
   color: var(--accent);
 }
+
+/* Sits beside the collapse chevron: one tucks the bar, one clears the stage. */
+.hud-close-all {
+  color: var(--text-meta);
+}
+.hud-close-all:hover:not(:disabled) {
+  color: var(--bad);
+}
+.hud-close-all:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
 .cockpit-hud:has(.cockpit-hud-inner.is-tucked) {
   transform: translateY(calc(100% + 18px));
   opacity: 0;
@@ -435,32 +363,9 @@
 }
 .cockpit-hud {
   transition:
-    transform 0.22s ease,
-    opacity 0.22s ease;
+    transform var(--motion-med) ease,
+    opacity var(--motion-med) ease;
 }
-.hud-dock-tab {
-  position: fixed;
-  left: 50%;
-  bottom: 0;
-  transform: translateX(-50%);
-  z-index: 40;
-  width: 52px;
-  height: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
-  background: hsl(248 30% 10% / 0.72);
-  border: 1px solid hsl(var(--accent-hsl) / 0.24);
-  border-bottom: none;
-  color: var(--accent);
-  font-size: 0.62rem;
-  cursor: pointer;
-}
-.hud-dock-tab:hover {
-  background: hsl(var(--accent-hsl) / 0.16);
-}
-
 /* Folded mode — the mic keeps its button, only the mode pill hides. */
 .cockpit-hud-inner.is-folded .hud-voice-mode {
   display: none;
@@ -471,4 +376,94 @@
   .hud-section-stack {
     transition: none;
   }
+}
+
+/* The assistant's name is a control: what it shows of itself (orb, captions)
+   hangs off it, rather than off a stack in the bottom HUD three surfaces away
+   from the things it toggles. */
+.top-status-hud__name {
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+}
+
+.top-status-hud__name:hover,
+.top-status-hud__name.is-open {
+  color: var(--accent-bright);
+}
+
+/* The portalled shell every HUD menu shares — `components/common/HudMenu`.
+   The HUD clips its overflow, so these are fixed-positioned at <body>. */
+.hud-menu {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 132px;
+  padding: var(--space-xs);
+  border-radius: var(--radius-sm);
+  background: var(--hint-bg);
+  border: var(--stroke-1) solid var(--hint-border);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: opacity var(--motion-fast) var(--ease-out);
+}
+
+.assistant-menu {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 132px;
+  padding: var(--space-xs);
+  border-radius: var(--radius-sm);
+  background: var(--hint-bg);
+  border: var(--stroke-1) solid var(--hint-border);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: opacity var(--motion-fast) var(--ease-out);
+}
+
+/* The mode picker's rows are `MenuItem`s; each carries a label and a line of
+   explanation, so they stack rather than sit side by side. Layout only —
+   everything else is the shared row. */
+.hud-menu__row {
+  flex-direction: column;
+  gap: var(--space-1);
+  align-items: flex-start;
+}
+
+.hud-menu__label {
+  font-weight: var(--t-ui-weight);
+}
+
+.hud-menu__what {
+  color: var(--text-meta);
+  font-size: var(--t-meta-size);
+}
+
+.assistant-menu__box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  border-radius: var(--radius-xs);
+  border: var(--stroke-1) solid var(--panel-border);
+  color: var(--bg-void);
+  font-size: var(--t-meta-size);
+  line-height: 1;
+}
+
+.assistant-menu__box.is-on {
+  background: var(--accent);
+  border-color: var(--accent);
 }

@@ -1,6 +1,8 @@
-"""AgendaReaperJob — P7 addendum — staleness self-prune for the agenda
-backlog (operator directive 2026-07-07: "clean the agenda ... we need
-to add self prune to old stuff").
+"""AgendaReaperJob — staleness self-prune for the agenda backlog.
+
+Runs as the `agenda_reap` stage of the `consolidate` row. It had a 12:30 row
+of its own and no reason for one: nothing it sweeps is time-of-day sensitive,
+and an hour chosen on one machine shipped to every install.
 
 Transitions stale non-terminal agenda items to ABANDONED, per a
 per-status ``max_age_days`` config map, so a growing non-terminal
@@ -12,19 +14,13 @@ someone recently touched survives even if it was minted long ago.
 Sub-second sweep; calls no model, sends no channel message, writes no
 memory — read store, transition, ``JobResult``.
 
-SCOUT and STRATEGIST get a built-in, STATUS-AWARE skip: ``scout_reaper.py``
-and ``strategist_reaper.py`` already own staleness for the statuses in
-their own ``_REAPABLE`` sets (per-item / per-goal horizons resolved from
-their own side ledgers). Reaping those same statuses here too would
-double-handle the same items under two different staleness policies —
-left to their dedicated reapers. Any OTHER status for those sources
-(e.g. ``blocked``, ``resume_queued``) is not owned by either dedicated
-reaper and falls through to this one, so a SCOUT/STRATEGIST item that
-reaches BLOCKED (operator approval -> failed worker dispatch) can still
-self-prune (P7 whole-phase review finding 1). The owned-status sets are
-imported directly from the dedicated reapers' ``_REAPABLE`` constants —
-single source of truth; if a dedicated reaper widens its coverage later,
-this one narrows automatically with no edit required here.
+**It is the only reaper now, and that is why the table below is empty.** Two
+dedicated reapers used to own particular statuses for particular sources, and
+this job skipped those pairs to avoid applying two staleness policies to one
+item. Both were deleted with the sources they served. An exemption is a promise
+that something else will clean the item, so an exemption with no dedicated
+reaper behind it is how an item lives forever — the table stays as the
+mechanism, with nothing in it, because the next dedicated reaper will need it.
 """
 
 from __future__ import annotations
@@ -37,19 +33,14 @@ from typing import Any
 from tesseract.orchestrator.autonomy.agenda_store import AgendaStore
 from tesseract.orchestrator.autonomy.models import AgendaSource, AgendaStatus
 from tesseract.scheduler.base_job import BaseJob
-from tesseract.scheduler.tasks.scout_reaper import _REAPABLE as _SCOUT_OWNED
-from tesseract.scheduler.tasks.strategist_reaper import _REAPABLE as _STRATEGIST_OWNED
 from tesseract.scheduler.types import JobContext, JobResult
 
 log = logging.getLogger(__name__)
 
-# Statuses owned by each source's dedicated reaper — never double-handled
-# here. Any status for that source NOT in this set falls through to the
-# general sweep below.
-_BUILTIN_OWNED_STATUSES: dict[AgendaSource, frozenset[AgendaStatus]] = {
-    AgendaSource.SCOUT: _SCOUT_OWNED,
-    AgendaSource.STRATEGIST: _STRATEGIST_OWNED,
-}
+# Statuses owned by a source's dedicated reaper — never double-handled here.
+# Any status for that source NOT in this set falls through to the general sweep
+# below. Empty today: every source that had a dedicated reaper is gone.
+_BUILTIN_OWNED_STATUSES: dict[AgendaSource, frozenset[AgendaStatus]] = {}
 
 
 class AgendaReaperJob(BaseJob):

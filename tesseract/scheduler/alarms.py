@@ -403,6 +403,10 @@ class AlarmRegistry:
             fired_at=now,
             app=app,
             config=ctx_payload,
+            # Alarms share `runs.jsonl` with cron jobs. Left at the default an
+            # alarm coming due would read as a cron tick, which is the same
+            # conflation `trigger_source` exists to end.
+            trigger_source="alarm",
         )
         t0 = time.perf_counter()
         try:

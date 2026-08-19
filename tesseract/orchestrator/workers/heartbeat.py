@@ -12,9 +12,8 @@ this docstring wrongly sent operators looking for one. Changing them means
 changing the schema and this module together, since recovery's staleness
 verdict and the writer's interval have to stay a 1:3 pair.
 
-``worker_liveness``'s own ``staleness_threshold_seconds`` job config
-overrides only what THAT job reports; it does not move the recovery
-threshold below.
+``liveness.announce_stale_workers`` takes a ``threshold`` argument, which
+moves only what IT reports; it does not move the recovery threshold below.
 """
 
 from __future__ import annotations

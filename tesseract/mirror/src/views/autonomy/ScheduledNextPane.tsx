@@ -5,6 +5,7 @@
 // surfaces cadence + last fired time. Lets the operator see what
 // background work is queued without leaving the dashboard.
 
+import { Block } from '../../components/common/Block';
 import React from 'react';
 import type { ScheduleJob } from '../../lib/types';
 
@@ -29,11 +30,7 @@ export function ScheduledNextPane({ jobs }: ScheduledNextPaneProps): React.React
     .sort((a, b) => a.name.localeCompare(b.name));
 
   return (
-    <section className="runtime-block autonomy-pane autonomy-pane--scheduled">
-      <div className="runtime-block__title">
-        Scheduled
-        <span className="t-meta" style={{ marginLeft: 8 }}>{enabled.length} enabled</span>
-      </div>
+    <Block title="Scheduled" meta={<>{enabled.length} enabled</>}>
 
       {enabled.length === 0 ? (
         <p className="t-meta">No scheduled jobs enabled.</p>
@@ -68,6 +65,6 @@ export function ScheduledNextPane({ jobs }: ScheduledNextPaneProps): React.React
           )}
         </ul>
       )}
-    </section>
+    </Block>
   );
 }

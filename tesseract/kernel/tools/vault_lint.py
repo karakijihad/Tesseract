@@ -10,7 +10,7 @@ import json
 import logging
 from dataclasses import asdict
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -37,6 +37,17 @@ class VaultLintTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "research-library"
+    summary: ClassVar[str] = "Runs lint passes over the compiled vault wiki and flags issues found."
+    use_when: ClassVar[str] = (
+        "Use to check wiki health after ingesting or compiling sources — writes lint_flags "
+        "for the operator to resolve. Pass dry_run=true to inspect without writing."
+    )
+    not_when: ClassVar[str] = (
+        "reading vault content — that is `vault_query` or `vault_search`."
+    )
+
     def __init__(
         self,
         vault_manager: VaultManager,
@@ -54,16 +65,6 @@ class VaultLintTool(Tool):
     @property
     def name(self) -> str:
         return "vault_lint"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Run lint passes over the compiled vault wiki. Detects orphan pages, "
-            "stale sources, 4-verb contradictions between Source pages, missing "
-            "entity hubs, and an INDEX scale-split alarm. Writes `lint_flags:` into "
-            "page frontmatter; operator resolves. Pass dry_run=true to inspect "
-            "without writing."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

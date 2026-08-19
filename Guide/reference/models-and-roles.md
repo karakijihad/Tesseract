@@ -18,19 +18,16 @@ A role either names its own model or points at a shared **chain** — a list wri
 | Role | Ships pointing at | Falls back to | Via |
 | --- | --- | --- | --- |
 | `agents_default` | `api.google.gemini_36_flash` | `api.nim.gpt_oss_120b`, `api.openai.gpt56_luna` | `chain_2` |
-| `audio_transcribe` | `local.whisper.local_whisper` | — | — |
-| `auditor` | `cli.codex.gpt56_terra` | — | — |
-| `autonomy_heartbeat` | `api.nim.gpt_oss_120b` | `api.google.gemini_36_flash`, `api.openai.gpt56_luna` | `chain_1` |
-| `autonomy_scout` | `api.nim.gpt_oss_120b` | `api.google.gemini_36_flash`, `api.openai.gpt56_luna` | `chain_1` |
-| `autonomy_strategist` | `api.google.gemini_36_flash` | `api.nim.gpt_oss_120b`, `api.openai.gpt56_luna` | `chain_2` |
-| `autonomy_vetter` | `api.google.gemini_36_flash` | `api.nim.gpt_oss_120b`, `api.openai.gpt56_luna` | `chain_2` |
-| `chat_brain` | `api.openai.gpt56_luna` | `api.openai.gpt54_mini`, `api.xai.grok_43` | — |
-| `claude_cli` | `cli.claude.opus_5` | — | — |
-| `coder` | `cli.claude.opus_5` | — | — |
-| `codex_cli` | `cli.codex.gpt56_terra` | — | — |
-| `feedback_consolidator` | `api.google.gemini_36_flash` | `api.nim.gpt_oss_120b`, `api.openai.gpt56_luna` | `chain_2` |
-| `image_generator` | `api.google.gemini_31_flash_image` | `api.xai.grok_imagine_image` | — |
+| `audio_transcribe` | `local.whisper.local_whisper` | — | `chain_7` |
+| `auditor` | `cli.codex.gpt56_terra` | — | `chain_5` |
+| `channel_vision` | `api.google.gemini_36_flash` | `api.nim.gpt_oss_120b`, `api.openai.gpt56_luna` | `chain_2` |
+| `chat_brain` | `api.openai.gpt56_luna` | `api.openai.gpt54_mini`, `api.xai.grok_43` | `chain_3` |
+| `claude_cli` | `cli.claude.opus_5` | — | `chain_4` |
+| `coder` | `cli.claude.opus_5` | — | `chain_4` |
+| `codex_cli` | `cli.codex.gpt56_terra` | — | `chain_5` |
+| `image_generator` | `api.google.gemini_31_flash_image` | `api.xai.grok_imagine_image` | `chain_6` |
 | `observer_agent` | `api.nim.gpt_oss_120b` | `api.google.gemini_36_flash`, `api.openai.gpt56_luna` | `chain_1` |
 | `subagents_default` | `api.google.gemini_36_flash` | `api.nim.gpt_oss_120b`, `api.openai.gpt56_luna` | `chain_2` |
+| `watchman` | `api.nim.gpt_oss_120b` | `api.google.gemini_36_flash`, `api.openai.gpt56_luna` | `chain_1` |
 
 Refs read `<tier>.<provider>.<model>`. The tiers are `api` (billed per token), `cli` (covered by a subscription, free at the point of use) and `local` (runs on your machine).

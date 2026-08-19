@@ -1,5 +1,7 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import './ExpandOverlay.css';
+import { CloseButton } from './CloseButton';
+import { Scrim } from './Scrim';
 
 interface Props {
   open: boolean;
@@ -67,12 +69,7 @@ export function ExpandOverlay({ open, onClose, title, children, actions }: Props
 
   return (
     <>
-      <button
-        type="button"
-        className="expand-overlay-scrim"
-        onClick={onClose}
-        aria-label="Close overlay"
-      />
+      <Scrim onClick={onClose} ariaLabel="Close overlay" level="panel" />
       <div
         ref={dialogRef}
         className="expand-overlay-panel"
@@ -85,14 +82,7 @@ export function ExpandOverlay({ open, onClose, title, children, actions }: Props
           {title && <h2 id={TITLE_ID} className="expand-overlay-title">{title}</h2>}
           <div className="expand-overlay-actions">
             {actions}
-            <button
-              type="button"
-              className="expand-overlay-close"
-              onClick={onClose}
-              aria-label="Close (Esc)"
-            >
-              ×
-            </button>
+            <CloseButton onClick={onClose} ariaLabel="Close (Esc)" />
           </div>
         </header>
         <div className="expand-overlay-body">{children}</div>

@@ -13,83 +13,25 @@
   padding: var(--space-md) var(--space-lg);
   gap: var(--space-md);
 }
-/* Match the agents canonical: mono uppercase title, t-meta subtitle inline,
- * agents-style refresh button. See `agents.css` lines 14-51. */
-.conscience-view-head {
+/* History window picker. Same shape as the workspace inbox's date controls —
+   two bounded dates then presets — because it is the same act, and an
+   operator who has learned one should not have to learn the other. */
+.conscience-range {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-md);
-  padding: var(--space-sm) 14px;
-  border-bottom: 1px solid var(--panel-border);
-  flex-shrink: 0;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
 }
-.conscience-view-title-row {
-  display: flex;
+
+.conscience-range__field {
+  display: inline-flex;
   align-items: center;
-  gap: var(--space-md);
-  min-width: 0;
+  gap: var(--space-xs);
 }
-.conscience-view-title {
+
+.conscience-range__stored {
   font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  color: var(--text-meta);
-  margin: 0;
-}
-.conscience-view-meta {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-meta);
-}
-.conscience-view-refresh {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-  padding: 4px 10px;
-  border-radius: var(--radius-xs);
-  background: var(--bg-card);
-  border: 1px solid var(--panel-border);
-  color: var(--text-meta);
-  cursor: pointer;
-  margin-left: auto;
-  flex-shrink: 0;
-}
-.conscience-view-refresh:hover:not(:disabled) {
-  color: var(--text-primary);
-  border-color: var(--accent-dim);
-}
-.conscience-view-refresh:disabled {
-  opacity: 0.5;
-  cursor: wait;
-}
-.conscience-view-error {
-  color: var(--bad);
-  border: 1px solid var(--bad);
-  background: var(--bad-dim);
-  border-radius: var(--radius-xs);
-  padding: var(--space-sm);
-}
-.conscience-view-empty {
-  padding: var(--space-lg);
-  text-align: center;
-  color: var(--text-meta);
-  font-style: italic;
-}
-.conscience-view-empty code {
-  font-family: var(--font-mono);
-  color: var(--accent-bright);
-  font-style: normal;
-}
-.conscience-view-body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-md);
 }
 
 /* Summary pills */
@@ -104,19 +46,19 @@
   gap: var(--space-xs);
   padding: var(--space-xs) var(--space-sm);
   border-radius: var(--radius-xs);
-  border: 1px solid var(--panel-divider);
+  border: var(--stroke-1) solid var(--panel-divider);
   background: var(--bg-card);
 }
 .conscience-summary-count {
-  font-family: var(--font-mono);
-  font-size: 18px;
+  font-family: var(--font-ui);
+  font-size: var(--t-head-size);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   color: var(--text-primary);
 }
-.conscience-summary-pill--ok   { border-color: var(--ok);   background: rgba(74, 222, 128, 0.08); }
+.conscience-summary-pill--ok   { border-color: var(--ok);   background: var(--ok-wash); }
 .conscience-summary-pill--ok .conscience-summary-count   { color: var(--ok); }
-.conscience-summary-pill--warn { border-color: var(--warn); background: rgba(255, 180, 84, 0.08); }
+.conscience-summary-pill--warn { border-color: var(--warn); background: var(--warn-wash); }
 .conscience-summary-pill--warn .conscience-summary-count { color: var(--warn); }
 .conscience-summary-pill--bad  { border-color: var(--bad);  background: var(--bad-dim); }
 .conscience-summary-pill--bad .conscience-summary-count  { color: var(--bad); }
@@ -133,17 +75,17 @@
   gap: var(--space-xs);
   padding: var(--space-sm) var(--space-md);
   border-radius: var(--radius-xs);
-  border: 1px solid var(--panel-divider);
-  border-left-width: 2px;
+  border: var(--stroke-1) solid var(--panel-divider);
+  border-left-width: var(--stroke-2);
   background: var(--bg-card);
 }
 .conscience-card--ok   { border-left-color: var(--ok); }
-.conscience-card--warn { border-left-color: var(--warn); background: rgba(255, 180, 84, 0.04); }
+.conscience-card--warn { border-left-color: var(--warn); background: var(--warn-wash); }
 .conscience-card--bad  { border-left-color: var(--bad);  background: var(--bad-dim); }
 .conscience-card-heading {
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  font-size: 10px;
+  letter-spacing: 0.05em;
+  font-size: var(--t-meta-size);
 }
 .conscience-card-value {
   display: flex;
@@ -152,20 +94,20 @@
   gap: var(--space-sm);
 }
 .conscience-card-number {
-  font-family: var(--font-mono);
-  font-size: 20px;
+  font-family: var(--font-ui);
+  font-size: var(--t-head-size);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   color: var(--text-primary);
 }
 .conscience-card-status {
   font-family: var(--font-ui);
-  font-size: 10px;
+  font-size: var(--t-meta-size);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  padding: 1px 6px;
+  letter-spacing: 0.05em;
+  padding: var(--space-1) var(--space-6);
   border-radius: var(--radius-xs);
-  border: 1px solid currentColor;
+  border: var(--stroke-1) solid currentColor;
 }
 .conscience-card-status--ok   { color: var(--ok); }
 .conscience-card-status--warn { color: var(--warn); }
@@ -176,26 +118,128 @@
 }
 .conscience-card-detail {
   color: var(--text-meta);
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-ui);
+  font-size: var(--t-caption-size);
   word-break: break-word;
 }
 
 /* History sparkline — stacked-bar per day, segments weighted by counts */
-.conscience-history {
+.drift-chart {
   display: flex;
   flex-direction: column;
   gap: var(--space-xs);
-  flex-shrink: 0;
+  margin: 0;
 }
-.conscience-history-heading {
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  font-size: 10px;
+
+/* The plot is the positioning context for the gridlines and the columns. The
+   top padding is where the ceiling tick sits — outside it, the tick printed
+   over the block's own meta line. */
+.drift-chart__plot {
+  position: relative;
+  height: 132px;
+  padding-top: var(--space-14);
 }
+
+/* Recessive by construction: a hairline of the divider colour, never the
+   grid competing with the data. */
+/* Decoration on top of the marks, so it must not take the pointer — a
+   gridline swallowing the hover is the chart's own tooltip failing. */
+.drift-chart__grid {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--panel-divider);
+  pointer-events: none;
+}
+
+/* The ceiling and its half, measured from the plot's own floor. */
+.drift-chart__grid--top { top: 14px; }
+.drift-chart__grid--mid { top: calc(14px + (100% - 14px) / 2); }
+
+.drift-chart__tick {
+  position: absolute;
+  top: 0;
+  right: 0;
+  pointer-events: none;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.drift-chart__cols {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-3);
+  height: 100%;
+}
+
+.drift-chart__col {
+  flex: 1 1 0;
+  min-width: 3px;
+  /* Four reports across a full-width panel would draw four slabs; the cap
+     keeps a column reading as a column however few there are. */
+  max-width: 56px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  /* 2px of surface between stacked segments, so two adjacent counts read as
+     two rather than one taller block. */
+  gap: var(--space-2);
+  border-radius: 2px;
+  cursor: default;
+}
+
+.drift-chart__col.is-read,
+.drift-chart__col:focus-visible {
+  outline: var(--stroke-1) solid var(--panel-border);
+  outline-offset: 2px;
+}
+
+.drift-chart__seg {
+  display: block;
+  width: 100%;
+  border-radius: 2px;
+  min-height: 2px;
+}
+
+.drift-chart__seg--ok { background: var(--ok); }
+.drift-chart__seg--warn { background: var(--warn); }
+.drift-chart__seg--bad { background: var(--bad); }
+
+.drift-chart__axis {
+  display: flex;
+  justify-content: space-between;
+}
+
+.drift-chart__legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs) var(--space-md);
+  min-height: 18px;
+}
+
+.drift-chart__read {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.drift-chart__key {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.drift-chart__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+}
+
 .conscience-history-bars {
   display: flex;
-  gap: 3px;
+  gap: var(--space-3);
   align-items: stretch;
   height: 28px;
 }
@@ -215,3 +259,86 @@
 .conscience-history-seg--ok   { background: var(--ok); }
 .conscience-history-seg--warn { background: var(--warn); }
 .conscience-history-seg--bad  { background: var(--bad); }
+
+/* --- tool usage -----------------------------------------------------------
+   Horizontal bars, because the label is a tool name and a vertical axis of
+   rotated `browser_snapshot` is a chart nobody reads. Length is distinct
+   sessions; the figures repeat as text beside every bar. */
+
+.tool-usage__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.tool-usage__count {
+  margin: 0;
+}
+
+.tool-usage__bars {
+  list-style: none;
+  margin: var(--space-4) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.tool-usage__row {
+  display: grid;
+  /* Name, bar, figures. The name column is fixed so every bar starts at the
+     same x — ragged origins turn a ranked list into a comparison nobody can
+     make by eye. */
+  grid-template-columns: minmax(0, 12rem) 1fr auto;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.tool-usage__name {
+  font-family: var(--font-mono);
+  font-size: var(--t-body-size);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-usage__track {
+  display: block;
+  height: var(--space-3);
+  background: var(--panel-divider);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.tool-usage__bar {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+.tool-usage__figures {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tool-usage__caption {
+  margin-top: var(--space-3);
+}
+
+.tool-usage__unused-lead {
+  margin: var(--space-3) 0 var(--space-2);
+}
+
+.tool-usage__unused {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  font-family: var(--font-mono);
+}

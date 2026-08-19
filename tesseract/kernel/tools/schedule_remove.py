@@ -1,11 +1,12 @@
 """schedule_remove tool — operator-or-the assistant removal of a scheduler job.
 
 Phase 18 Task B. ASK-gated. Calls `SchedulerEngine.remove_job_runtime`
-which trims `schedule.yaml` and the live registry. Built-in jobs
-shipped in the repo (daily_writer, vault_lint, etc.) can be removed
-through this path — operators who want to keep them but stop firing
-should `set_enabled(false)` via the existing /schedule-disable command
-instead.
+which trims the operator's `schedule.yaml` and the live registry.
+
+Removes the operator's own jobs only. A job the app ships is declared in
+the sealed app tree, so deleting the operator's row would drop their
+overrides and the job would return on the next start — the call is refused
+with that reason, and disabling is the way to stop one firing.
 """
 
 from __future__ import annotations
@@ -27,17 +28,19 @@ class ScheduleRemoveTool(Tool):
     default_posture = "ask"
 
     risk_class: ClassVar[str] = "propose"
+
+    group: ClassVar[str] = "time"
+    summary: ClassVar[str] = "Deletes one of the operator's scheduler jobs entirely."
+    use_when: ClassVar[str] = "Use when the operator wants a job gone for good, not paused."
+    not_when: ClassVar[str] = (
+        "disabling a job while keeping it registered, which is `schedule_update`; a job the app "
+        "ships, which cannot be removed and only disabled; canceling a one-time reminder, which "
+        "is `alarm_cancel`."
+    )
+
     @property
     def name(self) -> str:
         return "schedule_remove"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Remove a scheduler job by name. Use when the operator asks to "
-            "delete a job entirely. To keep the job but stop firing, use "
-            "/schedule-disable instead. Persists to schedule.yaml."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

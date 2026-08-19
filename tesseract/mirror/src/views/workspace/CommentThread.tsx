@@ -3,6 +3,8 @@ import { useEntityName } from '../../hooks/useEntityName';
 import type { WorkspaceComment } from '../../stores/workspace';
 import { useWorkspaceStore } from '../../stores/workspace';
 import { Markdown } from '../../components/common/Markdown';
+import { Textarea } from '../../components/common/Textarea';
+import { Button } from '../../components/common/Button';
 
 interface Props {
   event_id: string;
@@ -91,18 +93,18 @@ export function CommentThread({ event_id, comments }: Props) {
         </ul>
       )}
       <form className="workspace-thread-form" onSubmit={onSubmit}>
-        <textarea
+        <Textarea
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={setDraft}
           placeholder={`Comment — ${entityName} will see this on the next turn`}
           rows={2}
           disabled={busy}
         />
         <div className="workspace-thread-form-row">
           {error && <span className="workspace-thread-error t-caption">{error}</span>}
-          <button type="submit" disabled={busy || !draft.trim()}>
+          <Button type="submit" tone="primary" onClick={() => {}} disabled={busy || !draft.trim()}>
             {busy ? 'Sending…' : 'Send'}
-          </button>
+          </Button>
         </div>
       </form>
     </div>

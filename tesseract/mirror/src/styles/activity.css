@@ -14,8 +14,8 @@
   flex-direction: column;
   overflow: hidden;
   border-radius: 14px;
-  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.12));
-  background: var(--glass-bg, rgba(20, 24, 32, 0.72));
+  border: var(--stroke-1) solid var(--border-visible);
+  background: var(--hint-bg);
   backdrop-filter: blur(16px);
   color: var(--text-primary);
 }
@@ -24,63 +24,37 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--glass-border, rgba(255, 255, 255, 0.1));
+  padding: var(--space-8) var(--space-12);
+  border-bottom: var(--stroke-1) solid var(--border-visible);
   cursor: move;
   touch-action: none;
 }
 .activity-map__title {
-  font-size: 12px;
+  font-size: var(--t-caption-size);
   font-weight: 600;
 }
 .activity-map__actions {
   display: flex;
   align-items: center;
-  gap: 8px;
-}
-.activity-map__closeall {
-  background: none;
-  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.14));
-  color: var(--text-meta);
-  cursor: pointer;
-  font-size: 11px;
-  line-height: 1;
-  padding: 3px 8px;
-  border-radius: 6px;
-  white-space: nowrap;
-}
-.activity-map__closeall:hover:not(:disabled) {
-  color: var(--text-primary);
-  border-color: var(--text-meta);
-}
-.activity-map__closeall:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-.activity-map__close {
-  background: none;
-  border: none;
-  color: var(--text-meta);
-  cursor: pointer;
-  font-size: 16px;
+  gap: var(--space-8);
 }
 /* The body — not the whole card — is the scroll container, so the bar +
    close-all header stay pinned while the row list scrolls underneath. */
 .activity-map__body {
-  padding: 6px 8px;
+  padding: var(--space-6) var(--space-8);
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 .activity-map__group {
-  margin-bottom: 8px;
+  margin-bottom: var(--space-8);
 }
 .activity-map__group-title {
-  font-size: 10px;
+  font-size: var(--t-meta-size);
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  padding: 4px 6px;
+  padding: var(--space-4) var(--space-6);
 }
 .activity-map__row-wrap {
   display: flex;
@@ -89,23 +63,22 @@
 .activity-map__row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-8);
   width: 100%;
-  padding: 6px;
+  padding: var(--space-6);
   border: none;
   background: none;
   color: inherit;
-  cursor: pointer;
   border-radius: 8px;
   text-align: left;
 }
 .activity-map__row:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--wash-md);
 }
 /* A failed routine/autonomy run stays visible until dismissed — same
    --bad/--bad-dim tokens Pulse/Conscience use for error rows (tokens.css). */
 .activity-map__row--failed {
-  border-left: 2px solid var(--bad);
+  border-left: var(--stroke-2) solid var(--bad);
   background: var(--bad-dim);
 }
 .activity-map__row--failed:hover {
@@ -121,62 +94,35 @@
 }
 .activity-map__label {
   flex: 1;
-  font-size: 12px;
+  font-size: var(--t-caption-size);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .activity-map__provider,
 .activity-map__state {
-  font-size: 10px;
+  font-size: var(--t-meta-size);
 }
 .activity-map__chevron {
-  font-size: 12px;
-  transition: transform 0.15s ease;
+  font-size: var(--t-caption-size);
+  transition: transform var(--motion-fast) ease;
 }
 .activity-map__chevron.is-open {
   transform: rotate(90deg);
 }
-.activity-map__row-close {
+/* Placement only. The close inside is `CloseButton`. */
+/* PLACEMENT ONLY — the slot is `RowActions`; it holds one control and must
+   not take a share of the row's width. */
+.activity-map__row-close-slot {
   flex: none;
-  background: none;
-  border: none;
-  color: var(--text-meta);
-  cursor: pointer;
-  font-size: 13px;
-  line-height: 1;
-  padding: 2px 4px;
-  border-radius: 4px;
-}
-.activity-map__row-close:hover:not(:disabled) {
-  color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.08);
-}
-.activity-map__row-close:disabled {
-  opacity: 0.4;
-  cursor: default;
 }
 .activity-map__detail {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 2px 6px 8px 30px;
-  font-size: 10px;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-6) var(--space-8) var(--space-30);
+  font-size: var(--t-meta-size);
 }
-.activity-map__more {
-  display: block;
-  width: 100%;
-  text-align: left;
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 4px 6px;
-  font-size: 10px;
-}
-.activity-map__more:hover {
-  color: var(--text-primary);
-}
-
 .activity-dot {
   width: 8px;
   height: 8px;
@@ -220,71 +166,42 @@
   max-width: 460px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px 14px;
+  gap: var(--space-8);
+  padding: var(--space-12) var(--space-14);
   border-radius: 12px;
-  background: var(--glass-bg, rgba(20, 24, 32, 0.86));
-  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.14));
+  background: var(--hint-bg);
+  border: var(--stroke-1) solid var(--border-visible);
   backdrop-filter: blur(16px);
   color: var(--text-primary);
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 8px 30px var(--scrim-sm);
 }
 .mcp-approvals__title {
-  font-size: 12px;
+  font-size: var(--t-caption-size);
   font-weight: 600;
 }
 .mcp-approvals__row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-12);
 }
 .mcp-approvals__what {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-2);
   min-width: 0;
 }
 .mcp-approvals__verb {
-  font-size: 13px;
+  font-size: var(--t-body-size);
   font-family: var(--font-mono, ui-monospace, monospace);
 }
 .mcp-approvals__client {
-  font-size: 11px;
+  font-size: var(--t-caption-size);
 }
 .mcp-approvals__actions {
   display: flex;
-  gap: 6px;
+  gap: var(--space-6);
   flex-shrink: 0;
-}
-.mcp-approvals__approve,
-.mcp-approvals__reject {
-  font-size: 12px;
-  line-height: 1;
-  padding: 5px 10px;
-  border-radius: 6px;
-  cursor: pointer;
-  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.14));
-  background: none;
-  color: var(--text-primary);
-}
-.mcp-approvals__approve {
-  border-color: rgba(90, 200, 130, 0.5);
-}
-.mcp-approvals__approve:hover:not(:disabled) {
-  background: rgba(90, 200, 130, 0.16);
-}
-.mcp-approvals__reject {
-  color: var(--text-meta);
-}
-.mcp-approvals__reject:hover:not(:disabled) {
-  color: var(--text-primary);
-  border-color: var(--text-meta);
-}
-.mcp-approvals__approve:disabled,
-.mcp-approvals__reject:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 /* trio W4 — parked asks reuse the approvals styling but float at the bottom so
    they never overlap the top-anchored MCP approvals pane. */

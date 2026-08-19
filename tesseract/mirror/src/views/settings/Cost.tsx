@@ -1,21 +1,31 @@
+import { Note } from '../../components/common/Note';
 import { useEffect, useMemo, useState } from 'react';
 
-import { postCostSettings, postVoiceCostSettings } from '../../lib/api';
+import { postCostSettings, postResetDefaults, postVoiceCostSettings } from '../../lib/api';
+import { ResetDefaults } from '../../components/common/ResetDefaults';
 import { useCostStore } from '../../stores/cost';
 import { useIdentityStore } from '../../stores/identity';
 import { formatUsd } from '../../lib/money';
+import { Hint } from '../../components/ui/Hint';
+import { Button } from '../../components/common/Button';
+import { Input } from '../../components/common/Input';
 
 type VoiceKind = 'tts' | 'stt';
 
-const VOICE_RATE_LABEL: Record<VoiceKind, string> = {
-  tts: '$ / 1M chars',
-  stt: '$ / audio-hour',
+// The unit belongs to the LANE, not to the side of the subsystem. A local
+// voice bills per character of text; a generative cloud one bills per
+// second of the speech it produced. Labelling the second as dollars per
+// million characters does not read as merely wrong — $2.30 shown against
+// "1M chars" reads as free.
+const VOICE_RATE_LABEL: Record<'chars' | 'audio_hour', string> = {
+  chars: '$ / 1M chars',
+  audio_hour: '$ / audio-hour',
 };
 
-interface VoiceDraft {
-  rate: string;
-  cap: string;
-}
+const DEFAULT_RATE_UNIT: Record<VoiceKind, 'chars' | 'audio_hour'> = {
+  tts: 'chars',
+  stt: 'audio_hour',
+};
 
 export function CostSection() {
   const costTracking = useIdentityStore((s) => s.costTracking);
@@ -28,7 +38,12 @@ export function CostSection() {
 
   const [warnPctDraft, setWarnPctDraft] = useState<string>('');
   const [perRoleDraft, setPerRoleDraft] = useState<Record<string, string>>({});
-  const [voiceDraft, setVoiceDraft] = useState<Record<VoiceKind, Record<string, VoiceDraft>>>({
+  // The daily cap only. The RATE is a catalog fact — what the provider
+  // charges — not something this pane sets, and offering an input for it made
+  // every voice row the odd one out on a screen where every other row is one
+  // cap. It also let a typo write a fabricated price into the catalog that the
+  // ledger then billed against.
+  const [voiceDraft, setVoiceDraft] = useState<Record<VoiceKind, Record<string, string>>>({
     tts: {},
     stt: {},
   });
@@ -48,16 +63,10 @@ export function CostSection() {
     const voice = costTracking.voice ?? { tts: {}, stt: {} };
     setVoiceDraft({
       tts: Object.fromEntries(
-        Object.entries(voice.tts).map(([provider, p]) => [
-          provider,
-          { rate: String(p.rate), cap: String(p.cap_usd) },
-        ]),
+        Object.entries(voice.tts).map(([provider, p]) => [provider, String(p.cap_usd)]),
       ),
       stt: Object.fromEntries(
-        Object.entries(voice.stt).map(([provider, p]) => [
-          provider,
-          { rate: String(p.rate), cap: String(p.cap_usd) },
-        ]),
+        Object.entries(voice.stt).map(([provider, p]) => [provider, String(p.cap_usd)]),
       ),
     });
   }, [costTracking]);
@@ -73,7 +82,7 @@ export function CostSection() {
     );
     const voiceTotal = (['tts', 'stt'] as VoiceKind[]).reduce((acc, kind) => {
       return acc + Object.values(voiceDraft[kind]).reduce(
-        (sub, d) => sub + (parseFloat(d.cap) || 0),
+        (sub, cap) => sub + (parseFloat(cap) || 0),
         0,
       );
     }, 0);
@@ -90,10 +99,9 @@ export function CostSection() {
     if (voice) {
       for (const kind of ['tts', 'stt'] as VoiceKind[]) {
         for (const [provider, p] of Object.entries(voice[kind])) {
-          const d = voiceDraft[kind][provider];
-          if (!d) continue;
-          if (parseFloat(d.rate) !== p.rate) return true;
-          if (parseFloat(d.cap) !== p.cap_usd) return true;
+          const cap = voiceDraft[kind][provider];
+          if (cap === undefined) continue;
+          if (parseFloat(cap) !== p.cap_usd) return true;
         }
       }
     }
@@ -115,37 +123,28 @@ export function CostSection() {
         if (!Number.isFinite(v) || v < 0) throw new Error(`${role} cap must be >= 0`);
         perRole[role] = v;
       }
+      // The cap ONLY. Both rate fields are optional server-side, so leaving
+      // them out means the catalog price is the one thing this pane cannot
+      // change — which is the point: a rate is what the provider charges, not
+      // an operator preference, and the ledger bills against whatever is
+      // written there.
       const voicePayload: {
-        tts: Record<string, { cost_per_million_chars: number; daily_budget_usd: number }>;
-        stt: Record<string, { cost_per_audio_hour: number; daily_budget_usd: number }>;
+        tts: Record<string, Record<string, number>>;
+        stt: Record<string, Record<string, number>>;
       } = { tts: {}, stt: {} };
       let voiceDirty = false;
       const voice = costTracking.voice ?? { tts: {}, stt: {} };
       for (const kind of ['tts', 'stt'] as VoiceKind[]) {
         for (const [provider, p] of Object.entries(voice[kind])) {
-          const d = voiceDraft[kind][provider];
-          if (!d) continue;
-          const rate = parseFloat(d.rate);
-          const cap = parseFloat(d.cap);
-          if (!Number.isFinite(rate) || rate < 0) {
-            throw new Error(`${kind} ${provider}: rate must be >= 0`);
-          }
+          const raw = voiceDraft[kind][provider];
+          if (raw === undefined) continue;
+          const cap = parseFloat(raw);
           if (!Number.isFinite(cap) || cap <= 0) {
             throw new Error(`${kind} ${provider}: daily cap must be > 0`);
           }
-          if (rate === p.rate && cap === p.cap_usd) continue;
+          if (cap === p.cap_usd) continue;
           voiceDirty = true;
-          if (kind === 'tts') {
-            voicePayload.tts[provider] = {
-              cost_per_million_chars: rate,
-              daily_budget_usd: cap,
-            };
-          } else {
-            voicePayload.stt[provider] = {
-              cost_per_audio_hour: rate,
-              daily_budget_usd: cap,
-            };
-          }
+          voicePayload[kind][provider] = { daily_budget_usd: cap };
         }
       }
       // Two endpoints because chat caps + warning_pct live in the
@@ -170,7 +169,6 @@ export function CostSection() {
   if (!costTracking) {
     return (
       <section className="settings-section">
-        <h3 className="settings-section__title">Cost &amp; budgets</h3>
         <div className="t-meta">(loading…)</div>
       </section>
     );
@@ -183,51 +181,39 @@ export function CostSection() {
     if (!voice) return null;
     const providers = Object.entries(voice[kind]);
     if (providers.length === 0) return null;
-    return providers.map(([provider]) => {
-      const d = voiceDraft[kind][provider] ?? { rate: '', cap: '' };
+    return providers.map(([provider, cfg]) => {
+      const cap = voiceDraft[kind][provider] ?? '';
       const spent = voiceProviders?.[kind]?.[provider]?.spent_usd ?? 0;
+      const rateLabel =
+        VOICE_RATE_LABEL[cfg.rate_unit ?? DEFAULT_RATE_UNIT[kind]];
+      const inputId = `cost-voice-${kind}-${provider}`;
       return (
         <div key={`${kind}-${provider}`} className="cost-row">
-          <label className="cost-row__label">
+          {/* One label, one cap, one spend — the same three columns as every
+              row above. The price the provider charges rides under the name as
+              a fact, because it explains what the cap buys and is not
+              something set here. */}
+          <label className="cost-row__label" htmlFor={inputId}>
             voice_{kind} · {provider}
+            <span className="cost-row__rate t-meta">
+              {cfg.rate} {rateLabel}
+            </span>
           </label>
-          <input
-            type="number"
-            min={0}
-            step={0.001}
-            value={d.rate}
-            onChange={(e) =>
-              setVoiceDraft((prev) => ({
-                ...prev,
-                [kind]: {
-                  ...prev[kind],
-                  [provider]: { ...d, rate: e.target.value },
-                },
-              }))
-            }
-            disabled={saving}
-            className="cost-row__input"
-            aria-label={`${provider} rate ${VOICE_RATE_LABEL[kind]}`}
-            title={VOICE_RATE_LABEL[kind]}
-          />
-          <input
+          <Input
+            id={inputId}
             type="number"
             min={0}
             step={0.1}
-            value={d.cap}
-            onChange={(e) =>
+            value={cap}
+            onChange={(next) =>
               setVoiceDraft((prev) => ({
                 ...prev,
-                [kind]: {
-                  ...prev[kind],
-                  [provider]: { ...d, cap: e.target.value },
-                },
+                [kind]: { ...prev[kind], [provider]: next },
               }))
             }
             disabled={saving}
             className="cost-row__input"
-            aria-label={`${provider} daily cap`}
-            title="Daily cap USD"
+            ariaLabel={`${provider} daily cap`}
           />
           <span className="cost-row__spend t-meta">
             spent {formatUsd(spent)}
@@ -239,34 +225,36 @@ export function CostSection() {
 
   return (
     <section className="settings-section">
-      <h3 className="settings-section__title">Cost &amp; budgets</h3>
-      <div className="settings-hint t-meta">
+      <Note>
         Daily cap derives from the sum of every per-role and per-voice cap.
         Warning fires at the same percentage on every cap.
-      </div>
+      </Note>
       <div className="cost-row">
         <label className="cost-row__label">Daily cap</label>
-        <input
-          type="number"
-          value={derivedDaily.toFixed(2)}
-          disabled
-          className="cost-row__input"
-          title="Derived: sum of every per-role cap + every voice provider cap"
-        />
+        <Hint label="Derived: sum of every per-role cap + every voice provider cap">
+          <Input
+            type="number"
+            value={derivedDaily.toFixed(2)}
+            onChange={() => {}}
+            disabled
+            className="cost-row__input"
+            ariaLabel="Daily cap, derived"
+          />
+        </Hint>
         <span className="cost-row__spend t-meta">
           spent {formatUsd(globalState?.spent_usd ?? 0)}
         </span>
       </div>
       <div className="cost-row">
         <label className="cost-row__label" htmlFor="cost-warn-pct">Warning at %</label>
-        <input
+        <Input
           id="cost-warn-pct"
           type="number"
           min={0}
           max={100}
           step={1}
           value={warnPctDraft}
-          onChange={(e) => setWarnPctDraft(e.target.value)}
+          onChange={setWarnPctDraft}
           disabled={saving}
           className="cost-row__input"
         />
@@ -279,14 +267,14 @@ export function CostSection() {
           <label className="cost-row__label" htmlFor={`cost-${role}`}>
             {role}
           </label>
-          <input
+          <Input
             id={`cost-${role}`}
             type="number"
             min={0}
             step={0.1}
             value={perRoleDraft[role] ?? ''}
-            onChange={(e) =>
-              setPerRoleDraft((prev) => ({ ...prev, [role]: e.target.value }))
+            onChange={(next) =>
+              setPerRoleDraft((prev) => ({ ...prev, [role]: next }))
             }
             disabled={saving}
             className="cost-row__input"
@@ -299,19 +287,25 @@ export function CostSection() {
       {renderVoiceRows('tts')}
       {renderVoiceRows('stt')}
       <div className="cost-row cost-row--actions">
-        <button
-          type="button"
-          className="cost-row__save"
+        <Button
           onClick={onSave}
           disabled={!dirty || saving}
+          tone="primary"
         >
           {saving ? 'Saving…' : 'Save'}
-        </button>
+        </Button>
+        <ResetDefaults
+          run={() => postResetDefaults('cost')}
+          reach="every budget and rate on this pane"
+          // The pane renders `costTracking` off the identity payload, which
+          // carries the per-role caps and the voice rates alike.
+          onDone={() => void useIdentityStore.getState().fetchIdentity()}
+        />
         {!costTracking.enabled && (
           <span className="t-meta">Cost tracking disabled in models.yaml.</span>
         )}
       </div>
-      {error && <div className="settings-error">{error}</div>}
+      {error && <Note tone="bad">{error}</Note>}
     </section>
   );
 }

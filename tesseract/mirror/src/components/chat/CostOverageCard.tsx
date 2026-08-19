@@ -1,6 +1,7 @@
 import { useCostStore } from '../../stores/cost';
 import { useWebSocketStore } from '../../stores/websocket';
 import type { CostOverageAskData } from '../../lib/types';
+import { Button } from '../common/Button';
 
 interface Props {
   ask: CostOverageAskData;
@@ -45,20 +46,12 @@ export function CostOverageCard({ ask }: Props) {
         . Continue today? Extra spend will show in red on the HUD until midnight.
       </div>
       <div className="cost-overage-card__actions">
-        <button
-          type="button"
-          className="cost-overage-card__btn cost-overage-card__btn--no"
-          onClick={() => send(false)}
-        >
-          No · stop
-        </button>
-        <button
-          type="button"
-          className="cost-overage-card__btn cost-overage-card__btn--yes"
-          onClick={() => send(true)}
-        >
+        <Button onClick={() => send(false)}>No · stop</Button>
+        {/* `danger` is the CONTINUE side on purpose: stopping is the safe
+            answer, and spending past the cap is the one that needs the red. */}
+        <Button tone="danger" onClick={() => send(true)}>
           Yes · continue
-        </button>
+        </Button>
       </div>
     </div>
   );

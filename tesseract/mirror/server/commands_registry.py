@@ -101,7 +101,7 @@ async def _h_save(app, session, arg):
 
 
 async def _h_load(app, session, arg):
-    await cmd_mod.cmd_load(app, session, _split_first(arg))
+    await cmd_mod.cmd_load(app, session, arg)
 
 
 async def _h_reset(app, session, arg):
@@ -113,11 +113,11 @@ async def _h_compact(app, session, _arg):
 
 
 async def _h_compact_file(app, session, arg):
-    await cmd_mod.cmd_compact_file(app, session, _split_first(arg))
+    await cmd_mod.cmd_compact_file(app, session, arg)
 
 
 async def _h_delete(app, session, arg):
-    await cmd_mod.cmd_delete(session, _split_first(arg))
+    await cmd_mod.cmd_delete(app, session, arg)
 
 
 async def _h_reflect(app, session, _arg):
@@ -197,32 +197,32 @@ async def _h_stats(app, session, _arg):
 _MIRROR_SESSION_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         name="sessions",
-        summary="list saved sessions",
+        summary="list conversations",
         handler=_h_sessions,
     ),
     CommandSpec(
         name="save",
-        summary="save current session",
+        summary="write this conversation to its record",
         handler=_h_save,
         arg_label="[name]",
-        arg_help="defaults to the current save name or a fresh timestamp",
+        arg_help="a name renames the conversation; bare /save just writes it",
     ),
     CommandSpec(
         name="load",
-        summary="replace history with a saved session",
+        summary="open a conversation",
         handler=_h_load,
         aliases=("resume",),
         arg_label="<name>",
-        arg_help="name of the saved session file (without .json)",
+        arg_help="its title, or its id if two share a title",
         mutates_session=True,
         emit_stats_after=True,
     ),
     CommandSpec(
         name="reset",
-        summary="clear the conversation; the dialog asks whether to reflect first",
+        summary="start a fresh conversation; the dialog asks whether to reflect first",
         handler=_h_reset,
         arg_label="[reflect|clear]",
-        arg_help="bare /reset opens the confirm dialog; reflect = autosave+reflect+clear, clear = wipe with zero side effects",
+        arg_help="bare /reset opens the confirm dialog; reflect = keep this one (archived) + reflect + open a new one, clear = wipe it for good",
         mutates_session=True,
         emit_stats_after=True,
     ),
@@ -235,10 +235,10 @@ _MIRROR_SESSION_SPECS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         name="compact_file",
-        summary="compact a saved session file without disturbing the live session",
+        summary="compact a stored conversation without disturbing the live one",
         handler=_h_compact_file,
         arg_label="<name>",
-        arg_help="name of the saved session file to compact in place",
+        arg_help="its title, or its id if two share a title",
         mutates_session=True,
     ),
     CommandSpec(
@@ -248,9 +248,10 @@ _MIRROR_SESSION_SPECS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         name="delete",
-        summary="delete a saved session file",
+        summary="delete an archived conversation",
         handler=_h_delete,
         arg_label="<name>",
+        arg_help="its title, or its id; archive it first",
     ),
     CommandSpec(
         name="reflect",

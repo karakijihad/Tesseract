@@ -50,20 +50,23 @@ class TasksSetTool(Tool):
     default_posture: ClassVar[str] = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "being-present"
+    summary: ClassVar[str] = "Replaces the full operator-visible task checklist for this turn."
+    use_when: ClassVar[str] = (
+        "Use when a turn needs more than a few distinct steps, so the operator can follow progress "
+        "instead of inferring it from tool calls. Skip for single-tool or trivial answers. Give "
+        "each step a short stable id ('1', '2', 'verify') — `tasks_update` addresses them by id, "
+        "so an id that changes between calls loses the step."
+    )
+    not_when: ClassVar[str] = (
+        "flipping one item's status, which is `tasks_update` — calling `tasks_set` again replaces "
+        "the whole list."
+    )
+
     @property
     def name(self) -> str:
         return "tasks_set"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Replace the operator-visible task checklist for this turn. "
-            "Use when you're about to do >3 steps so the operator can "
-            "follow progress. Each item: {id, title, status} with status "
-            "in {pending, in_progress, completed}. Mark exactly ONE item "
-            "as in_progress at a time; flip via tasks_update. Skip for "
-            "single-tool answers — the checklist is for multi-step work."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

@@ -20,6 +20,7 @@ from tesseract.mirror.server.cors import build_cors_middleware, resolve_allowed_
 from tesseract.mirror.server.routes import agents as agents_route
 from tesseract.mirror.server.routes import brief as brief_route
 from tesseract.mirror.server.routes import channels as channels_route
+from tesseract.mirror.server.routes import chains as chains_route
 from tesseract.mirror.server.routes import chats as chats_route
 from tesseract.mirror.server.routes import commands as commands_route
 from tesseract.mirror.server.routes import conscience as conscience_route
@@ -36,7 +37,6 @@ from tesseract.mirror.server.routes import observer_stats as observer_stats_rout
 from tesseract.mirror.server.routes import providers as providers_route
 from tesseract.mirror.server.routes import alarms as alarms_route
 from tesseract.mirror.server.routes import schedule as schedule_route
-from tesseract.mirror.server.routes import sessions as sessions_route
 from tesseract.mirror.server.routes import settings as settings_route
 from tesseract.mirror.server.routes import system as system_route
 from tesseract.mirror.server.routes import uploads as uploads_route
@@ -72,8 +72,26 @@ _lag_samples: deque[tuple[float, str]] = deque(maxlen=_LAG_SAMPLE_HISTORY)
 _lag_sampler_started = False
 
 
+#: Request-body ceiling. aiohttp defaults to 1 MiB, which is *just* under what
+#: wake-word calibration legitimately sends: five phrase takes plus a few
+#: seconds of ordinary speech is ~730 KB of audio, and base64 costs 4 bytes per
+#: 3. A payload past the default is refused by the framework with a bare,
+#: non-JSON 413 before any handler runs — during a recording session that reads
+#: as the feature being broken rather than as a limit.
+#:
+#: Set explicitly so the two limits are chosen together: this is the outer
+#: bound, and `routes/voice.py::MAX_CALIBRATION_AUDIO_BYTES` is the inner one
+#: that can still explain itself in seconds. Raised only enough to put the
+#: friendly refusal in front of the framework's, not enough to make large
+#: bodies cheap.
+MAX_REQUEST_BYTES = 4 * 1024 * 1024
+
+
 def create_app(config: ServerConfig) -> web.Application:
-    app = web.Application(middlewares=[build_cors_middleware(config.cors_origins)])
+    app = web.Application(
+        middlewares=[build_cors_middleware(config.cors_origins)],
+        client_max_size=MAX_REQUEST_BYTES,
+    )
     app["config"] = config
     # The WebSocket handshake is not CORS-gated by the middleware — CORS only
     # decorates responses, it never refuses one. `/ws` reaches the PTY, which
@@ -137,7 +155,6 @@ def create_app(config: ServerConfig) -> web.Application:
     app["tts_engine"] = None  # TTSEngine | None — populated when voice config is present
     app["vault_config"] = None  # VaultConfig | None — populated when watcher reloads
     app["config_watcher"] = None  # ConfigWatcher | None — Phase 18 auto-config-reflection
-    app["code_watcher"] = None  # CodeWatcher | None — source drift detection (mirror.yaml::code_watch)
     app["config_reload_toasts_enabled"] = _config_reload_toasts_enabled(config)
     app["_warmup_tasks"] = []  # list[asyncio.Task] — fire-and-forget model warm-ups; drained on shutdown
     # Created here, not lazily in the appender: `_build_voice_runtime` queues
@@ -158,6 +175,7 @@ def create_app(config: ServerConfig) -> web.Application:
     app["mcp_clients"] = None  # MCPClientManager | None — capability-growth Phase 2 OUTBOUND client; connected in _init_background STAGE 2
 
     app["loop_lag_task"] = None
+    app["brief_delivery_task"] = None  # Task | None — brief delivery service; started in _init_background
 
     _register_routes(app)
     app.on_startup.append(_on_startup)
@@ -236,23 +254,17 @@ def _register_routes(app: web.Application) -> None:
     app.router.add_get(
         "/api/controller_sessions/{session_id}", controller_session_status_handler
     )
-    app.router.add_get("/api/sessions", sessions_route.list_sessions_handler)
-    # Phase 1 (CLI parity) — per-day grouped view + archive listing.
-    # Path order matters: aiohttp matches routes top-down, so the more
-    # specific `/api/sessions/days` and `/api/sessions/archive` MUST be
-    # registered BEFORE `/api/sessions/{session_id}` or the placeholder
-    # would swallow them.
-    app.router.add_get("/api/sessions/days", sessions_route.list_sessions_by_day_handler)
-    app.router.add_get("/api/sessions/archive", sessions_route.list_archive_handler)
-    app.router.add_get("/api/sessions/{session_id}", sessions_route.get_session)
-    app.router.add_get("/api/sessions/{session_id}/preview", sessions_route.get_preview)
-    app.router.add_post("/api/sessions/{session_id}/rename", sessions_route.post_rename)
-    app.router.add_post("/api/sessions/{session_id}/duplicate", sessions_route.post_duplicate)
-    # mirror-multi-chat — session-agnostic chat library (chats persist across
-    # WS connections; create is WS-only). `{chat_id}/archive|restore` are more
-    # specific than `{chat_id}` — aiohttp matches by exact path, no conflict.
+    # Session-agnostic chat library (chats persist across WS connections;
+    # create is WS-only). `{chat_id}/archive|restore` are more specific than
+    # `{chat_id}` — aiohttp matches by exact path, no conflict.
+    #
+    # Path order matters for `days`: aiohttp matches top-down, so a literal
+    # segment MUST be registered before the `{chat_id}` placeholder or the
+    # placeholder swallows it.
     app.router.add_get("/api/chats", chats_route.list_chats_handler)
+    app.router.add_get("/api/chats/days", chats_route.list_chats_by_day_handler)
     app.router.add_get("/api/chats/{chat_id}", chats_route.get_chat_handler)
+    app.router.add_get("/api/chats/{chat_id}/preview", chats_route.preview_chat_handler)
     app.router.add_patch("/api/chats/{chat_id}", chats_route.rename_chat_handler)
     app.router.add_post("/api/chats/{chat_id}/archive", chats_route.archive_chat_handler)
     app.router.add_post("/api/chats/{chat_id}/restore", chats_route.restore_chat_handler)
@@ -329,6 +341,7 @@ def _register_routes(app: web.Application) -> None:
         channels_route.replay_channel_missed_handler,
     )
     app.router.add_get("/api/conscience/drift", conscience_route.drift)
+    app.router.add_get("/api/conscience/tool-usage", conscience_route.tool_usage)
     app.router.add_get("/api/soul", system_route.soul)
     app.router.add_get("/api/breakers", system_route.breakers)
     app.router.add_get("/api/identity", system_route.identity)
@@ -339,11 +352,14 @@ def _register_routes(app: web.Application) -> None:
     app.router.add_post("/api/settings/voice-cost", settings_route.set_voice_cost)
     app.router.add_get("/api/settings/config-files", settings_route.get_config_files)
     app.router.add_post("/api/settings/tool-permission", settings_route.set_tool_permission)
+    app.router.add_post("/api/settings/reset-defaults", settings_route.reset_defaults)
     app.router.add_post("/api/settings/role-models", settings_route.set_role_models)
     app.router.add_get("/api/settings/catalog", settings_route.get_catalog)
     app.router.add_post("/api/settings/model-ref", settings_route.set_model_ref)
+    chains_route.register(app)
     app.router.add_get("/api/settings/voice", settings_route.get_voice)
     app.router.add_post("/api/settings/voice", settings_route.set_voice)
+    app.router.add_post("/api/settings/voice/preset", settings_route.set_voice_preset)
     app.router.add_get("/api/settings/system", settings_route.get_system)
     app.router.add_get("/api/settings/session-policy", settings_route.get_session_policy)
     app.router.add_post("/api/settings/session-policy", settings_route.set_session_policy)
@@ -354,13 +370,19 @@ def _register_routes(app: web.Application) -> None:
     app.router.add_get("/api/voice/catalog", voice_route.get_catalog)
     app.router.add_post("/api/voice/primary", voice_route.set_primary)
     app.router.add_post("/api/voice/test", voice_route.post_test)
+    # Wake word. `GET` separates permission (`enabled`) from readiness
+    # (`armed`) — reporting one number for both is how an operator ends up
+    # believing a gate is live while it passes everything through. `DELETE` is
+    # the rollback: the gate arms on the calibration existing.
+    app.router.add_get("/api/voice/wake", voice_route.get_wake)
+    app.router.add_post("/api/voice/wake/calibrate", voice_route.post_wake_calibrate)
+    app.router.add_delete("/api/voice/wake", voice_route.delete_wake_calibration)
     app.router.add_get("/api/cost/state", cost_route.get_state)
+    app.router.add_get("/api/cost/windows", cost_route.get_windows)
     app.router.add_get("/api/system/ollama", ollama_route.status)
     app.router.add_post("/api/system/ollama", ollama_route.action)
     app.router.add_get("/api/system/whisper", local_models_route.whisper_status)
     app.router.add_post("/api/system/whisper", local_models_route.whisper_action)
-    app.router.add_get("/api/system/piper", local_models_route.piper_status)
-    app.router.add_post("/api/system/piper", local_models_route.piper_action)
     app.router.add_get("/api/system/kokoro", local_models_route.kokoro_status)
     app.router.add_post("/api/system/kokoro", local_models_route.kokoro_action)
     app.router.add_post("/api/system/models/download", local_models_route.model_download)
@@ -398,10 +420,6 @@ def _register_routes(app: web.Application) -> None:
     )
     app.router.add_post(
         "/api/workspace/operator-post", workspace_route.post_operator_post,
-    )
-    app.router.add_post(
-        "/api/workspace/event/{event_id}/channel-gate",
-        workspace_route.post_channel_gate_decision,
     )
     app.router.add_get("/api/workspace/seen", workspace_route.get_seen)
     app.router.add_post("/api/workspace/seen", workspace_route.post_seen)
@@ -544,40 +562,18 @@ async def _on_startup(app: web.Application) -> None:
     from tesseract.mirror.server.routes.canvas_state import canvas_state_dir
     canvas_state_dir().mkdir(parents=True, exist_ok=True)
     _regenerate_kb_roles_summary()
-    # mcp-control-plane P2 — construct the MCP server from mcp.yaml. Cheap disk
-    # read; config-as-authority means a malformed mcp.yaml raises loudly here
-    # (same contract as load_server_config). Routes were registered in
-    # _register_routes; this gives their handlers a live instance.
-    from tesseract.config.mcp import load_mcp_config
-    from tesseract.mirror.server.mcp import MCPServer
-    from tesseract.mirror.server.mcp.approvals import (
-        MCPApprovalRegistry,
-        build_verb_ask_fn,
-    )
-    from tesseract.orchestrator.background_event_bus import get_background_bus
+    await _prepare_mcp_server(app)
+    # The boot graph is read and checked against the registry HERE, not inside
+    # the background task. `_init_background` swallows its own exceptions so a
+    # broken substrate cannot take the backend down, and a malformed graph
+    # would inherit that swallow — producing a backend that answers, reports
+    # warm, and has prepared nothing. Config is authority and a contradiction
+    # raises loudly, so it raises where it stops the start.
+    from tesseract.boot_graph import load_graph, validate
 
-    mcp_cfg = load_mcp_config()
-    approvals = MCPApprovalRegistry()
-    app["mcp_approvals"] = approvals
-
-    def _emit_mcp_approval(approval_id, verb, client):  # noqa: ANN001,ANN202
-        get_background_bus().publish(
-            "mcp_approval_requested",
-            {
-                "channel": "mcp_approval",
-                "approval_id": approval_id,
-                "verb": verb,
-                "client": client.name,
-                "trust_tier": client.trust_tier,
-            },
-        )
-
-    verb_ask_fn = build_verb_ask_fn(
-        approvals, _emit_mcp_approval, mcp_cfg.server.ask_hold_timeout_s
-    )
-    mcp_server = MCPServer(mcp_cfg, verb_ask_fn=verb_ask_fn)
-    await mcp_server.start(app)
-    app["mcp_server"] = mcp_server
+    app["boot_registry"] = build_substrate_registry(app)
+    app["boot_layers"] = load_graph()
+    validate(app["boot_layers"], app["boot_registry"])
     # Fire the heavy boot chain WITHOUT awaiting it. aiohttp will bind
     # the listener as soon as this on_startup hook returns; the
     # supervisor's heartbeat sees /api/health = 200 within seconds.
@@ -590,43 +586,12 @@ async def _on_startup(app: web.Application) -> None:
 _BOOT_TIMING_ENV = "TESSERACT_BOOT_TIMING"
 
 
-class _BootClock:
-    """Elapsed time between named boot checkpoints, when asked for.
-
-    Two boot stalls are reproduced across consecutive boots and neither can
-    be attributed from the log as it stands: ~11s between stage 2 starting
-    and the embedding model warming (a window that also contains a
-    94k-character prompt assembly, so two candidates share it), and ~24s
-    between the scheduler starting and the autonomy kernel, with no log
-    line in the gap at all.
-
-    Checkpoints rather than spans, because the boot chain is sequential and
-    the interesting number is the gap BETWEEN two stages — a span wrapping
-    both would report the sum and narrow nothing. A checkpoint also cannot
-    be skipped by an exception the way a context manager's exit can.
-
-    Off by default: a timing line per stage on every boot is noise for
-    everyone not chasing this.
-    """
-
-    def __init__(self) -> None:
-        self._enabled = bool(os.environ.get(_BOOT_TIMING_ENV))
-        self._last = time.monotonic()
-
-    def mark(self, name: str) -> None:
-        if not self._enabled:
-            return
-        now = time.monotonic()
-        log.info("boot timing: %s took %.2fs", name, now - self._last)
-        self._last = now
-
-
 def _enable_boot_timing_loop_debug() -> None:
     """Turn on asyncio's own slow-callback reporting for this boot.
 
-    Deliberately not a configured value: this is a debug override in the
-    same family as `TESSERACT_PROMPT_FULL`, and asyncio's own default
-    threshold applies unless the env var carries one.
+    Deliberately not a configured value: it is a debug override for one
+    boot, not a setting, and asyncio's own default threshold applies unless
+    the env var carries one.
     """
     raw = os.environ.get(_BOOT_TIMING_ENV, "")
     try:
@@ -644,301 +609,399 @@ def _enable_boot_timing_loop_debug() -> None:
     )
 
 
+def _needs_tool_registry(app: web.Application):
+    """Skip reason for substrates that are meaningless without the registry.
+
+    Routes to the state the registry substrate itself installs rather than to
+    a second flag: there is one answer to "did the tool registry build", and it
+    is whether `app["tool_registry"]` is there.
+    """
+    def _reason() -> str | None:
+        if app.get("tool_registry") is None:
+            return "the tool registry did not build"
+        return None
+
+    return _reason
+
+
+async def _prepare_activity_rebuild(app: web.Application) -> None:
+    from tesseract.orchestrator.activity.rebuild import rebuild_from_disk
+
+    seeded = await asyncio.to_thread(rebuild_from_disk)
+    log.info("activity: seeded %d persistent record(s) from disk", seeded)
+
+
+async def _prepare_tool_registry(app: web.Application) -> None:
+    """Build the registry off-loop, then publish what it produced on the loop.
+
+    The heavy half is threaded and the assignments are not, which is the same
+    split the hand-written chain had: it built inside `to_thread` and unpacked
+    after the gather.
+    """
+    result = await asyncio.to_thread(
+        _try_build_tool_registry, policy=app["config"].permissions, app=app,
+    )
+    if not isinstance(result, tuple):
+        return
+    registry, mood, bundle, alarm_registry = result
+    app["tool_registry"] = registry
+    app["mood"] = mood
+    app["memory_bundle"] = bundle
+    app["alarm_registry"] = alarm_registry
+    # Daily-brief auto-promote reads ``compile_source`` off this; cron jobs
+    # find it via app context.
+    app["vault_librarian"] = (
+        getattr(registry, "vault_librarian", None) if registry else None
+    )
+    set_state_tool = registry.tools.get("set_state") if registry is not None else None
+    app["entity_affect"] = getattr(set_state_tool, "_affect", None)
+    if alarm_registry is not None:
+        log.info("alarm_registry: ready (%d restored)", len(alarm_registry.list_pending()))
+    _schedule_warmup(app, _warm_embeddings(bundle), name="embeddings")
+    # Armed BEFORE the warm-up is queued, because the thing it guards against
+    # runs in between: the autonomy kernel starts below the warm line and its
+    # resume sweep can retrieve, which would build the session on the request
+    # path and block the loop for seconds.
+    reranker = getattr(bundle, "reranker", None) if bundle is not None else None
+    if reranker is not None and hasattr(reranker, "defer_until_warm"):
+        reranker.defer_until_warm()
+    _queue_serial_warmup(app, _warm_reranker(bundle), name="reranker")
+
+
+async def _prepare_cost_ledger(app: web.Application) -> None:
+    app["cost_ledger"] = await asyncio.to_thread(_try_build_cost_ledger)
+    _wire_cost_broadcast(app)
+
+
+async def _prepare_voice_runtime(app: web.Application) -> None:
+    await asyncio.to_thread(_build_voice_runtime, app)
+
+
+async def _prepare_observer(app: web.Application) -> None:
+    observer = await asyncio.to_thread(_try_build_observer, app.get("cost_ledger"))
+    app["observer"] = observer
+    if observer is None:
+        return
+    from tesseract.brain.observer_subscriber import ObserverSubscriber
+
+    app["observer_subscriber"] = ObserverSubscriber(observer)
+    # Owner request 2026-04-29 — observer arms by default on boot.
+    app["observer_state"] = "armed"
+    log.info("observer: armed-by-default at boot")
+
+
+async def _prepare_chat_infra(app: web.Application) -> None:
+    await asyncio.to_thread(_build_chat_infra, app)
+
+
+async def _prepare_command_registry(app: web.Application) -> None:
+    # Late import — commands_registry pulls in envelope/session helpers that
+    # need the chat infra, which the layer above this one built.
+    from tesseract.mirror.server.commands_registry import build_command_registry
+
+    app["command_registry"] = await asyncio.to_thread(
+        build_command_registry, app["tool_registry"],
+    )
+    log.info(
+        "command_registry: %d specs ready (mirror+kernel)",
+        len(app["command_registry"].specs()),
+    )
+
+
+async def _prepare_voice_dependent_tools(app: web.Application) -> None:
+    await asyncio.to_thread(_register_voice_dependent_tools, app)
+
+
+async def _prepare_outbound_notifier(app: web.Application) -> None:
+    """Prime the shared notifier before any scheduler job can want it.
+
+    Without it, a job that notifies fires with reason="no_notifier" whenever it
+    beats every other path that would have warmed the cache. The getters
+    resolve channel state at notify-time, so priming now is safe even when the
+    telegram bridge was a no-op for want of a token.
+    """
+    _get_outbound_notifier(app)
+    log.info("outbound_notifier: initialized (shared cache primed)")
+    if app.get("pty_manager") is not None:
+        log.info("pty_manager: ready (max %d pty(s))", app["pty_manager"].max_ptys)
+
+
+async def _prepare_serial_warmups(app: web.Application) -> None:
+    """Drain the GIL-bound queue, and wait for it.
+
+    The queue is still how these arrive: `_build_voice_runtime` fills it at
+    boot AND on every voice hot reload, and the single-drainer rule is what
+    stops a reload's pair from being awaited concurrently with a boot's. This
+    layer starts that drainer and waits for it, which is the difference
+    between the splash meaning something and not — these are the only boot
+    work that holds the GIL, so they are the only boot work that can still
+    stall a turn after the window opens.
+
+    The `_schedule_warmup` set is deliberately NOT waited on: it releases the
+    GIL, so it costs a first-use latency rather than a stall.
+    """
+    app["_serial_warmups_started"] = True
+    _ensure_serial_drainer(app)
+    drain = app.get("serial_warmup_task")
+    if drain is not None:
+        await drain
+
+
+async def _prepare_mcp_clients(app: web.Application) -> None:
+    await _connect_mcp_clients(app, app.get("tool_registry"))
+
+
+async def _start_brief_delivery(app: web.Application) -> None:
+    """The delivery half of the brief. Generation is `brief_render`, a stage of
+    the nightly row; this only decides when what it wrote reaches the operator,
+    at the hour in `mirror.yaml::brief`."""
+    from tesseract.mirror.server.brief_delivery import delivery_loop
+
+    app["brief_delivery_task"] = asyncio.create_task(delivery_loop(app))
+
+
+async def _prepare_activity_subscriber(app: web.Application) -> None:
+    from tesseract.mirror.server.activity_subscriber import ActivitySubscriber
+
+    subscriber = ActivitySubscriber(parked_store=app["controller_parked_asks"])
+    await subscriber.start()
+    app["activity_subscriber"] = subscriber
+    log.info("activity: controller push subscriber started")
+
+
+async def _prepare_operator_panes(app: web.Application) -> None:
+    """Re-open operator-facing controller session viewer panes that died with
+    the previous backend process. Background sessions stay headless."""
+    from tesseract.mirror.server.routes.controller_sessions import (
+        _list_active_sessions,
+    )
+
+    pty_manager = app.get("pty_manager")
+    if pty_manager is None:
+        return
+    await reattach_operator_panes(
+        list_fn=_list_active_sessions,
+        pty_open_fn=pty_manager.dispatch_for_agent,
+    )
+
+
+async def _prepare_wake_spotter(app: web.Application) -> None:
+    await asyncio.to_thread(_warm_wake_spotter, app)
+
+
+async def _prepare_cli_auth(app: web.Application) -> None:
+    from tesseract.brain import cli_auth
+
+    await cli_auth.refresh()
+
+
+async def _prepare_browser_provision(app: web.Application) -> None:
+    from tesseract.orchestrator.browser.provision import ensure_browsers_if_wanted
+
+    await ensure_browsers_if_wanted()
+
+
+def build_substrate_registry(app: web.Application):
+    """Every substrate the Mirror backend knows how to prepare.
+
+    Each entry states three things about its own code that `boot.yaml` cannot
+    override: whether preparing it holds the interpreter, what the app does
+    when it was never prepared, and whether this machine has any use for it.
+    A blank `degrade` is legal only above the warm line, where there is no
+    cold behaviour to describe because the window waits.
+    """
+    from tesseract.boot_graph import SubstrateRegistry
+
+    reg = SubstrateRegistry()
+
+    # ── above the line ────────────────────────────────────
+    reg.add(
+        "tls_trust_store", lambda: _warm_tls_trust_store(),
+        # The CA-bundle load is OpenSSL's, and it runs under `to_thread`.
+        holds_gil=False, degrade="",
+    )
+    reg.add(
+        "ollama", lambda: _ensure_ollama_ready(app),
+        holds_gil=False, degrade="",
+    )
+    reg.add(
+        "tool_registry", lambda: _prepare_tool_registry(app),
+        holds_gil=False, degrade="",
+    )
+    reg.add(
+        "cost_ledger", lambda: _prepare_cost_ledger(app),
+        holds_gil=False, degrade="",
+    )
+    reg.add(
+        "recovery", lambda: _run_recovery(app),
+        holds_gil=False, degrade="",
+    )
+    reg.add(
+        "activity_rebuild", lambda: _prepare_activity_rebuild(app),
+        holds_gil=False, degrade="",
+    )
+    reg.add(
+        "voice_runtime", lambda: _prepare_voice_runtime(app),
+        holds_gil=False, degrade="",
+    )
+    reg.add(
+        "observer", lambda: _prepare_observer(app),
+        holds_gil=False, degrade="",
+    )
+    reg.add(
+        "chat_infra", lambda: _prepare_chat_infra(app),
+        holds_gil=False, degrade="",
+    )
+    reg.add(
+        "command_registry", lambda: _prepare_command_registry(app),
+        holds_gil=False, degrade="", requires=_needs_tool_registry(app),
+    )
+    reg.add(
+        "voice_dependent_tools", lambda: _prepare_voice_dependent_tools(app),
+        holds_gil=False, degrade="", requires=_needs_tool_registry(app),
+    )
+    reg.add(
+        "telegram_bridge", lambda: _start_telegram_bridge(app),
+        holds_gil=False, degrade="",
+    )
+    reg.add(
+        "outbound_notifier", lambda: _prepare_outbound_notifier(app),
+        holds_gil=False, degrade="",
+    )
+    reg.add(
+        "scheduler", lambda: _start_scheduler(app),
+        holds_gil=False, degrade="",
+    )
+    reg.add(
+        "serial_warmups", lambda: _prepare_serial_warmups(app),
+        # onnxruntime's session constructor does not release the GIL for its
+        # duration, so a worker thread buys nothing — measured at 4.6s of a
+        # 4.7s Kokoro build. This is the fact that keeps it above the line.
+        holds_gil=True, degrade="",
+    )
+
+    # ── below the line ────────────────────────────────────
+    reg.add(
+        "autonomy_kernel", lambda: _start_autonomy_kernel(app),
+        holds_gil=False,
+        degrade=(
+            "no agenda ticks and no dispatch; jobs still run and what they "
+            "publish is discarded, with the first loss per source warned and "
+            "the rest counted"
+        ),
+    )
+    reg.add(
+        "config_watcher", lambda: _start_config_watcher(app),
+        holds_gil=False,
+        degrade=(
+            "a yaml edit reaches anything that re-reads the file; anything "
+            "needing a rebuild waits for the next start"
+        ),
+    )
+    reg.add(
+        "activity_subscriber", lambda: _prepare_activity_subscriber(app),
+        holds_gil=False,
+        degrade=(
+            "controller-origin parked asks refuse with 503 naming the missing "
+            "half; chat-origin asks still settle, and delegates plus the disk "
+            "seed still populate the activity registry"
+        ),
+    )
+    reg.add(
+        "mcp_clients", lambda: _prepare_mcp_clients(app),
+        holds_gil=False,
+        degrade=(
+            "no remote MCP tools in the registry; local kernel tools are "
+            "unaffected and an mcp_servers.yaml save reports that it reached "
+            "nothing"
+        ),
+        requires=_needs_tool_registry(app),
+    )
+    reg.add(
+        "brief_delivery", lambda: _start_brief_delivery(app),
+        holds_gil=False,
+        degrade=(
+            "the brief is still written at the anchor and readable in the "
+            "Brief tab; it just is not pushed at your hour"
+        ),
+    )
+    reg.add(
+        "operator_panes", lambda: _prepare_operator_panes(app),
+        holds_gil=False,
+        degrade=(
+            "viewer panes are not reattached; the operator's next connect and "
+            "session list cover it"
+        ),
+    )
+    reg.add(
+        "cli_auth", lambda: _prepare_cli_auth(app),
+        holds_gil=False,
+        degrade="the capability report shows cli providers as unverified rather than unavailable",
+    )
+    reg.add(
+        "browser_provision", lambda: _prepare_browser_provision(app),
+        holds_gil=False,
+        degrade=(
+            "the first browser_* call returns an ordinary tool error naming "
+            "the missing engine"
+        ),
+    )
+    reg.add(
+        "wake_spotter", lambda: _prepare_wake_spotter(app),
+        holds_gil=False,
+        degrade="the wake gate builds its decoder lazily on the first gated utterance",
+    )
+    return reg
+
+
+def _mark_warm(app: web.Application) -> None:
+    """Every substrate the operator can immediately touch is prepared.
+
+    The launch splash waits on this via `/api/health`. Below-the-line layers
+    are still running when it fires, and that is the whole point of the line.
+    """
+    if app.get("recovery_state") == "initializing":
+        app["recovery_state"] = "ready"
+    app["warm"] = True
+    log.info("mirror: warm — the window may open; background layers continue")
+
+
 async def _init_background(app: web.Application) -> None:
-    """Heavy boot chain — runs after aiohttp binds the listener.
+    """Walk the boot graph — after aiohttp binds the listener.
 
-    Architectural invariants (agent-by-design — parallel + thread-pool):
+    What runs, in what order, and what the operator waits for is declared in
+    `config/boot.yaml` and checked against the registry in `_on_startup`, so a
+    contradiction stops the backend there rather than surfacing later as a
+    substrate nobody prepared. Three invariants survive from the hand-written
+    chain this replaces:
 
-    1. **The event loop stays free.** ``_on_startup`` returns in <1s,
-       aiohttp binds the listener immediately, ``/api/health`` answers
-       within milliseconds throughout boot. CPU-bound synchronous
-       substrates run in the default thread-pool executor via
-       :func:`asyncio.to_thread` so they never block the loop.
-    2. **Independent substrates fan out in parallel.** Substrates with
-       no inter-dependency are dispatched together via
-       :func:`asyncio.gather`. The four-stage layout below mirrors
-       the actual dependency DAG; only edges that genuinely depend
-       on a prior substrate's output are serialised.
-    3. **Failure isolation.** Each stage is wrapped so one broken
-       substrate (e.g. cost-ledger disk read fails) doesn't abort the
-       rest. The aggregate try/except is the final safety net.
-
-    Stage layout::
-
-        STAGE 1 (parallel, no deps):
-            - _ensure_ollama_ready (async I/O — local daemon probe)
-            - _try_build_tool_registry (sync — kernel tools + agents)
-            - _try_build_cost_ledger (sync — reads cost-tracking.jsonl)
-            - _run_recovery (async — reads disk state, no live deps)
-
-        STAGE 2 (parallel, depend on stage 1 outputs):
-            - _build_voice_runtime (sync — needs voice config + tool registry)
-            - _try_build_observer (sync — needs cost_ledger)
-            - _build_chat_infra (sync — needs tool_registry)
-
-        STAGE 3 (serial — strict dependency chain):
-            - build_command_registry (needs tool_registry)
-            - _register_voice_dependent_tools (needs voice + tool registry)
-            - _start_telegram_bridge (needs chat_infra)
-
-        STAGE 4 (serial — orchestrator boot chain):
-            - _start_scheduler (async)
-            - _start_autonomy_kernel (async — needs scheduler + tool_registry)
-            - _start_config_watcher (async)
+    1. **The event loop stays free.** `_on_startup` returns in under a second
+       and `/api/health` answers throughout. CPU-bound preparations go through
+       `asyncio.to_thread`; the one substrate that holds the GIL regardless is
+       declared as doing so and cannot be placed below the line.
+    2. **Independent substrates fan out.** A `fires: parallel` layer gathers
+       its members; `serial` is for genuine dependency chains and for work
+       that contends on one interpreter.
+    3. **Failure isolation.** One broken substrate leaves the rest prepared,
+       and the window still opens — a window that never appears is worse than
+       a partial one.
     """
     try:
-        # AS-1 Phase 6 — seed the Unified Activity Registry from disk-durable
-        # substrates (named + bare lanes, controller sessions) BEFORE the live
-        # push subscriber connects. Pure disk read, no substrate deps → runs
-        # first, off-loop. Best-effort: a failure never blocks boot.
-        try:
-            from tesseract.orchestrator.activity.rebuild import rebuild_from_disk
-
-            seeded = await asyncio.to_thread(rebuild_from_disk)
-            log.info("activity: seeded %d persistent record(s) from disk", seeded)
-        except Exception:
-            log.exception("activity: rebuild_from_disk failed — continuing boot")
-
-        # Playwright pins one browser revision per package version; upgrading
-        # the package orphans the binaries on disk and browser_navigate dies
-        # at launch. `playwright install` is an idempotent fast no-op when
-        # current, so fire-and-forget provisioning here keeps the browser
-        # tools self-healing. Nothing at boot depends on it.
-        try:
-            from tesseract.orchestrator.browser.provision import ensure_browsers
-
-            _schedule_warmup(app, ensure_browsers(), name="browsers")
-        except Exception:
-            log.exception("browser provision: scheduling failed — continuing boot")
-
-        # cli-auth DESIGN.md §3 — boot probe of every enabled `cli` provider's
-        # subscription auth (claude/codex sign-in state), populating the
-        # process-wide cache `capabilities.py` and the role-broken check
-        # read. Fire-and-forget: nothing at boot depends on it, and a broken
-        # or slow probe must never delay or fail boot (design constraint).
-        try:
-            from tesseract.brain import cli_auth
-
-            _schedule_warmup(app, cli_auth.refresh(), name="cli_auth")
-        except Exception:
-            log.exception("cli_auth: scheduling refresh failed — continuing boot")
-
-        # ───── STAGE 1 ── parallel: ollama / tool_registry / cost_ledger / recovery
         _enable_boot_timing_loop_debug()
-        clock = _BootClock()
-        log.info("mirror init stage 1: ollama / tool_registry / cost_ledger / recovery (parallel)")
-        ollama_task = asyncio.create_task(_ensure_ollama_ready(app), name="boot:ollama")
-        registry_task = asyncio.create_task(
-            asyncio.to_thread(
-                _try_build_tool_registry,
-                policy=app["config"].permissions,
-                app=app,
-            ),
-            name="boot:tool_registry",
+        from tesseract.boot_graph import run_layers
+
+        await run_layers(
+            app["boot_layers"], app["boot_registry"],
+            on_window_open=lambda: _mark_warm(app),
         )
-        cost_task = asyncio.create_task(
-            asyncio.to_thread(_try_build_cost_ledger), name="boot:cost_ledger",
-        )
-        # AU-2 broad reconciler — runs in parallel with ollama/registry/cost;
-        # write surface is limited to worker records + PTY leases, which
-        # neither parallel substrate touches. See `_run_recovery` docstring
-        # for the contract.
-        recovery_task = asyncio.create_task(_run_recovery(app), name="boot:recovery:au2")
-
-        # Wait for the parallel set; gather() raises on first exception
-        # but each substrate already swallows its own failures, so we
-        # only see infrastructure errors here.
-        ollama_res, registry_res, cost_res, _recovery = await asyncio.gather(
-            ollama_task, registry_task, cost_task, recovery_task,
-            return_exceptions=True,
-        )
-        for name, res in (
-            ("ollama", ollama_res), ("tool_registry", registry_res),
-            ("cost_ledger", cost_res), ("recovery", _recovery),
-        ):
-            if isinstance(res, Exception):
-                log.exception(
-                    "mirror init stage 1: %s raised — continuing partial-ready",
-                    name, exc_info=res,
-                )
-
-        if isinstance(registry_res, tuple):
-            registry, mood, bundle, alarm_registry = registry_res
-            app["tool_registry"] = registry
-            app["mood"] = mood
-            app["memory_bundle"] = bundle
-            app["alarm_registry"] = alarm_registry
-            # Daily-brief auto-promote reads ``compile_source`` off this;
-            # cron jobs find it via app context.
-            app["vault_librarian"] = (
-                getattr(registry, "vault_librarian", None) if registry else None
-            )
-            set_state_tool = (
-                registry.tools.get("set_state") if registry is not None else None
-            )
-            app["entity_affect"] = getattr(set_state_tool, "_affect", None)
-            if alarm_registry is not None:
-                log.info(
-                    "alarm_registry: ready (%d restored)",
-                    len(alarm_registry.list_pending()),
-                )
-            _schedule_warmup(app, _warm_embeddings(bundle), name="embeddings")
-            # Armed BEFORE the warm-up is queued, because the thing it guards
-            # against runs in between: the autonomy kernel starts later in
-            # boot and its resume sweep can retrieve, which would build the
-            # session on the request path and block the loop for seconds.
-            reranker = getattr(bundle, "reranker", None) if bundle is not None else None
-            if reranker is not None and hasattr(reranker, "defer_until_warm"):
-                reranker.defer_until_warm()
-            _queue_serial_warmup(app, _warm_reranker(bundle), name="reranker")
-        else:
-            registry = None
-            bundle = None
-
-        if not isinstance(cost_res, Exception):
-            app["cost_ledger"] = cost_res
-            _wire_cost_broadcast(app)
-
-        # ───── STAGE 2 ── parallel: voice / observer / chat_infra
-        clock.mark("stage 1: ollama / tool_registry / cost_ledger / recovery")
-        log.info("mirror init stage 2: voice / observer / chat_infra (parallel)")
-        voice_task = asyncio.create_task(
-            asyncio.to_thread(_build_voice_runtime, app), name="boot:voice",
-        )
-        observer_task = asyncio.create_task(
-            asyncio.to_thread(_try_build_observer, app.get("cost_ledger")),
-            name="boot:observer",
-        )
-        chat_task = asyncio.create_task(
-            asyncio.to_thread(_build_chat_infra, app), name="boot:chat_infra",
-        )
-        # capability-growth Phase 2 — connect curated OUTBOUND MCP servers.
-        # Async-native (network I/O), gated on the STAGE-1 registry, per-server
-        # failure-isolated inside connect_all so one dead server never blocks
-        # boot or the other STAGE-2 substrates.
-        mcp_client_task = asyncio.create_task(
-            _connect_mcp_clients(app, registry), name="boot:mcp_client",
-        )
-        voice_res, observer_res, chat_res, mcp_client_res = await asyncio.gather(
-            voice_task, observer_task, chat_task, mcp_client_task,
-            return_exceptions=True,
-        )
-        for name, res in (
-            ("voice", voice_res), ("observer", observer_res),
-            ("chat_infra", chat_res), ("mcp_client", mcp_client_res),
-        ):
-            if isinstance(res, Exception):
-                log.exception(
-                    "mirror init stage 2: %s raised — continuing partial-ready",
-                    name, exc_info=res,
-                )
-
-        if not isinstance(observer_res, Exception):
-            app["observer"] = observer_res
-            if observer_res is not None:
-                from tesseract.brain.observer_subscriber import ObserverSubscriber
-
-                app["observer_subscriber"] = ObserverSubscriber(observer_res)
-                # Owner request 2026-04-29 — observer arms by default on boot.
-                app["observer_state"] = "armed"
-                log.info("observer: armed-by-default at boot")
-
-        clock.mark("stage 2: voice / observer / chat_infra")
-        # ───── STAGE 3 ── serial: substrates that depend on stage 2 outputs
-        if registry is not None:
-            # Late import — commands_registry pulls in envelope/session
-            # helpers that need the chat infra. Safe only post-stage-2.
-            from tesseract.mirror.server.commands_registry import build_command_registry
-            app["command_registry"] = await asyncio.to_thread(
-                build_command_registry, registry,
-            )
-            log.info(
-                "command_registry: %d specs ready (mirror+kernel)",
-                len(app["command_registry"].specs()),
-            )
-            await asyncio.to_thread(_register_voice_dependent_tools, app)
-
-        await _start_telegram_bridge(app)
-        # Codex audit-2 2026-05-19 P1 #3 — initialize the shared
-        # OutboundNotifier here so scheduler jobs (OperatorNudgeJob in
-        # particular) don't silently skip with reason="no_notifier" when
-        # they fire before any recovery/governor/upgrade-restart path has
-        # warmed the cache. The notifier's getters resolve channel state
-        # at notify-time, so wiring it now is safe even if telegram_bridge
-        # was a no-op (no TELEGRAM_BOT_TOKEN).
-        _get_outbound_notifier(app)
-        log.info("outbound_notifier: initialized (shared cache primed)")
-        if app.get("pty_manager") is not None:
-            log.info("pty_manager: ready (max %d pty(s))", app["pty_manager"].max_ptys)
-
-        # ───── STAGE 4 ── orchestrator boot chain (serial — strict deps)
-        # Recovery already ran in stage 1; scheduler catch-up happens
-        # after, then autonomy kernel. Timed individually rather than as one
-        # stage: the unexplained gap sits BETWEEN the scheduler and the
-        # kernel, so a single span around both would not narrow it.
-        clock.mark("stage 3: command registry")
-        await _start_scheduler(app)
-        clock.mark("stage 4: scheduler")
-        await _start_autonomy_kernel(app)
-        clock.mark("stage 4: autonomy kernel")
-        await _start_config_watcher(app)
-        clock.mark("stage 4: config watcher")
-        try:
-            await _start_code_watcher(app)
-        except Exception:
-            # Loud + local — a missing required `code_watch` key surfaces
-            # as a full traceback in the supervisor log but does NOT take
-            # down the "background init complete" log.
-            log.exception("code_watcher: refused to start — code drift will not surface")
-        # AS-1 — controller→Mirror activity push subscriber. Live lane /
-        # controller-session transitions reach the Mirror's activity registry
-        # (delegates register in-process; disk-rebuild seeded existence at the
-        # top of this function). Resilient to the controller being down at boot.
-        try:
-            from tesseract.mirror.server.activity_subscriber import ActivitySubscriber
-
-            subscriber = ActivitySubscriber(
-                parked_store=app["controller_parked_asks"]
-            )
-            await subscriber.start()
-            app["activity_subscriber"] = subscriber
-            log.info("activity: controller push subscriber started")
-        except Exception:
-            log.exception(
-                "activity: subscriber failed to start — live lane/session "
-                "reflection disabled (delegates + disk seed still work)"
-            )
-        # B4 — re-open operator-facing controller session viewer panes that
-        # died with the previous backend process. Background sessions stay
-        # headless. Wrapped in try/except so a reattach failure (e.g. no
-        # primary operator WS yet — acceptable; the operator's next connect
-        # + session-list covers the gap) never crashes boot.
-        try:
-            from tesseract.mirror.server.routes.controller_sessions import (
-                _list_active_sessions,
-            )
-            pty_manager = app.get("pty_manager")
-            if pty_manager is not None:
-                await reattach_operator_panes(
-                    list_fn=_list_active_sessions,
-                    pty_open_fn=pty_manager.dispatch_for_agent,
-                )
-        except Exception:
-            log.exception("reattach_operator_panes: failed — boot continues")
-        log.info("mirror: background init complete; backend fully ready")
-        # Deferred to here deliberately: these block the loop while they run
-        # (see `_queue_serial_warmup`), and doing that before the backend is
-        # answering is what produced the UI's "failed to fetch".
-        app["_serial_warmups_started"] = True
-        _ensure_serial_drainer(app)
+        log.info("mirror: background init complete; every layer prepared")
     except Exception:
         log.exception("mirror: background init crashed — leaving backend in partial-ready state")
     finally:
-        # _run_recovery sets state="ready" in its try/finally; if recovery
-        # never ran (early crash), default to "ready" so the dashboard
-        # doesn't stay stuck on "recovering" forever.
-        if app.get("recovery_state") == "initializing":
-            app["recovery_state"] = "ready"
+        # The safety net, not the signal: `_mark_warm` fires at the warm line
+        # and this catches a boot that crashed before reaching it. A crashed
+        # boot is as warm as this process will get.
+        _mark_warm(app)
 
 
 async def _on_shutdown(app: web.Application) -> None:
@@ -970,6 +1033,13 @@ async def _on_shutdown(app: web.Application) -> None:
         lag_task.cancel()
         try:
             await lag_task
+        except (asyncio.CancelledError, Exception):
+            pass
+    brief_task = app.get("brief_delivery_task")
+    if brief_task is not None:
+        brief_task.cancel()
+        try:
+            await brief_task
         except (asyncio.CancelledError, Exception):
             pass
     # mcp-control-plane P2 — signal open MCP SSE streams to close.
@@ -1030,12 +1100,6 @@ async def _on_shutdown(app: web.Application) -> None:
             await watcher.stop()
         except Exception:
             log.exception("config_watcher.stop on shutdown failed")
-    code_watcher = app.get("code_watcher")
-    if code_watcher is not None:
-        try:
-            await code_watcher.stop()
-        except Exception:
-            log.exception("code_watcher.stop on shutdown failed")
     governor = app.get("autonomy_governor")
     if governor is not None:
         try:
@@ -1312,11 +1376,32 @@ def _load_channels_config():
 
 
 def _try_build_tool_registry(policy=None, app=None):
+    """STAGE 1's registry build — and the boot's single chat_brain resolution.
+
+    Resolved here rather than inside `build_tool_registry`, and parked on the
+    app so STAGE 2's `_build_chat_infra` consumes it instead of resolving
+    again. The resolve builds one SDK client per chain entry and cost ~3.6s
+    twice per boot for two copies of the same answer.
+    """
+    chat_runtime = None
+    try:
+        from tesseract.brain.boot import resolve_chat_brain_runtime
+
+        chat_runtime = resolve_chat_brain_runtime()
+    except Exception as exc:  # noqa: BLE001
+        # Not a failure here: `build_tool_registry` and `_build_chat_infra`
+        # each own a degraded path for an unresolvable chain, and both are
+        # reached by leaving this None so they re-ask and get their own
+        # exception. Re-asking is cheap — a chain nobody can build constructs
+        # no clients.
+        log.info("chat_brain: boot resolve failed (%s) — substrates will degrade", exc)
+    if app is not None:
+        app["chat_runtime"] = chat_runtime
     try:
         from tesseract.brain.boot import build_tool_registry
 
         registry, mood, bundle, alarm_registry = build_tool_registry(
-            policy=policy, app=app,
+            policy=policy, app=app, chat_runtime=chat_runtime,
         )
         log.info("tool_registry loaded: %d tools", len(registry.tools))
         return registry, mood, bundle, alarm_registry
@@ -1485,6 +1570,82 @@ async def _ensure_ollama_ready(app: web.Application) -> None:
                 log.exception("ollama supervisor aclose on startup-fail failed")
 
 
+async def _prepare_mcp_server(app: web.Application) -> None:
+    """Construct the MCP server from ``mcp.yaml`` — if it is switched on.
+
+    Cheap disk read; config-as-authority means a malformed ``mcp.yaml`` raises
+    loudly here (same contract as ``load_server_config``). Routes were
+    registered in ``_register_routes``; this gives their handlers a live
+    instance.
+
+    ``server.enabled: false`` is the shipped default and builds nothing: no
+    approval registry, no ask timer, no session sweep. ``app["mcp_server"]``
+    stays ``None``, which the ``/mcp`` handlers already read as nothing to
+    serve. The CONFIG is still loaded and kept, because Settings renders the
+    address and the verb list from it whether the door is open or not — what
+    the surface would be is not a secret, and hiding it would leave the
+    operator turning on something undescribed.
+    """
+    from tesseract.config.mcp import load_mcp_config
+    from tesseract.mirror.server.mcp import MCPServer
+    from tesseract.mirror.server.mcp.approvals import (
+        MCPApprovalRegistry,
+        build_verb_ask_fn,
+    )
+    from tesseract.orchestrator.agent_controller.lanes import mcp_provision
+    from tesseract.orchestrator.background_event_bus import get_background_bus
+
+    mcp_cfg = load_mcp_config()
+    app["mcp_config"] = mcp_cfg
+    # Before the switch, not after: the runtime identities are what a lane and
+    # a terminal are given when they spawn, and a boot that skipped minting
+    # them would leave the operator turning MCP on and still finding it dead.
+    await asyncio.to_thread(mcp_provision.ensure_runtime_tokens, mcp_cfg)
+    if not mcp_cfg.server.enabled:
+        log.info("mcp: off (mcp.yaml server.enabled) — /mcp serves nothing")
+        return
+
+    approvals = MCPApprovalRegistry()
+    app["mcp_approvals"] = approvals
+
+    def _emit_mcp_approval(approval_id, verb, client):  # noqa: ANN001,ANN202
+        get_background_bus().publish(
+            "mcp_approval_requested",
+            {
+                "channel": "mcp_approval",
+                "approval_id": approval_id,
+                "verb": verb,
+                "client": client.name,
+                "trust_tier": client.trust_tier,
+            },
+        )
+
+    verb_ask_fn = build_verb_ask_fn(
+        approvals, _emit_mcp_approval, mcp_cfg.server.ask_hold_timeout_s
+    )
+    mcp_server = MCPServer(mcp_cfg, verb_ask_fn=verb_ask_fn)
+    await mcp_server.start(app)
+    app["mcp_server"] = mcp_server
+
+
+async def _warm_tls_trust_store() -> None:
+    """Build the process-wide TLS context before anything needs it.
+
+    `http_client.ssl_context()` loads a CA bundle — ~0.8s of synchronous CPU
+    on this machine, and it is the same 0.8s whoever pays it. Left to the
+    first caller it lands inside a request handler, on the loop, which is
+    exactly the >50ms rule. Here it lands in a thread during boot, where it
+    costs nothing and every client built afterwards is free.
+    """
+    from tesseract import http_client
+
+    try:
+        await asyncio.to_thread(http_client.ssl_context)
+        log.info("tls: trust store built and shared")
+    except Exception:
+        log.exception("tls: trust store build failed — clients will build their own")
+
+
 async def _warm_embeddings(bundle) -> None:
     """Pre-warm the embedding model so the first dedupe doesn't pay cold-load tax.
 
@@ -1507,9 +1668,9 @@ async def _warm_reranker(bundle) -> None:
 
     Left on the concurrent path this was the last blocking stretch at boot:
     measured after the voice lanes were serialised, its warm-up was the only
-    remaining event-loop breach, at 5.34s. It is the same defect as Kokoro's
-    and Piper's — an onnxruntime session constructor that does not release
-    the GIL — so it gets the same treatment.
+    remaining event-loop breach, at 5.34s. It is the same defect as Kokoro's —
+    an onnxruntime session constructor that does not release the GIL — so it
+    gets the same treatment.
 
     Warms regardless of whether embeddings came online: it is built from its
     own local config, so BM25-only retrieval still gets a warm reranker.
@@ -1536,13 +1697,13 @@ def _queue_serial_warmup(app: web.Application, coro, *, name: str) -> None:
     `asyncio.to_thread` only buys concurrency when the native call releases
     the GIL, and onnxruntime's session constructor does not: measured on an
     8 GB laptop, building the Kokoro session blocks the event loop for 4.6s
-    of its 4.7s, and Piper for 6.5s of 6.9s. CTranslate2 DOES release it —
-    whisper's 13.9s load costs 0.25s of lag — which is why it still goes
-    through `_schedule_warmup` and is not queued here.
+    of its 4.7s. CTranslate2 DOES release it — whisper's 13.9s load costs
+    0.25s of lag — which is why it still goes through `_schedule_warmup` and
+    is not queued here.
 
-    So these cannot overlap each other, and running them as three concurrent
-    tasks never made boot shorter; it only stacked the blocked stretches into
-    one long outage. A live boot showed 36.5s in a single window, during which
+    So these cannot overlap each other, and running them as concurrent tasks
+    never made boot shorter; it only stacked the blocked stretches into one
+    long outage. A live boot showed 36.5s in a single window, during which
     the backend answered no HTTP at all and the UI reported "failed to fetch".
     Worse, the lost wall-clock ran Kokoro's own preload past its timeout, and
     the timeout latched the lane off — so a slow boot silently demoted the
@@ -2070,7 +2231,7 @@ async def _start_autonomy_kernel(app: web.Application) -> None:
         # Wire pause_store now; tick hook waits until after Governor exists.
         pause_store.set_broadcast_hook(_governor_pause_hook)
         log.info(
-            "autonomy_kernel: started (tick=%.1fs top_k=%d)",
+            "autonomy_kernel: started (fallback wake=%.1fs top_k=%d)",
             kernel.config.tick_interval_seconds,
             kernel.config.top_k,
         )
@@ -2170,123 +2331,6 @@ async def _start_config_watcher(app: web.Application) -> None:
         app["config_watcher"] = watcher
     except Exception:
         log.exception("config_watcher unavailable — external yaml edits will not hot-reload")
-
-
-async def _start_code_watcher(app: web.Application) -> None:
-    """Background poller for `code_drift_detected`. Reads `mirror.yaml::code_watch`
-    for cadence + auto-restart posture. The block REQUIRES every key when
-    `enabled=true` — config is single source of truth, no implicit defaults.
-    A missing required key, a malformed block, or a missing git binary all
-    raise; the outer `_init_background` `except Exception` catches and logs
-    at exception level so the operator sees a stack trace, not a silent skip.
-    """
-    from tesseract.mirror.server.code_watcher import CodeWatcher
-    from tesseract.mirror.server.config import MIRROR_YAML
-    from tesseract.paths import ROOT
-    import yaml as _yaml
-
-    raw = _yaml.safe_load(MIRROR_YAML.read_text(encoding="utf-8")) or {}
-    block = raw.get("code_watch") if isinstance(raw, dict) else None
-    if block is None:
-        log.info("code_watcher: mirror.yaml has no `code_watch` block — feature disabled")
-        return
-    if not isinstance(block, dict):
-        raise ValueError(
-            f"mirror.yaml::code_watch must be a mapping, got {type(block).__name__}"
-        )
-    if "enabled" not in block:
-        raise KeyError("mirror.yaml::code_watch.enabled missing — no implicit defaults")
-    if not bool(block["enabled"]):
-        log.info("code_watcher: disabled via mirror.yaml::code_watch.enabled=false")
-        return
-    for required in ("interval_seconds", "auto_restart", "show_toast"):
-        if required not in block:
-            raise KeyError(
-                f"mirror.yaml::code_watch.{required} missing — no implicit defaults"
-            )
-    interval = max(5.0, float(block["interval_seconds"]))
-    auto_restart = bool(block["auto_restart"])
-    show_toast = bool(block["show_toast"])
-    app["code_watch_show_toast"] = show_toast
-
-    watcher = CodeWatcher(
-        repo_root=ROOT,
-        emit_fn=_make_code_drift_emit_fn(app),
-        interval_seconds=interval,
-        auto_restart=auto_restart,
-        restart_fn=_make_code_drift_restart_fn(app) if auto_restart else None,
-    )
-    await watcher.start()
-    app["code_watcher"] = watcher
-
-
-def _make_code_drift_emit_fn(app: web.Application):
-    """Fan a `code_drift_detected` envelope across all live operator sessions."""
-    async def emit(
-        classification: str,
-        paths: list[str],
-        head_drift: bool,
-        dirty_drift: bool,
-        head_sha: str | None,
-    ) -> None:
-        if not app.get("code_watch_show_toast", True):
-            return
-        from tesseract.mirror.server.envelope import make_code_drift_detected
-        from tesseract.mirror.server.session import send_envelope
-
-        sessions = app.get("server_sessions") or {}
-        for sess in list(sessions.values()):
-            env = make_code_drift_detected(
-                getattr(sess, "session_id", ""),
-                classification=classification,
-                paths=paths,
-                head_drift=head_drift,
-                dirty_drift=dirty_drift,
-                head_sha=head_sha,
-            )
-            try:
-                await send_envelope(sess, env)
-            except Exception:
-                log.exception("code_watcher: send_envelope failed")
-    return emit
-
-
-def _make_code_drift_restart_fn(app: web.Application):
-    """Schedule a `restart_upgrade` exit when `auto_restart=true` fires."""
-    async def restart(paths: list[str], short_sha: str) -> None:
-        try:
-            from tesseract.paths import TESSERACT_HOME
-            from tesseract.supervisor.intent import (
-                IntentFile,
-                intent_path,
-                now_utc,
-                write_atomic,
-            )
-            import asyncio as _asyncio
-
-            cont_id = f"code-drift-{short_sha}"
-            home = Path(os.environ.get("TESSERACT_HOME") or TESSERACT_HOME).resolve()
-            write_atomic(
-                intent_path(home),
-                IntentFile(
-                    intent="restart_upgrade",
-                    timestamp=now_utc(),
-                    source="backend_signal",
-                    continuation_id=cont_id,
-                    reason=f"code drift auto-restart ({len(paths)} backend path(s) changed)",
-                    backend_pid=os.getpid(),
-                    backend_ppid=os.getppid(),
-                ),
-            )
-            log.warning(
-                "code_watcher: auto_restart triggered — wrote intent.json continuation=%s",
-                cont_id,
-            )
-            loop = _asyncio.get_running_loop()
-            loop.call_later(0.5, loop.stop)
-        except Exception:
-            log.exception("code_watcher: restart_fn failed")
-    return restart
 
 
 def _config_reload_toasts_enabled(config: ServerConfig) -> bool:
@@ -2466,7 +2510,7 @@ def _build_voice_runtime(app: web.Application) -> None:
         from tesseract.voice import model_files as voice_model_files
         from tesseract.voice.providers.gemini import GeminiSTTConfig
         from tesseract.voice.providers.local_whisper import LocalWhisperConfig
-        from tesseract.voice.providers.piper_tts import PiperPreset, PiperTTSConfig
+        from tesseract.voice.providers.gemini_tts import GeminiPreset, GeminiTTSConfig
         from tesseract.voice.providers.kokoro_tts import KokoroPreset, KokoroTTSConfig
 
         cfg = load_voice_config()
@@ -2539,35 +2583,42 @@ def _build_voice_runtime(app: web.Application) -> None:
                 _schedule_warmup(app, app["stt_engine"].warm_up_local(), name="whisper")
 
         # ── TTS ─────────────────────────────────────────────────
-        piper_entry = next((e for e in tts_chain if e.get("adapter") == "piper"), None)
         kokoro_entry = next((e for e in tts_chain if e.get("adapter") == "kokoro"), None)
+        # `adapter` is a CONNECTION field, so Google's TTS and STT entries
+        # both report `gemini`. What identifies a cloud SPEAKING lane is
+        # the pair of fields only a TTS entry carries: its own endpoint
+        # (this model family is on the Interactions API, not the chat
+        # base) and the voice to speak in.
+        #
+        # Matching on those rather than on the adapter alone is also what
+        # keeps a half-written catalog entry from taking down the whole
+        # subsystem: everything below runs under one `try`, so a KeyError
+        # here would leave the machine with no voice AND no ears. An entry
+        # this build cannot drive is skipped and the remaining lanes
+        # serve — the contract this function's docstring already states.
+        gemini_tts_entry = next(
+            (
+                e for e in tts_chain
+                if e.get("adapter") == "gemini"
+                and e.get("base_url_override")
+                and e.get("voice")
+            ),
+            None,
+        )
+        unbuildable = [
+            e for e in tts_chain
+            if e.get("adapter") == "gemini" and e is not gemini_tts_entry
+        ]
+        for entry in unbuildable:
+            log.warning(
+                "voice: TTS ref=%s names the gemini adapter but carries no "
+                "`base_url_override`/`voice` — lane not built",
+                entry.get("ref"),
+            )
 
-        if piper_entry or kokoro_entry:
-            piper_config = None
+        if kokoro_entry or gemini_tts_entry:
             kokoro_config = None
-            if piper_entry:
-                piper_models_dir = voice_model_files.lane_dir("piper")
-                model_filename = piper_entry["model"]
-                model_path = piper_models_dir / model_filename
-                config_path = model_path.with_suffix(model_path.suffix + ".json")
-                presets_raw = piper_entry.get("synthesis_presets") or {}
-                presets = {
-                    name: PiperPreset(
-                        length_scale=float(spec.get("length_scale", 1.0)),
-                        noise_scale=float(spec.get("noise_scale", 0.0)),
-                        noise_w=float(spec.get("noise_w", 0.0)),
-                        sentence_silence=float(spec.get("sentence_silence", 0.2)),
-                    )
-                    for name, spec in presets_raw.items()
-                }
-                piper_config = PiperTTSConfig(
-                    model_path=model_path,
-                    config_path=config_path,
-                    sample_rate=int(piper_entry.get("sample_rate", 22050)),
-                    presets=presets,
-                    preload=bool(piper_entry.get("preload", False)),
-                    timeout_seconds=float(piper_entry.get("timeout_seconds", 60.0)),
-                )
+            gemini_config = None
             if kokoro_entry:
                 kokoro_models_dir = voice_model_files.lane_dir("kokoro")
                 model_filename = kokoro_entry["model"]
@@ -2597,24 +2648,56 @@ def _build_voice_runtime(app: web.Application) -> None:
                     preload=bool(kokoro_entry.get("preload", False)),
                     timeout_seconds=float(kokoro_entry.get("timeout_seconds", 60.0)),
                 )
+            if gemini_tts_entry:
+                g_presets_raw = gemini_tts_entry.get("synthesis_presets") or {}
+                g_presets = {
+                    name: GeminiPreset(
+                        style=str(spec.get("style", "")),
+                        pace=str(spec.get("pace", "")),
+                    )
+                    for name, spec in g_presets_raw.items()
+                }
+                gemini_config = GeminiTTSConfig(
+                    model=gemini_tts_entry["model"],
+                    api_key_env=gemini_tts_entry["api_key_env"],
+                    base_url=gemini_tts_entry["base_url_override"],
+                    voice=gemini_tts_entry["voice"],
+                    timeout_seconds=float(gemini_tts_entry["timeout_seconds"]),
+                    sample_rate=int(gemini_tts_entry["sample_rate"]),
+                    audio_profile=str(gemini_tts_entry.get("audio_profile", "")),
+                    presets=g_presets,
+                )
+                if not os.environ.get(gemini_config.api_key_env):
+                    # Built anyway. The lane is the operator's stated chain
+                    # and a key can arrive without a restart, so refusing to
+                    # construct it would make the setup form's "add a key
+                    # later" path a lie. Said once at boot, because a cloud
+                    # voice that cannot authenticate is the difference
+                    # between a quiet machine and a broken one.
+                    log.warning(
+                        "voice: cloud TTS lane %s is configured but %s is not "
+                        "set — it will fail at the first sentence",
+                        gemini_tts_entry.get("ref"),
+                        gemini_config.api_key_env,
+                    )
             # Every key comes off the chain entry that produced the
             # config — no defaults. A lane with no entry has no config
             # and no key, so the engine skips it by construction.
             tts_primary_provider = tts_chain[0]["provider"]
             app["tts_engine"] = TTSEngine(
                 cost_ledger=ledger,
-                piper_config=piper_config,
                 kokoro_config=kokoro_config,
+                gemini_config=gemini_config,
                 provider_key=tts_primary_provider,
-                piper_provider_key=(piper_entry or {}).get("provider", ""),
                 kokoro_provider_key=(kokoro_entry or {}).get("provider", ""),
+                gemini_provider_key=(gemini_tts_entry or {}).get("provider", ""),
             )
             log.info("voice: TTSEngine ready (primary=%s)", tts_primary_provider)
             # Warm a lane at boot only when it is the role primary (or
             # the operator explicitly opted in via catalog `preload`).
-            # Fallback lanes stay cold so a Piper-primary loadout doesn't
-            # also pay Kokoro's CUDA-DLL preload cost, and vice versa.
-            # First use loads the cold lane lazily.
+            # A fallback lane stays cold so a cloud-primary loadout doesn't
+            # pay Kokoro's CUDA-DLL preload cost for a model it may never
+            # use. First use loads the cold lane lazily.
             primary_tts_adapter = tts_chain[0].get("adapter")
             if (
                 app["tts_engine"] is not None
@@ -2622,14 +2705,53 @@ def _build_voice_runtime(app: web.Application) -> None:
                 and (primary_tts_adapter == "kokoro" or kokoro_config.preload)
             ):
                 _queue_serial_warmup(app, app["tts_engine"].warm_up_kokoro(), name="kokoro")
-            if (
-                app["tts_engine"] is not None
-                and piper_config is not None
-                and (primary_tts_adapter == "piper" or piper_config.preload)
-            ):
-                _queue_serial_warmup(app, app["tts_engine"].warm_up_piper(), name="piper")
     except Exception:
         log.exception("voice runtime unavailable — /api/voice/* will report disabled")
+
+
+def _warm_wake_spotter(app: web.Application) -> None:
+    """Load the wake decoder into the gate's cache, off the loop.
+
+    Only when the gate would actually use it: the wake word on, a confirmed
+    calibration present, and the phrase it was confirmed for still the phrase.
+    Warming outside those conditions would spend 9-12 s and a few hundred MB
+    of resident graph on an install whose gate is open and stays open.
+
+    Never raises. This is an optimisation, and every fault it could hit is one
+    `evaluate_wake_gate` already resolves to dispatch.
+    """
+    try:
+        from tesseract.mirror.server.wake_word import (
+            WakeWordConfig,
+            spotter_blocking,
+            wake_phrase,
+        )
+        from tesseract.voice import wake_calibration
+        from tesseract.voice.wake_spotter import SpotterKey
+
+        config = app.get("config")
+        wake = getattr(config, "wake_word", None)
+        if not isinstance(wake, WakeWordConfig) or not wake.enabled:
+            return
+        calibration = wake_calibration.load()
+        phrase = wake_phrase(config)
+        if calibration is None or not phrase or not calibration.matches_phrase(phrase):
+            return
+        started = time.monotonic()
+        if spotter_blocking(
+            app,
+            SpotterKey(
+                phrase=phrase,
+                threshold=max(calibration.threshold, wake.min_threshold),
+                boost=wake.boost,
+            ),
+        ) is not None:
+            log.info(
+                "wake_word: decoder warm in %.1fs — the first utterance does "
+                "not pay for it", time.monotonic() - started,
+            )
+    except Exception as exc:  # noqa: BLE001 — a warm-up that fails is just a cold gate
+        log.info("wake_word: could not warm the decoder (%s) — it will load on demand", exc)
 
 
 def _try_build_observer(cost_ledger=None):
@@ -2652,12 +2774,23 @@ def _build_chat_infra(app: web.Application) -> None:
         from tesseract.brain.prompt import assemble_system_prompt
 
         t0 = time.monotonic()
-        chat_cfg, adapter, options, adapter_chain = resolve_chat_brain_runtime()
+        # Popped, not read: STAGE 1 resolved this seconds ago and nothing else
+        # consumes it. Leaving it on the app would be a cache with no
+        # invalidation rule — `rebuild_adapters` re-resolves on every config
+        # save and would have to remember to refresh a second copy.
+        chat_cfg, adapter, options, adapter_chain = (
+            app.pop("chat_runtime", None) or resolve_chat_brain_runtime()
+        )
         t1 = time.monotonic()
-        prompt_mode = "full" if os.environ.get("TESSERACT_PROMPT_FULL") == "1" else "manifest"
 
         def _build_prompt() -> str:
-            return assemble_system_prompt(mode=prompt_mode)
+            # Resolved at call time, not captured: STAGE ordering does not
+            # guarantee the registry is on the app yet when this closure is
+            # built, and a prompt rebuilt after `rebuild_adapters` must see
+            # the registry that healing produced rather than the one before it.
+            return assemble_system_prompt(
+                tool_registry_provider=lambda: app.get("tool_registry"),
+            )
 
         system_prompt = _build_prompt()
         t2 = time.monotonic()
@@ -2668,16 +2801,11 @@ def _build_chat_infra(app: web.Application) -> None:
         app["adapter_chain"] = adapter_chain
         app["system_prompt"] = system_prompt
         app["prompt_builder"] = _build_prompt
-        # CR-3 — channel sessions build a session-specific prompt_builder
-        # in ``_build_chat_session`` that re-calls ``assemble_system_prompt``
-        # with the adapter's ``channel_name``. Stash the resolved mode here
-        # so the session layer doesn't re-read ``TESSERACT_PROMPT_FULL`` itself.
-        app["prompt_mode"] = prompt_mode
         app["chat_infra_error"] = None
         log.info(
-            "chat infra ready: provider=%s model=%s chain_len=%d prompt_mode=%s prompt_chars=%d "
+            "chat infra ready: provider=%s model=%s chain_len=%d prompt_chars=%d "
             "resolve_s=%.2f assemble_s=%.2f total_s=%.2f",
-            chat_cfg.provider, chat_cfg.model, len(adapter_chain), prompt_mode, len(system_prompt),
+            chat_cfg.provider, chat_cfg.model, len(adapter_chain), len(system_prompt),
             t1 - t0, t2 - t1, t2 - t0,
         )
     except RuntimeError as exc:
@@ -2719,10 +2847,11 @@ def _build_degraded_chat_infra(app: web.Application, reason: str) -> None:
         from tesseract.kernel.adapters.null_adapter import NullChatAdapter
 
         chat_cfg = load_chat_brain_chain()[0]
-        prompt_mode = "full" if os.environ.get("TESSERACT_PROMPT_FULL") == "1" else "manifest"
 
         def _build_prompt() -> str:
-            return assemble_system_prompt(mode=prompt_mode)
+            return assemble_system_prompt(
+                tool_registry_provider=lambda: app.get("tool_registry"),
+            )
 
         app["adapter"] = NullChatAdapter(reason)
         app["adapter_options"] = adapter_options_from_chat_brain(chat_cfg)
@@ -2730,7 +2859,6 @@ def _build_degraded_chat_infra(app: web.Application, reason: str) -> None:
         app["adapter_chain"] = []
         app["system_prompt"] = _build_prompt()
         app["prompt_builder"] = _build_prompt
-        app["prompt_mode"] = prompt_mode
         app["chat_infra_error"] = reason
     except Exception:
         log.exception("chat infra degraded-build also failed — /ws chat_message will fail")

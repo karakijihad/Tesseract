@@ -115,7 +115,7 @@ async def _maybe_search(cfg: dict[str, Any]) -> list[dict[str, Any]]:
         return []
     cap = int(cfg.get("max_tavily_calls") or _DEFAULT_MAX_TAVILY_CALLS)
     queries = queries[:cap]
-    fetch = _make_tavily_fetcher(None)  # no ToolContext in cron — same as DailyBriefJob
+    fetch = _make_tavily_fetcher(None)  # no ToolContext in cron — same as brief_render
     options = {
         "max_results": int(cfg.get("max_results_per_query") or _DEFAULT_MAX_RESULTS),
         "exclude_domains": list(cfg.get("exclude_domains") or []),

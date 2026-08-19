@@ -42,6 +42,7 @@ from typing import Any, ClassVar, Literal, Optional
 import httpx
 from pydantic import BaseModel, Field
 
+from tesseract import http_client
 from tesseract.kernel.tools.base import (
     PermissionResult,
     Tool,
@@ -100,20 +101,23 @@ class ImageGenerateTool(Tool):
     # Network egress + writes a file to downloads/ — `propose` per the
     # AU-3 reviewer (image artifact is a user-visible state change).
     risk_class: ClassVar[str] = "propose"
+    group: ClassVar[str] = "showing-the-operator"
+    summary: ClassVar[str] = (
+        "Generate an image from a text prompt, or edit a source image (image-to-image)."
+    )
+    use_when: ClassVar[str] = (
+        "The operator asks you to draw, illustrate, render, edit, or restyle "
+        "a visual. Pass `image_attachment_id` for image-to-image. Saves the "
+        "result under downloads and returns its URL."
+    )
+    not_when: ClassVar[str] = (
+        "`open` to show an image that already exists — this tool MAKES one, "
+        "it doesn't display one."
+    )
 
     @property
     def name(self) -> str:
         return "image_generate"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Generate an image from a text prompt, or edit a source image "
-            "(image-to-image, pass `image_attachment_id`). Saves the result "
-            "under the downloads tree and returns its public URL. Use when the "
-            "operator asks you to draw, illustrate, render, edit, or restyle a "
-            "visual. The image_generator role decides which model serves the call."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:
@@ -256,7 +260,7 @@ class ImageGenerateTool(Tool):
 
         timeout = float(conn.timeout_seconds)
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with http_client.async_client(timeout=timeout) as client:
                 resp = await client.post(
                     url,
                     headers=_auth_headers(payload_profile, api_key),
@@ -465,7 +469,7 @@ async def _bytes_from_payload(payload: Any, timeout: float) -> bytes | None:
     url = _extract_image_url(payload)
     if url:
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with http_client.async_client(timeout=timeout) as client:
                 r = await client.get(url)
                 if r.status_code == 200 and r.content:
                     return r.content

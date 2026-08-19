@@ -54,10 +54,6 @@ from tesseract.kernel.workspace_changes import (
 )
 from tesseract.paths import ROOT, workspace_dir
 from tesseract.permissions.approval_log import record_ask
-from tesseract.integrations._channel_gate import (
-    record_approval,
-    record_approval_by_hash,
-)
 from tesseract.workspace_events import (
     EventStore,
     WorkspaceComment,
@@ -281,11 +277,15 @@ async def _commit_yaml_change_proposal(
 
 
 def _agents_dir() -> Path:
-    """Agents tree resolved at call time — delegates to the canonical
-    `tesseract.paths.agents_dir()` helper (distributable-app Task 1/3)."""
-    from tesseract.paths import agents_dir
+    """The operator's agents tree, resolved at call time.
 
-    return agents_dir()
+    The user root specifically: this route promotes and rejects the
+    assistant's proposals, and both move files. Nothing shipped is ever
+    pending, so there is nothing here that belongs in the app tree.
+    """
+    from tesseract.paths import user_agents_dir
+
+    return user_agents_dir()
 
 
 def _archive_rejected_agent(agents_dir: Path, name: str, reason: str | None) -> str | None:
@@ -1122,191 +1122,6 @@ async def post_operator_post(request: web.Request) -> web.Response:
             log.exception("workspace: failed to spawn workspace post reply")
 
     return web.json_response(event.to_dict(), status=201)
-
-
-_REJECT_TEMPLATE = (
-    "I checked with the operator — they prefer I not use {tool} for this. "
-    "Anything else I can help with?"
-)
-
-
-async def post_channel_gate_decision(request: web.Request) -> web.Response:
-    """CR-5 — operator-side handler for ``agent_post`` events sourced by the
-    channel gate.
-
-    Body: ``{action: "approve_next_turn" | "reject_and_message",
-    reply?: string}``. The event must be ``kind == "agent_post"`` and its
-    payload must carry ``channel`` + ``chat_id`` (otherwise it wasn't
-    sourced by ``channel_gate``).
-
-    Approve-next-turn writes a single-shot token onto the channel
-    :class:`ServerSession` so the next call that matches
-    ``(tool_name, args_hash)`` auto-passes within
-    ``approve_next_turn_ttl_s``. Reject sends a templated outbound reply
-    via the channel adapter and resolves the event.
-    """
-    store = _store(request)
-    event_id = request.match_info["event_id"]
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid_json"}, status=400)
-
-    action = (body.get("action") or "").strip().lower()
-    if action not in {"approve_next_turn", "reject_and_message"}:
-        return web.json_response(
-            {"error": "action must be 'approve_next_turn' or 'reject_and_message'"},
-            status=400,
-        )
-
-    ev = store.get_event(event_id)
-    if ev is None:
-        return web.json_response({"error": "not_found"}, status=404)
-    if ev.kind != "agent_post":
-        return web.json_response(
-            {"error": "channel_gate decisions only valid for agent_post events"},
-            status=400,
-        )
-    payload = ev.payload or {}
-    channel = str(payload.get("channel") or "")
-    chat_id = str(payload.get("chat_id") or "")
-    tool_name = str(payload.get("tool") or "")
-    if not channel or not chat_id or not tool_name:
-        return web.json_response(
-            {"error": "event was not sourced by channel_gate (missing channel/chat_id/tool)"},
-            status=400,
-        )
-
-    bridge = _find_channel_bridge(request.app, channel)
-    if bridge is None:
-        return web.json_response(
-            {"error": f"no bridge available for channel '{channel}'"},
-            status=503,
-        )
-
-    if action == "approve_next_turn":
-        ok, detail = _approve_next_turn(bridge, chat_id, payload)
-        if not ok:
-            return web.json_response({"error": detail}, status=400)
-        updated = store.update_event_status(
-            event_id, "approved", reason="approve_next_turn",
-        )
-        try:
-            await record_ask(
-                session_id="workspace",
-                call_id=event_id,
-                tool_name="workspace_decision",
-                input_summary={
-                    "kind": ev.kind,
-                    "decision": "approve_next_turn",
-                    "tool": tool_name,
-                    "channel": channel,
-                    "chat_id": chat_id,
-                },
-                posture_source="channel_gate",
-                result="allow_once",
-                actor="operator",
-            )
-        except Exception:
-            log.exception("workspace: channel-gate approval ledger record failed")
-        comments = store.list_comments(event_id)
-        return web.json_response(
-            _event_dict(updated or ev, comments),
-        )
-
-    # reject_and_message
-    reply = (body.get("reply") or "").strip()
-    if not reply:
-        reply = _REJECT_TEMPLATE.format(tool=tool_name)
-    try:
-        await _send_outbound_via_bridge(bridge, chat_id, reply)
-    except Exception as exc:
-        log.exception("workspace: channel-gate reject send failed")
-        return web.json_response(
-            {"error": "send_failed", "detail": str(exc)}, status=502,
-        )
-    updated = store.update_event_status(event_id, "rejected", reason="reject_and_message")
-    try:
-        await record_ask(
-            session_id="workspace",
-            call_id=event_id,
-            tool_name="workspace_decision",
-            input_summary={
-                "kind": ev.kind,
-                "decision": "reject_and_message",
-                "tool": tool_name,
-                "channel": channel,
-                "chat_id": chat_id,
-            },
-            posture_source="channel_gate",
-            result="deny",
-            actor="operator",
-        )
-    except Exception:
-        log.exception("workspace: channel-gate rejection ledger record failed")
-    comments = store.list_comments(event_id)
-    return web.json_response(_event_dict(updated or ev, comments))
-
-
-def _find_channel_bridge(app: web.Application, channel: str) -> Any | None:
-    """Return the bridge instance for ``channel`` or ``None``.
-
-    Today only ``telegram`` exists; the lookup is generalized so future
-    adapters slot in under their own ``<channel>_bridge`` app key.
-    """
-    return app.get(f"{channel}_bridge")
-
-
-def _approve_next_turn(
-    bridge: Any, chat_id: str, payload: dict[str, Any],
-) -> tuple[bool, str]:
-    sessions = getattr(bridge, "_sessions", None)
-    if not isinstance(sessions, dict):
-        return False, "bridge does not expose channel sessions"
-    try:
-        chat_key = int(chat_id)
-    except (TypeError, ValueError):
-        chat_key = chat_id  # future adapters may key on strings
-    session = sessions.get(chat_key)
-    if session is None:
-        return False, f"no live channel session for chat_id={chat_id}"
-    tool_name = str(payload.get("tool") or "")
-    ttl_s = int(payload.get("approve_next_turn_ttl_s") or 1800)
-    if not tool_name:
-        return False, "event payload missing tool name"
-
-    # Prefer the fingerprint the gate already stored on the event — it
-    # is keyed on the exact validated args the next ASK will hash against,
-    # so the approval token cannot drift from the live call's hash even
-    # if the args contained an exotic non-dict value at gate time.
-    stored_hash = payload.get("args_hash")
-    if isinstance(stored_hash, str) and stored_hash:
-        record_approval_by_hash(session, args_hash=stored_hash, ttl_s=ttl_s)
-    else:
-        args = payload.get("args")
-        record_approval(
-            session,
-            tool_name=tool_name,
-            args=args if isinstance(args, dict) else {},
-            ttl_s=ttl_s,
-        )
-    return True, ""
-
-
-async def _send_outbound_via_bridge(
-    bridge: Any, chat_id: str, body: str,
-) -> None:
-    """Dispatch an operator-templated reply through the bridge's outbound
-    path. The Telegram bridge owns ``_send_outbound`` (HTML formatting +
-    conversation log); other adapters will expose the same surface."""
-    send = getattr(bridge, "_send_outbound", None)
-    if not callable(send):
-        raise RuntimeError(f"bridge {bridge!r} has no _send_outbound")
-    try:
-        chat_key = int(chat_id)
-    except (TypeError, ValueError):
-        chat_key = chat_id
-    await send(chat_key, body)
 
 
 async def get_seen(request: web.Request) -> web.Response:

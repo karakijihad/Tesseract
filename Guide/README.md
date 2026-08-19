@@ -45,6 +45,7 @@ need — most people stop at the second.
 - [Prompts](mechanisms/prompts.md) — what the model is actually told
 - [Workspace](mechanisms/workspace.md) — the files the assistant keeps about itself
 - [What it asks before doing](reference/permissions.md) — generated from the gate's own config
+- [Background work](reference/pipeline.md) — what it does while you are not asking
 - [Tools](reference/tools.md) · [Models and roles](reference/models-and-roles.md) · [Configuration](reference/config.md) · [Costs](reference/costs.md)
 
 ## The project

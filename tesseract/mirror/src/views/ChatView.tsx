@@ -18,6 +18,7 @@ import { ActivityTaskbar } from '../components/chat/ActivityTaskbar';
 import { useCostStore } from '../stores/cost';
 import { useTasksStore } from '../stores/tasks';
 import { useStickToBottom } from '../hooks/useStickToBottom';
+import { Button } from '../components/common/Button';
 
 // `.chat-scroll` spaces in-flow rows with `gap: 14px` (chat.css). The
 // virtualized rows are position:absolute and never receive that flex gap, so
@@ -176,14 +177,11 @@ export function ChatView() {
         )}
       </div>
       {userScrolledUp && (
-        <button
-          type="button"
-          className="scroll-to-bottom-btn"
-          onClick={stickToLatest}
-          aria-label="Jump to latest"
-        >
-          ↓ Jump to latest
-        </button>
+        <div className="scroll-to-bottom">
+          <Button tone="primary" onClick={stickToLatest} ariaLabel="Jump to latest">
+            ↓ Jump to latest
+          </Button>
+        </div>
       )}
       <ActivityTaskbar />
       {todoCount > 0 && (

@@ -17,14 +17,19 @@ class SurfaceFocusInput(BaseModel):
 class SurfaceFocusTool(Tool):
     default_posture = "auto"
     risk_class: ClassVar[str] = "autonomous"
+    group: ClassVar[str] = "showing-the-operator"
+    summary: ClassVar[str] = "Bring a surface to the front and scroll it into view."
+    use_when: ClassVar[str] = (
+        "The operator's card is buried under others or off-screen and needs to be visible again."
+    )
+    not_when: ClassVar[str] = (
+        "`surface_highlight` for pulse/glow emphasis without changing z-order; "
+        "`surface_update` changes what the card shows, not its position."
+    )
 
     @property
     def name(self) -> str:
         return "surface_focus"
-
-    @property
-    def description(self) -> str:
-        return "Bring a surface to the front (raise its z) and scroll it into view."
 
     @property
     def input_schema(self) -> type[BaseModel]:

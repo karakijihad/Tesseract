@@ -11,13 +11,16 @@ one that has something closer to a self.
 
 | File | What it holds |
 | --- | --- |
-| `IDENTITY.md` | who it is |
-| `SOUL.md` | how it wants to behave — refined over time, not expanded |
+| `SOUL.md` | who it is and how it sounds — refined over time, not expanded |
 | `USER.md` | what it has learned about you |
-| `HEARTBEAT.md` | what it noticed while you were away |
 | `DIARY.md` | its own running notes |
-| `TOOLS.md` · `MCP.md` | what it can do, in its own words |
-| `VOICE.md` | how it speaks |
+| `OPERATING.md` | how it works and what it holds to — the ethics included |
+| `WORKSHOP.md` | how it lays out the work it does for you |
+
+These carry instructions and character, and nothing else. What the assistant
+*can do* — the tools it has, what each one is for, what runs on a schedule —
+is generated into its prompt from the code that owns it, so no file here holds
+a list that could quietly fall out of date.
 
 ## Refined, not accumulated
 

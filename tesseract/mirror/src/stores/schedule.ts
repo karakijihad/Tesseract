@@ -103,11 +103,15 @@ export const useScheduleStore = create<ScheduleState>((set) => ({
                 runtime: {
                   name: j.runtime?.name ?? j.name,
                   cadence: j.runtime?.cadence ?? j.cadence,
+                  when: j.runtime?.when ?? j.when ?? '',
+                  when_config: j.runtime?.when_config ?? {},
+                  when_reason: j.runtime?.when_reason ?? '',
                   enabled: j.runtime?.enabled ?? j.enabled,
                   consecutive_failures: j.runtime?.consecutive_failures ?? 0,
                   ...j.runtime,
                   circuit_broken: data.circuit_broken,
                   last_fired_at: serverFiredAt,
+                  last_trigger: data.trigger_source ?? null,
                   last_result: lastResult,
                 },
               }

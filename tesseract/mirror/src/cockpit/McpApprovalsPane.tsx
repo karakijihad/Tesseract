@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react';
 
 import { decideMcpApproval, getMcpApprovals, type McpApproval } from '../lib/api';
 import { useWebSocketStore } from '../stores/websocket';
+import { Button } from '../components/common/Button';
 
 const POLL_MS = 2500;
 
@@ -62,22 +63,20 @@ export function McpApprovalsPane() {
             <span className="mcp-approvals__client t-meta">{a.client}</span>
           </div>
           <div className="mcp-approvals__actions">
-            <button
-              type="button"
-              className="mcp-approvals__approve"
-              disabled={!!busy}
+            <Button
               onClick={() => void decide(a.approval_id, true)}
+              disabled={!!busy}
+              tone="good"
             >
               Approve
-            </button>
-            <button
-              type="button"
-              className="mcp-approvals__reject"
-              disabled={!!busy}
+            </Button>
+            <Button
               onClick={() => void decide(a.approval_id, false)}
+              disabled={!!busy}
+              tone="danger"
             >
               Reject
-            </button>
+            </Button>
           </div>
         </div>
       ))}

@@ -14,10 +14,10 @@
      leaves overflow-x computed as `auto`, which surfaces a horizontal
      scrollbar the moment a child (e.g. unwrapped URL) overflows. */
   overflow-x: hidden;
-  padding: var(--space-lg) 20px;
+  padding: var(--space-lg) var(--space-20);
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--space-14);
 }
 
 .message-row {
@@ -41,16 +41,16 @@
 
 .message-bubble {
   max-width: 100%;
-  padding: 10px 14px;
+  padding: var(--space-10) var(--space-14);
   border-radius: var(--radius-sm);
-  font-size: 13px;
+  font-size: var(--t-body-size);
   line-height: 1.55;
 }
 
 .message-bubble.user {
   max-width: min(80%, 720px);
   background: var(--bg-elevated);
-  border: 1px solid var(--accent-glow);
+  border: var(--stroke-1) solid var(--accent-glow);
   color: var(--ink-100);
   border-radius: var(--radius-md);
 }
@@ -58,7 +58,7 @@
 .message-bubble.assistant {
   width: 100%;
   background: transparent;
-  border: 1px solid transparent;
+  border: var(--stroke-1) solid transparent;
   color: var(--text-primary);
   border-radius: var(--radius-sm);
 }
@@ -66,7 +66,7 @@
 .message-bubble.entity {
   max-width: min(80%, 720px);
   background: var(--accent-dim);
-  border: 1px solid var(--accent-dim);
+  border: var(--stroke-1) solid var(--accent-dim);
   color: var(--accent-bright);
   border-radius: var(--radius-md);
 }
@@ -91,9 +91,9 @@
 .bubble-queued-pill {
   margin-left: 0.5rem;
   padding: 0 0.45rem;
-  border: 1px solid var(--border);
+  border: var(--stroke-1) solid var(--border);
   border-radius: 999px;
-  font-size: 10px;
+  font-size: var(--t-meta-size);
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -105,9 +105,9 @@
 .bubble-steered-pill {
   margin-left: 0.5rem;
   padding: 0 0.45rem;
-  border: 1px solid var(--accent);
+  border: var(--stroke-1) solid var(--accent);
   border-radius: 999px;
-  font-size: 10px;
+  font-size: var(--t-meta-size);
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -115,18 +115,18 @@
 .streaming-bubble {
   width: 100%;
   background: transparent;
-  border: 1px solid transparent;
+  border: var(--stroke-1) solid transparent;
   color: var(--text-primary);
   border-radius: var(--radius-sm);
   max-width: 100%;
-  padding: 10px 14px;
-  font-size: 13px;
+  padding: var(--space-10) var(--space-14);
+  font-size: var(--t-body-size);
   line-height: 1.55;
 }
 
 .streaming-bubble::after {
   content: '▋';
-  animation: caret-blink 1s step-end infinite;
+  animation: caret-blink var(--motion-beat) step-end infinite;
   color: var(--accent);
 }
 
@@ -137,9 +137,9 @@
    `position: sticky` is applied. Each row is a status glyph + title;
    completed items collapse under a "+N completed" toggle. */
 .chat-todos-strip {
-  padding: 8px 14px;
-  background: var(--bg);
-  border-bottom: 1px solid var(--panel-border);
+  padding: var(--space-8) var(--space-14);
+  background: var(--bg-surface);
+  border-bottom: var(--stroke-1) solid var(--panel-border);
   flex-shrink: 0;
 }
 
@@ -152,37 +152,23 @@
 .chat-mgr {
   position: relative;
   flex-shrink: 0;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--panel-border);
-  background: var(--bg);
+  padding: var(--space-6) var(--space-10);
+  border-bottom: var(--stroke-1) solid var(--panel-border);
+  background: var(--bg-surface);
 }
-.chat-mgr-trigger {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
-  padding: 4px 10px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius-sm);
-  color: var(--text-primary);
-  cursor: pointer;
-  font: inherit;
-}
-.chat-mgr-trigger:hover { border-color: var(--accent); }
 .chat-mgr-caret { flex-shrink: 0; color: var(--text-meta); }
 .chat-mgr-active-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.chat-mgr-count { flex-shrink: 0; margin-left: auto; padding-left: 8px; }
+.chat-mgr-count { flex-shrink: 0; margin-left: auto; padding-left: var(--space-8); }
 .chat-mgr-panel {
   position: absolute;
   top: 100%;
   left: 10px;
   z-index: 6;
-  margin-top: 4px;
+  margin-top: var(--space-4);
   display: flex;
   flex-direction: column;
   min-width: 260px;
@@ -190,46 +176,25 @@
   max-height: 60vh;
   overflow-y: auto;
   background: var(--bg-elevated);
-  border: 1px solid var(--panel-border);
+  border: var(--stroke-1) solid var(--panel-border);
   border-radius: var(--radius-sm);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 6px 20px var(--scrim-md);
 }
-.chat-mgr-new {
-  padding: 8px 12px;
-  text-align: left;
-  background: none;
-  border: none;
-  border-bottom: 1px solid var(--panel-border);
-  color: var(--text-secondary);
-  cursor: pointer;
-  font: inherit;
-}
-.chat-mgr-new:hover:not(:disabled) { background: var(--accent-dim); color: var(--text-primary); }
-.chat-mgr-new:disabled { opacity: 0.4; cursor: not-allowed; }
 .chat-mgr-list { display: flex; flex-direction: column; }
-.chat-mgr-empty { padding: 8px 12px; }
+.chat-mgr-empty { padding: var(--space-8) var(--space-12); }
 .chat-mgr-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 2px 6px 2px 10px;
+  gap: var(--space-6);
+  padding: var(--space-2) var(--space-6) var(--space-2) var(--space-10);
 }
-.chat-mgr-row.is-active { background: var(--accent-dim); }
+/* Placement only. The chat in view is lit by the row's own `is-active` —
+   which chat is current is a property of the control you click, not of the
+   strip of actions beside it. */
 .chat-mgr-row-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
   flex: 1;
   min-width: 0;
-  padding: 6px 2px;
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font: inherit;
-  text-align: left;
 }
-.chat-mgr-row.is-active .chat-mgr-row-label { color: var(--text-primary); }
 .chat-mgr-active-dot {
   flex-shrink: 0;
   width: 5px;
@@ -238,48 +203,24 @@
   background: var(--accent);
 }
 .chat-mgr-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat-mgr-row-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
-.chat-mgr-icon {
-  padding: 4px 6px;
-  background: none;
-  border: none;
-  color: var(--text-meta);
-  cursor: pointer;
-  font: inherit;
-  line-height: 1;
-}
-.chat-mgr-icon:hover { color: var(--text-primary); }
+.chat-mgr-row-actions { display: flex; align-items: center; gap: var(--space-2); flex-shrink: 0; }
+/* PLACEMENT ONLY — the field is `.input`; it stands in for a row and takes
+   the row's width. */
 .chat-mgr-rename {
   flex: 1;
   min-width: 0;
-  margin: 4px 2px;
-  padding: 4px 8px;
-  background: var(--bg);
-  border: 1px solid var(--accent);
-  border-radius: var(--radius-xs);
-  color: var(--text-primary);
-  font: inherit;
+  margin: var(--space-4) var(--space-2);
 }
-.chat-mgr-archived { border-top: 1px solid var(--panel-border); }
-.chat-mgr-archived-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  padding: 8px 12px;
-  background: none;
-  border: none;
-  cursor: pointer;
-  font: inherit;
-}
-.chat-mgr-archived-header:hover { color: var(--text-primary); }
+.chat-mgr-archived { border-top: var(--stroke-1) solid var(--panel-border); }
+/* Placement only — the count sits left, the caret right. */
+.chat-mgr-archived-header { justify-content: space-between; }
 .chat-mgr-archived-list { display: flex; flex-direction: column; }
 .chat-mgr-archived-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 6px 10px 6px 12px;
+  gap: var(--space-8);
+  padding: var(--space-6) var(--space-10) var(--space-6) var(--space-12);
 }
 .chat-mgr-archived-row:hover { background: var(--accent-dim); }
 .chat-mgr-archived-title {
@@ -289,33 +230,16 @@
   color: var(--text-secondary);
 }
 .chat-mgr-archived-actions,
-.chat-mgr-confirm { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.chat-mgr-confirm { display: flex; align-items: center; gap: var(--space-4); flex-shrink: 0; }
 .chat-mgr-confirm-label,
 .chat-mgr-delete-error { white-space: nowrap; }
-.chat-mgr-restore,
-.chat-mgr-confirm-yes {
-  flex-shrink: 0;
-  padding: 2px 8px;
-  background: none;
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius-xs);
-  color: var(--text-secondary);
-  cursor: pointer;
-  font: inherit;
-}
-.chat-mgr-restore:hover { color: var(--text-primary); border-color: var(--accent); }
-.chat-mgr-confirm-yes {
-  color: var(--accent-bright);
-  border-color: var(--accent-bright);
-}
-.chat-mgr-confirm-yes:hover { background: var(--accent-dim); }
 .chat-tab-pulse {
   flex-shrink: 0;
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--accent-bright);
-  animation: chat-tab-pulse 1.2s ease-in-out infinite;
+  animation: chat-tab-pulse var(--motion-beat) ease-in-out infinite;
 }
 @keyframes chat-tab-pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
 /* P4 — pending-approval badge: a background chat is blocked on a tool ASK.
@@ -334,17 +258,17 @@
 .chat-cost-strip {
   display: flex;
   gap: var(--space-sm);
-  padding: 6px 14px;
-  border-top: 1px solid var(--panel-border);
+  padding: var(--space-6) var(--space-14);
+  border-top: var(--stroke-1) solid var(--panel-border);
   flex-shrink: 0;
 }
 
 .todos-card {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 6px 10px;
-  border-left: 2px solid var(--accent);
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-10);
+  border-left: var(--stroke-2) solid var(--accent);
   background: color-mix(in srgb, var(--accent) 6%, transparent);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
@@ -352,10 +276,10 @@
 .todos-card-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 2px 0;
+  gap: var(--space-8);
+  padding: var(--space-2) 0;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--t-caption-size);
   line-height: 1.4;
   color: var(--text-meta);
 }
@@ -379,7 +303,7 @@
   width: 16px;
   flex-shrink: 0;
   text-align: center;
-  font-size: 11px;
+  font-size: var(--t-caption-size);
 }
 
 .todos-card-row.is-active .todos-card-glyph {
@@ -395,22 +319,6 @@
   word-break: break-word;
 }
 
-.todos-card-toggle {
-  margin-top: 4px;
-  padding: 2px 0;
-  background: transparent;
-  border: none;
-  color: var(--text-meta);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.todos-card-toggle:hover {
-  color: var(--accent);
-}
-
 /* Task 6.2 — activity taskbar chip + expandable list. Sits above the
    TodosCard at the bottom of ChatView so the operator can see ALL running
    workstream kinds (delegate incl. invoke_agent, lane, controller_session,
@@ -418,31 +326,13 @@
    "running spawns" chip, which only covered CLI delegate subprocesses plus
    a lane/controller_session subset of the activity registry. */
 .activity-taskbar-strip {
-  padding: 4px 14px 0;
+  padding: var(--space-4) var(--space-14) 0;
   flex-shrink: 0;
-}
-
-.activity-taskbar-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 10px;
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-  border: 1px solid var(--accent);
-  border-radius: 999px;
-  color: var(--accent);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.activity-taskbar-chip:hover {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .activity-taskbar-glyph {
   display: inline-block;
-  animation: caret-blink 1.6s ease-in-out infinite;
+  animation: caret-blink var(--motion-breathe) ease-in-out infinite;
 }
 
 .activity-taskbar-count {
@@ -450,12 +340,12 @@
 }
 
 .activity-taskbar-list {
-  margin-top: 4px;
+  margin-top: var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 6px 10px;
-  border-left: 2px solid var(--accent);
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-10);
+  border-left: var(--stroke-2) solid var(--accent);
   background: color-mix(in srgb, var(--accent) 5%, transparent);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
@@ -465,27 +355,10 @@
   flex-direction: column;
 }
 
+/* Placement only — the rows bleed into the strip's own padding so a hovered
+   row spans the full width of the list. */
 .activity-taskbar-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 4px 6px;
-  margin: 0 -6px;
-  background: transparent;
-  border: 0;
-  border-radius: var(--radius-xs, 4px);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-secondary);
-  text-align: left;
-  cursor: pointer;
-  transition: background var(--motion-fast) ease-out;
-}
-
-.activity-taskbar-row:hover {
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-  color: var(--text-primary);
+  margin: 0 calc(var(--space-6) * -1);
 }
 
 .activity-taskbar-label {
@@ -498,7 +371,7 @@
 
 .activity-taskbar-age {
   margin-left: auto;
-  font-size: 10px;
+  font-size: var(--t-meta-size);
 }
 
 /* Phase 2 (revised 2026-05-11) — the standalone queued-message badge
@@ -508,27 +381,18 @@
    carries the same signal without duplicating UI. */
 
 .assistant-status-strip {
-  margin: 0 0 8px;
-  padding: 5px 8px;
-  border-left: 2px solid var(--accent);
+  margin: 0 0 var(--space-8);
+  padding: var(--space-5) var(--space-8);
+  border-left: var(--stroke-2) solid var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--t-caption-size);
   line-height: 1.4;
 }
 
 /* Soft post-commit adapter notes (FallbackAdapter recovered via the next
    iteration). Same shape as the status strip but warn-tinted so it reads as
    "advisory, not failure". Hint-token rule: text uses var(--text-meta). */
-.assistant-system-note {
-  margin: 0 0 8px;
-  padding: 5px 8px;
-  border-left: 2px solid var(--warn);
-  background: color-mix(in srgb, var(--warn) 8%, transparent);
-  color: var(--text-meta);
-  font-size: 12px;
-  line-height: 1.4;
-}
 
 @keyframes caret-blink {
   0%, 100% { opacity: 1; }
@@ -540,8 +404,8 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 4px;
+  gap: var(--space-8);
+  margin-bottom: var(--space-4);
   min-height: 18px;
   /* min-width:0 lets long model names + Hint tooltips shrink/wrap inside
      the bubble instead of pushing the row past the chat-view's right
@@ -550,7 +414,7 @@
   max-width: 100%;
 }
 .bubble-speaker {
-  font-size: 11px;
+  font-size: var(--t-caption-size);
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -574,9 +438,9 @@
   border-color: var(--warn, var(--accent));
 }
 .model-badge-fallback {
-  margin-left: 4px;
-  padding: 0 4px;
-  border: 1px solid var(--warn, var(--accent));
+  margin-left: var(--space-4);
+  padding: 0 var(--space-4);
+  border: var(--stroke-1) solid var(--warn, var(--accent));
   border-radius: var(--radius-xs);
   color: var(--warn, var(--accent));
   font-weight: 500;
@@ -587,9 +451,9 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
-  font-size: 10px;
+  gap: var(--space-8);
+  margin-top: var(--space-8);
+  font-size: var(--t-meta-size);
   color: var(--text-meta);
 }
 .bubble-time {
@@ -600,7 +464,7 @@
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-2);
   opacity: 0;
   transition: opacity var(--motion-fast) var(--ease-out);
 }
@@ -610,24 +474,7 @@
   opacity: 1;
 }
 
-.message-actions button {
-  border: 1px solid transparent;
-  border-radius: var(--radius-xs);
-  background: transparent;
-  color: var(--text-meta);
-  padding: 2px 6px;
-  font-size: 10px;
-  font-family: var(--font-ui);
-  line-height: 1.3;
-  cursor: pointer;
-}
 
-.message-actions button:hover,
-.message-actions button:focus-visible {
-  color: var(--text-primary);
-  border-color: var(--border);
-  background: color-mix(in srgb, var(--bg-elevated) 80%, transparent);
-}
 
 .message-actions .hint-wrap {
   display: inline-flex;
@@ -636,32 +483,32 @@
 .bubble-cache-pill {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 1px 6px;
+  gap: var(--space-4);
+  padding: var(--space-1) var(--space-6);
   border-radius: 10px;
   font-variant-numeric: tabular-nums;
-  border: 1px solid transparent;
+  border: var(--stroke-1) solid transparent;
 }
 .bubble-cache-pill.is-cold {
   color: var(--text-meta);
-  border-color: rgba(138, 138, 138, 0.25);
+  border-color: var(--border-visible);
 }
 .bubble-cache-pill.is-warm {
   color: var(--warn);
-  border-color: rgba(245, 158, 11, 0.3);
-  background: rgba(245, 158, 11, 0.06);
+  border-color: var(--warn-strong);
+  background: var(--warn-wash);
 }
 .bubble-cache-pill.is-hot {
   color: var(--ok);
-  border-color: rgba(34, 197, 94, 0.3);
-  background: rgba(34, 197, 94, 0.06);
+  border-color: var(--ok-strong);
+  background: var(--ok-wash);
 }
 
 .bubble-attachments {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
+  gap: var(--space-8);
+  margin-top: var(--space-8);
 }
 
 .bubble-attachment-image {
@@ -674,17 +521,17 @@
   max-width: 100%;
   max-height: 220px;
   border-radius: var(--radius-xs);
-  border: 1px solid var(--border);
+  border: var(--stroke-1) solid var(--border);
   object-fit: contain;
 }
 
 .bubble-attachment-file {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-8);
   max-width: 100%;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
+  padding: var(--space-6) var(--space-8);
+  border: var(--stroke-1) solid var(--border);
   border-radius: var(--radius-xs);
   background: var(--bg-card);
   color: var(--text-primary);
@@ -694,7 +541,7 @@
 .bubble-attachment-file-icon {
   color: var(--text-meta);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--t-meta-size);
 }
 
 .bubble-attachment-file-name {
@@ -706,7 +553,7 @@
 
 .bubble-pdf-card {
   width: min(100%, 620px);
-  border: 1px solid var(--border);
+  border: var(--stroke-1) solid var(--border);
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--bg-card) 76%, transparent);
   overflow: hidden;
@@ -715,8 +562,8 @@
 .bubble-pdf-head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
+  gap: var(--space-10);
+  padding: var(--space-8) var(--space-10);
 }
 
 .bubble-pdf-icon {
@@ -725,11 +572,11 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--border);
+  border: var(--stroke-1) solid var(--border);
   border-radius: var(--radius-xs);
   color: var(--text-meta);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--t-meta-size);
   flex-shrink: 0;
 }
 
@@ -741,53 +588,34 @@
 .bubble-pdf-name {
   overflow: hidden;
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--t-caption-size);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .bubble-pdf-meta {
-  margin-top: 1px;
+  margin-top: var(--space-1);
 }
 
 .bubble-pdf-actions {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-4);
   flex-shrink: 0;
 }
 
-.bubble-pdf-actions button,
-.bubble-pdf-actions a {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xs);
-  background: transparent;
-  color: var(--text-secondary);
-  padding: 4px 8px;
-  font-size: 10px;
-  line-height: 1.3;
-  text-decoration: none;
-  cursor: pointer;
-}
 
-.bubble-pdf-actions button:hover,
-.bubble-pdf-actions a:hover,
-.bubble-pdf-actions button:focus-visible,
-.bubble-pdf-actions a:focus-visible {
-  color: var(--text-primary);
-  border-color: var(--accent-glow);
-}
 
 .bubble-pdf-preview {
   max-height: min(72vh, 720px);
-  padding: 10px;
-  border-top: 1px solid var(--border);
+  padding: var(--space-10);
+  border-top: var(--stroke-1) solid var(--border);
   overflow: auto;
   background: var(--bg-deep);
 }
 
 .bubble-pdf-state {
-  padding: 8px;
+  padding: var(--space-8);
 }
 
 .bubble-pdf-canvas {
@@ -795,7 +623,7 @@
   max-width: 100%;
   height: auto;
   margin: 0 auto;
-  border: 1px solid var(--border);
+  border: var(--stroke-1) solid var(--border);
   background: var(--ink-100);
 }
 
@@ -820,8 +648,8 @@
 
 
 .chat-artifact {
-  margin: 10px 0;
-  border: 1px solid var(--border);
+  margin: var(--space-10) 0;
+  border: var(--stroke-1) solid var(--border);
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--bg-card) 88%, transparent);
   overflow: hidden;
@@ -832,22 +660,22 @@
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 12px;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
+  gap: var(--space-12);
+  padding: var(--space-8) var(--space-10);
+  border-bottom: var(--stroke-1) solid var(--border);
 }
 
 .chat-artifact-title {
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--t-caption-size);
   font-weight: 600;
 }
 
 .chat-artifact-meta {
-  margin-top: 1px;
+  margin-top: var(--space-1);
   color: var(--text-meta);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--t-meta-size);
   letter-spacing: 0.04em;
 }
 
@@ -855,35 +683,16 @@
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 2px;
-  border: 1px solid var(--border);
+  gap: var(--space-2);
+  border: var(--stroke-1) solid var(--border);
   border-radius: var(--radius-xs);
   background: var(--bg-deep);
-  padding: 2px;
+  padding: var(--space-2);
   flex-shrink: 0;
 }
 
-.chat-artifact-actions button {
-  min-width: 44px;
-  border: none;
-  border-radius: 3px;
-  padding: 4px 8px;
-  background: transparent;
-  color: var(--text-meta);
-  font-size: 10px;
-  font-weight: 600;
-  cursor: pointer;
-}
 
-.chat-artifact-actions button:hover,
-.chat-artifact-actions button:focus-visible {
-  color: var(--text-primary);
-}
 
-.chat-artifact-actions button.is-active {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
-  color: var(--text-bright);
-}
 
 .chat-artifact-frame {
   display: block;
@@ -897,12 +706,12 @@
 .chat-artifact-code {
   margin: 0;
   max-height: min(70vh, 720px);
-  padding: 12px;
+  padding: var(--space-12);
   overflow: auto;
   background: var(--bg-elevated);
   color: var(--text-secondary);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--t-caption-size);
   line-height: 1.5;
 }
 
@@ -915,11 +724,11 @@
 
 .chat-artifact-markdown {
   max-height: min(70vh, 720px);
-  padding: 12px 14px;
+  padding: var(--space-12) var(--space-14);
   overflow: auto;
   background: var(--bg-elevated);
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: var(--t-body-size);
   line-height: 1.55;
 }
 .chat-artifact-markdown > :first-child { margin-top: 0; }
@@ -927,21 +736,23 @@
 
 /* === TOOL CALL PILL === */
 .tool-call-pill {
-  margin: 4px 0;
-  border: 1px solid var(--border);
+  margin: var(--space-4) 0;
+  border: var(--stroke-1) solid var(--border);
   border-radius: var(--radius-xs);
   overflow: hidden;
-  font-size: 11px;
+  font-size: var(--t-caption-size);
 }
 
+/* PLACEMENT ONLY — the head is a `Disclosure` in its `row` variant, which is
+   already the full-width section head this used to draw by hand. */
 .tool-pill-header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  padding: 6px 10px;
-  background: var(--bg-card);
-  cursor: pointer;
   user-select: none;
+}
+
+/* The caret is content, not chrome — `Disclosure` leaves the wording and the
+   arrow to the caller, and this one sits hard right. */
+.tool-pill-caret {
+  margin-left: auto;
 }
 
 .tool-pill-name {
@@ -960,12 +771,12 @@
 
 .tool-pill-badge {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--t-meta-size);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  padding: 1px 6px;
+  letter-spacing: 0.05em;
+  padding: var(--space-1) var(--space-6);
   border-radius: var(--radius-xs);
-  border: 1px solid;
+  border: var(--stroke-1) solid;
   flex-shrink: 0;
 }
 
@@ -999,28 +810,28 @@
 }
 
 .tool-pill-hard-reason {
-  margin-top: 8px;
-  border-top: 1px solid var(--border);
-  padding-top: 8px;
+  margin-top: var(--space-8);
+  border-top: var(--stroke-1) solid var(--border);
+  padding-top: var(--space-8);
 }
 
 .tool-pill-hard-reason-text {
-  margin-top: 6px;
+  margin-top: var(--space-6);
   color: var(--bad);
   background: var(--bad-dim);
-  padding: 6px 8px;
+  padding: var(--space-6) var(--space-8);
   border-radius: var(--radius-xs);
 }
 
 .tool-pill-body {
-  padding: var(--space-sm) 10px;
+  padding: var(--space-sm) var(--space-10);
   background: var(--bg-deep);
-  border-top: 1px solid var(--border);
+  border-top: var(--stroke-1) solid var(--border);
 }
 
 .tool-pill-body pre {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--t-meta-size);
   color: var(--text-secondary);
   white-space: pre-wrap;
   word-break: break-all;
@@ -1030,9 +841,9 @@
  * Renders below the pill regardless of expanded state — the operator
  * shouldn't have to click to see what the assistant just produced. */
 .tool-pill-download {
-  padding: 8px 10px 10px;
+  padding: var(--space-8) var(--space-10) var(--space-10);
   background: var(--bg-deep);
-  border-top: 1px solid var(--border);
+  border-top: var(--stroke-1) solid var(--border);
 }
 
 /* === DOWNLOAD PREVIEW (image_generate, future TTS-to-file, video-gen) === */
@@ -1048,7 +859,7 @@
   max-width: 100%;
   max-height: 480px;
   border-radius: var(--radius-xs);
-  border: 1px solid var(--border);
+  border: var(--stroke-1) solid var(--border);
 }
 .dl-preview--audio audio,
 .dl-preview--video video {
@@ -1065,21 +876,21 @@
   display: block;
   width: 100%;
   height: 480px;
-  border: 1px solid var(--border);
+  border: var(--stroke-1) solid var(--border);
   border-radius: var(--radius-xs);
 }
 .dl-preview--file {
   color: var(--text-meta);
   text-decoration: none;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--t-caption-size);
 }
 .dl-preview-link {
   display: block;
-  margin-top: 4px;
+  margin-top: var(--space-4);
   color: var(--text-meta);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--t-meta-size);
   text-decoration: none;
   word-break: break-all;
 }
@@ -1089,34 +900,34 @@
 
 /* === APPROVAL CARD === */
 .approval-card {
-  border: 1px solid var(--orange);
+  border: var(--stroke-1) solid var(--orange);
   border-radius: var(--radius-sm);
-  padding: 12px 14px;
+  padding: var(--space-12) var(--space-14);
   background: var(--orange-dim);
   margin: var(--space-sm) 0;
 }
 
 .approval-card-header {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--t-meta-size);
   color: var(--orange);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.05em;
   margin-bottom: var(--space-sm);
 }
 
 .approval-card-tool {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--t-caption-size);
   color: var(--text-bright);
-  margin-bottom: 4px;
+  margin-bottom: var(--space-4);
 }
 
 .approval-card-summary {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--t-caption-size);
   color: var(--text-secondary);
-  margin: 0 0 12px;
+  margin: 0 0 var(--space-12);
   white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: anywhere;
@@ -1128,37 +939,9 @@
   gap: var(--space-sm);
 }
 
-.approval-btn {
-  padding: 5px var(--space-md);
-  border-radius: var(--radius-xs);
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  border: 1px solid;
-  transition: all var(--motion-fast);
-}
-
-.approval-btn.approve {
-  background: var(--green-dim);
-  border-color: var(--green);
-  color: var(--green);
-}
-
-.approval-btn.approve:hover { background: rgba(0,232,143,0.2); }
-
-.approval-btn.deny {
-  background: var(--red-dim);
-  border-color: var(--red);
-  color: var(--red);
-}
-
-.approval-btn.deny:hover { background: rgba(255,77,106,0.15); }
-
-.approval-btn:disabled { opacity: 0.35; cursor: not-allowed; }
-
 .approval-countdown {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--t-meta-size);
   color: var(--text-meta);
   margin-left: auto;
   align-self: center;
@@ -1169,9 +952,9 @@
    dismissed by accident. Mirrors approval-card layout but uses red tokens
    to read as "money decision" rather than "tool decision". */
 .cost-overage-card {
-  border: 1px solid var(--red);
+  border: var(--stroke-1) solid var(--red);
   border-radius: var(--radius-sm);
-  padding: 12px 14px;
+  padding: var(--space-12) var(--space-14);
   background: var(--red-dim);
   margin: var(--space-sm) 0;
 }
@@ -1183,16 +966,16 @@
 }
 .cost-overage-card__title {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--t-meta-size);
   color: var(--red);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.05em;
 }
-.cost-overage-card__scope { font-size: 11px; }
+.cost-overage-card__scope { font-size: var(--t-caption-size); }
 .cost-overage-card__body {
-  font-size: 11px;
+  font-size: var(--t-caption-size);
   color: var(--text-secondary);
-  margin-bottom: 12px;
+  margin-bottom: var(--space-12);
   line-height: 1.5;
 }
 .cost-overage-card__over {
@@ -1203,27 +986,6 @@
   display: flex;
   gap: var(--space-sm);
 }
-.cost-overage-card__btn {
-  padding: 5px var(--space-md);
-  border-radius: var(--radius-xs);
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  border: 1px solid;
-  transition: all var(--motion-fast);
-}
-.cost-overage-card__btn--no {
-  background: transparent;
-  border-color: var(--text-meta);
-  color: var(--text-secondary);
-}
-.cost-overage-card__btn--no:hover { background: rgba(255,255,255,0.04); }
-.cost-overage-card__btn--yes {
-  background: var(--red-dim);
-  border-color: var(--red);
-  color: var(--red);
-}
-.cost-overage-card__btn--yes:hover { background: rgba(255,77,106,0.18); }
 
 /* === WS DOT === */
 .ws-dot {
@@ -1244,57 +1006,24 @@
   flex-direction: column;
   gap: var(--space-sm);
 }
+/* PLACEMENT ONLY — the field is `.textarea`. An in-place edit sits at the
+   width of the bubble it replaces and starts shorter than a form field. */
 .message-edit-textarea {
   width: 100%;
   min-height: 64px;
-  padding: var(--space-sm) var(--space-md);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-elevated);
-  color: var(--text-primary);
-  font: inherit;
-  resize: vertical;
-}
-.message-edit-textarea:focus-visible {
-  outline: none;
-  border-color: var(--text-meta);
 }
 .message-edit-actions {
   display: inline-flex;
-  gap: 6px;
+  gap: var(--space-6);
   justify-content: flex-end;
 }
-.message-edit-actions button {
-  font: inherit;
-  font-size: 12px;
-  padding: 4px 10px;
-  border-radius: var(--radius-xs);
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--text-meta);
-  cursor: pointer;
-}
-.message-edit-actions button.is-primary {
-  color: var(--text-primary);
-  border-color: var(--text-meta);
-}
-.message-edit-actions button:hover,
-.message-edit-actions button:focus-visible {
-  color: var(--text-primary);
-  border-color: var(--text-meta);
-}
-.message-edit-actions button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
 /* === AWAITING CHIP === */
 .awaiting-chip {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--t-caption-size);
   color: var(--text-meta);
-  border: 1px solid var(--border);
-  padding: 6px var(--space-md);
+  border: var(--stroke-1) solid var(--border);
+  padding: var(--space-6) var(--space-md);
   border-radius: 99px;
   letter-spacing: 0.1em;
 }
@@ -1307,7 +1036,7 @@
 
 @media (max-width: 720px) {
   .chat-scroll {
-    padding: var(--space-md) 12px;
+    padding: var(--space-md) var(--space-12);
   }
 
   .message-bubble,

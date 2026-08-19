@@ -27,17 +27,16 @@ class ScheduleListTool(Tool):
 
     risk_class: ClassVar[str] = "autonomous"
 
+    group: ClassVar[str] = "time"
+    summary: ClassVar[str] = "Lists registered scheduler jobs with cadence, enabled state, and last-fire time."
+    use_when: ClassVar[str] = (
+        "Use before creating a job to avoid duplicates, or to check an existing job's runtime state."
+    )
+    not_when: ClassVar[str] = "pending alarms, which is `alarm_list`."
+
     @property
     def name(self) -> str:
         return "schedule_list"
-
-    @property
-    def description(self) -> str:
-        return (
-            "List registered scheduler jobs with their cadence, enabled state, "
-            "and last-fire timestamp. Use before proposing a new job to avoid "
-            "duplicates or to check the runtime state of an existing one."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

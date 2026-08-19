@@ -46,6 +46,18 @@ class DiaryAppendTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "remembering"
+    summary: ClassVar[str] = "Append a first-person reflection to the assistant's private diary."
+    use_when: ClassVar[str] = (
+        "Use for self-observations about a session — what landed, what felt "
+        "off, what you'd do differently. Read DIARY.md before first use."
+    )
+    not_when: ClassVar[str] = (
+        "use `memory_save` for facts about the operator or the project. Not "
+        "retrieved by `memory_search`; it's walled off from routine recall."
+    )
+
     """Append a first-person reflection entry to today's diary file.
 
     AUTO permission — this is the assistant's own file. No operator approval
@@ -58,16 +70,6 @@ class DiaryAppendTool(Tool):
     @property
     def name(self) -> str:
         return "diary_append"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Append a first-person reflection to your private diary. "
-            "Use for self-observations: what landed, what felt off, "
-            "patterns you're noticing about yourself. Not for facts "
-            "about the operator (use memory_save). Read DIARY.md before "
-            "first use."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

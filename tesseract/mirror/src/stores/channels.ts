@@ -43,9 +43,33 @@ export interface ChannelRow {
   extras: { override?: TelegramOverride | null };
 }
 
-interface MutationResult {
+/* A mutation that did not go through failed for one of two reasons, and the
+ * route now says which: the operator answered no, or nobody answered at all
+ * and the prompt expired. `refusalToast` is where that distinction becomes
+ * words, so no caller has to remember not to say "denied" for a timeout. */
+export type MutationOutcome =
+  | 'approved'
+  | 'denied'
+  | 'timeout'
+  // The asker returned False without saying which of the two happened. Its
+  // own value, not 'denied': the sentence it carries names both possibilities
+  // and a "denied:" prefix in front of it would pick one.
+  | 'unresolved';
+
+export interface MutationResult {
   approved: boolean;
+  outcome: MutationOutcome;
   output: string;
+}
+
+/** Toast text for a mutation that did not go through. Only a known decline
+ *  gets the "denied" framing — the other two carry a sentence that already
+ *  says what happened, and prefixing it would both repeat the action and
+ *  assert something the runtime did not claim. */
+export function refusalToast(action: string, result: MutationResult): string {
+  return result.outcome === 'denied'
+    ? `${action} denied: ${result.output}`
+    : result.output;
 }
 
 export interface ChannelLogEntry {
@@ -204,7 +228,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     set((s) => ({ pending: { ...s.pending, [name]: true }, error: null }));
     try {
       const result = await _postJson<{
-        status: 'approved' | 'denied';
+        status: MutationOutcome;
         output: string;
         channel?: ChannelRow;
       }>(`/api/channels/${encodeURIComponent(name)}/restart`, {
@@ -219,7 +243,11 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
             : s.channels;
         return { pending: next, channels };
       });
-      return { approved: result.status === 'approved', output: result.output };
+      return {
+        approved: result.status === 'approved',
+        outcome: result.status,
+        output: result.output,
+      };
     } catch (err) {
       set((s) => {
         const next = { ...s.pending };
@@ -238,7 +266,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     set((s) => ({ pending: { ...s.pending, [key]: true }, error: null }));
     try {
       const result = await _postJson<{
-        status: 'approved' | 'denied';
+        status: MutationOutcome;
         output: string;
         channel?: ChannelRow;
       }>('/api/channels/telegram/status', {
@@ -256,7 +284,11 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
             : s.channels;
         return { pending: next, channels };
       });
-      return { approved: result.status === 'approved', output: result.output };
+      return {
+        approved: result.status === 'approved',
+        outcome: result.status,
+        output: result.output,
+      };
     } catch (err) {
       set((s) => {
         const next = { ...s.pending };
@@ -383,7 +415,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     set((s) => ({ pending: { ...s.pending, [key]: true }, error: null }));
     try {
       const result = await _postJson<{
-        status: 'approved' | 'denied';
+        status: MutationOutcome;
         output: string;
         user?: ChannelUser;
         person_record_error?: string | null;
@@ -405,7 +437,11 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       if (result.status === 'approved') {
         await get().fetchUsers(channel);
       }
-      return { approved: result.status === 'approved', output: result.output };
+      return {
+        approved: result.status === 'approved',
+        outcome: result.status,
+        output: result.output,
+      };
     } catch (err) {
       set((s) => {
         const next = { ...s.pending };
@@ -424,7 +460,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     set((s) => ({ pending: { ...s.pending, [key]: true }, error: null }));
     try {
       const result = await _postJson<{
-        status: 'approved' | 'denied';
+        status: MutationOutcome;
         output: string;
         user?: ChannelUser;
       }>(`/api/channels/${encodeURIComponent(channel)}/revoke`, {
@@ -439,7 +475,11 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       if (result.status === 'approved') {
         await get().fetchUsers(channel);
       }
-      return { approved: result.status === 'approved', output: result.output };
+      return {
+        approved: result.status === 'approved',
+        outcome: result.status,
+        output: result.output,
+      };
     } catch (err) {
       set((s) => {
         const next = { ...s.pending };
@@ -458,7 +498,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     set((s) => ({ pending: { ...s.pending, [key]: true }, error: null }));
     try {
       const result = await _postJson<{
-        status: 'approved' | 'denied';
+        status: MutationOutcome;
         output: string;
         user?: ChannelUser;
       }>(`/api/channels/${encodeURIComponent(channel)}/block`, {
@@ -473,7 +513,11 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       if (result.status === 'approved') {
         await get().fetchUsers(channel);
       }
-      return { approved: result.status === 'approved', output: result.output };
+      return {
+        approved: result.status === 'approved',
+        outcome: result.status,
+        output: result.output,
+      };
     } catch (err) {
       set((s) => {
         const next = { ...s.pending };

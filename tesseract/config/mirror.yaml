@@ -37,14 +37,50 @@ identity:
   #
   # The phrase is `<prefix> <name>`, which is why it lives here: `name`
   # above is what it is built from, and it is re-read per utterance, so
-  # a rename re-teaches the gate with no restart. `match_threshold` is
-  # normalized edit-distance similarity (1.0 = exact) over the head of
-  # the transcript — low enough to tolerate how STT spells an arbitrary
-  # name, high enough that unrelated speech never scores.
+  # a rename re-teaches the gate with no restart.
+  #
+  # The gate listens to AUDIO, not to the transcript. The phrase is
+  # spotted by a decoder whose vocabulary is restricted to those exact
+  # words, so ordinary speech decodes to nothing at all and the gate
+  # never depends on how the speech engine chooses to spell a name it
+  # has never seen. Nothing is transcribed before this decides.
+  #
+  # It answers yes or no — there is no similarity score. Sensitivity is
+  # set BEFORE decoding, by two numbers:
+  #   `min_threshold` — the floor the gate will not go below. Settings →
+  #     Voice confirms a threshold for your voice and this room; raise
+  #     this to overrule it upward, and the stricter of the two wins.
+  #   `boost` — how much the decoder favours the phrase over what it
+  #     would otherwise hear. 1.0 is neutral; raising it makes a
+  #     mumbled phrase more likely to land, and false wakes with it.
+  # Neither is a speaker control: anyone who says the phrase wakes it.
+  #
+  # `enabled` is permission, not readiness. The gate arms only once you
+  # have said the phrase in Settings → Voice and watched it fire, so
+  # turning this on can never leave an install unable to hear you — it
+  # keeps dispatching every utterance until that run passes.
   wake_word:
-    enabled: false
+    enabled: true
     prefix: hey
-    match_threshold: 0.72
+    min_threshold: 0.15
+    boost: 1.0
+    # The keyword model, fetched once and verified against this digest
+    # before install. Apache-2.0, declared by the publisher in the
+    # archive's own README; the phrase is compiled to tokens from the
+    # model's vocabulary at runtime, so a custom name needs no training
+    # and no second download.
+    #
+    # One archive because the release ships no per-file downloads. The
+    # fetch keeps the five files the gate loads (~5.5 MB) and discards
+    # the fp32 duplicates and test audio.
+    # Fetch: python -m tesseract.scripts.fetch_wake_models
+    download:
+      max_download_mb: 32
+      # Measured from the pinned URL below, not estimated.
+      download_mb: 18
+      base_url: https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models
+      files:
+        sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2: f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a
 
 voice:
   # The line spoken when a voice is auditioned from the Identity tab.
@@ -110,16 +146,6 @@ ui:
   # Show a toast whenever a config yaml file is reloaded after an edit.
   show_config_reload_toasts: true
 
-code_watch:
-  # Background watcher that detects when the working tree changes under a
-  # running backend (e.g. you edited and saved source while it's live).
-  enabled: true
-  interval_seconds: 30
-  # If true, a restart-required drift schedules an automatic restart
-  # instead of waiting for you to click the toast.
-  auto_restart: false
-  show_toast: true
-
 session:
   # Auto-resume policy when reopening the Mirror UI.
   # today_only           — only sessions saved today auto-resume
@@ -128,6 +154,24 @@ session:
   # always               — resume any session, however old
   resume_policy: today_plus_yesterday
   resume_days: 1
+  # Write the open session to disk while it is still running. Saving only at
+  # shutdown loses everything a crash, a power loss or a forced kill
+  # interrupts — and that is exactly the session worth having on disk.
+  autosave: true
+  autosave_interval_seconds: 60
+
+brief:
+  # When the morning brief reaches you. Local time, like every cadence you set.
+  #
+  # This is a preference, not a schedule. The brief is WRITTEN as the last step
+  # of the nightly pass — so it knows what the night did — and this only decides
+  # when it is put in front of you. Moving it moves nothing else; the nightly
+  # anchor lives in schedule.yaml and is a separate question.
+  #
+  # A machine asleep at this hour delivers when it wakes, rather than skipping
+  # the day.
+  delivery_hour: 8
+  delivery_minute: 0
 
 mission:
   # Lane-aware work queue. Each worker:<kind> lane caps how many steps of

@@ -9,6 +9,7 @@
 // shell. For S2 it's surfaced inside the Settings Runtime section so
 // the operator can see recovery state today without waiting for AU-7.
 
+import { Block } from '../../components/common/Block';
 import React from 'react';
 
 export interface RecoveryScans {
@@ -61,18 +62,16 @@ function fmtTimeAgo(iso: string | null): string {
 export function RecoveryPane({ summary, recoveryState }: RecoveryPaneProps): React.ReactElement {
   if (recoveryState === 'recovering') {
     return (
-      <div className="runtime-block recovery-pane recovery-pane--recovering">
-        <div className="runtime-block__title">Recovery in progress</div>
+      <Block title="Recovery in progress" tone="warn">
         <p className="t-meta">RecoveryManager is reconciling boot-time state. Heartbeat suspended; /api/health returns 503 until ready.</p>
-      </div>
+      </Block>
     );
   }
   if (!summary || !summary.boot_id) {
     return (
-      <div className="runtime-block recovery-pane">
-        <div className="runtime-block__title">Recovery</div>
+      <Block title="Recovery">
         <p className="t-meta">No recovery pass recorded in this backend lifetime yet.</p>
-      </div>
+      </Block>
     );
   }
 
@@ -80,13 +79,7 @@ export function RecoveryPane({ summary, recoveryState }: RecoveryPaneProps): Rea
   const hasSchedule = nonEmpty(summary.scans, 'schedule');
 
   return (
-    <div className={`runtime-block recovery-pane${attn.length ? ' recovery-pane--attn' : ''}`}>
-      <div className="runtime-block__title">
-        Last recovery
-        <span className="t-meta" style={{ marginLeft: 8 }}>
-          boot {summary.boot_id.slice(-9)} · {fmtTimeAgo(summary.started_at)}
-        </span>
-      </div>
+    <Block title="Last recovery" meta={<>boot {summary.boot_id.slice(-9)} · {fmtTimeAgo(summary.started_at)}</>} tone={attn.length ? "warn" : "default"}>
 
       {hasSchedule && (
         <dl className="recovery-scans">
@@ -123,6 +116,6 @@ export function RecoveryPane({ summary, recoveryState }: RecoveryPaneProps): Rea
       {!attn.length && (
         <p className="t-meta">Clean boot — no in-flight state required operator attention.</p>
       )}
-    </div>
+    </Block>
   );
 }

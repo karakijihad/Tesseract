@@ -4,7 +4,8 @@ Audit M3 fix (2026-04-29): before, `resolve_chat_brain_runtime()` resolved
 the chain at startup and `app["adapter_chain"]` was stashed but never
 consumed. `ChatSession` only ever talked to the primary adapter; if the
 primary 5xx-ed mid-conversation, the turn errored and the operator had to
-manually flip models. Hermes/OpenClaw-style runtimes failover transparently.
+manually flip models. A chain that is declared and not consumed is not a
+fallback; failing over has to be transparent to the turn or it is not one.
 
 Operator policy (2026-05-02): the chain must distinguish *transient* from
 *hard* errors:
@@ -250,7 +251,11 @@ class FallbackAdapter(ModelAdapter):
         skipped_in_cooldown = 0
 
         for idx, (adapter, entry_options) in enumerate(self._chain):
-            entry_label = getattr(adapter, "model", entry_options.model) or entry_options.model
+            # From the OPTIONS, never the adapter. The catalog and the adapter
+            # carry the same model name, but an entry may not be constructed
+            # yet — reading an attribute off it to write a log line would
+            # build a client for every entry the chain merely considered.
+            entry_label = entry_options.model or f"idx={idx}"
 
             # Cooldown breaker — if this entry has been failing
             # consecutively, the breaker is open and we skip until the
@@ -559,6 +564,16 @@ class FallbackAdapter(ModelAdapter):
         return self.primary.count_tokens(messages)
 
     async def check_available(self) -> bool:
+        """True if any entry that has been BUILT is reachable.
+
+        Narrowed deliberately: three of the four provider adapters answer this
+        by calling their SDK client, so asking an unbuilt entry would
+        construct one — the whole chain, on a question nobody in production
+        asks. `MeteredAdapter` delegates here and nothing else calls it, so
+        this narrows a contract with no live consumer rather than changing a
+        behaviour someone sees. An unbuilt entry reports itself unavailable,
+        which is honest: it has not been reached yet.
+        """
         for adapter, _ in self._chain:
             try:
                 if await adapter.check_available():

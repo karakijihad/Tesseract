@@ -47,17 +47,21 @@ class OsLaunchInput(BaseModel):
 class OsLaunchTool(Tool):
     default_posture = "ask"
     risk_class: ClassVar[str] = "operator_gate"
+    group: ClassVar[str] = "showing-the-operator"
+    summary: ClassVar[str] = (
+        "Internal primitive: open a local file, folder, or app in the program that owns it."
+    )
+    use_when: ClassVar[str] = (
+        "Called by `open` after it resolves a target to a local path or "
+        "configured app. Not for direct use."
+    )
+    not_when: ClassVar[str] = (
+        "Model callers use `open` — it resolves the target and dispatches here itself."
+    )
 
     @property
     def name(self) -> str:
         return "os_launch"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Open a local file or folder in the application that owns it. "
-            "Internal primitive — callers use `open`."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

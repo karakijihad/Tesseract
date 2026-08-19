@@ -45,7 +45,12 @@ MACHINE_DIRS = (
     "controller",
 )
 MACHINE_FILES = (
-    "session_metadata.sqlite", "work_index.sqlite",
+    "chat_metadata.sqlite", "work_index.sqlite",
+    # The chat index was keyed by a session filename until 2026-08-19. An
+    # install that predates that carries the old file, and an unclassified
+    # entry REFUSES the whole migration — so it is named here to be moved,
+    # not to be kept.
+    "session_metadata.sqlite",
     "work_index.sqlite-wal", "work_index.sqlite-shm",
     # Trusted working directories are absolute paths on THIS machine.
     "trusted_dirs.json",
@@ -60,6 +65,9 @@ DATA_REPO_ENTRIES = (".git", ".gitignore")
 _ROOTS = ("app", "home", "runtime")
 _LOGS = "logs"
 
+#: The cost ledger, named once because two lists and one repair all point at it.
+COST_LEDGER = "cost-tracking.jsonl"
+
 # DESIGN.md §logs — split by ownership.
 LOGS_TO_HOME = (
     "sessions", "observer", "conscience", "autonomy", "consolidator",
@@ -69,6 +77,13 @@ LOGS_TO_HOME = (
     # decision — so it follows them to the other PC like the rest of this
     # column, rather than staying with machine ops.
     "workspace",
+    # What the operator SPENT. It is their history, not this machine's, and
+    # `CostLedger` has always appended it under `home/` — this list was the
+    # one place that disagreed, so a pre-split install migrating here had its
+    # spend history filed under `runtime/`, where nothing reads or appends it
+    # and a reinstall wipes it. `relocate_cost_ledger` reclaims one already
+    # stranded that way.
+    COST_LEDGER,
 )
 LOGS_TO_RUNTIME = (
     "audit", "approvals.jsonl", "circuit-breakers", "supervisor", "janitor",
@@ -83,7 +98,6 @@ LOGS_TO_RUNTIME = (
     "backend-console.log", "mirror-backend.log", "shell.log",
     "supervisor-console.log", "supervisor.log",
     "agent-controller-console.log", "agent-controller.log",
-    "cost-tracking.jsonl",
 )
 
 # Template trees seeded into home/, used to pre-populate the phase-5 manifest.
@@ -103,6 +117,68 @@ def _classify_log_entry(entry: Path, root: Path) -> tuple[Path, Path] | None:
     if entry.name in LOGS_TO_RUNTIME:
         return (entry, root / "runtime" / _LOGS / entry.name)
     return None
+
+
+def relocate_cost_ledger(root: Path, *, apply: bool) -> str | None:
+    """Bring a cost ledger stranded under `runtime/logs/` back to `home/logs/`.
+
+    Separate from `plan_migration` because it repairs a tree that has ALREADY
+    split: the classification above used to send this file to the machine half,
+    so an install that migrated before the correction has its pre-split spend
+    history sitting where nothing reads it. `plan_migration` walks the flat
+    layout and would never see it.
+
+    Idempotent, and safe to run on a tree that was never wrong — it returns
+    `None` when there is nothing stranded.
+
+    Merges rather than replaces. `CostLedger` has been appending home-side the
+    whole time, so both files can hold real rows; the destination keeps its own
+    order and gains only the source rows it does not already have. Exact-line
+    dedupe is enough because every entry carries a UTC timestamp — and it
+    matters, because `_seed_from_log` SUMS today's rows, so a duplicated line
+    is a day's spend counted twice.
+
+    Copy, verify, then remove — never move-then-hope. A failure leaves the
+    source exactly where it was.
+    """
+    src = root / "runtime" / _LOGS / COST_LEDGER
+    dst = root / "home" / _LOGS / COST_LEDGER
+    if not src.exists():
+        return None
+
+    src_lines = src.read_text(encoding="utf-8").splitlines()
+    dst_lines = (
+        dst.read_text(encoding="utf-8").splitlines() if dst.exists() else []
+    )
+    seen = set(dst_lines)
+    fresh = [ln for ln in src_lines if ln.strip() and ln not in seen]
+
+    summary = (
+        f"cost ledger: {len(fresh)} row(s) from runtime/ → home/ "
+        f"({len(src_lines)} found, {len(src_lines) - len(fresh)} already there)"
+    )
+    if not apply:
+        return summary
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    merged = dst_lines + fresh
+    tmp = dst.with_suffix(dst.suffix + ".migrating")
+    tmp.write_text("\n".join(merged) + ("\n" if merged else ""), encoding="utf-8")
+
+    # Verify BEFORE anything is destroyed: every row that was on either side
+    # has to be present, or the source stays and the operator is told.
+    check = set(tmp.read_text(encoding="utf-8").splitlines())
+    missing = [ln for ln in dst_lines + src_lines if ln.strip() and ln not in check]
+    if missing:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"cost ledger merge dropped {len(missing)} row(s); "
+            f"left {src} untouched"
+        )
+
+    tmp.replace(dst)
+    src.unlink()
+    return summary
 
 
 def plan_migration(root: Path) -> MigrationPlan:
@@ -376,6 +452,12 @@ def main(argv: list[str] | None = None) -> int:
         for path in plan.unclassified:
             print(f"  {path.relative_to(root)}")
 
+    # Only forward. Reverting flattens the tree, and the ledger's home-side
+    # position is where the runtime already expects it either way.
+    ledger = None if reverting else relocate_cost_ledger(root, apply=False)
+    if ledger:
+        print(f"\n{ledger}")
+
     if args.dry_run:
         return 1 if plan.unclassified else 0
 
@@ -383,6 +465,9 @@ def main(argv: list[str] | None = None) -> int:
         apply_revert(plan)
     else:
         apply_migration(plan)
+        # After the moves, so a tree that split in this same run is repaired
+        # too — and safe on a tree that was already correct, where it no-ops.
+        relocate_cost_ledger(root, apply=True)
     print(f"\n{verb} applied.")
     return 0
 

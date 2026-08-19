@@ -7,7 +7,16 @@ export class AmbientHaze {
   private texture!: THREE.CanvasTexture;
   private canvas!: HTMLCanvasElement;
 
-  private hazeColor = '#050508';
+  // Seeded from tokens.css through the entity store before the first frame
+  // (`appearance.ts::apply` → `setOrbPalette`), so these hold only until that
+  // arrives and are not a second place the brand is decided.
+  /* brand-exempt: the pre-CSS fallback for a canvas that cannot read a custom
+     property. Something has to be drawable before the first push; `setPalette`
+     replaces both the moment tokens.css is readable. */
+  private ground = '#050508';
+  private dreamingColor = '#6b21a8';
+
+  private hazeColor = this.ground;
   private intensity = 0.04;
   private accentHsl = '246 83% 68%';
   private hueShift = 0;
@@ -50,8 +59,8 @@ export class AmbientHaze {
     const effectiveIntensity = this.dreamingActive ? this.intensity * (0.7 + 0.3 * Math.sin(this.dreamPhase)) : this.intensity;
 
     // Core glow uses accent color (darkened); outer haze uses state hazeColor
-    const accentHex = this.dreamingActive ? '#6b21a8' : this._accentToHex();
-    const outerColor = this.dreamingActive ? '#6b21a8' : this.hazeColor;
+    const accentHex = this.dreamingActive ? this.dreamingColor : this._accentToHex();
+    const outerColor = this.dreamingActive ? this.dreamingColor : this.hazeColor;
 
     const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
     gradient.addColorStop(0, this._withAlpha(accentHex, Math.min(effectiveIntensity * 2.0, 0.85)));
@@ -103,7 +112,22 @@ export class AmbientHaze {
   }
 
   setHazeColor(color: string): void {
+    if (this.hazeColor === color) return;
     this.hazeColor = color;
+    this._draw();
+  }
+
+  /** The orb's two brand colours, from `tokens.css` via the entity store.
+   *  `ground` is what the haze fades out to and is `--bg-void`, so changing the
+   *  app's background moves the orb with it instead of leaving it on a colour
+   *  that merely used to match. */
+  setPalette(ground: string, dreaming: string): void {
+    if (this.ground === ground && this.dreamingColor === dreaming) return;
+    // The ground doubles as the resting haze until a state supplies its own,
+    // so a `--bg-void` change has to carry it.
+    if (this.hazeColor === this.ground) this.hazeColor = ground;
+    this.ground = ground;
+    this.dreamingColor = dreaming;
     this._draw();
   }
 

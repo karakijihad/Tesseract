@@ -5,9 +5,12 @@
 // then recent terminals. Answers §15 Q1 (what is the assistant doing) by
 // showing the actual process surface, not just the agenda intent.
 
+import { Block } from '../../components/common/Block';
 import React from 'react';
 import type { ActiveWorker } from '../../lib/api';
 import { useAutonomyStore } from '../../stores/autonomy';
+import { Hint } from '../../components/ui/Hint';
+import { Row } from '../../components/common/Row';
 
 interface WorkersPaneProps {
   workers: ActiveWorker[];
@@ -70,10 +73,9 @@ export function WorkersPane({ workers, status, error }: WorkersPaneProps): React
   const openWorkerDetail = useAutonomyStore((s) => s.openWorkerDetail);
   if (status === 'error') {
     return (
-      <section className="runtime-block autonomy-pane autonomy-pane--workers">
-        <div className="runtime-block__title">Workers</div>
+      <Block title="Workers">
         <p className="t-meta">Failed to load: {error}</p>
-      </section>
+      </Block>
     );
   }
 
@@ -84,37 +86,26 @@ export function WorkersPane({ workers, status, error }: WorkersPaneProps): React
 
   if (status !== 'ready' && workers.length === 0) {
     return (
-      <section className="runtime-block autonomy-pane autonomy-pane--workers">
-        <div className="runtime-block__title">Workers</div>
+      <Block title="Workers">
         <p className="t-meta">Loading…</p>
-      </section>
+      </Block>
     );
   }
 
   return (
-    <section className="runtime-block autonomy-pane autonomy-pane--workers">
-      <div className="runtime-block__title">
-        Workers
-        <span className="t-meta" style={{ marginLeft: 8 }}>{live.length} live · {recent.length} recent</span>
-      </div>
+    <Block title="Workers" meta={<>{live.length} live · {recent.length} recent</>}>
 
       {workers.length === 0 ? (
         <p className="t-meta">No workers active. Records appear here as the kernel dispatches.</p>
       ) : (
         <ul className="autonomy-list">
           {live.map((w) => (
-            <li
+            <Row
+              as="li"
               key={w.id}
-              className={`autonomy-row autonomy-row--${w.status} autonomy-row--clickable`}
+              className={`autonomy-row autonomy-row--${w.status}`}
               onClick={() => void openWorkerDetail(w.id)}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  void openWorkerDetail(w.id);
-                }
-              }}
+              ariaLabel={`Open worker ${_shortId(w.id)}`}
             >
               <div className="autonomy-row__head">
                 <span className={`autonomy-chip autonomy-chip--${w.status}`}>{w.status}</span>
@@ -124,7 +115,7 @@ export function WorkersPane({ workers, status, error }: WorkersPaneProps): React
               </div>
               <div className="autonomy-row__goal t-mono">{_shortId(w.id)}</div>
               {w.summary && <div className="autonomy-row__rationale t-meta">{w.summary}</div>}
-            </li>
+            </Row>
           ))}
           {recent.length > 0 && (
             <li className="autonomy-list__divider t-meta">recent terminals</li>
@@ -133,34 +124,27 @@ export function WorkersPane({ workers, status, error }: WorkersPaneProps): React
             const failureBadge = _failureBadge(w);
             const duration = _fmtDuration(w.duration_seconds ?? 0);
             return (
-              <li
+              <Row
+                as="li"
                 key={w.id}
-                className={`autonomy-row autonomy-row--${w.status} autonomy-row--clickable`}
+                className={`autonomy-row autonomy-row--${w.status}`}
                 onClick={() => void openWorkerDetail(w.id)}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    void openWorkerDetail(w.id);
-                  }
-                }}
+                ariaLabel={`Open worker ${_shortId(w.id)}`}
               >
                 <div className="autonomy-row__head">
                   <span className={`autonomy-chip autonomy-chip--${w.status}`}>{w.status}</span>
                   <span className="autonomy-chip autonomy-chip--kind">{w.kind}</span>
                   <span className="autonomy-chip autonomy-chip--source">{w.role}</span>
                   {failureBadge && (
-                    <span
-                      className={`autonomy-chip autonomy-chip--${failureBadge === 'TIMEOUT' ? 'awaiting_io' : 'failed'}`}
-                      title={
-                        failureBadge === 'TIMEOUT'
+                    <Hint label={failureBadge === 'TIMEOUT'
                           ? 'wall-clock timeout — worker was still working when its budget ran out'
-                          : 'tool returned an error or denied path'
-                      }
-                    >
-                      {failureBadge}
-                    </span>
+                          : 'tool returned an error or denied path'}>
+                      <span
+                        className={`autonomy-chip autonomy-chip--${failureBadge === 'TIMEOUT' ? 'awaiting_io' : 'failed'}`}
+                      >
+                        {failureBadge}
+                      </span>
+                    </Hint>
                   )}
                   <span className="autonomy-row__score">
                     {duration && <>{duration} · </>}
@@ -171,11 +155,11 @@ export function WorkersPane({ workers, status, error }: WorkersPaneProps): React
                 {w.last_transition?.reason && (
                   <div className="autonomy-row__rationale t-meta">{w.last_transition.reason}</div>
                 )}
-              </li>
+              </Row>
             );
           })}
         </ul>
       )}
-    </section>
+    </Block>
   );
 }

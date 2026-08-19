@@ -1,0 +1,293 @@
+/* =============================================================
+   NAV — the app's section switchers.
+
+   One stylesheet behind `Tabs`, `Chips` and `NavRail`, keyed off the
+   classes those components emit themselves. A surface gets the app's
+   tabs by rendering the component; there is no class for a caller to
+   remember and no second dialect for one to invent.
+
+   Six surfaces hand-rolled this before it existed — three visual
+   dialects and five type treatments for the same act, which is what
+   made the app read as several apps stitched together.
+   ============================================================= */
+
+/* ── Tabs — horizontal section switching ─────────────────────── */
+
+.nav-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-xs);
+  flex: 0 0 auto;
+  padding: var(--space-sm) var(--space-md) 0;
+  border-bottom: var(--stroke-1) solid var(--panel-divider);
+}
+
+/* Equal shares of a fixed panel, and no side padding to steal from them. */
+.nav-tabs--fill {
+  gap: 0;
+  padding: 0;
+}
+
+.nav-tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
+  min-width: 0;
+  padding: var(--space-sm) var(--space-10);
+  margin-bottom: calc(var(--space-1) * -1);
+  background: transparent;
+  border: none;
+  border-bottom: var(--stroke-2) solid transparent;
+  color: var(--text-meta);
+  font-family: var(--font-ui);
+  font-size: var(--t-caption-size);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--motion-fast) var(--ease-out);
+}
+
+.nav-tabs--fill .nav-tab {
+  flex: 1 1 0;
+}
+
+.nav-tab:hover {
+  color: var(--text-primary);
+}
+
+.nav-tab.is-active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+}
+
+.nav-tab__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nav-tab__badge {
+  font-family: var(--font-ui);
+  font-size: var(--t-meta-size);
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-meta);
+}
+
+.nav-tab.is-active .nav-tab__badge {
+  color: var(--accent-bright);
+}
+
+/* ── Chips — filter selection ────────────────────────────────── */
+
+.nav-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+}
+
+.nav-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-3) var(--space-10);
+  border: var(--stroke-1) solid var(--panel-divider);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-meta);
+  font-family: var(--font-ui);
+  font-size: var(--t-meta-size);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition:
+    color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out);
+}
+
+.nav-chip:hover {
+  color: var(--text-primary);
+}
+
+.nav-chip.is-active {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--accent-bright);
+}
+
+.nav-chip__count {
+  padding: 0 var(--space-5);
+  border-radius: var(--radius-pill);
+  background: var(--panel-divider);
+  color: var(--text-meta);
+  font-family: var(--font-ui);
+  font-size: var(--t-meta-size);
+  letter-spacing: 0;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.nav-chip.is-active .nav-chip__count {
+  background: var(--accent);
+  color: var(--bg-void);
+}
+
+/* ── NavRail — vertical section switching ────────────────────── */
+
+.nav-rail {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 176px;
+  /* Without this a long row label (an agent name) grows the flex item past
+     its basis, and the rail was a different width in every view. */
+  min-width: 0;
+  min-height: 0;
+  padding: var(--space-sm);
+  gap: var(--space-sm);
+  border-right: var(--stroke-1) solid var(--panel-divider);
+}
+
+.nav-rail__search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 0 var(--space-sm);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  border: var(--stroke-1) solid var(--panel-border);
+  color: var(--text-meta);
+  transition: border-color var(--motion-fast) var(--ease-out);
+}
+
+.nav-rail__search:focus-within {
+  border-color: var(--accent);
+}
+
+.nav-rail__input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-7) 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-family: var(--font-ui);
+  font-size: var(--t-caption-size);
+  color: var(--text-primary);
+}
+
+.nav-rail__input::placeholder {
+  color: var(--text-meta);
+}
+
+.nav-rail__input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.nav-rail__nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.nav-rail__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.nav-rail__group-label {
+  padding: 0 var(--space-sm) var(--space-xs);
+}
+
+.nav-rail__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-7) var(--space-sm);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
+  font-size: var(--t-caption-size);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
+}
+
+.nav-rail__row:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.nav-rail__row.is-active {
+  background: var(--accent-dim);
+  color: var(--text-primary);
+}
+
+.nav-rail__icon {
+  display: flex;
+  flex: 0 0 auto;
+  color: var(--text-meta);
+}
+
+.nav-rail__row:hover .nav-rail__icon,
+.nav-rail__row.is-active .nav-rail__icon {
+  color: var(--accent-bright);
+}
+
+.nav-rail__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-rail__empty {
+  padding: var(--space-sm);
+}
+
+.nav-rail__foot {
+  padding: var(--space-sm) var(--space-sm) 0;
+  border-top: var(--stroke-1) solid var(--panel-divider);
+  line-height: 1.45;
+}
+
+/* `display: contents` like `.hint-wrap`, so a wrapped row is still a direct
+   flex child of the group. */
+.nav-rail__row-wrap {
+  display: contents;
+}
+
+/* Filter rows — a checklist in the rail, so what you tick and what it changes
+   are in view at the same time. Same row shape as a section row; the tick
+   column is what tells them apart. */
+.nav-rail__row--filter.is-checked {
+  color: var(--text-primary);
+}
+
+.nav-rail__tick {
+  flex: 0 0 auto;
+  width: 12px;
+  text-align: center;
+  color: var(--accent-bright);
+}
+
+.nav-rail__count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.nav-rail__row--reset {
+  opacity: 0.8;
+}

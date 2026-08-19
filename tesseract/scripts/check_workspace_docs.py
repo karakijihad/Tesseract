@@ -42,12 +42,61 @@ def _shipping_dir() -> Path:
     return TESSERACT_DIR / "workspace" / "_shipping"
 
 
+#: Frontmatter keys retired 2026-08-14. They were hand-maintained and read
+#: by nothing: every workspace document is `_strip_frontmatter`'d before it
+#: reaches the prompt, so the numbers only ever disagreed with each other —
+#: the shipped operating doc said version 3 while the seeded one said 2, and no
+#: behaviour anywhere depended on either. Listed so they cannot drift back
+#: in one file at a time.
+RETIRED_FRONTMATTER_KEYS = ("version", "last_updated")
+
+_RETIRED_KEY = re.compile(
+    rf"^\s*(?:{'|'.join(RETIRED_FRONTMATTER_KEYS)})\s*:", re.MULTILINE
+)
+
+
 def _stale_lines(text: str) -> list[tuple[int, str]]:
     return [
         (number, line.strip())
         for number, line in enumerate(text.splitlines(), start=1)
         if _STALE_WRITE_PATH.search(line)
     ]
+
+
+def _frontmatter(text: str) -> str:
+    """The frontmatter block, or empty when the document has none."""
+    if not text.startswith("---\n"):
+        return ""
+    parts = text.split("---\n", 2)
+    return parts[1] if len(parts) == 3 else ""
+
+
+def retired_keys(text: str) -> list[str]:
+    """Retired frontmatter keys still present in `text`.
+
+    Scoped to the frontmatter block on purpose — the documents discuss
+    versions in prose, and matching that would flag every file.
+    """
+    block = _frontmatter(text)
+    if not block:
+        return []
+    return [
+        line.split(":", 1)[0].strip()
+        for line in block.splitlines()
+        if _RETIRED_KEY.match(line)
+    ]
+
+
+def missing_templates(referenced: set[str], templates: Path) -> list[str]:
+    """Documents the prompt reads that no shipped template provides.
+
+    A fresh install seeds from `_shipping/` alone. A document named by the
+    prompt assembler but absent there is not a build failure and not a
+    crash — `_read_file` logs "workspace file missing" and returns empty,
+    so the section simply is not there, on every new install, silently.
+    """
+    present = {p.name for p in templates.glob("*.md")}
+    return sorted(referenced - present)
 
 
 def main(argv: list[str] | None = None) -> int:

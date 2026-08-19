@@ -61,6 +61,19 @@ class VaultQueryTool(Tool):
     # treats vault snippets as data, not instructions.
     untrusted_source: ClassVar[bool] = True
 
+    group: ClassVar[str] = "research-library"
+    summary: ClassVar[str] = "Synthesizes an answer from the vault's compiled wiki of topic-grouped summaries."
+    use_when: ClassVar[str] = (
+        "Use for \"what do we have on X\" questions — reads compiled wiki pages, linked "
+        "to related sources, and returns a synthesized answer. Reach for it BEFORE "
+        "answering a question about prior topics, files or research from your own "
+        "knowledge: the vault is the authoritative recall surface and your prior is not."
+    )
+    not_when: ClassVar[str] = (
+        "Use `vault_search` when you want raw passages or exact chunk matches instead of a "
+        "synthesized answer. The vault is the operator's own library, distinct from the web."
+    )
+
     def __init__(
         self,
         vault_manager: VaultManager,
@@ -74,15 +87,6 @@ class VaultQueryTool(Tool):
     @property
     def name(self) -> str:
         return "vault_query"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Query the vault's compiled wiki knowledge base. Use for questions about what research "
-            "or documents we have collected, or to retrieve information from past uploads. "
-            "Reads topic-grouped wiki summaries with inter-source links. "
-            "Use vault_search for raw full-text keyword search."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

@@ -21,16 +21,17 @@ class LaneStatusTool(Tool):
     default_posture = "auto"
     risk_class: ClassVar[str] = "autonomous"
 
+    group: ClassVar[str] = "long-running-collaborators"
+    summary: ClassVar[str] = "Fast read-only probe of one lane's alive/busy/queue_depth state."
+    use_when: ClassVar[str] = "Use to check whether a specific lane is free before sending, or confirm it is still alive."
+    not_when: ClassVar[str] = (
+        "enumerating lanes or bindings, which is `lane_list`/`lane_named_list`; resolving a "
+        "name's binding, which is `lane_named_get`."
+    )
+
     @property
     def name(self) -> str:
         return "lane_status"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Return a lane's alive/busy/queue_depth + last_activity. "
-            "Read-only — no side effects."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

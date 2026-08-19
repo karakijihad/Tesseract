@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class ScheduleCreateInput(BaseModel):
-    name: str = Field(description="Unique job name (slug-style: 'vault_lint_4h').")
+    name: str = Field(description="Unique job name (slug-style: 'reading_list_weekly').")
     cadence: str = Field(
         description=(
             "Interval shorthand ('15m', '6h', '1d12h') or 5-field cron "
@@ -31,8 +31,18 @@ class ScheduleCreateInput(BaseModel):
     handler: str = Field(
         description=(
             "Dotted import path of a BaseJob subclass under "
-            "`tesseract.scheduler.tasks.*` (whitelist enforced). Example: "
-            "'tesseract.scheduler.tasks.vault_lint.VaultLintJob'."
+            "`tesseract.scheduler.tasks.*` (whitelist enforced). Unless the "
+            "operator named a specific one, this is "
+            "'tesseract.scheduler.tasks.scheduled_task.ScheduledTaskJob' — the "
+            "generic primitive that runs a described task on a cadence, so a "
+            "recurring task does not need a job module written for it."
+        )
+    )
+    summary: str = Field(
+        description=(
+            "One line saying what this job is for, in the operator's words — it "
+            "is what they read in WHAT-RUNS.md and the Schedule tab. Required: a "
+            "row nobody can explain is a row nobody can decide to keep."
         )
     )
     enabled: bool = Field(default=True, description="Disable to dry-run before arming.")
@@ -49,27 +59,18 @@ class ScheduleCreateTool(Tool):
     default_posture = "ask"
 
     risk_class: ClassVar[str] = "propose"
+
+    group: ClassVar[str] = "time"
+    summary: ClassVar[str] = "Registers a new job that recurs on its configured cadence, persisted to disk."
+    use_when: ClassVar[str] = "Use when the operator wants a task to run repeatedly going forward, not once."
+    not_when: ClassVar[str] = (
+        "a single one-time reminder, which is `alarm_set`; changing an existing job is "
+        "`schedule_update`."
+    )
+
     @property
     def name(self) -> str:
         return "schedule_create"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Register a new scheduler job at runtime. Use when the operator asks "
-            "for a recurring task ('lint the vault every 6 hours', 'run the daily "
-            "writer at 8pm'). The job persists to schedule.yaml and survives "
-            "restart. Returns the new job name + cadence.\n\n"
-            "For a recurring LLM task that interprets an instruction, optionally "
-            "web-searches, filters, and DELIVERS the result to a chat (e.g. "
-            "'every morning summarize AI papers and message me', 'weekly "
-            "competitor-price check'), use the generic lean handler "
-            "'tesseract.scheduler.tasks.scheduled_task.ScheduledTaskJob' with "
-            "config {prompt: <the instruction>, channel: 'telegram', chat_ref: "
-            "<chat id>, queries?: [<search strings>], title?: <header>}. This is "
-            "NOT a mission and needs no approval gate — prefer it over a mission "
-            "loop for repetitive fetch/filter/deliver work."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:
@@ -92,6 +93,7 @@ class ScheduleCreateTool(Tool):
                 name=inp.name,
                 cadence=inp.cadence,
                 handler=inp.handler,
+                summary=inp.summary,
                 enabled=inp.enabled,
                 on_failure=inp.on_failure,
                 retry_policy=RetryPolicy(

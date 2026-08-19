@@ -7,14 +7,21 @@
  * The default tier is `operator` so the common case — operator approving
  * their own second Telegram chat — is a single-click flow.
  */
-import { useEffect, useState } from 'react';
+import { Select } from '../../components/common/Select';
+import { useState } from 'react';
 import {
   useChannelsStore,
+  refusalToast,
   type ChannelUser,
   type ChannelUserTier,
 } from '../../stores/channels';
 import { useToastStore } from '../../stores/toasts';
 import { useWebSocketStore } from '../../stores/websocket';
+import { Hint } from '../../components/ui/Hint';
+import { Input } from '../../components/common/Input';
+import { CloseButton } from '../../components/common/CloseButton';
+import { Button } from '../../components/common/Button';
+import { Modal } from '../../components/common/Modal';
 
 interface ApprovalModalProps {
   channel: string;
@@ -32,16 +39,6 @@ export function ApprovalModal({ channel, user, onClose }: ApprovalModalProps) {
   const [tier, setTier] = useState<ChannelUserTier>('operator');
   const [ttlIso, setTtlIso] = useState<string>('');
   const busy = Boolean(pending[`${channel}:approve:${user.user_id}`]);
-
-  // Close on Escape — modal is operator-facing so the existing keyboard
-  // affordance pattern (Esc to dismiss) carries through from settings.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
 
   const _onConfirm = async () => {
     if (!sessionId) {
@@ -63,7 +60,7 @@ export function ApprovalModal({ channel, user, onClose }: ApprovalModalProps) {
         push(`${user.user_id} approved as ${tier}`, 'info');
         onClose();
       } else {
-        push(`Approve denied: ${result.output}`, 'warning');
+        push(refusalToast('Approve', result), 'warning');
       }
     } catch (err) {
       push(
@@ -74,34 +71,19 @@ export function ApprovalModal({ channel, user, onClose }: ApprovalModalProps) {
   };
 
   return (
-    <div
-      className="channel-modal-overlay"
-      role="dialog"
-      aria-modal="true"
-      aria-label="approve channel user"
-      data-testid="channel-approval-modal"
-      onClick={(e) => {
-        // Backdrop click dismisses. The dialog body uses stopPropagation
-        // so clicks inside the form don't bubble back here.
-        if (e.target === e.currentTarget) onClose();
-      }}
+    <Modal
+      onClose={onClose}
+      ariaLabel="approve channel user"
+      className="channel-modal"
+      testId="channel-approval-modal"
     >
-      <div
-        className="channel-modal"
-        onClick={(e) => e.stopPropagation()}
-        data-testid="channel-approval-modal-body"
-      >
         <header className="channel-modal-head">
           <span className="channel-modal-title">Approve channel user</span>
-          <button
-            type="button"
-            className="channel-modal-close"
+          <CloseButton
             onClick={onClose}
-            aria-label="close approval modal"
-            data-testid="channel-approval-cancel"
-          >
-            ×
-          </button>
+            ariaLabel="close approval modal"
+            testId="channel-approval-cancel"
+          />
         </header>
 
         <div className="channel-modal-meta t-meta">
@@ -110,29 +92,31 @@ export function ApprovalModal({ channel, user, onClose }: ApprovalModalProps) {
 
         <label className="channel-modal-field">
           <span className="channel-modal-label">display name</span>
-          <input
-            type="text"
+          <Input
             value={displayName}
-            onChange={(e) => setDisplayName(e.target.value)}
+            onChange={setDisplayName}
             placeholder={user.display_name || 'name shown in records'}
-            data-testid="channel-approval-display-name"
+            testId="channel-approval-display-name"
             className="channel-modal-input"
           />
         </label>
 
         <label className="channel-modal-field">
           <span className="channel-modal-label">tier</span>
-          <select
+          <Select
             value={tier}
-            onChange={(e) => setTier(e.target.value as ChannelUserTier)}
-            data-testid="channel-approval-tier"
-            className="channel-modal-input"
-          >
-            <option value="operator">operator</option>
-            <option value="friend" disabled title="available in multi-user milestone">
-              friend (multi-user milestone)
-            </option>
-          </select>
+            options={[
+              { value: 'operator', label: 'operator' },
+              {
+                value: 'friend',
+                label: 'friend (multi-user milestone)',
+                disabled: true,
+              },
+            ]}
+            onChange={(v) => setTier(v as ChannelUserTier)}
+            ariaLabel="Approve as tier"
+            testId="channel-approval-tier"
+          />
           <span className="channel-modal-hint t-meta">
             tier enforcement ships with the multi-user milestone
           </span>
@@ -143,41 +127,35 @@ export function ApprovalModal({ channel, user, onClose }: ApprovalModalProps) {
           {/* Native date picker so enabling the field in the multi-user
               milestone needs zero form changes; today it's disabled and
               the value still ships in the POST payload (inert). */}
-          <input
-            type="date"
-            value={ttlIso}
-            onChange={(e) => setTtlIso(e.target.value)}
-            placeholder="no expiry"
-            disabled
-            title="available in multi-user milestone"
-            data-testid="channel-approval-ttl"
-            className="channel-modal-input"
-          />
+          <Hint label="available in multi-user milestone">
+            <Input
+              type="date"
+              value={ttlIso}
+              onChange={setTtlIso}
+              placeholder="no expiry"
+              disabled
+              testId="channel-approval-ttl"
+              className="channel-modal-input"
+            />
+          </Hint>
           <span className="channel-modal-hint t-meta">
             TTL enforcement ships with the multi-user milestone
           </span>
         </label>
 
         <div className="channel-modal-actions">
-          <button
-            type="button"
-            className="channel-user-btn"
-            onClick={onClose}
-            disabled={busy}
-          >
+          <Button onClick={onClose} disabled={busy}>
             cancel
-          </button>
-          <button
-            type="button"
-            className="channel-user-btn channel-user-btn-primary"
+          </Button>
+          <Button
+            tone="primary"
             onClick={() => void _onConfirm()}
             disabled={busy}
-            data-testid="channel-approval-confirm"
+            testId="channel-approval-confirm"
           >
             {busy ? 'approving…' : 'approve'}
-          </button>
+          </Button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

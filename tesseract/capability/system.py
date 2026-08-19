@@ -27,6 +27,7 @@ import os
 import sys
 from pathlib import Path
 
+from tesseract import http_client
 from tesseract.capability.state import (
     Consent,
     ConsentOrigin,
@@ -177,12 +178,20 @@ def check_browser_engine() -> DependencyRecord:
     build number is decided by the installed `playwright` package, which
     `uv pip install -e` already reconciles on every dependency change. Pinning
     it a second time here would give two owners to one fact.
+
+    Recorded as a `service`, not a `runtime`, and the difference is consent:
+    `consent._DEFERRABLE_KINDS` downgrades a CONFIG-derived answer to
+    `never_asked` on an install whose setup form never opened, and it does that
+    by KIND. The engine was a `runtime` while it was installed on every path.
+    It stopped being one when it became an optional extra — the shipped
+    `services.browser.enabled: true` is a default nobody chose, and reading it
+    as consent is exactly what the deferred-setup marker exists to prevent.
     """
     root = _browsers_root()
     if root is None:
         return _record(
             "browser-engine",
-            "runtime",
+            "service",
             DependencyState.UNKNOWN,
             "the browser location is overridden, so it cannot be checked here",
         )
@@ -194,10 +203,10 @@ def check_browser_engine() -> DependencyRecord:
     except OSError:
         installed = False
     if installed:
-        return _record("browser-engine", "runtime", DependencyState.OK)
+        return _record("browser-engine", "service", DependencyState.OK)
     return _record(
         "browser-engine",
-        "runtime",
+        "service",
         DependencyState.ABSENT,
         "reading web pages is unavailable until the browser engine is installed",
     )
@@ -282,7 +291,7 @@ def check_package_conflicts() -> DependencyRecord:
     returns early — "GPU packages already resolve, nothing to install" — the
     moment `gpu_packages_ready` is True, which is BEFORE it would prune. So
     once the GPU path works, any later `uv pip install -e` that re-adds the CPU
-    build transitively (piper-tts and kokoro-onnx both depend on it) leaves the
+    build transitively (kokoro-onnx depends on it) leaves the
     machine one dependency reinstall away from silently dropping to the
     processor, and nothing will ever prune it again.
 
@@ -460,9 +469,7 @@ async def _model_digests(base_url: str, models: list[str]) -> str:
     is present is the answer, and `fetch_tags` already gave it.
     """
     try:
-        import httpx
-
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with http_client.async_client(timeout=5.0) as client:
             response = await client.get(f"{base_url.rstrip('/')}/api/tags")
             response.raise_for_status()
             payload = response.json()

@@ -39,20 +39,21 @@ class SystemDiagnoseTool(Tool):
 
     risk_class: ClassVar[str] = "autonomous"
 
+    group: ClassVar[str] = "checking-your-state"
+    summary: ClassVar[str] = "Report this machine's runtime health in one call."
+    use_when: ClassVar[str] = (
+        "Use to check GPU/CUDA, Ollama reachability and installed models, "
+        "provider probes, open circuit breakers, scheduler job runs, and "
+        "free disk. Read-only, local only, no billable calls."
+    )
+    not_when: ClassVar[str] = (
+        "for behavioural drift rather than machine health, use "
+        "`conscience_status` instead."
+    )
+
     @property
     def name(self) -> str:
         return "system_diagnose"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Report this machine's runtime health in one call: GPU and CUDA, "
-            "whether Whisper and Kokoro can use the GPU, Ollama reachability "
-            "and which models are really installed, last recorded provider "
-            "probe per role, open circuit breakers, last scheduler run per "
-            "job, and free disk. Read-only, local and localhost only, no "
-            "billable calls."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

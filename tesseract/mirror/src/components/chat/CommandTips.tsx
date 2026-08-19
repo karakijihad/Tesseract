@@ -2,6 +2,7 @@ import { sendCommand } from '../../lib/commands';
 import { useUIStore } from '../../stores/ui';
 import { useResetDialogStore } from '../../stores/resetDialog';
 import { Hint } from '../ui/Hint';
+import { Chip } from '../common/Chip';
 
 interface Tip {
   cmd: string;
@@ -38,13 +39,7 @@ export function CommandTips() {
         {TIPS.map((t) => (
           <li key={t.cmd}>
             <Hint label={`Run ${t.cmd}`} position="bottom">
-              <button
-                type="button"
-                className="command-tips-cmd"
-                onClick={() => run(t)}
-              >
-                {t.cmd}
-              </button>
+              <Chip onClick={() => run(t)}>{t.cmd}</Chip>
             </Hint>
             <span className="command-tips-desc">— {t.description}</span>
           </li>

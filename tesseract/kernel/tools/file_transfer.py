@@ -131,17 +131,17 @@ class _FileTransferTool(Tool):
 class FileCopyTool(_FileTransferTool):
     _lockdown_fields: ClassVar[tuple[str, ...]] = ("dest_path",)
 
+    group: ClassVar[str] = "files-on-disk"
+    summary: ClassVar[str] = "Copy a single file to a new path, leaving the source in place."
+    use_when: ClassVar[str] = (
+        "Duplicating a file. Creates parent directories; refuses to overwrite "
+        "an existing dest_path unless overwrite=true."
+    )
+    not_when: ClassVar[str] = "Use `file_move` when the source should not remain at its old path."
+
     @property
     def name(self) -> str:
         return "file_copy"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Copy a single file to a new path. Creates parent directories; "
-            "refuses to overwrite unless overwrite=true. Use this instead of "
-            "bash copy/cp for file management."
-        )
 
     def _transfer(self, source: Path, dest: Path) -> None:
         shutil.copy2(source, dest)
@@ -150,17 +150,17 @@ class FileCopyTool(_FileTransferTool):
 class FileMoveTool(_FileTransferTool):
     _lockdown_fields: ClassVar[tuple[str, ...]] = ("source_path", "dest_path")
 
+    group: ClassVar[str] = "files-on-disk"
+    summary: ClassVar[str] = "Move or rename a single file to a new path."
+    use_when: ClassVar[str] = (
+        "Relocating or renaming a file. Creates parent directories; refuses to "
+        "overwrite an existing dest_path unless overwrite=true."
+    )
+    not_when: ClassVar[str] = "Use `file_copy` when the source should still exist at its old path afterward."
+
     @property
     def name(self) -> str:
         return "file_move"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Move (rename) a single file to a new path. Creates parent "
-            "directories; refuses to overwrite unless overwrite=true. Use this "
-            "instead of bash move/mv for file management."
-        )
 
     def _transfer(self, source: Path, dest: Path) -> None:
         shutil.move(str(source), str(dest))

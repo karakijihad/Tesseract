@@ -48,26 +48,34 @@ class WorkerRunner(Protocol):
     async def run(self, record: WorkerRecord) -> None: ...  # pragma: no cover
 
 
-# Default runner factory the kernel uses when none is injected. Marks
-# the worker as ``done`` immediately and writes the record — a stand-in
-# until per-kind runners ship. This is the conservative path: a
-# selected item without a real runner still leaves a durable record on
-# disk and transitions the agenda item to ``DONE``, so the operator
-# sees the selection happen but no actual code runs.
+# Default runner the kernel falls back to when none is injected — which
+# on the Mirror happens whenever the tool registry is unavailable at
+# boot. It runs nothing, so it refuses: the record lands on disk and the
+# agenda item is parked for the operator rather than closed.
+#
+# It used to mark the worker DONE, and reconciliation then closed the
+# item as completed work. On a boot with no registry that made every
+# selected item read as finished, having done nothing at all — the same
+# empty-is-success defect the result vocabulary exists to remove, in the
+# one place where nothing whatsoever ran.
 class _NoopRunner:
-    """Default WorkerRunner. Records the dispatch + transitions to done.
+    """Default WorkerRunner. Records the dispatch and refuses it.
 
-    Production replaces this with per-kind runners. For S2 the no-op
-    proves the dispatch path end-to-end: WorkerRecord on disk, agenda
-    item linked + transitioned, the worker eventually marked terminal.
+    Production replaces this with per-kind runners. The record still
+    proves the dispatch path end to end: WorkerRecord on disk, agenda
+    item linked, the worker terminal — as a refusal, not a completion.
     """
 
     async def run(self, record: WorkerRecord) -> None:
-        record.transition_to(
-            WorkerStatus.DONE,
-            reason="noop_runner_complete",
+        record.set_outcome(
+            RunOutcome.REFUSED,
+            reason="no worker runner is wired in this process, so nothing ran",
         )
-        record.summary = "noop runner stand-in — replace with real kind runner"
+        record.summary = "no runner wired — the dispatch was recorded, not performed"
+        record.transition_to(
+            WorkerStatus.BLOCKED,
+            reason="no_runner_wired",
+        )
         write_record(record)
 
 

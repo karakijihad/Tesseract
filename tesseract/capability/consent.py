@@ -51,6 +51,54 @@ logger = logging.getLogger(__name__)
 
 _FILENAME = "consent.json"
 
+#: Written by the shell when it provisions without a setup form — the splash
+#: window failed to open, so nobody was asked anything. Its presence changes
+#: one thing, and it is the thing that closes `b1049faf`: `enabled: true` in
+#: the SHIPPED catalog stops counting as an answer on this machine.
+_DEFERRED_FILENAME = "setup-deferred.json"
+
+#: The dependency kinds an unanswered provisioning run skips, and therefore the
+#: only ones whose config-derived consent is a fiction. `runtime` is absent on
+#: purpose: the venv is installed on every path, including that one, so it was
+#: never in question.
+#:
+#: The browser engine used to be named here too, and was not moved when it
+#: became an optional extra — it is a `service` now, and `system.py` records it
+#: as one. Leaving it a `runtime` left its shipped `enabled: true` reading as
+#: consent on an install where nobody was asked anything.
+_DEFERRABLE_KINDS = frozenset({"model", "service", "packages"})
+
+
+def setup_deferred() -> bool:
+    """Whether first-run setup never ran on this install.
+
+    `ConsentOrigin.CONFIG` treats the live config asking for something as
+    consent, and that is right when a person walked the form: declining a lane
+    there writes `enabled: false` and nothing is fetched for it. It is a
+    fiction when the form never opened — the config then holds the SHIPPED
+    defaults, which nobody chose, and reading them as consent is how a failed
+    splash window turned into several gigabytes on a stranger's machine.
+
+    Cleared by one thing only: the setup form being answered, whether on the
+    first run or on a later launch that could finally show it — the shell
+    removes the file at the moment those answers land. A Settings toggle does
+    not clear it, and that asymmetry is the point: answering one question
+    outranks this per dependency, because it is a real answer, while the ones
+    still unanswered stay unanswered, which is the truth about this machine.
+    Only the form answers all of them at once.
+
+    Total: an unreadable runtime directory answers False, keeping today's
+    behaviour rather than silently switching an ordinary install into
+    ask-first mode.
+    """
+    from tesseract.paths import runtime_dir
+
+    try:
+        return (runtime_dir() / _DEFERRED_FILENAME).is_file()
+    except OSError as exc:  # noqa: BLE001 — a path that cannot be read is not a marker
+        logger.info("consent: could not check for %s (%s)", _DEFERRED_FILENAME, exc)
+        return False
+
 
 class ConsentAnswer(BaseModel):
     """One answer, and where it came from."""
@@ -156,7 +204,9 @@ def record(
     return written
 
 
-def apply(record_: DependencyRecord, ledger: ConsentLedger) -> DependencyRecord:
+def apply(
+    record_: DependencyRecord, ledger: ConsentLedger, *, deferred: bool = False
+) -> DependencyRecord:
     """Overlay a recorded answer onto a fresh verdict.
 
     A pass derives consent from the live config (`ConsentOrigin.CONFIG`),
@@ -164,9 +214,32 @@ def apply(record_: DependencyRecord, ledger: ConsentLedger) -> DependencyRecord:
     answer outranks that — including a `declined` that config would otherwise
     read as wanted, which is the case where getting the precedence backwards
     means downloading something the operator said no to.
+
+    `deferred` is the case where the config is not evidence of anything: the
+    setup form never ran, so what it holds are the shipped defaults. A
+    config-derived `granted` becomes `never_asked` — which stops the launch
+    pass repairing it silently, because nothing was ever agreed to.
+
+    Only for the kinds an unanswered run actually skipped, and that limit is
+    load-bearing: `venv` is `runtime`, it is the APP rather than an optional
+    download, and it is installed on every path. Downgrading it would make an
+    absent interpreter stop being reported — `needs_attention` is `absent AND
+    granted` — so the one failure that leaves an install unable to start would
+    go silent on exactly the machines this marker exists to protect.
     """
     answer = ledger.answers.get(record_.id)
     if answer is None:
+        if (
+            deferred
+            and record_.consent_origin is ConsentOrigin.CONFIG
+            and record_.kind in _DEFERRABLE_KINDS
+        ):
+            return record_.model_copy(
+                update={
+                    "consent": Consent.NEVER_ASKED,
+                    "consent_origin": ConsentOrigin.UNASKED,
+                }
+            )
         return record_
     if answer.origin not in AUTHORITATIVE_ORIGINS:
         # Only answers a PERSON gave outrank the live config. A `CONFIG`
@@ -189,6 +262,9 @@ def apply(record_: DependencyRecord, ledger: ConsentLedger) -> DependencyRecord:
 def apply_all(
     records: dict[str, DependencyRecord], ledger: ConsentLedger | None = None
 ) -> dict[str, DependencyRecord]:
-    """`apply` across a whole pass, reading the ledger once."""
+    """`apply` across a whole pass, reading the ledger and the marker once."""
     ledger = ledger if ledger is not None else read_ledger()
-    return {dep_id: apply(rec, ledger) for dep_id, rec in records.items()}
+    deferred = setup_deferred()
+    return {
+        dep_id: apply(rec, ledger, deferred=deferred) for dep_id, rec in records.items()
+    }

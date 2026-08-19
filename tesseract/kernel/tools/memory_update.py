@@ -34,6 +34,18 @@ class MemoryUpdateTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "remembering"
+    summary: ClassVar[str] = "Revise an existing memory's content, title, importance, or tags."
+    use_when: ClassVar[str] = (
+        "Use to amend a memory once a fact changes. Pass the memory id — "
+        "`memory_search` results carry it."
+    )
+    not_when: ClassVar[str] = (
+        "use `memory_save` to create a new fact; use `memory_promote` for "
+        "lifecycle actions like archive/merge/bump."
+    )
+
     def __init__(
         self,
         store: MemoryStore,
@@ -49,10 +61,6 @@ class MemoryUpdateTool(Tool):
     @property
     def name(self) -> str:
         return "memory_update"
-
-    @property
-    def description(self) -> str:
-        return "Update an existing memory's content, title, importance, or tags."
 
     @property
     def input_schema(self) -> type[BaseModel]:

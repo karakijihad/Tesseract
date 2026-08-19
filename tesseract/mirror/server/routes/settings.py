@@ -8,9 +8,13 @@ from typing import Any
 from aiohttp import web
 
 from tesseract.brain.boot import rebuild_adapters
+from tesseract.config import factory_reset
 from tesseract.config.loader import ROLE_MODES, ROLE_MODE_INACTIVE
 from tesseract.lib.yaml_io import round_trip_yaml
+from tesseract.mirror.server.routes._localhost import is_localhost_request
+from tesseract.mirror.server.config import VOICE_RATE_FIELDS, project_voice_cost_view
 from tesseract.mirror.server.ws import emit_stats
+from tesseract.permissions import bash_security
 
 log = logging.getLogger(__name__)
 
@@ -71,7 +75,10 @@ def _permissions_yaml_path(app: web.Application) -> Path:
 async def set_tool_permission(request: web.Request) -> web.Response:
     """Update a single tool's default posture in `permissions.yaml.tools`.
 
-    Hard security layer (`bash_security.py` 24-check DENY) is unaffected;
+    The hard security layer (`bash_security.py`) is unaffected — its checks
+    fire before any posture lookup and no setting reaches them. No count is
+    restated here: the last one drifted by two, and `bash_security.rules()`
+    is the only thing entitled to say how many there are.
     mode overrides in `permissions.yaml.modes.<mode>.overrides` still apply
     on top of this default; path overrides still win. This endpoint only
     tunes the baseline `tools.<name>` posture.
@@ -113,16 +120,55 @@ async def set_tool_permission(request: web.Request) -> web.Response:
     return web.json_response({"name": name, "posture": posture})
 
 
+#: Which panes own a reset button, and the scope each one restores. Named here
+#: rather than taken from the request so a caller cannot ask for a scope no
+#: screen renders — `factory_reset.SCOPES` also carries `capabilities`, which
+#: has its own route because a switch reset records consent as well.
+_RESETTABLE = ("session", "loop_limits", "cost", "tools")
+
+
+async def reset_defaults(request: web.Request) -> web.Response:
+    """POST /api/settings/reset-defaults — one pane back to shipped values.
+
+    Body: `{"scope": "session"|"loop_limits"|"cost"|"tools"}`. Returns
+    `{changed, missing}` as `file::key.path` strings; the pane re-fetches its
+    own state rather than this route learning to render four different shapes.
+
+    Nothing is synced in memory here on purpose. `config_watcher` watches all
+    four files and reloads on the write — the same path a hand edit takes, and
+    the one these panes already tell the operator is equivalent.
+    """
+    if not is_localhost_request(request):
+        return web.json_response({"error": "localhost only"}, status=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_json"}, status=400)
+
+    scope = body.get("scope")
+    if scope not in _RESETTABLE:
+        return web.json_response(
+            {"error": f"scope must be one of {list(_RESETTABLE)}"}, status=400
+        )
+    try:
+        changed, missing = await asyncio.to_thread(factory_reset.restore, scope)
+        return web.json_response(
+            {"changed": [str(c) for c in changed], "missing": missing}
+        )
+    except (OSError, ValueError) as exc:
+        # ValueError covers yaml.YAMLError. Refused rather than half-applied:
+        # `restore` writes nothing when any file in the scope fails to parse.
+        return web.json_response(
+            {"error": f"could not read the shipped config: {exc}"}, status=500
+        )
+
+
 def _providers_yaml_path(app: web.Application) -> Path:
     return app["tesseract_dir"] / "config" / "providers.yaml"
 
 
 def _roles_yaml_path(app: web.Application) -> Path:
     return app["tesseract_dir"] / "config" / "roles.yaml"
-
-
-def _providers_yaml_path(app: web.Application) -> Path:
-    return app["tesseract_dir"] / "config" / "providers.yaml"
 
 
 # `_round_trip_yaml` is a thin alias to keep the existing call sites in this
@@ -313,8 +359,9 @@ async def get_session_caps(request: web.Request) -> web.Response:
     """GET /api/settings/session-caps — current loop limits for chat_brain.
 
     Returns the two operator-tunable caps (tool iteration, consecutive
-    adapter error) plus the read-only DENY-rule reminder so the UI can
-    surface what *isn't* configurable.
+    adapter error) plus the DENY rules themselves — read from
+    ``bash_security.rules()`` rather than restated here, so the panel cannot
+    go on claiming a count this module has grown past.
     """
     roles = request.app["config"].models.get("roles") or {}
     chat_brain = roles.get("chat_brain") or {}
@@ -327,6 +374,7 @@ async def get_session_caps(request: web.Request) -> web.Response:
         "tool_iteration_cap": int(chat_brain["tool_iteration_cap"]),
         "consecutive_error_cap": int(chat_brain["consecutive_error_cap"]),
         "deny_rules_locked": True,
+        "deny_rules": bash_security.rules(),
     })
 
 
@@ -415,6 +463,7 @@ async def set_session_caps(request: web.Request) -> web.Response:
         "tool_iteration_cap": int(chat_brain["tool_iteration_cap"]),
         "consecutive_error_cap": int(chat_brain["consecutive_error_cap"]),
         "deny_rules_locked": True,
+        "deny_rules": bash_security.rules(),
     })
 
 
@@ -615,20 +664,37 @@ async def set_voice_cost(request: web.Request) -> web.Response:
                 {"error": f"tts.{provider} must be an object"}, status=400
             )
         entry: dict[str, float] = {}
-        if "cost_per_million_chars" in fields:
+        # A TTS lane prices in one unit or the other, never both: a local
+        # voice per character of text, a generative cloud one per second
+        # of the speech it produced. Accepting only the first meant the
+        # panel could write a per-audio-hour figure into the per-character
+        # field — a rate wrong by five orders of magnitude that the ledger
+        # would then bill against.
+        rate_fields = [k for k in VOICE_RATE_FIELDS if k in fields]
+        if len(rate_fields) > 1:
+            return web.json_response(
+                {
+                    "error": (
+                        f"tts.{provider} sets {' and '.join(sorted(rate_fields))} — "
+                        f"a lane prices in one unit"
+                    )
+                },
+                status=400,
+            )
+        for rate_field in rate_fields:
             try:
-                v = float(fields["cost_per_million_chars"])
+                v = float(fields[rate_field])
             except (TypeError, ValueError):
                 return web.json_response(
-                    {"error": f"tts.{provider}.cost_per_million_chars must be a number"},
+                    {"error": f"tts.{provider}.{rate_field} must be a number"},
                     status=400,
                 )
             if v < 0:
                 return web.json_response(
-                    {"error": f"tts.{provider}.cost_per_million_chars must be >= 0"},
+                    {"error": f"tts.{provider}.{rate_field} must be >= 0"},
                     status=400,
                 )
-            entry["cost_per_million_chars"] = v
+            entry[rate_field] = v
         if "daily_budget_usd" in fields:
             try:
                 v = float(fields["daily_budget_usd"])
@@ -694,8 +760,9 @@ async def set_voice_cost(request: web.Request) -> web.Response:
             {
                 "error": (
                     "no recognized fields to update — each provider must include "
-                    "at least one of: cost_per_million_chars (TTS), "
-                    "cost_per_audio_hour (STT), or daily_budget_usd"
+                    "at least one of: cost_per_million_chars or "
+                    "cost_per_audio_hour (whichever unit the lane prices in), "
+                    "or daily_budget_usd"
                 )
             },
             status=400,
@@ -725,11 +792,22 @@ async def set_voice_cost(request: web.Request) -> web.Response:
     return web.json_response(_identity_cost_tracking(request.app))
 
 
-def _find_provider_model(doc: Any, model_id: str) -> dict | None:
+def _find_provider_model(
+    doc: Any, model_id: str, *, merged: bool = False
+) -> dict | None:
     """Walk providers.yaml to locate the catalog entry whose key is `model_id`.
 
     Tier blocks may carry a scalar ``enabled:`` reserved key alongside the
     provider sub-blocks; skip anything that isn't a mapping.
+
+    A model block carrying ``voices:`` is shared settings over several voice
+    entries, so the voice's own sub-block is what a per-model write must
+    land on — writing the parent would reprice every voice under it. That is
+    the default, and it is the wrong answer for a READER: `loader.py::
+    _expanded_models` materializes a voice as ``{**shared, **overrides}``, so
+    a reader stopping at the sub-block misses every field the parent holds —
+    `synthesis_presets` among them, which is the whole character of the voice.
+    Pass ``merged=True`` to get the entry the runtime actually built.
     """
     for tier_name in ("api", "cli", "local"):
         tier = doc.get(tier_name) or {}
@@ -739,6 +817,15 @@ def _find_provider_model(doc: Any, model_id: str) -> dict | None:
             models = prov_block.get("models") or {}
             if model_id in models:
                 return models[model_id]
+            for entry in models.values():
+                if not isinstance(entry, dict):
+                    continue
+                voices = entry.get("voices") or {}
+                if isinstance(voices, dict) and model_id in voices:
+                    if not merged:
+                        return voices[model_id]
+                    shared = {k: v for k, v in entry.items() if k != "voices"}
+                    return {**shared, **(voices[model_id] or {})}
     return None
 
 
@@ -750,17 +837,19 @@ def _apply_voice_cost_providers(
     """Write per-model unit pricing to providers.yaml. The `model_id` keys
     in the request match catalog entry names (e.g. `af_heart`,
     `gemini_flash_audio`)."""
-    for kind_in, parsed, rate_key in (
-        ("tts", tts, "cost_per_million_chars"),
-        ("stt", stt, "cost_per_audio_hour"),
-    ):
+    # The validator has already established that a lane names at most one
+    # rate field, so writing whichever one arrived cannot leave an entry
+    # carrying both — which the catalog reader would have to break a tie on.
+    for parsed in (tts, stt):
         for model_id, fields in parsed.items():
-            if rate_key not in fields:
+            present = [k for k in VOICE_RATE_FIELDS if k in fields]
+            if not present:
                 continue
             entry = _find_provider_model(doc, model_id)
             if entry is None:
                 raise KeyError(f"providers.yaml model '{model_id}' missing")
-            entry[rate_key] = fields[rate_key]
+            for rate_key in present:
+                entry[rate_key] = fields[rate_key]
 
 
 def _apply_voice_cost_roles(
@@ -888,20 +977,7 @@ def _identity_cost_tracking(app: web.Application) -> dict[str, Any]:
     either endpoint's response."""
     cost_cfg = app["config"].models.get("cost_tracking") or {}
     voice_cfg = cost_cfg.get("voice") or {}
-    voice_tts: dict[str, dict[str, float]] = {}
-    for provider, fields in (voice_cfg.get("tts") or {}).items():
-        rate = fields.get("cost_per_million_chars")
-        cap = fields.get("daily_budget_usd")
-        if rate is None or cap is None:
-            continue
-        voice_tts[provider] = {"rate": float(rate), "cap_usd": float(cap)}
-    voice_stt: dict[str, dict[str, float]] = {}
-    for provider, fields in (voice_cfg.get("stt") or {}).items():
-        rate = fields.get("cost_per_audio_hour")
-        cap = fields.get("daily_budget_usd")
-        if rate is None or cap is None:
-            continue
-        voice_stt[provider] = {"rate": float(rate), "cap_usd": float(cap)}
+    voice_tts, voice_stt = project_voice_cost_view(voice_cfg)
     per_role = {
         role: float(cap) for role, cap in (cost_cfg.get("per_role") or {}).items()
     }
@@ -1338,16 +1414,110 @@ async def set_voice(request: web.Request) -> web.Response:
     return web.json_response({"wake_word_enabled": wake_word_enabled})
 
 
+#: The knobs each TTS adapter actually reads, and the shape each accepts.
+#:
+#: Keyed by the `adapter` on the provider's CONNECTION block, because that is
+#: what decides which dataclass a preset is parsed into — `KokoroPreset` takes
+#: two floats, `GeminiPreset` takes two strings, and neither reads the other's
+#: keys (`app.py::_build_voice_runtime`).
+#:
+#: This is what makes the editor per-adapter rather than a free-text box. A
+#: single editor would let `speed: 1.05` be saved against the cloud lane and
+#: shown back on the panel while synthesis ignored it entirely — a control that
+#: appears to work and does nothing, which is the defect the voice contract
+#: already ruled against once.
+#:
+#: A lane whose adapter is absent here exposes no editable knobs and says so.
+#: Adding one is this table plus the parse in `_build_voice_runtime`; a knob in
+#: one and not the other is a dead control in whichever direction is missing.
+_PRESET_KNOBS: dict[str, dict[str, dict[str, Any]]] = {
+    "kokoro": {
+        # Kokoro's only pacing knob, and the post-pad silence between
+        # sentences. Bounded because the adapter floats them straight into
+        # synthesis: a speed of 0 produces no audio and a large one produces
+        # noise, neither of which reports an error.
+        "speed": {"kind": "number", "min": 0.5, "max": 2.0},
+        "sentence_silence": {"kind": "number", "min": 0.0, "max": 2.0},
+    },
+    "gemini": {
+        # Prose, because the model takes prose: both are prefixed to the text
+        # as a direction line. Bounded in length rather than in content — a
+        # direction longer than the sentence it directs is billed per second
+        # of speech it did not change.
+        "style": {"kind": "text", "max_chars": 200},
+        "pace": {"kind": "text", "max_chars": 200},
+    },
+}
+
+
+def _adapter_for_ref(providers_raw: Any, ref: str) -> str:
+    """The adapter a catalog ref resolves to, from its connection block.
+
+    `adapter` is a connection-level key (`loader.py` requires it there and
+    nowhere else), so a ref's knobs are decided by its provider rather than by
+    the voice entry underneath it.
+    """
+    parts = str(ref).split(".")
+    if len(parts) != 3:
+        return ""
+    tier, provider, _model = parts
+    block = ((providers_raw.get(tier) or {}).get(provider)) or {}
+    return str(block.get("adapter") or "") if isinstance(block, dict) else ""
+
+
+def _clean_preset(
+    knobs: dict[str, dict[str, Any]], settings: Any
+) -> tuple[dict[str, Any], str]:
+    """Validate one preset against the knobs its lane actually reads.
+
+    Returns `(cleaned, error)`. A value the lane cannot honour is refused here
+    rather than written: the whole point of a per-adapter editor is that saving
+    it and ignoring it is not one of the outcomes.
+    """
+    if not isinstance(settings, dict):
+        return {}, "settings must be an object"
+    unknown = sorted(set(settings) - set(knobs))
+    if unknown:
+        return {}, (
+            f"this lane does not read {', '.join(unknown)} — it reads "
+            f"{', '.join(sorted(knobs))}"
+        )
+    cleaned: dict[str, Any] = {}
+    for name, spec in knobs.items():
+        if name not in settings:
+            continue
+        value = settings[name]
+        if spec["kind"] == "number":
+            # `bool` is an `int` in Python and would sail through `float()` as
+            # 0.0 or 1.0 — a checkbox posted into a speed field.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return {}, f"{name} must be a number"
+            value = float(value)
+            if not spec["min"] <= value <= spec["max"]:
+                return {}, f"{name} must be between {spec['min']} and {spec['max']}"
+            cleaned[name] = value
+        else:
+            if not isinstance(value, str):
+                return {}, f"{name} must be text"
+            value = value.strip()
+            if len(value) > spec["max_chars"]:
+                return {}, f"{name} must be {spec['max_chars']} characters or fewer"
+            cleaned[name] = value
+    if not cleaned:
+        return {}, "no knobs were given"
+    return cleaned, ""
+
+
 async def get_voice(request: web.Request) -> web.Response:
     """GET /api/settings/voice — the operator-facing voice settings.
 
-    Per-surface synthesis presets are surfaced read-only so the operator
-    can see what character each surface renders; editing them is a
-    providers.yaml/roles.yaml edit that the config watcher picks up.
+    Each per-surface synthesis preset carries the adapter it belongs to and
+    the knobs that adapter reads, so the panel can render a typed field per
+    knob instead of a free-text box that could save a key the lane ignores.
 
-    The wake-word threshold rides along read-only too — the toggle is a
-    UI control, but the number that decides how forgiving the match is
-    stays a config edit.
+    The wake-word toggle is a UI control; how forgiving the gate is stays out
+    of this payload entirely, because it is confirmed per voice rather than
+    configured, and `GET /api/voice/wake` is the one place that reports it.
 
     Wake-word values are read from **mirror.yaml, not `app["config"]`**.
     The panel saves and immediately re-reads, while the live config only
@@ -1368,10 +1538,17 @@ async def get_voice(request: web.Request) -> web.Response:
     tts_settings = (tts_block.get("settings")) or {}
 
     # Presets live on the catalog entry — a voice's character travels with
-    # the voice, not with the lane wiring. A per-ref block in roles.yaml
-    # may override individual surfaces, so the catalog is read first and
-    # the override laid on top; reading only one of the two showed the
-    # operator a character the engine wasn't using.
+    # the voice, not with the lane wiring. A per-ref block in roles.yaml may
+    # replace them, and REPLACE is the word: `boot.load_voice_config`
+    # materializes a chain entry as catalog-then-settings and its
+    # `merged.update(provider.settings)` swaps the whole `synthesis_presets`
+    # map, so an override naming only `intent` leaves `answer` on the
+    # adapter's built-in defaults rather than on the catalog's.
+    #
+    # This panel used to lay the override over the catalog surface by surface,
+    # which showed a character the engine was not using in exactly that case.
+    # It reports what the runtime reads now, and the writer below always emits
+    # the complete map so the two cannot drift apart again.
     try:
         providers_raw = yaml.safe_load(
             _providers_yaml_path(request.app).read_text(encoding="utf-8")
@@ -1389,17 +1566,33 @@ async def get_voice(request: web.Request) -> web.Response:
 
     style_presets = []
     for ref in refs:
-        entry = _find_provider_model(providers_raw, ref.rsplit(".", 1)[-1]) or {}
-        merged = dict((entry.get("synthesis_presets") or {}))
+        entry = (
+            _find_provider_model(providers_raw, ref.rsplit(".", 1)[-1], merged=True)
+            or {}
+        )
+        shipped = dict((entry.get("synthesis_presets") or {}))
         override = ((tts_settings.get(ref) or {}).get("synthesis_presets")) or {}
-        merged.update(override)
-        for surface, spec in merged.items():
+        adapter = _adapter_for_ref(providers_raw, ref)
+        live = dict(override) if override else shipped
+        for surface, spec in live.items():
             style_presets.append({
                 "ref": str(ref),
                 "surface": str(surface),
+                "adapter": adapter,
                 # Whatever knobs this provider exposes — no shape is
                 # assumed, so a new provider's presets render unchanged.
                 "settings": {str(k): v for k, v in (spec or {}).items()},
+                # What this lane READS, so the panel can offer a field per
+                # knob and nothing else. Empty for an adapter with no entry in
+                # `_PRESET_KNOBS`, which the panel renders read-only.
+                "knobs": _PRESET_KNOBS.get(adapter, {}),
+                # The shipped character, so "reset" is a value rather than a
+                # second round trip — and so the panel can say when a surface
+                # has been moved off it.
+                "shipped": {
+                    str(k): v for k, v in ((shipped.get(surface) or {})).items()
+                },
+                "overridden": bool(override),
             })
 
     identity = (mirror_raw.get("identity") or {}) if isinstance(mirror_raw, dict) else {}
@@ -1408,9 +1601,182 @@ async def get_voice(request: web.Request) -> web.Response:
         "style_presets": style_presets,
         "wake_word_enabled": wake.get("enabled") is True,
         "wake_word_prefix": str(wake.get("prefix") or ""),
-        "wake_word_threshold": wake.get("match_threshold"),
+        # No sensitivity number here. What the gate uses is confirmed per
+        # voice and reported by `GET /api/voice/wake`; a second figure on this
+        # payload could only ever disagree with it.
         "entity_name": str(identity.get("name") or ""),
     })
+
+
+async def set_voice_preset(request: web.Request) -> web.Response:
+    """POST /api/settings/voice/preset — retune one surface of one lane.
+
+    Body: ``{"ref": "<tier>.<provider>.<model>", "surface": "answer",
+    "settings": {...}}``. Sending ``"settings": null`` resets that surface to
+    the character the catalog ships.
+
+    **An operator surface, and only that.** No tool reaches it: a preset the
+    assistant could write would be the per-utterance tone control the voice
+    contract refuses. What this adds is a second way for the OPERATOR to make
+    an edit they could already make by hand in `roles.yaml`.
+
+    Gated on `is_localhost_request`, and this docstring used to claim it was
+    gated "like the rest of this module" — which was false. Nothing else in
+    `settings.py` carries the check, so the sentence advertised a guard that
+    did not exist, which is worse than having no guard: it is the reason
+    nobody would go looking. The bind is 127.0.0.1 by default and that is the
+    whole threat model, but `mirror.yaml::server.host` is a setting, and CORS
+    deliberately passes an `Origin`-less request because that is what a native
+    client sends. A writer of config belongs behind the same check
+    `env_keys.py` uses.
+
+    The whole `synthesis_presets` map is written, never one surface of it,
+    because that is how the runtime reads it: `boot.load_voice_config` swaps
+    the catalog's map for the settings block's, so writing one surface would
+    silently drop the other onto the adapter's built-in defaults.
+
+    Written to `roles.yaml`, not to the catalog: `providers.yaml` carries the
+    shipped character, and leaving it alone is what makes reset a deletion
+    rather than a guess at what was there before.
+    """
+    import yaml
+
+    if not is_localhost_request(request):
+        return web.json_response({"error": "localhost only"}, status=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"error": "body must be an object"}, status=400)
+
+    ref = str(body.get("ref") or "")
+    surface = str(body.get("surface") or "")
+    if not ref or not surface:
+        return web.json_response({"error": "ref and surface are required"}, status=400)
+
+    try:
+        roles_raw = yaml.safe_load(
+            _roles_yaml_path(request.app).read_text(encoding="utf-8")
+        ) or {}
+        providers_raw = yaml.safe_load(
+            _providers_yaml_path(request.app).read_text(encoding="utf-8")
+        ) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        return web.json_response({"error": f"failed to read config: {exc}"}, status=500)
+
+    tts_block = ((roles_raw.get("voice") or {}).get("tts")) or {}
+    chain = [tts_block.get("primary"), *(tts_block.get("fallbacks") or [])]
+    if ref not in [r for r in chain if isinstance(r, str)]:
+        # A ref off the chain is a preset nothing would ever read — the lane
+        # is not wired, so the block would sit in `roles.yaml` looking applied.
+        return web.json_response(
+            {"error": f"{ref} is not in the voice chain"}, status=400
+        )
+
+    entry = (
+        _find_provider_model(providers_raw, ref.rsplit(".", 1)[-1], merged=True) or {}
+    )
+    shipped = dict(entry.get("synthesis_presets") or {})
+    if surface not in shipped:
+        # The adapters ask for `intent` and `answer` by name. A surface the
+        # catalog does not declare is one nothing will ever request.
+        return web.json_response(
+            {
+                "error": f"{ref} has no {surface} surface — it has "
+                f"{', '.join(sorted(shipped)) or 'none'}"
+            },
+            status=400,
+        )
+
+    adapter = _adapter_for_ref(providers_raw, ref)
+    knobs = _PRESET_KNOBS.get(adapter)
+    if not knobs:
+        return web.json_response(
+            {"error": f"the {adapter or 'unknown'} lane exposes no editable knobs"},
+            status=400,
+        )
+
+    reset = body.get("settings") is None
+    cleaned: dict[str, Any] = {}
+    if not reset:
+        cleaned, error = _clean_preset(knobs, body.get("settings"))
+        if error:
+            return web.json_response({"error": error}, status=400)
+
+    def _apply(doc: Any) -> None:
+        voice = doc.get("voice")
+        if voice is None:
+            raise KeyError("voice")
+        lane = voice.get("tts")
+        if not isinstance(lane, dict):
+            raise KeyError("voice.tts")
+        settings_block = lane.get("settings")
+        per_ref = (
+            settings_block.get(ref) if isinstance(settings_block, dict) else None
+        )
+        # Read from the document this write is about to change, not from the
+        # copy loaded to validate against. `round_trip_yaml` performs its own
+        # read, so computing the new map up there and assigning it here would
+        # overwrite anything that landed in between with a value derived from
+        # a file that is one read out of date — and this is a whole-map
+        # replacement, so what it loses is the whole preset block.
+        existing = (
+            (per_ref.get("synthesis_presets") or {})
+            if isinstance(per_ref, dict)
+            else {}
+        )
+        live = {
+            str(name): dict(spec or {})
+            for name, spec in (existing if existing else shipped).items()
+        }
+
+        if reset:
+            live[surface] = dict(shipped.get(surface) or {})
+        else:
+            # Merged onto what this surface currently reads, not assigned over
+            # it. `_clean_preset` accepts a subset — and the runtime reads each
+            # knob with a dataclass default, so an omitted `pace` became the
+            # empty string rather than the catalog's line. A retune of one knob
+            # silently changed the other.
+            current = live.get(surface) or {}
+            live[surface] = {
+                **{name: current[name] for name in knobs if name in current},
+                **cleaned,
+            }
+
+        # Back to the shipped character on every surface: drop the override
+        # entirely rather than writing a copy of the catalog into `roles.yaml`,
+        # where it would then stop tracking a catalog the next update changes.
+        if live == shipped:
+            if isinstance(per_ref, dict):
+                per_ref.pop("synthesis_presets", None)
+                # A per-ref block that held nothing but the override goes with
+                # it, so declining a retune leaves the file as it was found.
+                if not per_ref:
+                    settings_block.pop(ref, None)
+            return
+
+        if not isinstance(settings_block, dict):
+            settings_block = {}
+            lane["settings"] = settings_block
+        if not isinstance(per_ref, dict):
+            per_ref = {}
+            settings_block[ref] = per_ref
+        per_ref["synthesis_presets"] = live
+
+    try:
+        _round_trip_yaml(_roles_yaml_path(request.app), _apply)
+    except KeyError as exc:
+        return web.json_response({"error": f"config missing key: {exc}"}, status=500)
+    except OSError as exc:
+        return web.json_response({"error": f"failed to write config: {exc}"}, status=500)
+
+    # Re-read rather than echo: the config watcher is what makes this take
+    # effect, and handing back what was posted would show the operator their
+    # own input whether or not it landed.
+    return await get_voice(request)
 
 
 # ── Phase 18 Task C — System section (capability detection) ─────────
@@ -1466,6 +1832,10 @@ async def get_session_policy(request: web.Request) -> web.Response:
     return web.json_response({
         "policy": str(session_block.get("resume_policy") or "today_plus_yesterday"),
         "days": int(session_block.get("resume_days") or 1),
+        "autosave": bool(session_block.get("autosave", True)),
+        "autosave_interval_seconds": int(
+            session_block.get("autosave_interval_seconds") or 60
+        ),
         "show_config_reload_toasts": bool(
             (raw.get("ui") or {}).get("show_config_reload_toasts", True)
         ),
@@ -1482,7 +1852,33 @@ async def set_session_policy(request: web.Request) -> web.Response:
     policy = body.get("policy")
     days = body.get("days")
     show_toasts = body.get("show_config_reload_toasts")
+    autosave = body.get("autosave")
+    autosave_interval = body.get("autosave_interval_seconds")
 
+    if autosave is not None and not isinstance(autosave, bool):
+        return web.json_response({"error": "autosave must be a boolean"}, status=400)
+    if autosave_interval is not None:
+        try:
+            autosave_interval = int(autosave_interval)
+        except (TypeError, ValueError):
+            return web.json_response(
+                {"error": "autosave_interval_seconds must be an integer"}, status=400
+            )
+        # Bounds imported, not restated: the pump clamps to the same pair, and
+        # a range the UI accepts but the pump silently overrides is worse than
+        # either bound alone.
+        from tesseract.mirror.server.session_autosave import (
+            AUTOSAVE_MAX_SECONDS,
+            AUTOSAVE_MIN_SECONDS,
+        )
+        if not (AUTOSAVE_MIN_SECONDS <= autosave_interval <= AUTOSAVE_MAX_SECONDS):
+            return web.json_response(
+                {
+                    "error": "autosave_interval_seconds must be between "
+                    f"{AUTOSAVE_MIN_SECONDS} and {AUTOSAVE_MAX_SECONDS}"
+                },
+                status=400,
+            )
     if policy is not None and policy not in _VALID_RESUME_POLICIES:
         return web.json_response(
             {"error": f"policy must be one of {sorted(_VALID_RESUME_POLICIES)}"},
@@ -1502,7 +1898,13 @@ async def set_session_policy(request: web.Request) -> web.Response:
             {"error": "show_config_reload_toasts must be a boolean"}, status=400
         )
 
-    if policy is None and days is None and show_toasts is None:
+    if (
+        policy is None
+        and days is None
+        and show_toasts is None
+        and autosave is None
+        and autosave_interval is None
+    ):
         return web.json_response({"error": "no fields to update"}, status=400)
 
     def _apply(doc: Any) -> None:
@@ -1511,6 +1913,10 @@ async def set_session_policy(request: web.Request) -> web.Response:
             session["resume_policy"] = policy
         if days is not None:
             session["resume_days"] = days
+        if autosave is not None:
+            session["autosave"] = autosave
+        if autosave_interval is not None:
+            session["autosave_interval_seconds"] = autosave_interval
         if show_toasts is not None:
             ui = doc.setdefault("ui", {})
             ui["show_config_reload_toasts"] = show_toasts
@@ -1529,6 +1935,8 @@ async def set_session_policy(request: web.Request) -> web.Response:
     return web.json_response({
         "policy": policy,
         "days": days,
+        "autosave": autosave,
+        "autosave_interval_seconds": autosave_interval,
         "show_config_reload_toasts": show_toasts,
     })
 
@@ -1618,6 +2026,10 @@ async def get_catalog(request: web.Request) -> web.Response:
             "model": model.model,
             "kind": model.kind,
             "context_window": int(ctx) if ctx else 0,
+            # Advisory. The picker shows these so the operator can see what a
+            # model is for before wiring it — `allowed_kinds` below is what
+            # actually constrains the choice.
+            "good_for": [str(tag) for tag in (model.fields.get("good_for") or ())],
         })
 
     targets_in_order = _discover_ref_targets(bundle)
@@ -1803,6 +2215,18 @@ async def set_model_ref(request: web.Request) -> web.Response:
     except Exception as exc:
         log.exception("set_model_ref: rebuild_adapters raised after YAML committed")
         rebuild_error = f"live rebuild failed: {exc}"
+    if rebuild_summary.get("voice"):
+        # A rebuilt engine is a new chain, so the "a different voice is
+        # speaking" notice must be able to fire against it. The latch is per
+        # session and outlives the engine that set it; this is the third of
+        # the three places a rebuild happens, and the one an operator reaches
+        # by picking a voice directly.
+        try:
+            from tesseract.mirror.server.tts import clear_fallback_notices
+
+            clear_fallback_notices(request.app)
+        except Exception as exc:  # noqa: BLE001 — a courtesy must not fail the swap
+            log.info("set_model_ref: could not reset the voice fallback notice (%s)", exc)
     if rebuild_error is None and "chat_brain_error" in rebuild_summary and target == "chat_brain":
         rebuild_error = rebuild_summary["chat_brain_error"]
 

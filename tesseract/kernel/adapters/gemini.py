@@ -16,6 +16,7 @@ TOOL_CALL_END to match the shape other adapters use.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 from typing import Any, AsyncGenerator
@@ -148,12 +149,28 @@ class GeminiAdapter(ModelAdapter):
                     tool_call_seq += 1
                     tc_id = f"gemini_{name or 'tool'}_{tool_call_seq}"
                 args = call.get("args") or {}
+                signature = call.get("signature") or ""
                 yield StreamChunk(
                     type=ChunkType.TOOL_CALL_START,
                     tool_call_id=tc_id,
-                    tool_call=ToolCall(id=tc_id, name=name, input=args),
+                    tool_call=ToolCall(
+                        id=tc_id, name=name, input=args,
+                        provider_signature=signature,
+                    ),
                 )
-                yield StreamChunk(type=ChunkType.TOOL_CALL_END, tool_call_id=tc_id)
+                # The payload rides on END as well as START, because END is
+                # where `ChatSession` collects a call to run — a bare id there
+                # meant every Gemini tool call was announced to the UI and
+                # never executed, and the turn ended with whatever text
+                # preceded it, which for a tool-first agent is nothing.
+                yield StreamChunk(
+                    type=ChunkType.TOOL_CALL_END,
+                    tool_call_id=tc_id,
+                    tool_call=ToolCall(
+                        id=tc_id, name=name, input=args,
+                        provider_signature=signature,
+                    ),
+                )
 
             cand = self._first_candidate(chunk)
             finish = getattr(cand, "finish_reason", None) if cand else None
@@ -270,7 +287,21 @@ class GeminiAdapter(ModelAdapter):
                     }
                     if call_id:
                         fc["id"] = call_id  # pairs with function_response.id
-                    parts.append({"function_call": fc})
+                    part: dict[str, Any] = {"function_call": fc}
+                    # Gemini 3 refuses a replayed function call that comes back
+                    # without the signature it issued with it — one 400 for the
+                    # whole request, so the turn after any tool call died. The
+                    # signature belongs to the PART, beside the call.
+                    signature = tc.get("provider_signature") or ""
+                    if signature:
+                        try:
+                            part["thought_signature"] = base64.b64decode(signature)
+                        except (ValueError, TypeError):
+                            logger.warning(
+                                "gemini: dropping unreadable provider_signature "
+                                "for call %s", call_id or name,
+                            )
+                    parts.append(part)
             if parts:
                 contents.append({"role": gemini_role, "parts": parts})
         return "\n\n".join(system_parts), contents
@@ -364,14 +395,24 @@ class GeminiAdapter(ModelAdapter):
         for part in parts:
             fc = getattr(part, "function_call", None)
             if fc and getattr(fc, "name", None):
+                # The signature lives on the PART, beside the call, not inside
+                # it. Base64 here so it can ride a JSON history and a saved
+                # session; `_split_messages` decodes it on the way back.
+                signature = getattr(part, "thought_signature", None)
                 out.append({
                     "id": getattr(fc, "id", "") or "",
                     "name": fc.name,
                     "args": dict(getattr(fc, "args", {}) or {}),
+                    "signature": (
+                        base64.b64encode(signature).decode("ascii")
+                        if isinstance(signature, bytes) and signature
+                        else ""
+                    ),
                 })
         return out
 
-    def count_tokens(self, messages: list[dict[str, Any]]) -> int:
+    @staticmethod
+    def count_tokens(messages: list[dict[str, Any]]) -> int:
         """Rough estimate — one token per 4 chars. Matches other adapters' heuristic."""
         total = 0
         for msg in messages:

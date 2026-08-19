@@ -4,7 +4,15 @@
  * ASK-gated REST endpoint. The Telegram bridge re-reads `status.json`
  * on every inbound message tick, so no bridge restart is required for
  * the flip to take effect end-to-end (see phase doc §1 mech-2 wiring). */
-import { useChannelsStore, type ChannelRow, type TelegramOverride } from '../../stores/channels';
+import { Block } from '../../components/common/Block';
+import { Segmented } from '../../components/common/Segmented';
+import { Button } from '../../components/common/Button';
+import {
+  useChannelsStore,
+  refusalToast,
+  type ChannelRow,
+  type TelegramOverride,
+} from '../../stores/channels';
 import { useToastStore } from '../../stores/toasts';
 import { useWebSocketStore } from '../../stores/websocket';
 
@@ -53,7 +61,7 @@ export function StatusPane({ channel }: StatusPaneProps) {
       if (result.approved) {
         push(`${channel.name} restarted`, 'info');
       } else {
-        push(`${channel.name} restart denied: ${result.output}`, 'warning');
+        push(refusalToast(`${channel.name} restart`, result), 'warning');
       }
     } catch (err) {
       push(
@@ -76,7 +84,7 @@ export function StatusPane({ channel }: StatusPaneProps) {
       if (result.approved) {
         push(`Telegram override set to ${_overrideLabel(next)}`, 'info');
       } else {
-        push(`Telegram override denied: ${result.output}`, 'warning');
+        push(refusalToast('Telegram override', result), 'warning');
       }
     } catch (err) {
       push(
@@ -90,8 +98,7 @@ export function StatusPane({ channel }: StatusPaneProps) {
 
   return (
     <div data-testid="channel-status-pane">
-      <section className="channel-status-section">
-        <span className="channel-status-section-label">Bridge</span>
+      <Block title="Bridge">
         <div className="channel-state-row">
           <span
             className={`channel-state-badge state-${snap.bridge_state}`}
@@ -103,10 +110,9 @@ export function StatusPane({ channel }: StatusPaneProps) {
             last poll {_fmtPoll(snap.last_poll_at)}
           </span>
         </div>
-      </section>
+      </Block>
 
-      <section className="channel-status-section">
-        <span className="channel-status-section-label">Counters (24h)</span>
+      <Block title="Counters (24h)">
         <div className="channel-stats-grid">
           <div className="channel-stat">
             <span className="channel-stat-label">errors</span>
@@ -129,74 +135,38 @@ export function StatusPane({ channel }: StatusPaneProps) {
             <span className="channel-stat-value">{snap.pending_count}</span>
           </div>
         </div>
-      </section>
+      </Block>
 
-      <section className="channel-status-section">
-        <span className="channel-status-section-label">Actions</span>
+      <Block title="Actions">
         <div className="channel-actions">
-          <button
-            type="button"
-            className="channel-restart-btn"
+          <Button
             onClick={_onRestart}
             disabled={restartBusy}
-            data-testid="channel-restart-btn"
-            aria-label={`restart ${channel.name}`}
+            testId="channel-restart-btn"
+            ariaLabel={`restart ${channel.name}`}
           >
             {restartBusy ? 'restarting…' : 'restart bridge'}
-          </button>
+          </Button>
 
           {isTelegram && (
-            <div
-              className="channel-override-toggle"
-              role="radiogroup"
-              aria-label="telegram availability override"
-            >
-              <button
-                type="button"
-                role="radio"
-                aria-checked={currentOverride === null}
-                className={`channel-override-segment${
-                  currentOverride === null ? ' is-active' : ''
-                }`}
-                onClick={() => void _onSetOverride(null)}
-                disabled={overrideBusy}
-                data-testid="channel-override-follow"
-              >
-                follow
-              </button>
-              <button
-                type="button"
-                role="radio"
-                aria-checked={currentOverride === 'online'}
-                className={`channel-override-segment${
-                  currentOverride === 'online' ? ' is-active' : ''
-                }`}
-                onClick={() => void _onSetOverride('online')}
-                disabled={overrideBusy}
-                data-testid="channel-override-online"
-              >
-                online
-              </button>
-              <button
-                type="button"
-                role="radio"
-                aria-checked={currentOverride === 'offline'}
-                className={`channel-override-segment${
-                  currentOverride === 'offline' ? ' is-active' : ''
-                }`}
-                onClick={() => void _onSetOverride('offline')}
-                disabled={overrideBusy}
-                data-testid="channel-override-offline"
-              >
-                offline
-              </button>
+            <div className="channel-override-toggle">
+              <Segmented
+                items={[
+                  { key: 'follow', label: 'follow', disabled: overrideBusy, testId: 'channel-override-follow' },
+                  { key: 'online', label: 'online', disabled: overrideBusy, testId: 'channel-override-online' },
+                  { key: 'offline', label: 'offline', disabled: overrideBusy, testId: 'channel-override-offline' },
+                ]}
+                value={currentOverride ?? 'follow'}
+                onSelect={(key) => void _onSetOverride(key === 'follow' ? null : key)}
+                label="telegram availability override"
+              />
               <span className="channel-override-hint t-meta">
                 {_overrideLabel(currentOverride)}
               </span>
             </div>
           )}
         </div>
-      </section>
+      </Block>
 
       {error && (
         <div className="channel-error" data-testid="channel-error">

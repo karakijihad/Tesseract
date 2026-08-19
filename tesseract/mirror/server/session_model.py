@@ -42,6 +42,10 @@ class ChatMeta:
     started_at: str
     archived: bool = False
     turn_count: int = 0
+    # The adapter model this chat was last spoken to with. It belongs to the
+    # chat rather than to a write: a writer that does not happen to know it —
+    # rename, archive, restore — must not blank the record by saying nothing.
+    model: str = ""
 
 
 def _new_chat_meta(
@@ -131,7 +135,6 @@ class ServerSession:
     # this lock (they suppress text output — unchanged WP-2 concurrency).
     turn_stream_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     started_at: str = ""
-    save_name: str | None = None
     # Tool name keyed by call_id, populated on TOOL_CALL_END, popped on TOOL_RESULT.
     # Lets `_handle_chunk` know which tool a result belongs to without scanning history
     # — needed so `set_mood` results can immediately trigger an entity_signals emission.
@@ -154,6 +157,9 @@ class ServerSession:
     # AS-1 — Unified Activity event forwarder pump (channel "activity").
     # Cancelled symmetrically in websocket_handler.finally.
     activity_events_task: asyncio.Task[None] | None = None
+    # Autosave timer (`session_autosave`). Cancelled symmetrically in
+    # websocket_handler.finally, before the teardown save.
+    autosave_task: asyncio.Task[None] | None = None
     # Tallies for the `[session_end]` daily writer section (S1). Incremented
     # inline by `_maybe_auto_compact` / `cmd_reflect`; runtime-only.
     compact_count: int = 0
@@ -166,6 +172,21 @@ class ServerSession:
     # `voice_cancel` clears it. Capped at `VOICE_PCM_BUFFER_CAP_BYTES` (5 min
     # at 16 kHz/16-bit mono = 9_600_000 bytes). Excess frames trim the head.
     voice_pcm_buffer: bytearray | None = None
+    # The wake decoder's per-utterance state. The gate used to run on the
+    # committed buffer, which meant nothing knew whether an utterance had
+    # woken the assistant until the operator stopped talking — so a minute of
+    # speech could be discarded a minute after the phrase that should have
+    # started it. The decoder is a streaming one; these three let it decide
+    # while the operator is still speaking.
+    #
+    # `wake_stream` is sherpa's per-utterance handle (0.33 ms to make).
+    # `wake_fired` is the verdict so far. `wake_decidable` is the one that
+    # matters for safety: False means no live decoder ever saw this audio —
+    # still warming, model absent, load failed — and the commit must fail
+    # OPEN rather than read a False `wake_fired` as "not the wake word".
+    wake_stream: Any = None
+    wake_fired: bool = False
+    wake_decidable: bool = False
     # Voice-latency legs. The live copies live on ``TurnState``, per turn, for
     # the same reason as every other field migrated off this class — two turns
     # sharing one slot report each other's timings. These two are transitional
@@ -226,6 +247,12 @@ class ServerSession:
     # Per-turn guard so a provider outage does not spam one toast per
     # sentence/chunk. Reset at turn start.
     tts_failure_notified: bool = False
+    # Per-SESSION, unlike the guard above, and deliberately: a lane falling
+    # through to the one behind it is a standing condition rather than a
+    # per-turn event — the chosen voice stays unavailable until the operator
+    # reloads it. Announced once and then carried by the HUD's lane marker,
+    # because a toast on every turn is how a warning stops being read.
+    tts_fallback_notified: bool = False
     # Operator-selected voice mode — the HUD pill cycles it and pushes the
     # value via the `voice_mode_set` envelope. The legal values and which
     # of them are silent live in `voice_modes.py`, shared with the handler

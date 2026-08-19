@@ -46,16 +46,20 @@ class WebSearchTool(Tool):
     # in the UNTRUSTED_TOOL_OUTPUT envelope before history append.
     untrusted_source: ClassVar[bool] = True
 
+    group: ClassVar[str] = "searching-the-web"
+    summary: ClassVar[str] = "Web search via Brave — a ranked list of title, URL, and short snippet."
+    use_when: ClassVar[str] = (
+        "Use for breadth on current events, recent docs, or niche queries — wide results, "
+        "not one synthesized answer. The web is not the vault; it holds outside sources."
+    )
+    not_when: ClassVar[str] = (
+        "Use `tavily_search` when you need denser per-result content or a synthesized answer "
+        "instead of short snippets."
+    )
+
     @property
     def name(self) -> str:
         return "web_search"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Search the web via Brave Search. Returns a ranked list of title + URL + snippet. "
-            "Use for current events, recent docs, or anything outside local memory/vault."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

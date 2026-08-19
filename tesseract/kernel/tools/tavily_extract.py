@@ -42,17 +42,19 @@ class TavilyExtractTool(Tool):
     # Audit-3 M9 — extracted web pages are attacker-controlled content.
     untrusted_source: ClassVar[bool] = True
 
+    group: ClassVar[str] = "searching-the-web"
+    summary: ClassVar[str] = "Extracts clean markdown from one or more specific URLs via Tavily."
+    use_when: ClassVar[str] = (
+        "Use once you already know the URL(s) and want their readable content, typically "
+        "after `tavily_search` or `web_search` surfaces a promising link."
+    )
+    not_when: ClassVar[str] = (
+        "Use `tavily_search` or `web_search` first when you don't yet have a specific URL."
+    )
+
     @property
     def name(self) -> str:
         return "tavily_extract"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Extract clean markdown from one or more URLs via Tavily. "
-            "Use when you have specific URLs and need readable content — "
-            "e.g. after tavily_search / web_search surfaces a promising link."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

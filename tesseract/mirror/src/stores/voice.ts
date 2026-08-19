@@ -68,6 +68,46 @@ interface VoiceStoreState {
    * preview is active. NOT the canonical transcript — the backend's
    * `voice_final` supersedes this on commit. Cleared on speech-end. */
   partialTranscript: string;
+  /** The last non-empty preview, kept after `partialTranscript` clears.
+   *
+   * Speech-end wipes the preview immediately, and the wake gate's verdict
+   * arrives after that — so by the time a discard is known, what the
+   * operator was looking at is already gone. This is the copy that
+   * survives long enough to say what was not heard. */
+  lastPreview: string;
+  /** Held for ~2s after the wake gate refuses an utterance, then cleared.
+   *
+   * The operator's complaint was that a rejected utterance appears and
+   * vanishes, which reads as a dead microphone. Showing nothing was the
+   * rejected option: it removes the only evidence the mic heard anything.
+   * An inline chat note was rejected too — it would be noise on every
+   * passing conversation. This holds what was on screen, marks it as
+   * not-heard, and fades.
+   *
+   * No score: the wake decoder hears the phrase or it does not, so there
+   * is no confidence number to show and inventing one would be a figure
+   * the operator could only tune against wrongly. */
+  notHeard: string;
+  /** True from the instant the wake phrase lands until the utterance ends.
+   *
+   * The counterpart to `notHeard`, and the more useful of the two: the gate
+   * decides mid-sentence now, so this can say "keep going, you were heard"
+   * while the operator is still talking. Before, nothing knew until they
+   * stopped — which is how a minute of speech got refused a minute late. */
+  woken: boolean;
+  /** The engine that last actually spoke, and whether it is the one the
+   * operator chose. Written from every `tts_chunk` carrying a provider —
+   * the terminator chunk carries none and is skipped, so the answer
+   * survives the end of the utterance rather than blanking with it.
+   *
+   * `engine` is resolved by the backend, never derived here: the wire's
+   * `provider` is a bare catalog model id and this side has no way to map
+   * one to a lane.
+   *
+   * The operator's rule: no silent fallback. At any moment it must be
+   * possible to see WHICH engine is speaking without reading a log, and a
+   * substitution must be visible as a substitution. */
+  speakingLane: { engine: string; isFallback: boolean } | null;
   setState: (state: VoiceUiState) => void;
   setMicActive: (active: boolean) => void;
   setAudioLevel: (rms: number) => void;
@@ -76,6 +116,13 @@ interface VoiceStoreState {
   setVoiceMode: (mode: VoiceMode) => void;
   setPendingDictation: (text: string | null) => void;
   setPartialTranscript: (text: string) => void;
+  /** Hold the last preview on screen, marked as not heard, then fade it. */
+  markNotHeard: () => void;
+  /** The wake phrase just landed, mid-utterance. */
+  markWoken: () => void;
+  /** The utterance resolved — the marker has said what it had to say. */
+  clearWoken: () => void;
+  setSpeakingLane: (engine: string, isFallback: boolean) => void;
   /** Map a backend `voice_state` envelope payload onto the UI state. */
   applyBackendState: (state: VoiceState) => void;
 }
@@ -100,7 +147,12 @@ const persistVoiceMode = (mode: VoiceMode) => {
   }
 };
 
-export const useVoiceStore = create<VoiceStoreState>((set) => ({
+/** How long a refused utterance stays on screen. Long enough to read two
+ * words and understand they were not heard; short enough that it is gone
+ * before the next thing you say. */
+export const NOT_HEARD_MS = 2000;
+
+export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
   state: 'idle',
   audioLevel: 0,
   micActive: false,
@@ -109,6 +161,10 @@ export const useVoiceStore = create<VoiceStoreState>((set) => ({
   voiceMode: loadVoiceMode(),  // default transcribe — the assistant silent until operator opts in
   pendingDictation: null,
   partialTranscript: '',
+  lastPreview: '',
+  notHeard: '',
+  woken: false,
+  speakingLane: null,
   setState: (state) => set({ state }),
   setMicActive: (micActive) => set({ micActive }),
   setAudioLevel: (audioLevel) => set({ audioLevel }),
@@ -119,7 +175,32 @@ export const useVoiceStore = create<VoiceStoreState>((set) => ({
     set({ voiceMode });
   },
   setPendingDictation: (pendingDictation) => set({ pendingDictation }),
-  setPartialTranscript: (partialTranscript) => set({ partialTranscript }),
+  // A non-empty preview is also kept as `lastPreview`, because the clear
+  // that arrives on speech-end would otherwise destroy the only thing a
+  // discard has to show. Clearing does NOT touch the copy.
+  setPartialTranscript: (partialTranscript) =>
+    set(
+      partialTranscript.trim()
+        ? { partialTranscript, lastPreview: partialTranscript }
+        : { partialTranscript },
+    ),
+  markWoken: () => set({ woken: true, notHeard: '' }),
+  clearWoken: () => set({ woken: false }),
+  markNotHeard: () => {
+    const text = get().lastPreview.trim();
+    // Nothing to hold: the browser preview is best-effort and absent when
+    // Web Speech is unavailable. A marker with no words would say less than
+    // the pulse row already does.
+    if (!text) return;
+    set({ notHeard: text });
+    setTimeout(() => {
+      // Only if it is still the same one. A second utterance arriving
+      // inside the window owns the surface, and clearing on this timer
+      // would wipe its preview instead.
+      if (get().notHeard === text) set({ notHeard: '' });
+    }, NOT_HEARD_MS);
+  },
+  setSpeakingLane: (engine, isFallback) => set({ speakingLane: { engine, isFallback } }),
   applyBackendState: (state) => {
     if (state === 'transcribing' || state === 'idle' || state === 'speaking_back') {
       set({ state });

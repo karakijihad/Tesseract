@@ -17,14 +17,14 @@ class SurfaceCloseInput(BaseModel):
 class SurfaceCloseTool(Tool):
     default_posture = "auto"
     risk_class: ClassVar[str] = "autonomous"
+    group: ClassVar[str] = "showing-the-operator"
+    summary: ClassVar[str] = "Destroy a surface and remove its card from the canvas."
+    use_when: ClassVar[str] = "The operator is done with a card, or it's stale and needs clearing."
+    not_when: ClassVar[str] = "`surface_update` to change a card's content without destroying it."
 
     @property
     def name(self) -> str:
         return "surface_close"
-
-    @property
-    def description(self) -> str:
-        return "Destroy a surface and remove its card from the canvas."
 
     @property
     def input_schema(self) -> type[BaseModel]:

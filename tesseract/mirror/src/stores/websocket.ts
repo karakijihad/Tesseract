@@ -55,10 +55,10 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => {
   let _socket: WebSocket | null = null;
   let _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let _intentionalClose = false;
-  // One-shot guard: auto-resume from persisted saveName fires only on the
+  // One-shot guard: auto-resume from the persisted chat id fires only on the
   // first successful connection per page load. Without this, a reconnect
   // storm (e.g. WS drops before the first stream_error round-trip completes)
-  // would re-dispatch /resume against a still-stale saveName — producing
+  // would re-dispatch /resume against a still-stale id — producing
   // duplicate "session not found" entries in the pulse feed.
   let _autoResumeAttempted = false;
   // Live-gate fix pass (Finding 2, 2026-07-05) — one-shot guard mirroring
@@ -193,8 +193,8 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => {
         void useActivityStore.getState().hydrate();
         _catchUp(prev.sessionId, prev.lastEventTs);
         if (!_autoResumeAttempted) {
-          const persistedName = useSessionStore.getState().saveName;
-          if (persistedName && _socket?.readyState === WebSocket.OPEN) {
+          const persistedId = useSessionStore.getState().lastChatId;
+          if (persistedId && _socket?.readyState === WebSocket.OPEN) {
             _autoResumeAttempted = true;
             // Phase 18 Task C — load resume policy BEFORE the cutoff
             // check fires so isWithinResumeCutoff reads the operator-
@@ -209,24 +209,24 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => {
               useSessionStore.getState().fetchList(),
             ]).then(() => {
               const sessions = useSessionStore.getState().sessions;
-              const match = sessions.find(
-                (s) => s.session_id === persistedName,
-              );
+              const match = sessions.find((s) => s.chat_id === persistedId);
               if (match && isWithinResumeCutoff(match.started_at)) {
                 if (_socket?.readyState === WebSocket.OPEN) {
+                  // By id, not by name: `/resume` reopens the conversation
+                  // rather than reading a file whose name was the identity.
                   _socket.send(
                     JSON.stringify({
                       type: "command",
-                      data: { cmd: `/resume ${persistedName}` },
+                      data: { cmd: `/resume ${persistedId}` },
                     }),
                   );
                 }
               } else if (!match) {
-                // Saved name no longer exists on disk — clear the persisted
-                // pointer so we don't keep retrying every reconnect.
-                useSessionStore.getState().setSaveName(null);
+                // The conversation is gone — clear the persisted pointer so we
+                // don't keep retrying every reconnect.
+                useSessionStore.getState().setLastChatId(null);
               } else {
-                // Outside the resume cutoff — leave saveName intact so the
+                // Outside the resume cutoff — leave the pointer intact so the
                 // operator can still see + manually /load it from the
                 // SessionDrawer, but surface a toast so they know why the
                 // session didn't auto-resume. Phase 18 audit m1 — message
@@ -234,7 +234,7 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => {
                 useToastStore
                   .getState()
                   .push(
-                    `Session "${persistedName}" is ${describeResumeCutoff()} — open the Sessions drawer to /load manually.`,
+                    `"${match.title}" is ${describeResumeCutoff()} — open the Sessions drawer to /load manually.`,
                     "info",
                     6000,
                   );

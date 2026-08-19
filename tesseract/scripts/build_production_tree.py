@@ -16,6 +16,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -257,7 +258,6 @@ def build(src_root: Path, out_root: Path, files: Iterable[str] | None = None) ->
     # without a rule. Each ships a tracked README, so each directory exists in
     # the output tree and each needs its own ignore file.
     for rel in (
-        "tesseract/voice/models/piper",
         "tesseract/voice/models/kokoro",
         "tesseract/voice/models/whisper",
     ):
@@ -319,6 +319,19 @@ def main() -> None:
     ap = argparse.ArgumentParser(prog="python -m tesseract.scripts.build_production_tree")
     ap.add_argument("src_root", type=Path)
     ap.add_argument("out_root", type=Path)
+    ap.add_argument(
+        "--tokens-file",
+        type=Path,
+        default=None,
+        help="JSON {\"tokens\": [...]} of operator-identifying strings to fail on. "
+             "Defaults to <src_root>/.release-tokens.json when that exists.",
+    )
+    ap.add_argument(
+        "--no-tokens",
+        action="store_true",
+        help="build without the operator-token check. Only for a tree that has "
+             "never seen operator prose.",
+    )
     args = ap.parse_args()
     build(args.src_root, args.out_root)
 
@@ -328,7 +341,40 @@ def main() -> None:
     # `scan_all` also covers test-surface files and work-note comments
     # reaching the tree — a manifest gap or an unrewritten comment fails the
     # build the same way a leaked credential would.
-    offenders = audit_release_tree.scan_all(args.out_root)
+    # Regenerate the Guide's number-bearing pages from the config that was just
+    # written into THIS tree. The committed copies are rendered from the dev
+    # checkout, and `build_shipping_config` copies config verbatim, so the two
+    # agree today — but "they agree today" is exactly how a published page
+    # starts lying. Rendering here makes the shipped Guide describe the shipped
+    # config by construction rather than by coincidence.
+    if (args.out_root / "Guide" / "reference").is_dir():
+        subprocess.run(
+            [sys.executable, "-m", "tesseract.scripts.generate_guide",
+             "--write", "--tree-root", str(args.out_root)],
+            check=True,
+        )
+
+    # Operator-identifying strings that no regex can generalise — a real name,
+    # a machine name — live in a gitignored token list rather than in this
+    # module, because everything under `scripts/` ships: a name written into
+    # the scanner would leak through the scanner itself. The list has always
+    # been supported by `scan_all`; nothing was passing it.
+    tokens_file = args.tokens_file
+    if tokens_file is None:
+        default = args.src_root / ".release-tokens.json"
+        tokens_file = default if default.is_file() else None
+    if tokens_file is None and not args.no_tokens:
+        raise SystemExit(
+            "build_production_tree: no .release-tokens.json at "
+            f"{args.src_root / '.release-tokens.json'}.\n"
+            "The name/handle half of the leak gate cannot run without it, and "
+            "the environment most likely to be missing it — a fresh clone — is "
+            "the one where a leaked name is least likely to be caught by eye.\n"
+            'Write {"tokens": ["Your Name", "your-handle"]} there (it is '
+            "gitignored), or pass --no-tokens to build without that check."
+        )
+
+    offenders = audit_release_tree.scan_all(args.out_root, tokens_file)
     if offenders:
         raise RuntimeError(
             "build_production_tree: release-audit found violation(s):\n"

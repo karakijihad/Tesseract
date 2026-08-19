@@ -41,6 +41,18 @@ class BriefReadTool(Tool):
     default_posture: ClassVar[str] = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "checking-your-state"
+    summary: ClassVar[str] = "Return an already-rendered daily brief as plain text."
+    use_when: ClassVar[str] = (
+        "Use when the operator asks to hear, read, or summarise the daily "
+        "brief — the returned text is voice-friendly and read back verbatim."
+    )
+    not_when: ClassVar[str] = (
+        "if no brief exists yet for the date, use `brief_render` to produce "
+        "one first — this tool only reads what already exists."
+    )
+
     def __init__(self, *, briefs_dir: Path | None = None) -> None:
         # Default resolved at call time via ``_resolve_briefs_dir`` so
         # tests that monkeypatch ``TESSERACT_HOME`` reach the right tree.
@@ -49,16 +61,6 @@ class BriefReadTool(Tool):
     @property
     def name(self) -> str:
         return "brief_read"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Return the daily brief for a given ISO date (defaults to "
-            "today UTC) as plain markdown body, frontmatter stripped. "
-            "Voice-friendly. Use when the operator asks to hear, read, or "
-            "summarise the daily brief — the assistant reads the returned text "
-            "verbatim back to the operator through the normal TTS lane."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

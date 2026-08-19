@@ -334,12 +334,12 @@ class SpawnRegistry:
         # the assistant's own work. Carried onto each durable record so a completion is
         # attributable after the handle is gone.
         self.owner_principal: str = ""
-        # OpenClaw-style numeric backstop against runaway
+        # Numeric backstop against runaway
         # fan-out. `None` (default) = uncapped (REPL / bare test registries);
         # Mirror sessions set it from
         # `runtime.yaml::max_concurrent_spawns_per_session` via ChatSession.
         self.max_concurrent: Optional[int] = None
-        # trio W3 — spawn NESTING backstop (OpenClaw maxSpawnDepth analog).
+        # Spawn NESTING backstop — the cap above bounds width, this bounds depth.
         # `depth` is the owning session's nesting level (root = 0; sub-agent
         # sessions +1 per level, stamped by ChatSession.__post_init__ from
         # ToolContext.spawn_depth). Registering a spawn from a session at or

@@ -1,6 +1,11 @@
 """WHAT_NOT_TO_SAVE exclusion policy.
 
-Loads exclusion categories from memory-store/WHAT_NOT_TO_SAVE.md.
+The exclusion rules are the pattern tuples below and nothing else. This module
+used to also parse `memory-store/WHAT_NOT_TO_SAVE.md` into a `categories` list
+that no code ever read, and warn when the file was absent — a warning about a
+parse whose result was discarded, on a file the loader's own root never held.
+The markdown is documentation for the operator; it configures nothing.
+
 Provides a should_save() check that runs before every memory write.
 """
 
@@ -8,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import re
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +31,18 @@ _EPHEMERAL_PATTERNS = [
     re.compile(r"\b(currently working on|in-progress|temporary|right now I'm)\b", re.IGNORECASE),
 ]
 
-_CLAUDE_MD_PATTERNS = [
-    re.compile(r"\bCLAUDE\.md (says|specifies|defines|instructs)\b", re.IGNORECASE),
-    re.compile(r"\bthe CLAUDE\.md\b", re.IGNORECASE),
+# The assistant's own standing instructions, whichever surface carries them:
+# the loaded rule set, or an agent-instruction file a CLI dropped in the tree.
+_INSTRUCTION_ECHO_PATTERNS = [
+    re.compile(
+        r"\b(CLAUDE|AGENTS)\.md (says|specifies|defines|instructs)\b", re.IGNORECASE
+    ),
+    re.compile(r"\bthe (CLAUDE|AGENTS)\.md\b", re.IGNORECASE),
+    re.compile(
+        r"\bmy (standing )?(instructions|system prompt|rules) "
+        r"(say|state|specify|require)\b",
+        re.IGNORECASE,
+    ),
 ]
 
 _ROUTINE_PATTERNS = [
@@ -60,32 +73,14 @@ _TRIVIAL_BODY_MIN_CHARS = 80
 
 
 class WhatNotToSave:
-    def __init__(self, store_dir: Path) -> None:
-        self._store_dir = store_dir
-        self.categories: list[str] = []
+    def __init__(self) -> None:
         # Set by should_save() on the last call — read by MemoryStore.write()
         # so the forensic writes.jsonl log carries the specific reason.
         self.last_reason: str | None = None
-        self._load()
-
-    def _load(self) -> None:
-        path = self._store_dir / "WHAT_NOT_TO_SAVE.md"
-        if not path.exists():
-            logger.warning("WHAT_NOT_TO_SAVE.md not found at %s", path)
-            return
-        text = path.read_text(encoding="utf-8")
-        for line in text.splitlines():
-            line = line.strip()
-            if re.match(r"^\d+\.\s+", line):
-                category = re.sub(r"^\d+\.\s+", "", line).strip()
-                self.categories.append(category)
 
     def should_save(self, content: str) -> bool:
-        # Pattern checks run unconditionally — the categories list from
-        # WHAT_NOT_TO_SAVE.md is documentation, not a feature flag. A
-        # missing or malformed markdown file must not silently disable
-        # the filter. self.last_reason is set to the specific category
-        # that blocked, so callers can log forensics.
+        # `last_reason` names the specific rule that blocked, so callers can
+        # log forensics — `store.py` writes it to events/writes.jsonl.
         self.last_reason = None
 
         for pattern in _CODE_PATTERNS:
@@ -106,10 +101,10 @@ class WhatNotToSave:
                 logger.debug("Blocked by ephemeral task state exclusion")
                 return False
 
-        for pattern in _CLAUDE_MD_PATTERNS:
+        for pattern in _INSTRUCTION_ECHO_PATTERNS:
             if pattern.search(content):
-                self.last_reason = "claude_md_content"
-                logger.debug("Blocked by CLAUDE.md content exclusion")
+                self.last_reason = "instruction_echo"
+                logger.debug("Blocked by standing-instruction echo exclusion")
                 return False
 
         for pattern in _ROUTINE_PATTERNS:

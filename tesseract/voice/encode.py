@@ -1,6 +1,6 @@
 """Audio format converters for outbound channel media.
 
-Local TTS (Piper / Kokoro) emits WAV. Telegram's ``sendVoice`` endpoint
+Every TTS lane emits WAV. Telegram's ``sendVoice`` endpoint
 only renders the voice-note UI (round play button, waveform) for
 ``.ogg`` files encoded with the Opus codec — sending WAV through that
 endpoint produces a generic "audio file" pill, which kills the

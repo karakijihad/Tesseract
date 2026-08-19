@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
-import { Hint } from '../../components/ui/Hint';
+import { Segmented } from '../../components/common/Segmented';
+import { Button } from '../../components/common/Button';
 import { IntervalCell } from './IntervalCell';
 
 /**
@@ -160,20 +161,16 @@ export function AlarmWhenPicker({ value, onCommit, onCancel, embedded = false }:
 
   return (
     <div className="cadence-picker" role="group" aria-label="Edit alarm time">
-      <div className="cadence-picker-modes">
-        {(Object.keys(MODE_LABELS) as AlarmMode[]).map((m) => (
-          <Hint key={m} label={MODE_HINTS[m]} position="bottom" maxWidth={320}>
-            <button
-              type="button"
-              className={`cadence-picker-mode${mode === m ? ' is-active' : ''}`}
-              onClick={() => setMode(m)}
-              aria-pressed={mode === m}
-            >
-              {MODE_LABELS[m]}
-            </button>
-          </Hint>
-        ))}
-      </div>
+      <Segmented
+        items={(Object.keys(MODE_LABELS) as AlarmMode[]).map((m) => ({
+          key: m,
+          label: MODE_LABELS[m],
+          hint: MODE_HINTS[m],
+        }))}
+        value={mode}
+        onSelect={setMode}
+        label="Alarm shape"
+      />
 
       {(mode === 'once' || mode === 'interval') && (
         <div className="cadence-picker-interval" aria-label="Duration fields">
@@ -199,19 +196,12 @@ export function AlarmWhenPicker({ value, onCommit, onCancel, embedded = false }:
 
       {mode === 'weekly' && (
         <div className="alarm-picker-weekly" aria-label="Weekly time fields">
-          <div className="alarm-picker-weekday-row">
-            {WEEKDAY_SHORT.map((name, idx) => (
-              <button
-                key={name}
-                type="button"
-                className={`alarm-picker-weekday${weekly.weekday === idx ? ' is-active' : ''}`}
-                onClick={() => setWeekly({ ...weekly, weekday: idx })}
-                aria-pressed={weekly.weekday === idx}
-              >
-                {name}
-              </button>
-            ))}
-          </div>
+          <Segmented
+            items={WEEKDAY_SHORT.map((name, idx) => ({ key: idx, label: name }))}
+            value={weekly.weekday}
+            onSelect={(idx) => setWeekly({ ...weekly, weekday: idx })}
+            label="Day of the week"
+          />
           <div className="cadence-picker-daily">
             <IntervalCell label="H" max={23} value={weekly.hour}
               onChange={(v) => setWeekly({ ...weekly, hour: v })} />
@@ -233,17 +223,14 @@ export function AlarmWhenPicker({ value, onCommit, onCancel, embedded = false }:
 
       {!embedded && (
         <div className="cadence-picker-actions">
-          <button type="button" className="cadence-picker-btn is-cancel" onClick={onCancel}>
-            cancel
-          </button>
-          <button
-            type="button"
-            className="cadence-picker-btn is-save"
+          <Button onClick={onCancel}>cancel</Button>
+          <Button
+            tone="primary"
             onClick={handleSave}
             disabled={!!validationError || !whenString}
           >
             save
-          </button>
+          </Button>
         </div>
       )}
     </div>

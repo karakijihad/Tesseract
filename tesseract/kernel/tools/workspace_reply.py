@@ -42,6 +42,18 @@ class WorkspaceReplyTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "asking-without-blocking"
+    summary: ClassVar[str] = "Reply inside an existing Workspace event's operator comment thread."
+    use_when: ClassVar[str] = (
+        "Use when `[workspace_comment_on_<event_id>]` appears in context and the "
+        "comment expects an answer. Renders under the comment in the Inbox."
+    )
+    not_when: ClassVar[str] = (
+        "opening a new note, use `workspace_post`; a plain in-conversation "
+        "question you can just ask in the reply you are already writing."
+    )
+
     def __init__(self, store: EventStore) -> None:
         """Writes the reply comment to disk (durable). Broadcasting is
         the caller's responsibility: `dispatch_workspace_reply` calls
@@ -52,15 +64,6 @@ class WorkspaceReplyTool(Tool):
     @property
     def name(self) -> str:
         return "workspace_reply"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Reply to an operator comment on a Workspace event. Use this "
-            "when you see [workspace_comment_on_<event_id>] in your context "
-            "and the operator's comment expects an answer. The reply renders "
-            "under the comment in the Workspace Inbox thread."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

@@ -123,6 +123,13 @@ log = logging.getLogger(__name__)
 # ``_overflow_disconnect``) so the rest of the session keeps flowing.
 _OUTBOUND_QUEUE_MAX = 1000
 
+# How long one request will wait for `attach_runtime` before being told the
+# daemon is still starting. Far above the ~17s a cold build measures, because
+# this is a backstop against a build that HUNG, not a deadline for a slow
+# machine — a cap set near the measured time would re-create the timeout this
+# whole warm-up path exists to remove.
+_WARMUP_WAIT_SECONDS = 120.0
+
 
 # ── Public callback types (entry point wires these to chat brain / kernel)
 
@@ -230,6 +237,7 @@ class ControllerDaemon(
         named_lane_manager: Any | None = None,
         drain_timeout_seconds: float = 30.0,
         heartbeat_interval: float = HEARTBEAT_INTERVAL_SECONDS,
+        warmup: bool = False,
     ) -> None:
         self._controller_id = controller_id
         self._token = token
@@ -289,6 +297,22 @@ class ControllerDaemon(
         # from interleaving their drains.
         self._reload_lock = asyncio.Lock()
 
+        # Set once the brain wiring is attached. Clear ONLY when the caller
+        # asked to warm up behind an open port; every other construction is
+        # ready the moment it exists, so no existing caller changes behaviour.
+        #
+        # The port used to open after `initial_build()` returned, which put the
+        # whole brain — FAISS, the memory index, the tool registry, the prompt
+        # — in front of the first TCP connect. Measured at 17.4s on an idle
+        # machine against the dispatcher's 25s spawn budget, and the margin is
+        # gone under load: `delegate_coder` failed with "daemon spawned but did
+        # not become reachable". `_is_daemon_alive` only connects, so binding
+        # first answers the probe honestly — the daemon IS up — and the wait
+        # moves to the one request that actually needs the brain.
+        self._ready = asyncio.Event()
+        if not warmup:
+            self._ready.set()
+
         self._stop_event = asyncio.Event()
         self._heartbeat_task: asyncio.Task | None = None
         # AS-1 — relays the controller's `activity` bus channel to connected
@@ -307,6 +331,38 @@ class ControllerDaemon(
     @property
     def address(self) -> tuple[str, int]:
         return self._address
+
+    def attach_runtime(
+        self,
+        *,
+        dispatch_turn: DispatchTurn | None = None,
+        reload_callback: ReloadCallback | None = None,
+        on_session_deleted: OnSessionDeleted | None = None,
+        lane_manager: Any | None = None,
+        named_lane_manager: Any | None = None,
+    ) -> None:
+        """Wire the brain in after the port is already open, and open the gate.
+
+        The counterpart to ``warmup=True``. Called exactly once, from
+        ``run_controller``, with whatever ``ControllerRuntime`` produced —
+        including nothing, because ``initial_build`` is best-effort and leaves
+        its holders at ``None`` when boot raises. A daemon with no brain is
+        still a live daemon (the TC-4 invariant), so this sets ``_ready``
+        unconditionally: the alternative is clients waiting out
+        ``_WARMUP_WAIT_SECONDS`` for wiring that is never coming.
+        """
+        self._dispatch_turn = dispatch_turn
+        self._reload_callback = reload_callback
+        self._on_session_deleted = on_session_deleted
+        self._lane_manager = lane_manager
+        self._named_lane_manager = named_lane_manager
+        self._ready.set()
+
+    @property
+    def ready(self) -> asyncio.Event:
+        """Fires when the brain wiring is in place. Always set unless the
+        daemon was constructed with ``warmup=True``."""
+        return self._ready
 
     @property
     def operator_shutdown_event(self) -> asyncio.Event:
@@ -741,6 +797,16 @@ class ControllerDaemon(
         DecideParkedAskMessage: "_on_decide_parked_ask",
     }
 
+    #: Answerable while the brain is still building. `shutdown` has to be
+    #: here or a daemon caught mid-warm-up cannot be stopped; the two
+    #: snapshots read registries `start()` has already seeded. Everything
+    #: else reaches wiring `attach_runtime` has not delivered yet, and
+    #: waiting is the honest answer — a `..._unwired` error would report a
+    #: permanent absence for a condition that clears in seconds.
+    _WARMUP_ANSWERABLE: ClassVar[frozenset[type]] = frozenset(
+        {ShutdownMessage, ActivitySnapshotMessage, ParkedAsksSnapshotMessage}
+    )
+
     async def _dispatch(self, conn: _ClientConn, msg: Any) -> None:
         handler_name = self._DISPATCH_TABLE.get(type(msg))
         if handler_name is None:  # pragma: no cover — parse_client_message would have raised
@@ -751,7 +817,34 @@ class ControllerDaemon(
                 ).model_dump(mode="json")
             )
             return
+        if not self._ready.is_set() and type(msg) not in self._WARMUP_ANSWERABLE:
+            if not await self._await_warm(conn, type(msg).__name__):
+                return
         await getattr(self, handler_name)(conn, msg)
+
+    async def _await_warm(self, conn: _ClientConn, verb: str) -> bool:
+        """Hold one request until the brain is wired. False = give up, answered.
+
+        Bounded rather than open-ended, and generously: the cap exists so a
+        build that hangs reports something instead of holding every client to
+        its own idle timeout, NOT to police a slow machine. Setting it near the
+        measured 17.4s would re-create the failure this fixes one tier down.
+        """
+        log.info("controller: holding %s — brain still warming", verb)
+        try:
+            await asyncio.wait_for(self._ready.wait(), timeout=_WARMUP_WAIT_SECONDS)
+        except asyncio.TimeoutError:
+            await conn.outbound.put(
+                ErrorPush(
+                    code="warming_up",
+                    detail=(
+                        f"the controller is still starting up and did not finish "
+                        f"within {_WARMUP_WAIT_SECONDS:.0f}s"
+                    ),
+                ).model_dump(mode="json")
+            )
+            return False
+        return True
 
     # ── lane.* result helpers (X-4 Session C) ───────────────────────────
 

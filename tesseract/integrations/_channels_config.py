@@ -96,7 +96,13 @@ GatePolicyKind = Literal["workspace_nudge", "deny"]
 class GatePolicy(BaseModel):
     model_config = _FROZEN
     on_ask: GatePolicyKind = "workspace_nudge"
-    approve_next_turn_ttl_s: int = Field(default=1800, ge=60, le=86_400)
+    #: How long a gated call waits for the operator before refusing itself.
+    #: The turn is parked on that wait and the bridge serialises a chat's
+    #: turns, so this is also the longest the bot could stay busy on one
+    #: prompt — except that a new inbound message cancels the wait, which is
+    #: what keeps a long value safe. Was `approve_next_turn_ttl_s` when a tap
+    #: armed a token for a later turn instead of answering the call in hand.
+    decision_timeout_s: int = Field(default=1800, ge=60, le=86_400)
 
 
 class RetentionBlock(BaseModel):

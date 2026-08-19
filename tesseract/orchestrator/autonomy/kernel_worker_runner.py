@@ -48,6 +48,7 @@ from typing import Any, Callable
 from tesseract.brain.tools import ToolRegistry, execute_tool
 from tesseract.config.cockpit import load_conductor_relay
 from tesseract.kernel.tools.base import ToolContext
+from tesseract.orchestrator.outcome import RunOutcome
 from tesseract.orchestrator.autonomy.summary_sanitize import clean_summary_tail
 from tesseract.orchestrator.autonomy.worker_dispatch import WorkerRunner
 from tesseract.orchestrator.workers.heartbeat import (
@@ -77,6 +78,15 @@ _BILLING_BY_KIND: dict[WorkerKind, Billing] = {
 
 log = logging.getLogger(__name__)
 
+
+# Which outcomes still leave the worker DONE. ``degraded`` did produce
+# output, below its declared contract — neither a success nor a failure,
+# and the record's ``outcome`` is where that distinction survives. Every
+# other non-healthy outcome lands FAILED, so nothing that produced
+# nothing can read as completed work.
+_DONE_OUTCOMES = frozenset(
+    {RunOutcome.SUCCEEDED, RunOutcome.SKIPPED_NO_WORK, RunOutcome.DEGRADED}
+)
 
 _OUTPUT_SUMMARY_TAIL_CHARS = 500
 
@@ -108,11 +118,7 @@ _KNOWN_MODEL_ROLE_NAMES: frozenset[str] = frozenset({
     "agents_default",
     "subagents_default",
     "channel_vision",
-    "feedback_consolidator",
-    "autonomy_heartbeat",
-    "autonomy_strategist",
-    "autonomy_vetter",
-    "autonomy_scout",
+    "watchman",
     "vision_agent",
     "image_generator",
     "audio_transcribe",
@@ -245,6 +251,9 @@ class KernelWorkerRunner:
             record.error_class = type(exc).__name__
             record.error_message = str(exc)[:500]
             record.summary = f"runner crashed: {exc!r}"[:500]
+            record.set_outcome(
+                RunOutcome.FAILED, reason=f"runner crashed: {type(exc).__name__}"
+            )
             record.transition_to(WorkerStatus.FAILED, reason="runner_crash")
             write_record(record)
             return
@@ -255,6 +264,9 @@ class KernelWorkerRunner:
         if result.get("error_message"):
             record.error_message = result["error_message"]
         record.billing = _BILLING_BY_KIND.get(record.kind, Billing.UNKNOWN)
+        record.tokens_in = int(result.get("tokens_in") or 0)
+        record.tokens_out = int(result.get("tokens_out") or 0)
+        record.set_outcome(result["outcome"], reason=result["outcome_reason"])
         # Wallclock-exceeded: keep the item alive (BLOCKED) instead of
         # discarding the work as FAILED — operator can extend the budget
         # or comment to resume rather than re-queue from scratch.
@@ -270,7 +282,11 @@ class KernelWorkerRunner:
             record.transition_to(WorkerStatus.BLOCKED, reason=result["reason"])
             write_record(record)
             return
-        terminal = WorkerStatus.DONE if result["ok"] else WorkerStatus.FAILED
+        terminal = (
+            WorkerStatus.DONE
+            if record.outcome in _DONE_OUTCOMES
+            else WorkerStatus.FAILED
+        )
         record.transition_to(terminal, reason=result["reason"])
         write_record(record)
 
@@ -293,6 +309,8 @@ class KernelWorkerRunner:
                 "reason": "unsupported_kind",
                 "error_class": "UnsupportedKindError",
                 "error_message": tool_args,
+                "outcome": RunOutcome.REFUSED,
+                "outcome_reason": tool_args,
             }
 
         # A tool the registry never got (chat_brain adapter unresolved at
@@ -313,6 +331,8 @@ class KernelWorkerRunner:
                 "error_class": "ToolUnavailableError",
                 "error_message": message,
                 "parked": True,
+                "outcome": RunOutcome.REFUSED,
+                "outcome_reason": message,
             }
 
         # Apply operator-configured timeout if the kind has one.
@@ -353,6 +373,11 @@ class KernelWorkerRunner:
         )
         output = (result.output or "")
         summary = clean_summary_tail(output, tail_chars=_OUTPUT_SUMMARY_TAIL_CHARS)
+        meta = result.metadata or {}
+        tokens = {
+            "tokens_in": int(meta.get("tokens_in") or 0),
+            "tokens_out": int(meta.get("tokens_out") or 0),
+        }
         if result.is_error:
             # Distinguish wallclock timeout from generic tool errors so
             # the caller can transition to BLOCKED instead of FAILED.
@@ -367,14 +392,52 @@ class KernelWorkerRunner:
             reason = "tool_denied" if result.denied_hard else (
                 "wallclock_exceeded" if timed_out else "tool_error"
             )
+            if result.denied_hard:
+                outcome = RunOutcome.REFUSED
+            elif timed_out:
+                outcome = RunOutcome.TRUNCATED
+            else:
+                outcome = RunOutcome.FAILED
             return {
                 "ok": False,
                 "summary": summary or (result.deny_reason or reason),
                 "reason": reason,
                 "error_message": result.deny_reason or summary,
                 "timed_out": timed_out,
+                "outcome": outcome,
+                "outcome_reason": result.deny_reason or summary or reason,
+                **tokens,
             }
-        return {"ok": True, "summary": summary, "reason": "ok"}
+
+        # The tool did not raise, which is not the same as having produced
+        # anything. `invoke_agent` reports the length of the sub-agent's final
+        # text; a tool that reports nothing is judged on its own output. A run
+        # with neither is `failed`, never DONE — this is the single line that
+        # marked eight empty autonomy runs as completed work.
+        produced = meta.get("final_text_chars")
+        if produced is None:
+            produced = len(output.strip())
+        if int(produced) == 0:
+            message = f"{tool_name} returned no output"
+            log.warning("kernel_worker_runner: %s for %s", message, record.id)
+            return {
+                "ok": False,
+                "summary": summary or message,
+                "reason": "empty_output",
+                "error_class": "EmptyOutputError",
+                "error_message": message,
+                "outcome": RunOutcome.FAILED,
+                "outcome_reason": message,
+                **tokens,
+            }
+        return {
+            "ok": True,
+            "summary": summary,
+            "reason": "ok",
+            "outcome": RunOutcome.SUCCEEDED,
+            "outcome_reason": "",
+            **tokens,
+        }
 
 
 def _route_for_kind(record: WorkerRecord) -> tuple[str | None, Any]:

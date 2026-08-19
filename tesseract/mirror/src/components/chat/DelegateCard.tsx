@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useConversationStore } from '../../stores/conversation';
 import { useEntityName } from '../../hooks/useEntityName';
+import { Hint } from '../ui/Hint';
 
 interface Props {
   call_id: string;
@@ -31,9 +32,11 @@ export function DelegateCard({ call_id }: Props) {
       <div className="delegate-card-header">
         <span className="delegate-card-tool">{stream.tool}</span>
         {isBackground && (
-          <span className="delegate-card-bg-badge" title={`Dispatched in background — ${entityName} can keep working in parallel`}>
-            ↻ background
-          </span>
+          <Hint label={`Dispatched in background — ${entityName} can keep working in parallel`}>
+            <span className="delegate-card-bg-badge">
+              ↻ background
+            </span>
+          </Hint>
         )}
         <span className="delegate-card-state">
           {finished ? `exit: ${stream.exit_code}` : 'running…'}

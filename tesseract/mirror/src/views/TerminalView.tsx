@@ -9,6 +9,11 @@ import { TerminalSearch } from '../lib/terminal/TerminalSearch';
 import { RecordingPlayer } from '../lib/terminal/RecordingPlayer';
 import { dispatch as dispatchKey, DEFAULT_BINDINGS } from '../lib/terminal/keybindings';
 import { Hint } from '../components/ui/Hint';
+import { CloseButton } from '../components/common/CloseButton';
+import { MenuItem } from '../components/common/MenuItem';
+import { IconButton } from '../components/common/IconButton';
+import { Button } from '../components/common/Button';
+import { Row, RowActions } from '../components/common/Row';
 
 const TERMINAL_HELP_TEXT =
   'Shortcuts:\n' +
@@ -210,43 +215,50 @@ export function TerminalPanes() {
       <div className="wt-tabbar">
         <div className="wt-tabs">
           {tabs.map((tab) => (
-            <div
+            <Row
               key={tab.id}
               className={`wt-tab${tab.id === activeTabId ? ' is-active' : ''}`}
               onClick={() => setActiveTab(tab.id)}
+              ariaLabel={`Switch to ${tab.label}`}
             >
               <span className="wt-tab-icon">{getIcon(tab.root.type === 'leaf' ? tab.root.shell : '')}</span>
               <span className="wt-tab-label">{tab.label}</span>
-              <button
-                className="wt-tab-close"
-                onClick={(e) => { e.stopPropagation(); closeTab(tab.id); }}
-              >
-                ×
-              </button>
-            </div>
+              {/* The slot owns the fade-in the tab drives. */}
+              <RowActions className="wt-tab-close-slot">
+                <CloseButton
+                  size="inline"
+                  onClick={() => closeTab(tab.id)}
+                  ariaLabel={`Close ${tab.label}`}
+                />
+              </RowActions>
+            </Row>
           ))}
         </div>
 
         <Hint label={TERMINAL_HELP_TEXT} position="bottom" maxWidth={340}>
-          <button className="wt-help-btn" type="button" aria-label="Terminal shortcuts">?</button>
+          <IconButton onClick={() => {}} ariaLabel="Terminal shortcuts">?</IconButton>
         </Hint>
 
         <div className="wt-new" ref={dropdownRef}>
-          <button className="wt-new-btn" onClick={() => addTab()} title="New terminal">+</button>
-          <button
-            className="wt-new-dropdown-btn"
-            onClick={() => setDropdownOpen(!dropdownOpen)}
-            title="Select shell profile"
-          >
-            ∨
-          </button>
+          <Hint label="New terminal">
+            <IconButton onClick={() => addTab()} ariaLabel="New terminal">+</IconButton>
+          </Hint>
+          <Hint label="Select shell profile">
+            <IconButton
+              onClick={() => setDropdownOpen(!dropdownOpen)}
+              active={dropdownOpen}
+              ariaLabel="Select shell profile"
+            >
+              ∨
+            </IconButton>
+          </Hint>
           {dropdownOpen && (
             <div className="wt-dropdown">
               {profileEntries.map(([key, profile]) => (
-                <button key={key} className="wt-dropdown-item" onClick={() => addTab(key)}>
+                <MenuItem key={key} onClick={() => addTab(key)}>
                   <span className="wt-dropdown-icon">{profile.icon ?? '⟩'}</span>
                   <span>{profile.label}</span>
-                </button>
+                </MenuItem>
               ))}
             </div>
           )}
@@ -278,19 +290,17 @@ export function TerminalPanes() {
             then the HUD observer button is the canonical surface. This
             avoids the two-bar duplication the operator flagged. */}
         {focusedLeaf && masterOn && (
-          <button
-            className="wt-statusbar-btn"
-            onClick={toggleObserver}
-            title={
-              observerEnabled
+          <Hint label={observerEnabled
                 ? `Disable the ${entityName} observer for this pane (master stays armed)`
-                : `Enable the ${entityName} observer for this pane`
-            }
-          >
-            {effectivelyObserving ? '◉ this pane' : '○ this pane'}
-          </button>
+                : `Enable the ${entityName} observer for this pane`}>
+            <Button onClick={toggleObserver} active={effectivelyObserving}>
+              {effectivelyObserving ? '◉ this pane' : '○ this pane'}
+            </Button>
+          </Hint>
         )}
-        {effectivelyObserving && <span className="wt-observer-dot" title={`${entityName} is observing`}>● observing</span>}
+        {effectivelyObserving && <Hint label={`${entityName} is observing`}>
+          <span className="wt-observer-dot">● observing</span>
+        </Hint>}
         <span className="wt-statusbar-meta">
           {tabs.length} tab{tabs.length !== 1 ? 's' : ''}
         </span>

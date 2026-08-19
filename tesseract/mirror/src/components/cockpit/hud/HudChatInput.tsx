@@ -9,6 +9,7 @@ import { dispatchCommand } from '../../../cockpit/commandDispatch';
 import { useWebSocketStore } from '../../../stores/websocket';
 import { useToastStore } from '../../../stores/toasts';
 import { Hint } from '../../ui/Hint';
+import { CloseButton } from '../../common/CloseButton';
 import { MessageBubble } from '../../chat/MessageBubble';
 import { StreamingBubble } from '../../chat/StreamingBubble';
 import { ApprovalCard } from '../../chat/ApprovalCard';
@@ -28,6 +29,8 @@ import {
 import type { ChatAttachment, ChatMessage } from '../../../lib/types';
 import { lastQueuedPosition, queueChipLabel } from '../../../lib/chatQueue';
 import { canSteer } from '../../../lib/steer';
+import { ComposerButton } from '../../common/ComposerButton';
+import { FileTrigger, type FileTriggerHandle } from '../../common/FileTrigger';
 
 const SCROLLBACK_LIMIT = 12;
 
@@ -58,7 +61,7 @@ export function HudChatInput() {
   const sendSteer = useConversationStore((s) => s.sendSteer);
 
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const fileInputRef = useRef<FileTriggerHandle | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [isOpen, setIsOpen] = useState(false);
   const [draft, setDraft] = useState('');
@@ -89,7 +92,7 @@ export function HudChatInput() {
   useEffect(() => {
     setPendingAttachments([]);
     setUploadError(null);
-    if (fileInputRef.current) fileInputRef.current.value = '';
+    fileInputRef.current?.reset();
   }, [sessionId]);
 
   // Discard pending attachments via functional setState so we always read
@@ -104,7 +107,7 @@ export function HudChatInput() {
       return [];
     });
     setUploadError(null);
-    if (fileInputRef.current) fileInputRef.current.value = '';
+    fileInputRef.current?.reset();
     setIsOpen(false);
     stickToLatest();
   };
@@ -201,7 +204,7 @@ export function HudChatInput() {
       useToastStore.getState().push(`Attach failed: ${msg}`, 'warning');
     } finally {
       setIsUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
+      fileInputRef.current?.reset();
     }
   };
 
@@ -302,14 +305,7 @@ export function HudChatInput() {
     <div className="hud-chat-panel" role="dialog" aria-label={`Ambient ${entityName} chat`}>
       <header className="hud-chat-panel-head">
         <span className="hud-chat-panel-title">{entityName}</span>
-        <button
-          type="button"
-          className="hud-chat-panel-close"
-          onClick={closeWidget}
-          aria-label="Close ambient chat"
-        >
-          ×
-        </button>
+        <CloseButton onClick={closeWidget} ariaLabel="Close ambient chat" />
       </header>
       <div
         className="hud-chat-panel-scroll"
@@ -339,14 +335,11 @@ export function HudChatInput() {
           {pendingAttachments.map((att) => (
             <span key={att.id} className="hud-chat-attachment-chip t-meta">
               <span className="hud-chat-attachment-name">{att.filename}</span>
-              <button
-                type="button"
-                className="hud-chat-attachment-remove"
+              <CloseButton
+                size="inline"
                 onClick={() => removeAttachment(att.id)}
-                aria-label={`Remove ${att.filename}`}
-              >
-                ×
-              </button>
+                ariaLabel={`Remove ${att.filename}`}
+              />
             </span>
           ))}
         </div>
@@ -356,26 +349,21 @@ export function HudChatInput() {
         <div className="chat-queue-pill t-meta" aria-label={queueLabel}>{queueLabel}</div>
       )}
       <div className="hud-chat-composer" onPaste={handlePaste}>
-        <input
+        <FileTrigger
           ref={fileInputRef}
-          type="file"
-          className="hud-chat-file-input"
           accept={uploadAccept}
           multiple
-          onChange={(e) => {
-            if (e.currentTarget.files) void uploadFiles(e.currentTarget.files);
-          }}
+          onFiles={(files) => void uploadFiles(files)}
         />
         <Hint label={`Attach files. ${uploadHelp}`} position="top" maxWidth={280}>
-          <button
-            type="button"
-            className="hud-chat-input-attach"
-            onClick={() => fileInputRef.current?.click()}
+          <ComposerButton
+            verb="attach"
+            onClick={() => fileInputRef.current?.open()}
             disabled={isUploading || !sessionId}
-            aria-label="Attach files"
+            ariaLabel="Attach files"
           >
             {isUploading ? '…' : '+'}
-          </button>
+          </ComposerButton>
         </Hint>
         <input
           ref={inputRef}
@@ -398,26 +386,20 @@ export function HudChatInput() {
             position="top"
             maxWidth={220}
           >
-            <button
-              type="button"
-              className="hud-chat-input-steer"
-              onClick={handleSteer}
-              aria-label="Redirect now"
-            >
+            <ComposerButton verb="steer" onClick={handleSteer} ariaLabel="Redirect now">
               <span aria-hidden="true">↪</span>
-            </button>
+            </ComposerButton>
           </Hint>
         )}
         <Hint label="Send" position="top" maxWidth={80}>
-          <button
-            type="button"
-            className="hud-chat-input-send"
+          <ComposerButton
+            verb="send"
             onClick={submit}
             disabled={!draft.trim() && !hasAttachments}
-            aria-label="Send message"
+            ariaLabel="Send message"
           >
             <span aria-hidden="true">↵</span>
-          </button>
+          </ComposerButton>
         </Hint>
       </div>
     </div>

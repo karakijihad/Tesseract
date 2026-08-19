@@ -68,21 +68,28 @@ class SurfaceCreateInput(BaseModel):
 class SurfaceCreateTool(Tool):
     default_posture = "auto"
     risk_class: ClassVar[str] = "autonomous"
+    group: ClassVar[str] = "showing-the-operator"
+    summary: ClassVar[str] = (
+        "Author a card from content you generated — html, markdown, code, or a chart."
+    )
+    use_when: ClassVar[str] = (
+        "An `html` surface renders in a sandboxed iframe with an opaque "
+        "origin, so keep it self-contained; storage calls are safe but reset "
+        "on every mount, and the card takes keyboard input only once focused. "
+        "Returns surface_id — `surface_update` mutates it, `replaces` hands "
+        "off cleanly."
+    )
+    not_when: ClassVar[str] = (
+        "Anything that already exists — a url, a file, a folder, an app — is "
+        "`open`'s job. In particular, never hand-write an `<iframe>` for a "
+        "video or another third-party page: the opaque origin makes the "
+        "embedded player throw on storage and the card renders black. The fix "
+        "is the verb, not the markup."
+    )
 
     @property
     def name(self) -> str:
         return "surface_create"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Author a surface from content you generated — a live html app, a "
-            "chart, markdown or code you wrote. Returns surface_id. To SHOW "
-            "something that already exists (a url, a file, a folder, an app), "
-            "use `open` instead: it resolves the target and picks the type "
-            "itself. Use surface_update to mutate a card, surface_focus to "
-            "raise it, surface_close to dismiss it."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

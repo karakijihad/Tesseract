@@ -287,7 +287,7 @@ async def broadcast_daily_brief_ready(
 
     Mirrors :func:`tesseract.workspace_events.broadcast.broadcast_workspace_event`
     — same fail-soft pattern. Imported lazily by the scheduler-side
-    ``DailyBriefJob`` so the cron path can fire the same envelope when
+    `brief_delivery` so the service can fire the same envelope when
     ``BriefRenderer.render`` completes outside the REST surface.
     """
     sessions = app.get("server_sessions") or {}

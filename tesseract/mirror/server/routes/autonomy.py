@@ -22,6 +22,7 @@ shape). Mutating actions land in S2.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -29,6 +30,7 @@ from typing import Any
 from aiohttp import web
 
 from tesseract.orchestrator.autonomy.agenda_store import AgendaStore
+from tesseract.orchestrator.autonomy.completion import completion_payload
 from tesseract.orchestrator.autonomy.governor import (
     Governor,
     GovernorConfig,
@@ -65,6 +67,11 @@ def _worker_payload(record: WorkerRecord) -> dict[str, Any]:
         "risk_class": record.risk_class.value,
         "role": record.role,
         "status": record.status.value,
+        # `status` is where the worker ended; `outcome` is what came of it.
+        # `null` on records written before the vocabulary existed — render
+        # that as unknown, not as success.
+        "outcome": record.outcome.value if record.outcome else None,
+        "outcome_reason": record.outcome_reason,
         "last_heartbeat": (
             record.last_heartbeat.isoformat() if record.last_heartbeat else None
         ),
@@ -353,6 +360,17 @@ async def get_pruned_ledger(request: web.Request) -> web.Response:
     )
 
 
+async def get_completion(request: web.Request) -> web.Response:
+    """GET /api/autonomy/completion — completion rate per agenda source and
+    outcome counts per worker lane, derived from the agenda index and the
+    worker records. A source with nothing finished reports
+    ``completion_rate: null``, which a surface must render as "no data" and
+    never as zero.
+    """
+    payload = await asyncio.to_thread(completion_payload)
+    return web.json_response(payload)
+
+
 def _require_operator_session(
     request: web.Request, body: dict[str, Any],
 ) -> web.Response | None:
@@ -457,11 +475,13 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/recovery/latest", get_latest_recovery)
     app.router.add_get("/api/autonomy/journal", get_operator_journal)
     app.router.add_get("/api/autonomy/pruned", get_pruned_ledger)
+    app.router.add_get("/api/autonomy/completion", get_completion)
     app.router.add_post("/api/autonomy/source/{source}/mute", mute_source)
     app.router.add_post("/api/autonomy/source/{source}/unmute", unmute_source)
 
 
 __all__ = [
+    "get_completion",
     "get_governor_state",
     "get_latest_recovery",
     "get_operator_journal",

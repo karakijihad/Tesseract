@@ -18,7 +18,7 @@ from tesseract.config.loader import _REF_RE as _CATALOG_REF_RE
 from tesseract.config.loader import ROLE_MODES, ROLE_MODE_INACTIVE
 
 # The loader keeps inactive roles as unresolved stubs (`_build_role` skips
-# `_chain_refs` entirely), so a stale chain or ref on one never blocks boot.
+# `chain_refs` entirely), so a stale chain or ref on one never blocks boot.
 # This gate must refuse exactly what the loader refuses and no more, or an
 # otherwise-valid edit is rejected before it can be written.
 _STUB_MODE = ROLE_MODE_INACTIVE

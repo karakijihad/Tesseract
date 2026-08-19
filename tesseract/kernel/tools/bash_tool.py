@@ -75,13 +75,26 @@ class BashTool(Tool):
         "operations, use forward-slash relative paths, and avoid shell "
         "constructs that decode or substitute commands."
     )
+
+    group: ClassVar[str] = "running-commands"
+    summary: ClassVar[str] = (
+        "Runs a raw shell command through the operating system."
+    )
+    use_when: ClassVar[str] = (
+        "Use for an actual shell operation no dedicated tool covers — running "
+        "a script, a build, a git command, a package manager."
+    )
+    not_when: ClassVar[str] = (
+        "Reading a file's contents (`file_read`), searching file contents or "
+        "names (`grep`, `glob`), or writing or editing a file (`file_write`) "
+        "— those tools exist so this one doesn't have to, and reaching for "
+        "bash to cat/grep/echo something costs an operator prompt for "
+        "nothing. Most commands prompt the operator before running."
+    )
+
     @property
     def name(self) -> str:
         return "bash"
-
-    @property
-    def description(self) -> str:
-        return "Execute a shell command. Subject to security checks and permission rules."
 
     @property
     def input_schema(self) -> type[BaseModel]:

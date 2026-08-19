@@ -132,6 +132,17 @@ class SkillPromoteTool(Tool):
     default_posture: ClassVar[str] = "ask"
     risk_class: ClassVar[str] = "operator_gate"
 
+    group: ClassVar[str] = "extending-yourself"
+    summary: ClassVar[str] = "Move a quarantined skill into the active set."
+    use_when: ClassVar[str] = (
+        "Use to activate a skill already drafted by `skill_create`, once the "
+        "operator approves it. Required before it appears in the prompt manifest."
+    )
+    not_when: ClassVar[str] = (
+        "to draft a new skill, use `skill_create`; to change the wording of an "
+        "already-active skill, use `skill_refine`."
+    )
+
     def __init__(self, skills_dir: Path, event_store: Optional[EventStore] = None) -> None:
         """``event_store`` lets a chat-side promotion settle any open
         `skill_approval` card for the same skill, so the two approval surfaces
@@ -143,14 +154,6 @@ class SkillPromoteTool(Tool):
     @property
     def name(self) -> str:
         return "skill_promote"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Promote a quarantined skill from workspace/skills/pending/ to the "
-            "active set. Required before a newly drafted skill is surfaced in "
-            "the prompt manifest. Operator-approval-gated."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

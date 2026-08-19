@@ -9,6 +9,12 @@
 # listener — the MCP server rides on the Mirror backend's own socket (see
 # mirror.yaml server.host/port). Keep these two files in sync.
 server:
+  # Off until the operator turns it on in Settings → Keys → MCP. Nothing in
+  # the app needs this surface — the CLI lanes and the terminal reach the
+  # runtime directly — so it exists only for connecting an OUTSIDE tool, and
+  # a door that is only sometimes wanted should be shut by default. When
+  # false the server is never constructed and /mcp answers that it is off.
+  enabled: false
   host: "127.0.0.1"                     # loopback-only; MCP is local-only like the Mirror app
   port: 8000                            # must match mirror.yaml server.port
   token_secret_env: "TESSERACT_MCP_SECRET"   # env var holding the operator client's bearer token
@@ -34,15 +40,33 @@ stream:
   max_streams_total: 16                 # across every session
   max_streams_per_session: 2            # one live + one reconnect mid-handover
 
-# Per-client identities. Default-deny: a bearer token matching no client
-# below is rejected. Each client's trust_tier is a ceiling layered on top of
-# the per-verb posture (see trust_tiers/verbs below). The operator client's
-# token_env MUST equal server.token_secret_env.
+# The client identity. Default-deny: a bearer token that is not this one is
+# rejected. trust_tier is a ceiling layered on top of the per-verb posture
+# (see trust_tiers/verbs below), and this client's token_env MUST equal
+# server.token_secret_env.
+#
+# ONE of these is a credential the operator handles: `operator`. It is the
+# only one Settings shows, the only one an outside tool is ever given, and
+# the only one there is any point pasting anywhere.
+#
+# The three below are the RUNTIME'S OWN and are not credentials anyone
+# types. Every process this app spawns is handed exactly one of them and
+# stripped of the rest — `cli_utils.py::scope_mcp_token` for a lane,
+# `lanes/mcp_provision.py` for a terminal — so a spawned CLI cannot pick up
+# the operator bearer and come back in acting as the operator. Ownership on
+# the lane surface is keyed on whichever identity the bearer resolves to,
+# which is the whole reason there is more than one.
+#
+# Deleting them simplifies nothing. Both of those call sites fail CLOSED on
+# a name they cannot resolve: the lane refuses to spawn and the terminal
+# refuses to provision. Tried it — the backend logged
+# `mcp_provision: mcp.yaml has no client named 'terminal-manual'` on the
+# next boot, which is what this paragraph is here to stop happening twice.
 clients:
   - name: "operator"
     token_env: "TESSERACT_MCP_SECRET"
     trust_tier: "operator"
-  # Auto-provisioned identities for the built-in CLI lanes and terminal.
+  # Runtime-internal. Issued per spawned process, never pasted by hand.
   - name: "lane-claude"
     token_env: "TESSERACT_MCP_LANE_CLAUDE_TOKEN"
     trust_tier: "trusted"

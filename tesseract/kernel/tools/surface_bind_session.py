@@ -23,17 +23,22 @@ class SurfaceBindSessionInput(BaseModel):
 class SurfaceBindSessionTool(Tool):
     default_posture = "auto"
     risk_class: ClassVar[str] = "autonomous"
+    group: ClassVar[str] = "showing-the-operator"
+    summary: ClassVar[str] = (
+        "Attach a lane or channel session to a surface so its card streams live updates."
+    )
+    use_when: ClassVar[str] = (
+        "A surface should reflect a running session's activity as it happens, "
+        "rather than a static snapshot."
+    )
+    not_when: ClassVar[str] = (
+        "`surface_update` for a one-off content change; this is for ongoing "
+        "live streaming from a session."
+    )
 
     @property
     def name(self) -> str:
         return "surface_bind_session"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Attach a controller lane / channel record to a surface "
-            "so the card streams live updates from that session."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

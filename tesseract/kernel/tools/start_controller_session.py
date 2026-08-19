@@ -90,19 +90,21 @@ class StartControllerSessionTool(Tool):
     default_posture: ClassVar[str] = "ask"
     risk_class: ClassVar[str] = "propose"
 
+    group: ClassVar[str] = "long-running-collaborators"
+    summary: ClassVar[str] = (
+        "Spawn a whole new agent controller session in the background and fire its first prompt."
+    )
+    use_when: ClassVar[str] = (
+        "Use to hand heavy work to a full controller session the operator can attach to and watch live."
+    )
+    not_when: ClassVar[str] = (
+        "a lane or interactive session you keep driving yourself turn by turn, which is "
+        "`lane_turn`/`session_send`."
+    )
+
     @property
     def name(self) -> str:
         return "start_controller_session"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Spawn a fresh agent controller session in the background and "
-            "fire an initial prompt. Returns the session_id so the "
-            "operator can attach with `agent --session <id>`. Use for "
-            "heavy lifts the chat brain wants the operator to be able "
-            "to watch live."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

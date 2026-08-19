@@ -1,5 +1,6 @@
 import { useEntityStore } from '../../../stores/entity';
 import { useRoutingStore } from '../../../stores/routing';
+import { Hint } from '../../ui/Hint';
 
 export function StatusLine() {
   const state = useEntityStore(s => s.state);
@@ -14,14 +15,16 @@ export function StatusLine() {
       <span className={`hud-sl-dot${isLive ? ' is-live' : ''}`} />
       <span className="hud-sl-text">{state}</span>
       {hasRoute && (
-        <span className="hud-sl-route" title={`${role} · ${provider} · ${model}`}>
-          <span className="hud-sl-route-sep">│</span>
-          <span className="hud-sl-role">{role}</span>
-          <span className="hud-sl-sep">·</span>
-          <span className="hud-sl-provider">{provider}</span>
-          <span className="hud-sl-sep">·</span>
-          <span className="hud-sl-model">{model}</span>
-        </span>
+        <Hint label={`${role} · ${provider} · ${model}`}>
+          <span className="hud-sl-route">
+            <span className="hud-sl-route-sep">│</span>
+            <span className="hud-sl-role">{role}</span>
+            <span className="hud-sl-sep">·</span>
+            <span className="hud-sl-provider">{provider}</span>
+            <span className="hud-sl-sep">·</span>
+            <span className="hud-sl-model">{model}</span>
+          </span>
+        </Hint>
       )}
     </div>
   );

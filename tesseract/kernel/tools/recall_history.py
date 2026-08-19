@@ -50,22 +50,23 @@ class RecallHistoryTool(Tool):
     default_posture: ClassVar[str] = "auto"
     risk_class: ClassVar[str] = "autonomous"
 
+    group: ClassVar[str] = "remembering"
+    summary: ClassVar[str] = "Search past session transcripts and workshop artifacts by free text."
+    use_when: ClassVar[str] = (
+        "Use to recall what happened in a prior session or workshop file — "
+        "returns ranked hits with a source path to `file_read` for full context."
+    )
+    not_when: ClassVar[str] = (
+        "use `memory_search` for promoted, authoritative facts. Hits here are "
+        "recall, not memory."
+    )
+
     def __init__(self, index: WorkIndex) -> None:
         self._index = index
 
     @property
     def name(self) -> str:
         return "recall_history"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Search past sessions and workshop artifacts by free-text "
-            "query. Returns ranked hits with `session:` / `workshop:` "
-            "provenance labels and source paths so you can `file_read` "
-            "the source for full context. Hits are NON-AUTHORITATIVE — "
-            "they are recall, not promoted memory."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

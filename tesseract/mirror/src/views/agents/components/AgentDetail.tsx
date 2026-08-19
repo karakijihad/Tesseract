@@ -1,3 +1,5 @@
+import { Block } from '../../../components/common/Block';
+import { Button } from '../../../components/common/Button';
 import { useEffect, useState } from 'react';
 import { useAgentsStore } from '../../../stores/agents';
 import {
@@ -5,6 +7,7 @@ import {
   saveAgentSource,
   toggleAgentDisabled,
 } from '../../../lib/api';
+import { Textarea } from '../../../components/common/Textarea';
 
 export function AgentDetail() {
   const detail = useAgentsStore((s) => s.detail);
@@ -96,51 +99,30 @@ export function AgentDetail() {
   return (
     <div className="agent-detail">
       <header className="agent-detail-head">
-        <h2 className="agent-detail-name">{detail.name}</h2>
-        <span className={`agent-status-badge is-${detail.status}`}>{detail.status}</span>
-        {detail.version && (
-          <span className="agent-detail-version t-meta">v{detail.version}</span>
-        )}
         {detail.disabled && (
           <span className="agent-status-badge is-disabled">disabled</span>
         )}
         <div className="agent-detail-actions">
-          <button
-            type="button"
-            className="agent-detail-btn"
+          <Button
             onClick={onToggleDisabled}
             disabled={toggling}
+            ariaLabel={detail.disabled ? 'enable agent' : 'disable agent'}
           >
             {toggling ? '…' : detail.disabled ? 'enable' : 'disable'}
-          </button>
+          </Button>
           {!editing && (
-            <button
-              type="button"
-              className="agent-detail-btn"
-              onClick={onEdit}
-              disabled={sourceLoading}
-            >
+            <Button onClick={onEdit} disabled={sourceLoading} ariaLabel="edit agent">
               {sourceLoading ? 'loading…' : 'edit'}
-            </button>
+            </Button>
           )}
           {editing && (
             <>
-              <button
-                type="button"
-                className="agent-detail-btn agent-detail-btn-primary"
-                onClick={onSave}
-                disabled={saving}
-              >
+              <Button onClick={onSave} disabled={saving} ariaLabel="save agent">
                 {saving ? 'saving…' : 'save'}
-              </button>
-              <button
-                type="button"
-                className="agent-detail-btn"
-                onClick={onCancel}
-                disabled={saving}
-              >
+              </Button>
+              <Button onClick={onCancel} disabled={saving} ariaLabel="cancel edit">
                 cancel
-              </button>
+              </Button>
             </>
           )}
         </div>
@@ -151,12 +133,12 @@ export function AgentDetail() {
       )}
 
       {editing ? (
-        <textarea
+        <Textarea
           className="agent-detail-editor"
           value={source}
-          onChange={(e) => setSource(e.target.value)}
+          onChange={setSource}
           spellCheck={false}
-          aria-label={`Edit agent ${selectedName}`}
+          ariaLabel={`Edit agent ${selectedName}`}
         />
       ) : (
         <>
@@ -165,10 +147,6 @@ export function AgentDetail() {
           )}
 
           <dl className="agent-detail-meta">
-            <div className="agent-detail-meta-row">
-              <dt className="t-meta">model_role</dt>
-              <dd>{detail.model_role}</dd>
-            </div>
             {detail.resolved_ref && (
               <div className="agent-detail-meta-row">
                 <dt className="t-meta">resolved_ref</dt>
@@ -196,10 +174,9 @@ export function AgentDetail() {
           {sectionEntries.length > 0 && (
             <div className="agent-detail-sections">
               {sectionEntries.map(([heading, body]) => (
-                <section key={heading} className="agent-detail-section">
-                  <h3 className="agent-detail-section-title">{heading}</h3>
+                <Block key={heading} title={heading}>
                   <pre className="agent-detail-section-body">{body}</pre>
-                </section>
+                </Block>
               ))}
             </div>
           )}

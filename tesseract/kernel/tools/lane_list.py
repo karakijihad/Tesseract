@@ -21,16 +21,17 @@ class LaneListTool(Tool):
     default_posture = "auto"
     risk_class: ClassVar[str] = "autonomous"
 
+    group: ClassVar[str] = "long-running-collaborators"
+    summary: ClassVar[str] = "Enumerate every live lane_id the controller currently hosts."
+    use_when: ClassVar[str] = "Use to discover what lanes exist right now, independent of any name."
+    not_when: ClassVar[str] = (
+        "named-lane bindings, which is `lane_named_list`; one lane's liveness/busy state, "
+        "which is `lane_status`."
+    )
+
     @property
     def name(self) -> str:
         return "lane_list"
-
-    @property
-    def description(self) -> str:
-        return (
-            "List every live (non-archived) lane the controller hosts. "
-            "Use lane_status / lane_attach to drill in. Read-only."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

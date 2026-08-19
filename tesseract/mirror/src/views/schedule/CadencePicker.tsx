@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 
-import { Hint } from '../../components/ui/Hint';
+import { Segmented } from '../../components/common/Segmented';
+import { Button } from '../../components/common/Button';
+import { Input } from '../../components/common/Input';
 import { IntervalCell } from './IntervalCell';
 import {
   type CadenceMode,
@@ -108,20 +110,16 @@ export function CadencePicker({ jobName, value, onCommit, onCancel, embedded = f
 
   return (
     <div className="cadence-picker" role="group" aria-label={`Edit cadence for ${jobName}`}>
-      <div className="cadence-picker-modes">
-        {(Object.keys(MODE_LABELS) as CadenceMode[]).map((m) => (
-          <Hint key={m} label={MODE_HINTS[m]} position="bottom" maxWidth={320}>
-            <button
-              type="button"
-              className={`cadence-picker-mode${mode === m ? ' is-active' : ''}`}
-              onClick={() => setMode(m)}
-              aria-pressed={mode === m}
-            >
-              {MODE_LABELS[m]}
-            </button>
-          </Hint>
-        ))}
-      </div>
+      <Segmented
+        items={(Object.keys(MODE_LABELS) as CadenceMode[]).map((m) => ({
+          key: m,
+          label: MODE_LABELS[m],
+          hint: MODE_HINTS[m],
+        }))}
+        value={mode}
+        onSelect={setMode}
+        label="Cadence shape"
+      />
 
       {mode === 'interval' && (
         <div className="cadence-picker-interval" aria-label="Interval fields">
@@ -152,13 +150,13 @@ export function CadencePicker({ jobName, value, onCommit, onCancel, embedded = f
           {(Object.keys(CRON_PLACEHOLDERS) as (keyof CronFields)[]).map((key) => (
             <label key={key} className="cadence-picker-cron-field">
               <span className="cadence-picker-cron-label">{CRON_PLACEHOLDERS[key]}</span>
-              <input
+              <Input
                 className="cadence-picker-cron-input"
                 value={cron[key]}
-                onChange={(e) => setCron({ ...cron, [key]: e.target.value })}
+                onChange={(next) => setCron({ ...cron, [key]: next })}
                 placeholder={CRON_PLACEHOLDERS[key]}
+                ariaLabel={CRON_PLACEHOLDERS[key]}
                 spellCheck={false}
-                autoCapitalize="off"
               />
             </label>
           ))}
@@ -176,17 +174,14 @@ export function CadencePicker({ jobName, value, onCommit, onCancel, embedded = f
 
       {!embedded && (
         <div className="cadence-picker-actions">
-          <button type="button" className="cadence-picker-btn is-cancel" onClick={onCancel}>
-            cancel
-          </button>
-          <button
-            type="button"
-            className="cadence-picker-btn is-save"
+          <Button onClick={onCancel}>cancel</Button>
+          <Button
+            tone="primary"
             onClick={handleSave}
             disabled={!!validationError || !cadenceString}
           >
             save
-          </button>
+          </Button>
         </div>
       )}
     </div>

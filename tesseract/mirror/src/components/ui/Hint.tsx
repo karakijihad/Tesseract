@@ -9,7 +9,10 @@ import {
 import { createPortal } from "react-dom";
 
 interface HintProps {
-  label: string;
+  /** Absent renders the children bare, with no popover and no listeners — for
+   *  a hint that only exists in one state (a disabled control explaining why).
+   *  The alternative was callers passing '' and getting an empty box. */
+  label?: string;
   children: ReactNode;
   /** Where the popover renders relative to the trigger. Defaults to 'top'.
    *  'right' serves the HUD section stacks (2026-07-31) — vertical icon
@@ -43,7 +46,12 @@ export function Hint({
     const trigger = triggerRef.current;
     const pop = popRef.current;
     if (!trigger || !pop) return;
-    const tRect = trigger.getBoundingClientRect();
+    // Measure the CHILD, not the wrapper. The wrapper is `display: contents`
+    // so it generates no box of its own — which is what lets a Hint be dropped
+    // around a flex or grid child without moving the layout, and is why 87
+    // controls reached for a native `title=` instead of this component.
+    const measured = trigger.firstElementChild ?? trigger;
+    const tRect = measured.getBoundingClientRect();
     const pRect = pop.getBoundingClientRect();
     const vw = window.innerWidth;
     const vh = window.innerHeight;
@@ -106,6 +114,8 @@ export function Hint({
   const handleEnter = () => setOpen(true);
   const handleLeave = () => setOpen(false);
 
+  if (!label) return <>{children}</>;
+
   return (
     <span
       ref={triggerRef}
@@ -116,6 +126,12 @@ export function Hint({
       onBlur={handleLeave}
     >
       {children}
+      {/* The hint text, in the DOM whether or not the popover is open.
+          A native `title=` was always readable by assistive tech and by a
+          test; a popover that only exists on hover is readable by neither,
+          which would make replacing 78 of them a downgrade. Visually hidden,
+          never measured — `reposition` takes the FIRST element child. */}
+      <span className="hint-label">{label}</span>
       {open &&
         createPortal(
           <span

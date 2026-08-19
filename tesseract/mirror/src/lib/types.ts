@@ -162,11 +162,17 @@ export interface SessionCreatedData {
 }
 
 export interface SessionMeta {
-  session_id: string;
+  // A conversation's id, stamped once when it was created. It was a filename
+  // minted from the clock until 2026-08-18, which is why nothing may derive a
+  // date or a name from it.
+  chat_id: string;
+  title: string;
+  created_at: string;
   started_at: string;
   ended_at: string | null;
   turn_count: number;
   model: string;
+  archived?: boolean;
 }
 
 export interface SessionListData {
@@ -195,27 +201,23 @@ export interface RawHistoryEntry {
   };
 }
 
-export interface SessionLoadedData {
-  session_id: string;
-  save_name: string;
-  turn_count: number;
-  history: RawHistoryEntry[];
-}
-
 export interface SessionSavedData {
   session_id: string;
-  save_name: string;
+  chat_id: string;
+  title: string;
   path: string;
 }
 
 export type SessionResetData = Record<string, never>;
 
 export interface SessionDeletedData {
-  save_name: string;
+  chat_id: string;
+  title: string;
 }
 
 export interface SessionCompactFileData {
-  save_name: string;
+  chat_id: string;
+  title: string;
   tokens_before: number;
   tokens_after: number;
 }
@@ -576,14 +578,32 @@ export interface VoiceFinalData {
   destination: VoiceDestination;
 }
 
+// `voice_woken` — the wake phrase just landed, MID-utterance.
+//
+// Carries nothing: the content is that it arrived, and when. It fires at most
+// once per utterance, on the edge, the moment the streaming decoder hears the
+// phrase — not when the operator stops talking. That timing is the reason it
+// exists. The gate used to decide on the committed buffer, so someone could
+// speak for a minute and only then learn nothing had been listening, and there
+// was no instant at which a truthful "go ahead" could have been shown.
+export type VoiceWokenData = Record<string, never>;
+
 // `voice_discarded` — an utterance the wake-word gate refused. Arrives
-// INSTEAD of `voice_final`, so the words never become a chat bubble, a
-// turn, or speech. `score` is how close the utterance came to the wake
-// phrase, which is what tells the operator whether to retune the
-// threshold in mirror.yaml or simply speak up.
+// INSTEAD of `voice_final`, so nothing becomes a chat bubble, a turn, or
+// speech.
+//
+// There is deliberately NO transcript here. The gate decides from audio and
+// runs before transcription, so a refused utterance is never sent to a speech
+// engine at all — which is what keeps ambient speech away from the cloud
+// STT fallback. What the operator said is still visible to them: the
+// browser's own Web Speech preview (`voice.partialTranscript`) is local and
+// independent of this path.
+//
+// And no score. The decoder hears the phrase or it hears nothing, so there is
+// no confidence number; the length is carried instead, because it separates a
+// gate too tight from a microphone that overheard the room.
 export interface VoiceDiscardedData {
-  text: string;
-  score: number;
+  audio_seconds: number;
   reason: "wake_word";
 }
 
@@ -595,6 +615,16 @@ export interface TtsChunkData {
   provider: string; // catalog model id of the lane that synthesized it
   sequence: number; // monotonic per turn
   is_final: boolean; // last chunk for this utterance
+  // Whether `provider` is the lane the operator chose or one the chain fell
+  // through to — the voice twin of the chat `is_fallback` above. The HUD
+  // marks the difference: a voice substituted in silence is the same defect
+  // as a model that fails to download in silence.
+  is_fallback: boolean;
+  // The engine name behind `provider`, resolved server-side. `provider` is
+  // the bare catalog model id (`af_heart`) so the cost ledger can debit
+  // without a second mapping — nothing on this side can turn that into
+  // "kokoro", and guessing by splitting it produced exactly the wrong label.
+  engine: string;
 }
 
 // `voice_instruction` envelope — why the reply is not being spoken.
@@ -625,14 +655,6 @@ export interface ConfigReloadedData {
   summary: string;
   detail: Record<string, unknown>;
   ok: boolean;
-}
-
-export interface CodeDriftDetectedData {
-  classification: "restart_required" | "frontend_only";
-  paths: string[];
-  head_drift: boolean;
-  dirty_drift: boolean;
-  head_sha: string | null;
 }
 
 export interface MessageStats {
@@ -694,10 +716,22 @@ export interface ScheduleJobLastResult {
 export interface ScheduleJobRuntime {
   name: string;
   cadence: string;
+  // A row fires on a clock or on an event, never both. `when` names the
+  // condition, `when_reason` is that condition's own sentence about the last
+  // time it was asked — "3 of 40 new skill uses since the last pass" is this
+  // row's answer to the question a cron row answers with a next-fire time.
+  when: string;
+  when_config: Record<string, unknown>;
+  when_reason: string;
   enabled: boolean;
   circuit_broken: boolean;
   consecutive_failures: number;
   last_fired_at: string | null;
+  // Who caused the last run: scheduled | catchup | operator | assistant |
+  // alarm. `null` means this backend process has not fired the job — a
+  // `last_fired_at` seeded from the run log at boot carries no trigger, and
+  // the row says "unknown" rather than assuming it was the schedule.
+  last_trigger: string | null;
   last_result: ScheduleJobLastResult | null;
   uses_llm?: boolean;
   model_role?: string | null;
@@ -708,6 +742,11 @@ export interface ScheduleJobRuntime {
 export interface ScheduleJob {
   name: string;
   cadence: string;
+  when?: string;
+  // What this row is for, in the operator's words. Shipped rows carry theirs
+  // in the run manifest and operator rows carry their own; the backend sends
+  // whichever applies, and this tab shows it rather than restating it.
+  summary?: string;
   handler: string;
   enabled: boolean;
   on_failure: "log" | "alert" | "disable";
@@ -774,6 +813,9 @@ export interface ScheduleJobDoneData {
   payload: Record<string, unknown>;
   duration_ms: number;
   circuit_broken: boolean;
+  // Optional so a frontend running ahead of its backend still parses the
+  // envelope — the app self-updates, so version skew is a normal state.
+  trigger_source?: string;
 }
 
 export interface ScheduleJobFailedData {
@@ -831,6 +873,59 @@ export interface CatalogEntry {
   model: string;
   kind: ProviderModelKind;
   context_window: number;
+  /** Advisory — what the catalog says this model is for (`brain`, `tools`,
+   *  `vision`, …). Shown in the picker; `allowed_kinds` is what constrains. */
+  good_for: string[];
+}
+
+export interface ChainEntry {
+  ref: string;
+  resolved: boolean;
+  tier?: "api" | "cli" | "local";
+  provider?: string;
+  model?: string;
+  kind?: ProviderModelKind;
+  context_window?: number;
+  good_for?: string[];
+  /** Whether an adapter could be built from this ref — the same gate the
+   *  runtime raises from, not a prediction. Absent from a backend older than
+   *  the field, which the row reads as "nothing was reported". */
+  available?: boolean;
+  /** The runtime's own sentence for why not, naming the flag or variable that
+   *  is false. Null when `available`. */
+  reason?: string | null;
+}
+
+export interface Chain {
+  name: string;
+  /** Null only when every entry is unresolvable. */
+  kind: ProviderModelKind | null;
+  entries: ChainEntry[];
+  /** The roles that follow this chain — editing it moves all of them. */
+  used_by: string[];
+}
+
+export interface ChainsResponse {
+  chains: Chain[];
+}
+
+export interface ChainWriteResponse {
+  name: string;
+  refs?: string[];
+  used_by?: string[];
+  deleted?: boolean;
+  applied?: boolean;
+  live_update_failed?: boolean;
+  live_update_error?: string | null;
+}
+
+export interface RoleChainResponse {
+  role: string;
+  chain: string;
+  refs: string[];
+  applied: boolean;
+  live_update_failed?: boolean;
+  live_update_error?: string | null;
 }
 
 export interface CatalogTargetMeta {
@@ -910,6 +1005,12 @@ export interface IdentityCompactThreshold {
 
 export interface IdentityVoiceProviderConfig {
   rate: number;
+  /** What `rate` is a price of. TTS lanes use either: a conventional lane
+   * bills per character of input, a generative one per second of produced
+   * speech. The two differ by five orders of magnitude, so the label beside
+   * the number has to follow the lane rather than the side of the subsystem.
+   * Optional for back-compat with a backend that predates the field. */
+  rate_unit?: "chars" | "audio_hour";
   cap_usd: number;
 }
 
@@ -1131,7 +1232,7 @@ export interface AgentDetail extends Agent {
   sections: Record<string, string>;
 }
 
-// API keys (P5). Read from `.env.example`, written to <TESSERACT_HOME>/.env.
+// Keys. Read from `.env.example`, written to <TESSERACT_HOME>/.env.
 // No value is ever carried in either direction except the token the backend
 // generates, which comes back once in the response that creates it.
 
@@ -1148,8 +1249,8 @@ export interface EnvKey {
 }
 
 export interface EnvKeySection {
+  /** The section caption in `.env.example`, which IS the tab. */
   title: string;
-  advanced: boolean;
   keys: EnvKey[];
 }
 
@@ -1167,7 +1268,12 @@ export interface McpVerb {
 }
 
 export interface McpSurface {
-  clients: McpClientKey[];
+  /** Whether `/mcp` serves anything. Off by default — the runtime needs no
+   *  MCP surface to run itself, so it exists only for an outside tool. */
+  enabled: boolean;
+  /** One identity, one token. There were four; three were never handed out
+   *  by anything and carried the same authority as the one that was. */
+  client: McpClientKey | null;
   verbs: McpVerb[];
   endpoint: string | null;
   error: string | null;

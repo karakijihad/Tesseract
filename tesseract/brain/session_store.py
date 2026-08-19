@@ -31,6 +31,8 @@ from typing import Any
 
 from ruamel.yaml import YAML
 
+from tesseract.lib.yaml_io import atomic_write_text
+
 logger = logging.getLogger(__name__)
 
 
@@ -167,6 +169,7 @@ def save_session(
     history: list[dict[str, Any]],
     *,
     index_work: bool = True,
+    count_interaction: bool = True,
 ) -> Path:
     path = session_file(session_dir, name)
     if path is None:
@@ -179,9 +182,17 @@ def save_session(
         model=model,
         history=sanitize_history_for_persistence(history),
     )
-    path.write_text(json.dumps(state.to_dict(), indent=2), encoding="utf-8")
+    # Atomic, not `write_text`: autosave rewrites this file on a timer, so a
+    # kill during a write is the event it exists to survive, and `load_session`
+    # discards malformed JSON — a truncated snapshot is a lost one.
+    atomic_write_text(path, json.dumps(state.to_dict(), indent=2))
+    # `count_interaction=False` for a mid-session flush that rewrites the SAME
+    # file repeatedly: the count is interactions, not writes, so the periodic
+    # writer must not turn one conversation into dozens of them. The one save
+    # that closes the session still counts it.
     try:
-        _increment_soul_interaction_count()
+        if count_interaction:
+            _increment_soul_interaction_count()
     except Exception:  # never block session-save on workspace IO
         global _SOUL_INCREMENT_WARNED
         if not _SOUL_INCREMENT_WARNED:
@@ -202,158 +213,7 @@ def save_session(
             index_conversation_file(path)
         except Exception:  # noqa: BLE001 — never block save on indexer faults
             logger.exception("save_session: work-index hook raised (swallowed)")
-    # 2026-05-23: write-through to the session-metadata derived index
-    # so the Mirror drawer's list path can read from SQLite instead of
-    # walking + JSON-parsing every file on every render.
-    try:
-        _maybe_upsert_session_metadata(path, state, archived_in=None)
-    except Exception:  # noqa: BLE001 — never block save on metadata hook
-        logger.exception("save_session: session_metadata hook raised (swallowed)")
     return path
-
-
-def _session_metadata_index_path() -> Path:
-    """Resolve the session-metadata sqlite path via the canonical
-    env-or-default home pattern. Same shape as ``index_conversation_file``.
-    """
-    from tesseract.paths import TESSERACT_HOME as _DEFAULT_HOME
-
-    home = Path(os.environ.get("TESSERACT_HOME") or _DEFAULT_HOME)
-    return home / "session_metadata.sqlite"
-
-
-def _maybe_upsert_session_metadata(
-    path: Path,
-    state: "SessionState",
-    *,
-    archived_in: str | None,
-) -> None:
-    """Mirror a save into the session-metadata derived index. Best-effort."""
-    try:
-        from tesseract.memory.session_metadata import (
-            SessionMetadataIndex,
-            SessionMetaRow,
-        )
-    except Exception:  # noqa: BLE001
-        return
-    try:
-        idx = SessionMetadataIndex(_session_metadata_index_path())
-    except Exception:  # noqa: BLE001
-        return
-    try:
-        idx.upsert(SessionMetaRow(
-            session_id=path.stem,
-            started_at=state.started_at,
-            ended_at=state.ended_at,
-            turn_count=int(state.turn_count or 0),
-            model=state.model or "",
-            file_path=str(path),
-            archived_in=archived_in,
-        ))
-    except Exception:  # noqa: BLE001
-        pass
-    finally:
-        try:
-            idx.close()
-        except Exception:  # noqa: BLE001
-            pass
-
-
-def _maybe_delete_session_metadata(session_id: str) -> None:
-    try:
-        from tesseract.memory.session_metadata import SessionMetadataIndex
-    except Exception:  # noqa: BLE001
-        return
-    try:
-        idx = SessionMetadataIndex(_session_metadata_index_path())
-    except Exception:  # noqa: BLE001
-        return
-    try:
-        idx.delete(session_id)
-    finally:
-        try:
-            idx.close()
-        except Exception:  # noqa: BLE001
-            pass
-
-
-def _maybe_rename_session_metadata(
-    old_id: str, new_id: str, new_path: Path,
-) -> None:
-    try:
-        from tesseract.memory.session_metadata import SessionMetadataIndex
-    except Exception:  # noqa: BLE001
-        return
-    try:
-        idx = SessionMetadataIndex(_session_metadata_index_path())
-    except Exception:  # noqa: BLE001
-        return
-    try:
-        idx.rename(old_id, new_id, str(new_path))
-    finally:
-        try:
-            idx.close()
-        except Exception:  # noqa: BLE001
-            pass
-
-
-def _maybe_archive_session_metadata(
-    session_id: str, archived_in: str, new_path: Path,
-) -> None:
-    try:
-        from tesseract.memory.session_metadata import SessionMetadataIndex
-    except Exception:  # noqa: BLE001
-        return
-    try:
-        idx = SessionMetadataIndex(_session_metadata_index_path())
-    except Exception:  # noqa: BLE001
-        return
-    try:
-        idx.update_archived(session_id, archived_in, str(new_path))
-    finally:
-        try:
-            idx.close()
-        except Exception:  # noqa: BLE001
-            pass
-
-
-def _list_active_from_index() -> list[dict[str, Any]]:
-    """Read the active-sessions view from the metadata index. Returns
-    `[]` on miss / empty / failure so the caller falls back to disk.
-    """
-    try:
-        from tesseract.memory.session_metadata import SessionMetadataIndex
-    except Exception:  # noqa: BLE001
-        return []
-    try:
-        idx = SessionMetadataIndex(_session_metadata_index_path())
-    except Exception:  # noqa: BLE001
-        return []
-    try:
-        return idx.list_active_by_day()
-    finally:
-        try:
-            idx.close()
-        except Exception:  # noqa: BLE001
-            pass
-
-
-def _list_archive_from_index(limit: int) -> list[dict[str, Any]]:
-    try:
-        from tesseract.memory.session_metadata import SessionMetadataIndex
-    except Exception:  # noqa: BLE001
-        return []
-    try:
-        idx = SessionMetadataIndex(_session_metadata_index_path())
-    except Exception:  # noqa: BLE001
-        return []
-    try:
-        return idx.list_archive(limit=limit)
-    finally:
-        try:
-            idx.close()
-        except Exception:  # noqa: BLE001
-            pass
 
 
 def index_conversation_file(path: Path) -> None:
@@ -518,16 +378,7 @@ def list_sessions_by_day(session_dir: Path) -> list[dict[str, Any]]:
     sessions (no date prefix) land in a synthetic `"custom"` bucket
     sorted last so the date-ordered runs stay coherent.
 
-    Mirror drawer consumes this via `GET /api/sessions/days`.
-
-    Reads from the SQLite metadata index when populated; falls back to
-    the disk walk when the index is empty (e.g. first run before
-    backfill, or test fixtures that bypass save_session). Files stay
-    canonical — the index is rebuildable.
     """
-    fast = _list_active_from_index()
-    if fast:
-        return fast
     if not session_dir.exists():
         return []
     by_day: dict[str, list[dict[str, Any]]] = {}
@@ -587,13 +438,7 @@ def list_archive(
     keeps the route handler bounded under unrealistic backlogs.
     Operator with a deeper archive can raise the cap or load the
     files directly from disk.
-
-    Reads from the SQLite metadata index when populated; falls back to
-    the disk walk when the index is empty.
     """
-    fast = _list_archive_from_index(limit)
-    if fast:
-        return fast
     archive_root = session_dir / "archive"
     if not archive_root.exists():
         return []
@@ -669,15 +514,6 @@ def archive_old_sessions(
             logger.warning("sessions_archive rename failed (%s -> %s): %s", p, dst, exc)
             continue
         moved.append(dst)
-        # Sync the archival decision into the metadata index. The row
-        # already exists (created on the original save); we just flip
-        # `archived_in` and update the path.
-        try:
-            _maybe_archive_session_metadata(
-                p.stem, file_date.strftime("%Y-%m"), dst,
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception("archive_old_sessions: metadata hook raised (swallowed)")
     if moved:
         logger.info("sessions_archive moved %d file(s) into archive/", len(moved))
     return moved
@@ -709,19 +545,13 @@ def delete_session(session_dir: Path, name: str) -> tuple[bool, str]:
     except OSError as e:
         logger.warning("session delete failed (%s): %s", path, e)
         return False, "io_error"
-    # Keep the derived metadata index in sync. Best-effort; the file is
-    # already gone, the row is just bookkeeping.
-    try:
-        _maybe_delete_session_metadata(name)
-    except Exception:  # noqa: BLE001
-        logger.exception("delete_session: metadata hook raised (swallowed)")
     return True, ""
 
 
 # Path slug rules — keep filenames operator-readable and OS-safe. Allowed:
 # ASCII letters, digits, dot, dash, underscore. Disallowed everywhere else:
 # any slash, backslash, colon, leading/trailing whitespace, leading dots,
-# NULs, and non-ASCII characters (so cross-platform repo sync — Phase 17 —
+# NULs, and non-ASCII characters (so syncing the tree between machines
 # can't hit NFC/NFD filename collisions on macOS). Empty slugs rejected.
 _SLUG_MAX_LEN = 80
 
@@ -776,10 +606,6 @@ def rename_session(session_dir: Path, old_name: str, new_name: str) -> tuple[boo
     except OSError as e:
         logger.warning("session rename failed (%s -> %s): %s", src, dst, e)
         return False, "io_error"
-    try:
-        _maybe_rename_session_metadata(old_name, new_name, dst)
-    except Exception:  # noqa: BLE001
-        logger.exception("rename_session: metadata hook raised (swallowed)")
     return True, ""
 
 
@@ -805,14 +631,6 @@ def duplicate_session(
     except OSError as e:
         logger.warning("session duplicate failed (%s -> %s): %s", src, dst, e)
         return False, "io_error"
-    # Mirror the duplicate into the metadata index by reloading and
-    # upserting. Cheap (one JSON parse), keeps the drawer in sync.
-    try:
-        state = load_session(dst)
-        if state is not None:
-            _maybe_upsert_session_metadata(dst, state, archived_in=None)
-    except Exception:  # noqa: BLE001
-        logger.exception("duplicate_session: metadata hook raised (swallowed)")
     return True, ""
 
 
@@ -839,7 +657,7 @@ def preview_session(
         if msg.get("_reasoning"):
             continue
         content = msg.get("content")
-        text = _extract_text(content)
+        text = extract_message_text(content)
         if not text:
             continue
         turns.append({"role": role, "text": text[:600]})
@@ -853,10 +671,15 @@ def preview_session(
     }
 
 
-def _extract_text(content: Any) -> str:
+def extract_message_text(content: Any) -> str:
     """OpenAI/Gemini histories use mixed content shapes — stringify just
     enough to render a preview. Tool-call blocks and image parts are
-    skipped to keep the popover readable."""
+    skipped to keep the popover readable.
+
+    Public because it is about message CONTENT, not session identity — the
+    same reason `sanitize_history_for_persistence` and `index_conversation_file`
+    survive this module's retirement, and `chat_store.preview_chat` reads it.
+    """
     if isinstance(content, str):
         return content
     if isinstance(content, list):

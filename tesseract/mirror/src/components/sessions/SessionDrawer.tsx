@@ -1,14 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSessionStore } from '../../stores/session';
+import { useConversationStore } from '../../stores/conversation';
 import { useUIStore } from '../../stores/ui';
 import { sendCommand } from '../../lib/commands';
 import { Hint } from '../ui/Hint';
 import {
   fetchSessionPreview,
-  postSessionDuplicate,
+  postSessionArchive,
   postSessionRename,
   type SessionPreview,
 } from '../../lib/api';
+import { Checkbox } from '../common/Checkbox';
+import { Input } from '../common/Input';
+import { Button } from '../../components/common/Button';
+import { CloseButton } from '../common/CloseButton';
+import { Scrim } from '../common/Scrim';
+import { Disclosure } from '../common/Disclosure';
 
 function relativeTime(iso: string): string {
   const then = new Date(iso).getTime();
@@ -36,7 +43,9 @@ export function SessionDrawer() {
   const open = useUIStore((s) => s.drawerOpen);
   const setOpen = useUIStore((s) => s.setDrawerOpen);
   const sessions = useSessionStore((s) => s.sessions);
-  const saveName = useSessionStore((s) => s.saveName);
+  // The conversation the operator is IN, not the one they last saved. A title
+  // is not unique and was never identity; the active chat id is both.
+  const activeChatId = useConversationStore((s) => s.activeChatId);
   const fetchList = useSessionStore((s) => s.fetchList);
   const archive = useSessionStore((s) => s.archive);
   const archiveLoaded = useSessionStore((s) => s.archiveLoaded);
@@ -48,7 +57,7 @@ export function SessionDrawer() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const selectAllRef = useRef<HTMLInputElement>(null);
 
-  const allIds = useMemo(() => sessions.map((s) => s.session_id), [sessions]);
+  const allIds = useMemo(() => sessions.map((s) => s.chat_id), [sessions]);
   const allSelected = allIds.length > 0 && allIds.every((id) => selected.has(id));
   const someSelected = selected.size > 0 && !allSelected;
 
@@ -63,8 +72,12 @@ export function SessionDrawer() {
 
   useEffect(() => {
     if (!open) return;
+    // ONE source. This used to also fire `/sessions`, whose reply writes the
+    // same store field from a different function — capped at 20 and ordered by
+    // last activity, where this one is unbounded and ordered by creation. Two
+    // answers racing into one slot meant the row order and the row count
+    // changed between openings depending on which landed last.
     fetchList();
-    sendCommand('/sessions');
     asideRef.current?.focus();
   }, [open, fetchList]);
 
@@ -137,12 +150,7 @@ export function SessionDrawer() {
 
   return (
     <>
-      <button
-        type="button"
-        className="drawer-scrim"
-        onClick={() => setOpen(false)}
-        aria-label="Close sessions"
-      />
+      <Scrim onClick={() => setOpen(false)} ariaLabel="Close sessions" level="drawer" />
       <aside
         ref={asideRef}
         className="session-drawer"
@@ -154,71 +162,60 @@ export function SessionDrawer() {
         <header className="session-drawer-head">
           <span className="session-drawer-title">Sessions</span>
           <Hint label="Save current session (/save)" position="bottom" maxWidth={200}>
-            <button
-              type="button"
-              className="session-drawer-save"
+            <Button
               onClick={saveCurrent}
             >
               Save
-            </button>
+            </Button>
           </Hint>
           <Hint label="Close (Esc)" position="bottom" maxWidth={120}>
-            <button
-              type="button"
-              className="session-drawer-close"
-              onClick={() => setOpen(false)}
-              aria-label="Close"
-            >
-              ×
-            </button>
+            <CloseButton onClick={() => setOpen(false)} ariaLabel="Close" />
           </Hint>
         </header>
         <div className="session-drawer-actions" role="toolbar" aria-label="Selection actions">
           <Hint label={allSelected ? 'Clear selection' : 'Select all'} position="bottom" maxWidth={160}>
-            <label className="session-select-all">
-              <input
-                ref={selectAllRef}
-                type="checkbox"
-                className="session-row-check"
+            {/* The count is the checkbox's LABEL, not a span beside a bare
+                box in a wrapping label — two accessible names competing, with
+                `aria-label` silently winning over the word on screen. The
+                pill frame is all `session-select-all` owns. */}
+            <div className="session-select-all">
+              <Checkbox
+                inputRef={selectAllRef}
                 checked={allSelected}
                 onChange={toggleAll}
                 disabled={allIds.length === 0}
-                aria-label={allSelected ? 'Clear selection' : 'Select all sessions'}
+                label={
+                  <span className="t-caption">
+                    {allSelected ? 'None' : someSelected ? `${selected.size}/${allIds.length}` : 'All'}
+                  </span>
+                }
               />
-              <span className="t-caption">
-                {allSelected ? 'None' : someSelected ? `${selected.size}/${allIds.length}` : 'All'}
-              </span>
-            </label>
+            </div>
           </Hint>
           <Hint label={canLoad ? 'Load selected session' : 'Select one row to load'} position="bottom" maxWidth={220}>
-            <button
-              type="button"
-              className="session-action"
+            <Button
               onClick={loadSelected}
               disabled={!canLoad}
             >
               Load
-            </button>
+            </Button>
           </Hint>
           <Hint label={canBatch ? 'Delete selected sessions' : 'Select rows to delete'} position="bottom" maxWidth={220}>
-            <button
-              type="button"
-              className={`session-action${confirmDelete ? ' is-confirming' : ''}`}
+            <Button
+              tone="danger"
               onClick={deleteSelected}
               disabled={!canBatch}
             >
               {deleteLabel}
-            </button>
+            </Button>
           </Hint>
           <Hint label="Batch-compact selected sessions (Phase 8b — pending)" position="bottom" maxWidth={260}>
-            <button
-              type="button"
-              className="session-action"
+            <Button
               onClick={compactSelected}
               disabled={!canBatch}
             >
               Compact
-            </button>
+            </Button>
           </Hint>
         </div>
         <div className="session-drawer-list">
@@ -227,35 +224,36 @@ export function SessionDrawer() {
           )}
           {sessions.map((s) => (
             <SessionRow
-              key={s.session_id}
-              sessionId={s.session_id}
+              key={s.chat_id}
+              chatId={s.chat_id}
+              title={s.title}
               startedAt={s.started_at}
               endedAt={s.ended_at}
               turnCount={s.turn_count}
-              isCurrent={s.session_id === saveName}
-              isSelected={selected.has(s.session_id)}
-              onToggleSelect={() => toggleRow(s.session_id)}
+              isCurrent={s.chat_id === activeChatId}
+              isSelected={selected.has(s.chat_id)}
+              onToggleSelect={() => toggleRow(s.chat_id)}
               onMutated={fetchList}
             />
           ))}
-          {/* Phase 1 — archive expandable. Sessions older than 7 days
-              are moved here by the daily `sessions_archive` cron. The
-              fetch is on-demand to keep the drawer cheap. */}
+          {/* Archive expandable. A conversation lands here when the operator
+              archives it or /reset leaves it behind — archiving is a flag on
+              the record, so nothing moves and nothing is lost. The fetch is
+              on-demand to keep the drawer cheap. */}
           <div className="session-archive-section">
-            <button
-              type="button"
-              className="session-archive-toggle"
-              onClick={() => {
+            <Disclosure
+              variant="row"
+              open={archiveOpen}
+              onToggle={() => {
                 if (!archiveOpen && !archiveLoaded) {
                   void fetchArchive();
                 }
                 setArchiveOpen((v) => !v);
               }}
-              aria-expanded={archiveOpen}
             >
               {archiveOpen ? '▾' : '▸'} Archive
               {archiveLoaded && archive.length > 0 ? ` · ${archive.length}` : ''}
-            </button>
+            </Disclosure>
             {archiveOpen && (
               <div className="session-archive-list">
                 {!archiveLoaded && (
@@ -265,15 +263,11 @@ export function SessionDrawer() {
                   <div className="session-drawer-empty">Archive is empty.</div>
                 )}
                 {archive.map((row) => (
-                  <div key={row.session_id} className="session-archive-row">
-                    <span className="session-archive-bucket t-caption">
-                      {row.archived_in}
-                    </span>
-                    <span className="session-archive-name">
-                      {row.session_id}
-                    </span>
+                  <div key={row.chat_id} className="session-archive-row">
+                    <span className="session-archive-name">{row.title}</span>
                     <span className="session-archive-meta t-caption">
-                      {row.turn_count} turns · {relativeTime(row.started_at)}
+                      {row.turn_count} turns ·{' '}
+                      {relativeTime(row.ended_at ?? row.started_at)}
                     </span>
                   </div>
                 ))}
@@ -287,7 +281,8 @@ export function SessionDrawer() {
 }
 
 interface SessionRowProps {
-  sessionId: string;
+  chatId: string;
+  title: string;
   startedAt: string;
   endedAt: string | null;
   turnCount: number;
@@ -298,7 +293,8 @@ interface SessionRowProps {
 }
 
 function SessionRow({
-  sessionId,
+  chatId,
+  title,
   startedAt,
   endedAt,
   turnCount,
@@ -309,7 +305,7 @@ function SessionRow({
 }: SessionRowProps) {
   const stale = isStale(startedAt);
   const [renaming, setRenaming] = useState(false);
-  const [renameValue, setRenameValue] = useState(sessionId);
+  const [renameValue, setRenameValue] = useState(title);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [previewState, setPreviewState] = useState<
@@ -327,7 +323,7 @@ function SessionRow({
 
   const startRename = () => {
     setError(null);
-    setRenameValue(sessionId);
+    setRenameValue(title);
     setRenaming(true);
   };
 
@@ -338,14 +334,14 @@ function SessionRow({
 
   const submitRename = async () => {
     const target = renameValue.trim();
-    if (!target || target === sessionId) {
+    if (!target || target === title) {
       cancelRename();
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      await postSessionRename(sessionId, target);
+      await postSessionRename(chatId, target);
       setRenaming(false);
       await onMutated();
     } catch (e) {
@@ -355,15 +351,18 @@ function SessionRow({
     }
   };
 
-  const handleDuplicate = async () => {
-    const dest = `${sessionId}-copy`;
+  // Archive, not duplicate. A copy would be a second record of one
+  // conversation — the thing this whole surface exists to stop — and delete
+  // refuses until a chat is archived, so without this control the archive and
+  // the delete button were both out of reach from here.
+  const handleArchive = async () => {
     setBusy(true);
     setError(null);
     try {
-      await postSessionDuplicate(sessionId, dest);
+      await postSessionArchive(chatId);
       await onMutated();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'duplicate failed');
+      setError(e instanceof Error ? e.message : 'archive failed');
     } finally {
       setBusy(false);
     }
@@ -378,7 +377,7 @@ function SessionRow({
     if (previewState.kind === 'ready') return;
     setPreviewState({ kind: 'loading' });
     try {
-      const data = await fetchSessionPreview(sessionId);
+      const data = await fetchSessionPreview(chatId);
       setPreviewState({ kind: 'ready', data });
     } catch (e) {
       setPreviewState({
@@ -397,22 +396,19 @@ function SessionRow({
         (stale ? ' is-stale' : '')
       }
     >
-      <input
-        type="checkbox"
-        className="session-row-check"
+      <Checkbox
         checked={isSelected}
         onChange={onToggleSelect}
-        aria-label={`Select ${sessionId}`}
+        ariaLabel={`Select ${title}`}
       />
       <div className="session-row-body">
         {renaming ? (
           <div className="session-row-rename">
-            <input
-              ref={renameInputRef}
-              type="text"
+            <Input
+              inputRef={renameInputRef}
               className="session-row-rename-input"
               value={renameValue}
-              onChange={(e) => setRenameValue(e.target.value)}
+              onChange={setRenameValue}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
                   e.preventDefault();
@@ -423,35 +419,26 @@ function SessionRow({
                 }
               }}
               disabled={busy}
-              aria-label="New session name"
+              ariaLabel="New conversation title"
             />
-            <button
-              type="button"
-              className="session-row-action"
-              onClick={() => void submitRename()}
-              disabled={busy}
-            >
+            <Button onClick={() => void submitRename()} disabled={busy}>
               save
-            </button>
-            <button
-              type="button"
-              className="session-row-action"
-              onClick={cancelRename}
-              disabled={busy}
-            >
+            </Button>
+            <Button onClick={cancelRename} disabled={busy}>
               cancel
-            </button>
+            </Button>
           </div>
         ) : (
           <div className="session-row-name">
-            {sessionId}
+            {title}
             {stale && (
-              <span
-                className="session-row-stale"
-                title="Older than yesterday — manual /load only"
-              >
-                stale
-              </span>
+              <Hint label="Older than yesterday — manual /load only">
+                <span
+                  className="session-row-stale"
+                >
+                  stale
+                </span>
+              </Hint>
             )}
           </div>
         )}
@@ -487,35 +474,23 @@ function SessionRow({
       {!renaming && (
         <div className="session-row-actions" role="group" aria-label="Row actions">
           <Hint label={previewOpen ? 'Hide preview' : 'Show first turns'} position="bottom" maxWidth={180}>
-            <button
-              type="button"
-              className="session-row-action"
+            <Button
               onClick={togglePreview}
               disabled={busy}
-              aria-pressed={previewOpen}
+              active={previewOpen}
             >
               {previewOpen ? 'hide' : 'preview'}
-            </button>
+            </Button>
           </Hint>
-          <Hint label="Rename this session file" position="bottom" maxWidth={180}>
-            <button
-              type="button"
-              className="session-row-action"
-              onClick={startRename}
-              disabled={busy}
-            >
+          <Hint label="Rename this conversation" position="bottom" maxWidth={180}>
+            <Button onClick={startRename} disabled={busy}>
               rename
-            </button>
+            </Button>
           </Hint>
-          <Hint label="Copy as <name>-copy" position="bottom" maxWidth={180}>
-            <button
-              type="button"
-              className="session-row-action"
-              onClick={() => void handleDuplicate()}
-              disabled={busy}
-            >
-              duplicate
-            </button>
+          <Hint label="Move to the archive — delete needs this first" position="bottom" maxWidth={240}>
+            <Button onClick={() => void handleArchive()} disabled={busy}>
+              archive
+            </Button>
           </Hint>
         </div>
       )}

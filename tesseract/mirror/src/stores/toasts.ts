@@ -10,27 +10,17 @@ export interface ToastAlarmMeta {
   snoozeOptions: string[];
 }
 
-export interface ToastRestartMeta {
-  // Operator-actionable restart prompt (e.g. code_drift_detected with
-  // classification=restart_required). The toast renders the action
-  // button and POSTs to the matching endpoint when clicked.
-  headSha: string | null;
-  pathCount: number;
-}
-
 export interface Toast {
   id: string;
   message: string;
   kind: ToastKind;
   alarm?: ToastAlarmMeta;
-  restart?: ToastRestartMeta;
   sticky?: boolean;
 }
 
 interface ToastPushOptions {
   timeoutMs?: number;
   alarm?: ToastAlarmMeta;
-  restart?: ToastRestartMeta;
   sticky?: boolean;
 }
 
@@ -92,8 +82,7 @@ export const useToastStore = create<ToastStore>((set, get) => ({
       message,
       kind,
       alarm: options.alarm,
-      restart: options.restart,
-      sticky: options.sticky ?? Boolean(options.alarm ?? options.restart),
+      sticky: options.sticky ?? Boolean(options.alarm),
     };
     set((state) => ({ toasts: [...state.toasts, toast] }));
     if (!toast.sticky) {

@@ -13,7 +13,7 @@
 # window, capabilities). `api_key_env` names an environment variable you
 # supply in your `.env` file — see `tesseract/.env.example`. Providers under
 # the `local` and `cli` tiers need no API key at all: `local` runs on your
-# own machine (Ollama, Whisper, Piper), and `cli` rides your existing Claude
+# own machine (Ollama, Whisper, Kokoro), and `cli` rides your existing Claude
 # Code / Codex CLI subscription login instead of a per-token key.
 #
 # Hard rule: edit infrastructure values here, never in code.
@@ -116,6 +116,36 @@ services:
     enabled: true
     api_key_env: TAVILY_API_KEY
     unlocks: "tavily_search, tavily_extract"
+  # Download-gated rather than key-gated, and the only one so far. The
+  # engine is a full Chromium build and it is NOT required: nothing at boot
+  # depends on it, and `os_open_url` hands a link to the machine's own
+  # browser without any of this. What the download buys is headless
+  # automation — reading a page, clicking, filling a form — so declining it
+  # costs those seven tools and nothing else.
+  #
+  # `app.py` reads this switch before scheduling `ensure_browsers()`. That
+  # call is otherwise unconditional and idempotent (it re-pins Chromium to
+  # the revision the installed `playwright` package names, which is what
+  # stops the tools breaking after a package upgrade), so without the check
+  # a decline would be undone by the first launch.
+  browser:
+    enabled: true
+    # No `download_mb`, deliberately, and it is the only optional artifact
+    # without one. Every other figure in this catalog is the measured size of a
+    # sha256-pinned URL sitting a few lines away from it — the same bytes on
+    # every machine, which is the only kind of number that may be shown to
+    # someone else's install. This one cannot be: `playwright` is pinned as
+    # `>=1.40`, so the Chromium revision is chosen at install time, and there
+    # is no URL here to measure against. The 700 that used to sit here was a
+    # disk footprint from one machine's install, quoted under a heading that
+    # says "to download" — a different quantity, from a different Chromium,
+    # presented as the same fact.
+    #
+    # The form and the re-enable notice both render a row with no figure
+    # rather than a guess. Restoring one means pinning the package first.
+    unlocks: >-
+      browser_navigate, browser_snapshot, browser_click, browser_fill_form,
+      browser_screenshot, browser_network_requests, browser_close
 
 # ─── API tier ───────────────────────────────────────────────
 # Pay-per-token providers. Each needs the `.env` key named by its
@@ -156,6 +186,11 @@ api:
           pdf_input: true
           image_output: false
           audio_output: false
+        good_for:
+          - brain
+          - tools
+          - vision
+          - pdf
       gpt56_luna:
         model: gpt-5.6-luna
         context_window: 400000
@@ -172,6 +207,11 @@ api:
           pdf_input: true
           image_output: false
           audio_output: false
+        good_for:
+          - brain
+          - tools
+          - vision
+          - pdf
   google:
     enabled: true
     api_key_env: GOOGLE_API_KEY
@@ -220,6 +260,13 @@ api:
       # The thought step carries a very large `signature` blob that is NOT an
       # image — the extractor keys on `content[].type == "image"` for exactly
       # that reason. Both ops verified live 2026-08-10.
+        good_for:
+          - brain
+          - tools
+          - vision
+          - audio
+          - video
+          - pdf
       gemini_31_flash_image:
         kind: image_generation
         model: gemini-3.1-flash-image
@@ -233,11 +280,55 @@ api:
         capabilities:
           text_to_image: true
           image_to_image: true
-      gemini_flash_audio:         # voice STT — the only cloud voice lane left
+        good_for:
+          - image_generation
+      gemini_flash_audio:         # voice STT
         kind: audio_stt
         model: gemini-2.5-flash
         cost_per_audio_hour: 0.09  # 25 audio tokens/sec at $1/Mtok
 
+      # ── Cloud voice ────────────────────────────────────────────
+      # The speaking lane for a machine with no local voice. Same
+      # Interactions endpoint as the image entry, different body shape;
+      # `voice/providers/gemini_tts.py` holds it. Streamed because asked
+      # for one blob this endpoint renders the whole utterance first, so
+      # the wait grows with the reply length.
+      #
+      # `cost_per_audio_hour` rather than `cost_per_million_chars`: this
+      # model bills per token of produced audio, which has no relation to
+      # characters sent. `synthesis_presets` are prose because the model
+      # takes prose — they are prefixed to the text as a direction line.
+        good_for:
+          - stt
+      gemini_tts:
+        kind: tts
+        model: gemini-3.1-flash-tts-preview
+        base_url_override: https://generativelanguage.googleapis.com/v1beta/interactions
+        lang: en-us
+        sample_rate: 24000
+        audio_profile: "A helpful and professional personal assistant."
+        synthesis_presets:
+          intent:
+            style: Brisk and matter-of-fact
+            pace: Slightly quick
+          answer:
+            style: Empathetic and natural
+            pace: Natural
+        cost_per_audio_hour: 2.304
+        # Refs stay `api.google.<voice>` — the block above is shared settings,
+        # not an entry of its own. Female and male, neutral timbres, no persona.
+        voices:
+          erinome:
+            voice: Erinome
+            label: "Erinome — US female, cloud"
+            gender: female
+          charon:
+            voice: Charon
+            label: "Charon — US male, cloud"
+            gender: male
+
+        good_for:
+          - tts
   anthropic:
     # Enabled but not wired: no role names an anthropic ref by default.
     # A fresh install talks through `api.openai.*` (chat_brain) and
@@ -265,6 +356,11 @@ api:
           pdf_input: true
           image_output: false
           audio_output: false
+        good_for:
+          - brain
+          - tools
+          - vision
+          - pdf
       sonnet_5:
         model: claude-sonnet-5
         context_window: 200000
@@ -279,6 +375,11 @@ api:
           pdf_input: true
           image_output: false
           audio_output: false
+        good_for:
+          - brain
+          - tools
+          - vision
+          - pdf
   xai:
     enabled: true
     base_url: "${XAI_BASE_URL:-https://api.x.ai/v1}"
@@ -327,6 +428,10 @@ api:
       # image as a base64 data URI). The image_generate tool selects the
       # endpoint by op via `payload_profile: xai_images`. Flat per-image
       # pricing. `image_to_image` capability gates the fallback chain.
+        good_for:
+          - brain
+          - tools
+          - vision
       grok_imagine_image:
         kind: image_generation
         model: grok-imagine-image
@@ -339,6 +444,8 @@ api:
   # NVIDIA build tier — OpenAI-compatible, free with no payment method.
   # Every background role defaults here so unattended work stays off the
   # paid chat key.
+        good_for:
+          - image_generation
   nim:
     enabled: true
     base_url: "${NVIDIA_NIM_BASE_URL:-https://integrate.api.nvidia.com/v1}"
@@ -371,6 +478,9 @@ api:
 # tool returns "<provider> CLI disabled in providers.yaml" instead of
 # spawning the subprocess. Requires the corresponding CLI to be installed
 # and logged in on this machine.
+        good_for:
+          - brain
+          - tools
 cli:
   enabled: true
   claude:
@@ -416,6 +526,8 @@ cli:
           image_output: false
           audio_output: false
 
+        good_for:
+          - brain
   codex:
     enabled: true
     command: codex
@@ -453,14 +565,21 @@ cli:
 # ─── Local tier (this machine) ──────────────────────────────
 # Runs on your own hardware — no API key, no subscription. `enabled`
 # switches gate embeddings (ollama), local STT (whisper), and local TTS
-# (piper). Disabled refs are skipped during voice-runtime build and
+# (kokoro). Disabled refs are skipped during voice-runtime build and
 # embedding bring-up; the runtime degrades cleanly (BM25-only retrieval,
 # etc.) rather than crashing.
+        good_for:
+          - brain
+          - vision
 local:
   enabled: true
   ollama:
     enabled: true
-    base_url: "${OLLAMA_BASE_URL:-http://localhost:11434}"
+    # The loopback ADDRESS, not the name. Ollama binds 127.0.0.1, while
+    # `localhost` resolves to ::1 first on Windows — so every new connection
+    # spent ~2s failing over to IPv4 before it reached a daemon that was
+    # answering in 5ms. Set OLLAMA_BASE_URL if Ollama lives anywhere else.
+    base_url: "${OLLAMA_BASE_URL:-http://127.0.0.1:11434}"
     timeout_seconds: 120
     max_retries: 3
     models_endpoint: /api/tags
@@ -485,6 +604,12 @@ local:
     # Removing the key does not skip the check; verification fails closed
     # and the install is refused.
     installer_signer: "O=Ollama"
+    # The vendor installer plus the embedding model it pulls, measured:
+    # 1,565 MB for `OllamaSetup.exe` and 274 MB for `nomic-embed-text`. The
+    # setup form quoted 710 MB for this until it was measured, which is the
+    # reason the figure lives beside the thing it describes now instead of in
+    # a page that cannot read config.
+    download_mb: 1839
     models:
       nomic_embed:
         kind: embedding
@@ -493,6 +618,8 @@ local:
         timeout_seconds: 30
         max_retries: 3
 
+        good_for:
+          - embedding
   onnx_reranker:
     enabled: true
     adapter: onnx_reranker    # tesseract/memory/reranker.py - CPU, no VRAM
@@ -516,6 +643,9 @@ local:
         candidate_cap: 30
         download:
           max_download_mb: 50
+          # Measured from the pinned URLs below; see the note on
+          # `local.kokoro.download.download_mb`.
+          download_mb: 24
           # Pinned to a commit, like every other download in this catalog. It
           # was `resolve/main` — the one entry on a moving branch — which meant
           # an upstream re-upload changed what this URL served while the
@@ -531,6 +661,8 @@ local:
               source: onnx/model_quantized.onnx
             tokenizer.json: d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66
 
+        good_for:
+          - rerank
   whisper:
     enabled: true
     adapter: local_whisper
@@ -549,10 +681,13 @@ local:
       # any edit made afterwards — here or in Settings — stands. An edit made
       # before the first launch does not.
       #
-      # `large-v3-turbo` is the fresh-install default. Speech is the primary
-      # input, and the wake gate matches `<prefix> <name>` against the
-      # transcript, so STT accuracy on an arbitrary proper noun is what decides
-      # whether the agent hears its own name. `base` mishears exactly that.
+      # `large-v3-turbo` is the fresh-install default, and the reason is
+      # conversation quality alone. It is NOT about the wake word: the gate
+      # decides from audio through its own keyword model and never reads a
+      # transcript, so nothing here affects whether the assistant hears its own
+      # name. Speech is the primary input, and everything the assistant acts on
+      # arrives through this model — a misheard filename or command is a wrong
+      # action, not a typo.
       # Drop to `small` (or `base`) on a machine where CPU synthesis latency
       # matters more than accuracy — the pins below cover all three, so the
       # swap is this one line plus a re-run of the fetch script.
@@ -580,6 +715,7 @@ local:
         downloads:
           base:
             max_download_mb: 256
+            download_mb: 148
             base_url: https://huggingface.co/Systran/faster-whisper-base/resolve/ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66
             files:
               config.json: 56a6d8110d311f19c8f0471e562832c7527f146b567275bfca59fcf7c184da9a
@@ -588,6 +724,7 @@ local:
               vocabulary.txt: 34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913
           small:
             max_download_mb: 640
+            download_mb: 486
             base_url: https://huggingface.co/Systran/faster-whisper-small/resolve/536b0662742c02347bc0e980a01041f333bce120
             files:
               config.json: b55496ac7940a7ae47d2c01eab40edfd8701feec1229d9cce3b40014383fb828
@@ -596,6 +733,7 @@ local:
               vocabulary.txt: 34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913
           large-v3-turbo:
             max_download_mb: 2048
+            download_mb: 1622
             base_url: https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2/resolve/4df90f75321148c3a29a9e2351b7ddf8f5b115a8
             files:
               config.json: b0253ea6c0d3bea6b1e19e91a02acfd3b53f4467362efcb5a3e6b16c9b3a9b7e
@@ -604,77 +742,8 @@ local:
               tokenizer.json: 297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd
               vocabulary.json: c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1
 
-  piper:
-    enabled: true
-    adapter: piper          # tesseract/voice/providers/piper_tts.py
-    timeout_seconds: 60
-    max_retries: 1
-    host: this_pc
-    models:
-      # `model` is the ONNX filename under `runtime/models/voice/piper/`;
-      # each voice needs BOTH the `.onnx` and its `.onnx.json` sidecar in
-      # that directory. Fetch them with:
-      #   python -m tesseract.scripts.fetch_piper_voice
-      # Source: https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US
-      #
-      # Each voice's `download.base_url` is pinned to a specific upstream
-      # commit, never a branch: an upstream re-upload of the release-equivalent
-      # files must not silently change what a fresh install fetches. Bumping a
-      # pin is a deliberate, reviewed edit. Every file is verified against its
-      # sha256 before it is installed, and an existing file is never replaced.
-      #
-      # Two synthesis presets, picked by the TTS engine from the
-      # `<intent>`/`<answer>` tag contract. Intent = quicker,
-      # deterministic. Answer = natural pace, micro-variability for
-      # warmth. Edit these to change the voice's character.
-      hfc_female:
-        kind: tts
-        model: en_US-hfc_female-medium.onnx
-        label: "HFC female — US female"
-        gender: female
-        sample_rate: 22050
-        download:
-          max_download_mb: 128
-          base_url: https://huggingface.co/rhasspy/piper-voices/resolve/0d907f158acc877ddeebcbf827659ee13bea8bcd/en/en_US/hfc_female/medium
-          files:
-            en_US-hfc_female-medium.onnx: 914c473788fc1fa8b63ace1cdcdb44588f4ae523d3ab37df1536616835a140b7
-            en_US-hfc_female-medium.onnx.json: 03f1fa0622b80463283592d97aca9f6e89aec345a5c56b7257723e0093c58b6c
-        synthesis_presets:
-          intent:
-            length_scale: 0.95
-            noise_scale: 0.0
-            noise_w: 0.0
-            sentence_silence: 0.2
-          answer:
-            length_scale: 1.0
-            noise_scale: 0.4
-            noise_w: 0.5
-            sentence_silence: 0.2
-        cost_per_million_chars: 0.00
-      hfc_male:
-        kind: tts
-        model: en_US-hfc_male-medium.onnx
-        label: "HFC male — US male"
-        gender: male
-        sample_rate: 22050
-        download:
-          max_download_mb: 128
-          base_url: https://huggingface.co/rhasspy/piper-voices/resolve/0d907f158acc877ddeebcbf827659ee13bea8bcd/en/en_US/hfc_male/medium
-          files:
-            en_US-hfc_male-medium.onnx: d11e403a02bdf5a670c877b3dc56e0e1c8cece6fb30289586314dffdc0a78cb0
-            en_US-hfc_male-medium.onnx.json: f66847424aed0bf99ecbb5d7cfde47c0a906f426a0daf7c46f305e7d21afd886
-        synthesis_presets:
-          intent:
-            length_scale: 0.95
-            noise_scale: 0.0
-            noise_w: 0.0
-            sentence_silence: 0.2
-          answer:
-            length_scale: 1.0
-            noise_scale: 0.4
-            noise_w: 0.5
-            sentence_silence: 0.2
-        cost_per_million_chars: 0.00
+        good_for:
+          - stt
   kokoro:
     enabled: true
     adapter: kokoro         # tesseract/voice/providers/kokoro_tts.py
@@ -688,6 +757,14 @@ local:
     #   python -m tesseract.scripts.fetch_kokoro_voice
     download:
       max_download_mb: 512
+      # What the transfer actually costs, in the decimal megabytes the setup
+      # form quotes. Distinct from `max_download_mb` beside it, which is a
+      # REFUSAL CAP and always the larger number — quoting that to an operator
+      # would say a 354 MB download is 512 MB. Measured from the pinned URLs
+      # below rather than estimated, and it is the same bytes on every machine,
+      # which is the only kind of figure that may be shown to someone else's
+      # install.
+      download_mb: 354
       base_url: https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0
       files:
         kokoro-v1.0.onnx: 7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5
@@ -702,23 +779,20 @@ local:
       # style embeddings blend linearly — that is how a custom timbre is
       # designed. `kokoro.get_voices()` lists all 54 ids.
       #
-      # `speed` is Kokoro's only pacing knob; these values mirror Piper's
-      # intent/answer `length_scale` pair (0.95 shorter → 1.05 faster) so
-      # switching lanes doesn't change the delivery.
+      # `speed` is Kokoro's only pacing knob: 1.05 is quicker, 0.95 is
+      # slower. The intent/answer split is the same one every lane keeps —
+      # intent acknowledges, answer speaks — so switching lanes changes the
+      # timbre and not the delivery.
       #
       # `device: cuda` is safe on a CPU-only machine — onnxruntime falls
       # back to CPUExecutionProvider and logs the downgrade.
-      af_heart:
+      kokoro_v1:
         kind: tts
         model: kokoro-v1.0.onnx
         voices_file: voices-v1.0.bin
-        label: "Heart — US female"
-        gender: female
         lang: en-us
         device: cuda
         sample_rate: 24000
-        mix:
-          af_heart: 1.0
         synthesis_presets:
           intent:
             speed: 1.05
@@ -727,22 +801,18 @@ local:
             speed: 1.0
             sentence_silence: 0.2
         cost_per_million_chars: 0.00
-      am_echo:
-        kind: tts
-        model: kokoro-v1.0.onnx
-        voices_file: voices-v1.0.bin
-        label: "Echo — US male"
-        gender: male
-        lang: en-us
-        device: cuda
-        sample_rate: 24000
-        mix:
-          am_echo: 1.0
-        synthesis_presets:
-          intent:
-            speed: 1.05
-            sentence_silence: 0.2
-          answer:
-            speed: 1.0
-            sentence_silence: 0.2
-        cost_per_million_chars: 0.00
+        # Refs stay `local.kokoro.<voice>` — the block above is shared
+        # settings, not an entry of its own.
+        voices:
+          af_heart:
+            label: "Heart — US female"
+            gender: female
+            mix:
+              af_heart: 1.0
+          am_echo:
+            label: "Echo — US male"
+            gender: male
+            mix:
+              am_echo: 1.0
+        good_for:
+          - tts

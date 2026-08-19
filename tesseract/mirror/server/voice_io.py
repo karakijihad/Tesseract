@@ -22,6 +22,7 @@ from tesseract.mirror.server.envelope import (
     make_voice_final,
     make_voice_instruction,
     make_voice_state,
+    make_voice_woken,
 )
 from tesseract.mirror.server.session import send_envelope
 from tesseract.mirror.server.voice_modes import (
@@ -29,7 +30,7 @@ from tesseract.mirror.server.voice_modes import (
     destination_for,
     normalize_voice_mode,
 )
-from tesseract.mirror.server.wake_word import evaluate_wake_gate
+from tesseract.mirror.server.wake_word import reset_wake_stream, wake_verdict
 
 if TYPE_CHECKING:
     from tesseract.mirror.server.session import ServerSession
@@ -49,11 +50,51 @@ async def _emit_voice_state(session: "ServerSession", wire: str | None) -> None:
         await send_envelope(session, make_voice_state(session.session_id, wire))
 
 
-async def note_voice_audio(session: "ServerSession", *, turn_active: bool) -> None:
-    """SC-5 — drive the voice loop on an inbound PCM frame (binary WS path).
-    Emits ``listening`` exactly once per utterance (idle → listening),
-    turn-gated so ambient mic audio during the assistant's reply can't flip the mic
-    UI out of ``speaking_back``."""
+async def note_voice_audio(
+    app: web.Application,
+    session: "ServerSession",
+    data: bytes,
+    *,
+    turn_active: bool,
+) -> None:
+    """Everything one inbound PCM frame causes, in the order it must happen.
+
+    Three things, and the ordering between the first two is load-bearing: the
+    frame is buffered for transcription, then offered to the wake decoder, and
+    only then does the voice loop advance.
+
+    **The wake decoder runs here rather than at commit.** It is a streaming
+    decoder, and using it on the finished buffer meant nothing could know
+    whether an utterance had woken the assistant until the operator stopped
+    talking — so a minute of speech could be refused a minute after the phrase
+    that should have started it, with no way to tell early. Deciding per frame
+    costs 3.46 ms for the 100 ms frames the capture path sends (measured), and
+    the operator learns mid-sentence.
+
+    SC-5: emits ``listening`` exactly once per utterance (idle → listening),
+    turn-gated so ambient mic audio during the assistant's reply can't flip the
+    mic UI out of ``speaking_back``.
+    """
+    _accumulate_voice_pcm(session, data)
+
+    from tesseract.mirror.server.wake_word import note_wake_audio
+
+    if note_wake_audio(app, session, data):
+        # The edge, not the state: this is true once per utterance, and it is
+        # the moment the operator may keep talking knowing they were heard.
+        #
+        # Logged as well as sent, because the discard line alone cannot be
+        # counted. A refusal carries no transcript by design, so a log with
+        # only refusals in it cannot distinguish the gate missing a phrase
+        # from the operator never saying one — and those are the two numbers
+        # the wake word is judged on. The pair makes the log self-scoring:
+        # every gated utterance leaves exactly one of these two lines.
+        log.info(
+            "voice_commit: wake word heard %.2fs into the utterance",
+            len(session.voice_pcm_buffer or b"") / 32_000,
+        )
+        await send_envelope(session, make_voice_woken(session.session_id))
+
     await _emit_voice_state(session, session.voice_loop.note_audio(turn_active=turn_active))
 
 
@@ -152,6 +193,13 @@ async def _handle_voice_commit(
         )
     audio = bytes(session.voice_pcm_buffer or b"")
     session.voice_pcm_buffer = None
+    # The decoder stream describes the same utterance as that buffer, so the
+    # two are released together. The chat branch below reads the verdict off
+    # the session first; the silent modes never gate, and a stream left behind
+    # by one of them would carry decoder state into the next utterance — a
+    # phrase said once could then wake twice.
+    if mode != "chat":
+        reset_wake_stream(session)
     log.info("voice_commit: %d bytes (~%.2fs) mode=%s", len(audio), len(audio) / 32_000, mode)
     # End of speech. Held locally and only published to the session once a
     # chat turn is actually dispatched — see the bottom of this function. Most
@@ -180,6 +228,34 @@ async def _handle_voice_commit(
         return
 
     await _emit_voice_state(session, session.voice_loop.begin_transcribe())
+
+    # THE GATE RUNS BEFORE TRANSCRIPTION, and that ordering is the point.
+    # The old gate matched text, so it had to transcribe first; this one
+    # decides from audio and needs no transcript, which means speech that did
+    # not address the assistant never reaches an STT engine at all — including
+    # the cloud fallback `roles.yaml::voice.stt.fallbacks` ships by default,
+    # where a local-Whisper outage would otherwise have sent ambient room audio
+    # to a provider. It also stops paying transcription latency and cost on
+    # every utterance the gate was going to throw away.
+    if mode == "chat":
+        # Read, not decided. The live feed already decided while the operator
+        # was speaking — which is what let them be told mid-sentence — so this
+        # is the same verdict they have already seen, not a second opinion.
+        decision = wake_verdict(app, session)
+        reset_wake_stream(session)
+        if not decision.matched:
+            audio_seconds = len(audio) / 32_000
+            log.info(
+                "voice_commit: wake-word gate discarded utterance "
+                "(%.2fs of audio, not transcribed)",
+                audio_seconds,
+            )
+            await send_envelope(
+                session,
+                make_voice_discarded(session.session_id, audio_seconds=audio_seconds),
+            )
+            await _emit_voice_state(session, session.voice_loop.finish())
+            return
 
     text = ""
     try:
@@ -218,23 +294,6 @@ async def _handle_voice_commit(
             session,
             make_voice_instruction(session.session_id, instruction=notice),
         )
-
-    if text and mode == "chat":
-        decision = evaluate_wake_gate(app, text)
-        if not decision.matched:
-            log.info(
-                "voice_commit: wake-word gate discarded utterance (score=%.3f)",
-                decision.score,
-            )
-            await send_envelope(
-                session,
-                make_voice_discarded(
-                    session.session_id, text=text, score=decision.score
-                ),
-            )
-            await _emit_voice_state(session, session.voice_loop.finish())
-            return
-        text = decision.text
 
     await send_envelope(
         session,
@@ -312,6 +371,7 @@ async def _handle_voice_cancel(
         return
 
     session.voice_pcm_buffer = None
+    reset_wake_stream(session)
     # A cancelled voice turn never reaches its first audio chunk, so an
     # unclaimed commit timestamp would survive and be reported against whatever
     # turn came next — including a typed one.

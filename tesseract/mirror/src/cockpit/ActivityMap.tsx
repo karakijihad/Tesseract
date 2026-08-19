@@ -4,6 +4,13 @@
 // exists; kinds with no surface (routine | autonomy | mcp_session) expand an
 // inline detail block instead (HUD runs-surface fix).
 
+import { Button } from "../components/common/Button";
+import { CloseButton } from "../components/common/CloseButton";
+import { Disclosure } from "../components/common/Disclosure";
+import { IconButton } from "../components/common/IconButton";
+import { ResetIcon } from "../components/common/icons";
+import { ResizeHandles } from "../components/common/ResizeHandles";
+import { Row, RowActions } from "../components/common/Row";
 import { useState } from "react";
 
 import { useShallow } from "zustand/react/shallow";
@@ -17,6 +24,7 @@ import { closeActivity, closeAllActivities } from "../lib/api";
 import { nextZ, recordSurfaceZ } from "./zStack";
 import { useDraggable } from "./useDraggable";
 import { ActivityDetail } from "../components/activity/ActivityDetail";
+import { Hint } from '../components/ui/Hint';
 
 const GROUPS: Array<{ kind: string; title: string }> = [
   { kind: "lane", title: "Lanes" },
@@ -59,13 +67,17 @@ export function ActivityMap({ onClose }: ActivityMapProps) {
   // v2: the map's default anchor moved from bottom (near the retired
   // ActivityPill) to below the permanent top HUD segment (change-set B) —
   // versioned so a stale bottom-anchored position from before doesn't pin it.
-  const { ref, style, onDragStart } = useDraggable(
+  const { ref, style, onDragStart, onResizeStart, reset, moved } = useDraggable(
     "tesseract.cockpit.activityMap.pos.v2",
   );
   const [closing, setClosing] = useState(false);
   const [showOlder, setShowOlder] = useState<Record<string, boolean>>({});
 
   const closeableCount = records.filter((r) => CLOSEABLE.has(r.kind)).length;
+
+  // The bar drags the card, so a control inside it has to stop the pointer
+  // before the drag begins.
+  const stopDrag = (e: React.PointerEvent) => e.stopPropagation();
 
   async function onCloseAll() {
     if (closing || closeableCount === 0) return;
@@ -101,28 +113,32 @@ export function ActivityMap({ onClose }: ActivityMapProps) {
       <div className="activity-map__bar" onPointerDown={onDragStart}>
         <span className="activity-map__title">Routing</span>
         <div className="activity-map__actions">
-          <button
-            type="button"
-            className="activity-map__closeall"
-            disabled={closing || closeableCount === 0}
-            aria-label="Close all running units"
-            title="Cancel all lanes, MCP sessions and delegates"
-            onClick={onCloseAll}
-            onPointerDown={(e) => e.stopPropagation()}
-          >
-            {closing
-              ? "Closing…"
-              : `Close all${closeableCount ? ` (${closeableCount})` : ""}`}
-          </button>
-          <button
-            type="button"
-            className="activity-map__close"
-            aria-label="Close map"
+          <Hint label="Cancel all lanes, MCP sessions and delegates">
+            <Button
+              disabled={closing || closeableCount === 0}
+              ariaLabel="Close all running units"
+              onClick={onCloseAll}
+            >
+              {closing
+                ? "Closing…"
+                : `Close all${closeableCount ? ` (${closeableCount})` : ""}`}
+            </Button>
+          </Hint>
+          <Hint label="Reset Routing to its default position and size">
+            <IconButton
+              ariaLabel="Reset Routing to its default position and size"
+              disabled={!moved}
+              onClick={reset}
+              onPointerDown={stopDrag}
+            >
+              <ResetIcon />
+            </IconButton>
+          </Hint>
+          <CloseButton
+            ariaLabel="Close map"
             onClick={onClose}
-            onPointerDown={(e) => e.stopPropagation()}
-          >
-            ×
-          </button>
+            onPointerDown={stopDrag}
+          />
         </div>
       </div>
       <div className="activity-map__body">
@@ -141,25 +157,25 @@ export function ActivityMap({ onClose }: ActivityMapProps) {
           const hiddenCount = olderRows.length - visibleOlder.length;
           return (
             <div key={kind} className="activity-map__group">
-              <div className="activity-map__group-title t-meta">{title}</div>
+              <div className="activity-map__group-title t-meta t-label">{title}</div>
               {[...runningRows, ...visibleOlder].map((r) => (
                 <ActivityRow key={r.activity_id} record={r} />
               ))}
               {olderRows.length > OLDER_CAP && (
-                <button
-                  type="button"
-                  className="activity-map__more t-meta"
-                  onClick={() =>
+                <Disclosure
+                  open={expanded}
+                  onToggle={() =>
                     setShowOlder((s) => ({ ...s, [kind]: !expanded }))
                   }
                 >
                   {expanded ? "show less" : `+${hiddenCount} older`}
-                </button>
+                </Disclosure>
               )}
             </div>
           );
         })}
       </div>
+      <ResizeHandles inset onResizeStart={onResizeStart} />
     </div>
   );
 }
@@ -174,8 +190,7 @@ function ActivityRow({ record }: { record: ActivityRecord }) {
   const [expanded, setExpanded] = useState(false);
   const [closing, setClosing] = useState(false);
 
-  async function onCloseOne(e: React.MouseEvent) {
-    e.stopPropagation();
+  async function onCloseOne() {
     if (closing) return;
     setClosing(true);
     try {
@@ -187,54 +202,47 @@ function ActivityRow({ record }: { record: ActivityRecord }) {
 
   return (
     <div className="activity-map__row-wrap">
-      <div
-        role="button"
-        tabIndex={0}
-        className={`activity-map__row${failed ? " activity-map__row--failed" : ""}`}
-        onClick={() =>
-          detailable ? setExpanded((v) => !v) : void openActivity(record)
-        }
-        onKeyDown={(e) => {
-          if (e.target !== e.currentTarget) return; // let the nested close button handle its own key
-          if (e.key !== "Enter" && e.key !== " ") return;
-          e.preventDefault();
-          detailable ? setExpanded((v) => !v) : void openActivity(record);
-        }}
-        title={detailable ? "Show details" : "Open this work on the cockpit"}
-        aria-expanded={detailable ? expanded : undefined}
-      >
-        <span
-          className={`activity-dot activity-dot--${record.state}`}
-          aria-hidden="true"
-        />
-        <span className="activity-map__label">{record.label}</span>
-        {record.provider && (
-          <span className="activity-map__provider t-meta">
-            {record.provider}
-          </span>
-        )}
-        <span className="activity-map__state t-meta">{record.state}</span>
-        {closeable && (
-          <button
-            type="button"
-            className="activity-map__row-close"
-            aria-label={`Close ${record.label}`}
-            title="Close this unit"
-            disabled={closing}
-            onClick={onCloseOne}
-          >
-            {closing ? "…" : "×"}
-          </button>
-        )}
-        {detailable && (
+      <Hint label={detailable ? "Show details" : "Open this work on the cockpit"}>
+        <Row
+          className={`activity-map__row${failed ? " activity-map__row--failed" : ""}`}
+          onClick={() =>
+            detailable ? setExpanded((v) => !v) : void openActivity(record)
+          }
+          ariaExpanded={detailable ? expanded : undefined}
+        >
           <span
-            className={`activity-map__chevron t-meta${expanded ? " is-open" : ""}`}
+            className={`activity-dot activity-dot--${record.state}`}
             aria-hidden="true"
-          >
-            ›
-          </span>
-        )}
-      </div>
+          />
+          <span className="activity-map__label">{record.label}</span>
+          {record.provider && (
+            <span className="activity-map__provider t-meta">
+              {record.provider}
+            </span>
+          )}
+          <span className="activity-map__state t-meta">{record.state}</span>
+          {closeable && (
+            <Hint label="Close this unit">
+              <RowActions className="activity-map__row-close-slot">
+                <CloseButton
+                  size="inline"
+                  ariaLabel={`Close ${record.label}`}
+                  busy={closing}
+                  onClick={onCloseOne}
+                />
+              </RowActions>
+            </Hint>
+          )}
+          {detailable && (
+            <span
+              className={`activity-map__chevron t-meta${expanded ? " is-open" : ""}`}
+              aria-hidden="true"
+            >
+              ›
+            </span>
+          )}
+        </Row>
+      </Hint>
       {detailable && expanded && <ActivityDetail record={record} />}
     </div>
   );

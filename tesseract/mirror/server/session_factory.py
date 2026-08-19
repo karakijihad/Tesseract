@@ -139,10 +139,10 @@ def _build_chat_session(
     # cockpit path keeps the global ``app["prompt_builder"]`` (no overlay).
     if kind == "channel":
         from tesseract.brain.prompt import assemble_system_prompt
-        prompt_mode = app.get("prompt_mode", "manifest")
         def _channel_prompt_builder() -> str:
             return assemble_system_prompt(
-                mode=prompt_mode, channel_name=channel_display_name
+                channel_name=channel_display_name,
+                tool_registry_provider=lambda: app.get("tool_registry"),
             )
         prompt_builder = _channel_prompt_builder
         frozen_prompt = _channel_prompt_builder()

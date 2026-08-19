@@ -45,11 +45,10 @@ def _resolve_home() -> Path:
 def _has_fresh_route_intent(home: Path) -> bool:
     """True iff ``intent.json`` already names *this* backend PID.
 
-    Route handlers (``/api/runtime/shutdown``,
-    ``/api/runtime/restart_for_code_drift``) write the intent BEFORE
-    triggering ``loop.stop``, so by the time ``on_aiohttp_shutdown``
+    Route handlers (``/api/runtime/shutdown``, ``/api/runtime/restart``)
+    write the intent BEFORE triggering ``loop.stop``, so by the time ``on_aiohttp_shutdown``
     runs the route's intent is on disk for our own PID. The shutdown
-    hook must not overwrite a same-PID intent — the restart path
+    hook must not overwrite a same-PID intent — a restart path
     would degrade to ``operator_quit`` and the supervisor would refuse
     to respawn.
     """
@@ -112,8 +111,8 @@ def on_aiohttp_shutdown(app: Any) -> None:
     """Adapter for the aiohttp ``on_shutdown`` hook.
 
     Called when aiohttp receives SIGINT/SIGTERM, OR after a route
-    triggers ``loop.stop`` (the restart-for-code-drift and shutdown
-    routes do exactly that). If a route already wrote the intent for
+    triggers ``loop.stop`` (the restart and shutdown routes do exactly
+    that). If a route already wrote the intent for
     *this* PID, leave it — overwriting would flip a ``restart_upgrade``
     to ``operator_quit`` and the supervisor would refuse to respawn.
 

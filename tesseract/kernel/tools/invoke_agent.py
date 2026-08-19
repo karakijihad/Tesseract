@@ -1,6 +1,7 @@
 """invoke_agent tool — call a markdown-defined sub-agent.
 
-Loads an agent definition from tesseract/agents/, composes a system prompt
+Loads an agent definition — from the shipped tree or the operator's,
+whichever owns the name — composes a system prompt
 from its sections, spins up a bounded ChatSession, and returns the final
 text. Sub-agent gets a filtered, read-only subset of the parent registry by
 default (overridable via frontmatter `tools:` list). All tool calls the
@@ -153,7 +154,7 @@ class _SteerBox:
 
 
 class InvokeAgentInput(BaseModel):
-    name: str = Field(description="Slug of a registered sub-agent (see AGENTS.md).")
+    name: str = Field(description="Slug of a registered sub-agent (see agents/INDEX.md).")
     task: str = Field(
         description=(
             "Self-contained task prompt. The sub-agent has no access to this "
@@ -196,9 +197,25 @@ class InvokeAgentTool(Tool):
     default_posture = "ask"
 
     risk_class: ClassVar[str] = "propose"
+
+    group: ClassVar[str] = "handing-work-off"
+    summary: ClassVar[str] = (
+        "Dispatches a bounded task to a markdown-defined sub-agent with a "
+        "read-only tool subset."
+    )
+    use_when: ClassVar[str] = (
+        "Use for a persistent specialist stance — reviewer, planner, "
+        "domain expert — in a scoped context that does not see this "
+        "conversation."
+    )
+    not_when: ClassVar[str] = (
+        "CLI-role agents are rejected — use `delegate_coder` or "
+        "`delegate_auditor` for heavy CLI work."
+    )
+
     def __init__(
         self,
-        agents_dir: Path,
+        agents_dir: Path | None,
         adapter: ModelAdapter,
         options: AdapterOptions,
         parent_registry: ToolRegistry,
@@ -209,6 +226,9 @@ class InvokeAgentTool(Tool):
         ask_fn: AskFn | None = None,
         cost_ledger: "CostLedger | None" = None,
     ) -> None:
+        # `None` is the live pair of agent roots (AR-6) — the operator's
+        # cards shadowing the shipped ones. A directory named here is used
+        # alone, which only tests want.
         self._agents_dir = agents_dir
         self._adapter = adapter
         self._options = options
@@ -233,18 +253,6 @@ class InvokeAgentTool(Tool):
     @property
     def name(self) -> str:
         return "invoke_agent"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Dispatch a bounded task to a markdown sub-agent from tesseract/agents/. "
-            "Sub-agent runs with a read-only tool subset and its own system prompt. "
-            "Backgrounds by default (fire-and-track): returns a spawn_handle; "
-            "retrieve the reply via spawn_check / spawn_await or the completion "
-            "note. Pass background=false to await the final text inline. Use when a "
-            "task benefits from a persistent specialist stance (reviewer, planner, "
-            "domain expert). For heavy CLI work use delegate_coder / delegate_auditor."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:
@@ -383,6 +391,13 @@ class InvokeAgentTool(Tool):
         stop_reason = ""
         error: str | None = None
         steers_applied = 0
+        # Usage rides on the STOP chunk's `raw` for every adapter (the cost
+        # ledger reads the same field). Summed across turns so the caller can
+        # bill this spawn: the autonomy runner had no token figure at all for
+        # a worker it labelled `api`, which left both the per-item budget and
+        # the governor's cost-spiral detector reading a constant zero.
+        tokens_in = 0
+        tokens_out = 0
 
         # One pass per turn. Without a steer box there is exactly one, which
         # is the pre-steering behaviour. With one, a queued correction starts
@@ -402,6 +417,10 @@ class InvokeAgentTool(Tool):
                     elif chunk.type == ChunkType.STOP:
                         stop_reason = chunk.stop_reason
                         iterations += 1
+                        usage = chunk.raw.get("usage") if isinstance(chunk.raw, dict) else None
+                        if isinstance(usage, dict):
+                            tokens_in += int(usage.get("input_tokens") or 0)
+                            tokens_out += int(usage.get("output_tokens") or 0)
                     elif chunk.type == ChunkType.ERROR:
                         error = chunk.error
                         break
@@ -473,6 +492,26 @@ class InvokeAgentTool(Tool):
 
         final_text = "".join(collected).strip()
 
+        metadata = {
+            "agent": inp.name,
+            "model_role": _model_role,
+            "steers_applied": steers_applied,
+            "iterations": iterations,
+            "tool_calls": tool_calls,
+            "stop_reason": stop_reason,
+            # The two figures a caller needs to judge the run rather than
+            # re-parse the rendered output: did any text come back, and what
+            # did getting it cost. `final_text_chars == 0` is the empty
+            # response that eight autonomy workers recorded as `done`.
+            "final_text_chars": len(final_text),
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+        }
+
+        # Carried on the error path too: a spawn that burned tokens and then
+        # errored spent real money, and a caller that bills from metadata
+        # would otherwise record nothing for exactly the runs that produced
+        # nothing.
         if error:
             return ToolResult(
                 output=(
@@ -482,16 +521,9 @@ class InvokeAgentTool(Tool):
                     else f"[{inp.name}] sub-session errored: {error}"
                 ),
                 is_error=True,
+                metadata=metadata,
             )
 
-        metadata = {
-            "agent": inp.name,
-            "model_role": _model_role,
-            "steers_applied": steers_applied,
-            "iterations": iterations,
-            "tool_calls": tool_calls,
-            "stop_reason": stop_reason,
-        }
         return ToolResult(
             output=(
                 f"[{inp.name} · {iterations} iter · {tool_calls} tool call(s) · {stop_reason or 'end'}]\n\n"

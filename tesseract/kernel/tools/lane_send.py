@@ -45,19 +45,19 @@ class LaneSendTool(Tool):
     # path left the other two open.
     untrusted_source: ClassVar[bool] = True
 
+    group: ClassVar[str] = "long-running-collaborators"
+    summary: ClassVar[str] = "Send one message into a running lane and return once it is accepted."
+    use_when: ClassVar[str] = (
+        "Use to fire a turn onto a lane without waiting; wait=true blocks for just that turn's reply."
+    )
+    not_when: ClassVar[str] = (
+        "reading a lane's output after firing, which is `lane_read`; one call that both sends and "
+        "waits, which is `lane_turn`."
+    )
 
     @property
     def name(self) -> str:
         return "lane_send"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Send a follow-up message into a running lane. Drives one "
-            "CLI turn; events stream into the lane's events.jsonl. "
-            "Strict per-lane FIFO. Returns the accepted turn_id; with "
-            "wait=true, returns that turn's reply and whether it completed."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

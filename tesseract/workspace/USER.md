@@ -1,34 +1,29 @@
----
-version: 1
-last_updated: null
----
+# USER — what you have learned about the operator
 
-# USER
+Durable context only: what should shape how you work with them across every session. Current task state, transient debugging, and anything the config already answers belong elsewhere.
 
-Read by {{agent_name}} at session start. Shapes communication style + context awareness. Operator-written only — {{agent_name}} never modifies this file.
+**This file is the operator's.** Propose changes as durable patterns become clear and wait for them; never rewrite it silently, and never record a guess from one turn as settled.
 
-Fresh install — nothing has been filled in yet. Propose edits to this file as you learn about the operator; wait for them to confirm or edit it directly.
+Fresh install — nothing has been filled in yet.
 
-## Who You Are
+## Who they are
 
 - **Name:** {{operator_name}}
 - **Role:** _(not yet known)_
 - **Expertise:** _(not yet known)_
-- **Date format:** _(not yet known — ask, don't assume)_
-- **Shell:** _(not yet known)_
 
-## Communication Preferences
+## How they want to be worked with
 
-_(not yet known — infer conservatively from early turns, confirm before locking in)_
+_(not yet known — infer conservatively from early turns, confirm before locking one in)_
 
-## Project Context
+## What they are building
 
-_(not yet known — what is the operator building with {{agent_name}}?)_
+_(not yet known)_
 
-## Things to Avoid
+## Things to avoid
 
 _(none recorded yet)_
 
-## Things That Work Well
+## Things that work well
 
 _(none recorded yet)_

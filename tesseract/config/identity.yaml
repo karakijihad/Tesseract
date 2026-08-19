@@ -8,6 +8,17 @@
 # like, and it sticks.
 born_at: ""
 
+# Where this assistant is documented in public, for the case where it needs to
+# hand a person a link rather than explain from memory.
+#
+# NOT where it reads from. The same Guide ships inside the app (`Guide/`,
+# readable with `file_read`) and that copy is the one to read: it is replaced
+# wholesale by every update, so it describes the version actually running,
+# where the site describes whatever was last published. Read locally, share the
+# link.
+documentation:
+  site: "https://tesseract.metaengineershub.com"
+
 time_of_day_buckets:
   morning:   { start: "05:00", end: "12:00" }
   afternoon: { start: "12:00", end: "17:00" }

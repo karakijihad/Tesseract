@@ -1,5 +1,6 @@
 import { forwardRef, useImperativeHandle, useEffect, useMemo, useState } from 'react';
 import { lookupCommand, matchingCommands, type SlashCommandDef } from '../../lib/slashCommands';
+import { MenuItem } from '../common/MenuItem';
 
 export interface SlashCommandHintHandle {
   stepFocus: (direction: 1 | -1) => void;
@@ -69,7 +70,10 @@ export const SlashCommandHint = forwardRef<SlashCommandHintHandle, Props>(
       if (!helpDef) return null;
       return (
         <div className="slash-hint" role="status" aria-label="Slash command help">
-          <div className={`slash-hint-row is-help slash-hint-row--${helpDef.source}`}>
+          {/* The same row a pick would be, standing still — one command,
+              explained, with nothing to click. It wears the shared row so it
+              cannot drift from the list above it. */}
+          <div className="menu-item slash-hint-row is-help">
             <div className="slash-hint-cmd">
               <span className="slash-hint-name">/{helpDef.name}</span>
               {helpDef.argLabel && <span className="slash-hint-arg">{helpDef.argLabel}</span>}
@@ -88,14 +92,15 @@ export const SlashCommandHint = forwardRef<SlashCommandHintHandle, Props>(
     return (
       <div className="slash-hint" role="listbox" aria-label="Slash commands">
         {options.map((c, idx) => (
-          <button
+          <MenuItem
             key={`${c.name}-${idx}`}
-            type="button"
             role="option"
-            aria-selected={idx === focus}
-            className={`slash-hint-row${idx === focus ? ' is-focused' : ''} slash-hint-row--${c.source}`}
+            focused={idx === focus}
+            className="slash-hint-row"
             onClick={() => onPick(c)}
             onMouseEnter={() => setFocus(idx)}
+            // The composer keeps focus while the list is walked, so the row
+            // must not take it on the way to a click.
             onMouseDown={(e) => e.preventDefault()}
           >
             <div className="slash-hint-cmd">
@@ -106,7 +111,7 @@ export const SlashCommandHint = forwardRef<SlashCommandHintHandle, Props>(
               <span className="slash-hint-summary">{c.summary}</span>
               {c.argHelp && <span className="slash-hint-help t-meta">{c.argHelp}</span>}
             </div>
-          </button>
+          </MenuItem>
         ))}
       </div>
     );

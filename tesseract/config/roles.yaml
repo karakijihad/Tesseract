@@ -75,8 +75,19 @@ chains:
     - api.google.gemini_36_flash
     - api.nim.gpt_oss_120b
     - api.openai.gpt56_luna
-
-# ─── Cognition roles ────────────────────────────────────────
+  chain_3:
+    - api.openai.gpt56_luna
+    - api.openai.gpt54_mini
+    - api.xai.grok_43
+  chain_4:
+    - cli.claude.opus_5
+  chain_5:
+    - cli.codex.gpt56_terra
+  chain_6:
+    - api.google.gemini_31_flash_image
+    - api.xai.grok_imagine_image
+  chain_7:
+    - local.whisper.local_whisper
 roles:
 
   chat_brain:
@@ -86,10 +97,7 @@ roles:
     # first fallback is the same key (gpt-5.4-mini), so a rate limit or
     # transient error still resolves on OPENAI_API_KEY alone. The Grok
     # fallback only activates once XAI_API_KEY is added to .env.
-    primary: api.openai.gpt56_luna
-    fallbacks:
-      - api.openai.gpt54_mini
-      - api.xai.grok_43
+    chain: chain_3
     compact_threshold: 0.7        # compact when history >= 70% of context_window (raised from 0.4 — we have the room)
     keep_recent_turns: 10         # legacy fallback; ignored when active_window_tokens is set
     head_anchor_messages: 3       # first N user messages preserved verbatim across every compaction (attention-sink anchor)
@@ -127,7 +135,7 @@ roles:
   # a CLI is.
   claude_cli:
     mode: active
-    primary: cli.claude.opus_5
+    chain: chain_4
     notes: >-
       The claude CLI. Driven via PTY or --output-format stream-json. Rides
       your Claude Code subscription login — no API key needed, but the CLI must be
@@ -135,7 +143,7 @@ roles:
 
   codex_cli:
     mode: active
-    primary: cli.codex.gpt56_terra
+    chain: chain_5
     notes: >-
       The codex CLI. `codex exec` for one-shot, PTY for multi-turn. Rides your
       Codex CLI subscription login — no API key needed, but the CLI must be installed
@@ -156,16 +164,29 @@ roles:
   # An api seat has NO TOOLS — it cannot read files or run commands, so it is
   # read-only by construction rather than by a flag. It reviews what the brief
   # hands it: a real auditor, a poor coder.
+  # No `daily_budget_usd` on the two seats below, and that is the correct
+  # encoding rather than an omission. Both ride a `cli.` tier — a subscription,
+  # free at use-time — so there is nothing to meter.
+  #
+  # Do NOT write `daily_budget_usd: 0.00` here to say so. It reads as "free
+  # lane" beside `local.kokoro.af_heart: 0.00` further down this same file and
+  # means the opposite: a voice lane's figure becomes `VoiceRate.cap_usd` and
+  # only feeds the global sum, while a role's becomes `per_role_caps[role]`, and
+  # `budget_state` computes `role_blocked = role_spent >= role_cap`. `0.0 >=
+  # 0.0` is True, so the seat would be blocked before its first call of the day.
+  # An absent key skips `per_role_caps` entirely and adds nothing to the sum,
+  # which is exactly what is wanted. The same trap waits for every future
+  # `cli.` seat.
   coder:
     mode: active
-    primary: cli.claude.opus_5
+    chain: chain_4
     notes: >-
       Delegation seat — writes code. Large reads, multi-file refactors.
       Backs `delegate_coder`.
 
   auditor:
     mode: active
-    primary: cli.codex.gpt56_terra
+    chain: chain_5
     notes: >-
       Delegation seat — reviews, verifies, second opinions. Never edits.
       Backs `delegate_auditor`.
@@ -173,74 +194,45 @@ roles:
   agents_default:
     mode: active
     chain: chain_2
+    daily_budget_usd: 1.00
     notes: >-
       Default model for sub-agents that don't pin one in agents/INDEX.md. Cheapest
       viable fit — agents that need more horsepower set their own.
 
+  channel_vision:
+    mode: active
+    chain: chain_2
+    daily_budget_usd: 1.00
+    notes: >-
+      Image understanding — a photograph the operator sent through a channel,
+      and `screen_look`'s frame of their own screen. Not a chat seat: the
+      handler resolves a vision-capable entry from the chat_brain chain and
+      bills HERE, so this entry exists to give that spend a cap of its own.
+      Without it the role had no per-role cap at all and only the global one
+      applied, which meant a vision call could not be limited without limiting
+      everything.
+
   subagents_default:
     mode: active
     chain: chain_2
+    daily_budget_usd: 0.50
     notes: "Default model for sub-sub-agents (delegates spawned by agents)."
 
-  feedback_consolidator:
-    mode: active
-    chain: chain_2
-    daily_budget_usd: 0.50
-    notes: >-
-      Layer B/C of feedback durability — weekly consolidator + daily sweep both
-      use this role. Cheap model on a low-cadence cron; proposals only, operator confirms
-      before any memory mutates.
-
-  autonomy_heartbeat:
+  watchman:
     mode: active
     chain: chain_1
     daily_budget_usd: 0.50
     notes: >-
-      Periodic self-reflection pass. Reads recent workspace events + memory
-      writes since the last cursor, returns 0-3 bounded observations (Pydantic-validated).
-      Idle short-circuit prevents model bill on quiet ticks. Disabled by default in
-      schedule.yaml; flip on whenever you like.
-
-  autonomy_vetter:
-    mode: active
-    chain: chain_2
-    daily_budget_usd: 0.25
-    notes: >-
-      Agenda quality gate. Judges UNVETTED low-trust proposals in batches —
-      promote/reject/merge with a 0-1 usefulness score. Reviewing/verifying is exactly
-      codex_cli's remit; to use a stronger auditor, swap primary to cli.codex.gpt56_terra
-      or cli.claude.opus_5 (subscription CLI, no extra API key). Idle short-circuit
-      (no unvetted items → no model bill) keeps the cap ample.
-
-  autonomy_scout:
-    mode: active
-    chain: chain_1
-    daily_budget_usd: 0.50
-    notes: >-
-      Identity-anchored discovery. Two LLM calls per run (query-gen, then evaluation)
-      — idle short-circuit after dedup/pre-filter skips the second call on a quiet
-      tick. This cap is the idle-work spend ceiling, separate from chat_brain's budget.
-      Disabled by default in schedule.yaml; flip on whenever you like.
-
-  autonomy_strategist:
-    mode: active
-    chain: chain_2
-    daily_budget_usd: 0.25
-    notes: >-
-      Periodic initiative curator. Reads recent agenda outcomes, discovery leaves,
-      vault deltas, worker failures, governor pauses, and operator-view presence over
-      the lookback window configured in schedule.yaml; emits at most 3 high-conviction
-      Initiative objects with explicit success criteria. Cadence is operator-tunable
-      in schedule.yaml::autonomy_strategist.cadence; the idle short-circuit prevents
-      model bill on quiet windows so a 0.25 USD daily cap is sufficient even with
-      occasional re-renders.
+      Hourly runtime report. Counts what went wrong in `runtime/logs/` and the
+      worker records, then writes one paragraph from those counted facts — a
+      figure it invents is dropped rather than published. A quiet window calls no
+      model at all, which is what keeps this cap ample.
 
   # ─── Delegation roles ───────────────────────────────────────
   image_generator:
     mode: active
-    primary: api.google.gemini_31_flash_image
-    fallbacks:
-      - api.xai.grok_imagine_image
+    chain: chain_6
+    daily_budget_usd: 1.00
     notes: >-
       Both entries do text-to-image AND image-to-image, so the chain degrades on
       availability rather than on capability. Gemini 3.1 Flash Image leads on prompt
@@ -252,9 +244,7 @@ roles:
 
   audio_transcribe:
     mode: active
-    primary: local.whisper.local_whisper
-    # No fallback — local always available; if it fails the WS preprocessor
-    # substitutes "[audio transcription failed: <reason>]" for the audio part.
+    chain: chain_7
     notes: >-
       Audio-to-text. WS preprocessor calls local_whisper.transcribe directly
       (engine preloaded at boot). The `transcribe_audio` tool is also registered for
@@ -309,24 +299,36 @@ voice:
   tts:
     mode: active
     # The primary ref names the voice — any `kind: tts` entry in the
-    # catalog is selectable here. The two shipped by default are both
-    # local: Kokoro leads on naturalness, Piper sits behind it as the
-    # lighter lane, so a slow machine still speaks. What decides that is
-    # time to the FIRST sentence rather than throughput: Piper reaches it
-    # fastest on CPU, Kokoro is quicker once a GPU is available. Both need
-    # their model files fetched — see providers.yaml.
+    # catalog is selectable here. Kokoro leads: it is local, so it is free
+    # and it starts speaking in about a third of a second once its model
+    # is on disk.
+    #
+    # The cloud lane sits behind it for the case no local model is on disk
+    # at all — an install that declined the download, or a machine with no
+    # room for it. Without it, declining the local voice means no voice at
+    # all.
+    #
+    # The cloud lane needs GOOGLE_API_KEY. Without one it fails at the
+    # first sentence and the lane latches off, which is the same shape as
+    # the STT chain below and is what the setup form warns about when the
+    # cloud voice is chosen.
     primary: local.kokoro.af_heart
     fallbacks:
-      - local.piper.hfc_female
+      - api.google.erinome
     settings:
       local.kokoro.af_heart:
         # Kokoro loads one 311 MB ONNX session; the timeout is the
         # warm-up cap, not a per-sentence one.
         timeout_seconds: 60
         daily_budget_usd: 0.00
-      local.piper.hfc_female:
-        # Piper renders locally on CPU (near-zero VRAM). No `voice_id`
-        # knob — the ONNX file IS the voice. Synthesis presets
-        # (intent/answer) are set in the catalog.
-        timeout_seconds: 30
-        daily_budget_usd: 0.00
+      api.google.erinome:
+        # Streamed, so the timeout covers the whole utterance rather than
+        # the wait for it to begin. Generous enough for a long reply on a
+        # slow connection; a lane that times out mid-sentence latches off
+        # and the turn degrades to text.
+        timeout_seconds: 60
+        # The first paid voice lane, so the first one where this number
+        # does work. At $2.304/hour of speech, $1.00 is roughly 26 minutes
+        # of talking in a day — well past ordinary use, and it stops a
+        # runaway loop from spending the chat budget on saying things.
+        daily_budget_usd: 1.00

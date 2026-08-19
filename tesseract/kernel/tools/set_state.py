@@ -60,24 +60,25 @@ class SetStateTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "being-present"
+    summary: ClassVar[str] = "Sets a discrete orb state: happy, deep_focus, dreaming, or idle."
+    use_when: ClassVar[str] = (
+        "Call on a real shift: happy after a breakthrough, deep_focus for sustained work, dreaming "
+        "between turns, idle to settle back. Use sparingly — the runtime auto-sets some of these "
+        "itself, so don't double-fire."
+    )
+    not_when: ClassVar[str] = (
+        "reactive states, loop-driven and not settable here; continuous shading, `set_mood`; "
+        "hiding the orb, `orb_visibility`."
+    )
+
     def __init__(self, affect: EntityAffect) -> None:
         self._affect = affect
 
     @property
     def name(self) -> str:
         return "set_state"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Set the orb's discrete state. Use 'happy' after a real "
-            "breakthrough, 'deep_focus' for long debugging stretches, "
-            "'dreaming' when reflecting between turns, 'idle' to "
-            "settle back. Sticky until you call again or the loop "
-            "transitions on its own. Reactive states (thinking, "
-            "speaking) are loop-driven; this tool can't set them. "
-            "Use sparingly — mood (set_mood) does most expressive work."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

@@ -47,6 +47,15 @@ export interface EntityStateConfig {
   hueDriftHz?: number;
 }
 
+/* Each `hazeColor` below is that state's SHIPPED DEFAULT, and only that. What
+   the orb actually wears is resolved by `haze.ts`: a colour the operator chose
+   in Appearance wins, then the accent once they have moved the mirror colour
+   (each state carrying its own `hueShift` with it), then this.
+
+   brand-exempt: ten near-black tints that belong to the states rather than to
+   the palette — they are read by one module, they are the value "restore
+   default" returns to, and lifting them into tokens.css would put ten custom
+   properties there that no stylesheet ever reads. */
 export const ENTITY_STATES: Record<EntityState, EntityStateConfig> = {
   idle: {
     particlesFull: 3500,

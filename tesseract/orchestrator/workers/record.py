@@ -18,8 +18,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Iterator
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from tesseract.orchestrator.outcome import RunOutcome
 from tesseract.orchestrator.workers.kinds import WorkerKind
 from tesseract.orchestrator.workers.paths import (
     worker_dir,
@@ -125,7 +126,10 @@ class WorkerRecord(BaseModel):
     atomic rewrite; ``extra="forbid"`` so a typo'd field is a load-time
     error, not silently dropped."""
 
-    model_config = ConfigDict(frozen=False, extra="forbid")
+    # ``validate_assignment`` so the outcome invariant below holds however the
+    # field is set — the runner mutates a constructed record, which a plain
+    # validator would never see.
+    model_config = ConfigDict(frozen=False, extra="forbid", validate_assignment=True)
 
     # Identity
     id: str
@@ -173,6 +177,14 @@ class WorkerRecord(BaseModel):
     artifacts: list[ArtifactRef] = Field(default_factory=list)
     transcript_path: str | None = None
 
+    # What came of the run, as opposed to where it ended up. ``status`` is
+    # the lifecycle; ``outcome`` is the closed vocabulary in
+    # ``orchestrator/outcome.py``, and a run that produced nothing may not
+    # claim one of the healthy ones. ``None`` on records written before the
+    # field existed — a reader must treat that as unknown, never as success.
+    outcome: RunOutcome | None = None
+    outcome_reason: str = ""
+
     # TC-4 — controller-attested workers (AGENT_CONTROLLER kind). All
     # nullable; existing kinds keep their semantics untouched. The
     # controller fills these on dispatch so recovery can REATTACH:
@@ -182,8 +194,39 @@ class WorkerRecord(BaseModel):
     controller_hb_path: str | None = None
     session_id: str | None = None
 
+    @model_validator(mode="after")
+    def _outcome_carries_its_reason(self) -> "WorkerRecord":
+        """Every non-`succeeded` outcome explains itself, whoever set it.
+
+        An unexplained failure on a health surface is the same dead end as the
+        empty success this vocabulary replaced. Enforced here rather than only
+        in `set_outcome` so a direct assignment or a hand-built record cannot
+        route around it — `validate_assignment` is what makes that reach the
+        runner, which mutates an already-constructed record.
+        """
+        if self.outcome is not None and self.outcome is not RunOutcome.SUCCEEDED:
+            if not self.outcome_reason.strip():
+                raise ValueError(
+                    f"worker {self.id}: outcome {self.outcome.value} needs a reason"
+                )
+        return self
+
     def is_terminal(self) -> bool:
         return self.status in TERMINAL_STATUSES
+
+    def set_outcome(self, outcome: RunOutcome, *, reason: str = "") -> None:
+        """Record what came of the run, outcome and reason together.
+
+        The pair is what the invariant is about, so setting them in one call
+        avoids the transient state a two-step assignment would have to pass
+        through.
+        """
+        if outcome is not RunOutcome.SUCCEEDED and not reason.strip():
+            raise ValueError(
+                f"worker {self.id}: outcome {outcome.value} needs a reason"
+            )
+        self.outcome_reason = reason
+        self.outcome = outcome
 
     def transition_to(self, new_status: WorkerStatus, *, reason: str = "") -> None:
         """Mutate in place: append history entry, bump ``updated_at``,
@@ -409,6 +452,7 @@ __all__ = [
     "ArtifactRef",
     "Billing",
     "RiskClass",
+    "RunOutcome",
     "StatusTransition",
     "WorkerRecord",
     "WorkerStatus",

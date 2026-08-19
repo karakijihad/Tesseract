@@ -18,6 +18,9 @@ import type {
   RoleModelsUpdateInput,
   RoleModelsUpdateResponse,
   CatalogResponse,
+  ChainsResponse,
+  ChainWriteResponse,
+  RoleChainResponse,
   ModelRefUpdateInput,
   ModelRefUpdateResponse,
   ChatAttachment,
@@ -58,7 +61,7 @@ export interface ChatUploadConfig {
 
 const BASE = BACKEND_BASE;
 // 15s — Settings polls fire every 5s; a 5s timeout fights the next poll
-// when the backend stalls behind a long turn or a piper warm-up.
+// when the backend stalls behind a long turn or a voice warm-up.
 const TIMEOUT_MS = 15_000;
 const UPLOAD_TIMEOUT_MS = 60_000;
 
@@ -86,7 +89,7 @@ async function timedFetch(
 }
 
 // Network-flake retry. The backend's aiohttp loop occasionally stalls
-// behind a heavy turn (LLM streaming, piper warm-up, faiss index reload)
+// behind a heavy turn (LLM streaming, voice warm-up, faiss index reload)
 // long enough that an in-flight Settings fetch trips its 15s timeout
 // or the OS drops the connection — surfacing as `TypeError: Failed to
 // fetch` even though the next request would succeed. Retry these
@@ -147,7 +150,7 @@ export async function fetchCostState(): Promise<CostStateData> {
 // "ready" = actually checked and good. "unavailable" = checked and NOT
 // good (reason says which — disabled / missing key / binary not on PATH).
 // "unverified" = enabled, keyless, non-cli — nothing cheap here confirms
-// it further (e.g. Ollama reachability, whisper/piper model files); see
+// it further (e.g. Ollama reachability, whisper/kokoro model files); see
 // Settings -> Local Models for that live diagnostic instead of asserting
 // availability this report doesn't actually know.
 export type CapabilityProviderStatus = "ready" | "unavailable" | "unverified";
@@ -183,16 +186,34 @@ export interface CapabilityChat {
 
 export interface CapabilityIntegration {
   name: string;
-  key_name: string;
+  // The tools this service unlocks, as a list rather than a joined label —
+  // the browser block unlocks seven and the row cannot be seven names wide.
+  // Empty for a channel, which unlocks a transport, not a tool.
+  unlocks: string[];
+  // Null for a service gated by a download rather than a key — the browser
+  // engine takes a Chromium build and no token, and it is switchable all the
+  // same. No figure here either: `playwright` is unpinned, so the size is
+  // decided at install time and the catalog carries none.
+  key_name: string | null;
   key_present: boolean;
   // Independent of the key: `providers.yaml::services` and a channel's own
   // block can switch one off while its key stays set, which is how an
   // operator says "I have this, I don't want it running".
+  //
+  // `enabled` is the AND of the two below — what the runtime acts on. The box
+  // shows `service_enabled`, because that is the only flag it writes; showing
+  // the AND made a switch read off and do nothing visible when the section
+  // above it was off. Same split as `tier_enabled` / `provider_enabled`.
   enabled: boolean;
-  // The `providers.yaml::services` block name when this row is a service,
-  // and null for a channel — a channel's switch lives in its own file and
-  // is not writable from this panel.
+  // Optional, and read with `??` on the panel: a backend a release behind
+  // this screen sends neither, and a required field would have made every
+  // switch on the panel disabled instead of merely ungated.
+  section_enabled?: boolean;
+  service_enabled?: boolean;
+  // Exactly one of the two names the block this row's switch writes: a
+  // `providers.yaml::services` block, or a `channels.yaml` one.
   service: string | null;
+  channel: string | null;
 }
 
 // cli-auth DESIGN.md §4/§5 — per roles.yaml role, whether its primary
@@ -213,6 +234,19 @@ export interface CapabilitiesResponse {
   // persisted backend-side under <TESSERACT_HOME>/runtime/.
   notice_dismissed: boolean;
   integrations: CapabilityIntegration[];
+  // Only on the toggle response, and only when turning something ON queued a
+  // fetch. Nothing downloads at the click — the switch is written and the
+  // next start acts on it, which is correct and was invisible.
+  pending_download?: PendingDownload | null;
+}
+
+export interface PendingDownload {
+  // What was queued, in the words the setup form offered it in.
+  names: string[];
+  // Null when no figure could be read — a download of unknown size is still
+  // a download, and "0 MB" would be a claim.
+  size_mb: number | null;
+  when: "next_start";
 }
 
 export async function fetchCapabilities(): Promise<CapabilitiesResponse> {
@@ -251,6 +285,40 @@ export async function postProviderEnabled(
   });
 }
 
+/** What a reset actually moved. Reported rather than assumed: "reset" on a
+ *  panel where nothing differed from the shipped state should say so, not
+ *  flash a success and leave the operator wondering what changed. */
+export interface CapabilitiesResetResponse extends CapabilitiesResponse {
+  reset: { changed: string[]; missing: string[] };
+}
+
+// Restores every provider/tier switch to what the factory `providers.yaml`
+// beside the code ships with — the copy an update replaces, so this is the
+// running release's defaults. Channels are deliberately not included; a dev
+// checkout has one config tree and so nothing to restore. See the route's
+// docstring.
+export async function postCapabilitiesResetDefaults(): Promise<CapabilitiesResetResponse> {
+  return apiPost<CapabilitiesResetResponse>(
+    "/api/capabilities/reset-defaults",
+    {},
+  );
+}
+
+/** The panes with a reset button, each naming the keys it writes. The backend
+ *  refuses anything else — `factory_reset.SCOPES` is the authority and
+ *  `settings.py::_RESETTABLE` is the half of it a screen may ask for. */
+export type ResetScope = "session" | "loop_limits" | "cost" | "tools";
+
+// Restores one pane's settings from the factory config beside the code — the
+// copy an update replaces, so this is the running release's defaults. Scoped
+// by key, never by file: `roles.yaml` also carries the model wiring, which no
+// reset touches. A dev checkout has one config tree and so nothing to restore.
+export async function postResetDefaults(
+  scope: ResetScope,
+): Promise<{ changed: string[]; missing: string[] }> {
+  return apiPost("/api/settings/reset-defaults", { scope });
+}
+
 export interface RuntimeRestartResponse {
   status: string;
   intent: string;
@@ -259,18 +327,18 @@ export interface RuntimeRestartResponse {
 }
 
 // No session_id — the backend accepts any localhost caller for this route
-// (routes/runtime.py::post_restart_for_code_drift), which covers exactly
+// (routes/runtime.py::post_runtime_restart), which covers exactly
 // this cold-boot case where no operator chat session exists yet.
 export async function postRuntimeRestart(
   reason: string,
 ): Promise<RuntimeRestartResponse> {
   return apiPost<RuntimeRestartResponse>(
-    "/api/runtime/restart_for_code_drift",
+    "/api/runtime/restart",
     { reason },
   );
 }
 
-// ── API keys (P5) ───────────────────────────────────────
+// ── Keys ───────────────────────────────────────────────
 // The list and the prose come from `.env.example`; the writes land in
 // <TESSERACT_HOME>/.env. A report never carries a value — `in_file` and
 // `active` are the whole picture, and their disagreement is the restart.
@@ -289,6 +357,14 @@ export async function postGenerateEnvToken(
   name: string,
 ): Promise<EnvKeyTokenResponse> {
   return apiPost<EnvKeyTokenResponse>("/api/env-keys/generate", { name });
+}
+
+/** Open or shut the MCP surface. Writes `mcp.yaml::server.enabled`; the
+ *  server is built once at startup, so it lands on the next restart. */
+export async function postMcpEnabled(
+  enabled: boolean,
+): Promise<EnvKeysWriteResponse> {
+  return apiPost<EnvKeysWriteResponse>("/api/env-keys/mcp", { enabled });
 }
 
 export async function fetchSoul(): Promise<SoulResponse> {
@@ -458,6 +534,13 @@ interface PostOptions {
   // or fire side-effecting decisions (workspace decision) — a
   // network-flake retry on those could double-create.
   retryable?: boolean;
+  // Override the 15s default for a call that is legitimately slow. Not a
+  // workaround for a slow backend: the wake-word check loads an ONNX
+  // decoder per sensitivity it tries, which is seconds of work the
+  // operator is watching a progress UI through. A timeout shorter than
+  // the operation reports a network failure for a request that is
+  // succeeding, and the operator's recordings are lost with it.
+  timeoutMs?: number;
 }
 
 async function apiPost<T>(
@@ -470,9 +553,10 @@ async function apiPost<T>(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   };
+  const timeout = options.timeoutMs ?? TIMEOUT_MS;
   const res = options.retryable
-    ? await _retryingFetch(`${BASE}${path}`, init, TIMEOUT_MS)
-    : await timedFetch(`${BASE}${path}`, init, TIMEOUT_MS);
+    ? await _retryingFetch(`${BASE}${path}`, init, timeout)
+    : await timedFetch(`${BASE}${path}`, init, timeout);
   if (!res.ok) {
     let msg = `HTTP ${res.status}: ${res.statusText}`;
     let payload: Record<string, unknown> | undefined;
@@ -481,6 +565,11 @@ async function apiPost<T>(
       if (err && typeof err === "object") payload = err as Record<string, unknown>;
       if (err?.error) msg = String(err.error);
       if (err?.detail) msg = `${msg}: ${String(err.detail)}`;
+      // `{error, reason}` is the house shape for a route that fails on
+      // something outside itself — a provider, a key, a network. The error
+      // is the machine name and the reason is the only half a person can
+      // act on, so dropping it left the UI showing "synthesis_failed".
+      if (err?.reason) msg = `${msg}: ${String(err.reason)}`;
     } catch {
       // response had no JSON body — keep the default message
     }
@@ -534,6 +623,25 @@ export async function postRoleModels(
 
 export async function fetchCatalog(): Promise<CatalogResponse> {
   return apiFetch<CatalogResponse>("/api/settings/catalog");
+}
+
+export async function fetchChains(): Promise<ChainsResponse> {
+  return apiFetch<ChainsResponse>("/api/settings/chains");
+}
+
+// Writes one chain's order — which moves EVERY role following it. The caller
+// is responsible for having said so; `used_by` comes back either way.
+export async function postChain(
+  input: { name: string; refs: string[] } | { name: string; delete: true },
+): Promise<ChainWriteResponse> {
+  return apiPost<ChainWriteResponse>("/api/settings/chain", input);
+}
+
+// Moves one role and nothing else — the other half of the pair.
+export async function postRoleChain(
+  input: { role: string; chain: string },
+): Promise<RoleChainResponse> {
+  return apiPost<RoleChainResponse>("/api/settings/role-chain", input);
 }
 
 export async function postModelRef(
@@ -632,7 +740,7 @@ export interface ModelFilesStatus {
   download_error: string;
 }
 
-export type ModelLane = "whisper" | "kokoro" | "piper";
+export type ModelLane = "whisper" | "kokoro";
 
 export interface ModelDownloadResponse extends ModelFilesStatus {
   ok: true;
@@ -676,35 +784,6 @@ export async function postWhisperAction(
   return apiPost<WhisperActionResponse>("/api/system/whisper", { action });
 }
 
-export interface PiperStatusResponse extends ModelFilesStatus {
-  configured: boolean;
-  model_path: string;
-  config_path: string;
-  sample_rate: number | null;
-  preload: boolean;
-  presets: string[];
-  disabled: boolean;
-  disabled_reason: string;
-  loaded: boolean;
-  cached: Array<{ model_path: string }>;
-  provider_key: string;
-}
-
-export interface PiperActionResponse {
-  ok: true;
-  message: string;
-}
-
-export async function fetchPiperStatus(): Promise<PiperStatusResponse> {
-  return apiFetch<PiperStatusResponse>("/api/system/piper");
-}
-
-export async function postPiperAction(
-  action: "unload" | "warm",
-): Promise<PiperActionResponse> {
-  return apiPost<PiperActionResponse>("/api/system/piper", { action });
-}
-
 export interface KokoroStatusResponse extends ModelFilesStatus {
   configured: boolean;
   model_path: string;
@@ -742,10 +821,11 @@ export async function postKokoroAction(
   return apiPost<KokoroActionResponse>("/api/system/kokoro", { action });
 }
 
-// ── Sessions (Phase 15X — preview/rename/duplicate) ────
+// ── Conversations ────
 
 export interface SessionPreview {
-  session_id: string;
+  chat_id: string;
+  title: string;
   started_at: string;
   ended_at: string | null;
   turn_count: number;
@@ -755,26 +835,30 @@ export interface SessionPreview {
 
 export async function fetchSessionPreview(id: string): Promise<SessionPreview> {
   return apiFetch<SessionPreview>(
-    `/api/sessions/${encodeURIComponent(id)}/preview`,
+    `/api/chats/${encodeURIComponent(id)}/preview`,
   );
 }
 
+// A conversation is renamed, not renamed-into-a-new-file: the id and the
+// creation stamp do not move. The handler writes the new title through to any
+// live session holding the chat, so the next autosave does not undo it.
 export async function postSessionRename(
   id: string,
-  newName: string,
-): Promise<{ ok: true; session_id: string }> {
-  return apiPost(`/api/sessions/${encodeURIComponent(id)}/rename`, {
-    new_name: newName,
-  });
+  title: string,
+): Promise<{ ok: true; title: string }> {
+  return apiPatch(`/api/chats/${encodeURIComponent(id)}`, { title });
 }
 
-export async function postSessionDuplicate(
+export async function postSessionArchive(
   id: string,
-  destName: string,
-): Promise<{ ok: true; session_id: string }> {
-  return apiPost(`/api/sessions/${encodeURIComponent(id)}/duplicate`, {
-    dest_name: destName,
-  });
+): Promise<{ ok: true }> {
+  return apiPost(`/api/chats/${encodeURIComponent(id)}/archive`, {});
+}
+
+export async function postSessionRestore(
+  id: string,
+): Promise<{ ok: true }> {
+  return apiPost(`/api/chats/${encodeURIComponent(id)}/restore`, {});
 }
 
 // ── Schedule (Phase 18 Task B — agent-authored jobs) ────
@@ -792,6 +876,7 @@ export interface ScheduleCreateInput {
   name: string;
   cadence: string;
   handler: string;
+  summary: string;
   enabled?: boolean;
   on_failure?: "log" | "alert" | "disable";
   max_retries?: number;
@@ -803,6 +888,7 @@ export interface ScheduleCreateResponse {
   name: string;
   cadence: string;
   handler: string;
+  summary: string;
   enabled: boolean;
   on_failure: string;
 }
@@ -885,12 +971,39 @@ export async function createAlarm(payload: {
 
 // ── Settings v2 (Phase 18 Task C) ──────────────────────
 
+// One knob a lane actually reads. The backend sends the shape rather than
+// the panel assuming it, so a lane with different knobs renders correctly
+// without a frontend change — and a knob the lane does not read cannot be
+// offered as a field.
+export type VoiceKnob =
+  | { kind: "number"; min: number; max: number }
+  | { kind: "text"; max_chars: number };
+
 export interface VoiceStylePreset {
   surface: string; // "intent" | "answer"
   ref: string; // catalog ref the preset belongs to
+  adapter: string; // decides which knobs below are real
   // Whatever knobs that provider exposes — no fixed shape, so a new
   // provider's presets render without a frontend change.
-  settings: Record<string, string | number | boolean>;
+  settings?: Record<string, string | number | boolean>;
+  // Empty when this lane exposes nothing editable; the panel then shows the
+  // preset read-only rather than offering a control that writes nowhere.
+  //
+  // Optional because the app self-updates its frontend ahead of its backend, so
+  // a preset carrying neither field is a state this screen reaches in normal
+  // operation — it is what blanked the window before RailView had a boundary.
+  // Typing them as always-present is the assumption that crashed.
+  knobs?: Record<string, VoiceKnob>;
+  // The character the catalog ships, so reset needs no second round trip.
+  shipped: Record<string, string | number | boolean>;
+  overridden: boolean;
+}
+
+export interface VoicePresetUpdate {
+  ref: string;
+  surface: string;
+  // `null` resets this surface to the shipped character.
+  settings: Record<string, string | number> | null;
 }
 
 export interface VoiceSettingsResponse {
@@ -900,10 +1013,12 @@ export interface VoiceSettingsResponse {
   // either directly — agent-side mutation is locked off.
   style_presets: VoiceStylePreset[];
   // Wake-word gate. Only `enabled` is writable here; the phrase is
-  // `<prefix> <entity_name>` and the threshold is a config edit.
+  // `<prefix> <entity_name>`. Sensitivity is not carried: what the gate
+  // actually uses is confirmed per voice and reported by
+  // `GET /api/voice/wake`, so a second number here could only disagree
+  // with it.
   wake_word_enabled: boolean;
   wake_word_prefix: string;
-  wake_word_threshold: number | null;
   entity_name: string;
 }
 
@@ -919,6 +1034,90 @@ export async function postVoiceSettings(
   update: VoiceSettingsUpdate,
 ): Promise<VoiceSettingsUpdate> {
   return apiPost<VoiceSettingsUpdate>("/api/settings/voice", update, {
+    retryable: true,
+  });
+}
+
+// ── Wake word ───────────────────────────────────────────
+// `enabled` is permission and `armed` is readiness, and they are separate
+// fields because they are separate states: a gate switched on with nothing
+// recorded dispatches every utterance, and a screen that showed one number
+// for both would report filtering that is not happening.
+
+export interface WakeStatus {
+  enabled: boolean;
+  armed: boolean;
+  calibrated: boolean;
+  /** Confirmed for a phrase that is no longer the phrase — a rename. What
+   * was confirmed is that two particular words are heard reliably, so it
+   * cannot follow the name to a third. */
+  stale: boolean;
+  phrase: string;
+  calibrated_for: string | null;
+  samples: number;
+  threshold: number | null;
+  models_present: boolean;
+}
+
+export interface WakeCalibrateResult {
+  /** False is a normal outcome, not an error: the phrase was not heard
+   * reliably, or ordinary speech fired too, and `reason` is the useful part
+   * of the answer. */
+  ok: boolean;
+  reason: string;
+  /** The sensitivity that was confirmed. There is no per-take score to
+   * report — the decoder hears the phrase or it does not. */
+  threshold: number;
+  phrase_hits: number;
+  phrase_takes: number;
+  speech_hits: number;
+  speech_takes: number;
+  status?: WakeStatus;
+}
+
+export async function fetchWakeStatus(): Promise<WakeStatus> {
+  return apiFetch<WakeStatus>("/api/voice/wake");
+}
+
+/** How long the wake-word check may take.
+ *
+ * Measured, not guessed: constructing the decoder costs 9-12 s the first
+ * time in a backend process and ~3 s after that, and the check builds one
+ * per sensitivity it tries. A run that has to walk the whole ladder is
+ * therefore tens of seconds — inherent to the operation, not a stall. */
+export const WAKE_CALIBRATION_TIMEOUT_MS = 120_000;
+
+export async function postWakeCalibration(body: {
+  phrase_clips: string[];
+  speech_clips: string[];
+}): Promise<WakeCalibrateResult> {
+  // Not retryable: this carries the operator's recordings, and a silent
+  // second attempt would re-upload every take on a timeout.
+  return apiPost<WakeCalibrateResult>("/api/voice/wake/calibrate", body, {
+    timeoutMs: WAKE_CALIBRATION_TIMEOUT_MS,
+  });
+}
+
+export async function deleteWakeCalibration(): Promise<{
+  removed: boolean;
+  status: WakeStatus;
+}> {
+  const res = await timedFetch(
+    `${BASE}/api/voice/wake`,
+    { method: "DELETE" },
+    TIMEOUT_MS,
+  );
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+  return (await res.json()) as { removed: boolean; status: WakeStatus };
+}
+
+// Returns the whole settings payload re-read from disk, not the update that
+// was sent — the config watcher is what makes a preset take effect, and
+// echoing the input would show a value whether or not it landed.
+export async function postVoicePreset(
+  update: VoicePresetUpdate,
+): Promise<VoiceSettingsResponse> {
+  return apiPost<VoiceSettingsResponse>("/api/settings/voice/preset", update, {
     retryable: true,
   });
 }
@@ -939,6 +1138,15 @@ export interface CatalogVoice {
   label: string;
   gender: string;
   enabled: boolean;
+  /** The env var this voice's provider needs, "" for a lane that needs none.
+   * `key_present` is true whenever the voice can actually speak — always so
+   * for a local lane, since there is no key to be missing. */
+  key_env: string;
+  key_present: boolean;
+  /** Dollars per hour of speech — the rate spend is estimated from (speech
+   * length × this). Zero is free, and free versus paid is the only
+   * distinction the row draws. */
+  cost_per_hour_usd: number;
 }
 
 export interface VoiceCatalogResponse {
@@ -1119,12 +1327,16 @@ export type SessionResumePolicy =
 export interface SessionPolicyResponse {
   policy: SessionResumePolicy;
   days: number;
+  autosave: boolean;
+  autosave_interval_seconds: number;
   show_config_reload_toasts: boolean;
 }
 
 export interface SessionPolicyUpdate {
   policy?: SessionResumePolicy;
   days?: number;
+  autosave?: boolean;
+  autosave_interval_seconds?: number;
   show_config_reload_toasts?: boolean;
 }
 
@@ -1140,10 +1352,27 @@ export async function postSessionPolicy(
   });
 }
 
+/** One entry from `bash_security.RULES`. The check NUMBER is what the audit
+ *  log names, so it is what the panel shows — the rules are numbered rather
+ *  than named on purpose, and a description precise enough to reconstruct the
+ *  pattern would be an attack hint in a log an attacker may read. */
+export interface DenyRule {
+  check: number;
+  /** `mixed` is a check whose branches do both — check 8 asks for `eval` and
+   *  refuses a printf-decoded pipe into a shell. Rounding it to `ask` told
+   *  the operator the refused half would prompt them. */
+  posture: "blocked" | "ask" | "mixed";
+  refuses: string;
+}
+
 export interface SessionCapsResponse {
   tool_iteration_cap: number;
   consecutive_error_cap: number;
   deny_rules_locked: boolean;
+  /** Absent from a backend older than this screen — the panel says the list
+   *  could not be read rather than rendering an empty one, because "no rules"
+   *  and "could not ask" are opposite claims about a security floor. */
+  deny_rules?: DenyRule[];
 }
 
 export interface SessionCapsUpdate {
@@ -1826,4 +2055,27 @@ export interface NotificationsRatesResponse {
 
 export async function getNotificationsRates(): Promise<NotificationsRatesResponse> {
   return apiFetch<NotificationsRatesResponse>("/api/notifications/rates");
+}
+
+/** One spend window, beside the identical span immediately before it — the
+ *  comparison is computed by the ledger because only it knows whether the
+ *  earlier period exists at all. */
+export interface CostWindow {
+  days: number;
+  spent_usd: number;
+  previous_usd: number;
+}
+
+export interface CostWindowsResponse {
+  windows: { day: CostWindow; week: CostWindow; month: CostWindow };
+  /** Distinct local dates present in the ledger. A trend drawn from fewer
+   *  days than the window it compares is not a trend. */
+  history_days: number;
+  first_date: string | null;
+  last_date: string | null;
+  local_date: string;
+}
+
+export async function getCostWindows(): Promise<CostWindowsResponse> {
+  return apiFetch<CostWindowsResponse>("/api/cost/windows");
 }

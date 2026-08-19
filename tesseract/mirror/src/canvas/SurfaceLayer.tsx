@@ -8,12 +8,25 @@
 // deferred additive enhancement). Drag/resize/close mutate the store
 // optimistically and POST the operator event back via `emitSurfaceEvent`.
 
+import { CloseButton } from "../components/common/CloseButton";
+import { IconButton } from "../components/common/IconButton";
+import {
+  ResizeHandles,
+  RESIZE_VECTOR,
+} from "../components/common/ResizeHandles";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useSurfacesStore } from "../stores/surfaces";
 import { useWebSocketStore } from "../stores/websocket";
-import type { OperatorEvent, SurfaceDescriptor } from "./protocol/types";
-import { getRenderer } from "./renderers";
+import { reportSurfaceRender } from "./protocol/events";
+import type {
+  OperatorEvent,
+  ReportRender,
+  SurfaceDescriptor,
+} from "./protocol/types";
+import { getRenderer, RENDERERS } from "./renderers";
+import { ErrorBoundary } from "../components/common/ErrorBoundary";
+import { Hint } from '../components/ui/Hint';
 
 interface SurfaceLayerProps {
   view: string;
@@ -77,19 +90,6 @@ interface SurfaceCardProps {
 const MIN_W = 160;
 const MIN_H = 120;
 
-// The 8 resize handles, each a (dirX, dirY) unit vector: dir −1 grows/anchors
-// the leading edge (left/top), +1 the trailing edge (right/bottom), 0 fixed.
-const RESIZE_HANDLES: Array<{ dir: string; dx: -1 | 0 | 1; dy: -1 | 0 | 1 }> = [
-  { dir: "n", dx: 0, dy: -1 },
-  { dir: "s", dx: 0, dy: 1 },
-  { dir: "e", dx: 1, dy: 0 },
-  { dir: "w", dx: -1, dy: 0 },
-  { dir: "ne", dx: 1, dy: -1 },
-  { dir: "nw", dx: -1, dy: -1 },
-  { dir: "se", dx: 1, dy: 1 },
-  { dir: "sw", dx: -1, dy: 1 },
-];
-
 function SurfaceCard({ view, descriptor, bounds }: SurfaceCardProps) {
   const sendMessage = useWebSocketStore((s) => s.sendMessage);
   // Renderer → tool. Only `clicked` routes anywhere today: it carries a
@@ -129,6 +129,41 @@ function SurfaceCard({ view, descriptor, bounds }: SurfaceCardProps) {
   // Drag + resize are inert while locked or maximized; the card still raises.
   const geoLocked = locked || isMaximized;
   const Renderer = getRenderer(descriptor.type);
+  const known = descriptor.type in RENDERERS;
+
+  // The render half of the canvas → tool channel. Deduped on the last thing
+  // sent, because a renderer re-reports on every re-render and the backend
+  // only cares when the answer changes.
+  const reportedRef = useRef<string | null>(null);
+  const report = useCallback<ReportRender>(
+    (status, detail = "") => {
+      const key = `${status}:${detail}`;
+      if (reportedRef.current === key) return;
+      reportedRef.current = key;
+      void reportSurfaceRender(view, descriptor.id, status, detail);
+    },
+    [view, descriptor.id],
+  );
+
+  // Baseline. Child effects run before the parent's, so a renderer that
+  // already knows it failed has claimed the slot by the time this runs and
+  // `mounted` must not overwrite it — hence the has-anything-been-said check
+  // rather than an unconditional report. A renderer that discovers its failure
+  // later (a codec that only fails on `onError`) reports over `mounted`, which
+  // is correct: that is when it became known.
+  useEffect(() => {
+    if (!known) {
+      report(
+        "errored",
+        `no renderer for surface type '${descriptor.type}' — the card is showing a JSON dump of its own props`,
+      );
+    } else if (reportedRef.current === null) {
+      report("mounted");
+    }
+    return () => {
+      void reportSurfaceRender(view, descriptor.id, "unmounted");
+    };
+  }, [known, report, descriptor.type, descriptor.id, view]);
 
   // Geometry reads straight from the (live) store — during a drag/resize we
   // push live positions to the store for a responsive card, then commit
@@ -236,51 +271,52 @@ function SurfaceCard({ view, descriptor, bounds }: SurfaceCardProps) {
           </span>
         ) : (
           <div className="surface-card__actions">
-            <button
-              type="button"
-              className="surface-card__action"
-              aria-label={isMaximized ? "Restore surface" : "Maximize surface"}
-              title={isMaximized ? "Restore" : "Maximize"}
-              onClick={() => toggleMaximize(view, descriptor.id)}
-              onPointerDown={(e) => e.stopPropagation()}
-            >
-              {isMaximized ? "❐" : "▢"}
-            </button>
-            <button
-              type="button"
-              className="surface-card__action"
-              aria-label={isMinimized ? "Restore surface" : "Minimize surface"}
-              title={isMinimized ? "Restore" : "Minimize"}
-              onClick={() => toggleMinimize(view, descriptor.id)}
-              onPointerDown={(e) => e.stopPropagation()}
-            >
-              {isMinimized ? "▲" : "▼"}
-            </button>
-            <button
-              type="button"
-              className="surface-card__close"
-              aria-label="Close surface"
+            <Hint label={isMaximized ? "Restore" : "Maximize"}>
+              <IconButton
+                ariaLabel={isMaximized ? "Restore surface" : "Maximize surface"}
+                onClick={() => toggleMaximize(view, descriptor.id)}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                {isMaximized ? "❐" : "▢"}
+              </IconButton>
+            </Hint>
+            <Hint label={isMinimized ? "Restore" : "Minimize"}>
+              <IconButton
+                ariaLabel={isMinimized ? "Restore surface" : "Minimize surface"}
+                onClick={() => toggleMinimize(view, descriptor.id)}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                {isMinimized ? "▲" : "▼"}
+              </IconButton>
+            </Hint>
+            <CloseButton
+              ariaLabel="Close surface"
               onClick={() => close(view, descriptor.id)}
               onPointerDown={(e) => e.stopPropagation()}
-            >
-              ×
-            </button>
+            />
           </div>
         )}
       </div>
       <div className="surface-card__body">
-        <Renderer descriptor={descriptor} dispatch={dispatch} />
+        <ErrorBoundary
+          what={descriptor.title ?? descriptor.type}
+          onError={(err) => report("errored", `renderer threw: ${err.message}`)}
+        >
+          <Renderer
+            descriptor={descriptor}
+            dispatch={dispatch}
+            report={report}
+          />
+        </ErrorBoundary>
       </div>
-      {!geoLocked && !isMinimized
-        ? RESIZE_HANDLES.map((hd) => (
-            <div
-              key={hd.dir}
-              className={`surface-card__rh surface-card__rh--${hd.dir}`}
-              onPointerDown={startResize(hd.dx, hd.dy)}
-              aria-hidden="true"
-            />
-          ))
-        : null}
+      {!geoLocked && !isMinimized && (
+        <ResizeHandles
+          inset
+          onResizeStart={(dir) =>
+            startResize(RESIZE_VECTOR[dir].dx, RESIZE_VECTOR[dir].dy)
+          }
+        />
+      )}
     </div>
   );
 }

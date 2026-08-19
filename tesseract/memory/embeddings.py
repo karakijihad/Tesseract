@@ -22,6 +22,8 @@ import faiss
 import httpx
 import numpy as np
 
+from tesseract import http_client
+
 logger = logging.getLogger(__name__)
 
 # Circuit breaker for `rebuild_from_store`. When the embedding backend is
@@ -94,7 +96,7 @@ class EmbeddingIndex:
 
     def _http_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=self._timeout_seconds)
+            self._client = http_client.async_client(timeout=self._timeout_seconds)
         return self._client
 
     async def aclose(self) -> None:

@@ -7,9 +7,11 @@
  * no operator-supplied fields. The pane re-pulls the user list after every
  * approved mutation so the row moves between tables without a Refresh.
  */
+import { Button } from '../../components/common/Button';
 import { useEffect, useState } from 'react';
 import {
   useChannelsStore,
+  refusalToast,
   selectUsersForChannel,
   type ChannelUser,
 } from '../../stores/channels';
@@ -63,7 +65,7 @@ export function UsersPane({ channel }: UsersPaneProps) {
       if (result.approved) {
         push(`${user.display_name || user.user_id} revoked`, 'info');
       } else {
-        push(`Revoke denied: ${result.output}`, 'warning');
+        push(refusalToast('Revoke', result), 'warning');
       }
     } catch (err) {
       push(
@@ -81,7 +83,7 @@ export function UsersPane({ channel }: UsersPaneProps) {
       if (result.approved) {
         push(`${user.display_name || user.user_id} blocked`, 'info');
       } else {
-        push(`Block denied: ${result.output}`, 'warning');
+        push(refusalToast('Block', result), 'warning');
       }
     } catch (err) {
       push(
@@ -102,16 +104,14 @@ export function UsersPane({ channel }: UsersPaneProps) {
         <span className="channel-users-meta t-meta">
           {allowed.length} allowed · {pendingRows.length} pending · {blocked.length} blocked
         </span>
-        <button
-          type="button"
-          className="channels-view-btn"
+        <Button
           onClick={() => void fetchUsers(channel)}
           disabled={usersLoading}
-          data-testid="channel-users-refresh"
-          aria-label="refresh user list"
+          testId="channel-users-refresh"
+          ariaLabel="refresh user list"
         >
           {usersLoading ? 'loading…' : 'refresh'}
-        </button>
+        </Button>
       </div>
 
       <section className="channel-users-section" data-testid="channel-users-pending">
@@ -123,26 +123,24 @@ export function UsersPane({ channel }: UsersPaneProps) {
             rows={pendingRows}
             actions={(row) => (
               <>
-                <button
-                  type="button"
-                  className="channel-user-btn channel-user-btn-primary"
+                <Button
+                  tone="good"
                   onClick={() => setPendingApproval(row)}
-                  data-testid={`channel-user-approve:${row.user_id}`}
-                  aria-label={`approve ${row.user_id}`}
+                  testId={`channel-user-approve:${row.user_id}`}
+                  ariaLabel={`approve ${row.user_id}`}
                   disabled={Boolean(pending[`${channel}:approve:${row.user_id}`])}
                 >
                   approve
-                </button>
-                <button
-                  type="button"
-                  className="channel-user-btn"
+                </Button>
+                <Button
+                  tone="danger"
                   onClick={() => void _onBlock(row)}
-                  data-testid={`channel-user-block:${row.user_id}`}
-                  aria-label={`block ${row.user_id}`}
+                  testId={`channel-user-block:${row.user_id}`}
+                  ariaLabel={`block ${row.user_id}`}
                   disabled={Boolean(pending[`${channel}:block:${row.user_id}`])}
                 >
                   block
-                </button>
+                </Button>
               </>
             )}
           />
@@ -158,26 +156,24 @@ export function UsersPane({ channel }: UsersPaneProps) {
             rows={allowed}
             actions={(row) => (
               <>
-                <button
-                  type="button"
-                  className="channel-user-btn"
+                <Button
+                  tone="danger"
                   onClick={() => void _onRevoke(row)}
-                  data-testid={`channel-user-revoke:${row.user_id}`}
-                  aria-label={`revoke ${row.user_id}`}
+                  testId={`channel-user-revoke:${row.user_id}`}
+                  ariaLabel={`revoke ${row.user_id}`}
                   disabled={Boolean(pending[`${channel}:revoke:${row.user_id}`])}
                 >
                   revoke
-                </button>
-                <button
-                  type="button"
-                  className="channel-user-btn"
+                </Button>
+                <Button
+                  tone="danger"
                   onClick={() => void _onBlock(row)}
-                  data-testid={`channel-user-block:${row.user_id}`}
-                  aria-label={`block ${row.user_id}`}
+                  testId={`channel-user-block:${row.user_id}`}
+                  ariaLabel={`block ${row.user_id}`}
                   disabled={Boolean(pending[`${channel}:block:${row.user_id}`])}
                 >
                   block
-                </button>
+                </Button>
               </>
             )}
           />
@@ -190,16 +186,14 @@ export function UsersPane({ channel }: UsersPaneProps) {
           <UserTable
             rows={blocked}
             actions={(row) => (
-              <button
-                type="button"
-                className="channel-user-btn"
+              <Button
                 onClick={() => void _onRevoke(row)}
-                data-testid={`channel-user-revoke:${row.user_id}`}
-                aria-label={`unblock ${row.user_id}`}
+                testId={`channel-user-revoke:${row.user_id}`}
+                ariaLabel={`unblock ${row.user_id}`}
                 disabled={Boolean(pending[`${channel}:revoke:${row.user_id}`])}
               >
                 unblock
-              </button>
+              </Button>
             )}
           />
         </section>

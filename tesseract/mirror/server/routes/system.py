@@ -8,6 +8,7 @@ from pathlib import Path
 from aiohttp import web
 
 import tesseract
+from tesseract.mirror.server.config import project_voice_cost_view
 from tesseract.mirror.server.envelope import make_envelope
 from tesseract.permissions.policy import DEFAULT_POSTURE
 
@@ -151,20 +152,7 @@ async def identity(request: web.Request) -> web.Response:
     # store), so the cost panel renders config from identity (REST, always
     # available) and merges in live spend from the WS-driven cost store
     # via `?? 0` fallback — exactly how the chat rows are populated.
-    voice_tts: dict[str, dict[str, float]] = {}
-    for provider, fields in (voice_cfg.get("tts") or {}).items():
-        rate = fields.get("cost_per_million_chars")
-        cap = fields.get("daily_budget_usd")
-        if rate is None or cap is None:
-            continue
-        voice_tts[provider] = {"rate": float(rate), "cap_usd": float(cap)}
-    voice_stt: dict[str, dict[str, float]] = {}
-    for provider, fields in (voice_cfg.get("stt") or {}).items():
-        rate = fields.get("cost_per_audio_hour")
-        cap = fields.get("daily_budget_usd")
-        if rate is None or cap is None:
-            continue
-        voice_stt[provider] = {"rate": float(rate), "cap_usd": float(cap)}
+    voice_tts, voice_stt = project_voice_cost_view(voice_cfg)
     per_role = {
         role: float(cap) for role, cap in (cost_cfg.get("per_role") or {}).items()
     }
@@ -289,7 +277,7 @@ async def set_identity(request: web.Request) -> web.Response:
     A document still byte-identical to what was seeded is not authored prose,
     and `config_seed.refresh_seeded_docs` re-renders those with the new values
     on the next boot — so a rename or a gender change does reach an untouched
-    IDENTITY.md. The protection is against overwriting authorship, not against
+    SOUL.md. The protection is against overwriting authorship, not against
     the documents ever being correct.
     """
     try:

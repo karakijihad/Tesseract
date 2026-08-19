@@ -119,13 +119,20 @@ class FileWriteTool(Tool):
 
     risk_class: ClassVar[str] = "propose"
 
+    group: ClassVar[str] = "files-on-disk"
+    summary: ClassVar[str] = "Write content to a file, creating parent directories as needed."
+    use_when: ClassVar[str] = (
+        "Creating a new file or overwriting one wholesale. A relative path "
+        "anchors at the state root; writes into locked runtime/source trees are refused."
+    )
+    not_when: ClassVar[str] = (
+        "Use `file_copy` or `file_move` to relocate an existing file instead of "
+        "reading and rewriting it."
+    )
+
     @property
     def name(self) -> str:
         return "file_write"
-
-    @property
-    def description(self) -> str:
-        return "Write content to a file. Creates the file and parent directories if they don't exist."
 
     @property
     def input_schema(self) -> type[BaseModel]:

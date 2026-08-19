@@ -88,7 +88,7 @@ def kill_process_tree(proc, label: str, *, own_pgid: int | None = None) -> None:
 
     ``Popen.kill()`` is ``TerminateProcess`` on Windows and ``SIGKILL`` on
     POSIX, and both name a single pid. Everything the target had spawned — a
-    lane's claude/codex child, Chromium, Piper — outlived it and was left for
+    lane's claude/codex child, Chromium, a voice engine — outlived it and was left for
     the next boot's janitor sweep. ``lib.rs::kill_process_tree`` already walked
     the tree for this reason, but only on the Tauri 30s timeout, so a clean
     shutdown never reached it.

@@ -1,14 +1,17 @@
 # What NOT to Save in Memory
 
 These categories are excluded from the memory store. Saving them creates
-noise, not value. Pattern checks for each category are hardcoded in
-`tesseract/memory/what_not_to_save.py`; this file enables them via
-its numbered category list (read on startup).
+noise, not value.
+
+**This file is documentation, not configuration.** The checks live in
+`tesseract/memory/what_not_to_save.py` and editing the list below changes
+nothing. Categories 1, 7 and 8 describe intent that no check yet enforces,
+and are marked.
 
 ## Excluded Categories
 
 1. **Secrets and credentials** — API keys, tokens, passwords, SSH keys,
-   connection strings. Hard-blocked.
+   connection strings. *Not yet enforced by a check — do not rely on it.*
 2. **Code patterns** — function definitions, class bodies, import lines,
    try/except blocks. The source file is the truth; save observations
    *about* it, not copies of it.
@@ -17,14 +20,16 @@ its numbered category list (read on startup).
 4. **Ephemeral task state** — "currently working on X", "in-progress",
    "right now I'm", temporary scratch. The task is in TaskList or the
    workshop folder.
-5. **CLAUDE.md content** — the file is always loaded; repeating its
-   rules in memory is duplication.
+5. **Your own standing instructions** — the rules and workspace
+   documents loaded on every turn. Repeating them in memory is
+   duplication; they are already there.
 6. **Routine acknowledgements** — "hello", "thanks", "ok", "got it".
    These are turn noise, not facts worth recalling.
 7. **Raw file contents** — the file itself is the source of truth.
-   Save the conclusion drawn from it, not a copy of it.
+   Save the conclusion drawn from it, not a copy of it. *Not yet enforced
+   by a check, though the code-pattern check catches most source dumps.*
 8. **Raw tool / command output** — 200-line dumps. Save the one line
-   that matters.
+   that matters. *Not yet enforced by a check.*
 9. **Request echoes** — titles/bodies that narrate what the operator
    just asked ("You asked to search for…", "User requested…", "As you
    wanted…"). The operator's message is already in history; restating it
@@ -43,6 +48,6 @@ its numbered category list (read on startup).
 If a candidate memory fits any category above, `should_save()` returns
 False and the write is logged to `events/writes.jsonl` with
 `status: "blocked"` and a specific `reason` (`code_pattern` / `git_history`
-/ `ephemeral_task_state` / `claude_md_content` / `routine_ack` /
+/ `ephemeral_task_state` / `instruction_echo` / `routine_ack` /
 `request_echo` / `turn_summary` / `trivial_body`). The forensic trail
 lets the librarian calibrate thresholds over time.

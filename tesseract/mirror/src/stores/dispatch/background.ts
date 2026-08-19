@@ -56,6 +56,14 @@ export function handleBackground(env: Envelope): void {
       // top-right stack on every operator message.
       break;
     }
+    case "conscience_report": {
+      // Every successful heartbeat write, transition or not, and deliberately
+      // silent. `conscience_drift` below is the one that toasts; this is what
+      // keeps an open tab showing the latest scrape on an install where
+      // nothing ever changes band — which is a healthy install.
+      useConscienceStore.getState().fetchDrift();
+      break;
+    }
     case "conscience_drift": {
       // Fired by ConscienceHeartbeatJob on worst-status band transition
       // (ok ↔ warn ↔ bad). Refresh the Conscience tab's store so the

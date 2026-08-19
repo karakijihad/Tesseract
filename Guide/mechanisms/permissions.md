@@ -57,10 +57,17 @@ can read that set rather than trust this sentence.
 
 ## What gets written down
 
-Prompts and refusals are recorded to `runtime/logs/approvals.jsonl` — what was
-asked, and what you answered.
+Every tool call that passes the gate is recorded to
+`runtime/logs/approvals.jsonl` — the time, the tool, a short summary of what it
+was given, which rule decided, and the outcome. It survives restarts.
 
-Worth knowing precisely: a tool that resolves to `AUTO` writes no approval row,
-because nothing was approved. If you want a record of a tool's use, give it
-`ASK`. (`runtime/logs/audit/` is a different log; it belongs to the MCP
-client.)
+That includes the calls nobody was asked about. A tool resolving to `AUTO`
+writes a row marked `auto`, kept distinct from the `allow_once` a tool gets
+when you were asked and said yes — so "did I approve this?" and "did this
+happen?" stay two different questions. Most of the file is `auto` rows, since
+reading tools run several times a turn; filter them out to see only what you
+were actually asked.
+
+Two limits. The ledger records decisions, not outcomes — a row says a tool was
+allowed to run, not what it did. And nothing prunes the file, so it grows.
+(`runtime/logs/audit/` is a different log; it belongs to the MCP client.)

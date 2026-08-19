@@ -28,18 +28,23 @@ class SpawnCancelTool(Tool):
     default_posture: ClassVar[str] = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "tracking-spawned-work"
+    summary: ClassVar[str] = (
+        "Cancels a running background spawn and waits for it to unwind."
+    )
+    use_when: ClassVar[str] = (
+        "Use to stop a background spawn that is no longer needed or has gone "
+        "off track, before re-dispatching it with a corrected instruction."
+    )
+    not_when: ClassVar[str] = (
+        "Course-correcting a spawn that is still useful — steer it in place "
+        "with `work_send` instead of cancelling and restarting it."
+    )
+
     @property
     def name(self) -> str:
         return "spawn_cancel"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Cancel a running background spawn. Marks the handle "
-            "cancelled, fires the kind-specific cancel hook (subprocess "
-            "SIGTERM for delegate_*), and waits for the task to unwind. "
-            "Returns immediately if the handle is already done."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

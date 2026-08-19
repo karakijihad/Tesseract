@@ -1,18 +1,29 @@
-import { useEffect, useMemo, useState } from "react";
+import { Select } from "../../components/common/Select";
+import { Note } from "../../components/common/Note";
+import { Chip } from "../../components/common/Chip";
+import { useMemo, useState } from "react";
 
-import { fetchCatalog, postModelRef, postRoleModels } from "../../lib/api";
+import {
+  fetchCatalog,
+  fetchChains,
+  postModelRef,
+  postRoleChain,
+  postRoleModels,
+} from "../../lib/api";
 import type {
   CatalogEntry,
   CatalogResponse,
   CatalogTargetMeta,
+  Chain,
+  ChainsResponse,
   IdentityRoleStatus,
   ModelRefTarget,
   ProviderModelKind,
   RoleMode,
 } from "../../lib/types";
 import { useIdentityStore } from "../../stores/identity";
-import { useWebSocketStore } from "../../stores/websocket";
-import { useFetchRetryTick } from "../../lib/useFetchRetry";
+import { useCachedFetch } from "../../lib/useCachedFetch";
+import { Hint } from '../../components/ui/Hint';
 
 function ctxLabel(ctx: number | undefined): string {
   if (!ctx) return "—";
@@ -20,44 +31,69 @@ function ctxLabel(ctx: number | undefined): string {
 }
 
 function optionLabel(entry: CatalogEntry): string {
-  // Format: "<model>  ·  <tier>.<provider>  ·  <ctx>"
+  // Format: "<model>  ·  <tier>.<provider>  ·  <ctx>  ·  <what it is for>"
+  // The tags ride the option rather than a line beneath the select, because
+  // the moment they answer a question is while the list is open — a CLI ref
+  // that cannot call tools is worth seeing before it is picked, not after.
   const ctx = entry.context_window
     ? `  ${Math.round(entry.context_window / 1000)}k`
     : "";
-  return `${entry.model}  ·  ${entry.tier}.${entry.provider}${ctx}`;
+  const goodFor = entry.good_for?.length
+    ? `  ·  ${entry.good_for.join(" ")}`
+    : "";
+  return `${entry.model}  ·  ${entry.tier}.${entry.provider}${ctx}${goodFor}`;
+}
+
+function chainLabel(chain: Chain): string {
+  // Deliberately not naming the model it serves: the very next column already
+  // shows that, and repeating it is what pushed the label out of the cell.
+  const depth =
+    chain.entries.length === 1
+      ? "no fallback"
+      : `+${chain.entries.length - 1} fallback${chain.entries.length === 2 ? "" : "s"}`;
+  return `${chain.name}  ·  ${depth}`;
 }
 
 export function ModelRolesSection() {
   const roles = useIdentityStore((s) => s.roles);
   const fetchIdentity = useIdentityStore((s) => s.fetchIdentity);
 
-  const [catalog, setCatalog] = useState<CatalogResponse | null>(null);
+  const {
+    data: catalog,
+    error,
+    setError,
+    set: setCatalog,
+  } = useCachedFetch<CatalogResponse>("settings.catalog", fetchCatalog);
+  const { data: chainData, set: setChains } = useCachedFetch<ChainsResponse>(
+    "settings.chains",
+    fetchChains,
+  );
   const [savingTarget, setSavingTarget] = useState<ModelRefTarget | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   const reloadCatalog = async () => {
     try {
-      const c = await fetchCatalog();
-      setCatalog(c);
+      setCatalog(await fetchCatalog());
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "failed to load catalog");
     }
   };
 
-  // Re-runs on every WS (re)connection: a backend restart must replace a
-  // pre-restart "Failed to fetch" with fresh data (2026-07-30).
-  const wsGeneration = useWebSocketStore((s) => s.generation);
-  const retryTick = useFetchRetryTick(error !== null);
-  useEffect(() => {
-    void reloadCatalog();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wsGeneration, retryTick]);
-
   const targetRows: CatalogTargetMeta[] = useMemo(
     () => catalog?.targets ?? [],
     [catalog],
   );
+
+  // Which chain each role follows, derived from the chains payload rather than
+  // asked for per role — `used_by` is already the authoritative direction and
+  // inverting it here keeps one source.
+  const chainOfRole = useMemo(() => {
+    const out = new Map<string, Chain>();
+    for (const chain of chainData?.chains ?? []) {
+      for (const role of chain.used_by) out.set(role, chain);
+    }
+    return out;
+  }, [chainData]);
 
   const optionsByTarget = useMemo(() => {
     const out = new Map<ModelRefTarget, CatalogEntry[]>();
@@ -83,9 +119,8 @@ export function ModelRolesSection() {
   if (!catalog?.entries || !catalog?.targets) {
     return (
       <section className="settings-section">
-        <h3 className="settings-section__title">Model roles</h3>
         <div className="t-meta">(loading…)</div>
-        {error && <div className="settings-error">{error}</div>}
+        {error && <Note tone="bad">{error}</Note>}
       </section>
     );
   }
@@ -100,6 +135,22 @@ export function ModelRolesSection() {
       await fetchIdentity();
     } catch (err) {
       setError(err instanceof Error ? err.message : "model-ref update failed");
+    } finally {
+      setSavingTarget(null);
+    }
+  };
+
+  const swapChain = async (target: ModelRefTarget, chain: string) => {
+    if (chainOfRole.get(target)?.name === chain) return;
+    setSavingTarget(target);
+    setError(null);
+    try {
+      await postRoleChain({ role: target, chain });
+      setChains(await fetchChains());
+      await reloadCatalog();
+      await fetchIdentity();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "could not move the role");
     } finally {
       setSavingTarget(null);
     }
@@ -126,31 +177,44 @@ export function ModelRolesSection() {
 
   return (
     <section className="settings-section">
-      <h3 className="settings-section__title">Model roles</h3>
-      <div className="role-banner" role="status">
+      <Note tone="warn">
         Takes effect immediately — live sessions hot-swap to the new adapter on
         save.
-      </div>
-      <div className="settings-hint t-meta">
-        Each row writes a single ref into roles.yaml; catalog is sourced from
-        providers.yaml. Edit either file on disk and the picker reflects it.
-      </div>
-      {error && <div className="settings-error">{error}</div>}
+      </Note>
+      <Note>
+        A role follows a chain, and the chain decides which model serves it and
+        what it falls back to. Changing a role here moves that role alone; to
+        change the models themselves — or move every role that shares a chain —
+        edit the chain in Chains.
+      </Note>
+      {error && <Note tone="bad">{error}</Note>}
       <div className="role-table">
         <div className="role-table__head t-meta">
           <span>target</span>
+          <span>chain</span>
           <span>model</span>
           <span>provider</span>
           <span>context</span>
           <span>status</span>
         </div>
         {targetRows.map(
-          ({ target, allow_toggle, load_bearing, mode: serverMode }) => {
+          ({ target, allow_toggle, load_bearing, mode: serverMode, allowed_kinds }) => {
             const label = target;
             const currentRef = catalog.current[target];
             const options = optionsByTarget.get(target) ?? [];
             const head = options.find((e) => e.ref === currentRef);
             const saving = savingTarget === target;
+            const chain = chainOfRole.get(target);
+
+            // Only roles follow chains. `embeddings` and the voice lanes live
+            // under their own keys in roles.yaml and still name a ref directly,
+            // so they keep the model picker.
+            const compatible = (chainData?.chains ?? []).filter(
+              (c) =>
+                c.kind !== null &&
+                (allowed_kinds.length === 0 ||
+                  allowed_kinds.includes(c.kind as ProviderModelKind)),
+            );
 
             // Identity store carries the live mode for chat-style roles; for
             // newly-surfaced roles (vision_agent, image_generator, etc.) we
@@ -164,26 +228,55 @@ export function ModelRolesSection() {
             return (
               <div key={target} className="role-table__row">
                 <span className="role-table__role">{label}</span>
+                <span className="role-table__chain">
+                  {chain ? (
+                    <Hint
+                      label={
+                        chain.used_by.length > 1
+                          ? `${chain.name} is shared with ${chain.used_by
+                              .filter((r) => r !== target)
+                              .join(", ")} — moving this role leaves them on it`
+                          : `${chain.name} serves this role alone`
+                      }
+                    >
+                      <Select
+                        value={chain.name}
+                        disabled={saving || compatible.length === 0}
+                        onChange={(v) => void swapChain(target, v)}
+                        ariaLabel={`${label} chain`}
+                        options={compatible.map((c) => ({
+                          value: c.name,
+                          label: chainLabel(c),
+                        }))}
+                      />
+                    </Hint>
+                  ) : (
+                    <span className="t-meta">—</span>
+                  )}
+                </span>
                 <span className="role-table__model">
-                  <select
-                    className="role-table__select"
-                    value={currentRef ?? ""}
-                    disabled={saving || options.length === 0}
-                    onChange={(e) => void swapRef(target, e.target.value)}
-                    aria-label={`${label} model`}
-                  >
-                    {currentRef && !head && (
-                      <option value={currentRef}>
-                        {currentRef} (not in catalog)
-                      </option>
-                    )}
-                    {!currentRef && <option value="">(not configured)</option>}
-                    {options.map((opt) => (
-                      <option key={opt.ref} value={opt.ref}>
-                        {optionLabel(opt)}
-                      </option>
-                    ))}
-                  </select>
+                  {chain ? (
+                    <span className="role-table__resolved">
+                      {chain.entries[0]?.model ?? chain.entries[0]?.ref ?? "—"}
+                    </span>
+                  ) : (
+                    <Select
+                      value={currentRef ?? ""}
+                      disabled={saving || options.length === 0}
+                      onChange={(v) => void swapRef(target, v)}
+                      ariaLabel={`${label} model`}
+                      options={[
+                        ...(currentRef && !head
+                          ? [{ value: currentRef, label: `${currentRef} (not in catalog)` }]
+                          : []),
+                        ...(!currentRef ? [{ value: "", label: "(not configured)" }] : []),
+                        ...options.map((opt) => ({
+                          value: opt.ref,
+                          label: optionLabel(opt),
+                        })),
+                      ]}
+                    />
+                  )}
                 </span>
                 <span className="role-table__provider t-meta">
                   {head ? `${head.tier}.${head.provider}` : "—"}
@@ -193,35 +286,35 @@ export function ModelRolesSection() {
                 </span>
                 <span className="role-table__status">
                   {allow_toggle ? (
-                    <button
-                      type="button"
-                      className={`role-toggle role-toggle--${mode}`}
-                      onClick={() => void toggleMode(target, mode)}
-                      disabled={saving || (isLoadBearing && mode === "active")}
-                      title={
-                        isLoadBearing
+                    <Hint label={isLoadBearing
                           ? "chat_brain is load-bearing — cannot be set inactive"
                           : mode === "active"
                             ? "click to set inactive"
-                            : "click to set active"
-                      }
-                    >
-                      {mode}
-                    </button>
+                            : "click to set active"}>
+                      <Chip
+                        className="role-toggle"
+                        tone={mode === "active" ? "good" : "bad"}
+                        onClick={() => void toggleMode(target, mode)}
+                        disabled={saving || (isLoadBearing && mode === "active")}
+                      >
+                        {mode}
+                      </Chip>
+                    </Hint>
                   ) : (
                     // Lanes (embeddings / voice_stt / voice_tts) have no
                     // toggle here — show a read-only "active" pill so the
                     // status column stays consistent across all rows.
                     // role="img" + aria-label makes screen readers announce
                     // it as informational rather than a non-functional control.
-                    <span
-                      className="role-toggle role-toggle--active"
-                      role="img"
-                      aria-label="always active"
-                      title="always active — addressed directly by the runtime"
-                    >
-                      active
-                    </span>
+                    <Hint label="always active — addressed directly by the runtime">
+                      <span
+                        className="chip chip--outline chip--good role-toggle"
+                        role="img"
+                        aria-label="always active"
+                      >
+                        active
+                      </span>
+                    </Hint>
                   )}
                 </span>
               </div>

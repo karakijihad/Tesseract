@@ -6,9 +6,13 @@
 // cross-reference two surfaces to answer §15 Q6 (what failed and when?).
 // S2: per-pause Unpause button + per-blocked-item Cancel button.
 
+import { Block } from '../../components/common/Block';
 import React from 'react';
 import type { AgendaItem, GovernorPause } from '../../lib/api';
 import { useAutonomyStore } from '../../stores/autonomy';
+import { Hint } from '../../components/ui/Hint';
+import { Button } from '../../components/common/Button';
+import { Row, RowActions } from '../../components/common/Row';
 
 interface BlockedPaneProps {
   items: AgendaItem[];
@@ -40,13 +44,7 @@ export function BlockedPane({
   const anyError = itemsStatus === 'error' || governorStatus === 'error';
 
   return (
-    <section className="runtime-block autonomy-pane autonomy-pane--blocked">
-      <div className="runtime-block__title">
-        Blocked & paused sources
-        <span className="t-meta" style={{ marginLeft: 8 }}>
-          {blocked.length} blocked · {pauses.length} paused
-        </span>
-      </div>
+    <Block title={null} meta={<>{blocked.length} blocked · {pauses.length} paused</>}>
 
       {anyError && (
         <p className="t-meta">
@@ -73,14 +71,13 @@ export function BlockedPane({
                   </div>
                   <div className="autonomy-row__goal">{p.reason}</div>
                   <div className="autonomy-row__actions">
-                    <button
-                      type="button"
-                      className="autonomy-btn autonomy-btn--primary"
+                    <Button
+                      tone="primary"
                       onClick={() => void unpauseSource(p.source)}
                       disabled={busy}
                     >
                       Unpause
-                    </button>
+                    </Button>
                   </div>
                 </li>
               );
@@ -96,18 +93,12 @@ export function BlockedPane({
             {blocked.slice(0, 6).map((item) => {
               const busy = pending.has(item.id);
               return (
-                <li
+                <Row
+                  as="li"
                   key={item.id}
-                  className={`autonomy-row autonomy-row--blocked autonomy-row--clickable${busy ? ' is-busy' : ''}`}
+                  className={`autonomy-row autonomy-row--blocked${busy ? ' is-busy' : ''}`}
                   onClick={() => openDetail(item.id)}
-                  role="button"
-                  tabIndex={0}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      openDetail(item.id);
-                    }
-                  }}
+                  ariaLabel={`Open ${item.goal}`}
                 >
                   <div className="autonomy-row__head">
                     <span className="autonomy-chip autonomy-chip--blocked">blocked</span>
@@ -117,29 +108,25 @@ export function BlockedPane({
                   {item.blocked_reason && (
                     <div className="autonomy-row__rationale t-meta">{item.blocked_reason}</div>
                   )}
-                  <div
-                    className="autonomy-row__actions"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <button
-                      type="button"
-                      className="autonomy-btn autonomy-btn--primary"
-                      onClick={() => void resumeItem(item.id)}
-                      disabled={busy}
-                      title="Re-queue this item — kernel will dispatch a fresh worker on next tick. Raise agenda.yaml::worker_timeouts first if the prior worker hit its wallclock budget."
-                    >
-                      Resume
-                    </button>
-                    <button
-                      type="button"
-                      className="autonomy-btn autonomy-btn--danger"
+                  <RowActions className="autonomy-row__actions">
+                    <Hint label="Re-queue this item — kernel will dispatch a fresh worker on next tick. Raise agenda.yaml::worker_timeouts first if the prior worker hit its wallclock budget.">
+                      <Button
+                        tone="primary"
+                        onClick={() => void resumeItem(item.id)}
+                        disabled={busy}
+                      >
+                        Resume
+                      </Button>
+                    </Hint>
+                    <Button
+                      tone="danger"
                       onClick={() => void cancelItem(item.id)}
                       disabled={busy}
                     >
                       Cancel
-                    </button>
-                  </div>
-                </li>
+                    </Button>
+                  </RowActions>
+                </Row>
               );
             })}
             {blocked.length > 6 && (
@@ -148,6 +135,6 @@ export function BlockedPane({
           </ul>
         </div>
       )}
-    </section>
+    </Block>
   );
 }

@@ -1,16 +1,3 @@
-/* === SCHEDULE VIEW ===
- * Hint / subtext / meta text MUST use var(--text-meta). var(--text-dim) is
- * reserved for deep-background labels on near-black surfaces and is too low
- * contrast for UI copy.
- */
-.schedule-view-wrap {
-  display: flex;
-  flex-direction: row;
-  flex: 1;
-  overflow: hidden;
-  gap: var(--space-md);
-}
-
 /* Children must be allowed to shrink under their content; without
    `min-width: 0` flex children would refuse to clip and overflow the
    shared row. */
@@ -19,11 +6,7 @@
   flex: 1 1 0;
 }
 
-@media (max-width: 900px) {
-  .schedule-view-wrap {
-    flex-direction: column;
-  }
-}
+@media (max-width: 900px) {}
 
 .schedule-view {
   display: flex;
@@ -32,82 +15,31 @@
   overflow: hidden;
 }
 
-.schedule-header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-md);
-  padding: var(--space-sm) 14px;
-  border-bottom: 1px solid var(--panel-border);
-}
-
-.schedule-header-title {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  color: var(--text-meta);
-}
-
-.schedule-header-meta {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-meta);
-}
-
-.schedule-header-actions {
-  margin-left: auto;
-  display: flex;
-  gap: var(--space-sm);
-}
-
-.schedule-header-btn {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-  padding: 4px 10px;
-  border-radius: var(--radius-xs);
-  background: var(--bg-card);
-  border: 1px solid var(--panel-border);
-  color: var(--text-meta);
-  cursor: pointer;
-}
-
-.schedule-header-btn:hover { color: var(--text); border-color: var(--accent-dim); }
-
-.schedule-error {
-  padding: var(--space-sm) 14px;
-  color: var(--bad);
-  font-size: 11px;
-  font-family: var(--font-mono);
-}
-
 .schedule-list {
   flex: 1;
   overflow-y: auto;
-  padding: var(--space-sm) 10px;
+  padding: var(--space-sm) var(--space-10);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-6);
 }
 
 .schedule-empty {
   align-self: center;
-  margin-top: 40px;
+  margin-top: var(--space-40);
   color: var(--text-meta);
-  font-size: 12px;
+  font-size: var(--t-caption-size);
 }
 
 .schedule-row {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 8px 12px;
+  gap: var(--space-2);
+  padding: var(--space-8) var(--space-12);
   border-radius: var(--radius-sm);
   background: var(--bg-card);
-  border: 1px solid var(--panel-border);
-  border-left: 2px solid transparent;
+  border: var(--stroke-1) solid var(--panel-border);
+  border-left: var(--stroke-2) solid transparent;
   transition: border-color var(--motion-fast), background var(--motion-fast);
 }
 
@@ -117,52 +49,33 @@
 
 .schedule-row-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-sm);
+  gap: var(--space-xs) var(--space-sm);
+  min-width: 0;
 }
 
-.schedule-toggle {
-  width: 28px;
-  height: 16px;
-  border-radius: 10px;
-  background: var(--bg);
-  border: 1px solid var(--panel-border);
-  position: relative;
-  cursor: pointer;
-  transition: background var(--motion-fast);
-}
-
-.schedule-toggle.is-on { background: var(--accent); border-color: var(--accent); }
-
-.schedule-toggle-dot {
-  position: absolute;
-  top: 1px;
-  left: 1px;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--text-dim);
-  transition: transform var(--motion-fast), background var(--motion-fast);
-}
-
-.schedule-toggle.is-on .schedule-toggle-dot { transform: translateX(12px); background: var(--bg); }
-
+/* The job name is the row's identity — it takes the spare width, and the
+   buttons after it keep theirs. */
 .schedule-name {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--text);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-ui);
+  font-size: var(--t-caption-size);
+  color: var(--text-primary);
   font-weight: 600;
 }
 
 .schedule-cb-badge {
-  font-family: var(--font-mono);
-  font-size: 9px;
+  font-family: var(--font-ui);
+  font-size: var(--t-meta-size);
   font-weight: 700;
-  letter-spacing: 0.6px;
-  padding: 2px 6px;
+  letter-spacing: 0.06em;
+  padding: var(--space-2) var(--space-6);
   border-radius: 3px;
   background: var(--bad);
-  color: var(--bg);
+  color: var(--bg-surface);
 }
 
 .schedule-run-indicator {
@@ -171,37 +84,17 @@
   border-radius: 50%;
   background: var(--accent);
   box-shadow: 0 0 0 0 var(--accent);
-  animation: schedule-run-pulse 1.1s ease-in-out infinite;
+  animation: schedule-run-pulse var(--motion-beat) ease-in-out infinite;
   margin-left: auto;
 }
 
-.schedule-run-btn {
+/* Placement only — the run button sits at the right end of the head, and
+   gives the running dot room when there is one. */
+.schedule-row-head .btn {
   margin-left: auto;
-  font-family: var(--font-mono);
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-  padding: 3px 8px;
-  border-radius: var(--radius-xs);
-  background: var(--bg-card);
-  border: 1px solid var(--panel-border);
-  color: var(--text-meta);
-  cursor: pointer;
-  transition: color var(--motion-fast), border-color var(--motion-fast), background var(--motion-fast);
 }
 
-.schedule-run-btn:hover:not(:disabled) {
-  color: var(--accent);
-  border-color: var(--accent);
-  background: var(--accent-dim);
-}
-
-.schedule-run-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.schedule-run-indicator + .schedule-run-btn {
+.schedule-run-indicator + .btn {
   margin-left: var(--space-sm);
 }
 
@@ -211,111 +104,98 @@
   100% { box-shadow: 0 0 0 0 transparent; }
 }
 
+/* Wraps rather than overlaps. This was a nowrap flex row with no shrink rule,
+   so in a narrow panel the handler name and `on_failure:` were laid on top of
+   each other — flex items shrank below their content and the text overflowed
+   its box. Every fixed part refuses to shrink; the handler is the one that
+   gives, and it ellipsises rather than spilling. */
 .schedule-row-meta {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-sm);
-  margin-top: 2px;
-  font-family: var(--font-mono);
-  font-size: 10px;
+  gap: var(--space-xs) var(--space-sm);
+  margin-top: var(--space-2);
+  min-width: 0;
+  font-family: var(--font-ui);
+  font-size: var(--t-meta-size);
   color: var(--text-meta);
 }
 
+/* Placement only — it never wraps and never stretches in the meta row. */
 .schedule-cadence-pill {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  background: var(--bg);
-  border: 1px solid var(--panel-border);
-  color: var(--text);
-  cursor: pointer;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
-.schedule-cadence-pill:hover { border-color: var(--accent); }
+/* A row that fires on an event has no cadence to edit, so this is a label and
+   not a control. Placement only — the border and the colour are the token. */
+.schedule-when-pill {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  border: var(--stroke-1) solid var(--panel-border);
+  border-radius: var(--radius-pill);
+  padding: 0 var(--space-2);
+}
 
 .schedule-handler {
   opacity: 0.8;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schedule-on-failure {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .schedule-on-failure[data-mode="alert"] { color: var(--bad); }
 .schedule-on-failure[data-mode="disable"] { color: var(--warn); }
 
-.schedule-model-role {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 10px;
-  background: var(--bg);
-  border: 1px solid var(--panel-border);
-  color: var(--text-meta);
-  cursor: pointer;
-  margin-left: 4px;
-  appearance: none;
-  -webkit-appearance: none;
-  padding-right: 18px;
-  background-image: linear-gradient(45deg, transparent 50%, var(--text-meta) 50%),
-    linear-gradient(135deg, var(--text-meta) 50%, transparent 50%);
-  background-position: calc(100% - 9px) 50%, calc(100% - 5px) 50%;
-  background-size: 4px 4px, 4px 4px;
-  background-repeat: no-repeat;
-}
-
-.schedule-model-role:hover { border-color: var(--accent); color: var(--text); }
-.schedule-model-role:focus-visible { outline: none; border-color: var(--accent); }
-
-/* Native <option> rendering is OS-controlled; on Windows/Chromium these
- * declarations re-skin the popup so it tracks the app palette instead of
- * the system default blue/white. Selected/hover states still come from
- * the OS but at least the resting palette matches `var(--bg-card)`. */
-.schedule-model-role option {
-  background: var(--bg-card);
-  color: var(--text);
-  font-family: var(--font-mono);
-}
+/* The per-row model dropdown is `Select` — see `ui.css`. */
 
 .schedule-row-last {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  margin-top: 2px;
-  font-family: var(--font-mono);
-  font-size: 9px;
+  gap: var(--space-xs) var(--space-6);
+  min-width: 0;
+  margin-top: var(--space-2);
+  font-family: var(--font-ui);
+  font-size: var(--t-meta-size);
   color: var(--text-meta);
 }
 
 .schedule-last-label { color: var(--text-meta); }
+/* Provenance sits beside the timestamp, not coloured — who fired a job is not
+   a good/bad signal and must not compete with the ok/fail word next to it. */
+.schedule-last-trigger {
+  border: var(--stroke-1) solid var(--panel-border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-xs);
+  white-space: nowrap;
+}
 .schedule-last-status.ok { color: var(--ok); }
 .schedule-last-status.fail { color: var(--bad); }
 .schedule-last-duration { color: var(--text-meta); }
 .schedule-last-detail {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 420px;
   color: var(--text-meta);
 }
-.schedule-expand-btn {
-  margin-left: auto;
-  background: transparent;
-  border: 1px solid var(--panel-border);
-  color: var(--text-meta);
-  font-family: var(--font-mono);
-  font-size: 9px;
-  line-height: 1;
-  padding: 2px 6px;
-  border-radius: 3px;
-  cursor: pointer;
-}
-.schedule-expand-btn:hover { color: var(--text); border-color: var(--text-meta); }
 .schedule-row-payload {
-  margin: 4px 0 0;
-  padding: 8px 10px;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid var(--panel-border);
+  margin: var(--space-4) 0 0;
+  padding: var(--space-8) var(--space-10);
+  background: var(--wash-xs);
+  border: var(--stroke-1) solid var(--panel-border);
   border-radius: 4px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--t-meta-size);
   line-height: 1.4;
   color: var(--text-meta);
   max-height: 320px;
@@ -326,60 +206,33 @@
 
 /* === CADENCE PICKER === */
 .cadence-picker {
-  margin-top: 8px;
-  padding: 10px 12px;
+  margin-top: var(--space-8);
+  padding: var(--space-10) var(--space-12);
   background: var(--bg-elevated);
-  border: 1px solid var(--panel-border);
+  border: var(--stroke-1) solid var(--panel-border);
   border-radius: var(--radius-sm);
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  font-family: var(--font-mono);
-}
-
-.cadence-picker-modes {
-  display: flex;
-  gap: 4px;
-}
-
-.cadence-picker-mode {
-  flex: 0 0 auto;
-  padding: 4px 12px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-  background: transparent;
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius-xs);
-  color: var(--text-meta);
-  cursor: pointer;
-  transition: color var(--motion-fast), border-color var(--motion-fast), background var(--motion-fast);
-}
-
-.cadence-picker-mode:hover { color: var(--text-primary); border-color: var(--accent-dim); }
-.cadence-picker-mode.is-active {
-  color: var(--text-primary);
-  border-color: var(--accent);
-  background: var(--accent-dim);
+  gap: var(--space-10);
+  font-family: var(--font-ui);
 }
 
 .cadence-picker-interval,
 .cadence-picker-daily {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-6);
 }
 
 .cadence-picker-colon {
-  font-size: 16px;
+  font-size: var(--t-sub-size);
   color: var(--text-meta);
-  padding: 0 2px;
+  padding: 0 var(--space-2);
 }
 
 .cadence-picker-daily-hint {
-  margin-left: 12px;
-  font-size: 10px;
+  margin-left: var(--space-12);
+  font-size: var(--t-meta-size);
   color: var(--text-meta);
 }
 
@@ -388,54 +241,23 @@
 .alarm-picker-weekly {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-}
-
-.alarm-picker-weekday-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.alarm-picker-weekday {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  padding: 4px 10px;
-  background: transparent;
-  color: var(--text-meta);
-  border: 1px solid var(--panel-border);
-  border-radius: 3px;
-  cursor: pointer;
-  transition: color var(--motion-fast), border-color var(--motion-fast), background var(--motion-fast);
-}
-
-.alarm-picker-weekday:hover {
-  color: var(--text-primary);
-  border-color: var(--accent-dim);
-}
-
-.alarm-picker-weekday.is-active {
-  color: var(--text-primary);
-  border-color: var(--accent);
-  background: var(--accent-dim);
+  gap: var(--space-8);
 }
 
 .cadence-cell {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 3px;
+  gap: var(--space-3);
   min-width: 52px;
 }
 
 .cadence-cell-step {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  padding: 2px 0;
-  background: var(--bg);
-  border: 1px solid var(--panel-border);
+  font-family: var(--font-ui);
+  font-size: var(--t-caption-size);
+  padding: var(--space-2) 0;
+  background: var(--bg-surface);
+  border: var(--stroke-1) solid var(--panel-border);
   border-radius: var(--radius-xs);
   color: var(--text-meta);
   cursor: pointer;
@@ -446,10 +268,10 @@
 
 .cadence-cell-display {
   position: relative;
-  background: var(--bg);
-  border: 1px solid var(--panel-border);
+  background: var(--bg-surface);
+  border: var(--stroke-1) solid var(--panel-border);
   border-radius: var(--radius-xs);
-  padding: 6px 0 4px;
+  padding: var(--space-6) 0 var(--space-4);
   text-align: center;
 }
 
@@ -459,69 +281,54 @@
   border: none;
   outline: none;
   text-align: center;
-  font-family: var(--font-mono);
-  font-size: 18px;
+  font-family: var(--font-ui);
+  font-size: var(--t-head-size);
   font-weight: 600;
   color: var(--text-primary);
-  -moz-appearance: textfield;
-}
-
-.cadence-cell-input::-webkit-outer-spin-button,
-.cadence-cell-input::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
 }
 
 .cadence-cell-label {
   display: block;
-  margin-top: 2px;
-  font-size: 9px;
-  letter-spacing: 0.6px;
+  margin-top: var(--space-2);
+  font-size: var(--t-meta-size);
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--text-meta);
 }
 
 .cadence-picker-cron {
   display: flex;
-  gap: 6px;
+  gap: var(--space-6);
 }
 
 .cadence-picker-cron-field {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: var(--space-3);
   flex: 1;
   min-width: 54px;
 }
 
 .cadence-picker-cron-label {
-  font-size: 9px;
-  letter-spacing: 0.6px;
+  font-size: var(--t-meta-size);
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--text-meta);
 }
 
+/* PLACEMENT ONLY — the field is `.input`; a cron cell is narrow enough that
+   its digits read better centred. */
 .cadence-picker-cron-input {
-  padding: 5px 6px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  background: var(--bg);
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius-xs);
-  color: var(--text-primary);
   text-align: center;
-  outline: none;
 }
-
-.cadence-picker-cron-input:focus { border-color: var(--accent); }
 
 .cadence-picker-preview {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 0;
-  border-top: 1px solid var(--panel-divider);
-  font-size: 11px;
+  gap: var(--space-8);
+  padding: var(--space-4) 0;
+  border-top: var(--stroke-1) solid var(--panel-divider);
+  font-size: var(--t-caption-size);
 }
 
 .cadence-picker-preview-text { color: var(--text-meta); }
@@ -531,101 +338,32 @@
 .cadence-picker-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 6px;
+  gap: var(--space-6);
 }
-
-.cadence-picker-btn {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-  padding: 4px 12px;
-  border-radius: var(--radius-xs);
-  background: var(--bg-card);
-  border: 1px solid var(--panel-border);
-  color: var(--text-meta);
-  cursor: pointer;
-  transition: color var(--motion-fast), border-color var(--motion-fast), background var(--motion-fast);
-}
-
-.cadence-picker-btn:hover:not(:disabled) { color: var(--text-primary); border-color: var(--accent-dim); }
-.cadence-picker-btn.is-save { color: var(--text-primary); border-color: var(--accent); }
-.cadence-picker-btn.is-save:hover:not(:disabled) { background: var(--accent-dim); }
-.cadence-picker-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* ── Phase 18 Task B — Add/Remove job UI ────────────────────────── */
-
-.schedule-remove-btn {
-  font-family: var(--font-mono);
-  font-size: 14px;
-  line-height: 1;
-  width: 22px;
-  height: 22px;
-  border-radius: var(--radius-xs);
-  background: var(--bg-card);
-  border: 1px solid var(--panel-border);
-  color: var(--text-meta);
-  cursor: pointer;
-  margin-left: 6px;
-  transition: color var(--motion-fast), border-color var(--motion-fast);
-}
-
-.schedule-remove-btn:hover:not(:disabled) {
-  color: var(--bad);
-  border-color: var(--bad);
-}
-
-.schedule-remove-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .schedule-confirm-remove {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  margin-top: 6px;
-  border: 1px solid var(--panel-border);
+  gap: var(--space-8);
+  padding: var(--space-6) var(--space-8);
+  margin-top: var(--space-6);
+  border: var(--stroke-1) solid var(--panel-border);
   border-radius: var(--radius-xs);
   background: var(--bg-card);
-  font-size: 11px;
+  font-size: var(--t-caption-size);
 }
 
 .schedule-confirm-text { color: var(--text-meta); flex: 1; }
 
-.schedule-confirm-yes,
-.schedule-confirm-no {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-  padding: 4px 10px;
-  border-radius: var(--radius-xs);
-  background: var(--bg-card);
-  border: 1px solid var(--panel-border);
-  color: var(--text-meta);
-  cursor: pointer;
-  transition: color var(--motion-fast), border-color var(--motion-fast);
-}
-
-.schedule-confirm-yes:hover:not(:disabled) {
-  color: var(--bad);
-  border-color: var(--bad);
-}
-
-.schedule-confirm-no:hover:not(:disabled) {
-  color: var(--text-primary);
-  border-color: var(--accent-dim);
-}
-
-.schedule-confirm-yes:disabled,
-.schedule-confirm-no:disabled { opacity: 0.45; cursor: not-allowed; }
-
 .schedule-add-form {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px;
-  margin: 8px 0 12px;
-  border: 1px solid var(--panel-border);
+  gap: var(--space-8);
+  padding: var(--space-12);
+  margin: var(--space-8) 0 var(--space-12);
+  border: var(--stroke-1) solid var(--panel-border);
   border-radius: var(--radius-sm);
   background: var(--bg-card);
 }
@@ -633,7 +371,7 @@
 .schedule-add-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-8);
 }
 
 .schedule-add-row-picker {
@@ -641,7 +379,7 @@
 }
 
 .schedule-add-row-picker .schedule-add-label {
-  padding-top: 6px;
+  padding-top: var(--space-6);
 }
 
 .schedule-add-picker-wrap {
@@ -651,80 +389,41 @@
 
 .schedule-add-picker-wrap > .cadence-picker {
   margin: 0;
-  padding: 8px;
+  padding: var(--space-8);
 }
 
 .schedule-add-label {
-  font-family: var(--font-mono);
-  font-size: 10px;
+  font-family: var(--font-ui);
+  font-size: var(--t-meta-size);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.05em;
   color: var(--text-meta);
   width: 80px;
   flex-shrink: 0;
 }
 
+/* Width only — the field itself is `.input`. */
 .schedule-add-input {
   flex: 1;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  padding: 4px 8px;
-  border-radius: var(--radius-xs);
-  background: var(--bg-deep);
-  border: 1px solid var(--panel-border);
-  color: var(--text-primary);
 }
-
-.schedule-add-input:focus { border-color: var(--accent); outline: none; }
 
 .schedule-add-input[aria-invalid="true"] { border-color: var(--bad); }
 
 .schedule-add-hint {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--text-meta);
-}
-
-.schedule-add-checkbox {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-ui);
+  font-size: var(--t-meta-size);
   color: var(--text-meta);
 }
 
 .schedule-add-error {
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-ui);
+  font-size: var(--t-caption-size);
   color: var(--bad);
-  padding: 4px 0;
+  padding: var(--space-4) 0;
 }
 
 .schedule-add-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: var(--space-8);
 }
-
-.schedule-add-cancel,
-.schedule-add-submit {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-  padding: 4px 12px;
-  border-radius: var(--radius-xs);
-  background: var(--bg-card);
-  border: 1px solid var(--panel-border);
-  color: var(--text-meta);
-  cursor: pointer;
-  transition: color var(--motion-fast), border-color var(--motion-fast), background var(--motion-fast);
-}
-
-.schedule-add-cancel:hover:not(:disabled) { color: var(--text-primary); border-color: var(--accent-dim); }
-
-.schedule-add-submit { color: var(--text-primary); border-color: var(--accent); }
-.schedule-add-submit:hover:not(:disabled) { background: var(--accent-dim); }
-.schedule-add-cancel:disabled,
-.schedule-add-submit:disabled { opacity: 0.45; cursor: not-allowed; }

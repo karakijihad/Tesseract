@@ -13,10 +13,16 @@ class BaseJob(ABC):
     # Schedule view reads this to decide whether to render the role
     # dropdown for the row. The matching default role lives in
     # `default_model_role` so a `schedule.yaml::model_role` override always
-    # has a baseline to fall back to. Subclasses MUST keep these two in
-    # sync — `uses_llm=True` requires a non-empty `default_model_role`.
+    # has a baseline to fall back to. Subclasses MUST keep these in sync —
+    # `uses_llm=True` requires a non-empty `default_model_role` or
+    # `default_model_chain`.
     uses_llm: ClassVar[bool] = False
     default_model_role: ClassVar[str | None] = None
+    # The chain this job rides when it names no role. Roles are pillars, and a
+    # job that is not one of them used to get a role invented for it purely to
+    # hold a budget line — this is what removes the need. A job declares one or
+    # the other; an operator's `model_role` override still wins over both.
+    default_model_chain: ClassVar[str | None] = None
 
     @abstractmethod
     async def run(self, ctx: JobContext) -> JobResult:

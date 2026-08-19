@@ -140,6 +140,8 @@ interface PanelStore {
   hydratePanels: (saved: SavedPanel[]) => void;
   hydrateRails: (saved: SavedRail[]) => void;
   resetAll: () => void;
+  /** Close every view panel and leave everything else alone. */
+  closeAllViews: () => void;
   /** Put ONE rail back where it started, without touching the rest. */
   resetRail: (kind: RailKind) => void;
 }
@@ -430,6 +432,21 @@ export const usePanelStore = create<PanelStore>((set, get) => ({
           : p,
       ),
     }));
+  },
+
+  closeAllViews: () => {
+    // Deliberately NOT `resetAll`: that also re-docks and re-shows the rails,
+    // which is a restore, and the operator asked for a close (2026-08-14).
+    // Pinned panels close too — the button says "all", and pinning locks a
+    // panel in place rather than making it permanent.
+    set((s) => ({
+      panels: s.panels.map((p) =>
+        isRailKind(p.kind)
+          ? p
+          : { ...p, open: false, maximized: false, minimized: false },
+      ),
+    }));
+    useUIStore.getState().setView("orb");
   },
 
   resetAll: () => {

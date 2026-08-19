@@ -148,7 +148,7 @@ class WorkerLane:
     def from_mission_lanes_block(cls, lanes_block: dict[str, Any]) -> "WorkerLane":
         """Build from the raw ``mirror.yaml::mission.lanes.worker`` dict.
 
-        Unknown kind keys (e.g. future ``openclaw``) are logged and
+        Unknown kind keys — a lane kind a later release adds — are logged and
         skipped. A missing ``max_concurrent`` for a known kind sets cap
         to 0 — that kind cannot admit until configured, which surfaces
         as a clear rejection rather than an unbounded fan-out.

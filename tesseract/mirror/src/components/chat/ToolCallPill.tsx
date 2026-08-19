@@ -5,6 +5,7 @@ import { linkifyText } from "../../lib/linkify";
 import { DelegateCard } from "./DelegateCard";
 import { ControllerMirrorBlock } from "./ControllerMirrorBlock";
 import { DownloadPreview, isDownloadUrl } from "./DownloadPreview";
+import { Disclosure } from "../common/Disclosure";
 
 interface Props {
   call: ToolCall;
@@ -31,6 +32,23 @@ const STATUS_LABEL: Record<ToolCallStatus, string> = {
   denied: "denied",
   hard_denied: "BLOCKED",
 };
+
+// A `denied` status covers two events the backend keeps apart and this
+// badge used to flatten: the operator said no, and the prompt ran out with
+// nobody answering. The envelope names the second; reading it here is what
+// stops the row claiming a decision was made.
+const DENIED_REASON_LABEL: Record<string, string> = {
+  timeout: "expired",
+  park_timeout: "expired",
+  turn_cancelled: "cancelled",
+};
+
+function badgeLabel(status: ToolCallStatus, reason?: string): string {
+  if (status === "denied" && reason) {
+    return DENIED_REASON_LABEL[reason] ?? STATUS_LABEL.denied;
+  }
+  return STATUS_LABEL[status];
+}
 
 export function ToolCallPill({ call, result }: Props) {
   const [open, setOpen] = useState(false);
@@ -68,22 +86,24 @@ export function ToolCallPill({ call, result }: Props) {
 
   return (
     <div className="tool-call-pill">
-      <div className="tool-pill-header" onClick={() => setOpen((o) => !o)}>
+      <Disclosure
+        variant="row"
+        open={open}
+        onToggle={() => setOpen((o) => !o)}
+        className="tool-pill-header"
+        ariaLabel={`${call.name} call detail`}
+      >
         <span className="tool-pill-name">{call.name}</span>
         {status && (
           <span className={`tool-pill-badge ${STATUS_CLASS[status]}`}>
-            {STATUS_LABEL[status]}
+            {badgeLabel(status, statusEntry?.reason)}
           </span>
         )}
         {!open && hasArgs && (
           <span className="tool-pill-input-truncated">{inputStr}</span>
         )}
-        <span
-          style={{ marginLeft: "auto", color: "var(--text-meta)", fontSize: 10 }}
-        >
-          {open ? "▲" : "▼"}
-        </span>
-      </div>
+        <span className="tool-pill-caret t-meta">{open ? "▲" : "▼"}</span>
+      </Disclosure>
       {open && (
         <div className="tool-pill-body">
           {hasArgs ? (
@@ -93,16 +113,15 @@ export function ToolCallPill({ call, result }: Props) {
           )}
           {isHardDenied && statusEntry?.reason && (
             <div className="tool-pill-hard-reason">
-              <button
-                type="button"
-                className="tool-pill-expand-btn"
-                onClick={(e) => {
+              <Disclosure
+                open={showHardReason}
+                onToggle={(e) => {
                   e.stopPropagation();
                   setShowHardReason((v) => !v);
                 }}
               >
                 {showHardReason ? "Hide block reason" : "Show block reason"}
-              </button>
+              </Disclosure>
               {showHardReason && (
                 <pre className="tool-pill-hard-reason-text">
                   {statusEntry.reason}
@@ -128,10 +147,9 @@ export function ToolCallPill({ call, result }: Props) {
               </pre>
             )}
           {resultTooLong && !isDelegateStream && !controllerMeta && (
-            <button
-              type="button"
-              className="tool-pill-expand-btn"
-              onClick={(e) => {
+            <Disclosure
+              open={expandResult}
+              onToggle={(e) => {
                 e.stopPropagation();
                 setExpandResult((v) => !v);
               }}
@@ -139,7 +157,7 @@ export function ToolCallPill({ call, result }: Props) {
               {expandResult
                 ? "Collapse output"
                 : `Expand output (${resultOutput.length - RESULT_TRUNCATE_AT} more chars)`}
-            </button>
+            </Disclosure>
           )}
         </div>
       )}

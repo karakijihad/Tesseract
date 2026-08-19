@@ -1,15 +1,21 @@
-"""SkillSuggestJob — Phase 4 (capability-growth) 4c, suggest-only.
+"""A task you keep repeating that no skill covers yet — named, never drafted.
 
 The judgment path for drafting skills is the `skill_create` tool (the assistant decides,
-like `agent_create`). This job is the *optional* detector layer chosen by the
-operator: it never drafts. It reads the recent daily digests
+like `agent_create`). This job is the detector layer: it never drafts. It reads
+the recent daily digests
 (`memory-store/daily/*.md`, where chat_digest lands session summaries), lists
 the skills that already exist, and asks a model whether any repeated task shape
 appears with NO covering skill. Each suggestion becomes a `nudge` card — the
 operator (or the assistant on its next turn) decides whether to `skill_create` it.
 
-No auto-draft, ever. Disabled by default in ``schedule.yaml``. Never raises —
-handler contract returns ``JobResult(ok=False, ...)`` on failure.
+No auto-draft, ever.
+
+**Fired on volume, not on a clock.** Its row declares ``when: digest_volume``:
+it runs once enough new daily digests exist to read a repetition across, so a
+fortnight of not using the app costs nothing and a fortnight of heavy use is
+read once. The threshold is ``when_config.min_new_digests``.
+
+Never raises — handler contract returns ``JobResult(ok=False, ...)`` on failure.
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from tesseract.brain.skills import load_skills
+from tesseract.orchestrator.outcome import RunOutcome
 from tesseract.paths import TESSERACT_HOME, home_logs_root
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.scheduler.role_chain import build_chain_for_job
@@ -60,7 +67,11 @@ class SkillSuggestJob(BaseJob):
 
             digests = _recent_digests(ctx, lookback_days)
             if not digests.strip():
-                return _ok(ctx, t0, 0, "no recent digests")
+                return _ok(
+                    ctx, t0, 0, "no recent digests",
+                    outcome=RunOutcome.SKIPPED_NO_WORK,
+                    reason=f"no daily digest in the last {lookback_days} days to read across",
+                )
 
             skills_dir = _resolve_skills_dir(ctx)
             existing = load_skills(skills_dir)
@@ -72,12 +83,26 @@ class SkillSuggestJob(BaseJob):
                 log_label="skill_suggest",
             )
             if not chain:
-                return _ok(ctx, t0, 0, "role unavailable — skipped")
+                return _ok(
+                    ctx, t0, 0, "role unavailable — skipped",
+                    outcome=RunOutcome.REFUSED,
+                    reason="no model was reachable, so nothing was read",
+                )
 
             raw = await _call(chain, _build_prompt(digests, existing))
+            if not raw.strip():
+                return _ok(
+                    ctx, t0, 0, "no model answered",
+                    outcome=RunOutcome.FAILED,
+                    reason="every model in the chain failed or returned nothing",
+                )
             suggestions = _parse(raw, existing_names)[:max_suggestions]
             if not suggestions:
-                return _ok(ctx, t0, 0, "no uncovered shapes found")
+                return _ok(
+                    ctx, t0, 0, "no uncovered shapes found",
+                    outcome=RunOutcome.SKIPPED_NO_WORK,
+                    reason="nothing you repeat is missing a skill",
+                )
 
             store = _resolve_store(ctx)
             already = _pending_suggested_names(store)
@@ -88,6 +113,12 @@ class SkillSuggestJob(BaseJob):
                 if await _file_nudge(ctx, store, sug):
                     filed += 1
 
+            if filed == 0:
+                return _ok(
+                    ctx, t0, 0, f"suggested={len(suggestions)} filed=0",
+                    outcome=RunOutcome.SKIPPED_NO_WORK,
+                    reason="every shape it spotted is already suggested or already covered",
+                )
             return _ok(ctx, t0, filed, f"suggested={len(suggestions)} filed={filed}")
         except Exception as exc:  # noqa: BLE001 — handler contract forbids raising
             log.exception("skill_suggest crashed")
@@ -100,12 +131,26 @@ class SkillSuggestJob(BaseJob):
             )
 
 
-def _ok(ctx: JobContext, t0: float, filed: int, detail: str) -> JobResult:
+def _ok(
+    ctx: JobContext,
+    t0: float,
+    filed: int,
+    detail: str,
+    *,
+    outcome: RunOutcome = RunOutcome.SUCCEEDED,
+    reason: str = "",
+) -> JobResult:
+    """One exit for every non-crash path, so each one has to say which of the
+    closed states it was. `ok` is left to `JobResult` — it derives it from the
+    outcome, and a run that reports both would be able to disagree with
+    itself."""
     return JobResult(
         job_name=ctx.job_name,
         run_id=ctx.run_id,
         ok=True,
         detail=detail,
+        outcome=outcome,
+        outcome_reason=reason,
         payload={"filed": filed},
         duration_ms=(time.monotonic() - t0) * 1000.0,
     )

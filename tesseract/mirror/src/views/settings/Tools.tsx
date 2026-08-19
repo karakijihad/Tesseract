@@ -1,7 +1,11 @@
+import { Select, type SelectTone } from "../../components/common/Select";
+import { Note } from '../../components/common/Note';
 import { useEffect, useMemo, useState } from 'react';
 
-import { useSettingsStore } from '../../stores/settings';
 import { applyToolPermission, useToolsStore, type Posture } from '../../stores/tools';
+import { postResetDefaults } from '../../lib/api';
+import { ResetDefaults } from '../../components/common/ResetDefaults';
+import { Hint } from '../../components/ui/Hint';
 
 function ToolPermissionSelect({
   name,
@@ -15,23 +19,31 @@ function ToolPermissionSelect({
   onChange: (posture: Posture) => void;
 }) {
   return (
-    <select
-      className={`tool-row__select tool-row__select--${defaultPosture}`}
+    <Select
       value={defaultPosture}
-      onChange={(e) => onChange(e.target.value as Posture)}
+      options={POSTURE_OPTIONS}
+      onChange={(v) => onChange(v as Posture)}
       disabled={saving}
-      aria-label={`${name} default posture`}
-    >
-      <option value="auto">AUTO</option>
-      <option value="ask">ASK</option>
-      <option value="deny">DENY</option>
-    </select>
+      tone={POSTURE_TONE[defaultPosture]}
+      ariaLabel={`${name} default posture`}
+    />
   );
 }
 
+const POSTURE_OPTIONS = [
+  { value: "auto", label: "AUTO" },
+  { value: "ask", label: "ASK" },
+  { value: "deny", label: "DENY" },
+];
+
+// The posture IS the state: green runs, amber asks, red refuses.
+const POSTURE_TONE: Record<Posture, SelectTone> = {
+  auto: "ok",
+  ask: "warn",
+  deny: "bad",
+};
+
 export function ToolsSection() {
-  const collapsed = useSettingsStore((s) => s.collapsedSections['tools']);
-  const toggleCollapsed = useSettingsStore((s) => s.toggleCollapsed);
   const tools = useToolsStore((s) => s.tools);
   const mode = useToolsStore((s) => s.mode);
   const error = useToolsStore((s) => s.error);
@@ -40,10 +52,11 @@ export function ToolsSection() {
   const [savingName, setSavingName] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
 
+  // The section only mounts when its rail row is chosen, so the deferred
+  // load the collapse used to provide is now the mount itself.
   useEffect(() => {
-    if (collapsed) return;
     void load();
-  }, [collapsed, load, refreshTick]);
+  }, [load, refreshTick]);
 
   const sorted = useMemo(() => {
     if (!tools) return [];
@@ -79,24 +92,24 @@ export function ToolsSection() {
 
   return (
     <section className="settings-section">
-      <button
-        type="button"
-        className="settings-section__title settings-section__toggle t-meta"
-        onClick={() => toggleCollapsed('tools')}
-        aria-expanded={!collapsed}
-      >
-        <span className="settings-section__caret">{collapsed ? '▸' : '▾'}</span>
-        Tools ({tools ? tools.length : '…'}){mode ? ` — mode: ${mode}` : ''}
-      </button>
-      {!collapsed && (
-        <>
-          <div className="settings-hint t-meta">
+      <Note>
+        {tools ? `${tools.length} tools` : '…'}{mode ? ` — mode: ${mode}` : ''}
+      </Note>
+      <>
+          <Note>
             Edit the <strong>default</strong> posture (writes to `permissions.yaml.tools`). The
             <strong> effective</strong> badge is what runs right now — when it differs, the current
             mode is overriding the default. Path-sensitive tools resolve per-call against
             `path_overrides`. Hard DENY in `bash_security.py` always wins.
+          </Note>
+          {displayedError && <Note tone="bad">{displayedError}</Note>}
+          <div className="cost-row cost-row--actions">
+            <ResetDefaults
+              run={() => postResetDefaults("tools")}
+              reach="every default posture below — mode and path overrides are separate blocks and are not touched"
+              onDone={() => void load(true)}
+            />
           </div>
-          {displayedError && <div className="settings-error">{displayedError}</div>}
           <div className="tool-table">
             <div className="tool-table__head t-meta">
               <span>tool</span>
@@ -112,17 +125,23 @@ export function ToolsSection() {
                   <span className="tool-table__name">
                     {t.name}
                     {t.path_sensitive && (
-                      <span className="tool-table__tag t-meta" title="actual posture varies per call by path">
-                        path
-                      </span>
+                      <Hint label="actual posture varies per call by path">
+                        <span className="tool-table__tag t-meta">
+                          path
+                        </span>
+                      </Hint>
                     )}
                     {t.mode_override && (
-                      <span className="tool-table__tag t-meta" title="overridden by current mode">
-                        mode
-                      </span>
+                      <Hint label="overridden by current mode">
+                        <span className="tool-table__tag t-meta">
+                          mode
+                        </span>
+                      </Hint>
                     )}
                   </span>
-                  <span className="tool-table__desc" title={t.description}>{t.description}</span>
+                  <Hint label={t.description}>
+                    <span className="tool-table__desc">{t.description}</span>
+                  </Hint>
                   <span className="tool-table__posture">
                     <ToolPermissionSelect
                       name={t.name}
@@ -131,20 +150,20 @@ export function ToolsSection() {
                       onChange={(posture) => onChange(t.name, posture)}
                     />
                     {differs && (
-                      <span
-                        className={`tool-row__effective tool-row__effective--${effective}`}
-                        title={`current mode resolves this tool to ${effective.toUpperCase()}`}
-                      >
-                        → {effective.toUpperCase()}
-                      </span>
+                      <Hint label={`current mode resolves this tool to ${effective.toUpperCase()}`}>
+                        <span
+                          className={`tool-row__effective tool-row__effective--${effective}`}
+                        >
+                          → {effective.toUpperCase()}
+                        </span>
+                      </Hint>
                     )}
                   </span>
                 </div>
               );
             })}
           </div>
-        </>
-      )}
+      </>
     </section>
   );
 }

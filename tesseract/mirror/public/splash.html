@@ -12,6 +12,11 @@
         --border-visible: rgba(255, 255, 255, 0.12);
         --text-primary: rgb(245, 245, 250);
         --text-meta: rgba(234, 234, 248, 0.55);
+        /* Dimmer than meta, for a field's placeholder only. Declared here
+           rather than written into the rule: this document defines the palette
+           it cannot import, and a rule reaching past that palette for a
+           literal is the same defect here as it is in the app. */
+        --text-placeholder: rgba(234, 234, 248, 0.28);
         /* globals.css uses --text-dim for the scrollbar thumb's hover state.
            That is a UI element on a near-black surface, which is the case the
            token is reserved for; it is never applied to text here. */
@@ -28,6 +33,13 @@
         --danger: #b02a2a;
         --on-danger: #ffffff;
         --mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+        /* The scrollbar's width, declared once. Two rules need it and they
+           must not drift: the bar itself, and the pinned action row, which
+           carries the same reservation as a MARGIN so its border-top ends
+           where the field rules above it do. A gutter reserved on one and
+           not the other is a rule that stops short of the button it sits
+           over, on the first screen anyone sees. */
+        --scrollbar-w: 3px;
       }
 
       * {
@@ -58,7 +70,7 @@
          into horizontal overflow, and a centred flex row clips both edges when
          that happens. */
       ::-webkit-scrollbar {
-        width: 3px;
+        width: var(--scrollbar-w);
       }
       ::-webkit-scrollbar-track {
         background: transparent;
@@ -277,7 +289,7 @@
       }
       .field input[type="text"]::placeholder,
       .field input[type="password"]::placeholder {
-        color: rgba(234, 234, 248, 0.28);
+        color: var(--text-placeholder);
       }
       .field input[type="text"]:focus,
       .field input[type="password"]:focus {
@@ -380,6 +392,65 @@
         outline-offset: 1px;
       }
 
+      /* ── The setup frame ──────────────────────────────────────
+         One fixed window for all three steps, the way an installer is: the
+         content scrolls inside a bounded region and the action row never
+         moves, so Continue is in the same place on every step and no step
+         change resizes the window. `min-height: 0` on both is what actually
+         bounds it — a flex child defaults to its content's height and would
+         push the action row off the bottom instead of scrolling.
+
+         The form's own `display` is set by the script, which is why the flex
+         direction lives here and not on a rule that could win against it. */
+      #setup-form {
+        flex: 1 1 auto;
+        min-height: 0;
+        width: 100%;
+        flex-direction: column;
+      }
+      #steps {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        /* Reserves the scrollbar's width instead of padding it away. A right
+           padding would inset every field rule from the action row below,
+           which spans the full width because it sits outside this region —
+           and a rule that stops short of the button it sits above reads as a
+           mistake on the first screen anyone sees. */
+        scrollbar-gutter: stable;
+      }
+      .actions {
+        flex: 0 0 auto;
+        /* Margin, not padding: a border is drawn at the border box, so
+           padding would move the buttons in and leave the rule full width. */
+        margin-right: var(--scrollbar-w);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 14px;
+        padding-top: 14px;
+        border-top: 1px solid var(--border);
+      }
+      .actions__count {
+        font-family: var(--mono);
+        font-size: 10px;
+        letter-spacing: 0.16em;
+        color: var(--text-meta);
+        margin-right: auto;
+      }
+      /* In the row both controls size to their content, so the primary reads
+         as the primary and Back does not claim half the window. */
+      .actions .go {
+        width: auto;
+        margin-top: 0;
+        padding: 12px 22px;
+      }
+      .actions .back {
+        width: auto;
+        margin-top: 0;
+        padding: 12px 16px;
+      }
+
       .go {
         width: 100%;
         margin-top: 18px;
@@ -407,10 +478,11 @@
       }
 
 
-      /* ── Dependency rows ───────────────────────────────────────
+      /* ── Optional-download rows ───────────────────────────────
          Same instrument language as the key rows: a mono name, a figure on
-         the right, one line of consequence underneath. Required rows carry no
-         control at all, so nothing looks clickable that is not. */
+         the right, one line of consequence underneath. Every row here is a
+         control, because everything still being asked about is optional —
+         what was required is already installed by the time this form opens. */
       .dep {
         display: grid;
         grid-template-columns: 18px 1fr auto;
@@ -426,7 +498,6 @@
         color: var(--lit);
       }
       .dep__mark--off { color: var(--text-meta); }
-      .dep__mark--fixed { color: var(--text-dim); }
       .dep__name {
         font-family: var(--mono);
         font-size: 9.5px;
@@ -544,15 +615,22 @@
 
       <div id="fatal" style="display: none"></div>
 
-      <!-- Shown first, before anything is downloaded: these answers decide
-           what gets fetched, so declining speech has to happen here rather
-           than after the models are already on disk. -->
+      <!-- Shown once the app itself is installed and before anything OPTIONAL
+           is downloaded: these answers decide what gets fetched, so declining
+           speech has to happen here rather than after the models are already
+           on disk. Every figure on it arrives with the `setup-form` event —
+           the page reads this machine now rather than carrying literals. -->
       <form id="setup-form" style="display: none">
-        <!-- Step 1: who you are and what it connects to. Step 2 is the
-             download decision. Split because this half already measures
-             past 1200px with eight key rows, so appending the dependency
-             list would put the running total — the one number the
-             decision is actually made on — three scrolls below the fold. -->
+        <!-- Three steps: who you are, what it can reach, what it installs.
+             The window does NOT resize between them. It is one fixed frame —
+             a scrolling content region over a pinned action row — the way an
+             installer is, so the operator's eye stays where it was and the
+             Continue button is always in the same place. Splitting the keys
+             out is what makes that possible: identity plus eight key rows
+             plus the download list under one frame would put the running
+             total, the one figure the decision is made on, three scrolls
+             below the fold. -->
+        <div id="steps">
         <div id="step-1">
         <div class="field">
           <label for="operator-name">What should it call you?</label>
@@ -572,10 +650,14 @@
             id="agent-name"
             autocomplete="off"
             spellcheck="false"
-            placeholder="A name"
+            placeholder="Assistant"
           />
           <p class="hint">
-            Used everywhere it refers to itself. You can change it later.
+            Used everywhere it refers to itself, and it is half of the wake
+            phrase below. You can change it later. Something distinctive works
+            better than an everyday word &mdash; a name that turns up in
+            ordinary sentences is one the wake word has to hear apart from
+            them.
           </p>
         </div>
 
@@ -590,22 +672,13 @@
           />
           <p class="hint">
             The wake phrase is always two words &mdash; this one and the name
-            above, so &ldquo;hey Ada&rdquo; or &ldquo;ciao Sara&rdquo;. Only
-            used if you turn the wake word on. Left blank it stays
-            &ldquo;hey&rdquo;.
+            above, so &ldquo;hey Ada&rdquo; or &ldquo;ciao Sara&rdquo;. Left
+            blank it stays &ldquo;hey&rdquo;. Nothing to record here: the app
+            answers everything until you say the phrase once in
+            Settings &rarr; Voice and watch it land. What you record there is
+            checked on this machine and discarded &mdash; no audio is stored or
+            uploaded, and a muted microphone is muted.
           </p>
-        </div>
-
-        <!-- Rows are built by the script from one list, so the page cannot
-             show a key the submit handler does not send. -->
-        <div class="field">
-          <span class="glabel">API keys</span>
-          <p class="hint">
-            All optional, and all addable later in Settings &rarr; API keys.
-            Without a chat key it still listens, remembers and searches your
-            own files &mdash; it just has nothing to answer with.
-          </p>
-          <div id="keys"></div>
         </div>
 
         <div class="field">
@@ -616,44 +689,35 @@
             <input type="radio" name="gender" id="gender-male" value="male" />
             <label for="gender-male">Male</label>
           </div>
-          <p class="hint">Filters the voice list. Every voice is selectable later.</p>
+          <p class="hint">Filters the voice list. Nothing can speak yet — the voices arrive with this install — so once setup finishes, Settings → Voice lists them all and plays the one you have selected. A cloud voice is listed there whether or not you added its key, and says which key it needs.</p>
+        </div>
         </div>
 
-          <button type="button" id="setup-next" class="go">Continue</button>
-        </div>
-
-        <!-- Step 2. Required rows carry NO control: declining Python is not a
-             lighter install, it is a broken one, and rendering it as a
-             checkbox would be a lie the operator can act on. -->
+        <!-- Step 2 — the keys, on their own. Rows are built by the script from
+             one list, so the page cannot show a key the submit handler does
+             not send. This is the step a stranger is most likely to skip
+             entirely, which is why it says up front that skipping it costs
+             them answers and nothing else. -->
         <div id="step-2" style="display: none">
           <div class="field">
-            <span class="glabel">Required</span>
+            <span class="glabel">API keys</span>
             <p class="hint">
-              TESSERACT does not run without these. Listed so the download is
-              not a surprise, not because there is a decision here.
+              All optional, and all addable later in Settings &rarr; API keys.
+              Without a chat key it still listens, remembers and searches your
+              own files &mdash; it just has nothing to answer with.
             </p>
-            <div class="dep dep--fixed">
-              <span class="dep__mark dep__mark--fixed">&#9679;</span>
-              <span class="dep__name">Python runtime</span>
-              <span class="dep__size" id="size-python"></span>
-            </div>
-            <div class="dep dep--fixed">
-              <span class="dep__mark dep__mark--fixed">&#9679;</span>
-              <span class="dep__name">TESSERACT + dependencies</span>
-              <span class="dep__size">varies</span>
-              <p class="dep__hint">
-                Resolved for your machine, so the size is not known until it
-                runs.
-              </p>
-            </div>
-            <div class="dep dep--fixed">
-              <span class="dep__mark dep__mark--fixed">&#9679;</span>
-              <span class="dep__name">Browser engine</span>
-              <span class="dep__size" id="size-browser"></span>
-              <p class="dep__hint">How it reads web pages for you.</p>
-            </div>
+            <div id="keys"></div>
           </div>
+        </div>
 
+        <!-- Step 3. There is no Required section any more, and its absence is
+             the point: the app, Python and the dependency set are already on
+             disk by the time this opens. Listing them as rows with no control
+             was the honest rendering of a question with one answer; showing
+             them as progress and then asking only about what is genuinely
+             optional is better than honest, because there is nothing left to
+             pretend about. -->
+        <div id="step-3" style="display: none">
           <div class="field">
             <span class="glabel glabel--lit">Optional</span>
             <p class="hint">
@@ -665,14 +729,10 @@
 
         <div class="field">
           <span class="glabel">Speech</span>
-          <div class="choices">
-            <input type="radio" name="tts" id="tts-kokoro" value="kokoro" checked />
-            <label for="tts-kokoro">Natural</label>
-            <input type="radio" name="tts" id="tts-piper" value="piper" />
-            <label for="tts-piper">Light</label>
-            <input type="radio" name="tts" id="tts-none" value="none" />
-            <label for="tts-none">Off</label>
-          </div>
+          <!-- Built from the manifest: the lane ids are the answer vocabulary
+               the Python side maps to a tier and a provider, so the page must
+               not carry its own copy of them. -->
+          <div class="choices" id="tts-choices"></div>
           <p class="hint" id="tts-hint"></p>
         </div>
 
@@ -692,9 +752,25 @@
             <span class="total__value" id="total-size"></span>
           </div>
           <p class="total__note" id="total-note"></p>
+        </div>
+        </div>
 
-          <button type="submit" id="setup-submit" class="go">Begin setup</button>
+        <!-- Pinned, outside the scrolling region: the same two controls in the
+             same place on all three steps. The primary button is a real
+             submit so pressing Enter in a text field advances the step rather
+             than firing the form — which is what it did before, from step 1,
+             with every answer still at its default. -->
+        <div class="actions">
+          <!-- Named, because "1 / 3" read aloud is two numbers and a slash.
+               `aria-live` so moving between steps is announced to someone who
+               cannot see the heading change. -->
+          <span
+            class="actions__count"
+            id="step-count"
+            aria-live="polite"
+          ></span>
           <button type="button" id="setup-back" class="back">Back</button>
+          <button type="submit" id="setup-go" class="go">Continue</button>
         </div>
       </form>
 
@@ -756,10 +832,10 @@
       // deliberate even though it overrides a moved window: the 840 -> 300
       // step is large enough that growing from a fixed top-left would leave
       // the window hanging off the bottom of a small screen.
-      // Provisioning grew from 300 with P4's meter, counter and two-line
-      // tail. The window floor (400x280, set in `lib.rs`) must stay BELOW the
-      // shortest of these or Windows clamps every per-state resize — the bug
-      // P3 shipped and had to fix.
+      // Provisioning grew from 300 to carry the meter, the counter and a
+      // two-line tail. The window floor (400x280, set in `lib.rs`) must stay
+      // BELOW the shortest of these or Windows clamps every per-state resize,
+      // silently, while `set_size` still resolves.
       // 940 is not "the form's height" — with five key rows the form is past
       // 1200px and no longer fits a laptop screen, so `.stage` scrolls and
       // this number decides how much is visible before the operator has to.
@@ -790,111 +866,28 @@
       }
 
       // ── First-run setup form ──────────────────────────────────
-      // Nothing is downloaded until this is submitted: the answers decide
-      // what gets fetched, so the form is the whole first screen.
-
-      const checked = (name) =>
-        document.querySelector(`input[name="${name}"]:checked`).value;
-
-      // The size numbers are the honest ones — a first run that says
-      // "downloads a model" and then takes twenty minutes is how someone
-      // decides the app is broken and force-quits it mid-provision.
+      // The app itself is already installed by the time this appears, and
+      // nothing OPTIONAL is downloaded until it is submitted: the answers
+      // decide what gets fetched.
       //
-      // ONE map, read by both the per-choice hints and the total shown at
-      // submit. They were prose in two places before, which is exactly how a
-      // total comes to disagree with the hints that add up to it. These are
-      // not in `providers.yaml`: what the catalog carries is
-      // `max_download_mb`, a refusal cap (2048 for a ~1.6 GB model), and the
-      // splash cannot read config anyway — it runs before Python exists.
-      const SIZES_MB = {
-        kokoro: 340,
-        piper: 65,
-        whisper: 1600,
-        // Ollama's installer plus the embedding model it pulls.
-        embeddings: 710,
-        reranker: 23,
-        // The CUDA wheel set, only ever offered on a machine with a card.
-        gpu: 2200,
-        // Required tier. MEASURED from a real install rather than estimated —
-        // `playwright install chromium` lands both the full browser and the
-        // headless shell, which is why this is ~700 MB and not the ~150 a
-        // guess would have put here. Disk footprint, which is what the two
-        // figures below are: the compressed download is smaller, and quoting
-        // a number nobody can verify on their own disk is the same lie in a
-        // new place.
-        python: 62,
-        browser: 700,
+      // Every figure, every key row and every hint arrives with the
+      // `setup-form` event, built by `scripts/setup_manifest.py` against this
+      // machine's own config and graphics card. The page used to carry all of
+      // it as literals — it ran before the clone, so there was no
+      // `providers.yaml` to read and no Python to read it with — and a pair
+      // of drift tests held the copies in step. That is what the reorder
+      // removed: the sizes are wrong in a way nobody can see, and the speech
+      // model is chosen per machine, so a copy is a claim about somebody
+      // else's computer.
+      let manifest = null;
+
+      const checked = (name) => {
+        const on = document.querySelector(`input[name="${name}"]:checked`);
+        return on ? on.value : "";
       };
 
       const fmtMb = (mb) =>
         mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`;
-
-      // Every key `providers.yaml` names an `api_key_env` for, asked here
-      // because the alternative is finding a dot-file in a folder after the
-      // install has already finished.
-      //
-      // Hardcoded, and it has to be: this page runs before the clone stage,
-      // so there is no `providers.yaml` on disk to read and no Python to read
-      // it with — the same reason `SIZES_MB` above is a literal. A Python
-      // test reconciles this list against the catalog, so a provider added
-      // there and forgotten here fails the suite rather than the operator.
-      const PROVIDER_KEYS = [
-        {
-          group: "Talking to you",
-          env: "OPENAI_API_KEY",
-          label: "OpenAI",
-          url: "https://platform.openai.com/signup",
-          hint: "The one key the shipped setup needs to hold a conversation.",
-        },
-        {
-          env: "BUILD_NVIDIA_KEY",
-          label: "NVIDIA build",
-          url: "https://build.nvidia.com/",
-          hint: "Free, and no payment method. Background work runs here — without it that work falls back to OpenAI and you pay for what you never see.",
-        },
-        {
-          env: "GOOGLE_API_KEY",
-          label: "Google AI Studio",
-          url: "https://aistudio.google.com",
-          hint: "Carries more of the shipped setup than any other single key: several background roles, cloud speech recognition, and image generation.",
-        },
-        {
-          env: "ANTHROPIC_API_KEY",
-          label: "Anthropic",
-          url: "https://console.anthropic.com/settings/keys",
-          hint: "An alternative chat model. Nothing points at it until you say so.",
-        },
-        {
-          env: "XAI_API_KEY",
-          label: "xAI",
-          url: "https://console.x.ai",
-          hint: "An alternative chat model, and the image-generation fallback.",
-        },
-        // Two tools, two keys, and neither falls back to the other —
-        // `web_search` is wired to Brave and `tavily_search`/`tavily_extract`
-        // to Tavily. Asked here because the failure otherwise arrives as an
-        // error mid-answer, the first time you ask it to look something up.
-        {
-          group: "Reaching the web",
-          env: "BRAVE_SEARCH_API_KEY",
-          label: "Brave Search",
-          url: "https://brave.com/search/api/",
-          hint: "Free for 2,000 searches a month. Without it, searching the web fails with a setup hint instead of an answer.",
-        },
-        {
-          env: "TAVILY_API_KEY",
-          label: "Tavily",
-          url: "https://tavily.com",
-          hint: "Free for 1,000 a month. A separate tool: it pulls a page's full text in so it can be filed and searched later.",
-        },
-        {
-          group: "Messaging",
-          env: "TELEGRAM_BOT_TOKEN",
-          label: "Telegram bot",
-          url: "https://t.me/BotFather",
-          hint: "Only if you want to reach it from your phone. Create a bot with @BotFather and paste the token. The allowlist it needs is set afterwards in Settings, since your chat id only exists once you have messaged the bot.",
-        },
-      ];
 
       // The address is the link's own text: if the click cannot reach the OS
       // browser, the operator can still read where to go — but only if they
@@ -911,51 +904,68 @@
       }
 
       const keysEl = document.getElementById("keys");
-      for (const key of PROVIDER_KEYS) {
-        // Eight fields read as a wall; three captions make them three
-        // decisions, each of which can be skipped as a group.
-        if (key.group) {
-          const caption = document.createElement("p");
-          caption.className = "key__group";
-          caption.textContent = key.group;
-          keysEl.append(caption);
+
+      // Rendered from the manifest, whose rows are derived from every
+      // `api_key_env` in `providers.yaml` and `channels.yaml` — so a provider
+      // added to the catalog reaches this form without anyone editing it.
+      function renderKeys() {
+        keysEl.textContent = "";
+        let group = null;
+        for (const key of manifest.keys) {
+          // Eight fields read as a wall; a caption per group makes them three
+          // decisions, each of which can be skipped as a group.
+          if (key.group !== group) {
+            group = key.group;
+            const caption = document.createElement("p");
+            caption.className = "key__group";
+            caption.textContent = group;
+            keysEl.append(caption);
+          }
+
+          const row = document.createElement("div");
+          row.className = "key";
+
+          const head = document.createElement("div");
+          head.className = "key__head";
+          const name = document.createElement("label");
+          name.className = "key__name";
+          name.setAttribute("for", `key-${key.env}`);
+          name.textContent = key.label;
+          head.append(name);
+
+          const hint = document.createElement("p");
+          hint.className = "hint";
+          hint.textContent = key.hint;
+
+          // A real link, not a button styled as one, and it is also the only
+          // place the address is written — so it stays readable if the click
+          // cannot reach the OS browser. Absent only for a key the manifest
+          // has no words for, where there is no address to print.
+          if (key.url) {
+            const link = document.createElement("a");
+            link.className = "key__link";
+            link.href = key.url;
+            link.textContent = key.url.replace(/^https?:\/\//, "");
+            link.addEventListener("click", (e) => {
+              e.preventDefault();
+              openExternal(key.url, (message) => {
+                hint.textContent = `${key.hint} (${message})`;
+              });
+            });
+            head.append(link);
+          }
+
+          const input = document.createElement("input");
+          input.type = "password";
+          input.id = `key-${key.env}`;
+          input.dataset.env = key.env;
+          input.autocomplete = "off";
+          input.spellcheck = false;
+          input.placeholder = "Paste it here, or leave blank";
+
+          row.append(head, input, hint);
+          keysEl.append(row);
         }
-
-        const row = document.createElement("div");
-        row.className = "key";
-
-        const head = document.createElement("div");
-        head.className = "key__head";
-        const name = document.createElement("label");
-        name.className = "key__name";
-        name.setAttribute("for", `key-${key.env}`);
-        name.textContent = key.label;
-        const link = document.createElement("a");
-        link.className = "key__link";
-        link.href = key.url;
-        link.textContent = key.url.replace(/^https?:\/\//, "");
-        link.addEventListener("click", (e) => {
-          e.preventDefault();
-          openExternal(key.url, (message) => {
-            hint.textContent = `${key.hint} (${message})`;
-          });
-        });
-        head.append(name, link);
-
-        const input = document.createElement("input");
-        input.type = "password";
-        input.id = `key-${key.env}`;
-        input.dataset.env = key.env;
-        input.autocomplete = "off";
-        input.spellcheck = false;
-        input.placeholder = "Paste it here, or leave blank";
-
-        const hint = document.createElement("p");
-        hint.className = "hint";
-        hint.textContent = key.hint;
-
-        row.append(head, input, hint);
-        keysEl.append(row);
       }
 
       // Only what was actually typed. A blank field must not travel as an
@@ -970,63 +980,69 @@
         return out;
       }
 
-      const TTS_HINTS = {
-        kokoro: `The better voice. Downloads ~${fmtMb(
-          SIZES_MB.kokoro
-        )}, and needs a reasonably quick machine to keep up in conversation.`,
-        piper: `A lighter voice — plainer, but several times faster than real time even on a slow machine. Downloads ~${fmtMb(
-          SIZES_MB.piper
-        )}.`,
-        none: "Replies come back as text only. Nothing is downloaded.",
-      };
-      const STT_HINTS = {
-        yes: `Lets you talk to it. Downloads ~${fmtMb(
-          SIZES_MB.whisper
-        )} of speech recognition during setup, so it works the first time you speak instead of stalling.`,
-        no: "Type only. Nothing is downloaded.",
-      };
-
-      // The optional dependencies that are a plain yes/no. Voice and
-      // listening keep their own controls above — voice is a choice BETWEEN
-      // two artifacts, not an on/off.
+      // The three speech lanes, from the manifest. Real radios, so the group
+      // stays keyboard-navigable and legible to a screen reader — and built
+      // rather than written, because the ids are the answer vocabulary the
+      // Python side maps to a tier and a provider.
       //
-      // The GPU row is offered to everyone, and that is a correction to this
-      // phase's own design. It was meant to be hidden on a machine with no
-      // card — but this page runs BEFORE the clone and before Python exists,
-      // which is exactly why `SIZES_MB` and `PROVIDER_KEYS` are literals here,
-      // and GPU detection lives in `check_dependencies._detect_gpu`. The
-      // splash cannot know. So the row is shown and worded honestly: declining
-      // means never, accepting means "if this machine turns out to have one",
-      // and `provision_hardware` makes that call later with a real probe. Its
-      // size is excluded from the total for the same reason — quoting 2.2 GB
-      // to a machine that will never spend it is the kind of wrong number P4
-      // spent a phase removing.
-      const OPTIONAL = [
-        {
-          id: "embeddings",
-          name: "Semantic search",
-          hint: "Finds things by meaning rather than by wording, across its memory and your files. Without it, search falls back to matching words.",
-        },
-        {
-          id: "reranker",
-          name: "Better ranking",
-          hint: "Re-orders what search finds so the useful answer is first. Small, and it earns its size.",
-        },
-        {
-          id: "gpu",
-          name: "GPU acceleration",
-          hint: "Downloaded only if this machine turns out to have a compatible graphics card. Without it, speech recognition runs on the processor instead — slow enough that talking to it stops feeling like talking.",
-          conditional: true,
-        },
-      ];
+      // There is deliberately NO graphics-acceleration row anywhere on this
+      // form. `hardware.yaml` already declares which engine each acceleration
+      // package exists to speed up, and those engines are what the two
+      // questions here ask about — so choosing an engine on a machine with a
+      // card IS the answer, and a row that re-asks it can only contradict it.
+      // `provision_hardware::wanted_extras` derives it from the engine choice
+      // and the same probe that worded these hints.
+      const ttsChoicesEl = document.getElementById("tts-choices");
+
+      function renderTtsChoices() {
+        ttsChoicesEl.textContent = "";
+        for (const option of manifest.speech.tts.options) {
+          const input = document.createElement("input");
+          input.type = "radio";
+          input.name = "tts";
+          input.id = `tts-${option.id}`;
+          input.value = option.id;
+          input.checked = option.id === manifest.speech.tts.default;
+          input.addEventListener("change", () => {
+            refreshHints();
+            refreshTotal();
+          });
+
+          const label = document.createElement("label");
+          label.setAttribute("for", input.id);
+          label.textContent = option.label;
+
+          ttsChoicesEl.append(input, label);
+        }
+      }
 
       const optionalState = {};
       const optionalEl = document.getElementById("optional");
 
+      // Defaulted when the manifest arrives, not when the rows are first
+      // drawn. `collectOptional` reads this map, and rendering is what used to
+      // populate it — so a submit that never reached step 2 sent every extra
+      // as declined, recording a refusal nobody gave. Unreachable through the
+      // real controls, since the submit button lives on step 2, and one moved
+      // button away from being reachable.
+      //
+      // Defaults, not the live config, and that is a decision rather than an
+      // oversight. This form is shown a second time on an install that never
+      // got to answer it, where the operator may have turned some of this on
+      // or off in Settings since — and it still opens on yes. An installer
+      // that runs again starts from defaults, like every other app on the
+      // machine, and the operator is reading the screen while it asks. Seeding
+      // from current state would buy accuracy nobody asked for and give each
+      // row a second definition.
+      function defaultOptional() {
+        for (const item of manifest.extras) {
+          if (!(item.id in optionalState)) optionalState[item.id] = true;
+        }
+      }
+
       function renderOptional() {
         optionalEl.textContent = "";
-        for (const item of OPTIONAL) {
-          if (!(item.id in optionalState)) optionalState[item.id] = true;
+        for (const item of manifest.extras) {
           const on = optionalState[item.id];
 
           const row = document.createElement("div");
@@ -1046,9 +1062,7 @@
 
           const size = document.createElement("span");
           size.className = "dep__size";
-          size.textContent = item.conditional
-            ? "up to " + fmtMb(SIZES_MB[item.id])
-            : fmtMb(SIZES_MB[item.id]);
+          size.textContent = item.size_mb ? fmtMb(item.size_mb) : "";
 
           const hint = document.createElement("p");
           hint.className = "dep__hint";
@@ -1072,38 +1086,35 @@
         }
       }
 
-      // What the answers add up to. Every figure here is a fact about an
-      // artifact — the same bytes on every machine — which is the only kind
-      // of number that may be shown to someone else's install. The dependency
-      // set is excluded and says so: `uv` resolves it per machine, and a total
-      // that silently excluded it would be the same lie P4 removed.
+      const ttsOption = (id) =>
+        manifest.speech.tts.options.find((o) => o.id === id) || {};
+
+      // What the answers add up to — and now it is the WHOLE answer. Python,
+      // the app and the dependency set are already on disk by the time this
+      // form opens, so the total no longer carries a "plus the dependency
+      // set, resolved for your machine" caveat around a figure that excluded
+      // most of the install.
+      //
+      // Every figure is a fact about an artifact, read from the catalog,
+      // except the speech model — which is read for the checkpoint THIS
+      // machine's profile is about to fetch.
       function plannedMb() {
-        const tts = checked("tts");
-        let mb = SIZES_MB.python + SIZES_MB.browser;
-        if (tts !== "none") mb += SIZES_MB[tts];
-        if (checked("stt") === "yes") mb += SIZES_MB.whisper;
-        for (const item of OPTIONAL) {
-          if (item.conditional) continue;
-          if (optionalState[item.id]) mb += SIZES_MB[item.id];
+        let mb = ttsOption(checked("tts")).size_mb || 0;
+        if (checked("stt") === "yes") mb += manifest.speech.stt.size_mb || 0;
+        for (const item of manifest.extras) {
+          if (optionalState[item.id]) mb += item.size_mb || 0;
         }
         return mb;
       }
 
-      // Models only, for the line shown once provisioning starts.
-      function plannedModelMb() {
-        const tts = checked("tts");
-        let mb = tts === "none" ? 0 : SIZES_MB[tts];
-        if (checked("stt") === "yes") mb += SIZES_MB.whisper;
-        return mb;
-      }
-
       function refreshTotal() {
-        document.getElementById("size-python").textContent = fmtMb(SIZES_MB.python);
-        document.getElementById("size-browser").textContent = fmtMb(SIZES_MB.browser);
-        document.getElementById("total-size").textContent =
-          "≈ " + fmtMb(plannedMb());
-        document.getElementById("total-note").textContent =
-          "Plus the dependency set, which is resolved for your machine. You can start using it while the rest arrives.";
+        const mb = plannedMb();
+        document.getElementById("total-size").textContent = mb
+          ? "≈ " + fmtMb(mb)
+          : "nothing";
+        document.getElementById("total-note").textContent = mb
+          ? "You can start using it while this arrives."
+          : "Everything TESSERACT needs to run is already installed.";
       }
 
       // Which optional lanes the operator actually agreed to, as the consent
@@ -1112,66 +1123,113 @@
       // someone declined from one nobody ever reached.
       function collectOptional() {
         const out = {};
-        for (const item of OPTIONAL) {
+        for (const item of manifest.extras) {
           out[item.id] = optionalState[item.id] === true;
         }
         return out;
       }
 
       function refreshHints() {
-        document.getElementById("tts-hint").textContent = TTS_HINTS[checked("tts")];
-        document.getElementById("stt-hint").textContent = STT_HINTS[checked("stt")];
+        document.getElementById("tts-hint").textContent =
+          ttsOption(checked("tts")).hint || "";
+        const stt = manifest.speech.stt;
+        document.getElementById("stt-hint").textContent =
+          checked("stt") === "yes" ? stt.hint : stt.off_hint;
       }
 
-      // Both, on every change: these two rows are download decisions like the
+      // Both, on every change: these rows are download decisions like the
       // checkboxes above them, so the total has to move when they do. It did
-      // not, briefly, and the render is what caught it.
+      // not, briefly, and the render is what caught it. The tts radios bind
+      // their own handler as they are built; these are the ones the page
+      // declares itself.
       for (const input of setupEl.querySelectorAll('input[type="radio"]')) {
         input.addEventListener("change", () => {
           refreshHints();
           refreshTotal();
         });
       }
-      refreshHints();
 
       // ── Step handling ─────────────────────────────────────────
-      const step1El = document.getElementById("step-1");
-      const step2El = document.getElementById("step-2");
+      // One heading per step and nothing else changes shape: the window keeps
+      // its size and the action row keeps its place, so moving between steps
+      // is a change of content rather than of furniture.
+      const STEPS = [
+        { el: "step-1", heading: "Let's set up TESSERACT" },
+        { el: "step-2", heading: "What should it connect to?" },
+        { el: "step-3", heading: "What should it install?" },
+      ];
+      const stepsEl = document.getElementById("steps");
+      const backEl = document.getElementById("setup-back");
+      const goEl = document.getElementById("setup-go");
+      const countEl = document.getElementById("step-count");
+      let step = 1;
 
       function showStep(n) {
-        step1El.style.display = n === 1 ? "block" : "none";
-        step2El.style.display = n === 2 ? "block" : "none";
-        headingEl.textContent =
-          n === 1 ? "Let's set up TESSERACT" : "What should it install?";
-        if (n === 2) {
+        step = Math.min(Math.max(n, 1), STEPS.length);
+        STEPS.forEach((s, i) => {
+          document.getElementById(s.el).style.display =
+            i + 1 === step ? "block" : "none";
+        });
+        headingEl.textContent = STEPS[step - 1].heading;
+        countEl.textContent = `${step} / ${STEPS.length}`;
+        countEl.setAttribute(
+          "aria-label",
+          `Step ${step} of ${STEPS.length}`,
+        );
+        // Nothing to go back to from the first step, and a control that does
+        // nothing is worse than one that is not there.
+        backEl.style.display = step === 1 ? "none" : "";
+        goEl.textContent = step === STEPS.length ? "Begin setup" : "Continue";
+        if (step === STEPS.length) {
           renderOptional();
           refreshTotal();
         }
-        // The stage is the only scroller in this window, so a step change has
-        // to return it to the top — otherwise step 2 opens halfway down.
-        document.getElementById("stage").scrollTop = 0;
+        // The content region is the scroller now, and a step change has to
+        // return it to the top — otherwise a later step opens halfway down.
+        stepsEl.scrollTop = 0;
         sizeTo("setup");
       }
 
-      document
-        .getElementById("setup-next")
-        .addEventListener("click", () => showStep(2));
-      document
-        .getElementById("setup-back")
-        .addEventListener("click", () => showStep(1));
+      backEl.addEventListener("click", () => showStep(step - 1));
 
-      function showSetupForm() {
+      // Opened on the `setup-form` event, once the app itself is installed and
+      // the manifest for THIS machine has been built. Never opened without
+      // one: every row on the form is drawn from it, and a form rendered from
+      // nothing is the literals this reorder removed, re-invented at runtime.
+      function showSetupForm(payload) {
+        // Guarded HERE, not at the call sites. The form arrives by two routes
+        // — the `setup-form` event and the `pending_setup_form` command the
+        // page asks on load — and whichever lands second would otherwise
+        // re-render the form and discard whatever the operator had typed into
+        // it, API keys included.
+        if (manifest) return;
+        manifest = payload;
         bodyEl.classList.remove("provisioning");
         msgEl.style.display = "none";
         meterEl.style.display = "none";
         tailEl.textContent = "";
-        setupEl.style.display = "block";
+        defaultOptional();
+        renderKeys();
+        renderTtsChoices();
+        refreshHints();
+        // `flex`, not `block`: the form is the fixed frame that holds the
+        // scrolling content region above the pinned action row.
+        setupEl.style.display = "flex";
         showStep(1);
         document.getElementById("operator-name").focus();
       }
 
       setupEl.addEventListener("submit", (e) => {
         e.preventDefault();
+        // The primary control is one button across all three steps, so this
+        // handler is also the step advance — and because it is a real submit,
+        // Enter in a text field advances too. It used to fire the whole form
+        // from step 1 with every answer still at its default: the last step's
+        // submit button was the form's default button even while hidden.
+        if (step < STEPS.length) {
+          showStep(step + 1);
+          return;
+        }
         // Hand back to the normal progress view immediately: provisioning
         // takes minutes, and a form that stays on screen after the button
         // is pressed reads as a click that did nothing.
@@ -1179,11 +1237,13 @@
         msgEl.textContent = "Starting…";
         // The one moment the operator has agreed to a wait but has no idea
         // how long it is. Shown in the tail so the first real output line
-        // replaces it rather than fighting it for space.
-        const mb = plannedModelMb();
+        // replaces it rather than fighting it for space. It is the whole
+        // remaining download now, not a fraction of one — the app is already
+        // installed.
+        const mb = plannedMb();
         tailEl.textContent = mb
-          ? `About ${fmtMb(mb)} of models to download, plus Python and dependencies.`
-          : "No models to download — Python and dependencies only.";
+          ? `About ${fmtMb(mb)} to download.`
+          : "Nothing left to download.";
         invoke("submit_first_run_setup", {
           answers: {
             operator_name: document.getElementById("operator-name").value.trim(),
@@ -1222,6 +1282,18 @@
         headingEl.textContent = "Coming online";
         msgEl.style.display = "";
         sizeTo("provisioning");
+      }
+
+      // The wait between "the backend started" and "the backend is ready to
+      // be used". It is the whole of an ordinary launch — the app prepares
+      // itself here rather than under the operator's hands — so it says what
+      // it is doing and drops the provisioning furniture, which measures a
+      // download that is not happening.
+      function showWarming() {
+        showProvisioning();
+        msgEl.textContent = "Getting everything ready…";
+        meterEl.style.display = "none";
+        tailEl.textContent = "";
       }
 
       // Normal progress ("Downloading…", "Ready.", or "Setup failed: …").
@@ -1267,11 +1339,25 @@
           }
         }
 
-        if (d.line) {
+        // The last two DISTINCT lines. A byte marker carries the file name
+        // as its line and the fetcher emits one per 4 MB or per second — a
+        // stalled transfer keeps re-reporting the same figure on purpose —
+        // so appending every one of them spent both slots on one name and
+        // pushed out the line before it. The meter above is what those ticks
+        // are for; the tail only needs to say what they are about.
+        if (d.line && d.line !== lines[lines.length - 1]) {
           lines.push(d.line);
           while (lines.length > TAIL_LINES) lines.shift();
           tailEl.textContent = lines.join("\n");
         }
+      });
+
+      // The app itself is installed and there is now a machine to ask about.
+      // The payload is the whole form: sizes read from the catalog, the
+      // speech model this machine's profile resolved to, and one row per key
+      // the catalog gates a capability on.
+      listen("setup-form", (e) => {
+        showSetupForm(e.payload);
       });
 
       // Emitted when the splash is already open (first-run path).
@@ -1279,19 +1365,51 @@
         showFatal(e.payload);
       });
 
+      // The supervisor is up and the backend is preparing itself. Emitted on
+      // both flows — a first run reaches it after provisioning finishes, an
+      // ordinary launch within half a second of opening — so this is the last
+      // thing on screen before the cockpit either way.
+      listen("shell-warming", () => {
+        showWarming();
+      });
+
       // Already-provisioned launches have no splash to emit to, so the shell
       // opens this window with the message in the query string instead —
       // rendered synchronously here, with no listener-registration race to
       // lose the event to.
       //
-      // That window is this same file, so the setup form is only opened when
-      // there is no fatal message: an install that already exists and then
-      // failed to start must not be asked to name its agent again.
-      const fatalParam = new URLSearchParams(location.search).get("fatal");
+      // That window is this same file, so nothing here opens the setup form:
+      // it opens on the `setup-form` event above, which only a first run
+      // emits. An install that already exists and then failed to start must
+      // not be asked to name its agent again.
+      //
+      // The first run starts here on the progress view rather than on the
+      // form, because the app is already installing by the time this loads —
+      // that reorder is what lets the form know anything about the machine.
+      const params = new URLSearchParams(location.search);
+      const fatalParam = params.get("fatal");
       if (fatalParam) {
         showFatal(fatalParam);
+      } else if (params.get("warming")) {
+        // An already-provisioned launch: nothing is being installed and no
+        // form is coming, so the page opens on the warm-up wait directly
+        // rather than on first-run wording it would have to correct.
+        showWarming();
       } else {
-        showSetupForm();
+        showProvisioning();
+        // Asked for, as well as listened for. A Tauri event has no replay, so
+        // a page that had not finished registering the listener above would
+        // miss the emit and sit on this progress view forever — with the app
+        // installed and no marker written. The shell holds the manifest, so
+        // asking costs one call and closes that window; it also survives the
+        // page reloading, which the event alone never could.
+        invoke("pending_setup_form")
+          .then((fresh) => {
+            if (fresh) showSetupForm(fresh);
+          })
+          .catch(() => {
+            /* Still installing, or too old a shell to know the command. */
+          });
       }
     </script>
   </body>

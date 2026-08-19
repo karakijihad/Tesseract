@@ -9,6 +9,7 @@ import { McpApprovalsPane } from "./McpApprovalsPane";
 import { OrbCaptions } from "./OrbCaptions";
 import { ParkedAsksPane } from "./ParkedAsksPane";
 import { PanelHost } from "./PanelHost";
+import { RailDockTabs } from "../components/cockpit/RailDockTabs";
 import { usePanelStore } from "./panelStore";
 import { installLayoutPersistence } from "./layoutPersistence";
 
@@ -67,6 +68,8 @@ export function CockpitStage() {
       <div className="cockpit-hud">
         <BottomHud />
       </div>
+      {/* A hidden rail reappears from its own edge. */}
+      <RailDockTabs />
     </div>
   );
 }

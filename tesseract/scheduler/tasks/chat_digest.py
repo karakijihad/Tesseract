@@ -21,7 +21,7 @@ from tesseract.brain.boot import SESSIONS_DIR
 from tesseract.paths import TESSERACT_HOME
 from tesseract.brain.session_store import SessionState, list_sessions
 from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
-from tesseract.memory.daily_notes import append_section
+from tesseract.memory.daily_notes import append_section, section_exists
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.brain.cost.metered_adapter import meter_chain
 from tesseract.scheduler.role_chain import build_chain_for_role, resolve_role_name
@@ -67,6 +67,31 @@ class ChatDigestJob(BaseJob):
                     duration_ms=(time.monotonic() - t0) * 1000.0,
                 )
 
+            # Before anything expensive: a day already digested costs nothing.
+            # The probe used to run inside `append_section`, i.e. AFTER the
+            # model call, so re-firing on a written day still paid for a digest
+            # and threw it away — 12.7s and `wrote=False` in AR-3's live pass,
+            # multiplied once the pipeline began walking missed days.
+            daily_dir = _resolve_daily_dir(ctx)
+            header = f"## [chat_digest] {target_date.isoformat()}"
+            if section_exists(
+                probe=header,
+                daily_dir=daily_dir,
+                date=datetime.combine(target_date, dtime(0, 0), tzinfo=timezone.utc),
+            ):
+                return JobResult(
+                    job_name=ctx.job_name,
+                    run_id=ctx.run_id,
+                    ok=True,
+                    detail=f"{target_date.isoformat()} already digested",
+                    payload={
+                        "target_date": target_date.isoformat(),
+                        "sessions": len(sessions),
+                        "wrote": False,
+                    },
+                    duration_ms=(time.monotonic() - t0) * 1000.0,
+                )
+
             max_chars = int(ctx.config.get("max_digest_chars", DEFAULT_MAX_DIGEST_CHARS))
             transcript = _build_transcript(sessions, max_chars, target_date)
 
@@ -105,8 +130,9 @@ class ChatDigestJob(BaseJob):
                     duration_ms=(time.monotonic() - t0) * 1000.0,
                 )
 
-            daily_dir = _resolve_daily_dir(ctx)
-            header = f"## [chat_digest] {target_date.isoformat()}"
+            # `daily_dir`/`header` were resolved before the model call, for the
+            # early probe above. The write keeps its own probe as the guard
+            # against a second writer between the two.
             wrote = append_section(
                 header=header,
                 body=digest.strip(),

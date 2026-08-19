@@ -1,0 +1,14 @@
+---
+// The site's name, with the version of the thing it documents beside it.
+//
+// A reader has no other way to tell which release these pages describe, and
+// documentation that could be describing any version is documentation you have
+// to verify before trusting. The number is generated from
+// `tesseract/__init__.py` into `site.json`, so it is the version of the tree
+// this site was built from rather than one somebody remembered to update.
+import Default from '@astrojs/starlight/components/SiteTitle.astro';
+import site from '../site.json';
+---
+
+<Default><slot /></Default>
+<span class="tesseract-version">v{site.version}</span>

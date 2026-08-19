@@ -31,18 +31,20 @@ class ProjectOpenTool(Tool):
 
     risk_class: ClassVar[str] = "propose"
 
+    group: ClassVar[str] = "projects"
+    summary: ClassVar[str] = "Make a registered project the active one."
+    use_when: ClassVar[str] = (
+        "Use to switch which project the system prompt names and which "
+        "directory new lanes default into. Use `project_list` for ids first."
+    )
+    not_when: ClassVar[str] = (
+        "showing a file, folder, URL or app, which is `open` — this only "
+        "switches which project is active."
+    )
+
     @property
     def name(self) -> str:
         return "project_open"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Make a registered project active: it becomes the project named in "
-            "the system prompt and the default working directory for new lanes. "
-            "Also re-marks the root trusted and re-wires the claude/codex CLIs "
-            "to the hub. Use project_list to see registered ids."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

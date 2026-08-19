@@ -6,21 +6,43 @@ from tesseract.scheduler.config_loader import RetryPolicy
 
 
 async def list_jobs(request: web.Request) -> web.Response:
-    """GET /api/schedule — seeded jobs + live runtime state.
+    """GET /api/schedule — every job + live runtime state.
 
-    Response shape: `{"jobs": [{**JobConfig, "runtime": {...} | null}]}`.
+    Response shape:
+    `{"jobs": [{**JobConfig, "origin", "locked_fields", "runtime": {...} | null}]}`.
     `runtime` is `null` when the scheduler is not running.
+
+    `origin` is read from which file the row came from, never from a naming
+    convention, and `locked_fields` is what the app sets on a system job —
+    together they are what lets the editor say a job is set by the app and
+    follows it, at the point of edit, without the surface having to know the
+    rule. Everything else on a system job stays editable, and an edit becomes
+    an override row rather than a copy.
     """
+    from tesseract.scheduler.config_loader import (
+        OVERRIDE_FORBIDDEN_FIELDS,
+        system_job_names,
+    )
+
     scheduler = request.app.get("scheduler")
     if scheduler is None:
         return web.json_response({"jobs": []})
+    system = system_job_names(scheduler.config_dir)
+    locked = sorted(OVERRIDE_FORBIDDEN_FIELDS)
     jobs = []
     for cfg in scheduler.configs:
+        is_system = cfg.name in system
         try:
             runtime = scheduler.runtime_state(cfg.name)
         except KeyError:
             runtime = None
-        jobs.append({**cfg.model_dump(), "runtime": runtime})
+        jobs.append({
+            **cfg.model_dump(),
+            "origin": "system" if is_system else "user",
+            "locked_fields": locked if is_system else [],
+            "removable": not is_system,
+            "runtime": runtime,
+        })
     return web.json_response({"jobs": jobs})
 
 
@@ -75,20 +97,12 @@ async def list_handlers(request: web.Request) -> web.Response:
             "label": "Index rebuild",
         },
         {
-            "dotpath": "tesseract.scheduler.tasks.observer_idle.ObserverIdleJob",
-            "label": "Observer idle nudge",
-        },
-        {
             "dotpath": "tesseract.scheduler.tasks.telegram_notify.TelegramNotifyJob",
             "label": "Telegram notify",
         },
         {
             "dotpath": "tesseract.scheduler.tasks.provider_watch.ProviderWatchJob",
             "label": "Provider watch (daily)",
-        },
-        {
-            "dotpath": "tesseract.scheduler.tasks.daily_brief.DailyBriefJob",
-            "label": "Daily brief (morning)",
         },
         {
             "dotpath": "tesseract.scheduler.tasks.interests_decay.InterestsDecayJob",
@@ -120,6 +134,10 @@ async def create_job(request: web.Request) -> web.Response:
             name=str(body["name"]),
             cadence=str(body["cadence"]),
             handler=str(body["handler"]),
+            # Required, and the engine says why when it is missing — the same
+            # rule and the same sentence the `schedule_create` tool gets, since
+            # both doors land on that one call.
+            summary=str(body.get("summary") or ""),
             enabled=bool(body.get("enabled", True)),
             on_failure=str(body.get("on_failure", "log")),
             retry_policy=retry,
@@ -133,6 +151,7 @@ async def create_job(request: web.Request) -> web.Response:
         "name": cfg.name,
         "cadence": cfg.cadence,
         "handler": cfg.handler,
+        "summary": cfg.summary,
         "enabled": cfg.enabled,
         "on_failure": cfg.on_failure,
     })

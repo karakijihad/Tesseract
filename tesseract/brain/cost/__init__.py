@@ -10,9 +10,12 @@ from tesseract.brain.cost.ledger import (
     CostEvent,
     CostLedger,
     CostUsage,
+    VOICE_UNIT_AUDIO_HOUR,
+    VOICE_UNIT_CHARS,
     SttUsage,
     TtsUsage,
     VoiceCostEvent,
+    VoiceRate,
 )
 
 __all__ = [
@@ -23,5 +26,8 @@ __all__ = [
     "CostUsage",
     "SttUsage",
     "TtsUsage",
+    "VOICE_UNIT_AUDIO_HOUR",
+    "VOICE_UNIT_CHARS",
     "VoiceCostEvent",
+    "VoiceRate",
 ]

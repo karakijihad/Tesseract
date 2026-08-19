@@ -23,8 +23,6 @@ import logging
 import time
 from pathlib import Path
 
-from tesseract.orchestrator.autonomy.models import AgendaSource, RiskClass
-from tesseract.orchestrator.autonomy.publishers import publish_to_bus
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.scheduler.role_chain import build_chain_for_job
 from tesseract.scheduler.types import JobContext, JobResult
@@ -59,12 +57,12 @@ class LibrarianHeartbeatJob(BaseJob):
             payload["distilled"] = distill_stats
 
             candidates = distill_stats.get("candidates", 0)
-            # AU-20 §10 retrofit — surface non-zero personality
-            # candidates as a self_reflection agenda candidate so the
-            # operator sees an inbox item the moment distillation
-            # produces something to review.
-            if candidates > 0:
-                _publish_distillation_signal(candidates, ctx)
+            # This used to publish an agenda candidate whenever distillation
+            # produced something. It was the third publisher into one source,
+            # and it was telling the assistant something it is already told:
+            # the session-reflection prompt sends it to `pending_growth.md` by
+            # name. The count stays in the payload, which the stage's manifest
+            # row carries.
             return JobResult(
                 job_name=ctx.job_name,
                 run_id=ctx.run_id,
@@ -102,26 +100,6 @@ def _resolve_soul_path(ctx: JobContext) -> Path | None:
     tree never touches it. `ctx` kept for call-site compatibility."""
     from tesseract.paths import workspace_dir
     return workspace_dir() / "SOUL.md"
-
-
-def _publish_distillation_signal(candidates: int, ctx: JobContext) -> None:
-    """One-line bus publish per AU-20 §10. No-op when no bus is
-    registered (publish_to_bus drops silently). Event id is keyed on
-    the run id so dedup at the mapper layer is per-run, not per-day."""
-    payload = {
-        "observation": (
-            f"librarian_heartbeat produced {candidates} pending personality "
-            f"candidate(s) in memory-store/pending_growth.md — operator review needed"
-        ),
-        "suggested_risk_class": RiskClass.PROPOSE.value,
-        "evidence_ids": ["pending_growth.md"],
-        "source_handler": "librarian_heartbeat",
-    }
-    publish_to_bus(
-        AgendaSource.SELF_REFLECTION,
-        payload,
-        event_id=f"evt_librarian_{ctx.run_id[:16]}",
-    )
 
 
 async def _run_distillation(ctx: JobContext, librarian) -> dict:

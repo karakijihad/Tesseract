@@ -27,9 +27,11 @@ from typing import Any, Awaitable, Callable
 
 log = logging.getLogger(__name__)
 
-# Commands a friend-tier chat is allowed to invoke. Matches the spirit
-# of ``_channel_tier.FRIEND_DENIED_TOOLS`` — read-only chat surface, no
-# operator state leakage.
+# Commands a non-operator chat may invoke. Vestigial on a single-operator
+# install — `ctx.tier` resolves to "operator" for every chat, so this never
+# denies — and kept only because the dispatcher still reads it. The tool
+# denylist it used to mirror (`_channel_tier.FRIEND_DENIED_TOOLS`) is DELETED:
+# it lived in the ask_fn wrapper, so any AUTO posture skipped it entirely.
 _FRIEND_ALLOWED: frozenset[str] = frozenset({"/status", "/help", "/clear"})
 
 CommandHandler = Callable[["TelegramCommandContext"], Awaitable[str]]
@@ -163,7 +165,7 @@ async def _handle_clear(ctx: TelegramCommandContext) -> str:
 async def _handle_voice_on(ctx: TelegramCommandContext) -> str:
     """Flip the per-chat ``reply_voice`` flag on (Session 3 2026-05-16).
 
-    Subsequent the assistant replies in this chat synthesise via local Piper TTS
+    Subsequent the assistant replies in this chat synthesise via the configured TTS lane
     and ship as voice notes instead of plain text. Operator-only — friend
     tier hits ``_FRIEND_ALLOWED`` deny in the dispatcher.
     """

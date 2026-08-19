@@ -4,14 +4,23 @@
 // `preload="metadata"` so opening a card costs a header read rather than the
 // whole file; a 2GB recording should not download because a card exists.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { backendAssetUrl } from '../../lib/endpoints';
 import type { RendererProps } from './index';
 
-export function VideoRenderer({ descriptor }: RendererProps) {
+export function VideoRenderer({ descriptor, report }: RendererProps) {
   const [failed, setFailed] = useState(false);
   const src = descriptor.props?.url;
+  const missing = typeof src !== 'string' || !src;
+
+  // Same reason the card gets, sent to the model — an unplayable card looks
+  // identical to a playing one in a listing that only knows the descriptor.
+  useEffect(() => {
+    if (!report) return;
+    if (missing) report('errored', 'no video: props.url is missing or not a string');
+    else if (failed) report('errored', 'the container or codec is not supported here');
+  }, [report, missing, failed]);
 
   if (typeof src !== 'string' || !src) {
     return <div className="surface-media surface-media--empty t-meta">no video</div>;

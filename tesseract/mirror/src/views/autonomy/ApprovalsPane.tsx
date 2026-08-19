@@ -5,9 +5,12 @@
 // approval?). S2 wires the Approve / Cancel buttons; clicking the row
 // body opens the detail modal.
 
+import { Block } from '../../components/common/Block';
+import { Button } from '../../components/common/Button';
 import React from 'react';
 import type { AgendaItem } from '../../lib/api';
 import { useAutonomyStore } from '../../stores/autonomy';
+import { Row, RowActions } from '../../components/common/Row';
 
 interface ApprovalsPaneProps {
   items: AgendaItem[];
@@ -23,10 +26,9 @@ export function ApprovalsPane({ items, status, error }: ApprovalsPaneProps): Rea
 
   if (status === 'error') {
     return (
-      <section className="runtime-block autonomy-pane autonomy-pane--approvals">
-        <div className="runtime-block__title">Awaiting your approval</div>
+      <Block title="Awaiting your approval">
         <p className="t-meta">Failed to load: {error}</p>
-      </section>
+      </Block>
     );
   }
 
@@ -36,11 +38,7 @@ export function ApprovalsPane({ items, status, error }: ApprovalsPaneProps): Rea
     .sort((a, b) => b.priority_score - a.priority_score);
 
   return (
-    <section className="runtime-block autonomy-pane autonomy-pane--approvals">
-      <div className="runtime-block__title">
-        Awaiting your approval
-        <span className="t-meta" style={{ marginLeft: 8 }}>{awaiting.length}</span>
-      </div>
+    <Block title="Awaiting your approval" meta={<>{awaiting.length}</>}>
 
       {awaiting.length === 0 ? (
         <p className="t-meta">Nothing pending — no agenda item needs operator input.</p>
@@ -50,18 +48,12 @@ export function ApprovalsPane({ items, status, error }: ApprovalsPaneProps): Rea
             const open = item.approvals_required.filter((g) => !g.fulfilled);
             const busy = pending.has(item.id);
             return (
-              <li
+              <Row
+                as="li"
                 key={item.id}
-                className={`autonomy-row autonomy-row--awaiting_operator autonomy-row--clickable${busy ? ' is-busy' : ''}`}
+                className={`autonomy-row autonomy-row--awaiting_operator${busy ? ' is-busy' : ''}`}
                 onClick={() => openDetail(item.id)}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    openDetail(item.id);
-                  }
-                }}
+                ariaLabel={`Open ${item.goal}`}
               >
                 <div className="autonomy-row__head">
                   <span className="autonomy-chip autonomy-chip--awaiting_operator">awaiting</span>
@@ -79,32 +71,27 @@ export function ApprovalsPane({ items, status, error }: ApprovalsPaneProps): Rea
                     gates: {open.map((g) => `${g.kind}(${g.target})`).join(' · ')}
                   </div>
                 )}
-                <div
-                  className="autonomy-row__actions"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <button
-                    type="button"
-                    className="autonomy-btn autonomy-btn--primary"
+                <RowActions className="autonomy-row__actions">
+                  <Button
+                    tone="primary"
                     onClick={() => void approveItem(item.id)}
                     disabled={busy}
                   >
                     Approve
-                  </button>
-                  <button
-                    type="button"
-                    className="autonomy-btn autonomy-btn--danger"
+                  </Button>
+                  <Button
+                    tone="danger"
                     onClick={() => void cancelItem(item.id)}
                     disabled={busy}
                   >
                     Reject
-                  </button>
-                </div>
-              </li>
+                  </Button>
+                </RowActions>
+              </Row>
             );
           })}
         </ul>
       )}
-    </section>
+    </Block>
   );
 }

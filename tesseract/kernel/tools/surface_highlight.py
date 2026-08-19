@@ -24,14 +24,20 @@ class SurfaceHighlightInput(BaseModel):
 class SurfaceHighlightTool(Tool):
     default_posture = "auto"
     risk_class: ClassVar[str] = "autonomous"
+    group: ClassVar[str] = "showing-the-operator"
+    summary: ClassVar[str] = "Pulse or glow a surface briefly to draw the eye to it."
+    use_when: ClassVar[str] = (
+        "Something changed on a card and the operator's attention should land "
+        "there without sending a message. Auto-fades unless `persistent=true`."
+    )
+    not_when: ClassVar[str] = (
+        "`surface_focus` to actually raise/scroll the card into view — a "
+        "highlight alone does not move it."
+    )
 
     @property
     def name(self) -> str:
         return "surface_highlight"
-
-    @property
-    def description(self) -> str:
-        return "Visually emphasize a surface (pulse/glow). Auto-fades unless persistent=true."
 
     @property
     def input_schema(self) -> type[BaseModel]:

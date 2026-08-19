@@ -28,6 +28,7 @@ from typing import Any, Mapping
 import yaml
 
 from tesseract.bootid import current_boot_id
+from tesseract.lib.secret_patterns import CREDENTIAL_PATTERNS
 from tesseract.paths import CONFIG_DIR, log_dir, runtime_logs_root
 
 MIRROR_YAML = CONFIG_DIR / "mirror.yaml"
@@ -174,6 +175,58 @@ def attach_file_logging(process: str, *, config_path: Path = MIRROR_YAML) -> Pat
     return per_boot
 
 
+_REDACTED = "[redacted]"
+
+
+class _CredentialRedactionFilter(logging.Filter):
+    """Redact provider credentials from a record before any handler emits it.
+
+    The record this was written for is `httpx`'s per-request INFO line. The
+    Telegram Bot API puts the token in the URL PATH (``/bot<TOKEN>/getUpdates``),
+    so a polling install printed its bot token on the console once per poll —
+    every terminal, redirect, CI job and screen recording that captures stdout.
+    `mirror.yaml::logging.file_min_levels` floors `httpx` for the FILE, which is
+    why the durable logs were clean and the console was not.
+
+    Flooring `httpx` on the console too was the narrower alternative and was not
+    taken: it would throw away request logging that is genuinely useful in dev
+    to fix a leak that is about the VALUE, not the logger.
+
+    Covers the record's MESSAGE. An attached traceback is formatted by the
+    handler afterwards and is not rewritten here, so a credential that appears
+    only inside an exception's frames still reaches the stream.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001 — a bad format string is the handler's to report
+            return True
+        redacted = message
+        for pattern in CREDENTIAL_PATTERNS:
+            redacted = pattern.sub(_REDACTED, redacted)
+        if redacted != message:
+            # `args` are already interpolated into `redacted`; leaving them set
+            # would make the handler interpolate a second time and raise.
+            record.msg = redacted
+            record.args = ()
+        return True
+
+
+def redact_credentials_in_logs() -> None:
+    """Attach the redaction filter to every handler on the root logger.
+
+    On the HANDLERS rather than on a logger: a filter on a logger sees only
+    records logged directly to it, and every leak this exists for is emitted by
+    a third-party logger propagating upward. Call once at process start, after
+    the console and file handlers are attached — anything added later is not
+    covered.
+    """
+    redactor = _CredentialRedactionFilter()
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(redactor)
+
+
 class _ProactorDisconnectFilter(logging.Filter):
     """Drop ONE known-benign CPython artifact, nothing else.
 
@@ -208,6 +261,7 @@ __all__ = [
     "attach_file_logging",
     "boot_log_path",
     "load_logging_config",
+    "redact_credentials_in_logs",
     "suppress_proactor_disconnect_noise",
     "MIRROR_YAML",
 ]

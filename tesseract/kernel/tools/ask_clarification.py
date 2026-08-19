@@ -73,6 +73,17 @@ class AskClarificationTool(Tool):
 
     risk_class: ClassVar[str] = "autonomous"
 
+    group: ClassVar[str] = "asking-without-blocking"
+    summary: ClassVar[str] = "Post a question to the operator that can wait for an answer."
+    use_when: ClassVar[str] = (
+        "Use when you need operator input but can keep making progress on other "
+        "work while it waits. The answer lands on a later turn."
+    )
+    not_when: ClassVar[str] = (
+        "the operator is present right now, just ask in the reply you are "
+        "already writing; a reply on an existing thread, use `workspace_reply`."
+    )
+
     def __init__(
         self,
         store: EventStore,
@@ -85,16 +96,6 @@ class AskClarificationTool(Tool):
     @property
     def name(self) -> str:
         return "ask_clarification"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Ask the operator a question asynchronously via a workspace "
-            "thread. Use when you need operator input but the answer can "
-            "wait minutes-to-hours and you have other work you can do "
-            "first. Operator answers in the event's comment thread; the "
-            "reply lands on your next turn."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

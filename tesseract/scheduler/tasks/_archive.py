@@ -7,7 +7,7 @@ digests, watches) is also written to a retrievable markdown file under
 
 so both the assistant (via ``memory_get`` / file reads) and the operator (via
 Obsidian — memory-store is Obsidian-compatible markdown) can find "what
-we have" without scraping the chat. Mirrors how ``DailyBriefJob`` persists
+we have" without scraping the chat. Mirrors how ``brief_render`` persists
 under ``memory-store/daily/briefs/``.
 
 The archive is best-effort and one-file-per-day (latest run that day

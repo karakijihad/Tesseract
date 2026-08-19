@@ -98,19 +98,22 @@ class DelegateAuditorTool(Tool):
     # path left the other two open.
     untrusted_source: ClassVar[bool] = True
 
+    group: ClassVar[str] = "handing-work-off"
+    summary: ClassVar[str] = "Delegates a review task to whichever CLI fills the auditor seat."
+    use_when: ClassVar[str] = (
+        "Use for code review, verifying your own reasoning, second opinions on design "
+        "choices, or scope checks. Brief it with the root symptom, what you expected, and "
+        "what you ruled out — never your worry about the mess you made getting there."
+    )
+    not_when: ClassVar[str] = (
+        "Building code, not reviewing it — use `delegate_coder`. A "
+        "persistent controller session — use `delegate_agent_controller`. "
+        "A markdown sub-agent task — use `invoke_agent`."
+    )
+
     @property
     def name(self) -> str:
         return "delegate_auditor"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Delegate a review to the auditor seat — code review, "
-            "verification of your own reasoning, second opinions, scope "
-            "checks. Which CLI fills the seat is config "
-            "(roles.yaml::auditor); pass `provider` only to borrow the other "
-            "one for this call. Returns final output text."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

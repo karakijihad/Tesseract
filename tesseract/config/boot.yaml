@@ -1,0 +1,90 @@
+# Boot Graph
+#
+# What the runtime prepares at launch, in what order, and where the window
+# opens. This file owns the SHAPE. It does not own the facts: whether a
+# substrate holds the interpreter, what happens when it is cold, and whether
+# this machine has any use for it are declared in the substrate's own code and
+# cannot be overridden from here.
+#
+# Read it top to bottom as a flow chart. Layers run in order. Within a layer,
+# `fires: parallel` runs its members together and `fires: serial` runs them one
+# at a time. Whether a member runs on the event loop or on a worker thread is
+# NOT here — that follows from whether its preparation is a coroutine, which is
+# something Python already knows.
+#
+# The window opens after the last `blocks_window: true` layer. Everything below
+# that line is prepared while the operator is already using the app, so every
+# substrate down there has had to say what the app does before it is ready.
+#
+# Four things this file is checked against at boot, each of which stops the
+# backend rather than warning:
+#
+#   * a name here that no substrate registers
+#   * a substrate that appears in no layer, or in two
+#   * a GIL-bound substrate placed below the line — it would freeze the loop
+#     with a window already on screen
+#   * a substrate below the line with nothing said about its cold behaviour
+#
+# Re-order it freely. You cannot re-order it into a freeze.
+
+layers:
+  # Nothing here depends on anything else, and the first message cannot work
+  # without any of it. `activity_rebuild` seeds the activity registry from
+  # disk, which has to happen before the live subscriber connects further down.
+  - id: core
+    fires: parallel
+    blocks_window: true
+    carries: [tls_trust_store, ollama, tool_registry, cost_ledger, recovery,
+              activity_rebuild]
+
+  # The surfaces the operator can touch the moment the window appears. Voice
+  # builds its engines here; loading the models is a separate cost that sits
+  # elsewhere, because constructing a lane and warming it are two different
+  # substrates with two different tiers.
+  - id: surfaces
+    fires: parallel
+    blocks_window: true
+    carries: [voice_runtime, observer, chat_infra]
+
+  # Serial because each genuinely needs what came before it: the command
+  # registry needs the tool registry, the voice-dependent tools need both, and
+  # the bridge needs the chat infra.
+  #
+  # The scheduler is here and not below the line, and that is a decision rather
+  # than an oversight. It costs under half a second to start, and until it
+  # exists the per-turn and per-terminal spawns fall back to untracked tasks
+  # that shutdown cannot join. Below the line, the cockpit would be connected
+  # during exactly that gap. Keeping it above closes the gap by construction,
+  # for a cost too small to trade.
+  - id: wiring
+    fires: serial
+    blocks_window: true
+    carries: [command_registry, voice_dependent_tools, telegram_bridge,
+              outbound_notifier, scheduler]
+
+  # Model sessions that hold the interpreter for their whole construction.
+  # Serial because they contend on one GIL — running them together never made
+  # boot shorter, it only stacked the blocked stretches into one long outage
+  # during which the backend answered nothing.
+  #
+  # They are above the line for the same reason: a thread does not help when
+  # the work does not release the GIL, so "below the line" would mean freezing
+  # the loop with the operator already typing.
+  - id: gil_bound
+    fires: serial
+    blocks_window: true
+    carries: [serial_warmups]
+
+  # ─────────────── the window opens here ───────────────
+
+  - id: background
+    fires: parallel
+    blocks_window: false
+    carries: [autonomy_kernel, config_watcher, activity_subscriber,
+              mcp_clients, brief_delivery, operator_panes]
+
+  # Work whose absence costs a first-use latency and nothing else.
+  - id: opportunistic
+    fires: parallel
+    blocks_window: false
+    carries: [cli_auth, browser_provision, wake_spotter]

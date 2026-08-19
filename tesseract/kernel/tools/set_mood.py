@@ -42,21 +42,25 @@ class SetMoodTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "being-present"
+    summary: ClassVar[str] = "Sets affective mood: intensity (energy) and valence (cool-warm tone)."
+    use_when: ClassVar[str] = (
+        "Use when your affect has genuinely shifted and it matters — not as ornament every turn. "
+        "Resets to neutral each turn; call again to carry it forward. Move in small steps "
+        "(about ±0.1) unless the cause is genuinely big."
+    )
+    not_when: ClassVar[str] = (
+        "what you're doing right now, which is `set_state`; whether the orb is on screen at all, "
+        "which is `orb_visibility`."
+    )
+
     def __init__(self, mood_state: MoodState) -> None:
         self._mood_state = mood_state
 
     @property
     def name(self) -> str:
         return "set_mood"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Set your expressive mood for this turn. Two knobs: intensity "
-            "(0..1 energy) and valence (-1..+1 cool→warm). Drives the orb's "
-            "color and motion. Auto-resets to neutral at the end of every "
-            "turn — call again next turn if the mood should persist."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

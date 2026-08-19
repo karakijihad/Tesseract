@@ -33,22 +33,17 @@ class LaneCloseTool(Tool):
     default_posture = "ask"
     risk_class: ClassVar[str] = "operator_gate"
 
+    group: ClassVar[str] = "long-running-collaborators"
+    summary: ClassVar[str] = "Terminate a lane's CLI subprocess and archive its on-disk record."
+    use_when: ClassVar[str] = "Use when a lane's work is done and its process and history should stop existing."
+    not_when: ClassVar[str] = (
+        "pausing without ending the process — no lane tool does that; `lane_read`/`lane_status` "
+        "just stop being polled instead."
+    )
+
     @property
     def name(self) -> str:
         return "lane_close"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Terminate a lane. For PTY lanes: sends SIGTERM (terminate) "
-            "to the underlying CLI; if still alive after a 5 s grace, "
-            "escalates to SIGKILL. For headless lanes: sets the cancel "
-            "event to interrupt any in-flight turn — the per-turn "
-            "subprocess is already gone by close time, so no signal "
-            "fires. Always: marks the on-disk record closed, emits the "
-            "closed event, and archives the lane directory to "
-            "lanes-archive/<YYYY-MM>/. Returns archive path + final status."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

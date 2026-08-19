@@ -1,0 +1,38 @@
+# Controller Boot Graph
+#
+# The same shape file as `boot.yaml`, for the other process. The controller
+# daemon runs headless beside the app and builds its own brain wiring; this is
+# what it prepares and in what order. As with `boot.yaml`, the facts are not
+# here: whether a substrate holds the interpreter, what happens when it is
+# cold, and which reloads rebuild it are declared in its own code.
+#
+# Two things read differently in this process, and both are deliberate.
+#
+# Every layer blocks the window. The daemon binds its TCP port before any of
+# this runs — that ordering is what makes the spawn probe truthful — and it
+# opens for turns at `attach_runtime`, which takes the lane manager as an
+# argument. So the boundary this process has already sits after everything
+# below, and there is no tier under it to place anything in.
+#
+# A reload runs a subset of these same layers. Which subset is not written
+# here: each substrate names the reload targets that rebuild it, and the
+# default is none. `lane_manager` names nothing, which is how it says "prepared
+# once, never re-prepared" — its lanes are live workers with state on disk, and
+# rebuilding the manager would orphan every in-flight one.
+
+layers:
+  # Serial, and in this order, because the tool registry is built from the
+  # chain the adapter resolved. Resolving twice was two SDK clients for two
+  # copies of one answer, and the second one is what this ordering exists to
+  # avoid.
+  - id: brain
+    fires: serial
+    blocks_window: true
+    carries: [adapter, tool_registry]
+
+  # Everything a turn reaches through rather than runs on. Serial because the
+  # manifest system prompt is assembled after the registry it describes.
+  - id: services
+    fires: serial
+    blocks_window: true
+    carries: [scheduler, lane_manager, system_prompt]

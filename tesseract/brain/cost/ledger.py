@@ -16,10 +16,10 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Any, Callable
+from typing import Any, Callable, ClassVar
 
 import yaml
 
@@ -55,7 +55,7 @@ CACHE_CREATION_RATE = 1.25
 # `warning_at_pct` lives in models.yaml so the operator can tune it per
 # project without a code change.
 
-from tesseract.paths import CONFIG_DIR as _CONFIG_DIR, TESSERACT_HOME as _TESSERACT_HOME
+from tesseract.paths import CONFIG_DIR as _CONFIG_DIR, home_dir as _home_dir
 
 _DEFAULT_PROVIDERS_YAML = _CONFIG_DIR / "providers.yaml"
 _DEFAULT_ROLES_YAML = _CONFIG_DIR / "roles.yaml"
@@ -115,9 +115,19 @@ class CostUsage:
 
 @dataclass(frozen=True)
 class TtsUsage:
-    """Voice-TTS usage DTO. Billed per character of synthesized text."""
+    """Voice-TTS usage DTO.
+
+    Carries both quantities because TTS lanes do not agree on what they
+    sell. A conventional lane bills per character of input text; a
+    generative one bills per token of produced audio, which is a rate per
+    second of speech and has no relation to how many characters produced
+    it. Which field is charged is decided by the lane's `VoiceRate.unit`,
+    never by the caller — the engine fills in both and lets the price
+    decide.
+    """
 
     char_count: int = 0
+    seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -125,6 +135,31 @@ class SttUsage:
     """Voice-STT usage DTO. Billed per second of input audio."""
 
     seconds: float = 0.0
+
+
+#: What a voice lane's `VoiceRate.usd` is a price *of*. TTS lanes use
+#: either; STT lanes are always `audio_hour`.
+VOICE_UNIT_CHARS = "chars"
+VOICE_UNIT_AUDIO_HOUR = "audio_hour"
+
+
+@dataclass(frozen=True)
+class VoiceRate:
+    """One voice lane's price, its daily ceiling, and the unit it is a
+    price of.
+
+    The unit travels with the rate rather than being implied by which
+    side of the subsystem the lane sits on. It used to be implied — TTS
+    meant per-character, STT meant per-audio-hour — and that held only
+    while every TTS lane was a local one billing $0. A cloud lane that
+    bills per second of produced speech has no per-character rate to
+    state, and inventing one by dividing through by a typical character
+    count would put a fabricated number in the operator's spend view.
+    """
+
+    usd: float
+    cap_usd: float
+    unit: str
 
 
 @dataclass(frozen=True)
@@ -137,8 +172,11 @@ class VoiceCostEvent:
     local_date: str
     kind: str              # "voice_tts" | "voice_stt"
     provider: str
-    char_count: int        # TTS only; 0 for STT
-    seconds: float         # STT only; 0.0 for TTS
+    # A TTS event carries both — the lane's rate unit decides which one was
+    # charged, and recording only the charged quantity would leave the other
+    # unavailable to anyone auditing the lane's price after the fact.
+    char_count: int        # 0 for STT
+    seconds: float         # 0.0 for a per-character TTS lane
     cost_usd: float
     daily_total_usd: float
     provider_total_usd: float
@@ -182,6 +220,41 @@ def _local_today_iso() -> str:
     return date.today().isoformat()
 
 
+def _caps_from_bundle(bundle) -> dict[str, float]:
+    """Every daily ceiling, keyed by what it bills — a role or an entry.
+
+    Two declarations, one dict, because the ledger has one notion of a spend
+    source and both are one. A role's cap is the older half and covers the
+    pillars — chat, the seats, the defaults. A manifest entry's cap covers work
+    that is not a pillar and used to have a role invented for it purely to hold
+    this number.
+
+    It is read here, at construction, and again on every `reload()` — which is
+    the reason the manifest is where a per-entry ceiling can live at all.
+    Registered from anywhere else it would survive exactly until the next time
+    the operator saved a yaml file and the watcher rebuilt this dict.
+
+    A name declared in both halves takes the entry's number. There is one
+    spend source with that name whatever declared it, and the manifest is the
+    newer authority; a silent maximum would make the effective ceiling depend
+    on which file was edited last.
+    """
+    caps: dict[str, float] = {}
+    for role_name, role_cfg in bundle.roles.items():
+        cap = role_cfg.overrides.get("daily_budget_usd")
+        if cap is not None:
+            caps[role_name] = float(cap)
+    try:
+        from tesseract.scheduler.manifest.registry import ENTRIES
+    except Exception:  # noqa: BLE001 — a ledger without the manifest still bills
+        log.exception("cost ledger: manifest unreadable; per-entry caps not applied")
+        return caps
+    for entry in ENTRIES:
+        if entry.daily_budget_usd is not None:
+            caps[entry.name] = float(entry.daily_budget_usd)
+    return caps
+
+
 def _voice_pricing_from_bundle(
     bundle,
 ) -> tuple[dict[str, tuple[float, float]], dict[str, tuple[float, float]]]:
@@ -194,8 +267,8 @@ def _voice_pricing_from_bundle(
     ``large_v3_turbo``, ``gemini_flash_audio``) so existing callers that pass
     the engine name unchanged continue to work.
     """
-    tts: dict[str, tuple[float, float]] = {}
-    stt: dict[str, tuple[float, float]] = {}
+    tts: dict[str, VoiceRate] = {}
+    stt: dict[str, VoiceRate] = {}
     if bundle.voice is None:
         return tts, stt
     voice = bundle.voice
@@ -205,17 +278,63 @@ def _voice_pricing_from_bundle(
         model = entry.ref.model
         if model.kind != "tts":
             continue
+        # A TTS entry declares exactly one of the two rate fields, and
+        # which one it declares is what says how the lane bills. Per-char
+        # is checked first only because every local lane uses it; an entry
+        # carrying both is a catalog error, and the per-char reading wins
+        # rather than the two being silently added together.
         rate = model.fields.get("cost_per_million_chars")
+        if rate is not None:
+            tts[model.id] = VoiceRate(
+                float(rate), float(entry.daily_budget_usd or 0.0), VOICE_UNIT_CHARS,
+            )
+            continue
+        rate = model.fields.get("cost_per_audio_hour")
         if rate is None:
             continue
-        tts[model.id] = (float(rate), float(entry.daily_budget_usd or 0.0))
+        tts[model.id] = VoiceRate(
+            float(rate), float(entry.daily_budget_usd or 0.0), VOICE_UNIT_AUDIO_HOUR,
+        )
     for entry in stt_chain:
         model = entry.ref.model
         if model.kind not in ("stt", "audio_stt"):
             continue
         rate = model.fields.get("cost_per_audio_hour", 0.0)
-        stt[model.id] = (float(rate), float(entry.daily_budget_usd or 0.0))
+        stt[model.id] = VoiceRate(
+            float(rate), float(entry.daily_budget_usd or 0.0), VOICE_UNIT_AUDIO_HOUR,
+        )
     return tts, stt
+
+
+def _voice_rates_from_raw(block: Any, *, kind: str) -> dict[str, VoiceRate]:
+    """Parse a `cost_tracking.voice.<kind>` mapping into rates.
+
+    The single-file fixture path, used by `from_models_yaml` and by
+    `reload`'s test branch — the bundle path is `_voice_pricing_from_bundle`
+    above. Both existed as the same twelve lines twice over, which is how
+    the two came to be edited separately; the unit rule lives here once.
+
+    A lane with no rate field and no cap is skipped rather than defaulted:
+    a lane priced at an assumed zero would spend against the global cap
+    while reporting nothing.
+    """
+    out: dict[str, VoiceRate] = {}
+    for provider, cfg in (block or {}).items():
+        if not isinstance(cfg, dict):
+            continue
+        cap = cfg.get("daily_budget_usd")
+        if cap is None:
+            continue
+        if kind == "tts" and cfg.get("cost_per_million_chars") is not None:
+            out[provider] = VoiceRate(
+                float(cfg["cost_per_million_chars"]), float(cap), VOICE_UNIT_CHARS,
+            )
+            continue
+        rate = cfg.get("cost_per_audio_hour")
+        if rate is None:
+            continue
+        out[provider] = VoiceRate(float(rate), float(cap), VOICE_UNIT_AUDIO_HOUR)
+    return out
 
 
 CostSubscriber = Callable[["CostEvent", "BudgetState"], None]
@@ -247,13 +366,21 @@ class CostLedger:
     # from the optional `cost_per_mtok_cached_in` field on each catalog
     # entry — set it for providers (e.g. Gemini) whose cached rate isn't 10%.
     cached_pricing: dict[str, float] = field(default_factory=dict)
-    voice_tts_pricing: dict[str, tuple[float, float]] = field(default_factory=dict)
-    voice_stt_pricing: dict[str, tuple[float, float]] = field(default_factory=dict)
+    voice_tts_pricing: dict[str, VoiceRate] = field(default_factory=dict)
+    voice_stt_pricing: dict[str, VoiceRate] = field(default_factory=dict)
     providers_yaml: Path = _DEFAULT_PROVIDERS_YAML
     roles_yaml: Path = _DEFAULT_ROLES_YAML
     # Test-only — when set, ``reload()`` re-parses this single-file fixture
     # instead of going through the loader. None in production.
     _test_fixture_yaml: Path | None = None
+
+    # (mtime_ns, size) of the log the in-memory totals were last built from.
+    # The FILE is the canonical record of spend; these totals are a cache of
+    # it, and more than one process appends to it — the Mirror (which hosts
+    # chat, Telegram, voice and vision alike) and the agent controller. A cache
+    # nobody revalidates is how two processes each authorise spend up to the
+    # same cap.
+    _log_fingerprint: tuple[int, int] | None = None
 
     _daily_total_usd: float = 0.0
     _role_totals_usd: dict[str, float] = field(default_factory=dict)
@@ -297,11 +424,7 @@ class CostLedger:
         warning_at_pct = float(_require(ct_raw, "warning_at_pct", where))
         log_file = _require(ct_raw, "log_file", where)
 
-        per_role_caps: dict[str, float] = {}
-        for role_name, role_cfg in bundle.roles.items():
-            cap = role_cfg.overrides.get("daily_budget_usd")
-            if cap is not None:
-                per_role_caps[role_name] = float(cap)
+        per_role_caps: dict[str, float] = _caps_from_bundle(bundle)
 
         pricing: dict[str, tuple[float, float]] = {}
         cached_pricing: dict[str, float] = {}
@@ -317,7 +440,14 @@ class CostLedger:
 
         voice_tts_pricing, voice_stt_pricing = _voice_pricing_from_bundle(bundle)
 
-        resolved_log_path = log_path if log_path is not None else _TESSERACT_HOME / log_file
+        # `home_dir()` is called HERE, not captured at import. The ledger is
+        # operator history and belongs on the half that follows them; a
+        # module-level `TESSERACT_HOME` freezes whatever the environment said
+        # when this module was first imported, which is the wrong answer in
+        # any process that sets the home after import — every test that
+        # redirects it, and the packaged app, where the shell points it at
+        # `home/`.
+        resolved_log_path = log_path if log_path is not None else _home_dir() / log_file
 
         ledger = cls(
             enabled=enabled,
@@ -380,22 +510,17 @@ class CostLedger:
                         cached_pricing[model] = float(p_cached)
 
         voice_raw = ct_raw.get("voice") or {}
-        voice_tts: dict[str, tuple[float, float]] = {}
-        for provider, cfg in (voice_raw.get("tts") or {}).items():
-            rate = cfg.get("cost_per_million_chars")
-            cap = cfg.get("daily_budget_usd")
-            if rate is None or cap is None:
-                continue
-            voice_tts[provider] = (float(rate), float(cap))
-        voice_stt: dict[str, tuple[float, float]] = {}
-        for provider, cfg in (voice_raw.get("stt") or {}).items():
-            rate = cfg.get("cost_per_audio_hour")
-            cap = cfg.get("daily_budget_usd")
-            if rate is None or cap is None:
-                continue
-            voice_stt[provider] = (float(rate), float(cap))
+        voice_tts = _voice_rates_from_raw(voice_raw.get("tts"), kind="tts")
+        voice_stt = _voice_rates_from_raw(voice_raw.get("stt"), kind="stt")
 
-        resolved_log_path = log_path if log_path is not None else _TESSERACT_HOME / log_file
+        # `home_dir()` is called HERE, not captured at import. The ledger is
+        # operator history and belongs on the half that follows them; a
+        # module-level `TESSERACT_HOME` freezes whatever the environment said
+        # when this module was first imported, which is the wrong answer in
+        # any process that sets the home after import — every test that
+        # redirects it, and the packaged app, where the shell points it at
+        # `home/`.
+        resolved_log_path = log_path if log_path is not None else _home_dir() / log_file
 
         ledger = cls(
             enabled=enabled,
@@ -421,8 +546,8 @@ class CostLedger:
     def cap_usd(self) -> float:
         return (
             sum(self.per_role_caps.values())
-            + sum(cap for _, cap in self.voice_tts_pricing.values())
-            + sum(cap for _, cap in self.voice_stt_pricing.values())
+            + sum(r.cap_usd for r in self.voice_tts_pricing.values())
+            + sum(r.cap_usd for r in self.voice_stt_pricing.values())
         )
 
     @property
@@ -499,11 +624,7 @@ class CostLedger:
         new_enabled = bool(_require(ct_raw, "enabled", where))
         new_warn_pct = float(_require(ct_raw, "warning_at_pct", where))
 
-        new_caps: dict[str, float] = {}
-        for role_name, role_cfg in bundle.roles.items():
-            cap = role_cfg.overrides.get("daily_budget_usd")
-            if cap is not None:
-                new_caps[role_name] = float(cap)
+        new_caps: dict[str, float] = _caps_from_bundle(bundle)
 
         new_pricing: dict[str, tuple[float, float]] = {}
         new_cached_pricing: dict[str, float] = {}
@@ -562,20 +683,8 @@ class CostLedger:
                         new_cached_pricing[model] = float(p_cached)
 
         voice_raw = ct_raw.get("voice") or {}
-        new_voice_tts: dict[str, tuple[float, float]] = {}
-        for provider, cfg in (voice_raw.get("tts") or {}).items():
-            rate = cfg.get("cost_per_million_chars")
-            cap = cfg.get("daily_budget_usd")
-            if rate is None or cap is None:
-                continue
-            new_voice_tts[provider] = (float(rate), float(cap))
-        new_voice_stt: dict[str, tuple[float, float]] = {}
-        for provider, cfg in (voice_raw.get("stt") or {}).items():
-            rate = cfg.get("cost_per_audio_hour")
-            cap = cfg.get("daily_budget_usd")
-            if rate is None or cap is None:
-                continue
-            new_voice_stt[provider] = (float(rate), float(cap))
+        new_voice_tts = _voice_rates_from_raw(voice_raw.get("tts"), kind="tts")
+        new_voice_stt = _voice_rates_from_raw(voice_raw.get("stt"), kind="stt")
 
         with self._lock:
             self._maybe_roll_midnight()
@@ -586,6 +695,80 @@ class CostLedger:
             self.cached_pricing = new_cached_pricing
             self.voice_tts_pricing = new_voice_tts
             self.voice_stt_pricing = new_voice_stt
+
+    #: The windows the spend panel offers, and how many local days each spans.
+    #: Named here rather than at the call site so the route, the panel and the
+    #: tests cannot disagree about what "week" means.
+    #: `ClassVar` because this class is a dataclass — a bare dict annotation
+    #: here is read as a field with a mutable default and refuses to build.
+    WINDOW_DAYS: ClassVar[dict[str, int]] = {"day": 1, "week": 7, "month": 30}
+
+    def daily_totals(self) -> dict[str, float]:
+        """Every local date in the ledger, with what was spent on it.
+
+        Reads the whole file rather than today's rows — `_seed_from_log` needs
+        only today, this needs the history behind it. Malformed lines are
+        skipped exactly as they are there: a ledger that cannot be read at all
+        is worse than one missing a row somebody corrupted by hand.
+        """
+        totals: dict[str, float] = {}
+        if not self.log_path.exists():
+            return totals
+        try:
+            with self.log_path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    day = entry.get("local_date")
+                    if not isinstance(day, str):
+                        continue
+                    totals[day] = totals.get(day, 0.0) + float(entry.get("cost_usd", 0.0))
+        except OSError as exc:
+            logger.warning("cost ledger unreadable for windows: %s", exc)
+        return totals
+
+    def windows(self) -> dict[str, Any]:
+        """Spend over the last day, week and month, each with the window
+        BEFORE it so a trend compares like with like.
+
+        The comparison window is the reason this is computed here rather than
+        in the panel: "up 20%" against nothing is not a trend, and only the
+        ledger knows whether the earlier period exists. `history_days` is the
+        count of distinct dates present, and a caller that wants to draw a
+        direction has to check it — a first-week install comparing against
+        seven empty days would report every figure as an infinite rise.
+        """
+        totals = self.daily_totals()
+        today = date.fromisoformat(self._today_fn())
+
+        def _sum(start_offset: int, span: int) -> float:
+            days = [
+                (today - timedelta(days=start_offset + i)).isoformat()
+                for i in range(span)
+            ]
+            return round(sum(totals.get(d, 0.0) for d in days), 6)
+
+        out: dict[str, Any] = {}
+        for name, span in self.WINDOW_DAYS.items():
+            out[name] = {
+                "days": span,
+                "spent_usd": _sum(0, span),
+                # The same span, immediately before this one.
+                "previous_usd": _sum(span, span),
+            }
+        dates = sorted(totals)
+        return {
+            "windows": out,
+            "history_days": len(dates),
+            "first_date": dates[0] if dates else None,
+            "last_date": dates[-1] if dates else None,
+            "local_date": today.isoformat(),
+        }
 
     def snapshot(self) -> dict[str, Any]:
         """Read-only view of today's spend. Used by the Mirror WS catch-up
@@ -618,10 +801,15 @@ class CostLedger:
             global_warning = self._daily_total_usd >= self.warning_usd
             global_blocked = self._daily_total_usd >= self.cap_usd
             roles: dict[str, dict[str, Any]] = {}
-            # Always populate the four canonical roles so the chips render
-            # $0.00 / $cap immediately on a fresh day, even if no turn has
-            # been billed yet.
-            for role in ("chat_brain", "observer_agent"):
+            # Every role that declares a ceiling, plus every role that has
+            # actually spent. The list was hardcoded to chat_brain and
+            # observer_agent, so the ceilings the other roles declare in
+            # roles.yaml — autonomy's among them — never reached a surface:
+            # they counted against the global cap while the breakdown that
+            # explains the global cap did not mention them. A role with a cap
+            # is listed on a fresh day too, so its chip reads $0.00 / $cap
+            # before anything has been billed.
+            for role in sorted(set(self.per_role_caps) | set(self._role_totals_usd)):
                 roles[role] = {
                     "role_total_usd": self._role_totals_usd.get(role, 0.0),
                     "role_cap_usd": self.per_role_caps.get(role),
@@ -646,21 +834,27 @@ class CostLedger:
                 "last_model": "",
             }
             voice_providers = {
+                # `rate_unit` travels with `rate` so a reader can label it.
+                # Without it the spend view would print one number for a
+                # per-million-character price and a per-audio-hour one, which
+                # differ by five orders of magnitude.
                 "tts": {
                     provider: {
                         "spent_usd": self._voice_provider_totals_usd.get(provider, 0.0),
-                        "cap_usd": cap,
-                        "rate": rate,
+                        "cap_usd": r.cap_usd,
+                        "rate": r.usd,
+                        "rate_unit": r.unit,
                     }
-                    for provider, (rate, cap) in self.voice_tts_pricing.items()
+                    for provider, r in self.voice_tts_pricing.items()
                 },
                 "stt": {
                     provider: {
                         "spent_usd": self._voice_provider_totals_usd.get(provider, 0.0),
-                        "cap_usd": cap,
-                        "rate": rate,
+                        "cap_usd": r.cap_usd,
+                        "rate": r.usd,
+                        "rate_unit": r.unit,
                     }
-                    for provider, (rate, cap) in self.voice_stt_pricing.items()
+                    for provider, r in self.voice_stt_pricing.items()
                 },
             }
             return {
@@ -692,6 +886,32 @@ class CostLedger:
     #   "role:<role_name>"                — per_role[role_name]
     #   "voice:<kind>:<provider>"         — voice tts/stt provider cap
     # Frontend uses the same keys on `cost_overage_response`.
+
+    def _log_state(self) -> tuple[int, int] | None:
+        try:
+            st = self.log_path.stat()
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
+
+    def _resync_from_log(self) -> None:
+        """Rebuild today's totals from the log when another writer touched it.
+
+        Cheap in the common case: a stat, and a re-read only when the file has
+        actually moved. `_seed_from_log` ACCUMULATES rather than assigns, so
+        the totals are zeroed first — seeding twice without this would count
+        every row again and the cap would trip at half its value.
+
+        Must be called with `_lock` held.
+        """
+        state = self._log_state()
+        if state == self._log_fingerprint:
+            return
+        self._daily_total_usd = 0.0
+        self._role_totals_usd.clear()
+        self._voice_provider_totals_usd.clear()
+        self._seed_from_log()
+        self._log_fingerprint = state
 
     def check_warning(self, scope_key: str, spent: float, cap: float) -> bool:
         """Return True ONCE per day per scope when spend crosses
@@ -779,6 +999,14 @@ class CostLedger:
             return
         with self._lock:
             self._maybe_roll_midnight()
+            # Revalidate against the log before deciding. Every door into the
+            # assistant that spends money writes to this one file — the Mirror
+            # process carries chat, Telegram, voice and vision together, and
+            # the agent controller is a second process appending to the same
+            # place. Without this the two hold independent in-memory totals and
+            # each authorises up to the full cap, so the ceiling is per-process
+            # instead of per-day.
+            self._resync_from_log()
             state = self._budget_state_locked(role)
             role_unlocked = f"role:{role}" in self._overage_unlocked_today
             global_unlocked = "global" in self._overage_unlocked_today
@@ -820,8 +1048,7 @@ class CostLedger:
         """Daily cap for a voice provider, or None if not configured.
 
         `kind` is `"tts"` or `"stt"`. Mirrors `voice_tts_pricing` /
-        `voice_stt_pricing` shape. The cap is the second element of the
-        pricing tuple — see `_parse_voice_pricing`.
+        `voice_stt_pricing` shape.
         """
         if kind == "tts":
             entry = self.voice_tts_pricing.get(provider)
@@ -829,7 +1056,7 @@ class CostLedger:
             entry = self.voice_stt_pricing.get(provider)
         else:
             return None
-        return entry[1] if entry is not None else None
+        return entry.cap_usd if entry is not None else None
 
     def voice_check_preflight(self, kind: str, provider: str) -> None:
         """Raise `BudgetExhausted(scope="voice")` if the provider's daily
@@ -879,7 +1106,7 @@ class CostLedger:
                 scope="global",
             )
         spent = self.voice_provider_total_usd(provider)
-        # Cap == 0 means the provider is free at use-time (local Piper /
+        # Cap == 0 means the provider is free at use-time (a local lane /
         # local Whisper at $0/M chars). A literal `spent >= 0` check would
         # trip BudgetExhausted on the very first call — treat zero cap as
         # "no per-provider ceiling" so only the global daily cap applies.
@@ -1017,9 +1244,11 @@ class CostLedger:
                     f"no TTS pricing for provider={provider} — add "
                     f"cost_tracking.voice.tts.{provider} to models.yaml"
                 )
-            rate, _cap = entry
+            if entry.unit == VOICE_UNIT_AUDIO_HOUR:
+                seconds = float(getattr(usage, "seconds", 0.0))
+                return seconds * entry.usd / 3600.0
             chars = getattr(usage, "char_count", 0)
-            return chars * rate / 1_000_000
+            return chars * entry.usd / 1_000_000
         if kind == "stt":
             entry = self.voice_stt_pricing.get(provider)
             if entry is None:
@@ -1027,9 +1256,8 @@ class CostLedger:
                     f"no STT pricing for provider={provider} — add "
                     f"cost_tracking.voice.stt.{provider} to models.yaml"
                 )
-            rate, _cap = entry
             seconds = float(getattr(usage, "seconds", 0.0))
-            return seconds * rate / 3600.0
+            return seconds * entry.usd / 3600.0
         raise RuntimeError(f"voice kind must be 'tts' or 'stt', got {kind!r}")
 
     def _build_voice_event(

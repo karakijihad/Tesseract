@@ -71,6 +71,36 @@ fn marker_path(root: &Path) -> PathBuf {
     runtime_dir(root).join("provisioned.json")
 }
 
+/// Whether this install finished provisioning without anyone answering the
+/// setup form.
+///
+/// The marker is written on BOTH exits from `provision_extras`, deliberately:
+/// an unanswered run has installed the app, and without a marker every later
+/// launch would re-clone and rebuild it. That left one file carrying two
+/// facts — "do not reinstall" and "do not ask" — and only the first of them
+/// was ever true. The `scope` field separates them, so a launch can skip the
+/// install and still offer the form.
+///
+/// A marker without the field is an install provisioned before this shipped:
+/// answered, because treating the whole existing population as unanswered
+/// would put a setup form in front of every one of them on their next launch.
+/// The genuinely-deferred ones among those keep today's behaviour — the HUD
+/// advice pointing at Settings — rather than gaining a form.
+///
+/// Says nothing about whether the app is installed; `is_provisioned` answers
+/// that, and the launch path asks both.
+pub fn setup_unanswered(home: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(marker_path(home)) else {
+        return false;
+    };
+    match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(v) => {
+            v.get("scope").and_then(|s| s.as_str()) == Some(ProvisionScope::Unanswered.as_str())
+        }
+        Err(_) => false,
+    }
+}
+
 /// True iff the provisioning marker matches AND the artifacts it claims exist
 /// are actually on disk.
 ///
@@ -219,6 +249,9 @@ pub fn refresh_optional_assets(root: &Path) {
         // the handle is what makes stopping it on quit safe. Still never
         // waited on — this must add no latency to launch.
         if let Ok(child) = cmd.spawn() {
+            // The registry covers a clean quit; the job covers the crash that
+            // never reaches one. This fetcher can be pulling ~2.2 GB.
+            crate::job::adopt(child.id());
             if let Ok(mut children) = REFRESH_CHILDREN.lock() {
                 children.push(child);
             }
@@ -251,20 +284,157 @@ impl From<String> for ProvisionError {
 
 /// Emits the progress event the splash screen listens for AND appends the
 /// same line to the shell's durable log, so every stage a user sees on
-/// screen also lands in `<TESSERACT_HOME>/logs/shell.log` for later
-/// diagnosis.
+/// screen also lands in `<install root>/runtime/logs/shell.log` for later
+/// diagnosis. Not under `TESSERACT_HOME` — that is the `home/` sibling, and
+/// naming it here sent debugging to a path nothing ever writes.
 fn emit_progress(app: &AppHandle, msg: &str) {
     crate::shell_log::log(msg);
     let _ = app.emit("provision-progress", msg.to_string());
 }
 
+/// Whether anyone answered the setup form this run.
+///
+/// The form is where consent is given, so a run that never had one may
+/// install the app and nothing else. The alternative — provisioning the
+/// shipped defaults because the window failed to open — is several gigabytes
+/// arriving on a stranger's machine because a window failed to open, and the
+/// consent ledger exists precisely so that cannot happen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProvisionScope {
+    /// The form was submitted. Its answers are staged and govern everything.
+    Answered,
+    /// The splash could not open, so nothing was asked. Optional artifacts
+    /// wait for an answer given inside the app.
+    Unanswered,
+}
+
+impl ProvisionScope {
+    /// The word the completion marker carries, and the one `setup_unanswered`
+    /// reads back. Written out rather than derived from `Debug`, which is a
+    /// developer convenience no on-disk format should depend on.
+    fn as_str(self) -> &'static str {
+        match self {
+            ProvisionScope::Answered => "answered",
+            ProvisionScope::Unanswered => "unanswered",
+        }
+    }
+}
+
 /// How many stages a first run walks through: the clone, then every
-/// `progress(...)` call in `provision_stages` except the terminal "Ready.".
+/// `progress(...)` call in `base_stages` and `extras_stages` except the
+/// terminal "Ready.".
 ///
 /// Guarded by a unit test rather than trusted, because a stage added without
 /// touching this constant would silently make every "step N of TOTAL" wrong
 /// for the rest of the run.
 pub const TOTAL_STAGES: u32 = 11;
+
+/// The stages that run before anyone is asked anything: the clone, Python,
+/// the venv and the dependency install.
+///
+/// They are shown as progress and never as a question — declining Python is
+/// not a lighter install, it is a broken one. They also have to come first
+/// for the form to be answerable at all: `setup_manifest` needs an
+/// interpreter and a config tree to read this machine's real figures from,
+/// and before this reorder there was neither, which is why the page carried
+/// literals and quoted the wrong speech model to every machine.
+pub const BASE_STAGES: u32 = 4;
+
+/// The five stages an unanswered run skips: speech recognition, the voice
+/// model, the browser engine, the reranker, and embeddings — which is the
+/// Ollama vendor installer. Everything before them builds the app itself and
+/// asks nobody for anything.
+///
+/// The browser engine joined this list when it stopped being required. It is
+/// ~700 MB, nothing at boot depends on it, and `os_open_url` hands a link to
+/// the machine's own browser without it — so it is an optional capability
+/// like the rest, and it moved BELOW "Applying your setup…" for the reason
+/// every stage down here is below it: a decline has to reach the stage that
+/// would otherwise download it.
+///
+/// **Not subtracted from the denominator.** It was, and that was the defect:
+/// the base phase runs before anyone has been asked, so it can only count out
+/// of the full eleven — and an extras phase counting out of six then made the
+/// total SHRINK from 11 to 6 partway through the one run that is already
+/// degraded. An unanswered run ends at "Ready." on step 6 of 11, which is
+/// true: it skipped five stages, and the headline says it is finished.
+pub const DEFERRED_STAGES: u32 = 5;
+
+/// The marker that tells the Python side nobody was asked.
+///
+/// Written before the stages run, and read wherever consent is derived: with
+/// it present, `enabled: true` in the shipped catalog is a default rather than
+/// an answer, so the launch pass does not fetch on the next start what this
+/// run just declined to fetch. Recording a real answer — a Settings toggle —
+/// is what ends it.
+fn setup_deferred_path(root: &Path) -> PathBuf {
+    runtime_dir(root).join("setup-deferred.json")
+}
+
+fn write_setup_deferred(root: &Path, reason: &str) {
+    let runtime = runtime_dir(root);
+    if let Err(e) = std::fs::create_dir_all(&runtime) {
+        crate::shell_log::log_error(&format!("could not create {}: {e}", runtime.display()));
+        return;
+    }
+    let body = serde_json::json!({ "reason": reason });
+    let path = setup_deferred_path(root);
+    // Written, then READ BACK. This run skips the fetch stages whatever
+    // happens here, so a failed write costs nothing today — it costs the NEXT
+    // launch, where the marker's absence is indistinguishable from an
+    // ordinary install and the launch pass fetches the shipped defaults. That
+    // is the whole hole, one start later, and a write that silently produced
+    // nothing would reopen it while the log said the opposite.
+    let written = std::fs::write(&path, body.to_string()).and_then(|()| {
+        // Not `.exists()`: a truncated or unreadable file satisfies that and
+        // fails the read the Python side will do.
+        std::fs::read_to_string(&path).map(|_| ())
+    });
+    match written {
+        Ok(()) => crate::shell_log::log(
+            "setup was not answered — optional downloads wait for an answer in the app",
+        ),
+        // Never fatal — failing the install over a marker would trade a
+        // repairable state for no app at all — but said at the level that
+        // matches the consequence, and naming it, because the operator is the
+        // only one who can act on it.
+        Err(e) => crate::shell_log::log_error(&format!(
+            "COULD NOT RECORD that setup was skipped ({e}). This run downloads nothing \
+             optional, but the next launch will treat the shipped defaults as answers \
+             and may fetch several gigabytes. Create {} by hand, or answer setup in \
+             Settings before restarting.",
+            path.display()
+        )),
+    }
+}
+
+/// Removes the deferral marker once the answers it stood in for have landed.
+///
+/// The marker's whole meaning is "nobody was asked, so the shipped catalog's
+/// `enabled: true` is a default rather than an answer". A form that has now
+/// been answered — on a first run, or on the launch that re-offered it —
+/// makes that a lie, and a lie in this direction outranks the answer just
+/// given: `consent.py` would keep reading real choices as absent ones.
+///
+/// Only a submitted form clears it. A Settings toggle still outranks it per
+/// dependency without clearing it, because answering one question is not the
+/// same as having been asked all of them.
+///
+/// Never fatal: a marker that cannot be removed costs the operator advice
+/// they have already acted on, which is worse than tidy and better than a
+/// failed provision.
+fn clear_setup_deferred(root: &Path) {
+    let path = setup_deferred_path(root);
+    match std::fs::remove_file(&path) {
+        Ok(()) => crate::shell_log::log("setup was answered — the deferral marker is cleared"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => crate::shell_log::log_error(&format!(
+            "could not clear {} ({e}) — the answers just given are on record, but this \
+             install will go on reporting that its setup was never opened",
+            path.display()
+        )),
+    }
+}
 
 /// The machine-readable line `pinned_fetch` writes to STDOUT while it streams
 /// a model file. Human-facing log lines go to stderr, so the two channels
@@ -272,6 +442,13 @@ pub const TOTAL_STAGES: u32 = 11;
 /// prefix is byte progress and is never shown verbatim or logged, and
 /// everything else is text for the operator.
 const PROGRESS_MARKER: &str = "TESSERACT_PROGRESS ";
+
+/// The prefix `scripts/setup_manifest.py` puts on its one line of JSON.
+///
+/// Marked for the same reason the byte counters above are: stdout is a shared
+/// channel, and anything a transitively imported library prints on it would
+/// otherwise be read as part of the manifest.
+const MANIFEST_MARKER: &str = "TESSERACT_SETUP_MANIFEST ";
 
 /// One update for the splash: which stage is running, how far in, and either
 /// the latest line of output or the byte counts of the file being fetched.
@@ -331,18 +508,32 @@ struct StageState {
 /// Tracks which stage is running so a line of subprocess output can be
 /// attributed to it.
 ///
-/// Deliberately lives here and not in `provision_stages`: that function takes
-/// a `&dyn Fn(&str)` progress sink and its nine unit tests assert on the exact
-/// strings it emits. Counting stages on this side keeps the staged sequence,
+/// Deliberately lives here and not in the stage functions: those take a
+/// `&dyn Fn(&str)` progress sink and their unit tests assert on the exact
+/// strings emitted. Counting stages on this side keeps the staged sequence,
 /// its argv and its ordering tests untouched.
 struct StageTracker {
     state: Mutex<StageState>,
+    /// The denominator the splash renders. `TOTAL_STAGES` for every run, in
+    /// both phases: the base half runs before the scope is known, so any
+    /// scope-dependent total could only ever apply to the second half — and a
+    /// denominator that changes mid-run is a bar walking backwards.
+    total: u32,
 }
 
 impl StageTracker {
-    fn new() -> Self {
+    /// `done` is how many stages have already been counted by an earlier
+    /// phase. The run is split by a form in the middle of it, so the second
+    /// half has to resume the counter rather than restart it — a tracker that
+    /// began again at 1 would show "step 1 of 11" after four stages had
+    /// visibly completed.
+    fn starting_at(done: u32) -> Self {
         Self {
-            state: Mutex::new(StageState::default()),
+            state: Mutex::new(StageState {
+                index: done,
+                ..StageState::default()
+            }),
+            total: TOTAL_STAGES,
         }
     }
 
@@ -350,7 +541,7 @@ impl StageTracker {
     /// byte counts, so a stage that reports none does not inherit them.
     fn begin(&self, name: &str) {
         if let Ok(mut s) = self.state.lock() {
-            s.index = (s.index + 1).min(TOTAL_STAGES);
+            s.index = (s.index + 1).min(self.total);
             s.name = name.to_string();
             s.received = None;
             s.expected = None;
@@ -358,9 +549,15 @@ impl StageTracker {
         }
     }
 
-    /// One line of subprocess output. A counter marker updates the byte
-    /// figures and is never logged or shown verbatim; anything else is
-    /// operator-facing text that lands in `shell.log` and on the splash.
+    /// One line of subprocess output. A counter marker never reaches
+    /// `shell.log` — a 1.6 GB download would be thousands of rows of it — and
+    /// what the splash sees of it is the file name, as the tail's line, so
+    /// the bytes on the meter say what they are about. Anything else is
+    /// operator-facing text that lands in both.
+    ///
+    /// The marker repeats that name every 4 MB or every second, and a stalled
+    /// transfer deliberately keeps re-reporting, so whatever renders the line
+    /// owes it a same-as-last check; the splash tail does one.
     fn line(&self, app: &AppHandle, line: &str) {
         let Ok(mut s) = self.state.lock() else {
             return;
@@ -369,13 +566,13 @@ impl StageTracker {
             Some((file, received, expected)) => {
                 s.received = Some(received);
                 s.expected = expected;
-                let detail = Self::detail(&s, &file);
+                let detail = Self::detail(&s, &file, self.total);
                 drop(s);
                 let _ = app.emit("provision-detail", detail);
             }
             None => {
                 crate::shell_log::log(line);
-                let detail = Self::detail(&s, line);
+                let detail = Self::detail(&s, line, self.total);
                 drop(s);
                 let _ = app.emit("provision-detail", detail);
             }
@@ -399,16 +596,16 @@ impl StageTracker {
         } else {
             String::new()
         };
-        let detail = Self::detail(&s, &line);
+        let detail = Self::detail(&s, &line, self.total);
         drop(s);
         let _ = app.emit("provision-detail", detail);
     }
 
-    fn detail(s: &StageState, line: &str) -> ProvisionDetail {
+    fn detail(s: &StageState, line: &str, total: u32) -> ProvisionDetail {
         ProvisionDetail {
             stage: s.name.clone(),
             index: s.index,
-            total: TOTAL_STAGES,
+            total,
             line: line.to_string(),
             received_bytes: s.received,
             expected_bytes: s.expected,
@@ -416,13 +613,16 @@ impl StageTracker {
     }
 }
 
-/// Clone the source repo into the per-user home, download Python + deps
-/// online, editable-install tesseract, and fetch the browser engine. On
-/// success writes the marker and returns the venv python path. Emits
-/// "provision-progress" events (payload: a String line). Every failure is
-/// terminal for the run: the clone is anonymous, so there is no credential
-/// the caller could supply to retry with.
-pub fn provision(app: &AppHandle, home: &Path) -> Result<PathBuf, ProvisionError> {
+/// Install the app itself: clone the source repo into the per-user home,
+/// download Python, build the venv and editable-install tesseract. Returns
+/// the venv python path. Emits "provision-progress" events (payload: a String
+/// line). Every failure is terminal for the run: the clone is anonymous, so
+/// there is no credential the caller could supply to retry with.
+///
+/// **Nothing here is optional and nothing here is asked about.** The form
+/// runs after this, on a tree that exists — which is what lets it quote this
+/// machine's real figures instead of the literals it used to carry.
+pub fn provision_base(app: &AppHandle, home: &Path) -> Result<PathBuf, ProvisionError> {
     let uv = resolve_uv(app)?;
 
     // Before anything looks at `app/`: an update that died between its two
@@ -438,10 +638,10 @@ pub fn provision(app: &AppHandle, home: &Path) -> Result<PathBuf, ProvisionError
         Err(e) => crate::shell_log::log(&format!("provision: {e}")),
     }
 
-    // One tracker for the whole run: `progress` names the stage and `on_line`
-    // attributes every subsequent line of output to it, so a stall shows which
-    // step it stalled in rather than the last headline that happened to fire.
-    let tracker = StageTracker::new();
+    // `progress` names the stage and `on_line` attributes every subsequent
+    // line of output to it, so a stall shows which step it stalled in rather
+    // than the last headline that happened to fire.
+    let tracker = StageTracker::starting_at(0);
     let progress = |msg: &str| {
         tracker.begin(msg);
         emit_progress(app, msg);
@@ -451,14 +651,142 @@ pub fn provision(app: &AppHandle, home: &Path) -> Result<PathBuf, ProvisionError
     progress("Downloading TESSERACT…");
     clone_with_progress(app, &tracker, &app_dir(home))?;
 
-    provision_stages(
-        home,
-        &uv,
-        &progress,
-        &|program, args| run_uv(program, args, &on_line),
-        &|program, args| run_python(program, args, home, &on_line),
-    )
+    base_stages(home, &uv, &progress, &|program, args| {
+        run_uv(program, args, &on_line)
+    })
     .map_err(ProvisionError::from)
+}
+
+/// Apply the operator's answers and fetch what they agreed to. Writes the
+/// completion marker and returns the venv python path.
+///
+/// Split from `provision_base` by the form, and that split is the whole
+/// reorder: everything here reads a config the answers have just written, so
+/// declining a lane costs nothing, and nothing here runs on a machine where
+/// nobody was asked.
+pub fn provision_extras(
+    app: &AppHandle,
+    home: &Path,
+    scope: ProvisionScope,
+) -> Result<PathBuf, ProvisionError> {
+    // Before any stage runs, so a provision that dies half way still leaves
+    // the record that nobody was asked. The alternative ordering — writing it
+    // at the end — would let a crashed unanswered run look answered to the
+    // launch pass, which is the one reader that must never get this wrong.
+    if scope == ProvisionScope::Unanswered {
+        write_setup_deferred(home, "the setup form was never answered");
+    }
+
+    let tracker = StageTracker::starting_at(BASE_STAGES);
+    let progress = |msg: &str| {
+        tracker.begin(msg);
+        emit_progress(app, msg);
+    };
+    let on_line = |line: &str| tracker.line(app, line);
+
+    extras_stages(home, scope, &progress, &|program, args| {
+        run_python(program, args, home, &on_line)
+    })
+    .map_err(ProvisionError::from)
+}
+
+/// The form's questions, answered for THIS machine, as the JSON the splash
+/// renders from.
+///
+/// Buffered rather than streamed, unlike every other Python call here: this
+/// one is read by a program, not by a person, and `run_tool`'s line splitter
+/// truncates at 4 KB — a manifest is comfortably longer than that. It is also
+/// short enough that there is nothing to show progress for.
+/// Takes no `AppHandle`: `point_at_state_root` reads the `uv` path from
+/// `UV_PATH`, which `provision_base` has already populated by the time this
+/// can run at all.
+pub fn setup_manifest(home: &Path) -> Result<serde_json::Value, String> {
+    let mut cmd = manifest_command(home);
+
+    // Spawned rather than `output()`, and the difference is the quit path.
+    // `output()` gives no pid to adopt, so this was the one child in this file
+    // outside the Job Object and unknown to `ACTIVE_PID` — a crash or an
+    // end-task orphaned it, and a clean quit could not signal it. Everything
+    // else here goes through `run_tool`, which does exactly this.
+    if stopping() {
+        return Err("the setup manifest was not started: TESSERACT is shutting down".into());
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("the setup manifest could not be built: {e}"))?;
+    crate::job::adopt(child.id());
+    set_active(Some(child.id()));
+    if stopping() {
+        stop_active();
+        let _ = child.wait();
+        return Err("the setup manifest stopped: TESSERACT is shutting down".into());
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("the setup manifest did not complete: {e}"));
+    set_active(None);
+    let out = out?;
+
+    parse_manifest(
+        &out.stdout,
+        &out.stderr,
+        out.status.success(),
+        out.status.code(),
+    )
+}
+
+/// The command, built and not yet spawned — split out so a test can assert
+/// the interpreter, the module and the environment without needing a venv.
+fn manifest_command(home: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new(venv_python(home));
+    cmd.args(["-m", "tesseract.scripts.setup_manifest"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    point_at_state_root(&mut cmd, home);
+    hide_console(&mut cmd);
+    cmd
+}
+
+/// The manifest, or why it is not one — split from the spawn so it can be
+/// tested without a venv.
+///
+/// stderr is the script's diagnostic channel and is logged whatever the exit
+/// code: a manifest that succeeded while warning that the graphics probe
+/// failed is the case where the warning is the whole story.
+fn parse_manifest(
+    stdout: &[u8],
+    stderr: &[u8],
+    success: bool,
+    code: Option<i32>,
+) -> Result<serde_json::Value, String> {
+    for line in String::from_utf8_lossy(stderr).lines() {
+        let line = line.trim();
+        if !line.is_empty() {
+            crate::shell_log::log(&scrub_credentials(line));
+        }
+    }
+    if !success {
+        return Err(format!(
+            "the setup manifest exited {}",
+            code.unwrap_or(-1)
+        ));
+    }
+    // The MARKED line, not the whole stream. Anything printed to stdout by a
+    // library the script imports — a vendor banner, a deprecation notice —
+    // would otherwise prefix the JSON and cost the operator the entire form,
+    // on a machine that is working perfectly. Same shape as the byte-progress
+    // marker the fetch stages already use.
+    let text = String::from_utf8_lossy(stdout);
+    let body = text
+        .lines()
+        .rev()
+        .find_map(|line| line.trim().strip_prefix(MANIFEST_MARKER))
+        .ok_or_else(|| {
+            format!("the setup manifest printed no {MANIFEST_MARKER} line")
+        })?;
+    serde_json::from_str(body)
+        .map_err(|e| format!("the setup manifest was not readable JSON: {e}"))
 }
 
 /// Clones on a worker thread so this one can pump transfer statistics.
@@ -496,20 +824,19 @@ pub fn resolve_uv(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(uv)
 }
 
-/// Every post-clone provisioning stage, in order, with the progress sink and
-/// both subprocess runners injected.
+/// Every post-clone stage that installs the app, in order, with the progress
+/// sink and the subprocess runner injected.
 ///
-/// Split out from `provision()` because `provision()` needs a live Tauri
+/// Split out from `provision_base` because that needs a live Tauri
 /// `AppHandle` (for resource resolution and event emission) that no unit test
 /// can construct — which left the entire first-run sequence, the stage
-/// ordering, the argument construction, and the marker write untested. Here
+/// ordering, the argument construction and the marker write untested. Here
 /// the same logic runs against recording stubs.
-fn provision_stages(
+fn base_stages(
     home: &Path,
     uv: &Path,
     progress: &dyn Fn(&str),
     run_uv: &dyn Fn(&Path, &[&str]) -> Result<(), String>,
-    run_python: &dyn Fn(&Path, &[&str]) -> Result<(), String>,
 ) -> Result<PathBuf, String> {
     let venv = venv_dir(home);
     let py = venv_python(home);
@@ -532,21 +859,69 @@ fn provision_stages(
     progress("Downloading dependencies…");
     reinstall_deps_with(uv, home, run_uv)?;
 
-    progress("Downloading browser engine…");
-    run_python(&py, &["-m", "playwright", "install", "chromium"])?;
+    Ok(py)
+}
 
-    // The first stage that can run Python against the operator's state: it
-    // seeds `home/config/` from the freshly cloned templates and applies the
-    // setup form's staged answers to it. Must come BEFORE the fetch stages,
-    // which read that config to decide what to download — that ordering is
-    // the whole reason declining a lane costs nothing.
+/// Every stage that acts on the operator's answers, in order.
+///
+/// Nothing above this line asked anyone anything and nothing below it runs
+/// without an answer — which is what `scope` carries. Same injection as
+/// `base_stages`, for the same reason.
+fn extras_stages(
+    home: &Path,
+    scope: ProvisionScope,
+    progress: &dyn Fn(&str),
+    run_python: &dyn Fn(&Path, &[&str]) -> Result<(), String>,
+) -> Result<PathBuf, String> {
+    let py = venv_python(home);
+
+    // The stage that writes the setup form's staged answers into
+    // `home/config/`. Must come BEFORE the fetch stages, which read that
+    // config to decide what to download — that ordering is the whole reason
+    // declining a lane costs nothing. It seeds the config tree too, which is
+    // idempotent and matters on the unanswered path: `setup_manifest` has
+    // usually done it already, and a run whose form never opened has nobody
+    // to have done it.
     //
-    // Best-effort: a setup that could not be applied leaves the shipped
-    // defaults, which is a working install with a name the operator did not
-    // choose. The Identity tab can set every one of these afterwards, so
-    // failing the install over it would be a bad trade.
+    // Best-effort for the IDENTITY half: a setup that could not be applied
+    // leaves the shipped defaults, which is a working install with a name the
+    // operator did not choose. The Identity tab can set every one of these
+    // afterwards, so failing the install over it would be a bad trade.
+    //
+    // Not best-effort for the CONSENT half, and that is the difference this
+    // return value carries. This stage is what writes the operator's answers
+    // into the config the fetch stages read, AND what records them in the
+    // ledger. If it did not run, the config below is the shipped default and
+    // the ledger is empty — so proceeding to fetch would download every
+    // default lane on the strength of answers that never landed anywhere. An
+    // answered run whose answers were not applied is, for the purposes of
+    // what may be downloaded, an unanswered one.
     progress("Applying your setup…");
-    let _ = run_python(&py, &["-m", "tesseract.scripts.apply_first_run_setup"]);
+    let applied = run_python(&py, &["-m", "tesseract.scripts.apply_first_run_setup"]);
+    // Named rather than shadowing the parameter: every read below this line
+    // must be the downgraded value, and a shadow makes that invisible at the
+    // point a future stage is inserted above it.
+    let effective_scope = match applied {
+        Ok(()) => scope,
+        Err(e) => {
+            crate::shell_log::log_error(&format!(
+                "the setup answers could not be applied ({e}) — the config holds the \
+                 shipped defaults and the ledger is empty, so nothing optional is \
+                 downloaded on their strength"
+            ));
+            write_setup_deferred(home, "the setup answers could not be applied");
+            ProvisionScope::Unanswered
+        }
+    };
+
+    // Conditioned on the EFFECTIVE scope, never on `applied` alone. The
+    // unanswered path runs this same stage — it seeds the config tree, which
+    // is why it is above the scope check at all — and finds no staged answers
+    // to apply, which is a success. Clearing on `Ok(())` would therefore
+    // delete the marker `provision_extras` wrote four lines into this run.
+    if effective_scope == ProvisionScope::Answered {
+        clear_setup_deferred(home);
+    }
 
     // Between the config seed and the fetchers, and that position is the
     // whole point: this decides WHICH speech model this machine should have,
@@ -564,6 +939,31 @@ fn provision_stages(
     progress("Checking your hardware…");
     let _ = run_python(&py, &["-m", "tesseract.scripts.provision_hardware"]);
 
+    // Everything below this line downloads something optional, and the form
+    // is where consent for it is given. A run that never had a form asks
+    // nobody, so it fetches nothing: the marker written in `provision()` is
+    // what stops the next launch quietly doing it instead, and Settings →
+    // Local models is where the operator says yes at their own pace.
+    //
+    // The app itself is already installed by the stages above, which is the
+    // trade this path exists to make — a working app with no models beats
+    // several gigabytes nobody agreed to, and it also beats an install that
+    // stops dead because a window would not open.
+    if effective_scope == ProvisionScope::Unanswered {
+        // Said in the log, because the counter cannot say it: the run finishes
+        // at "Ready." on step 6 of 11, and the missing five are the whole
+        // reason this install has no models. The denominator deliberately does
+        // not shrink to match — a total that changes partway through a run is
+        // a bar walking backwards.
+        crate::shell_log::log(&format!(
+            "nobody was asked, so {DEFERRED_STAGES} optional stages were skipped — \
+             turn on what you want in Settings and it downloads then"
+        ));
+        write_marker(home, effective_scope)?;
+        progress("Ready.");
+        return Ok(py);
+    }
+
     // Best-effort, and each one reads the config the setup form just wrote:
     // an operator who declined speech has no lane named in `roles.yaml`, so
     // these find nothing to fetch and download nothing. Never propagated as
@@ -580,13 +980,30 @@ fn provision_stages(
 
     progress("Downloading voice models…");
     let _ = run_python(&py, &["-m", "tesseract.scripts.fetch_kokoro_voice"]);
-    let _ = run_python(&py, &["-m", "tesseract.scripts.fetch_piper_voice"]);
+
+    // The wake-word front end (~2.3 MB). Same best-effort contract: the script
+    // fetches nothing unless the wake word is enabled in config, so leaving it
+    // off costs zero bytes, and missing files leave the gate open rather than
+    // deaf.
+    let _ = run_python(&py, &["-m", "tesseract.scripts.fetch_wake_models"]);
 
     // Best-effort, same contract: fetches the pinned cross-encoder reranker
     // (~23 MB, sha256-pinned in the providers catalog) so retrieval ranks with
     // the reranker instead of pure RRF. Absent files are a supported degraded
     // mode, which is exactly why this must not be fatal — and also why it was
     // worth adding: without it every shipped install ran degraded in silence.
+    // Below "Applying your setup…", and that position is the whole reason it
+    // can be declined. It used to run ABOVE it, before any answer had been
+    // written, so the operator's "no" reached a stage that had already
+    // downloaded ~700 MB of Chromium. Best-effort like its neighbours: the
+    // browser tools report the switch that is false, and `os_open_url` needs
+    // none of this.
+    progress("Downloading browser engine…");
+    let _ = run_python(
+        &py,
+        &["-m", "tesseract.orchestrator.browser.provision"],
+    );
+
     progress("Downloading reranker model…");
     let _ = run_python(&py, &["-m", "tesseract.scripts.fetch_reranker_model"]);
 
@@ -599,7 +1016,7 @@ fn provision_stages(
     let _ = run_python(&py, &["-m", "tesseract.scripts.ensure_ollama"]);
 
     // Marker last, so a partial provision never reads as complete.
-    write_marker(home)?;
+    write_marker(home, effective_scope)?;
 
     progress("Ready.");
     Ok(py)
@@ -607,10 +1024,16 @@ fn provision_stages(
 
 /// Writes the completion marker `is_provisioned` reads. Only ever called as
 /// the final step of a fully successful provision.
-fn write_marker(home: &Path) -> Result<(), String> {
+///
+/// `scope` is the one that actually governed the run, not the one the caller
+/// hoped for: an answered run whose answers could not be applied is stamped
+/// unanswered, because that is what its config and its ledger say. The stamp
+/// is what a later launch reads to decide whether there is still a question
+/// outstanding on this machine.
+fn write_marker(home: &Path, scope: ProvisionScope) -> Result<(), String> {
     let runtime = runtime_dir(home);
     std::fs::create_dir_all(&runtime).map_err(|e| e.to_string())?;
-    let body = serde_json::json!({ "deps_version": DEPS_VERSION });
+    let body = serde_json::json!({ "deps_version": DEPS_VERSION, "scope": scope.as_str() });
     std::fs::write(marker_path(home), body.to_string()).map_err(|e| e.to_string())
 }
 
@@ -943,7 +1366,7 @@ static REFRESH_CHILDREN: Mutex<Vec<std::process::Child>> = Mutex::new(Vec::new()
 /// That is the abandoned-child case reappearing one stage later.
 static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-fn stopping() -> bool {
+pub(crate) fn stopping() -> bool {
     STOPPING.load(std::sync::atomic::Ordering::SeqCst)
 }
 
@@ -1117,6 +1540,11 @@ fn run_tool(
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("{label} spawn failed: {e}"))?;
+    // Before `set_active`, so the backstop is in place even if this thread
+    // never reaches another line. `uv` spawns children of its own and they
+    // inherit the job, which is the same reach `kill_tree` gets by walking —
+    // without needing anything of ours to still be running.
+    crate::job::adopt(child.id());
     set_active(Some(child.id()));
     // Re-checked after recording, not only before: a quit that latched the
     // flag between the check above and this line would already have taken its
@@ -1880,7 +2308,7 @@ mod tests {
     #[test]
     fn is_provisioned_false_when_app_git_is_missing() {
         let home = TempDir::new("no-app-git");
-        write_marker(home.path()).unwrap();
+        write_marker(home.path(), ProvisionScope::Answered).unwrap();
         let py = venv_python(home.path());
         std::fs::create_dir_all(py.parent().unwrap()).unwrap();
         std::fs::write(&py, "").unwrap();
@@ -1891,7 +2319,7 @@ mod tests {
     #[test]
     fn is_provisioned_false_when_venv_python_is_missing() {
         let home = TempDir::new("no-venv-python");
-        write_marker(home.path()).unwrap();
+        write_marker(home.path(), ProvisionScope::Answered).unwrap();
         std::fs::create_dir_all(home.join("app").join(".git")).unwrap();
 
         assert!(!is_provisioned(home.path()));
@@ -1900,7 +2328,7 @@ mod tests {
     #[test]
     fn is_provisioned_true_when_marker_matches_and_both_artifacts_exist() {
         let home = TempDir::new("intact");
-        write_marker(home.path()).unwrap();
+        write_marker(home.path(), ProvisionScope::Answered).unwrap();
         std::fs::create_dir_all(home.join("app").join(".git")).unwrap();
         let py = venv_python(home.path());
         std::fs::create_dir_all(py.parent().unwrap()).unwrap();
@@ -1914,7 +2342,7 @@ mod tests {
     #[test]
     fn invalidate_marker_flips_is_provisioned_to_false() {
         let home = TempDir::new("invalidate");
-        write_marker(home.path()).unwrap();
+        write_marker(home.path(), ProvisionScope::Answered).unwrap();
         std::fs::create_dir_all(home.join("app").join(".git")).unwrap();
         let py = venv_python(home.path());
         std::fs::create_dir_all(py.parent().unwrap()).unwrap();
@@ -1940,13 +2368,106 @@ mod tests {
     fn write_marker_creates_runtime_dir_and_a_marker_that_marker_matches_accepts() {
         let home = TempDir::new("write-marker");
 
-        write_marker(home.path()).expect("write_marker should succeed");
+        write_marker(home.path(), ProvisionScope::Answered).expect("write_marker should succeed");
 
         assert!(home.join("runtime").exists());
         assert!(marker_matches(home.path()));
     }
 
-    // -- provision_stages -------------------------------------------------
+    // -- setup_unanswered ---------------------------------------------------
+
+    /// The whole point of the field. An unanswered run has to write the marker
+    /// — without it every later launch re-clones an app that is already
+    /// installed — and before the scope was recorded, that same marker also
+    /// told the launch path there was nothing left to ask. One transient
+    /// failure to open a window therefore cost the operator the setup form
+    /// permanently.
+    #[test]
+    fn an_unanswered_run_is_provisioned_and_still_has_a_question_outstanding() {
+        let home = TempDir::new("scope-unanswered");
+        write_marker(home.path(), ProvisionScope::Unanswered).unwrap();
+        std::fs::create_dir_all(home.join("app").join(".git")).unwrap();
+        let py = venv_python(home.path());
+        std::fs::create_dir_all(py.parent().unwrap()).unwrap();
+        std::fs::write(&py, "").unwrap();
+
+        assert!(
+            is_provisioned(home.path()),
+            "the app IS installed — an unanswered run must never reinstall it"
+        );
+        assert!(
+            setup_unanswered(home.path()),
+            "and it must still be offered the form it never got"
+        );
+    }
+
+    #[test]
+    fn an_answered_run_has_nothing_outstanding() {
+        let home = TempDir::new("scope-answered");
+        write_marker(home.path(), ProvisionScope::Answered).unwrap();
+
+        assert!(!setup_unanswered(home.path()));
+    }
+
+    /// Every install provisioned before the field existed. Reading a missing
+    /// scope as unanswered would put a setup form in front of the entire
+    /// existing population on their next launch.
+    #[test]
+    fn a_marker_without_a_scope_is_treated_as_answered() {
+        let home = TempDir::new("scope-legacy");
+        std::fs::create_dir_all(home.join("runtime")).unwrap();
+        std::fs::write(
+            marker_path(home.path()),
+            serde_json::json!({ "deps_version": DEPS_VERSION }).to_string(),
+        )
+        .unwrap();
+
+        assert!(marker_matches(home.path()), "the install itself is fine");
+        assert!(!setup_unanswered(home.path()));
+    }
+
+    #[test]
+    fn an_absent_or_unreadable_marker_asks_nothing() {
+        let home = TempDir::new("scope-absent");
+        assert!(!setup_unanswered(home.path()));
+
+        std::fs::create_dir_all(home.join("runtime")).unwrap();
+        std::fs::write(marker_path(home.path()), "{not json").unwrap();
+        assert!(
+            !setup_unanswered(home.path()),
+            "a malformed marker is handled by is_provisioned, which re-provisions \
+             and asks in the ordinary way — this must not also claim a deferral"
+        );
+    }
+
+    // -- clear_setup_deferred -----------------------------------------------
+
+    /// The second half of the fix. `consent.py` reads this file as "nobody was
+    /// asked, so the shipped catalog's `enabled: true` is a default rather
+    /// than an answer" — which outranks the answers just given if it survives
+    /// them.
+    #[test]
+    fn answering_the_form_clears_the_marker_that_says_nobody_was_asked() {
+        let home = TempDir::new("clear-deferred");
+        write_setup_deferred(home.path(), "the setup form was never answered");
+        assert!(setup_deferred_path(home.path()).exists());
+
+        clear_setup_deferred(home.path());
+
+        assert!(!setup_deferred_path(home.path()).exists());
+    }
+
+    #[test]
+    fn clearing_a_deferral_that_was_never_written_is_a_silent_noop() {
+        let home = TempDir::new("clear-deferred-noop");
+        std::fs::create_dir_all(home.join("runtime")).unwrap();
+
+        clear_setup_deferred(home.path()); // must not panic
+
+        assert!(!setup_deferred_path(home.path()).exists());
+    }
+
+    // -- the provisioning stages -------------------------------------------------
 
     type Recorded = Vec<(PathBuf, Vec<String>)>;
 
@@ -2027,6 +2548,9 @@ mod tests {
         assert_eq!(home_env, Some(home_dir(home.path()).as_os_str()));
     }
 
+    /// Both halves, back to back, because the sequence is one sequence even
+    /// though a form now sits in the middle of it: the fetch stages read the
+    /// config the base half installed and the form's answers wrote.
     #[test]
     fn provision_stages_runs_every_stage_in_order_with_the_exact_argv() {
         let home = TempDir::new("stages-order");
@@ -2045,7 +2569,8 @@ mod tests {
             Ok(())
         };
 
-        let py = provision_stages(home.path(), &uv, &progress, &run_uv, &run_python)
+        base_stages(home.path(), &uv, &progress, &run_uv).expect("the app should install");
+        let py = extras_stages(home.path(), ProvisionScope::Answered, &progress, &run_python)
             .expect("all stages should succeed");
 
         assert_eq!(py, venv_python(home.path()));
@@ -2087,15 +2612,6 @@ mod tests {
                 py_path.clone(),
                 vec![
                     "-m".to_string(),
-                    "playwright".to_string(),
-                    "install".to_string(),
-                    "chromium".to_string(),
-                ],
-            ),
-            (
-                py_path.clone(),
-                vec![
-                    "-m".to_string(),
                     "tesseract.scripts.apply_first_run_setup".to_string(),
                 ],
             ),
@@ -2126,7 +2642,14 @@ mod tests {
                 py_path.clone(),
                 vec![
                     "-m".to_string(),
-                    "tesseract.scripts.fetch_piper_voice".to_string(),
+                    "tesseract.scripts.fetch_wake_models".to_string(),
+                ],
+            ),
+            (
+                py_path.clone(),
+                vec![
+                    "-m".to_string(),
+                    "tesseract.orchestrator.browser.provision".to_string(),
                 ],
             ),
             (
@@ -2156,11 +2679,11 @@ mod tests {
                 "Downloading Python…".to_string(),
                 "Creating Python environment…".to_string(),
                 "Downloading dependencies…".to_string(),
-                "Downloading browser engine…".to_string(),
                 "Applying your setup…".to_string(),
                 "Checking your hardware…".to_string(),
                 "Downloading speech recognition model…".to_string(),
                 "Downloading voice models…".to_string(),
+                "Downloading browser engine…".to_string(),
                 "Downloading reranker model…".to_string(),
                 "Setting up embeddings…".to_string(),
                 "Ready.".to_string(),
@@ -2174,11 +2697,11 @@ mod tests {
     // -- streaming output, stage counting, byte markers --------------------
 
     /// `TOTAL_STAGES` is rendered to the operator as "Step N of TOTAL", so a
-    /// stage added to `provision_stages` without touching the constant would
-    /// make every counter in the run wrong — and nothing else would notice.
-    /// Counted here against the real function rather than by hand.
+    /// stage added without touching the constant would make every counter in
+    /// the run wrong — and nothing else would notice. Counted here against the
+    /// real functions rather than by hand.
     #[test]
-    fn total_stages_matches_what_provision_stages_actually_emits() {
+    fn total_stages_matches_what_the_stage_functions_actually_emit() {
         let home = TempDir::new("stage-count");
         let uv = PathBuf::from("uv-stub");
         let progress_log: RefCell<Vec<String>> = RefCell::new(Vec::new());
@@ -2186,10 +2709,12 @@ mod tests {
         let progress = |msg: &str| progress_log.borrow_mut().push(msg.to_string());
         let ok = |_: &Path, _: &[&str]| -> Result<(), String> { Ok(()) };
 
-        provision_stages(home.path(), &uv, &progress, &ok, &ok).expect("stages should succeed");
+        base_stages(home.path(), &uv, &progress, &ok).expect("the app should install");
+        extras_stages(home.path(), ProvisionScope::Answered, &progress, &ok)
+            .expect("stages should succeed");
 
         // Every stage except the terminal "Ready.", plus the clone that
-        // `provision()` performs before calling in here.
+        // `provision_base()` performs before calling in.
         let staged = progress_log.borrow().len() as u32 - 1;
         assert_eq!(
             staged + 1,
@@ -2197,6 +2722,368 @@ mod tests {
             "a stage was added or removed without updating TOTAL_STAGES"
         );
         assert_eq!(progress_log.borrow().last().map(String::as_str), Some("Ready."));
+    }
+
+    /// The split point, asserted rather than assumed. `BASE_STAGES` is what
+    /// the extras half resumes its counter from, so a stage moved across the
+    /// form without touching it would renumber the second half — the operator
+    /// would watch "step 4 of 11" run twice.
+    #[test]
+    fn base_stages_emits_exactly_what_the_split_constant_claims() {
+        let home = TempDir::new("base-count");
+        let uv = PathBuf::from("uv-stub");
+        let progress_log: RefCell<Vec<String>> = RefCell::new(Vec::new());
+
+        let progress = |msg: &str| progress_log.borrow_mut().push(msg.to_string());
+        let ok = |_: &Path, _: &[&str]| -> Result<(), String> { Ok(()) };
+
+        base_stages(home.path(), &uv, &progress, &ok).expect("the app should install");
+
+        // Plus the clone, which `provision_base` performs before calling in.
+        assert_eq!(progress_log.borrow().len() as u32 + 1, BASE_STAGES);
+        assert!(
+            !marker_path(home.path()).exists(),
+            "the app is not provisioned until the form has been answered — a marker \
+             here would make every later launch skip the questions entirely"
+        );
+    }
+
+    // -- the unanswered run: install the app, ask nobody for anything ------
+
+    /// A first run whose splash window fails to open fell through
+    /// to provisioning on the shipped defaults — every speech model, the
+    /// reranker, and the Ollama vendor installer with `allow_install=True`.
+    /// No consent, because the thing that would have asked is the thing that
+    /// broke. Harmless while every install was the operator's own; public, it
+    /// is several gigabytes arriving on a stranger's machine because a window
+    /// failed to open.
+    #[test]
+    fn an_unanswered_run_downloads_nothing_optional() {
+        let home = TempDir::new("unanswered");
+        let uv = PathBuf::from("uv-stub");
+        let modules: RefCell<Vec<String>> = RefCell::new(Vec::new());
+
+        let progress = |_: &str| {};
+        let ok_uv = |_: &Path, _: &[&str]| -> Result<(), String> { Ok(()) };
+        let run_python = |_: &Path, args: &[&str]| -> Result<(), String> {
+            if let Some(module) = args.iter().position(|a| *a == "-m").map(|i| args[i + 1]) {
+                modules.borrow_mut().push(module.to_string());
+            }
+            Ok(())
+        };
+
+        base_stages(home.path(), &uv, &progress, &ok_uv).expect("the app should install");
+        extras_stages(home.path(), ProvisionScope::Unanswered, &progress, &run_python)
+            .expect("an unanswered run still installs the app");
+
+        let modules = modules.borrow();
+        for optional in [
+            "tesseract.scripts.fetch_whisper_model",
+            "tesseract.scripts.fetch_kokoro_voice",
+            "tesseract.scripts.fetch_wake_models",
+            "tesseract.scripts.fetch_reranker_model",
+            "tesseract.scripts.ensure_ollama",
+        ] {
+            assert!(
+                !modules.iter().any(|m| m == optional),
+                "{optional} ran without anyone having been asked; got {modules:?}"
+            );
+        }
+    }
+
+    /// The app still gets built. Refusing to provision at all would trade an
+    /// unasked download for no install on a machine whose splash could not
+    /// open, which is the offline case the best-effort design exists to serve.
+    #[test]
+    fn an_unanswered_run_still_installs_the_app_and_marks_it_complete() {
+        let home = TempDir::new("unanswered-app");
+        let uv = PathBuf::from("uv-stub");
+        let modules: RefCell<Vec<String>> = RefCell::new(Vec::new());
+
+        let progress = |_: &str| {};
+        let ok_uv = |_: &Path, _: &[&str]| -> Result<(), String> { Ok(()) };
+        let run_python = |_: &Path, args: &[&str]| -> Result<(), String> {
+            if let Some(module) = args.iter().position(|a| *a == "-m").map(|i| args[i + 1]) {
+                modules.borrow_mut().push(module.to_string());
+            }
+            Ok(())
+        };
+
+        base_stages(home.path(), &uv, &progress, &ok_uv).expect("the app should install");
+        let py = extras_stages(home.path(), ProvisionScope::Unanswered, &progress, &run_python)
+            .expect("stages should succeed");
+
+        assert_eq!(py, venv_python(home.path()));
+        assert!(
+            marker_path(home.path()).exists(),
+            "an unanswered run is a COMPLETE install of the app; without the marker \
+             every later launch would re-provision"
+        );
+        let modules = modules.borrow();
+        assert!(
+            !modules.iter().any(|m| m == "tesseract.orchestrator.browser.provision"),
+            "the browser engine is ~700 MB and optional — an unanswered run must not              fetch it any more than it fetches a voice model"
+        );
+        assert!(
+            modules.iter().any(|m| m == "tesseract.scripts.apply_first_run_setup"),
+            "the config seed must still run — there is a config to write into either way"
+        );
+    }
+
+    /// The marker an unanswered run leaves must say which run left it. This is
+    /// the fact the launch path reads to offer the form a second time; without
+    /// it, the install that most needs asking is the one that never gets asked.
+    #[test]
+    fn an_unanswered_run_stamps_its_scope_into_the_marker() {
+        let home = TempDir::new("stamp-unanswered");
+        let uv = PathBuf::from("uv-stub");
+        let progress = |_: &str| {};
+        let ok = |_: &Path, _: &[&str]| -> Result<(), String> { Ok(()) };
+
+        base_stages(home.path(), &uv, &progress, &ok).expect("the app should install");
+        extras_stages(home.path(), ProvisionScope::Unanswered, &progress, &ok)
+            .expect("stages should succeed");
+
+        assert!(setup_unanswered(home.path()));
+    }
+
+    /// The launch that finally asks. It runs the extras against an app that is
+    /// already installed, and it has to leave behind an install that no longer
+    /// claims to be waiting for an answer — in the marker AND in the file
+    /// `consent.py` reads.
+    #[test]
+    fn answering_on_a_later_launch_stamps_answered_and_clears_the_deferral() {
+        let home = TempDir::new("stamp-answered");
+        let uv = PathBuf::from("uv-stub");
+        let progress = |_: &str| {};
+        let ok = |_: &Path, _: &[&str]| -> Result<(), String> { Ok(()) };
+
+        // The state an earlier deferred run left on disk.
+        base_stages(home.path(), &uv, &progress, &ok).expect("the app should install");
+        extras_stages(home.path(), ProvisionScope::Unanswered, &progress, &ok).unwrap();
+        write_setup_deferred(home.path(), "the setup form was never answered");
+        assert!(setup_unanswered(home.path()));
+
+        // The form is answered on a later launch: extras only, no base.
+        extras_stages(home.path(), ProvisionScope::Answered, &progress, &ok)
+            .expect("the extras must run against an app that is already installed");
+
+        assert!(!setup_unanswered(home.path()));
+        assert!(
+            !setup_deferred_path(home.path()).exists(),
+            "a deferral marker outliving the answer would keep every real choice \
+             reading as never-asked"
+        );
+    }
+
+    /// The near-miss this ordering exists to avoid. The unanswered path runs
+    /// `apply_first_run_setup` too — it seeds the config tree, which is why it
+    /// sits above the scope check — and that stage SUCCEEDS with nothing to
+    /// apply. Clearing on the stage's exit code rather than on the effective
+    /// scope would delete the deferral marker `provision_extras` wrote seconds
+    /// earlier, and the next launch would read the shipped catalog's
+    /// `enabled: true` as consent.
+    #[test]
+    fn an_unanswered_run_does_not_clear_the_deferral_it_just_wrote() {
+        let home = TempDir::new("keep-deferral");
+        let uv = PathBuf::from("uv-stub");
+        let progress = |_: &str| {};
+        let ok = |_: &Path, _: &[&str]| -> Result<(), String> { Ok(()) };
+
+        base_stages(home.path(), &uv, &progress, &ok).expect("the app should install");
+        write_setup_deferred(home.path(), "the setup form was never answered");
+        extras_stages(home.path(), ProvisionScope::Unanswered, &progress, &ok)
+            .expect("stages should succeed");
+
+        assert!(setup_deferred_path(home.path()).exists());
+    }
+
+    /// An answered run whose answers did not land is an unanswered one, and
+    /// that downgrade has to reach the marker as well as the fetch stages —
+    /// otherwise the install records an answer nothing on disk reflects, and
+    /// the form is never offered again.
+    #[test]
+    fn a_downgraded_run_is_stamped_unanswered_and_keeps_its_deferral() {
+        let home = TempDir::new("stamp-downgraded");
+        let uv = PathBuf::from("uv-stub");
+        let progress = |_: &str| {};
+        let ok_uv = |_: &Path, _: &[&str]| -> Result<(), String> { Ok(()) };
+        let run_python = |_: &Path, args: &[&str]| -> Result<(), String> {
+            if args.contains(&"tesseract.scripts.apply_first_run_setup") {
+                return Err("the answers could not be applied".to_string());
+            }
+            Ok(())
+        };
+
+        base_stages(home.path(), &uv, &progress, &ok_uv).expect("the app should install");
+        extras_stages(home.path(), ProvisionScope::Answered, &progress, &run_python)
+            .expect("a failed apply must not fail the install");
+
+        assert!(setup_unanswered(home.path()));
+        assert!(setup_deferred_path(home.path()).exists());
+    }
+
+    // -- the setup manifest boundary ---------------------------------------
+    //
+    // The whole first-run form arrives through this parse. Nothing exercised
+    // it: the Python tests call `build_manifest()` directly and the splash
+    // test injects a synthetic event, so a regression here skipped the form
+    // and fell to an unanswered install with every test green.
+
+    /// The half `parse_manifest` cannot reach: which interpreter is spawned,
+    /// which module, and that the state root travels with it. Asserted against
+    /// the same `Command` the real call builds, one line above `.spawn()`.
+    ///
+    /// It reached the form through an untested boundary — a wrong argv or a
+    /// dropped `TESSERACT_HOME` would skip the questions and fall to an
+    /// unanswered install with the parser tests green.
+    #[test]
+    fn the_manifest_command_names_the_venv_python_and_carries_the_state_root() {
+        let home = TempDir::new("manifest-cmd");
+        let cmd = manifest_command(home.path());
+
+        assert_eq!(
+            std::path::Path::new(cmd.get_program()),
+            venv_python(home.path()),
+            "the manifest must run under the provisioned venv, not a PATH python"
+        );
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(args, vec!["-m", "tesseract.scripts.setup_manifest"]);
+
+        let envs: Vec<_> = cmd.get_envs().collect();
+        let home_env = envs
+            .iter()
+            .find(|(k, _)| *k == std::ffi::OsStr::new("TESSERACT_HOME"))
+            .map(|(_, v)| v.expect("TESSERACT_HOME must carry a value"));
+        assert_eq!(
+            home_env,
+            Some(home_dir(home.path()).as_os_str()),
+            "without the state root the script seeds and reads the wrong config"
+        );
+    }
+
+    #[test]
+    fn a_marked_manifest_line_parses() {
+        let out = format!("{MANIFEST_MARKER}{{\"extras\":[],\"keys\":[]}}");
+
+        let value = parse_manifest(out.as_bytes(), b"", true, Some(0))
+            .expect("a marked line is the manifest");
+
+        assert!(value["extras"].is_array());
+    }
+
+    /// The reason the line is marked at all. A vendor banner printed by any
+    /// library the script imports used to prefix the JSON and cost the
+    /// operator the entire form on a machine that was working perfectly.
+    #[test]
+    fn a_banner_on_stdout_does_not_cost_the_form() {
+        let out = format!(
+            "NVIDIA driver loaded\n{MANIFEST_MARKER}{{\"extras\":[]}}\ntrailing noise"
+        );
+
+        let value = parse_manifest(out.as_bytes(), b"", true, Some(0))
+            .expect("the marked line is found among the noise");
+
+        assert!(value["extras"].is_array());
+    }
+
+    #[test]
+    fn a_non_zero_exit_is_not_a_manifest() {
+        let err = parse_manifest(b"", b"boom", false, Some(1))
+            .expect_err("a failed script has no manifest");
+
+        assert!(err.contains("exited 1"), "got {err}");
+    }
+
+    /// Distinct from a failed script, and the message says which: the run
+    /// falls to an unanswered install either way, and the log line is the only
+    /// thing that tells the operator whether Python broke or something ate the
+    /// output.
+    #[test]
+    fn stdout_with_no_marked_line_is_reported_as_such() {
+        let err = parse_manifest(b"{\"extras\":[]}", b"", true, Some(0))
+            .expect_err("an unmarked line is not the manifest");
+
+        assert!(err.contains(MANIFEST_MARKER), "got {err}");
+    }
+
+    #[test]
+    fn a_marked_line_that_is_not_json_is_reported_as_such() {
+        let out = format!("{MANIFEST_MARKER}{{not json");
+
+        let err = parse_manifest(out.as_bytes(), b"", true, Some(0))
+            .expect_err("malformed JSON is not a manifest");
+
+        assert!(err.contains("readable JSON"), "got {err}");
+    }
+
+    /// The Python and Rust halves of one string. Neither can see the other's,
+    /// and a prefix changed on one side alone is a form that never opens.
+    #[test]
+    fn the_marker_matches_the_one_the_script_writes() {
+        let script = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../scripts/setup_manifest.py"),
+        )
+        .expect("the manifest script must be readable from the shell crate");
+
+        assert!(
+            script.contains(&format!("MARKER = \"{MANIFEST_MARKER}\"")),
+            "setup_manifest.py does not declare MARKER = \"{MANIFEST_MARKER}\""
+        );
+    }
+
+    /// An unanswered run emits exactly the stages `DEFERRED_STAGES` says it
+    /// skips — counted against the same denominator every other run uses.
+    ///
+    /// The denominator used to shrink here, from 11 to 6, because the extras
+    /// tracker took a scope the base tracker could not know. The operator
+    /// watched "step 4 of 11" become "step 5 of 6".
+    #[test]
+    fn the_unanswered_run_skips_exactly_the_deferred_stages() {
+        let home = TempDir::new("unanswered-count");
+        let uv = PathBuf::from("uv-stub");
+        let progress_log: RefCell<Vec<String>> = RefCell::new(Vec::new());
+
+        let progress = |msg: &str| progress_log.borrow_mut().push(msg.to_string());
+        let ok = |_: &Path, _: &[&str]| -> Result<(), String> { Ok(()) };
+
+        base_stages(home.path(), &uv, &progress, &ok).expect("the app should install");
+        extras_stages(home.path(), ProvisionScope::Unanswered, &progress, &ok)
+            .expect("stages should succeed");
+
+        // Same accounting as the answered case: every stage but the terminal
+        // "Ready.", plus the clone `provision_base()` performs before calling in.
+        let staged = progress_log.borrow().len() as u32 - 1;
+        assert_eq!(staged + 1, TOTAL_STAGES - DEFERRED_STAGES);
+        assert_eq!(progress_log.borrow().last().map(String::as_str), Some("Ready."));
+    }
+
+    /// One denominator for the whole run, both phases, either scope. A total
+    /// that changes partway through is a bar walking backwards, and the base
+    /// phase cannot know the scope — it runs before anyone is asked.
+    #[test]
+    fn the_denominator_never_changes_mid_run() {
+        for scope in [ProvisionScope::Answered, ProvisionScope::Unanswered] {
+            assert_eq!(StageTracker::starting_at(0).total, TOTAL_STAGES);
+            assert_eq!(StageTracker::starting_at(BASE_STAGES).total, TOTAL_STAGES);
+            let _ = scope;
+        }
+    }
+
+    /// Read by the Python side, where `enabled: true` in the shipped catalog
+    /// stops counting as an answer. Without it the launch pass would fetch on
+    /// the next start exactly what this run declined to fetch.
+    #[test]
+    fn the_deferred_marker_records_why_nobody_was_asked() {
+        let home = TempDir::new("deferred-marker");
+
+        write_setup_deferred(home.path(), "the setup window could not be opened");
+
+        let text = std::fs::read_to_string(setup_deferred_path(home.path()))
+            .expect("the marker should exist");
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed["reason"], "the setup window could not be opened");
     }
 
     #[test]
@@ -2268,8 +3155,7 @@ mod tests {
     /// The launch-refresh half of the same problem. `refresh_optional_assets`
     /// spawns six fetchers on every launch and never waits on them, so none
     /// reach `run_tool` and quit had nothing to stop — including the one that
-    /// can be pulling ~2.2 GB of CUDA wheels. Raised by this session's own
-    /// re-audit, then confirmed independently by three Trio lenses.
+    /// can be pulling ~2.2 GB of CUDA wheels.
     #[cfg(windows)]
     #[test]
     fn stop_active_kills_a_registered_refresh_child() {
@@ -2334,8 +3220,7 @@ mod tests {
     /// dependency install swallows its error, so a killed stage let the
     /// provisioning thread walk straight on to the next `run_tool` and spawn a
     /// child that `RunEvent::Exit` had already had its one look for — the
-    /// abandoned-child case reappearing one stage later. Confirmed by the
-    /// Trio auditor lens on this phase's own fix.
+    /// abandoned-child case reappearing one stage later.
     #[cfg(windows)]
     #[test]
     fn run_tool_refuses_to_spawn_once_a_quit_has_latched() {
@@ -2468,12 +3353,9 @@ mod tests {
             *call_count.borrow_mut() += 1;
             Err("python install boom".to_string())
         };
-        let run_python = |_: &Path, _: &[&str]| -> Result<(), String> {
-            panic!("run_python must not be called when python install fails")
-        };
         let progress = |_: &str| {};
 
-        let err = provision_stages(home.path(), &uv, &progress, &run_uv, &run_python)
+        let err = base_stages(home.path(), &uv, &progress, &run_uv)
             .expect_err("a python-install failure must abort");
 
         assert_eq!(err, "python install boom");
@@ -2499,12 +3381,9 @@ mod tests {
                 Err("venv create boom".to_string())
             }
         };
-        let run_python = |_: &Path, _: &[&str]| -> Result<(), String> {
-            panic!("run_python must not be called when venv creation fails")
-        };
         let progress = |_: &str| {};
 
-        let err = provision_stages(home.path(), &uv, &progress, &run_uv, &run_python)
+        let err = base_stages(home.path(), &uv, &progress, &run_uv)
             .expect_err("a venv-create failure must abort");
 
         assert_eq!(err, "venv create boom");
@@ -2530,12 +3409,9 @@ mod tests {
                 Err("pip install boom".to_string())
             }
         };
-        let run_python = |_: &Path, _: &[&str]| -> Result<(), String> {
-            panic!("run_python must not be called when dependency install fails")
-        };
         let progress = |_: &str| {};
 
-        let err = provision_stages(home.path(), &uv, &progress, &run_uv, &run_python)
+        let err = base_stages(home.path(), &uv, &progress, &run_uv)
             .expect_err("a dependency-install failure must abort");
 
         assert_eq!(err, "pip install boom");
@@ -2547,29 +3423,39 @@ mod tests {
         assert!(!marker_path(home.path()).exists());
     }
 
+    /// The reverse of what this test used to assert, and the reversal is the
+    /// point. A browser-engine failure used to abort the whole install,
+    /// because the stage ran before anyone had been asked and the engine was
+    /// treated as part of the app. It is optional now — ~700 MB, nothing at
+    /// boot depends on it — so a failure here costs the browser tools and
+    /// leaves a complete, marked install behind.
     #[test]
-    fn provision_stages_aborts_when_playwright_install_fails() {
-        let home = TempDir::new("fail-playwright");
+    fn a_browser_engine_failure_does_not_abort_the_install() {
+        let home = TempDir::new("fail-browser");
         let uv = PathBuf::from("uv-stub");
-        let python_calls = RefCell::new(0u32);
+        let seen: RefCell<Vec<String>> = RefCell::new(Vec::new());
 
         let run_uv = |_: &Path, _: &[&str]| -> Result<(), String> { Ok(()) };
-        let run_python = |_: &Path, _: &[&str]| -> Result<(), String> {
-            *python_calls.borrow_mut() += 1;
-            Err("playwright install boom".to_string())
+        let run_python = |_: &Path, args: &[&str]| -> Result<(), String> {
+            let module = args.get(1).copied().unwrap_or_default().to_string();
+            seen.borrow_mut().push(module.clone());
+            if module == "tesseract.orchestrator.browser.provision" {
+                return Err("playwright install boom".to_string());
+            }
+            Ok(())
         };
         let progress = |_: &str| {};
 
-        let err = provision_stages(home.path(), &uv, &progress, &run_uv, &run_python)
-            .expect_err("a playwright-install failure must abort");
+        base_stages(home.path(), &uv, &progress, &run_uv).expect("the app should install");
+        extras_stages(home.path(), ProvisionScope::Answered, &progress, &run_python)
+            .expect("an optional stage must not fail the install");
 
-        assert_eq!(err, "playwright install boom");
-        assert_eq!(
-            *python_calls.borrow(),
-            1,
-            "must abort at the first run_python call, never reaching the voice-model stage"
+        let seen = seen.borrow();
+        assert!(
+            seen.iter().any(|m| m == "tesseract.scripts.fetch_reranker_model"),
+            "the stages after it must still run; got {seen:?}"
         );
-        assert!(!marker_path(home.path()).exists());
+        assert!(marker_path(home.path()).exists());
     }
 
     /// The best-effort stages are keyed by MODULE NAME, not by call index.
@@ -2599,11 +3485,14 @@ mod tests {
     #[test]
     fn a_failed_optional_stage_never_skips_the_ones_behind_it() {
         for failing in [
-            "tesseract.scripts.apply_first_run_setup",
+            // `apply_first_run_setup` is deliberately NOT in this list any
+            // more; see the test below it. Its failure is the one that must
+            // stop the fetches, because it is what writes the answers they
+            // read and records the consent they rest on.
             "tesseract.scripts.provision_hardware",
             "tesseract.scripts.fetch_whisper_model",
             "tesseract.scripts.fetch_kokoro_voice",
-            "tesseract.scripts.fetch_piper_voice",
+            "tesseract.scripts.fetch_wake_models",
             "tesseract.scripts.fetch_reranker_model",
             "tesseract.scripts.ensure_ollama",
         ] {
@@ -2613,11 +3502,11 @@ mod tests {
             let run_uv = |_: &Path, _: &[&str]| -> Result<(), String> { Ok(()) };
             let progress = |_: &str| {};
 
-            let py = provision_stages(
+            base_stages(home.path(), &uv, &progress, &run_uv).expect("the app should install");
+            let py = extras_stages(
                 home.path(),
-                &uv,
+                ProvisionScope::Answered,
                 &progress,
-                &run_uv,
                 &failing_module_run(failing, &seen),
             )
             .unwrap_or_else(|e| panic!("a failed {failing} must not be fatal: {e}"));
@@ -2638,6 +3527,57 @@ mod tests {
                 "the marker must still be written despite the {failing} failure"
             );
         }
+    }
+
+    /// The one exception, and the reason it is one.
+    ///
+    /// `apply_first_run_setup` is what writes the operator's answers into the
+    /// config the fetch stages read, AND what records them in the ledger. If
+    /// it did not run, that config is the shipped default and the ledger is
+    /// empty — so carrying on would download every default lane on the
+    /// strength of answers that never landed anywhere. An answered run whose
+    /// answers were not applied is, for the purposes of what may be
+    /// downloaded, an unanswered one.
+    #[test]
+    fn a_setup_that_could_not_be_applied_stops_the_optional_downloads() {
+        let home = TempDir::new("apply-failed");
+        let uv = PathBuf::from("uv-stub");
+        let seen: RefCell<Vec<String>> = RefCell::new(Vec::new());
+        let run_uv = |_: &Path, _: &[&str]| -> Result<(), String> { Ok(()) };
+        let progress = |_: &str| {};
+
+        base_stages(home.path(), &uv, &progress, &run_uv).expect("the app should install");
+        let py = extras_stages(
+            home.path(),
+            ProvisionScope::Answered,
+            &progress,
+            &failing_module_run("tesseract.scripts.apply_first_run_setup", &seen),
+        )
+        .expect("a failed apply is still not fatal — the app installs");
+
+        assert_eq!(py, venv_python(home.path()));
+        let seen = seen.borrow();
+        for optional in [
+            "tesseract.scripts.fetch_whisper_model",
+            "tesseract.scripts.fetch_kokoro_voice",
+            "tesseract.scripts.fetch_wake_models",
+            "tesseract.scripts.fetch_reranker_model",
+            "tesseract.scripts.ensure_ollama",
+        ] {
+            assert!(
+                !seen.iter().any(|m| m == optional),
+                "{optional} ran on the strength of answers that were never applied; \
+                 got {seen:?}"
+            );
+        }
+        // The hardware stage still runs: it is what records the profile, and
+        // its own consent gate is where the wheels are decided.
+        assert!(seen.iter().any(|m| m == "tesseract.scripts.provision_hardware"));
+        assert!(
+            setup_deferred_path(home.path()).exists(),
+            "the next launch must not treat the shipped defaults as answers either"
+        );
+        assert!(marker_path(home.path()).exists(), "the app is still installed");
     }
 
     // -- reinstall_deps_with ---------------------------------------------

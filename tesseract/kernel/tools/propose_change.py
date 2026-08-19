@@ -1,8 +1,7 @@
 """propose_change — generic operator-gated workspace mutation.
 
 The assistant uses this to request a change to any operator-owned workspace `.md`
-file (SOUL, IDENTITY, FOUNDATION, USER, VOICE, AGENTS, HEARTBEAT, MCP,
-TOOLS, WORKSHOP, DIARY, BOOT). The tool **never** writes the target
+file (SOUL, USER, OPERATING, WORKSHOP, DIARY). The tool **never** writes the target
 file — it appends a `change_proposal` event to the workspace inbox with
 the full proposed content, an `expected_hash_before` snapshot, and a
 unified diff. The operator approves or rejects in the workspace; on
@@ -79,24 +78,24 @@ class ProposeChangeTool(Tool):
 
     risk_class: ClassVar[str] = "propose"
 
+    group: ClassVar[str] = "asking-without-blocking"
+    summary: ClassVar[str] = "Request a change to an operator-owned workspace file, gated on approval."
+    use_when: ClassVar[str] = (
+        "Use for any self-edit to a workspace document — how you sound, what "
+        "you have learned about the operator, how you work. Nothing is applied "
+        "until the operator approves the diff in the inbox."
+    )
+    not_when: ClassVar[str] = (
+        "replying inside an existing comment thread, use `workspace_reply` or "
+        "`agenda_comment`."
+    )
+
     def __init__(self, repo_root: Path) -> None:
         self._repo_root = repo_root
 
     @property
     def name(self) -> str:
         return "propose_change"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Request a change to an operator-owned workspace file (SOUL, "
-            "IDENTITY, FOUNDATION, USER, VOICE, AGENTS, HEARTBEAT, MCP, "
-            "TOOLS, WORKSHOP, DIARY, BOOT). The change is NOT applied "
-            "immediately — it appears in the workspace inbox as a "
-            "`change_proposal` row with a diff. The operator clicks "
-            "Approve to commit. Use this for any self-edit you want the "
-            "operator to confirm."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

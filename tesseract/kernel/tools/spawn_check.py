@@ -29,19 +29,25 @@ class SpawnCheckTool(Tool):
     default_posture: ClassVar[str] = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "tracking-spawned-work"
+    summary: ClassVar[str] = (
+        "Read-only status check for a background spawn: running, done, failed, or cancelled."
+    )
+    use_when: ClassVar[str] = (
+        "Use to confirm a spawn's current state — before steering it with `work_send`, or "
+        "deciding whether to `spawn_cancel`. A spawn-cap error wants an await or a cancel "
+        "first; a depth-cap error means do the work inline and report to the parent."
+    )
+    not_when: ClassVar[str] = (
+        "Retrieving a finished spawn's output — that arrives on its own in "
+        "your next turn; use `spawn_await` only for the rare case where the "
+        "result said it was too large to deliver whole."
+    )
+
     @property
     def name(self) -> str:
         return "spawn_check"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Check the status of a background spawn (delegate_* or "
-            "invoke_agent with background=true). Returns running / "
-            "done / failed / cancelled, plus started_at and "
-            "finished_at. Does not return the full output — call "
-            "spawn_await when you need the result."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

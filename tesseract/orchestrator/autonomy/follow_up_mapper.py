@@ -212,7 +212,7 @@ class FollowUpMapper:
             id=item_id,
             created_at=when,
             updated_at=when,
-            source=AgendaSource.SELF_REFLECTION,
+            source=AgendaSource.FOLLOW_UP,
             source_event_id=record.id,
             goal=goal,
             rationale=(

@@ -1,11 +1,12 @@
 """``tool_search`` — meta-tool for the tool-schema tiering system.
 
-Lean-agent-os P1 Task 2. Chat sessions start with only "core" tool
-schemas visible to the model (see `Tool.tier` in `kernel/tools/base.py`
-and `ToolRegistry.schemas_for_adapter` in `brain/tools.py`) to cut
-per-turn schema noise from ~125 tools to ~40. Extended tools stay fully
-executable by name — registry lookup and `decide.evaluate` are
-unaffected by tier — they are just not advertised up front.
+Chat sessions start with only the "core" working set visible to the model
+(`_CORE_TOOL_NAMES` in `brain/boot.py`; see `Tool.tier` in
+`kernel/tools/base.py` and `ToolRegistry.schemas_for_adapter` in
+`brain/tools.py`) so the schemas riding every turn are a fraction of the
+registry. Extended tools stay fully executable by name — registry lookup
+and `decide.evaluate` are unaffected by tier — they are just not
+advertised up front.
 
 This tool searches the FULL registry (every tool, any tier) by simple
 substring match against name + description. Only the "extended" matches
@@ -41,19 +42,23 @@ class ToolSearchTool(Tool):
     risk_class: ClassVar[str] = "autonomous"
     tier: ClassVar[str] = "core"
 
+    group: ClassVar[str] = "finding-a-tool"
+    summary: ClassVar[str] = "Search the full tool registry for tools not currently visible."
+    use_when: ClassVar[str] = (
+        "Most tools are not in this turn's schema — they still exist and "
+        "still run, just unlisted. Search by keyword against tool name and "
+        "description whenever the task needs a capability you cannot see; "
+        "matches are returned AND enabled for the rest of the session. "
+        "Search here before concluding a tool does not exist."
+    )
+    not_when: ClassVar[str] = (
+        "a tool already visible in this turn's schema needs no search — call "
+        "it directly."
+    )
+
     @property
     def name(self) -> str:
         return "tool_search"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Search the full tool registry (beyond the core set always "
-            "visible) by keyword against tool name + description. "
-            "Matching tools' schemas are returned AND enabled for the "
-            "rest of this session, so a later turn can call them "
-            "directly without searching again."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:
@@ -84,13 +89,36 @@ class ToolSearchTool(Tool):
         if not terms:
             return ToolResult(output=f"tool_search({inp.query!r}): empty query", is_error=True)
 
-        matches = []
+        # Ranked, because the glossary changed what a search IS. It used to be
+        # a guess against a registry the model could not see, so any hit was
+        # progress and order did not matter. Now the model reads a name off the
+        # map and comes here to make it callable — so an exact name must be
+        # first, or the one result that is certainly right arrives behind six
+        # that merely mention it.
+        query = inp.query.strip().lower()
+        scored: list[tuple[int, str, object]] = []
         for tool in registry.tools.values():
             if getattr(tool, "tier", "extended") != "extended":
                 continue
-            haystack = f"{tool.name} {tool.description}".lower()
-            if any(term in haystack for term in terms):
-                matches.append(tool)
+            name = tool.name.lower()
+            if name == query:
+                rank = 0
+            elif all(t in name for t in terms):
+                rank = 1
+            elif any(t in name for t in terms):
+                rank = 2
+            elif any(t in tool.description.lower() for t in terms):
+                rank = 3
+            else:
+                continue
+            scored.append((rank, name, tool))
+        scored.sort(key=lambda row: (row[0], row[1]))
+        # An exact name is not a search, it is a request. Returning the six
+        # tools that merely mention it alongside costs six schemas to answer a
+        # question that had one answer.
+        if scored and scored[0][0] == 0:
+            scored = scored[:1]
+        matches = [tool for _rank, _name, tool in scored]
 
         if context.enabled_extended_tools is not None:
             for tool in matches:

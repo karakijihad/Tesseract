@@ -14,9 +14,10 @@ from __future__ import annotations
 import logging
 from typing import Sequence
 
-from tesseract.brain.boot import build_adapter, load_bundle
+from tesseract.brain.boot import adapter_unavailable_reason, load_bundle
 from tesseract.brain.cost.ledger import CostLedger
 from tesseract.brain.cost.metered_adapter import meter_chain
+from tesseract.brain.lazy_adapter import LazyAdapter
 from tesseract.config.loader import (
     ConfigError,
     ResolvedRef,
@@ -100,8 +101,13 @@ def build_chain_for_role(
 ) -> AdapterChain:
     """Build the (adapter, options) chain for `role_name`.
 
+    The adapters are `LazyAdapter`s: each holds its resolved ref and
+    constructs the real client the first time something streams or generates
+    through it. A chain of three costs three dict lookups here and one client
+    at the moment one is actually used, instead of three clients per call.
+
     Empty list when the role is missing from `roles.yaml` or every
-    catalog ref fails to build. Per-ref failures are logged at INFO so a
+    catalog ref is unusable. Per-ref refusals are logged at INFO so a
     missing API key on a fallback entry doesn't spam ERROR.
 
     When `cost_ledger` is provided, each entry is wrapped in a
@@ -137,11 +143,16 @@ def build_chain_for_role(
             # assertions. Cheap here, unrecoverable there.
             failures.append("role resolved to no provider")
             continue
-        try:
-            adapter = build_adapter(ref)
-        except Exception as exc:  # noqa: BLE001
-            log.info("%s: cannot build %s — %s", log_label, ref.ref, exc)
-            failures.append(f"{ref.ref}: {exc}")
+        # Asked, not attempted. This used to call `build_adapter` and treat a
+        # raised exception as "skip the ref" — which meant constructing a real
+        # SDK client for every entry just to learn that the entry was usable,
+        # 2.2-3.7 s per job fire on the loop for two fallbacks that almost
+        # never run. `adapter_unavailable_reason` is the same gate
+        # `build_adapter` applies first, and answering it costs a dict lookup.
+        reason = adapter_unavailable_reason(ref)
+        if reason is not None:
+            log.info("%s: cannot build %s — %s", log_label, ref.ref, reason)
+            failures.append(f"{ref.ref}: {reason}")
             continue
         try:
             opts = _options_for_ref(ref, role_name)
@@ -149,7 +160,7 @@ def build_chain_for_role(
             log.warning("%s: %s — %s", log_label, ref.ref, exc)
             failures.append(f"{ref.ref}: {exc}")
             continue
-        chain.append((adapter, opts))
+        chain.append((LazyAdapter(ref), opts))
     if not chain:
         # Per-ref misses stay at INFO — one dead fallback is normal. A chain
         # with nothing left is not: the job silently does no work, so the
@@ -163,17 +174,91 @@ def build_chain_for_role(
     return meter_chain(chain, cost_ledger)
 
 
+def build_chain_for_chain(
+    chain_name: str,
+    *,
+    billing_key: str,
+    log_label: str = "scheduler",
+    cost_ledger: CostLedger | None = None,
+) -> AdapterChain:
+    """Build the chain named in `roles.yaml::chains`, billed to `billing_key`.
+
+    The role path above answers "which role is this, and what does the role
+    ride". This one skips the middle question, for work that has no reason to
+    be a role: five roles existed only to give one background job a budget
+    line, and each was a pillar in name only.
+
+    `billing_key` is not optional and not defaulted. The ledger keys caps,
+    totals, preflight and the operator's pause on that string, so a call that
+    named a chain and forgot to say what it was for would spend against
+    whatever `AdapterOptions.role` happened to hold.
+    """
+    if not billing_key.strip():
+        raise ValueError("build_chain_for_chain needs a billing key")
+    try:
+        bundle = load_bundle()
+    except Exception:
+        log.exception("%s: load_bundle failed", log_label)
+        return []
+    refs = (bundle.roles_raw.get("chains") or {}).get(chain_name)
+    if not isinstance(refs, list) or not refs:
+        known = ", ".join(sorted(bundle.roles_raw.get("chains") or {})) or "(none)"
+        log.warning(
+            "%s: chain %r is not defined in roles.yaml — known: %s",
+            log_label, chain_name, known,
+        )
+        return []
+    chain: AdapterChain = []
+    failures: list[str] = []
+    for raw in refs:
+        try:
+            ref = bundle.resolve(str(raw))
+        except ConfigError as exc:
+            failures.append(f"{raw}: {exc}")
+            continue
+        reason = adapter_unavailable_reason(ref)
+        if reason is not None:
+            log.info("%s: cannot build %s — %s", log_label, ref.ref, reason)
+            failures.append(f"{ref.ref}: {reason}")
+            continue
+        try:
+            chain.append((LazyAdapter(ref), _options_for_ref(ref, billing_key)))
+        except ConfigError as exc:
+            log.warning("%s: %s — %s", log_label, ref.ref, exc)
+            failures.append(f"{ref.ref}: {exc}")
+    if not chain:
+        log.warning(
+            "%s: chain %r has no usable provider — %s",
+            log_label, chain_name, "; ".join(failures) or "it is empty",
+        )
+    return meter_chain(chain, cost_ledger)
+
+
 def build_chain_for_job(
     ctx: JobContext,
     *,
     default_role: str | None,
     log_label: str = "scheduler",
+    default_chain: str | None = None,
 ) -> AdapterChain:
-    """Convenience: resolve the role and build the chain in one call.
+    """Convenience: resolve what this run rides and build it in one call.
 
-    Returns an empty list when no role is resolvable — handlers should
-    treat that as "skip this run", not raise.
+    A role override from the operator wins over everything — they answered the
+    question in the terms the row asked it. Otherwise a named chain wins over a
+    default role, since naming a chain is the newer and more specific claim.
+
+    Returns an empty list when nothing is resolvable — handlers should treat
+    that as "skip this run", not raise.
     """
+    override = (ctx.model_role or "").strip()
+    chain_name = (ctx.model_chain or "").strip() or (default_chain or "").strip()
+    if not override and chain_name:
+        return build_chain_for_chain(
+            chain_name,
+            billing_key=ctx.billing_key.strip() or ctx.job_name,
+            log_label=f"{log_label} chain={chain_name}",
+            cost_ledger=ctx.cost_ledger,
+        )
     role_name = resolve_role_name(ctx, default_role)
     if role_name is None:
         log.warning("%s: no role resolved (no override, no default)", log_label)
@@ -187,6 +272,7 @@ def build_chain_for_job(
 
 __all__: Sequence[str] = (
     "AdapterChain",
+    "build_chain_for_chain",
     "build_chain_for_job",
     "build_chain_for_role",
     "resolve_role_name",

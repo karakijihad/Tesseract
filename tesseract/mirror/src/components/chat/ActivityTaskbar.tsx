@@ -11,6 +11,9 @@ import {
 } from "../../canvas/openActivity";
 import { formatRelative } from "../../lib/time";
 import { ActivityDetail } from "../activity/ActivityDetail";
+import { Hint } from '../ui/Hint';
+import { MenuItem } from '../common/MenuItem';
+import { Chip } from '../common/Chip';
 
 /**
  * Task 6.2 — always-visible taskbar for ALL running workstream kinds
@@ -60,41 +63,38 @@ export function ActivityTaskbar() {
       role="region"
       aria-label="Active workstreams"
     >
-      <button
-        type="button"
-        className="activity-taskbar-chip"
+      <Chip
         onClick={() => setExpanded((v) => !v)}
-        aria-expanded={expanded}
+        active={expanded}
+        ariaExpanded={expanded}
       >
         <span className="activity-taskbar-glyph">↻</span>
         <span className="activity-taskbar-count">{running.length} running</span>
-      </button>
+      </Chip>
       {expanded && (
         <div className="activity-taskbar-list">
           {running.map((r) => {
             const openable = OPENABLE_ACTIVITY_KINDS.has(r.kind);
             return (
               <div key={r.activity_id} className="activity-taskbar-row-wrap">
-                <button
-                  type="button"
-                  className="activity-taskbar-row"
-                  onClick={() => onRowClick(r)}
-                  aria-label={`${openable ? "Open" : "Show details for"} ${r.label}`}
-                  title={
-                    openable
+                <Hint label={openable
                       ? "Open this work on the cockpit canvas"
-                      : "Show details"
-                  }
-                >
-                  <span
-                    className={`activity-dot activity-dot--${r.state}`}
-                    aria-hidden="true"
-                  />
-                  <span className="activity-taskbar-label">{r.label}</span>
-                  <span className="activity-taskbar-age t-meta">
-                    {formatRelative(r.started_at)}
-                  </span>
-                </button>
+                      : "Show details"}>
+                  <MenuItem
+                    className="activity-taskbar-row"
+                    onClick={() => onRowClick(r)}
+                    ariaLabel={`${openable ? "Open" : "Show details for"} ${r.label}`}
+                  >
+                    <span
+                      className={`activity-dot activity-dot--${r.state}`}
+                      aria-hidden="true"
+                    />
+                    <span className="activity-taskbar-label">{r.label}</span>
+                    <span className="activity-taskbar-age t-meta">
+                      {formatRelative(r.started_at)}
+                    </span>
+                  </MenuItem>
+                </Hint>
                 {!openable && openDetailId === r.activity_id && (
                   <ActivityDetail record={r} />
                 )}

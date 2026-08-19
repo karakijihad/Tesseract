@@ -56,7 +56,7 @@
   <!-- the three things the turn loops with, ordered by how long the loop lives -->
   <rect x="740" y="60" width="132" height="44" rx="3" fill="url(#s-node)" stroke="rgba(234,234,248,0.55)" stroke-width="1"/>
   <text x="806" y="80" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#f5f5fa" text-anchor="middle">tools</text>
-  <text x="806" y="95" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9" fill="rgba(234,234,248,0.55)" text-anchor="middle">118 registered</text>
+  <text x="806" y="95" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9" fill="rgba(234,234,248,0.55)" text-anchor="middle">119 registered</text>
 
   <rect x="740" y="124" width="132" height="44" rx="3" fill="url(#s-node)" stroke="#7c6cf0" stroke-width="1.2" stroke-dasharray="4 3"/>
   <text x="806" y="144" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#9d8fff" text-anchor="middle">delegates</text>

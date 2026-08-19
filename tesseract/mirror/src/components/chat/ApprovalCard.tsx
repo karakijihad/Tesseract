@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ApprovalRequest } from '../../lib/types';
 import { useConversationStore } from '../../stores/conversation';
+import { Button } from '../common/Button';
 
 interface Props {
   approval: ApprovalRequest;
@@ -55,22 +56,22 @@ export function ApprovalCard({ approval, isPrimary = false }: Props) {
         <div style={{ fontSize: 10, color: 'var(--text-meta)', marginBottom: 10 }}>reason: {reason}</div>
       )}
       <div className="approval-card-actions">
-        <button
-          className="approval-btn approve"
+        <Button
+          tone="good"
           onClick={() => resolve(true)}
           onMouseDown={keepFocus}
           disabled={resolved}
         >
           {verdict === 'approved' ? 'Approved' : 'Approve (y)'}
-        </button>
-        <button
-          className="approval-btn deny"
+        </Button>
+        <Button
+          tone="danger"
           onClick={() => resolve(false)}
           onMouseDown={keepFocus}
           disabled={resolved}
         >
           {verdict === 'denied' ? 'Denied' : 'Deny (n)'}
-        </button>
+        </Button>
       </div>
     </div>
   );

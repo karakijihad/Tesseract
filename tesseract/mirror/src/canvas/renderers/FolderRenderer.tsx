@@ -11,6 +11,8 @@
 // row does not decide, and must not — it has no idea which it is.
 
 import type { RendererProps } from './index';
+import { Hint } from '../../components/ui/Hint';
+import { MenuItem } from '../../components/common/MenuItem';
 
 interface Entry {
   name: string;
@@ -38,29 +40,30 @@ export function FolderRenderer({ descriptor, dispatch }: RendererProps) {
   const entries = normalizeEntries(descriptor.props?.entries);
   return (
     <div className="surface-folder">
-      <div className="surface-folder__root t-meta" title={root}>
-        {root || '(no path)'}
-      </div>
+      <Hint label={root}>
+        <div className="surface-folder__root t-meta">
+          {root || '(no path)'}
+        </div>
+      </Hint>
       {entries.length === 0 ? (
         <div className="surface-folder__empty t-meta">no entries</div>
       ) : (
         <ul className="surface-folder__list">
           {entries.map((e) => (
             <li key={e.name}>
-              <button
-                type="button"
-                className="surface-folder__entry"
-                title={joinPath(root, e.name)}
-                // The card is draggable; without this a click-to-open would
-                // also start a drag and the row would fight the card.
-                onPointerDown={(ev) => ev.stopPropagation()}
-                onClick={() => dispatch('clicked', { target: joinPath(root, e.name) })}
-              >
-                <span className="surface-folder__icon" aria-hidden="true">
-                  {e.kind === 'dir' ? '▸' : '·'}
-                </span>
-                {e.name}
-              </button>
+              <Hint label={joinPath(root, e.name)}>
+                <MenuItem
+                  // The card is draggable; without this a click-to-open would
+                  // also start a drag and the row would fight the card.
+                  onPointerDown={(ev) => ev.stopPropagation()}
+                  onClick={() => dispatch('clicked', { target: joinPath(root, e.name) })}
+                >
+                  <span className="surface-folder__icon" aria-hidden="true">
+                    {e.kind === 'dir' ? '▸' : '·'}
+                  </span>
+                  {e.name}
+                </MenuItem>
+              </Hint>
             </li>
           ))}
         </ul>

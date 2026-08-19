@@ -21,14 +21,22 @@ class SurfaceUpdateInput(BaseModel):
 class SurfaceUpdateTool(Tool):
     default_posture = "auto"
     risk_class: ClassVar[str] = "autonomous"
+    group: ClassVar[str] = "showing-the-operator"
+    summary: ClassVar[str] = "Mutate an existing surface's props or title (shallow merge)."
+    use_when: ClassVar[str] = (
+        "You need to change what an existing card shows without recreating "
+        "it — swap html/text/props or the title. Props merge shallowly into "
+        "the existing payload."
+    )
+    not_when: ClassVar[str] = (
+        "A new card is `surface_create` (with `replaces` to hand off "
+        "cleanly). Raising an existing card to the front is `surface_focus`, "
+        "not this."
+    )
 
     @property
     def name(self) -> str:
         return "surface_update"
-
-    @property
-    def description(self) -> str:
-        return "Mutate a surface's props or title. Props merge shallowly into the existing payload."
 
     @property
     def input_schema(self) -> type[BaseModel]:

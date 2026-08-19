@@ -13,6 +13,8 @@
  * land without a manual Refresh. Render order flipped to newest-first
  * and the visible slice is capped at `CONV_DISPLAY_CAP` (mirrors the
  * retention cap surfaced in the hint line). */
+import { NavRail } from '../../components/common/NavRail';
+import { Note } from '../../components/common/Note';
 import { useEffect, useMemo } from 'react';
 import { useEntityName } from '../../hooks/useEntityName';
 import { Markdown } from '../../components/common/Markdown';
@@ -126,27 +128,24 @@ export function ConversationsPane({ channel }: ConversationsPaneProps) {
 
   return (
     <div className="channel-conv" data-testid="channel-conv-pane">
-      <aside className="channel-conv-rail" aria-label="allowed users">
-        {allowed.length === 0 ? (
-          <div className="channels-empty">No approved users yet.</div>
-        ) : (
-          allowed.map((u) => (
-            <button
-              key={u.user_id}
-              type="button"
-              className={`channels-rail-btn${
-                u.user_id === selectedUserId ? ' is-active' : ''
-              }`}
-              onClick={() => selectUser(channel, u.user_id)}
-              data-testid={`channel-conv-user:${u.user_id}`}
-              aria-current={u.user_id === selectedUserId ? 'page' : undefined}
-            >
-              <span className="channel-conv-rail-name">{u.display_name}</span>
-              <span className="channel-conv-rail-id t-meta">{u.user_id}</span>
-            </button>
-          ))
-        )}
-      </aside>
+      {allowed.length === 0 ? (
+        <Note>No approved users yet.</Note>
+      ) : (
+        <NavRail
+          groups={[
+            {
+              label: 'Users',
+              items: allowed.map((u) => ({
+                key: u.user_id,
+                label: u.display_name,
+              })),
+            },
+          ]}
+          active={selectedUserId ?? ''}
+          onSelect={(id) => selectUser(channel, id)}
+          label="Allowed users"
+        />
+      )}
 
       <div className="channel-conv-body">
         {!selectedUserId && (

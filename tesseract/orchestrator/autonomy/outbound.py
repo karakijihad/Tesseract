@@ -49,7 +49,7 @@ NotificationCategory = Literal[
     "upgrade_restarting",
     "upgrade_applied",
     "crash_storm_latched",
-    "operator_nudge",
+    "runtime_report",
 ]
 
 CATEGORIES: tuple[NotificationCategory, ...] = (
@@ -61,7 +61,7 @@ CATEGORIES: tuple[NotificationCategory, ...] = (
     "upgrade_restarting",
     "upgrade_applied",
     "crash_storm_latched",
-    "operator_nudge",
+    "runtime_report",
 )
 
 EXEMPT_CATEGORIES: frozenset[NotificationCategory] = frozenset(
@@ -71,6 +71,12 @@ EXEMPT_CATEGORIES: frozenset[NotificationCategory] = frozenset(
 DEFAULT_RATE_PER_HOUR = 6
 DEFAULT_WINDOW_SECONDS = 3600
 MAX_MESSAGE_CHARS = 512
+# Every other category is a ping about one event and 512 characters is more
+# than it needs. The runtime report is a list — its findings ARE its content,
+# and three of ten reached the operator while seven were unreachable from the
+# message. Telegram accepts 4096 per message; the rest is headroom for the
+# HTML the template adds around each line.
+RUNTIME_REPORT_MAX_CHARS = 3500
 
 
 def _home() -> Path:
@@ -300,16 +306,31 @@ def format_message(category: NotificationCategory, context: dict[str, Any]) -> s
         if reason:
             body += f" · {reason}"
         return _truncate(body)
-    if category == "operator_nudge":
-        # Operator-requested periodic "still here, all is good" toast.
-        # 2026-05-19 confabulation fix — the model used to claim it had
-        # set this up without any tool call; ``OperatorNudgeJob`` is the
-        # real path. ``text`` carries the composed status body; nothing
-        # else to template.
-        text = str(context.get("text") or "").strip()
-        if not text:
-            text = "All good — autonomy loop is healthy."
-        return _truncate(f"<i>nudge</i> · {text}")
+    if category == "runtime_report":
+        # The watchman, and only when it found a defect — a quiet runtime
+        # sends nothing at all rather than an hourly all-clear.
+        lines = [str(line) for line in (context.get("lines") or [])]
+        count = int(context.get("defects") or len(lines))
+        report_path = str(context.get("report_path") or "").strip()
+        head = f"<b>Runtime</b> · {count} thing(s) went wrong"
+        # The pointer is reserved before the findings are laid out. A message
+        # that drops the link to fit one more finding has lost the only part
+        # of itself that reaches the ones it could not carry.
+        pointer = f"\n\nFull report: <code>{report_path}</code>" if report_path else ""
+        budget = RUNTIME_REPORT_MAX_CHARS - len(head) - len(pointer)
+        shown: list[str] = []
+        for line in lines:
+            entry = f"\n· {line}"
+            withheld = len(lines) - len(shown) - 1
+            tail = f"\n· …and {withheld} more" if withheld else ""
+            if len(entry) + len(tail) > budget:
+                break
+            budget -= len(entry)
+            shown.append(entry)
+        body = head + "".join(shown)
+        if len(shown) < len(lines):
+            body += f"\n· …and {len(lines) - len(shown)} more"
+        return _truncate(body + pointer, RUNTIME_REPORT_MAX_CHARS)
     return _truncate(str(context.get("text") or category))
 
 

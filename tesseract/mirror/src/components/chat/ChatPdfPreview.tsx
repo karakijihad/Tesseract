@@ -4,6 +4,7 @@ import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import type { ChatAttachment } from '../../lib/types';
 import { promoteAttachmentToVault } from '../../lib/api';
 import { useToastStore } from '../../stores/toasts';
+import { Button } from '../common/Button';
 
 interface Props {
   attachment: ChatAttachment;
@@ -109,9 +110,13 @@ export function ChatPdfPreview({ attachment }: Props) {
           </div>
         </div>
         <div className="bubble-pdf-actions">
-          <button type="button" onClick={() => setOpen(v => !v)} aria-label={open ? 'Hide PDF preview' : 'Show PDF preview'}>
+          <Button
+            onClick={() => setOpen(v => !v)}
+            active={open}
+            ariaLabel={open ? 'Hide PDF preview' : 'Show PDF preview'}
+          >
             {open ? 'Hide' : 'Preview'}
-          </button>
+          </Button>
           <a
             href={attachment.url}
             target="_blank"
@@ -120,14 +125,13 @@ export function ChatPdfPreview({ attachment }: Props) {
           >
             Open
           </a>
-          <button
-            type="button"
+          <Button
             onClick={onPromote}
             disabled={promote === 'pending' || promote === 'done'}
-            aria-label={`Save ${attachment.filename} to the vault`}
+            ariaLabel={`Save ${attachment.filename} to the vault`}
           >
             {promoteLabel}
-          </button>
+          </Button>
         </div>
       </div>
       {open && (

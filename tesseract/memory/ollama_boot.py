@@ -28,6 +28,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from tesseract import http_client
 from tesseract.brain.boot import ollama_up
 
 log = logging.getLogger(__name__)
@@ -102,7 +103,7 @@ async def fetch_tags(
             r.raise_for_status()
             data = r.json()
         else:
-            async with httpx.AsyncClient(timeout=timeout_s) as c:
+            async with http_client.async_client(timeout=timeout_s) as c:
                 r = await c.get(url)
                 r.raise_for_status()
                 data = r.json()

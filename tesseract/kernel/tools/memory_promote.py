@@ -69,6 +69,19 @@ class MemoryPromoteTool(Tool):
     default_posture = "ask"
 
     risk_class: ClassVar[str] = "propose"
+
+    group: ClassVar[str] = "remembering"
+    summary: ClassVar[str] = "Run an operator-approved memory lifecycle action: archive, merge, or bump."
+    use_when: ClassVar[str] = (
+        "Use to execute one action the feedback consolidator proposed and the "
+        "operator approved: archive a record, merge one into another, bump "
+        "importance, or propose a soul-growth bullet."
+    )
+    not_when: ClassVar[str] = (
+        "use `memory_update` for a routine content edit; use `memory_forget` "
+        "for permanent deletion."
+    )
+
     def __init__(
         self,
         store: MemoryStore,
@@ -82,15 +95,6 @@ class MemoryPromoteTool(Tool):
     @property
     def name(self) -> str:
         return "memory_promote"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Operator-confirmed feedback-memory lifecycle actions: archive, "
-            "merge_into another record, bump_importance, or propose_soul_growth. "
-            "Used by the feedback consolidator's approval flow — the assistant proposes, "
-            "operator approves, this tool executes the single approved action."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

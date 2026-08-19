@@ -64,18 +64,23 @@ class AgentAskTool(Tool):
     default_posture: ClassVar[str] = "auto"
     risk_class: ClassVar[str] = "autonomous"
 
+    group: ClassVar[str] = "handing-work-off"
+    summary: ClassVar[str] = (
+        "Lets a background sub-agent ask its dispatcher a question and wait "
+        "for the reply."
+    )
+    use_when: ClassVar[str] = (
+        "Use when a wrong assumption would waste the rest of a background "
+        "run; otherwise state the assumption and continue."
+    )
+    not_when: ClassVar[str] = (
+        "A foreground call has no parent to ask and is refused. Sending an "
+        "instruction downward instead — use `work_send`."
+    )
+
     @property
     def name(self) -> str:
         return "agent_ask"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Ask the caller who dispatched you a question and wait for their "
-            "answer. Use when a wrong assumption would waste the run. Your "
-            "next turn opens with their reply. Only available to background "
-            "sub-agents."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

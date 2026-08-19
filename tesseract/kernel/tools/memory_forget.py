@@ -18,6 +18,18 @@ class MemoryForgetTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "remembering"
+    summary: ClassVar[str] = "Permanently delete a memory: its file, index entry, and embedding."
+    use_when: ClassVar[str] = (
+        "Use sparingly and only on operator request to remove a memory by id. "
+        "Deletion is irreversible — the file is removed from disk."
+    )
+    not_when: ClassVar[str] = (
+        "use `memory_promote` action=archive to retire a memory while keeping "
+        "it for forensics."
+    )
+
     def __init__(
         self,
         store: MemoryStore,
@@ -33,10 +45,6 @@ class MemoryForgetTool(Tool):
     @property
     def name(self) -> str:
         return "memory_forget"
-
-    @property
-    def description(self) -> str:
-        return "Delete a memory from the persistent store. Removes the file, index entry, and embedding."
 
     @property
     def input_schema(self) -> type[BaseModel]:

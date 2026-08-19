@@ -136,6 +136,26 @@ export function Markdown({
 // `*` count is taken, or a complete bold pair reads as two odd singles.
 const STREAM_MARKS = ["**", "`", "*"] as const;
 
+// A COMPLETE inline-code span. Its contents are code, not prose, so the
+// delimiters inside it must not be counted or trimmed — `**/*.py`, `x**y` and
+// a shell-quoted `"**"` all carry an odd emphasis count that belongs to the
+// code. Masked to a same-length run so indices into the mask still address the
+// original string.
+//
+// The leading run is captured and back-referenced, so a span opened with two
+// backticks (CommonMark's way of writing a span that itself contains one)
+// masks as ONE unit. Matching a single backtick greedily read ``x**y`` as two
+// empty spans with bare text between them, which put the `**` back in play —
+// the same defect one form over.
+const CLOSED_CODE_SPAN = /(`+)(?:[^`\n]|`(?!\1))*?\1(?!`)/g;
+
+function maskCodeSpans(text: string): string {
+  // A space, not a NUL. The mask only has to be free of the three delimiters
+  // being counted, and a literal NUL in the source makes Git classify this
+  // file as binary — which silently costs every future diff of it.
+  return text.replace(CLOSED_CODE_SPAN, (span) => " ".repeat(span.length));
+}
+
 function occurrences(text: string, mark: string): number {
   return text.split(mark).length - 1;
 }
@@ -150,14 +170,22 @@ function occurrences(text: string, mark: string): number {
  *
  * A lone `*` used as multiplication is trimmed too, for as long as the stream
  * is open. It returns at the final render, which is not streaming.
+ *
+ * Counting is done over a copy with every CLOSED inline-code span masked out.
+ * Without that, `run `echo "**"`` has one `**` — odd — and the trim reached
+ * inside the backticks and deleted it, rewriting the operator's command while
+ * it streamed. A glob (`**​/*.py`) or an exponent (`x**y`) does the same.
  */
 export function trimDanglingMarks(text: string): string {
   if (occurrences(text, "```") % 2 === 1) return text;
 
   let out = text;
   for (const mark of STREAM_MARKS) {
-    if (occurrences(out, mark) % 2 === 0) continue;
-    const last = out.lastIndexOf(mark);
+    const masked = maskCodeSpans(out);
+    if (occurrences(masked, mark) % 2 === 0) continue;
+    // Index from the mask: same length, so it addresses the same character,
+    // and it can never land inside a span the mask hid.
+    const last = masked.lastIndexOf(mark);
     out = out.slice(0, last) + out.slice(last + mark.length);
   }
   return out;

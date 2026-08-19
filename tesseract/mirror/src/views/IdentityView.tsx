@@ -1,12 +1,12 @@
 import { useEffect, useMemo } from 'react';
-import { Markdown } from '../components/common/Markdown';
+import { Button } from '../components/common/Button';
+import { RailView, type RailGroup } from '../components/common/RailView';
 import { useSoulStore } from '../stores/soul';
 import { sendCommand } from '../lib/commands';
 import { formatRelative } from '../lib/time';
 import { parseSoul } from '../lib/soul';
 import { Hint } from '../components/ui/Hint';
 import { IdentityCard } from './identity/IdentityCard';
-import { VoicePicker } from './identity/VoicePicker';
 import { DocsEditor } from './identity/DocsEditor';
 
 /** Who it is — the name, the voice, the documents, and SOUL.md.
@@ -26,53 +26,32 @@ export function IdentityView() {
     fetchSoul();
   }, [fetchSoul]);
 
+  // Kept for the section count in the head; SOUL.md itself is edited under
+  // Documents, where it is the first row (`PROPOSABLE_PATHS`).
   const blocks = useMemo(() => parseSoul(content), [content]);
 
+  const groups: RailGroup[] = [
+    {
+      label: 'Who it is',
+      sections: [
+        { key: 'identity', label: 'Identity', Body: IdentityCard },
+        { key: 'documents', label: 'Documents', Body: DocsEditor },
+      ],
+    },
+  ];
+
   return (
-    <div className="identity-view">
-      <header className="identity-view-head">
-        <div className="identity-view-title-row">
-          <h1 className="t-head identity-view-title">Identity</h1>
-          <span className="t-meta identity-view-meta">
-            Last reflected: {formatRelative(lastReflectedAt)} · {blocks.length} sections
-          </span>
-        </div>
+    <RailView
+      groups={groups}
+      label="Identity sections"
+      meta={`Last reflected: ${formatRelative(lastReflectedAt)} · ${blocks.length} soul sections`}
+      actions={
         <Hint label="Run /reflect — re-read SOUL.md and update memory synthesis" position="bottom" maxWidth={260}>
-          <button
-            type="button"
-            className="identity-view-refresh"
-            onClick={() => sendCommand('/reflect')}
-          >
+          <Button onClick={() => sendCommand('/reflect')} ariaLabel="run /reflect">
             refresh
-          </button>
+          </Button>
         </Hint>
-      </header>
-
-      <div className="identity-view-body">
-        <IdentityCard />
-        <VoicePicker />
-        <DocsEditor />
-
-        <div className="identity-view-card-heading t-meta identity-soul-heading">
-          Soul
-        </div>
-        {blocks.length === 0 ? (
-          <div className="t-caption identity-view-empty">
-            {content.trim() ? 'SOUL.md has no ## sections yet' : 'SOUL.md is empty'}
-          </div>
-        ) : (
-          <div className="identity-view-grid">
-            {blocks.map((b) => (
-              <section key={b.heading} className="identity-view-card soul-block">
-                <div className="soul-block-heading identity-view-card-heading t-meta">{b.heading}</div>
-                <div className="soul-block-body">
-                  <Markdown>{b.body}</Markdown>
-                </div>
-              </section>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
+      }
+    />
   );
 }

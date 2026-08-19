@@ -46,6 +46,16 @@ class OrbVisibilityTool(Tool):
 
     risk_class: ClassVar[str] = "autonomous"
 
+    group: ClassVar[str] = "being-present"
+    summary: ClassVar[str] = "Shows or hides the orb — the assistant's body — in the Mirror cockpit."
+    use_when: ClassVar[str] = (
+        "Use when the operator asks you to hide or show yourself, or to shed GPU/CPU load by "
+        "pausing the render loop. Same switch as the operator's HUD toggle."
+    )
+    not_when: ClassVar[str] = (
+        "how the orb looks or behaves while visible, which is `set_mood` or `set_state`."
+    )
+
     def __init__(self, app_provider: Optional[Callable[[], Any]] = None) -> None:
         """``app_provider`` resolves the Mirror ``web.Application`` at call
         time (closure pattern; matches chat_initiate). REPL / unit tests
@@ -57,15 +67,6 @@ class OrbVisibilityTool(Tool):
     @property
     def name(self) -> str:
         return "orb_visibility"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Show or hide your orb in the Mirror cockpit. Hiding pauses "
-            "the orb's render loop (frees GPU/CPU); showing restores it. "
-            "Use when the operator asks you to hide/show yourself, or to "
-            "shed load. Same switch as the operator's HUD toggle."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

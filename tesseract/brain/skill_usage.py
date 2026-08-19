@@ -1,17 +1,19 @@
 """Skill usage telemetry — one JSONL line per skill load + outcome.
 
-Phase 4 (capability-growth) 4a. When the assistant `file_read`s a
-`workspace/skills/<name>/SKILL.md` body, that consultation is logged to
-`<TESSERACT_HOME>/logs/skills/usage.jsonl` so the refinement job
-(`scheduler/tasks/skill_refinement.py`) can flag skills that keep failing.
+When the assistant `file_read`s a `workspace/skills/<name>/SKILL.md` body, that
+consultation is logged to `<TESSERACT_HOME>/logs/skills/usage.jsonl` so the
+refinement job (`scheduler/tasks/skill_refinement.py`) can flag skills that keep
+failing. The volume of this file is also what fires that job — its row waits on
+`skill_usage_volume` rather than on an hour.
 
 Outcome vocabulary (Agent-Skills-agnostic):
 - ``ok``          — the skill body read cleanly (the common case).
 - ``error``       — the assistant was pointed at the skill but the read failed
                     (missing / oversize / unreadable): a genuinely broken skill.
-- ``correction``  — reserved: an operator correction attributed to a skill.
-                    No cheap production producer is wired yet; the refinement
-                    job counts it when present but nothing emits it today.
+- ``correction``  — an operator correction attributed to a skill. Produced by
+                    `attribute_session_corrections`, which the session-close
+                    reflection calls when the session saved a `feedback`
+                    memory (`brain/session_ops.py`).
 
 TESSERACT_HOME is resolved AT CALL TIME (never an import-time constant) so a
 test that sets ``TESSERACT_HOME`` before calling never writes to the

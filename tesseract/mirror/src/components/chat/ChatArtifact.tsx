@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
 import { copyToClipboard } from '../../lib/clipboard';
 import { ExpandOverlay } from '../common/ExpandOverlay';
+import { Button } from '../common/Button';
+import { Segmented } from '../common/Segmented';
 
 const LazyMarkdown = lazy(() =>
   import('../common/Markdown').then((m) => ({ default: m.Markdown })),
@@ -72,26 +74,21 @@ export function ChatArtifact({ code, language }: Props) {
           <div className="chat-artifact-meta">{ARTIFACT_META[kind]}</div>
         </div>
         <div className="chat-artifact-actions" role="group" aria-label="Artifact controls">
-          <button
-            type="button"
-            className={mode === 'preview' ? 'is-active' : ''}
-            onClick={() => setMode('preview')}
-          >
-            Preview
-          </button>
-          <button
-            type="button"
-            className={mode === 'code' ? 'is-active' : ''}
-            onClick={() => setMode('code')}
-          >
-            Code
-          </button>
-          <button type="button" onClick={copyCode} aria-label="Copy artifact code">
+          <Segmented
+            items={[
+              { key: 'preview', label: 'Preview' },
+              { key: 'code', label: 'Code' },
+            ]}
+            value={mode}
+            onSelect={(k) => setMode(k as typeof mode)}
+            label="What to show"
+          />
+          <Button onClick={copyCode} ariaLabel="Copy artifact code">
             {copied ? 'Copied' : 'Copy'}
-          </button>
-          <button type="button" onClick={() => setExpanded(true)} aria-label="Expand artifact">
+          </Button>
+          <Button onClick={() => setExpanded(true)} ariaLabel="Expand artifact">
             Expand
-          </button>
+          </Button>
         </div>
       </div>
       {mode === 'preview' ? (

@@ -1,4 +1,4 @@
-"""agent_create tool — propose a new markdown sub-agent under tesseract/agents/.
+"""agent_create tool — propose a new markdown sub-agent for the operator.
 
 The entity (or Claude during dev sessions) drafts a new specialist agent with
 a rationale. The tool validates the draft; attended sessions still ASK before
@@ -35,7 +35,7 @@ Use when:
 - "We should create a [role] agent"
 - "This task would benefit from a persistent expert in Y"
 
-Writes: tesseract/agents/pending/{name}.md (quarantine) + an agent_approval
+Writes: <home>/agents/pending/{name}.md (quarantine) + an agent_approval
 Workspace event. Check mode only for existing agents — never edits or
 deletes.
 """
@@ -53,10 +53,10 @@ from pydantic import BaseModel, Field
 
 from tesseract.agents.loader import (
     AgentDefinition,
-    list_agents,
     list_pending_agents,
     list_rejected_agents,
     load_agent,
+    locate_agent,
 )
 from tesseract.config.runtime_limits import (
     default_runtime_config_path,
@@ -125,6 +125,21 @@ class AgentCreateTool(Tool):
     # instance attribute can flip it.
     headless_quarantine_write: ClassVar[bool] = True
 
+    group: ClassVar[str] = "handing-work-off"
+    summary: ClassVar[str] = (
+        "Drafts a new markdown sub-agent proposal, quarantined until the "
+        "operator promotes it."
+    )
+    use_when: ClassVar[str] = (
+        "Use when a role keeps recurring across tasks — a reviewer, "
+        "auditor, or domain specialist — worth making persistent. Always "
+        "operator-gated."
+    )
+    not_when: ClassVar[str] = (
+        "Activating an already-drafted agent — use `agent_promote`. "
+        "Running an existing one — use `invoke_agent`."
+    )
+
     def __init__(
         self,
         agents_dir: Path,
@@ -145,17 +160,6 @@ class AgentCreateTool(Tool):
     @property
     def name(self) -> str:
         return "agent_create"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Propose a new markdown sub-agent under tesseract/agents/. "
-            "Attended: operator approves before the write. Unattended: the "
-            "draft lands in the agents/pending/ quarantine and a proposal "
-            "card is filed in the operator's Workspace Inbox — never "
-            "invokable until promoted. Never edits or deletes existing "
-            "agents."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:
@@ -192,9 +196,17 @@ class AgentCreateTool(Tool):
                 is_error=True,
             )
 
-        if inp.name in list_agents(self._agents_dir):
+        # Both roots, not just the operator's: a proposal that took a shipped
+        # slug would be read as a shadow of it, so the app's agent would stop
+        # running and nothing would say why.
+        existing = locate_agent(inp.name)
+        if existing is not None:
+            whose = "shipped with the app" if existing.origin == "system" else "yours"
             return ToolResult(
-                output=f"Agent {inp.name!r} already exists in {self._agents_dir}.",
+                output=(
+                    f"Agent {inp.name!r} already exists ({whose}) at "
+                    f"{existing.path}. Pick another name."
+                ),
                 is_error=True,
             )
         if inp.name in list_pending_agents(self._agents_dir):

@@ -35,7 +35,7 @@ Names and voice live in the **Identity** tab.
 
 ## 1. The keys
 
-Set them in **Settings → API keys**. Every key is listed there with what it unlocks and where to sign up, showing set or not set and never the value; saving one offers the restart it needs. Nothing forces you through that panel — the keys live in a plain `.env` in the folder above, it arrives commented with a signup link next to every key, and editing it by hand works exactly the same. Either way, **restart** afterwards: `.env` is read once at startup and is the only file that needs one.
+Set them in **Settings → Keys**, grouped into **API keys** (the providers), **Channels** (talking to TESSERACT from elsewhere) and **MCP** (letting another program talk to it). Every key shows set or not set and never its value, with the signup address beside it; saving one offers the restart it needs. Nothing forces you through that panel — the keys live in a plain `.env` in the folder above, it arrives commented with a signup link next to every key, and editing it by hand works exactly the same. Either way, **restart** afterwards: `.env` is read once at startup and is the only file that needs one.
 
 ### The one that matters
 
@@ -83,7 +83,9 @@ These are **two different tools with two different keys, and neither is a fallba
 | Key                     | Unlocks                                                       |
 | ----------------------- | ------------------------------------------------------------- |
 | `TELEGRAM_BOT_TOKEN`    | Talking to TESSERACT from Telegram. Create a bot via [@BotFather](https://t.me/BotFather). Also set `TELEGRAM_ALLOWED_CHAT_IDS` — send `/start` to your bot once, and your chat ID appears in the log. |
-| `OLLAMA_BASE_URL`       | Only if Ollama runs on a **different machine**. First-run setup installs it locally, so normally leave this blank. |
+| `TESSERACT_MCP_SECRET`  | Letting another program use TESSERACT — an editor, a coding assistant, another agent. Generate it in **Settings → Keys → MCP**, which also gives you the address and a config block to paste. Off until you switch it on. |
+
+`OLLAMA_BASE_URL` is no longer offered as a setting; set it by hand in `.env` only if the local model server runs on a different machine, which first-run setup means it normally does not.
 
 ---
 
@@ -182,7 +184,7 @@ If a config file ends up malformed, TESSERACT reports the problem and keeps runn
 
 | Folder           | What's in it                                                                      |
 | ---------------- | --------------------------------------------------------------------------------- |
-| `.env`           | Your API keys.                                                                    |
+| `.env`           | Your keys. Only secrets live here, so everything in it is hidden in Settings.      |
 | `memory-store/`  | What TESSERACT remembers — plain Markdown, readable and editable.                 |
 | `vault/`         | Your research library. Drop documents in; they become searchable.                 |
 | `workspace/`     | How it understands itself and you, including notes on your preferences.           |

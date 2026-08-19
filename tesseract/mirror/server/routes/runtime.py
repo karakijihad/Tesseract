@@ -205,17 +205,18 @@ async def post_shutdown(request: web.Request) -> web.Response:
     })
 
 
-async def post_restart_for_code_drift(request: web.Request) -> web.Response:
-    """Operator-clicked restart in response to a `code_drift_detected`
-    toast. Writes ``intent.json {restart_upgrade}`` so the supervisor
-    respawns the backend on clean exit, then triggers aiohttp shutdown.
+async def post_runtime_restart(request: web.Request) -> web.Response:
+    """Operator-clicked backend restart — used after an edit the running
+    process cannot pick up on its own (a new key in ``.env``, for one).
+    Writes ``intent.json {restart_upgrade}`` so the supervisor respawns
+    the backend on clean exit, then triggers aiohttp shutdown.
 
     Auth: accepts either (a) an authenticated operator session, OR
     (b) any localhost caller (Mirror binds 127.0.0.1 only — the threat
     model is "operator at the local machine"; the session gate was
     blocking restart from cold-boot windows where no chat session
     exists yet). Every accepted call is logged with source IP for
-    audit. No quiesce — the toast already warned about in-flight work.
+    audit. No quiesce — the caller is the operator, who asked for this.
     """
     try:
         body = await request.json()
@@ -250,8 +251,8 @@ async def post_restart_for_code_drift(request: web.Request) -> web.Response:
 
     head_sha = body.get("head_sha")
     short = (str(head_sha)[:8]) if isinstance(head_sha, str) and head_sha else "dirty"
-    cont_id = f"code-drift-{short}"
-    reason = body.get("reason") or "operator clicked restart on code drift"
+    cont_id = f"operator-restart-{short}"
+    reason = body.get("reason") or "operator clicked restart"
     if not isinstance(reason, str):
         reason = str(reason)
 
@@ -269,7 +270,7 @@ async def post_restart_for_code_drift(request: web.Request) -> web.Response:
         ),
     )
     log.info(
-        "runtime: POST /api/runtime/restart_for_code_drift — "
+        "runtime: POST /api/runtime/restart — "
         "continuation=%s auth=%s session=%s remote=%s",
         cont_id, auth_path, session_id or "<none>", request.remote or "<unknown>",
     )
@@ -290,7 +291,7 @@ def register(app: web.Application) -> None:
     """Register the runtime routes. Called from ``app.py::_routes``."""
     app.router.add_get("/api/runtime/status", get_status)
     app.router.add_post("/api/runtime/shutdown", post_shutdown)
-    app.router.add_post("/api/runtime/restart_for_code_drift", post_restart_for_code_drift)
+    app.router.add_post("/api/runtime/restart", post_runtime_restart)
 
 
-__all__ = ["register", "get_status", "post_shutdown", "post_restart_for_code_drift"]
+__all__ = ["register", "get_status", "post_shutdown", "post_runtime_restart"]

@@ -295,25 +295,52 @@ def make_voice_final(
     )
 
 
+def make_voice_woken(session_id: str) -> dict[str, Any]:
+    """`voice_woken` envelope — the wake phrase just landed, mid-utterance.
+
+    Sent the moment the decoder hears it, not when the operator stops
+    talking. That timing is the whole reason this exists: the gate used to
+    decide on the committed buffer, so someone could speak for a minute and
+    only then learn that nothing had been listening. There was no instant at
+    which a truthful "go ahead" could have been shown, because nothing had
+    decided yet.
+
+    Fires at most once per utterance — it marks an edge, not a state. A
+    second occurrence of the phrase in the same breath is the same answer.
+
+    Carries nothing. The interesting content is that it arrived, and when.
+    """
+    return make_envelope("voice_woken", "voice", session_id, {})
+
+
 def make_voice_discarded(
     session_id: str,
     *,
-    text: str,
-    score: float,
+    audio_seconds: float,
 ) -> dict[str, Any]:
     """`voice_discarded` envelope — an utterance the wake-word gate
-    refused. Sent *instead of* `voice_final`: the transcript never
-    becomes a chat bubble, a turn, or speech. It exists so a discard is
-    observable in the pulse feed rather than looking like a dead mic.
+    refused. Sent *instead of* `voice_final`: nothing becomes a chat
+    bubble, a turn, or speech. It exists so a discard is observable in the
+    pulse feed rather than looking like a dead mic.
 
-    `score` is how close the utterance came to the wake phrase, which is
-    what tells the operator whether to retune the threshold or just
-    speak up."""
+    **It carries no transcript, because there is none.** The gate decides
+    from audio and runs before transcription, so a refused utterance is
+    never sent to an STT engine — which is the point, and is what keeps
+    ambient speech away from the cloud fallback. What the operator was
+    saying is still visible to them: the browser's own Web Speech preview
+    is local and independent of this path.
+
+    **And no score, because there is none.** The decoder hears the phrase
+    or hears nothing; there is no confidence number, and inventing one
+    would be the kind of figure an operator tunes against. What the length
+    gives instead is the distinction that actually matters on this row:
+    a phrase-length utterance that did not land is a gate too tight, and
+    thirty seconds of it is the room being overheard."""
     return make_envelope(
         "voice_discarded",
         "voice",
         session_id,
-        {"text": text, "score": round(float(score), 3), "reason": "wake_word"},
+        {"audio_seconds": round(float(audio_seconds), 2), "reason": "wake_word"},
     )
 
 
@@ -340,12 +367,20 @@ def make_tts_chunk(
     provider: str,
     sequence: int,
     is_final: bool,
+    is_fallback: bool = False,
+    engine: str = "",
 ) -> dict[str, Any]:
     """`tts_chunk` envelope — base64-encoded audio for one sentence (or the
     final empty terminator chunk). Frontend decodes via `AudioContext.
     decodeAudioData` and queues onto a single playback timeline.
     `provider` carries the engine key (the catalog model id of the
-    lane that synthesized this chunk);
+    lane that synthesized this chunk) and stays the ledger's key;
+    `engine` is that lane's ENGINE NAME resolved server-side, because the
+    provider key is a bare model id (`af_heart`) that no client can map to
+    `kokoro` on its own; `is_fallback` says whether the lane is the one the
+    operator chose or one the chain fell through to — the HUD renders the
+    difference, because a substituted voice that nothing announces is the
+    same defect as a download that fails in silence;
     `sequence` is monotonic per turn so the client can detect drops.
     `is_final=True` on the last chunk signals the turn is closed and the
     `speaking_back` state can flip back to idle once the queue drains.
@@ -367,6 +402,8 @@ def make_tts_chunk(
             "provider": provider,
             "sequence": int(sequence),
             "is_final": bool(is_final),
+            "is_fallback": bool(is_fallback),
+            "engine": engine,
         },
         chat_id=get_chat_id(),
     )
@@ -394,43 +431,6 @@ def make_config_reloaded(
             "summary": summary,
             "detail": detail,
             "ok": bool(ok),
-        },
-    )
-
-
-def make_code_drift_detected(
-    session_id: str,
-    *,
-    classification: str,
-    paths: list[str],
-    head_drift: bool,
-    dirty_drift: bool,
-    head_sha: str | None = None,
-) -> dict[str, Any]:
-    """`code_drift_detected` envelope — fired by ``CodeWatcher`` when the
-    working tree under the repo root diverges from the boot snapshot.
-
-    ``classification`` is one of ``restart_required``, ``frontend_only``
-    (the watcher never emits for ``ignore`` buckets). ``paths`` is the
-    capped list of changed files relative to repo root (≤ ``CodeWatcher.
-    path_cap``). ``head_drift`` is True when ``git HEAD`` moved; ``dirty_drift``
-    is True when the working tree's uncommitted state changed. The
-    frontend toasts:
-
-    * ``frontend_only`` → low-severity info, auto-dismissed.
-    * ``restart_required`` → sticky warning with a ``Restart now`` button
-      that posts to ``/api/runtime/restart_for_code_drift``.
-    """
-    return make_envelope(
-        "code_drift_detected",
-        "entity",
-        session_id,
-        {
-            "classification": classification,
-            "paths": list(paths),
-            "head_drift": bool(head_drift),
-            "dirty_drift": bool(dirty_drift),
-            "head_sha": head_sha,
         },
     )
 
@@ -607,7 +607,7 @@ def make_daily_brief_ready(
 ) -> dict[str, Any]:
     """``daily_brief_ready`` envelope — emitted when ``BriefRenderer.render``
     successfully writes a brief (REST refresh path or cron-driven
-    ``DailyBriefJob``). The frontend brief store fetches the new file
+    the nightly `brief_render` stage). The frontend brief store fetches the new file
     and the toast manager pops a one-shot notification.
 
     ``category=schedule`` keeps the envelope alongside the other

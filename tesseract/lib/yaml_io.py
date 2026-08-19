@@ -93,13 +93,3 @@ def _round_trip_yaml() -> YAML:
     return ryaml
 
 
-def load_round_trip(path: Path) -> Any:
-    """Load `path` preserving comments and quote styles, without writing.
-
-    For reading a document whose *formatting* is part of what the caller
-    needs — `config_seed.migrate_config_keys` copies a subtree out of a
-    shipped template and into the operator's file, and the comments
-    explaining that block travel with the node.
-    """
-    with path.open("r", encoding="utf-8") as fh:
-        return _round_trip_yaml().load(fh)

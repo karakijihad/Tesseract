@@ -40,6 +40,18 @@ class AgendaCommentTool(Tool):
 
     risk_class: ClassVar[str] = "autonomous"
 
+    group: ClassVar[str] = "asking-without-blocking"
+    summary: ClassVar[str] = "Reply inside an operator comment thread on an agenda item."
+    use_when: ClassVar[str] = (
+        "Use when directed to answer a comment thread on an agenda item — it "
+        "renders in the item's thread, not the chat panel."
+    )
+    not_when: ClassVar[str] = (
+        "a comment on a Workspace event, use `workspace_reply`; the comment asks "
+        "for a change to a workspace file — reply here, then file that change "
+        "with `propose_change`."
+    )
+
     def __init__(self, store: AgendaStore) -> None:
         """Writes the reply comment to disk (durable). Broadcasting is the
         caller's responsibility: `dispatch_agenda_reply` calls
@@ -50,14 +62,6 @@ class AgendaCommentTool(Tool):
     @property
     def name(self) -> str:
         return "agenda_comment"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Reply to an operator comment on an agenda item. Use this when "
-            "directed to answer a comment thread on an agenda item — the "
-            "reply renders in the item's comment thread, not the chat panel."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

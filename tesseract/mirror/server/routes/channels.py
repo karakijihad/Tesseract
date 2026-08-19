@@ -92,21 +92,23 @@ async def _require_channel_approval(
     session_id: str,
     op_name: str,
     raw_input: dict[str, Any],
-) -> tuple[bool, str | None]:
+) -> tuple[bool, str, str | None]:
     """Drive the chat session's ASK round-trip for a channel mutation.
 
-    Returns ``(approved, error_msg)``. ``error_msg`` is non-None only on
-    setup failure (no session attached, no chat session, no ask_fn);
-    callers translate that into a 503. On a clean operator decline the
-    pair is ``(False, None)``.
+    Returns ``(approved, outcome, error_msg)``. ``error_msg`` is non-None
+    only on setup failure (no session attached, no chat session, no ask_fn);
+    callers translate that into a 503. ``outcome`` is whatever the asker
+    claimed on the way out (``ToolContext.ask_outcome``) — empty when it
+    claimed nothing — and exists so a refusal can be reported as the event
+    it was rather than as a decision nobody made.
     """
     server_session = (app.get("server_sessions") or {}).get(session_id)
     if server_session is None:
-        return False, f"operator session {session_id!r} not connected"
+        return False, "", f"operator session {session_id!r} not connected"
     chat_session = getattr(server_session, "chat_session", None)
     ask_fn = getattr(chat_session, "ask_fn", None) if chat_session is not None else None
     if ask_fn is None:
-        return False, f"operator session {session_id!r} has no approval channel"
+        return False, "", f"operator session {session_id!r} has no approval channel"
 
     call_id = uuid.uuid4().hex[:12]
     context = ToolContext(
@@ -129,8 +131,52 @@ async def _require_channel_approval(
         # ask_fn implementations record their own row; this branch is a
         # transport-level failure (ws closed mid-prompt, etc.) — surface
         # to the caller as denied without a duplicate ledger row.
-        return False, "approval channel error"
-    return approved, None
+        return False, "error", "approval channel error"
+    return approved, context.ask_outcome, None
+
+
+#: Outcomes that mean the prompt ran out rather than that anyone answered it.
+_UNANSWERED = frozenset({"timeout", "park_timeout"})
+
+
+def _not_approved_response(action: str, outcome: str) -> web.Response:
+    """Report a refused mutation without inventing a decision.
+
+    The operator approves a channel user from the Channels view, but the
+    prompt the round trip raises renders on the CHAT surface — so the
+    common way this ends is nobody seeing it and the 30s window closing.
+    Reported as "operator declined", that told the operator they had
+    refused something they were never shown.
+    """
+    if outcome in _UNANSWERED:
+        return web.json_response(
+            {
+                "status": "timeout",
+                "output": (
+                    f"no answer — the approval prompt for {action} expired "
+                    "before it was answered. It appears on the chat surface; "
+                    "keep that in view and try again."
+                ),
+            }
+        )
+    if not outcome:
+        # An asker that made no claim (the channel gate nudges a workspace
+        # inbox and returns False without deciding anything). Name both — and
+        # take its own status rather than "denied", because the surface
+        # prefixes a denial with the word and this sentence exists precisely
+        # to say it does not know which of the two happened.
+        return web.json_response(
+            {
+                "status": "unresolved",
+                "output": (
+                    f"{action} was not approved — the operator declined it, or "
+                    "the approval prompt expired before it was answered."
+                ),
+            }
+        )
+    return web.json_response(
+        {"status": "denied", "output": f"operator declined {action}"}
+    )
 
 
 # ── Serialization ──────────────────────────────────────────────────────────
@@ -263,7 +309,7 @@ async def set_telegram_status_handler(request: web.Request) -> web.Response:
         )
     new_override = raw_override if isinstance(raw_override, str) else None
 
-    approved, err = await _require_channel_approval(
+    approved, outcome, err = await _require_channel_approval(
         request.app,
         session_id=session_id,
         op_name="channel_status:telegram",
@@ -272,9 +318,7 @@ async def set_telegram_status_handler(request: web.Request) -> web.Response:
     if err is not None:
         return web.json_response({"error": err}, status=503)
     if not approved:
-        return web.json_response(
-            {"status": "denied", "output": "operator declined status change"}
-        )
+        return _not_approved_response("status change", outcome)
 
     # Late imports keep the route layer independent of the concrete bridge's
     # private state shape — Mirror restart on a fresh checkout starts before
@@ -463,7 +507,7 @@ async def approve_channel_user_handler(request: web.Request) -> web.Response:
     ttl_iso = body.get("ttl_iso") or None
     display_name = body.get("display_name") or None
 
-    approved, err = await _require_channel_approval(
+    approved, outcome, err = await _require_channel_approval(
         request.app,
         session_id=session_id,
         op_name=f"channel_approve:{name}",
@@ -478,9 +522,7 @@ async def approve_channel_user_handler(request: web.Request) -> web.Response:
     if err is not None:
         return web.json_response({"error": err}, status=503)
     if not approved:
-        return web.json_response(
-            {"status": "denied", "output": "operator declined approve"}
-        )
+        return _not_approved_response("approve", outcome)
 
     try:
         user = await adapter.approve(
@@ -541,7 +583,7 @@ async def revoke_channel_user_handler(request: web.Request) -> web.Response:
         return err_resp
     assert body is not None
 
-    approved, err = await _require_channel_approval(
+    approved, outcome, err = await _require_channel_approval(
         request.app,
         session_id=body["session_id"],
         op_name=f"channel_revoke:{name}",
@@ -550,9 +592,7 @@ async def revoke_channel_user_handler(request: web.Request) -> web.Response:
     if err is not None:
         return web.json_response({"error": err}, status=503)
     if not approved:
-        return web.json_response(
-            {"status": "denied", "output": "operator declined revoke"}
-        )
+        return _not_approved_response("revoke", outcome)
 
     try:
         user = await adapter.revoke(body["user_id"])
@@ -589,7 +629,7 @@ async def block_channel_user_handler(request: web.Request) -> web.Response:
         return err_resp
     assert body is not None
 
-    approved, err = await _require_channel_approval(
+    approved, outcome, err = await _require_channel_approval(
         request.app,
         session_id=body["session_id"],
         op_name=f"channel_block:{name}",
@@ -598,9 +638,7 @@ async def block_channel_user_handler(request: web.Request) -> web.Response:
     if err is not None:
         return web.json_response({"error": err}, status=503)
     if not approved:
-        return web.json_response(
-            {"status": "denied", "output": "operator declined block"}
-        )
+        return _not_approved_response("block", outcome)
 
     try:
         user = await adapter.block(body["user_id"])
@@ -677,7 +715,7 @@ async def replay_channel_missed_handler(request: web.Request) -> web.Response:
             {"error": "session_id required (operator chat session)"}, status=400
         )
 
-    approved, err = await _require_channel_approval(
+    approved, outcome, err = await _require_channel_approval(
         request.app,
         session_id=session_id,
         op_name=f"channel_missed_replay:{name}",
@@ -686,9 +724,7 @@ async def replay_channel_missed_handler(request: web.Request) -> web.Response:
     if err is not None:
         return web.json_response({"error": err}, status=503)
     if not approved:
-        return web.json_response(
-            {"status": "denied", "output": "operator declined replay"}
-        )
+        return _not_approved_response("replay", outcome)
 
     try:
         cid = int(user_id)

@@ -1,10 +1,12 @@
 /* =============================================================
-   Kernel flows.
+   Kernel flows — the left column's rail.
 
-   The rail is NOT styled here: `FlowRail` emits the synapse column's own
-   markup (`.syn-flow` / `.syn-node` / `.syn-dot` / `.syn-lbl` in
-   globals.css) and the stage headers reuse `.syn-sub`, so the panel cannot
-   drift away from the look it has always had.
+   The kernel is the only consumer of this language, so it lives here whole
+   rather than half in globals.css: one file to change when the rail changes.
+   Type comes off the scale in tokens.css (`--t-caption-size` for a node,
+   `--t-meta-size` for its second line); the rail's old 7/8/9px labels were
+   the one surface in the cockpit below the 10px floor, which is most of why
+   it read as noise rather than instrumentation.
 
    Everything is on one rail — tabs were tried and removed. The kernel is
    watched, not navigated.
@@ -13,7 +15,283 @@
 .kernel-flows {
   display: flex;
   flex-direction: column;
+  gap: var(--space-md);
   min-height: 0;
+  padding: var(--space-sm) var(--space-md) 0;
 }
 
-.kernel-stage + .kernel-stage { margin-top: var(--space-xs); }
+/* Run-out under the last node, deeper than the scroller's bottom fade, so
+   reaching the end fades over empty space rather than over `completion`.
+   A flex item and not `padding-bottom`, which a flex child does not add to
+   its scroll container's scrollHeight — the padding was there and the last
+   row still sat flush against the edge. */
+.kernel-flows::after {
+  content: '';
+  flex: 0 0 var(--space-xl);
+}
+
+/* ---- Flow head: name, rule, live position ------------------- */
+
+.kf-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+
+/* `.t-meta` carries size, colour, tracking and case — the same tier the
+   Monitor panel's tabs and spend labels use, so the two columns read as one
+   app. Only the weight that makes it a heading is set here. */
+.kf-head-name {
+  margin: 0;
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+.kf-head-rule {
+  flex: 1;
+  height: 1px;
+  background: var(--panel-divider);
+}
+
+/* The flow's current position — `idle` until something lights it. Mirrors
+   the old category head, which carried the tool that had just fired. */
+.kf-head-at {
+  flex-shrink: 0;
+  max-width: 45%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--font-ui);
+  text-transform: none;
+  color: var(--text-disabled);
+  transition: color var(--motion-med) var(--ease-smooth);
+}
+.kf-flow.is-live .kf-head-at { color: var(--accent-bright); }
+
+/* ---- The rail ----------------------------------------------- */
+
+.kf-nodes {
+  position: relative;
+  margin: 0;
+  padding: 0 0 0 var(--space-2);
+  list-style: none;
+}
+/* Spine, behind the markers — their centres sit at 5px. */
+.kf-nodes::before {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 6px;
+  bottom: 8px;
+  width: 1px;
+  background: var(--border-muted);
+  transition: background var(--motion-med) var(--ease-smooth);
+}
+.kf-flow.is-live .kf-nodes::before { background: hsl(var(--accent-hsl) / 0.35); }
+
+.kf-node {
+  position: relative;
+  display: grid;
+  grid-template-columns: 11px 1fr;
+  gap: var(--space-sm);
+  align-items: start;
+  padding: var(--space-3) 0;
+}
+
+/* Depth: the voice path sits under input, the tool loop and the speech lane
+   under stream, the tool groups under dispatch. The indent is drawn, not
+   implied — the old connectors were 8% accent on a near-black panel, which
+   is to say invisible.
+
+   A depth-1 elbow lands on the main spine, so it needs only the horizontal
+   arm. Depth 2 has no spine to land on and grows its own, running from its
+   parent's marker down through the last child in the run. */
+.kf-d1 { margin-left: var(--space-14); }
+.kf-d2 { margin-left: var(--space-28); }
+.kf-d1::before {
+  content: '';
+  position: absolute;
+  left: -11px;
+  top: 11px;
+  width: 11px;
+  height: 1px;
+  background: var(--border-muted);
+}
+.kf-d2::before {
+  content: '';
+  position: absolute;
+  left: -9px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border-muted);
+}
+.kf-d2::after {
+  content: '';
+  position: absolute;
+  left: -9px;
+  top: 11px;
+  width: 9px;
+  height: 1px;
+  background: var(--border-muted);
+}
+/* Last child of a run: the spine stops at the elbow instead of running on
+   into whatever follows at a shallower depth. */
+.kf-d2:not(:has(+ .kf-d2))::before {
+  bottom: auto;
+  height: 12px;
+}
+/* A depth-1 node with children drops the top of their spine out of its own
+   marker, so the run hangs off the parent rather than starting in mid-air. */
+.kf-d1:has(+ .kf-d2)::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 12px;
+  bottom: 0;
+  width: 1px;
+  background: var(--border-muted);
+}
+
+/* ---- Markers: the node's kind is its shape ------------------ */
+
+.kf-mark {
+  position: relative;
+  z-index: 1;
+  width: 11px;
+  height: 11px;
+  margin-top: var(--space-3);
+  flex-shrink: 0;
+  background: var(--bg-deep);
+}
+.kf-mark::before {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  background: currentColor;
+  transition:
+    box-shadow var(--motion-med) var(--ease-smooth),
+    opacity var(--motion-med) var(--ease-smooth);
+}
+/* stage — a step the run passes through */
+.kf-node[data-kind='stage'] .kf-mark::before { border-radius: 50%; }
+/* gate — a decision; the run can stop here */
+.kf-node[data-kind='gate'] .kf-mark::before {
+  inset: 1.5px;
+  transform: rotate(45deg);
+}
+/* store — an index read from, not walked through */
+.kf-node[data-kind='store'] .kf-mark::before {
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px currentColor;
+}
+/* seat — a slot config fills */
+.kf-node[data-kind='seat'] .kf-mark::before {
+  background: transparent;
+  border-radius: 1px;
+  box-shadow: inset 0 0 0 1.5px currentColor;
+}
+
+/* Tone rides on the marker, never the label — the text has to stay legible
+   and the rail is what carries the semantics. */
+.kf-node[data-tone='default'] .kf-mark { color: var(--ink-55); }
+.kf-node[data-tone='accent'] .kf-mark  { color: var(--accent); }
+.kf-node[data-tone='ok'] .kf-mark      { color: var(--ok); }
+.kf-node[data-tone='warn'] .kf-mark    { color: var(--warn); }
+.kf-node[data-tone='bad'] .kf-mark     { color: var(--bad); }
+.kf-node[data-tone='info'] .kf-mark    { color: var(--info); }
+
+/* ---- Text --------------------------------------------------- */
+
+.kf-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.kf-label {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  font-family: var(--font-ui);
+  font-size: var(--t-caption-size);
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--text-secondary);
+  transition: color var(--motion-med) var(--ease-smooth);
+}
+
+.kf-sub {
+  font-family: var(--font-ui);
+  font-size: var(--t-meta-size);
+  font-weight: 400;
+  line-height: 1.35;
+  letter-spacing: 0.01em;
+  color: var(--text-meta);
+  opacity: 0.75;
+}
+
+/* Fires this session, on the nodes that file tools. */
+.kf-count {
+  font-family: var(--font-ui);
+  font-size: var(--t-meta-size);
+  font-weight: 500;
+  color: var(--accent-bright);
+  opacity: 0.85;
+}
+
+/* ---- Cursor, trail, cold ------------------------------------ */
+
+/* Cold — the run has not been here. Present, readable, quiet. */
+.kf-node.is-cold .kf-mark::before { opacity: 0.32; }
+.kf-node.is-cold .kf-label { color: var(--text-meta); }
+.kf-node.is-cold .kf-sub { opacity: 0.45; }
+
+/* Unwired — the stage is real but nothing emits its signal yet, so the rail
+   cannot say whether the run reached it. Drawn as an outline: a marker that
+   is empty rather than merely dim, because "not instrumented" reading the
+   same as "not reached" is the panel telling the operator something false. */
+.kf-node.is-unwired .kf-mark::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px currentColor;
+  opacity: 0.3;
+}
+.kf-node.is-unwired .kf-label { color: var(--text-disabled); }
+.kf-node.is-unwired .kf-sub { opacity: 0.35; }
+
+/* Trail — already passed, this run. */
+.kf-node.is-trail .kf-mark::before { opacity: 0.62; }
+.kf-node.is-trail .kf-label { color: var(--text-secondary); }
+
+/* Cursor — where the flow is now. One per flow. */
+.kf-node.is-cursor .kf-mark::before {
+  opacity: 1;
+  box-shadow: 0 0 6px currentColor, 0 0 14px hsl(var(--accent-hsl) / 0.3);
+}
+.kf-node.is-cursor[data-kind='store'] .kf-mark::before,
+.kf-node.is-cursor[data-kind='seat'] .kf-mark::before {
+  box-shadow:
+    inset 0 0 0 1.5px currentColor,
+    0 0 6px currentColor;
+}
+.kf-node.is-cursor .kf-label {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.kf-node.is-cursor .kf-sub { opacity: 1; }
+
+@keyframes kf-arrive {
+  0%   { transform: scale(1); }
+  45%  { transform: scale(1.35); }
+  100% { transform: scale(1); }
+}
+.kf-node.is-flashing .kf-mark::before {
+  animation: kf-arrive var(--motion-med) var(--ease-smooth);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kf-node.is-flashing .kf-mark::before { animation: none; }
+}

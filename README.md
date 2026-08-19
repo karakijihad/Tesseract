@@ -63,7 +63,7 @@ The first time you open TESSERACT, a setup screen walks you through two steps be
 
 **It asks what to call it.** The assistant ships without a name — deliberately. A shipped stand-in name would be indistinguishable from one you chose, so an install whose setup quietly failed would look configured instead of looking unnamed. You give it a name here, and you tell it what to call you. The name is not cosmetic: it's what the assistant calls itself, what shows in the header, and what the wake phrase is built from.
 
-Every API key on this screen is optional and every one can be added later in **Settings → API keys**. You can change all of it later in the **Identity** tab. Nothing is locked in by answering now.
+Every API key on this screen is optional and every one can be added later in **Settings → Keys**. You can change all of it later in the **Identity** tab. Nothing is locked in by answering now.
 
 ![Step two of setup: a required list with sizes, and an optional list you can switch off, above a running download total](assets/onboarding/setup-downloads.png)
 

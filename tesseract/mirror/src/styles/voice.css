@@ -3,22 +3,22 @@
 
 /* ─── Mic button states ───────────────────────────────────── */
 
-.hud-mic-group {
+.hud-voice-controls {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-6);
 }
 
 .hud-voice-mode {
   appearance: none;
-  border: 1px solid var(--panel-divider);
+  border: var(--stroke-1) solid var(--panel-divider);
   background: transparent;
   color: var(--text-meta);
-  font-family: var(--font-mono);
-  font-size: 10px;
+  font-family: var(--font-ui);
+  font-size: var(--t-meta-size);
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  padding: 3px 9px;
+  padding: var(--space-3) var(--space-9);
   border-radius: 999px;
   cursor: pointer;
   line-height: 1;
@@ -26,7 +26,7 @@
 }
 
 .hud-voice-mode:hover {
-  color: var(--text);
+  color: var(--text-primary);
   border-color: color-mix(in srgb, var(--accent) 35%, var(--panel-divider));
 }
 
@@ -40,7 +40,7 @@
 /* Transcribe — the assistant silent. Cooler, more neutral cue so the operator
    reads "no audio reply" at a glance. */
 .hud-voice-mode.is-transcribe {
-  color: var(--text);
+  color: var(--text-primary);
   border-color: var(--panel-divider);
   background: color-mix(in srgb, var(--text-meta) 8%, transparent);
 }
@@ -93,7 +93,7 @@
 
 .hud-mic.is-speaking {
   /* Subtle pulse while VAD reports speech */
-  animation: hud-mic-pulse 1.4s ease-in-out infinite;
+  animation: hud-mic-pulse var(--motion-beat) ease-in-out infinite;
 }
 
 @keyframes hud-mic-pulse {
@@ -112,16 +112,16 @@
 .voice-status {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 10px;
-  font-size: 11px;
+  gap: var(--space-8);
+  padding: var(--space-4) var(--space-10);
+  font-size: var(--t-caption-size);
   color: var(--text-meta);
-  border-bottom: 1px solid var(--panel-divider);
+  border-bottom: var(--stroke-1) solid var(--panel-divider);
   background: color-mix(in srgb, var(--accent) 4%, transparent);
 }
 
 .voice-status__label {
-  font-family: var(--font-mono);
+  font-family: var(--font-ui);
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -130,8 +130,8 @@
 
 .voice-status--transcribing .voice-status__dots {
   display: inline-flex;
-  gap: 3px;
-  margin-left: 2px;
+  gap: var(--space-3);
+  margin-left: var(--space-2);
 }
 
 .voice-status--transcribing .voice-status__dots span {
@@ -139,13 +139,13 @@
   height: 4px;
   border-radius: 50%;
   background: var(--text-meta);
-  animation: voice-dot 1.2s ease-in-out infinite;
+  animation: voice-dot var(--motion-beat) ease-in-out infinite;
 }
 .voice-status--transcribing .voice-status__dots span:nth-child(2) {
-  animation-delay: 0.18s;
+  animation-delay: var(--motion-fast);
 }
 .voice-status--transcribing .voice-status__dots span:nth-child(3) {
-  animation-delay: 0.36s;
+  animation-delay: var(--motion-med);
 }
 
 @keyframes voice-dot {
@@ -158,7 +158,7 @@
 .voice-waveform {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-2);
   height: 14px;
 }
 
@@ -169,7 +169,7 @@
   min-height: 2px;
   background: var(--accent);
   border-radius: 1px;
-  transition: height 0.08s ease-out;
+  transition: height var(--motion-instant) ease-out;
 }
 
 .voice-status--waveform.is-speaking .voice-waveform span {
@@ -187,10 +187,39 @@
 .voice-status__partial {
   flex: 1 1 auto;
   min-width: 0;
-  margin-left: 6px;
+  margin-left: var(--space-6);
   font-style: italic;
   color: var(--text-meta);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Wake-word calibration — the level meter beside a take in progress.
+   It exists so a dead microphone is visible WHILE recording rather than at
+   the verdict, which is the worst moment to discover it. Same `--ok` ramp
+   and the same `--mic-level` idiom as the HUD mic glow, so the two read as
+   one indicator in two places rather than two indicators. */
+.wake-level {
+  display: inline-block;
+  width: var(--space-40);
+  height: var(--space-6);
+  border-radius: var(--radius-pill);
+  background: linear-gradient(
+    to right,
+    var(--ok) 0%,
+    var(--ok) calc(var(--wake-level, 0) * 100%),
+    var(--ok-wash) calc(var(--wake-level, 0) * 100%),
+    var(--ok-wash) 100%
+  );
+  transition: background var(--motion-instant) linear;
+}
+
+/* The line the operator is being asked to say, mid-training. Size and colour
+   come from `.t-body` on the element rather than from here: it is reading
+   copy, and the app already has a class for reading copy. This rule only
+   gives it room to breathe. */
+.wake-prompt {
+  display: block;
+  margin-bottom: var(--space-8);
 }

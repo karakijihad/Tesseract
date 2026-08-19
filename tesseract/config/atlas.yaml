@@ -1,0 +1,35 @@
+# Atlas — the derived map over memory, vault and runtime.
+#
+# The atlas is DERIVED. Everything under `<TESSERACT_HOME>/atlas/` is
+# rebuildable from the memory store, the vault and the run log, so deleting it
+# costs one rebuild and never data. Nothing here changes what is stored; it
+# changes how long a derived assertion stands before it wants looking at.
+#
+# The builder version is NOT a setting. It lives in the code that does the
+# deriving (`orchestrator/atlas/build.py::BUILDER_VERSION`), because a version
+# an operator can edit is a version that can be pinned below the builder
+# actually running — and then a better extractor silently never re-derives the
+# old records.
+
+# How long an assertion stands before the atlas flags it for review, by where
+# the assertion came from. `0` means it does not age.
+review_after_days:
+  # What you said yourself. It encodes intent, and intent does not expire on
+  # a timer.
+  operator_asserted: 0
+  # What a record literally states about itself — a memory's own `links`, a
+  # wiki page's own source. True as long as the record is.
+  stated_in_source: 0
+  # What a model concluded. Six months is roughly when this store's topics
+  # have moved enough that an inferred connection deserves a second look.
+  inferred_by_model: 180
+
+# Repairing what the map finds. When the atlas reports memories nothing can
+# reach by following links, the next stage of the same pass re-runs the
+# auto-linker over them — the trigger is the finding, not a clock.
+relink:
+  # Orphans repaired per pass. Each one is a vector search plus a small write,
+  # so the ceiling is about not spending a whole night on a backlog rather
+  # than about cost; the remainder is reported and picked up tomorrow.
+  max_per_run: 25
+

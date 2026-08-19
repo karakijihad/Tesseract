@@ -104,6 +104,17 @@ class ProjectNewTool(Tool):
 
     risk_class: ClassVar[str] = "operator_gate"
 
+    group: ClassVar[str] = "projects"
+    summary: ClassVar[str] = "Start a new project from scratch: create the directory, register, open it."
+    use_when: ClassVar[str] = (
+        "Use when the directory does not exist yet. Call first without "
+        "`confirmed` to propose the plan; call again with confirmed=true to "
+        "create it."
+    )
+    not_when: ClassVar[str] = (
+        "for a directory that already exists, use `project_link` instead."
+    )
+
     def __init__(
         self,
         store: EventStore,
@@ -116,16 +127,6 @@ class ProjectNewTool(Tool):
     @property
     def name(self) -> str:
         return "project_new"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Start a new project: create the directory, optionally git-init it, "
-            "write a starter AGENTS.md, register it and make it active. Call it "
-            "first without `confirmed` to post the proposal (where it will live, "
-            "git, remote, verify commands) to the operator; call it again with "
-            "confirmed=true and their answers to actually create it."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

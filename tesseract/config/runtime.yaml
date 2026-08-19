@@ -53,3 +53,8 @@ skill_pending_cap: 5
 # Maximum number of chat turns that may sit queued (not yet dispatched) for
 # one session before the queue is considered full.
 chat_queue_max: 10
+
+# `screen_look` — how many characters of the vision model's answer come back.
+# It answers a question rather than describing a scene, so this is a cap on a
+# paragraph, not on a report.
+screen_look_answer_chars: 1200

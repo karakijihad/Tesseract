@@ -20,19 +20,18 @@ class AlarmListTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "time"
+    summary: ClassVar[str] = "Lists every pending alarm with its label, fire time, and recurrence."
+    use_when: ClassVar[str] = "Use before canceling or snoozing so you know the label or id to reference."
+    not_when: ClassVar[str] = "registered scheduler jobs, which is `schedule_list`."
+
     def __init__(self, alarm_registry: AlarmRegistry) -> None:
         self._registry = alarm_registry
 
     @property
     def name(self) -> str:
         return "alarm_list"
-
-    @property
-    def description(self) -> str:
-        return (
-            "List every pending alarm. Use before canceling or snoozing so you "
-            "know the labels/ids the operator can disambiguate with."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

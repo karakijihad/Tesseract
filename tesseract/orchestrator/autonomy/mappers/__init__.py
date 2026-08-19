@@ -5,31 +5,24 @@ One module per :class:`AgendaSource`. Each mapper exposes a single
 hidden state. The kernel reads ``tesseract/config/agenda-mappers.yaml``
 on start and only registers mappers whose ``enabled`` is true.
 
-P4 prune wave 2 (2026-07-04) deleted the zero-signal ``repo_health``,
-``scheduler``, ``observer``, ``test_failure``, ``channel``, and
-``memory_signal`` mappers along with their producer scheduler jobs —
-see the mapper list below.
+**A mapper exists to turn something that HAPPENED into work.** Six were deleted
+because they turned something *observed* into work instead: ``operator_view``
+(where the operator was looking), ``self_reflection`` and ``strategist`` (a
+model asked what might be worth doing), ``vault_signal`` (which never had a
+publisher at all), and ``scout`` / ``repo_upgrade``, both of which proposed
+changes to the application — a tree an update replaces wholesale, so the
+proposal had nowhere durable to land. An earlier prune took ``repo_health``,
+``scheduler``, ``observer``, ``test_failure``, ``channel`` and ``memory_signal``
+for the same reason.
+
+What remains produces a draft only from a fact: the operator asked for it, or a
+probe measured it. Recovery items are written by the recovery pass directly
+rather than through the bus.
 """
 
 from tesseract.orchestrator.autonomy.mappers.operator import map as map_operator
-from tesseract.orchestrator.autonomy.mappers.operator_view import (
-    map as map_operator_view,
-)
 from tesseract.orchestrator.autonomy.mappers.provider_watch import (
     map as map_provider_watch,
-)
-from tesseract.orchestrator.autonomy.mappers.repo_upgrade import (
-    map as map_repo_upgrade,
-)
-from tesseract.orchestrator.autonomy.mappers.scout import map as map_scout
-from tesseract.orchestrator.autonomy.mappers.self_reflection import (
-    map as map_self_reflection,
-)
-from tesseract.orchestrator.autonomy.mappers.strategist import (
-    map as map_strategist,
-)
-from tesseract.orchestrator.autonomy.mappers.vault_signal import (
-    map as map_vault_signal,
 )
 from tesseract.orchestrator.autonomy.models import AgendaSource
 
@@ -37,24 +30,27 @@ from tesseract.orchestrator.autonomy.models import AgendaSource
 # ``enabled`` flag in ``agenda-mappers.yaml`` before subscribing.
 DEFAULT_MAPPERS = {
     AgendaSource.OPERATOR: map_operator,
-    AgendaSource.OPERATOR_VIEW: map_operator_view,
     AgendaSource.PROVIDER_WATCH: map_provider_watch,
-    AgendaSource.REPO_UPGRADE: map_repo_upgrade,
-    AgendaSource.SCOUT: map_scout,
-    AgendaSource.SELF_REFLECTION: map_self_reflection,
-    AgendaSource.STRATEGIST: map_strategist,
-    AgendaSource.VAULT_SIGNAL: map_vault_signal,
+}
+
+
+# Source → what publishes its events. A mapper with no producer is a source
+# that can never fire, and three shipped that way until they were deleted.
+# Declared here rather than in config because which code path emits which event
+# is a fact about the code, and it must stay beside the mapper list it has to
+# agree with.
+#
+# `job:<name>` resolves against `schedule.yaml`; `live:<what>` is an
+# always-running in-process publisher with no schedule row of its own.
+SOURCE_PRODUCERS: dict[AgendaSource, tuple[str, ...]] = {
+    AgendaSource.OPERATOR: ("live:mirror_agenda_route",),
+    AgendaSource.PROVIDER_WATCH: ("job:provider_probe",),
 }
 
 
 __all__ = [
     "DEFAULT_MAPPERS",
+    "SOURCE_PRODUCERS",
     "map_operator",
-    "map_operator_view",
     "map_provider_watch",
-    "map_repo_upgrade",
-    "map_scout",
-    "map_self_reflection",
-    "map_strategist",
-    "map_vault_signal",
 ]

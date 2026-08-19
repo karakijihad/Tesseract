@@ -16,6 +16,8 @@ import { Hint } from '../ui/Hint';
 import { ExpandOverlay } from '../common/ExpandOverlay';
 import { copyToClipboard } from '../../lib/clipboard';
 import { renderSegment, renderIntent } from '../../lib/segmentRender';
+import { Button } from '../common/Button';
+import { Textarea } from '../common/Textarea';
 
 interface Props {
   message: ChatMessage;
@@ -196,27 +198,26 @@ function MessageBubbleImpl({ message, isLastAssistantComplete = false, previousU
         )}
         {editing && (
           <div className="message-edit">
-            <textarea
-              ref={editTextareaRef}
+            <Textarea
+              inputRef={editTextareaRef}
               className="message-edit-textarea"
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+              onChange={setDraft}
               onKeyDown={onEditKeyDown}
-              aria-label="Edit message"
+              ariaLabel="Edit message"
             />
             <div className="message-edit-actions">
-              <button type="button" onClick={cancelEdit} aria-label="Cancel edit">
+              <Button onClick={cancelEdit} ariaLabel="Cancel edit">
                 Cancel
-              </button>
-              <button
-                type="button"
-                className="is-primary"
+              </Button>
+              <Button
+                tone="primary"
                 onClick={submitEdit}
                 disabled={!draft.trim() && reusableCurrentAttachments.length === 0}
-                aria-label="Send edited message"
+                ariaLabel="Send edited message"
               >
                 Send
-              </button>
+              </Button>
             </div>
           </div>
         )}
@@ -263,29 +264,29 @@ function MessageBubbleImpl({ message, isLastAssistantComplete = false, previousU
           {!editing && (
             <div className="message-actions" aria-label={`${speakerName || role} message actions`}>
               <Hint label="Copy message">
-                <button type="button" onClick={copyMessage} aria-label="Copy message">
+                <Button onClick={copyMessage} ariaLabel="Copy message">
                   Copy
-                </button>
+                </Button>
               </Hint>
               {canEdit && (
                 <Hint label="Edit and resend as a new turn">
-                  <button type="button" onClick={startEdit} aria-label="Edit message">
+                  <Button onClick={startEdit} ariaLabel="Edit message">
                     Edit
-                  </button>
+                  </Button>
                 </Hint>
               )}
               {canRetry && (
                 <Hint label="Send this prompt again as a new turn">
-                  <button type="button" onClick={retryMessage} aria-label="Resend this message">
+                  <Button onClick={retryMessage} ariaLabel="Resend this message">
                     Retry
-                  </button>
+                  </Button>
                 </Hint>
               )}
               {canRegenerate && (
                 <Hint label="Resend the previous prompt as a new turn">
-                  <button type="button" onClick={regenerateMessage} aria-label="Regenerate response">
+                  <Button onClick={regenerateMessage} ariaLabel="Regenerate response">
                     Regenerate
-                  </button>
+                  </Button>
                 </Hint>
               )}
             </div>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 
 // How far from the bottom still counts as "at the bottom". A click, a single
 // wheel notch or a rounding error must not unstick the transcript; a real
@@ -44,6 +44,12 @@ export function useStickToBottom(
   deps: unknown[],
 ): StickToBottom {
   const [scrolledUp, setScrolledUp] = useState(false);
+  // The scrollTop the settle loop last wrote. A `scroll` event is dispatched
+  // asynchronously, so by the time `onScroll` reads the container the height
+  // has often grown again and the position we just pinned measures as far from
+  // the bottom — which is the operator's own gesture, as far as the listener
+  // can tell. It is not, and it must never latch the lock. -1 = nothing pinned.
+  const pinnedTop = useRef(-1);
 
   useEffect(() => {
     if (scrolledUp) return;
@@ -59,6 +65,10 @@ export function useStickToBottom(
       const el = ref.current;
       if (!el) return;
       el.scrollTop = el.scrollHeight;
+      // Read back rather than reuse the assignment: the browser clamps to
+      // `scrollHeight - clientHeight`, and the guard compares against what the
+      // element actually holds.
+      pinnedTop.current = el.scrollTop;
       frames += 1;
       const height = el.scrollHeight;
       if (height !== lastHeight && frames < SETTLE_FRAME_BUDGET) {
@@ -75,7 +85,15 @@ export function useStickToBottom(
     const el = ref.current;
     if (!el) return;
     const distanceFromBottom = el.scrollHeight - el.clientHeight - el.scrollTop;
-    setScrolledUp(distanceFromBottom > SCROLL_LOCK_THRESHOLD_PX);
+    // Releasing is always honoured, whoever scrolled: at the bottom is at the
+    // bottom. Only ENGAGING the lock is guarded, and only against the position
+    // the settle loop itself wrote — anywhere else is the operator.
+    if (distanceFromBottom <= SCROLL_LOCK_THRESHOLD_PX) {
+      setScrolledUp(false);
+      return;
+    }
+    if (el.scrollTop === pinnedTop.current) return;
+    setScrolledUp(true);
   }, [ref]);
 
   // Clearing the lock re-runs the effect above, which settles to the true

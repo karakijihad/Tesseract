@@ -108,6 +108,23 @@ export type OperatorEvent =
   | 'edited'
   | 'highlighted';
 
+// What a card reports about its own drawing (canvas → tool). Separate from
+// OperatorEvent on purpose: those are things the operator did and they
+// persist geometry, this is the renderer talking about itself and the
+// backend keeps it in memory only. `mounted` is deliberately weak — it means
+// the renderer mounted and reported no failure, not that the pixels are
+// right; anything stronger would be the circular check this replaces.
+export type SurfaceRenderStatus =
+  | 'mounted'
+  | 'degraded'
+  | 'errored'
+  | 'unmounted';
+
+export type ReportRender = (
+  status: SurfaceRenderStatus,
+  detail?: string,
+) => void;
+
 // A descriptor is renderable only at the version this build speaks. A v2
 // descriptor is rejected (forward-incompatible by design, GOVERNANCE Rule 7).
 export function isSupportedDescriptor(d: unknown): d is SurfaceDescriptor {

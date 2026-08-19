@@ -71,7 +71,9 @@ _PROMPT = (
 
 class FeedbackConsolidatorJob(BaseJob):
     uses_llm = True
-    default_model_role = "feedback_consolidator"
+    # A chain, not a role — see `feedback_sweep`, which shares both the chain
+    # and the reason.
+    default_model_chain = "chain_2"
 
     async def run(self, ctx: JobContext) -> JobResult:
         t0 = time.monotonic()
@@ -91,13 +93,14 @@ class FeedbackConsolidatorJob(BaseJob):
 
             chain = build_chain_for_job(
                 ctx,
-                default_role=FeedbackConsolidatorJob.default_model_role,
+                default_role=None,
+                default_chain=FeedbackConsolidatorJob.default_model_chain,
                 log_label="feedback_consolidator",
             )
             if not chain:
                 return _ok(
                     ctx, t0, target_date, len(records), 0,
-                    "role unavailable — skipped",
+                    "no model reachable — skipped",
                 )
 
             prompt = _build_prompt(records)

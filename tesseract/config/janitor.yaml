@@ -5,6 +5,12 @@
 # cannot loosen the orphan requirement — it only names targets. Sweep
 # cadence lives in schedule.yaml. `pattern` is a regex matched against the
 # process's full command line.
+#
+# What is LEFT here is the live half: a process holding a port and a scratch
+# directory holding a lock are problems now, which is why this also runs at
+# every supervisor boot. Ageing files is not, and it moved to
+# `config/retention.yaml` — one table for every tree this machine ages, swept
+# once a night by the `retention` stage of the `consolidate` row.
 
 process_fingerprints:
   # Claude Code hook scripts left running by a missing `jq` fallback.
@@ -30,9 +36,6 @@ scratch_dir_globs:
   - ".codex-pytest-temp"
   - "tmp_*"
 
-# Archived controller-lane months older than this many days are pruned.
-archive_retention_days: 60
-
 # Controller sessions marked "active" whose owning process is dead are
 # closed once they're at least this stale, in hours.
 stale_session_grace_hours: 24
@@ -40,23 +43,3 @@ stale_session_grace_hours: 24
 # Detached-by-design processes stay exempt from the sweep while "claimed" —
 # a heartbeat file younger than this many seconds counts as claimed.
 claimed_heartbeat_max_age_s: 600
-
-# Log pruning is opt-in: paths listed here have files older than
-# retention_days deleted. Globs are matched under BOTH log roots —
-# <home>/logs/ and <runtime>/logs/ (janitor/archives.py). Empty list = off.
-#
-# `backend/*.log` is one file per launch, named for its boot id. It is the
-# only entry on by default: these are machine ops, not operator-visible
-# history, and unlike everything else here the set grows once per boot
-# forever. The aggregate <process>.log beside them is bounded by size
-# rotation instead and is deliberately not listed.
-log_prune:
-  retention_days: 60
-  globs:
-    # `*.log*`, not `*.log`. RotatingFileHandler names its rolled generations
-    # `<file>.log.1`..`.log.3`, which `*.log` does not match — so the live file
-    # of each boot was pruned and up to 15 MB of rotated generations per boot
-    # was kept forever. Retention is age-only within the window; the count of
-    # per-boot files is bounded by launch frequency, deliberately and not by a
-    # cap.
-    - "backend/*.log*"

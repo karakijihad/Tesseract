@@ -54,20 +54,20 @@ class ProjectLinkTool(Tool):
 
     risk_class: ClassVar[str] = "propose"
 
+    group: ClassVar[str] = "projects"
+    summary: ClassVar[str] = "Register an existing directory as a project."
+    use_when: ClassVar[str] = (
+        "Use to adopt a directory that already exists: it records root, git "
+        "identity and verification commands, and marks it trusted."
+    )
+    not_when: ClassVar[str] = (
+        "does not switch the active project — use `project_open` for that. "
+        "For a directory that does not exist yet, use `project_new`."
+    )
+
     @property
     def name(self) -> str:
         return "project_link"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Register an existing directory as a project: record its root, git "
-            "identity and verification commands, mark it trusted, and wire the "
-            "claude/codex CLIs to the hub so a terminal opened there connects "
-            "with no setup. Verify commands are detected from the tree unless "
-            "you pass them. Does not switch the active project — use "
-            "project_open for that."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

@@ -44,6 +44,8 @@ from typing import Literal
 
 import httpx
 
+from tesseract import http_client
+
 log = logging.getLogger("telegram.watchdog")
 
 State = Literal["up", "down"]
@@ -144,7 +146,7 @@ def run_loop(cfg: WatchdogConfig, *, stop_after: int | None = None) -> int:
     state: State | None = None
     consecutive_failures = 0
     probes = 0
-    with httpx.Client() as client:
+    with http_client.client() as client:
         while True:
             if stop_after is not None and probes >= stop_after:
                 return probes

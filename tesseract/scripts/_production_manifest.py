@@ -50,10 +50,17 @@ EXCLUDE_PATHS = (
     # this is the belt to that braces, because a single accidental `git add -f`
     # would ship the operator's directory layout.
     "tesseract/projects",
-    # Writes the capability matrix into the docs tree, which production does
-    # not have. Its only consumers are CI and a dev test, so shipping it puts
-    # a script in a user's tree whose single action is to fail.
-    "tesseract/scripts/generate_capability_matrix.py",
+    # A lint over the workspace prose, whose only consumers are CI and a dev
+    # test. It reads the registry directly and would run fine on an install;
+    # it just has nothing to tell a user. `adopt_seeded_doc.py` deliberately
+    # does NOT join this list — hand-correcting a seeded document is something
+    # that happens ON an install, which is the only place its counterpart
+    # matters.
+    "tesseract/scripts/check_tool_claims.py",
+    # Same reasoning for the Guide's generators: the rendered pages ship, the
+    # machinery that renders them does not.
+    "tesseract/scripts/generate_guide.py",
+    "tesseract/scripts/guide_facts.py",
     "CLAUDE.md",
     "AGENTS.md",
     ".github",
@@ -71,6 +78,11 @@ EXCLUDE_GLOBS = (
     "trusted_dirs.json",
     ".mcp.json",
     "owners-notes.md",
+    # Diagram provenance sidecars. They declare which source files and which
+    # runtime facts each drawing depicts, so CI can fail when one goes stale.
+    # That is a maintainer's contract with the code, not something a reader of
+    # the public tree needs — and they name paths that tree does not carry.
+    "*.sources.yaml",
     # Vitest unit specs live beside the source they cover throughout
     # `tesseract/mirror/src/**`, not under one prefix EXCLUDE_PATHS could
     # name — matched by filename instead, same reasoning as the e2e/

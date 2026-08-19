@@ -35,6 +35,8 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
 
+from tesseract import http_client
+
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
 
 Status = Literal["ok", "warn", "bad", "unknown"]
@@ -226,7 +228,7 @@ async def _check_ollama() -> list[Check]:
 
     url = f"{str(base_url).rstrip('/')}/api/tags"
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with http_client.async_client(timeout=5.0) as client:
             response = await client.get(url)
             response.raise_for_status()
             payload = response.json()

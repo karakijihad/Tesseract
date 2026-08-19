@@ -357,6 +357,7 @@ def _make_ask_fn(
             # cancel that lands at the next `await` point — and the cleanup
             # would be interrupted silently, dropping the audit row.
             cancelled = True
+            context.ask_outcome = "cancelled"
             pending_asks.pop(call_id, None)
             if parked_asks is not None:
                 # spawn_cancel on a parked spawn discards the question with
@@ -400,11 +401,29 @@ def _make_ask_fn(
             if not cancelled:
                 pending_asks.pop(call_id, None)
 
+        if park_result is not None:
+            final_result = park_result
+        else:
+            final_result = (
+                "allow_once" if approved else ("timeout" if timed_out else "deny")
+            )
+        # The caller gets the same distinction the ledger has always kept.
+        # Without it a `False` return means "the operator declined" and
+        # "nobody answered" equally, and both the chat row and the channel
+        # routes reported the second as the first.
+        context.ask_outcome = final_result
+
+        # `reason` is what the chat row renders beside the pill. A plain
+        # decline carries none — "denied" says all there is to say — while an
+        # expiry names itself, so the row stops asserting a decision.
+        reply_data = {"call_id": call_id}
+        if not approved and final_result != "deny":
+            reply_data["reason"] = final_result
         reply_env = make_envelope(
             "tool_approved" if approved else "tool_denied",
             "execution",
             session_id,
-            {"call_id": call_id},
+            reply_data,
         )
         event_log.append(reply_env)
         if park_result is not None:
@@ -419,12 +438,6 @@ def _make_ask_fn(
         else:
             await ws.send_json(reply_env)
 
-        if park_result is not None:
-            final_result = park_result
-        else:
-            final_result = (
-                "allow_once" if approved else ("timeout" if timed_out else "deny")
-            )
         await approval_log.record_ask(
             session_id=session_id,
             call_id=call_id,

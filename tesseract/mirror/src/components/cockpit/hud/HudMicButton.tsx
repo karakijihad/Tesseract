@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Hint } from '../../ui/Hint';
+import { HudMenu } from '../../common/HudMenu';
+import { MenuItem } from '../../common/MenuItem';
 import { useEntityStore } from '../../../stores/entity';
 import { useIdentityStore } from '../../../stores/identity';
 import { useVoiceStore, type VoiceMode } from '../../../stores/voice';
@@ -22,29 +24,67 @@ const STAGE_LABEL: Record<string, string> = {
   speaking_back: 'Replying',
 };
 
+/** What the pill says. **These name what comes back, not what goes in.**
+ *
+ * The old set — Transcribe / Command / Speak / Terminal — described the
+ * microphone, and three of the four opened with speech. That hid the mode
+ * with no microphone in it: `speak` with the mic muted is type-in /
+ * speech-out, which has always worked, because synthesis gates on the
+ * session's voice mode and never on where the text came from.
+ *
+ * The mode STRINGS are untouched, deliberately. `voice_modes.py` is explicit
+ * that a mode added in one module and missed in another dispatches turns
+ * nobody can hear, so this is a display map and nothing routes on it. */
 export const MODE_PILL: Record<VoiceMode, string> = {
-  transcribe: 'Transcribe',
-  command: 'Command',
-  speak: 'Speak',
-  terminal: 'Terminal',
+  transcribe: 'Draft',    // nothing is answered; it lands in the input to edit
+  command: 'Text',        // answered on screen
+  speak: 'Voice',         // answered out loud — mic optional
+  terminal: 'Terminal',   // typed into the focused pane
 };
 
 /** Hints name the entity rather than hardcoding one — AS-4 makes the name
  * operator-settable, and a caption that still said "the assistant" after a rename
- * would be the most visible place the rename didn't take. */
+ * would be the most visible place the rename didn't take.
+ *
+ * **These describe what comes OUT, not what goes in.** Every one of them used
+ * to open "speech goes to …", which reads as a microphone setting and hides
+ * the mode that has no microphone in it at all: `speak` with the mic off is
+ * type-in / speech-out, and it works today. Nothing routes on the mic being
+ * live — `tts.py` gates synthesis on the session's voice mode alone — so a
+ * hint that assumes voice-in is describing a rule the runtime does not have.
+ */
 export function modeHint(mode: VoiceMode, name: string): string {
   const who = name || 'the assistant';
   switch (mode) {
     case 'transcribe':
-      return `Transcribe — speech fills the chat input. ${who} stays silent.`;
+      return `Draft — ${who} answers nothing and says nothing. What you dictate lands in the chat input for you to edit and send yourself.`;
     case 'command':
-      return `Command — speech goes to ${who}. Replies stay text/actions only.`;
+      return `Text — ${who} answers on screen and never out loud. Type or speak; the answer is the same either way.`;
     case 'speak':
-      return `Speak — speech goes to ${who}. ${who} replies in voice.`;
+      return `Voice — ${who} answers out loud. The mic is optional: type with it muted and you still hear the reply.`;
     case 'terminal':
-      return `Terminal — speech is typed into the focused terminal pane. ${who} neither answers nor speaks.`;
+      return `Terminal — nothing reaches ${who} at all. What you dictate is typed straight into the focused terminal pane.`;
   }
 }
+
+/** Every mode, in the order the menu lists them: quietest first, so the row
+ *  that changes the least sits at the top. */
+export const ALL_MODES: readonly VoiceMode[] = [
+  'transcribe',
+  'command',
+  'speak',
+  'terminal',
+] as const;
+
+/** One line per row, under the label. The Hint says the same thing at
+ *  length for the CURRENT mode; this is what lets an operator choose a mode
+ *  they are not already in without visiting it first. */
+export const MODE_WHAT: Record<VoiceMode, string> = {
+  transcribe: 'No answer — dictation fills the input',
+  command: 'Answers on screen',
+  speak: 'Answers out loud — mic optional',
+  terminal: 'Types into the terminal pane',
+};
 
 /** Map `voiceMode` → STT routing for `voice_commit`. `transcribe` and
  * `terminal` both keep the transcript out of chat_brain — the backend
@@ -101,9 +141,10 @@ export function HudMicButton() {
           // TTS playback (so the operator stops hearing the old reply)
           // AND tell the backend to drop the in-flight chat_brain turn
           // + TTS chain by returning true (SttStream then sends
-          // `voice_cancel reason='barge_in'`). Matches OpenClaw Talk
-          // mode: when the operator speaks, the assistant shuts up *and* stops
-          // thinking. Compute is no longer wasted on a turn the
+          // `voice_cancel reason='barge_in'`). When the operator speaks,
+          // the assistant stops talking *and* stops thinking — cancelling
+          // only the audio would leave the turn billing away behind a reply
+          // nobody will hear. Compute is no longer wasted on a turn the
           // operator already overrode.
           //
           // AEC-bleed false-trigger: the explicit mic-press gate
@@ -180,8 +221,10 @@ export function HudMicButton() {
   // Idle / disabled paths return zero so no transient flicker.
   const micLevel = isHot ? Math.min(1, audioLevel * 4) : 0;
 
-  const onCycleMode = () => {
-    const next = nextMode(voiceMode);
+  const onPickMode = (next: VoiceMode) => {
+    // Browsers only allow audio to start from a user gesture, and this click
+    // is one. Arming here rather than at first playback is what stops the
+    // first spoken reply being silently swallowed by autoplay policy.
     if (next === 'speak') {
       void getTtsPlayer().arm();
     }
@@ -189,17 +232,43 @@ export function HudMicButton() {
   };
 
   return (
-    <div className="hud-mic-group">
-      <Hint label={modeHint(voiceMode, entityName)} position="top" maxWidth={260}>
-        <button
-          type="button"
-          className={`hud-voice-mode is-${voiceMode}`}
-          onClick={onCycleMode}
-          aria-label={`voice mode: ${voiceMode}, click to cycle`}
-        >
-          {MODE_PILL[voiceMode]}
-        </button>
-      </Hint>
+    <div className="hud-voice-controls">
+      <HudMenu
+        side="top"
+        ariaLabel="reply mode"
+        anchor={({ ref, open, toggle }) => (
+          <Hint label={modeHint(voiceMode, entityName)} position="top" maxWidth={260}>
+            <button
+              ref={ref}
+              type="button"
+              className={`hud-voice-mode is-${voiceMode}${open ? ' is-open' : ''}`}
+              onClick={toggle}
+              aria-expanded={open}
+              aria-haspopup="menu"
+              aria-label={`reply mode: ${voiceMode}`}
+            >
+              {MODE_PILL[voiceMode]}
+            </button>
+          </Hint>
+        )}
+      >
+        {/* All four at once. Cycling meant four modes behind one button that
+            only moved forward — three clicks to go back one, and no way to
+            see what the others were without visiting them. */}
+        {ALL_MODES.map((mode) => (
+          <MenuItem
+            key={mode}
+            role="menuitemradio"
+            checked={mode === voiceMode}
+            active={mode === voiceMode}
+            className="hud-menu__row"
+            onClick={() => onPickMode(mode)}
+          >
+            <span className="hud-menu__label">{MODE_PILL[mode]}</span>
+            <span className="hud-menu__what">{MODE_WHAT[mode]}</span>
+          </MenuItem>
+        ))}
+      </HudMenu>
       <Hint
         label={
           isOn

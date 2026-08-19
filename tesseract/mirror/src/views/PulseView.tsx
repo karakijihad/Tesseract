@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { Button } from '../components/common/Button';
+import { Block } from '../components/common/Block';
+import { Note } from '../components/common/Note';
+import { Segmented } from '../components/common/Segmented';
+import { RailView, type RailGroup } from '../components/common/RailView';
 import { linkifyText } from '../lib/linkify';
 import type { PulseTag } from '../lib/types';
 import { Hint } from '../components/ui/Hint';
@@ -103,77 +108,89 @@ export function PulseView() {
     [entries],
   );
 
-  return (
-    <div className="pulse-view">
-      <div className="pulse-header">
-        <span className="pulse-header-title">Pulse</span>
-        <span className="pulse-header-meta">
-          {filtered.length}{filterActive ? ` / ${entries.length}` : ''} / {capLabel}{locked ? ' · locked' : ''}
-        </span>
-        <div className="pulse-cap-selector" role="group" aria-label="Pulse retention cap">
-          {CAP_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              className={`pulse-cap-btn${cap === opt.value ? ' is-active' : ''}`}
-              onClick={() => setCap(opt.value)}
-              aria-pressed={cap === opt.value}
-              data-cap={opt.value}
-            >
-              {opt.label}
-            </button>
-          ))}
-          {cap === 'all' && (
-            <span className="pulse-cap-warn t-meta" title="No cap — long sessions may slow the panel">
-              unbounded — may affect performance
-            </span>
-          )}
-        </div>
-        <div className="pulse-header-actions">
-          <button
-            type="button"
-            onClick={() => setErrorsOnly(!errorsOnly)}
-            className={`pulse-header-btn${errorsOnly ? ' is-active' : ''}`}
-            aria-pressed={errorsOnly}
-            title="Show only error rows from the Mirror backend"
-          >
-            errors{errorCount > 0 ? ` (${errorCount})` : ''}
-          </button>
-          {filterActive && (
-            <button type="button" onClick={resetFilter} className="pulse-header-btn">
-              clear filter
-            </button>
-          )}
-          {entries.length > 0 && (
-            <button type="button" onClick={clear} className="pulse-header-btn">
-              clear
-            </button>
-          )}
-        </div>
-      </div>
-      <div className="pulse-filters">
-        {ALL_PULSE_TAGS.map((tag) => (
-          <Hint key={tag} label={`${tag} — ${TAG_HINTS[tag]}`} position="bottom" maxWidth={280}>
-            <button
-              type="button"
-              className={`ev-tag ${tag} pulse-filter-chip${isTagEnabled(tag) ? ' is-on' : ' is-off'}`}
-              onClick={() => toggleTag(tag)}
-              aria-pressed={isTagEnabled(tag)}
-            >
-              {tag}
-            </button>
-          </Hint>
-        ))}
-      </div>
-      <div className="pulse-stream" ref={scrollRef} onScroll={onScroll}>
-        {filtered.length === 0 ? (
-          <div className="pulse-empty">
-            {filterActive ? 'No events match filter' : 'Waiting for events…'}
-          </div>
-        ) : (
-          filtered.map((e) => <Row key={e.id} entry={e} />)
-        )}
-      </div>
-    </div>
-  );
+  const tagCounts = useMemo(() => {
+    const counts = new Map<PulseTag, number>();
+    for (const e of entries) counts.set(e.tag, (counts.get(e.tag) ?? 0) + 1);
+    return counts;
+  }, [entries]);
+
+  const groups: RailGroup[] = [
+    {
+      label: 'Feed',
+      sections: [
+        {
+          key: 'stream',
+          label: 'Stream',
+          meta: `${filtered.length}${filterActive ? ` / ${entries.length}` : ''} / ${capLabel}${locked ? ' · locked' : ''}`,
+          actions: (
+            <>
+              <Hint label="Show only error rows from the Mirror backend">
+                <Button
+                  onClick={() => setErrorsOnly(!errorsOnly)}
+                  active={errorsOnly}
+                  ariaLabel="show errors only"
+                >
+                  errors{errorCount > 0 ? ` (${errorCount})` : ''}
+                </Button>
+              </Hint>
+              {entries.length > 0 && (
+                <Button onClick={clear} ariaLabel="clear the event stream">
+                  clear
+                </Button>
+              )}
+            </>
+          ),
+          render: () => (
+            <div className="pulse-stream" ref={scrollRef} onScroll={onScroll}>
+              {filtered.length === 0 ? (
+                <div className="pulse-empty">
+                  {filterActive ? 'No events match filter' : 'Waiting for events…'}
+                </div>
+              ) : (
+                filtered.map((e) => <Row key={e.id} entry={e} />)
+              )}
+            </div>
+          ),
+        },
+        {
+          key: 'retention',
+          label: 'Retention',
+          meta: `keeping ${capLabel}`,
+          render: () => (
+            <Block title="How much to keep" meta={`${entries.length} held`}>
+              <Segmented
+                items={CAP_OPTIONS.map((o) => ({ key: o.value, label: o.label }))}
+                value={cap}
+                onSelect={setCap}
+                label="Pulse retention cap"
+                className="pulse-cap-selector"
+              />
+              {cap === 'all' && (
+                <Note tone="warn">
+                  No cap — a long session keeps every event, which the panel
+                  eventually feels.
+                </Note>
+              )}
+            </Block>
+          ),
+        },
+      ],
+    },
+    {
+      // Ticked in the rail, applied to the stream beside it — no section to
+      // leave and come back from (operator, 2026-08-14).
+      label: 'Tags',
+      filters: ALL_PULSE_TAGS.map((tag) => ({
+        key: tag,
+        label: tag,
+        count: tagCounts.get(tag) ?? 0,
+        checked: isTagEnabled(tag),
+        hint: TAG_HINTS[tag],
+      })),
+      onToggleFilter: (key) => toggleTag(key as PulseTag),
+      onResetFilters: resetFilter,
+    },
+  ];
+
+  return <RailView groups={groups} label="Pulse sections" />;
 }

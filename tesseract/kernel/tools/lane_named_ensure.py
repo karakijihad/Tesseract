@@ -63,19 +63,21 @@ class LaneNamedEnsureTool(Tool):
     default_posture = "ask"
     risk_class: ClassVar[str] = "operator_gate"
 
+    group: ClassVar[str] = "long-running-collaborators"
+    summary: ClassVar[str] = (
+        "Get-or-open a named, persistent lane in one call — reuses it if alive, opens fresh if not."
+    )
+    use_when: ClassVar[str] = (
+        "Use for a standing collaborator you address by name across turns and sessions, not a throwaway."
+    )
+    not_when: ClassVar[str] = (
+        "an unnamed one-off lane, which is `lane_open`; looking up an existing binding without "
+        "opening, which is `lane_named_get`."
+    )
+
     @property
     def name(self) -> str:
         return "lane_named_ensure"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Get-or-open a named lane in one call. Reuses the bound "
-            "lane_id when alive; opens a fresh lane under the same name "
-            "when no binding exists or the bound lane is dead. Returns "
-            "the binding record. ASK-gated because the open branch "
-            "spawns a CLI subprocess."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

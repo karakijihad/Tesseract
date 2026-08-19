@@ -1,5 +1,11 @@
 """janitor.yaml accessor. Config is authoritative — missing or malformed
-keys raise (KeyError / ValidationError), no silent defaults."""
+keys raise (KeyError / ValidationError), no silent defaults.
+
+`archive_retention_days` and `log_prune` used to live here; both are rows in
+`config/retention.yaml` now. `extra="forbid"` means an install still carrying
+them fails to load rather than reading them and doing nothing — which is what
+a silently-ignored retention window would be.
+"""
 
 from __future__ import annotations
 
@@ -20,22 +26,13 @@ class Fingerprint(BaseModel):
     pattern: str  # regex searched against the full command line
 
 
-class LogPrune(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    retention_days: int = Field(ge=1)
-    globs: list[str]
-
-
 class JanitorConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     process_fingerprints: list[Fingerprint]
     scratch_dir_globs: list[str]
-    archive_retention_days: int = Field(ge=1)
     stale_session_grace_hours: int = Field(ge=1)
     claimed_heartbeat_max_age_s: int = Field(ge=1)
-    log_prune: LogPrune
 
 
 def load_janitor_config(path: Path | None = None) -> JanitorConfig:

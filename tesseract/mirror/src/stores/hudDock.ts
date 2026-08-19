@@ -1,24 +1,16 @@
 import { create } from "zustand";
 
-// Sectioned dock (2026-07-31, operator-approved mockup v6) — shared state for
-// the bottom HUD: which section stack is open (one at a time) and whether the
-// whole bar is tucked into the edge tab. Per-session by design: a fresh boot
-// starts with the bar visible and all stacks closed.
+// Bottom HUD dock state: whether the whole bar is tucked into its edge tab.
+// Per-session by design — a fresh boot starts with the bar visible.
+//
+// `openSection` went with the section stacks (operator, 2026-08-13): every tab
+// is on the bar now, so there is no stack to have one of open.
 interface HudDockStore {
-  openSection: string | null;
   tucked: boolean;
-  toggleSection: (id: string) => void;
-  closeSections: () => void;
   setTucked: (tucked: boolean) => void;
 }
 
-export const useHudDockStore = create<HudDockStore>((set, get) => ({
-  openSection: null,
+export const useHudDockStore = create<HudDockStore>((set) => ({
   tucked: false,
-  toggleSection: (id) =>
-    set({ openSection: get().openSection === id ? null : id }),
-  closeSections: () => {
-    if (get().openSection !== null) set({ openSection: null });
-  },
-  setTucked: (tucked) => set({ tucked, openSection: null }),
+  setTucked: (tucked) => set({ tucked }),
 }));

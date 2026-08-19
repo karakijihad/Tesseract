@@ -1,8 +1,8 @@
 """Generic propose/commit primitives for agent-initiated workspace changes.
 
 Mental model: the assistant is a colleague sending change requests. Any mutation
-of an operator-owned workspace `.md` file (SOUL.md, IDENTITY.md,
-FOUNDATION.md, etc.) routes through this module:
+of an operator-owned workspace `.md` file (SOUL.md, USER.md, OPERATING.md,
+etc.) routes through this module:
 
     propose_change tool  ─►  WorkspaceEvent(kind="change_proposal")  ─►  inbox row
     operator clicks Approve in workspace  ─►  apply_change()  ─►  file mutated
@@ -55,36 +55,12 @@ PROPOSABLE_PATHS: dict[str, dict[str, object]] = {
         "label": "Soul",
         "allowed_actions": ("append", "replace", "append_to_section"),
     },
-    "tesseract/workspace/IDENTITY.md": {
-        "label": "Identity",
-        "allowed_actions": ("append", "replace", "append_to_section"),
-    },
-    "tesseract/workspace/FOUNDATION.md": {
-        "label": "Foundation",
-        "allowed_actions": ("append", "replace", "append_to_section"),
-    },
     "tesseract/workspace/USER.md": {
         "label": "User",
         "allowed_actions": ("append", "replace", "append_to_section"),
     },
-    "tesseract/workspace/VOICE.md": {
-        "label": "Voice",
-        "allowed_actions": ("append", "replace", "append_to_section"),
-    },
-    "tesseract/workspace/AGENTS.md": {
-        "label": "Agents",
-        "allowed_actions": ("append", "replace", "append_to_section"),
-    },
-    "tesseract/workspace/HEARTBEAT.md": {
-        "label": "Heartbeat",
-        "allowed_actions": ("append", "replace", "append_to_section"),
-    },
-    "tesseract/workspace/MCP.md": {
-        "label": "MCP",
-        "allowed_actions": ("append", "replace", "append_to_section"),
-    },
-    "tesseract/workspace/TOOLS.md": {
-        "label": "Tools",
+    "tesseract/workspace/OPERATING.md": {
+        "label": "Operating",
         "allowed_actions": ("append", "replace", "append_to_section"),
     },
     "tesseract/workspace/WORKSHOP.md": {
@@ -93,10 +69,6 @@ PROPOSABLE_PATHS: dict[str, dict[str, object]] = {
     },
     "tesseract/workspace/DIARY.md": {
         "label": "Diary",
-        "allowed_actions": ("append", "replace", "append_to_section"),
-    },
-    "tesseract/workspace/BOOT.md": {
-        "label": "Boot",
         "allowed_actions": ("append", "replace", "append_to_section"),
     },
 }

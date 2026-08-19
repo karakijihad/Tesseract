@@ -31,18 +31,14 @@ class ControllerSessionListTool(Tool):
     default_posture: ClassVar[str] = "auto"
     risk_class: ClassVar[str] = "autonomous"
 
+    group: ClassVar[str] = "long-running-collaborators"
+    summary: ClassVar[str] = "List agent controller sessions on disk, newest first, with status."
+    use_when: ClassVar[str] = "Use to check whether a detached session from start_controller_session finished."
+    not_when: ClassVar[str] = "lanes or interactive sessions, which are `lane_list`/`session_list`."
+
     @property
     def name(self) -> str:
         return "controller_session_list"
-
-    @property
-    def description(self) -> str:
-        return (
-            "List agent controller sessions (the ones started via "
-            "start_controller_session / delegate_agent_controller), newest "
-            "first. Returns session_id, title, mode, origin, status, "
-            "last_active_at. Use to check whether a detached session finished."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

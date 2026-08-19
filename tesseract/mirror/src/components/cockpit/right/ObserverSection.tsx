@@ -4,6 +4,8 @@ import { useObserverStore } from '../../../stores/observer';
 import { useSuggestionsStore } from '../../../stores/suggestions';
 import { ObserverStatsChip } from './ObserverStatsChip';
 import { ObserverSuggestions } from './ObserverSuggestions';
+import { Hint } from '../../ui/Hint';
+import { Button } from '../../common/Button';
 
 function formatTime(iso: string): string {
   const d = new Date(iso);
@@ -23,6 +25,8 @@ export function ObserverSection() {
   const suggestions = useSuggestionsStore(s => s.suggestions);
   const resetSuggestions = useSuggestionsStore(s => s.reset);
   const armState = useObserverStore(s => s.state);
+  const arm = useObserverStore(s => s.arm);
+  const disarm = useObserverStore(s => s.disarm);
 
   const newestFirst = [...observations].reverse();
   const isArmed = armState !== 'off';
@@ -44,15 +48,30 @@ export function ObserverSection() {
           <div className="observer-arm-row t-meta">
             <span className="observer-arm-state">arm: {armState}</span>
             <div className="observer-arm-actions">
-              <button
-                type="button"
-                className="observer-trigger t-caption"
-                onClick={handleClear}
-                disabled={!hasContent}
-                title="Clear stored observations + suggestions from this Mirror"
+              {/* The section reported `arm: off` and gave no way to change it —
+                  the only control lived in the bottom HUD group that the tab
+                  replaced. A state readout with no control beside it is the
+                  half of a feature that cannot be used. */}
+              <Hint
+                label={
+                  isArmed
+                    ? 'Observer is on — background passes run on your turns'
+                    : 'Observer is off — arm it to run background passes'
+                }
               >
-                clear
-              </button>
+                <Button
+                  tone={isArmed ? 'good' : 'default'}
+                  active={isArmed}
+                  onClick={() => (isArmed ? disarm() : arm())}
+                >
+                  {isArmed ? 'disarm' : 'arm'}
+                </Button>
+              </Hint>
+              <Hint label="Clear stored observations + suggestions from this Mirror">
+                <Button onClick={handleClear} disabled={!hasContent}>
+                  clear
+                </Button>
+              </Hint>
             </div>
           </div>
           {isArmed && <ObserverStatsChip />}
@@ -83,7 +102,7 @@ export function ObserverSection() {
               ))}
             </ul>
           )}
-      <div className="observer-suggestions-header t-meta">Suggestions</div>
+      <div className="observer-suggestions-header t-meta t-label">Suggestions</div>
       <ObserverSuggestions />
     </section>
   );

@@ -304,15 +304,14 @@ function deriveLabel(env: Envelope): string {
       return text ? `voice final: "${truncate(text, 56)}"` : 'voice final: (empty)';
     }
     case 'voice_discarded': {
-      // The whole point of the row: what was heard and how close it came.
-      // Without the score the operator can't tell "threshold too tight"
-      // from "the mic heard the TV".
-      const text = (d as { text?: unknown }).text;
-      const score = (d as { score?: unknown }).score;
-      const scoreStr = typeof score === 'number' ? ` (${score.toFixed(2)})` : '';
-      return typeof text === 'string' && text
-        ? `no wake word${scoreStr}: "${truncate(text, 44)}"`
-        : `no wake word${scoreStr}`;
+      // The length is what the row is for. There is no score to show — the
+      // decoder hears the phrase or it does not — and the duration is the
+      // distinction that matters anyway: two seconds is a gate too tight,
+      // thirty is the mic hearing the room.
+      const seconds = (d as { audio_seconds?: unknown }).audio_seconds;
+      return typeof seconds === 'number'
+        ? `no wake word (${seconds.toFixed(1)}s)`
+        : 'no wake word';
     }
     case 'tts_chunk': {
       const seq = (d as { sequence?: unknown }).sequence;

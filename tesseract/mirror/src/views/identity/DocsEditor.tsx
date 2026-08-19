@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Block } from "../../components/common/Block";
+import { Note } from "../../components/common/Note";
 
 import { useToastStore } from "../../stores/toasts";
 import { useWebSocketStore } from "../../stores/websocket";
@@ -10,6 +12,9 @@ import {
   saveWorkspaceDoc,
   type WorkspaceDocRow,
 } from "../../lib/api";
+import { Button } from "../../components/common/Button";
+import { MenuItem } from "../../components/common/MenuItem";
+import { Textarea } from "../../components/common/Textarea";
 
 interface Conflict {
   theirs: string;
@@ -145,23 +150,22 @@ export function DocsEditor() {
   const openRow = rows?.find((r) => r.path === openPath) ?? null;
 
   return (
-    <section className="identity-view-card identity-panel">
-      <div className="identity-view-card-heading t-meta">Documents</div>
+    <Block title={null}>
       <div className="identity-panel-body">
-        {error && <div className="settings-error">{error}</div>}
-        <span className="t-meta identity-field-hint">
+        {error && <Note tone="bad">{error}</Note>}
+        <Note>
           The documents the assistant reads every turn, and proposes changes
           against. Saving here commits directly — the proposal card is
           skipped, the hash check is not.
-        </span>
+        </Note>
 
         <div className="docs-editor">
           <ul className="docs-editor-list">
             {(rows ?? []).map((r) => (
               <li key={r.path}>
-                <button
-                  type="button"
-                  className={`docs-editor-row${r.path === openPath ? " is-open" : ""}`}
+                <MenuItem
+                  className="docs-editor-row"
+                  active={r.path === openPath}
                   disabled={!r.exists || loading}
                   onClick={() => void open(r.path)}
                 >
@@ -169,7 +173,7 @@ export function DocsEditor() {
                   <span className="t-meta docs-editor-size">
                     {r.exists ? `${r.lines} lines` : "missing"}
                   </span>
-                </button>
+                </MenuItem>
               </li>
             ))}
             {rows !== null && rows.length === 0 && (
@@ -204,49 +208,42 @@ export function DocsEditor() {
                       <pre className="docs-editor-diff">{conflict.diff}</pre>
                     )}
                     <div className="identity-actions">
-                      <button
-                        type="button"
-                        className="identity-save"
+                      <Button
                         onClick={takeTheirs}
                       >
                         discard mine, load theirs
-                      </button>
-                      <button
-                        type="button"
-                        className="identity-save"
+                      </Button>
+                      <Button
                         onClick={rebaseOnTheirs}
                       >
                         keep mine, save over theirs
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 )}
 
-                <textarea
+                <Textarea
                   className="docs-editor-text"
                   value={draft}
                   spellCheck={false}
                   disabled={loading || saving}
-                  onChange={(e) => setDraft(e.target.value)}
+                  ariaLabel="Document body"
+                  onChange={setDraft}
                 />
 
                 <div className="identity-actions">
-                  <button
-                    type="button"
-                    className="identity-save"
+                  <Button
                     onClick={() => void save()}
                     disabled={!dirty || saving || conflict !== null}
                   >
                     {saving ? "saving…" : "save"}
-                  </button>
-                  <button
-                    type="button"
-                    className="identity-save"
+                  </Button>
+                  <Button
                     onClick={() => setDraft(baseline)}
                     disabled={!dirty || saving}
                   >
                     revert
-                  </button>
+                  </Button>
                   {conflict !== null && (
                     <span className="t-meta">
                       Resolve the conflict above before saving.
@@ -258,6 +255,6 @@ export function DocsEditor() {
           </div>
         </div>
       </div>
-    </section>
+    </Block>
   );
 }

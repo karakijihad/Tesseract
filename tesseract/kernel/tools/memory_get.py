@@ -69,20 +69,24 @@ class MemoryGetTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "remembering"
+    summary: ClassVar[str] = "Read a line-range slice of one known memory-store markdown file."
+    use_when: ClassVar[str] = (
+        "Use when you already know the memory-store path and want an exact, "
+        "line-numbered slice rather than a ranked search."
+    )
+    not_when: ClassVar[str] = (
+        "use `memory_search` when you don't already have the path. Refuses "
+        "identity files (MEMORY.md, WHAT_NOT_TO_SAVE.md)."
+    )
+
     def __init__(self, *, memory_root: Path | None = None) -> None:
         self._memory_root = memory_root if memory_root is not None else TESSERACT_HOME / MEMORY_STORE_DIRNAME
 
     @property
     def name(self) -> str:
         return "memory_get"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Read a slice of a memory-store markdown file. Path must be "
-            "under tesseract/memory-store/ and end in .md. Identity files "
-            "(MEMORY.md, WHAT_NOT_TO_SAVE.md) are rejected."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

@@ -5,6 +5,13 @@
 // The hosted view is memoized on its kind so the high-frequency geometry updates
 // during a drag/resize re-render only this frame, never the view inside it.
 
+import { CloseButton } from "../components/common/CloseButton";
+import { IconButton } from "../components/common/IconButton";
+import { ResetIcon } from "../components/common/icons";
+import {
+  ResizeHandles,
+  type ResizeDir,
+} from "../components/common/ResizeHandles";
 import { memo, useMemo, type PointerEvent as ReactPointerEvent } from "react";
 
 import {
@@ -15,15 +22,13 @@ import {
   type PanelState,
 } from "./panelStore";
 import { VIEW_REGISTRY, VIEW_LABELS } from "./viewRegistry";
+import { Hint } from '../components/ui/Hint';
 
 const MIN_W = 340;
 const MIN_H = 240;
 // Floating rails resize down to their dock width, not the view-panel floor,
 // so an undocked rail doesn't snap 282→340 on first resize.
 const railMinW = (isRail: boolean): number => (isRail ? RAIL_W : MIN_W);
-
-type Dir = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
-const HANDLES: Dir[] = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
 
 // A thumbtack — filled when pinned (locked), outline when free.
 function PinIcon({ filled }: { filled: boolean }) {
@@ -46,21 +51,6 @@ function PinIcon({ filled }: { filled: boolean }) {
 }
 
 // A short underscore — collapse the panel off-stage (reachable from the HUD).
-function ResetIcon() {
-  return (
-    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-      <path
-        d="M13 8a5 5 0 1 1-1.6-3.7"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-      <polygon points="13.4,1.8 13.4,5.4 9.8,5.4" fill="currentColor" />
-    </svg>
-  );
-}
-
 function MinimizeIcon() {
   return (
     <svg
@@ -174,7 +164,7 @@ function GlassPanelImpl({ panel, maximizeRect, bounds }: GlassPanelProps) {
     window.addEventListener("pointerup", onUp);
   };
 
-  const startResize = (dir: Dir) => (e: ReactPointerEvent) => {
+  const startResize = (dir: ResizeDir) => (e: ReactPointerEvent) => {
     if (maximized) return;
     e.preventDefault();
     e.stopPropagation();
@@ -253,76 +243,53 @@ function GlassPanelImpl({ panel, maximizeRect, bounds }: GlassPanelProps) {
         <span className="glass-panel__title">{label}</span>
         <div className="glass-panel__actions">
           {/* Pin = lock in place (no move/resize) — on every panel, rails too. */}
-          <button
-            type="button"
-            className={`glass-panel__btn${panel.pinned ? " is-active" : ""}`}
-            aria-label={
-              panel.pinned ? `Unlock ${label}` : `Pin ${label} in place`
-            }
-            aria-pressed={panel.pinned}
+          <IconButton
+            active={panel.pinned}
+            ariaLabel={panel.pinned ? `Unlock ${label}` : `Pin ${label} in place`}
             onPointerDown={stop}
             onClick={() => togglePin(panel.id)}
           >
             <PinIcon filled={panel.pinned} />
-          </button>
+          </IconButton>
           {isRail && (
-            <button
-              type="button"
-              className="glass-panel__btn"
-              aria-label={`Reset ${label} to its default position`}
-              title={`Reset ${label} to its default position`}
-              onPointerDown={stop}
-              onClick={() => resetRail(panel.kind as RailKind)}
-            >
-              <ResetIcon />
-            </button>
+            <Hint label={`Reset ${label} to its default position`}>
+              <IconButton
+                ariaLabel={`Reset ${label} to its default position`}
+                onPointerDown={stop}
+                onClick={() => resetRail(panel.kind as RailKind)}
+              >
+                <ResetIcon />
+              </IconButton>
+            </Hint>
           )}
           {!isRail && (
-            <button
-              type="button"
-              className="glass-panel__btn"
-              aria-label={`Minimize ${label}`}
+            <IconButton
+              ariaLabel={`Minimize ${label}`}
               onPointerDown={stop}
               onClick={() => toggleMinimize(panel.id)}
             >
               <MinimizeIcon />
-            </button>
+            </IconButton>
           )}
           {!isRail && (
-            <button
-              type="button"
-              className={`glass-panel__btn${panel.maximized ? " is-active" : ""}`}
-              aria-label={
-                panel.maximized ? `Restore ${label}` : `Maximize ${label}`
-              }
-              aria-pressed={panel.maximized}
+            <IconButton
+              active={panel.maximized}
+              ariaLabel={panel.maximized ? `Restore ${label}` : `Maximize ${label}`}
               onPointerDown={stop}
               onClick={() => toggleMaximize(panel.id)}
             >
               <MaximizeIcon on={panel.maximized} />
-            </button>
+            </IconButton>
           )}
-          <button
-            type="button"
-            className="glass-panel__btn glass-panel__close"
-            aria-label={`Close ${label}`}
+          <CloseButton
+            ariaLabel={`Close ${label}`}
             onPointerDown={stop}
             onClick={() => closePanel(panel.id)}
-          >
-            ×
-          </button>
+          />
         </div>
       </div>
       <div className="glass-panel__body">{content}</div>
-      {showHandles &&
-        HANDLES.map((dir) => (
-          <div
-            key={dir}
-            className={`glass-panel__resize glass-panel__resize--${dir}`}
-            aria-hidden="true"
-            onPointerDown={startResize(dir)}
-          />
-        ))}
+      {showHandles && <ResizeHandles onResizeStart={startResize} />}
     </div>
   );
 }

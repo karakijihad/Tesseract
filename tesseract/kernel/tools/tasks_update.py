@@ -32,18 +32,21 @@ class TasksUpdateTool(Tool):
     default_posture: ClassVar[str] = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "being-present"
+    summary: ClassVar[str] = "Flips one task's status or renames it, by id, without touching the rest."
+    use_when: ClassVar[str] = (
+        "Use as work advances: mark a step in_progress when you start it, completed when done. "
+        "Exactly one step is in_progress at a time — the strip shows the operator where you are, "
+        "and two at once says nowhere. Requires `tasks_set` to have established the checklist first."
+    )
+    not_when: ClassVar[str] = (
+        "replacing the whole checklist, which is `tasks_set`."
+    )
+
     @property
     def name(self) -> str:
         return "tasks_update"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Update one todo by id — flip its status (pending / "
-            "in_progress / completed) and optionally rename it. Use as "
-            "work advances. Returns the full new list so the operator's "
-            "checklist re-renders inline in chat."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

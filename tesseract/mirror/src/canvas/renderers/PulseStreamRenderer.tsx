@@ -3,11 +3,15 @@
 // PulseView. Filter state is read from the pulse store, shared with the
 // PulseFilterRenderer card.
 
+import { Button } from '../../components/common/Button';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { linkifyText } from '../../lib/linkify';
 import { usePulseStore, type PulseCapValue, type PulseEntry } from '../../stores/pulse';
 import type { RendererProps } from './index';
+import { Hint } from '../../components/ui/Hint';
+import { Segmented } from '../../components/common/Segmented';
+import { ViewHeader } from '../../components/common/ViewHeader';
 
 const CAP_OPTIONS: { value: PulseCapValue; label: string }[] = [
   { value: 100, label: '100' },
@@ -82,51 +86,51 @@ export function PulseStreamRenderer(_props: RendererProps) {
 
   return (
     <div className="pulse-view pulse-view--card">
-      <div className="pulse-header">
-        <span className="pulse-header-meta">
-          {filtered.length}{filterActive ? ` / ${entries.length}` : ''} / {capLabel}{locked ? ' · locked' : ''}
-        </span>
-        <div className="pulse-cap-selector" role="group" aria-label="Pulse retention cap">
-          {CAP_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              className={`pulse-cap-btn${cap === opt.value ? ' is-active' : ''}`}
-              onClick={() => setCap(opt.value)}
-              aria-pressed={cap === opt.value}
-              data-cap={opt.value}
-            >
-              {opt.label}
-            </button>
-          ))}
-          {cap === 'all' && (
-            <span className="pulse-cap-warn t-meta" title="No cap — long sessions may slow the panel">
-              unbounded — may affect performance
-            </span>
-          )}
-        </div>
-        <div className="pulse-header-actions">
-          <button
-            type="button"
-            onClick={() => setErrorsOnly(!errorsOnly)}
-            className={`pulse-header-btn${errorsOnly ? ' is-active' : ''}`}
-            aria-pressed={errorsOnly}
-            title="Show only error rows from the Mirror backend"
-          >
-            errors{errorCount > 0 ? ` (${errorCount})` : ''}
-          </button>
-          {filterActive && (
-            <button type="button" onClick={resetFilter} className="pulse-header-btn">
-              clear filter
-            </button>
-          )}
-          {entries.length > 0 && (
-            <button type="button" onClick={clear} className="pulse-header-btn">
-              clear
-            </button>
-          )}
-        </div>
-      </div>
+      <ViewHeader
+        meta={
+          <>
+            {filtered.length}{filterActive ? ` / ${entries.length}` : ''} / {capLabel}{locked ? ' · locked' : ''}
+          </>
+        }
+        actions={
+          <>
+            <div className="pulse-cap-selector">
+              <Segmented
+                items={CAP_OPTIONS.map((o) => ({ key: o.value, label: o.label }))}
+                value={cap}
+                onSelect={setCap}
+                label="Pulse retention cap"
+              />
+              {cap === 'all' && (
+                <Hint label="No cap — long sessions may slow the panel">
+                  <span className="pulse-cap-warn t-meta">
+                    unbounded — may affect performance
+                  </span>
+                </Hint>
+              )}
+            </div>
+            <Hint label="Show only error rows from the Mirror backend">
+              <Button
+                onClick={() => setErrorsOnly(!errorsOnly)}
+                active={errorsOnly}
+                ariaLabel="show errors only"
+              >
+                errors{errorCount > 0 ? ` (${errorCount})` : ''}
+              </Button>
+            </Hint>
+            {filterActive && (
+              <Button onClick={resetFilter} ariaLabel="clear filter">
+                clear filter
+              </Button>
+            )}
+            {entries.length > 0 && (
+              <Button onClick={clear} ariaLabel="clear">
+                clear
+              </Button>
+            )}
+          </>
+        }
+      />
       <div className="pulse-stream" ref={scrollRef} onScroll={onScroll}>
         {filtered.length === 0 ? (
           <div className="pulse-empty">

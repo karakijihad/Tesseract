@@ -66,7 +66,7 @@ If there's exactly one notable item and the rest is noise, emit a single card. I
 ## Rules
 
 - Synthesise — do not paste preview text verbatim. The previews are evidence, not output.
-- Bias for items that touch model availability, pricing, context windows, deprecations, agentic-tool releases, or upstream library breakage in the assistant-adjacent tools (Claude Code, Codex CLI, Anthropic / OpenAI / Google SDKs, Tavily, Piper). Demote pure marketing or rumor.
+- Bias for items that touch model availability, pricing, context windows, deprecations, agentic-tool releases, or upstream library breakage in the assistant-adjacent tools (Claude Code, Codex CLI, Anthropic / OpenAI / Google SDKs, Tavily). Demote pure marketing or rumor.
 - Voice contract: no `**bold**`, no `*italic*`, no inline `[text](url)` links, no tables, no code fences, no horizontal rules. Spell out integers under ten ("three new pages", not "3 new pages").
 - Date stamps live on the brief frontmatter and individual `Source:` clauses — do not also add "today" / "yesterday" qualifiers in the prose.
 - Use "you / your" not "the operator / the user". The brief is addressed to the operator.

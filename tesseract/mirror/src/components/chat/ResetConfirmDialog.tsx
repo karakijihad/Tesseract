@@ -2,24 +2,20 @@ import { useEffect, useRef } from 'react';
 import { useResetDialogStore } from '../../stores/resetDialog';
 import { sendCommand } from '../../lib/commands';
 import './ResetConfirmDialog.css';
+import { Button } from '../common/Button';
+import { Modal } from '../common/Modal';
 
 export function ResetConfirmDialog() {
   const open = useResetDialogStore((s) => s.open);
   const closeDialog = useResetDialogStore((s) => s.closeDialog);
   const reflectBtnRef = useRef<HTMLButtonElement>(null);
 
+  // Escape and the scrim belong to `Modal`; what is left here is where focus
+  // lands, which is this dialog's own choice — the reflecting option, not the
+  // destructive one beside it.
   useEffect(() => {
-    if (!open) return;
-    reflectBtnRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        closeDialog();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, closeDialog]);
+    if (open) reflectBtnRef.current?.focus();
+  }, [open]);
 
   if (!open) return null;
 
@@ -33,19 +29,12 @@ export function ResetConfirmDialog() {
   };
 
   return (
-    <>
-      <button
-        type="button"
-        className="reset-dialog-scrim"
-        onClick={closeDialog}
-        aria-label="Cancel reset"
-      />
-      <div
-        className="reset-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="reset-dialog-title"
-      >
+    <Modal
+      onClose={closeDialog}
+      ariaLabel="reset this conversation"
+      ariaLabelledBy="reset-dialog-title"
+      className="reset-dialog"
+    >
         <h2 id="reset-dialog-title" className="reset-dialog-title">
           Reset this conversation
         </h2>
@@ -56,30 +45,12 @@ export function ResetConfirmDialog() {
           reflection.
         </p>
         <div className="reset-dialog-actions">
-          <button
-            ref={reflectBtnRef}
-            type="button"
-            className="reset-dialog-btn reset-dialog-btn-primary"
-            onClick={onReflect}
-          >
+          <Button ref={reflectBtnRef} tone="primary" onClick={onReflect}>
             Reflect &amp; clear
-          </button>
-          <button
-            type="button"
-            className="reset-dialog-btn"
-            onClick={onClear}
-          >
-            Just clear
-          </button>
-          <button
-            type="button"
-            className="reset-dialog-btn reset-dialog-btn-cancel"
-            onClick={closeDialog}
-          >
-            Cancel
-          </button>
+          </Button>
+          <Button onClick={onClear}>Just clear</Button>
+          <Button onClick={closeDialog}>Cancel</Button>
         </div>
-      </div>
-    </>
+    </Modal>
   );
 }

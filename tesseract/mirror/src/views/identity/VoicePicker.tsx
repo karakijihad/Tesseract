@@ -1,15 +1,19 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { Block } from "../../components/common/Block";
+import { Note } from "../../components/common/Note";
 
 import { ensureTtsPlayer } from "../../stores/dispatch/tts";
 import { useToastStore } from "../../stores/toasts";
-import { useWebSocketStore } from "../../stores/websocket";
-import { useFetchRetryTick } from "../../lib/useFetchRetry";
+import { useCachedFetch } from "../../lib/useCachedFetch";
 import {
   fetchVoiceCatalog,
   postVoicePrimary,
   postVoiceTest,
+  type CatalogVoice,
   type VoiceCatalogResponse,
 } from "../../lib/api";
+import { Button } from "../../components/common/Button";
+import { MenuItem } from "../../components/common/MenuItem";
 
 /** Which voice speaks.
  *
@@ -28,23 +32,55 @@ import {
  * no per-call voice override by design — AS-3 removed it — which is why
  * the sample always speaks the *current* selection.
  */
+/** What a voice costs per hour of speech, which is how spend is estimated:
+ * speech length × this rate. Zero is free. */
+function costLabel(v: CatalogVoice): string {
+  return v.cost_per_hour_usd
+    ? `$${v.cost_per_hour_usd.toFixed(2)}/hour spoken`
+    : "free";
+}
+
+/** The one thing the row says about its own state, in precedence order.
+ *
+ * Early returns rather than a ternary chain: the order IS the behaviour —
+ * `locked` sitting above `isPrimary` is what makes a keyless current voice
+ * read "needs GOOGLE_API_KEY" instead of "speaking", which is the true
+ * statement. That decision should be legible as a sequence, not recovered
+ * from nesting depth.
+ */
+function stateLabel(
+  v: CatalogVoice,
+  { locked, saving, isPrimary, fallbackAt }: {
+    locked: boolean;
+    saving: boolean;
+    isPrimary: boolean;
+    fallbackAt: number;
+  },
+): string {
+  if (!v.enabled) return "disabled in providers.yaml";
+  if (locked) return `needs ${v.key_env}`;
+  if (saving) return "saving…";
+  if (isPrimary) return "speaking";
+  if (fallbackAt >= 0) return `fallback ${fallbackAt + 1}`;
+  return "";
+}
+
 export function VoicePicker() {
-  const [catalog, setCatalog] = useState<VoiceCatalogResponse | null>(null);
+  // `useCachedFetch` rather than a fetch of its own: it already carries the
+  // WS-generation refetch and the error retry this had hand-rolled, and it
+  // adds the one thing they did not — the catalog survives the unmount, so
+  // returning to this panel paints the voices instead of `(loading…)`.
+  const {
+    data: catalog,
+    error,
+    set: setCatalog,
+    setError,
+  } = useCachedFetch<VoiceCatalogResponse>(
+    "identity.voice-catalog",
+    fetchVoiceCatalog,
+  );
   const [busyRef, setBusyRef] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const wsGeneration = useWebSocketStore((s) => s.generation);
-  const retryTick = useFetchRetryTick(error !== null);
-  useEffect(() => {
-    setError(null);
-    fetchVoiceCatalog()
-      .then(setCatalog)
-      .catch((err) =>
-        setError(err instanceof Error ? err.message : String(err)),
-      );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wsGeneration, retryTick]);
 
   const pick = async (ref: string) => {
     if (!catalog || ref === catalog.primary) return;
@@ -80,7 +116,15 @@ export function VoicePicker() {
       // of a turn still streaming.
       await ensureTtsPlayer().play({ audio_b64: res.audio_b64, is_final: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      // Both surfaces, and that is deliberate: the inline note is next to
+      // the button that failed, and the toast reaches an operator who has
+      // already scrolled away or switched tabs while a cloud voice was
+      // still rendering. `ApiError`'s message now carries the provider's
+      // own explanation, so this says which key or which network failed
+      // rather than "synthesis_failed".
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg);
+      useToastStore.getState().push(`Voice sample failed — ${msg}`, "error");
     } finally {
       setPlaying(false);
     }
@@ -88,31 +132,28 @@ export function VoicePicker() {
 
   if (!catalog) {
     return (
-      <section className="identity-view-card identity-panel">
-        <div className="identity-view-card-heading t-meta">Voice</div>
-        <div className="identity-panel-body">
-          <div className="t-meta">{error ?? "(loading…)"}</div>
-        </div>
-      </section>
+      <Block title={null}>
+        <div className="t-meta">{error ?? "(loading…)"}</div>
+      </Block>
     );
   }
 
   return (
-    <section className="identity-view-card identity-panel">
-      <div className="identity-view-card-heading t-meta">Voice</div>
+    <Block title={null}>
       <div className="identity-panel-body">
-        {error && <div className="settings-error">{error}</div>}
+        {error && <Note tone="bad">{error}</Note>}
 
         <ul className="voice-picker-list">
           {catalog.voices.map((v) => {
             const isPrimary = v.ref === catalog.primary;
             const fallbackAt = catalog.fallbacks.indexOf(v.ref);
+            const locked = !v.key_present;
             return (
               <li key={v.ref}>
-                <button
-                  type="button"
-                  className={`voice-picker-row${isPrimary ? " is-primary" : ""}`}
-                  disabled={!v.enabled || busyRef !== null || isPrimary}
+                <MenuItem
+                  className="voice-picker-row"
+                  active={isPrimary}
+                  disabled={!v.enabled || locked || busyRef !== null || isPrimary}
                   onClick={() => void pick(v.ref)}
                 >
                   <span className="voice-picker-mark" aria-hidden="true">
@@ -124,33 +165,32 @@ export function VoicePicker() {
                       <span className="t-meta voice-picker-gender">{` · ${v.gender}`}</span>
                     )}
                   </span>
+                  {/* Said on the row that would spend it, not on the spend
+                      view afterwards — a paid voice should announce itself
+                      at the moment it is chosen. */}
+                  <span className="t-meta voice-picker-cost">{costLabel(v)}</span>
                   <span className="t-meta voice-picker-ref">{v.ref}</span>
                   <span className="t-meta voice-picker-state">
-                    {!v.enabled
-                      ? "disabled in providers.yaml"
-                      : busyRef === v.ref
-                        ? "saving…"
-                        : isPrimary
-                          ? "speaking"
-                          : fallbackAt >= 0
-                            ? `fallback ${fallbackAt + 1}`
-                            : ""}
+                    {stateLabel(v, {
+                      locked,
+                      saving: busyRef === v.ref,
+                      isPrimary,
+                      fallbackAt,
+                    })}
                   </span>
-                </button>
+                </MenuItem>
               </li>
             );
           })}
         </ul>
 
         <div className="identity-actions">
-          <button
-            type="button"
-            className="identity-save"
+          <Button
             onClick={() => void play()}
             disabled={playing || busyRef !== null}
           >
             {playing ? "speaking…" : "play sample"}
-          </button>
+          </Button>
           <span className="t-meta">“{catalog.sample_text}”</span>
         </div>
         <span className="t-meta identity-field-hint">
@@ -161,6 +201,6 @@ export function VoicePicker() {
           timbre knob, because a local voice is its model file.
         </span>
       </div>
-    </section>
+    </Block>
   );
 }

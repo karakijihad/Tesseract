@@ -141,10 +141,28 @@ def _server(request: web.Request) -> MCPServer | None:
     return request.app.get("mcp_server")
 
 
+def _unavailable(request: web.Request) -> web.Response:
+    """Why there is no server to answer with — off, or not up yet.
+
+    These are different states and the operator fixes them differently: one
+    is a switch in Settings, the other is waiting a few seconds. A single
+    "not ready" for both sent anyone who had left MCP off looking for a
+    fault that was a setting.
+    """
+    cfg = request.app.get("mcp_config")
+    if cfg is not None and not cfg.server.enabled:
+        return _rpc_error(
+            503,
+            protocol._SERVER_ERROR,
+            "mcp is off — turn it on in Settings > Keys > MCP, then restart",
+        )
+    return _rpc_error(503, protocol._SERVER_ERROR, "mcp server not ready")
+
+
 async def _post_handler(request: web.Request) -> web.Response:
     server = _server(request)
     if server is None:
-        return _rpc_error(503, protocol._SERVER_ERROR, "mcp server not ready")
+        return _unavailable(request)
     client = authenticate(server._config, request.headers.get("Authorization"))
     if client is None:
         return _rpc_error(401, protocol._SERVER_ERROR, "unauthorized: valid bearer token required")
@@ -182,7 +200,7 @@ async def _get_handler(request: web.Request) -> web.StreamResponse:
     configured client presenting its own valid token must still not ride it."""
     server = _server(request)
     if server is None:
-        return _rpc_error(503, protocol._SERVER_ERROR, "mcp server not ready")
+        return _unavailable(request)
     client = authenticate(server._config, request.headers.get("Authorization"))
     if client is None:
         return _rpc_error(401, protocol._SERVER_ERROR, "unauthorized: valid bearer token required")
@@ -267,7 +285,7 @@ async def _delete_handler(request: web.Request) -> web.Response:
     streams and flips their ``mcp_session`` Activity record to closed."""
     server = _server(request)
     if server is None:
-        return _rpc_error(503, protocol._SERVER_ERROR, "mcp server not ready")
+        return _unavailable(request)
     client = authenticate(server._config, request.headers.get("Authorization"))
     if client is None:
         return _rpc_error(401, protocol._SERVER_ERROR, "unauthorized: valid bearer token required")

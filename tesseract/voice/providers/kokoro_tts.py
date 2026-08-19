@@ -186,8 +186,8 @@ def _do_register_cuda_dlls() -> None:
 
 
 def status(cfg: KokoroTTSConfig | None) -> dict[str, Any]:
-    """Mirror Settings shape — keys parallel piper_tts.status() so the
-    LocalModels panel can render Kokoro alongside Piper."""
+    """Mirror Settings shape — keys parallel the other lanes' status() so the
+    LocalModels panel can render Kokoro alongside Whisper."""
     loaded = bool(_kokoro_cache)
     cached = []
     for key, entry in _kokoro_cache.items():
@@ -419,9 +419,8 @@ def _resolve_style(kokoro: Any, mix: Mapping[str, float]) -> Any:
 
 
 def _sanitize_for_tts(text: str) -> str:
-    """Same sanitisation contract as piper_tts — strip
-    bracketed style cues (`[whispers]`) and markdown emphasis (`*`,
-    `**`) so they don't surface as spoken artefacts."""
+    """Strip bracketed style cues (`[whispers]`) and markdown emphasis
+    (`*`, `**`) so they don't surface as spoken artefacts."""
     cleaned = _STYLE_CUE_RE.sub("", text)
     cleaned = _MARKDOWN_EMPHASIS_RE.sub("", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()

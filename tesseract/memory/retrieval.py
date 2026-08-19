@@ -122,6 +122,9 @@ class RetrievalResult:
     # (1.0 when unset). Distinct from `score` — score is retrieval relevance,
     # confidence is how much the saver trusted the fact.
     confidence: float = 1.0
+    # True when the conversation this memory was learned from has been deleted.
+    # The fact still stands; there is simply no transcript left to go back to.
+    source_deleted: bool = False
 
 
 class RetrievalPipeline:
@@ -273,6 +276,7 @@ class RetrievalPipeline:
                 mem_type=fm.type,
                 provenance=prov,
                 confidence=fm.confidence,
+                source_deleted=fm.source_deleted_at is not None,
             ))
         for fm in entity_hits:
             read_result = self._store.read(fm.id, log_access=False)
@@ -288,6 +292,7 @@ class RetrievalPipeline:
                 mem_type=fm.type,
                 provenance=prov,
                 confidence=fm.confidence,
+                source_deleted=fm.source_deleted_at is not None,
             ))
 
         # Short-circuit only on a single slug hit. Multiple slug hits
@@ -500,6 +505,7 @@ class RetrievalPipeline:
                 mem_type=fm.type,
                 provenance=tuple(provenance.get(mem_id, ())),
                 confidence=fm.confidence,
+                source_deleted=fm.source_deleted_at is not None,
             ))
         return results
 
@@ -532,6 +538,7 @@ class RetrievalPipeline:
                 mem_type=fm.type,
                 provenance=("vector",),
                 confidence=fm.confidence,
+                source_deleted=fm.source_deleted_at is not None,
             ))
         results.sort(key=lambda r: r.score, reverse=True)
         return results

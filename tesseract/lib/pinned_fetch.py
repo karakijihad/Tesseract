@@ -23,6 +23,15 @@ Three invariants, each one load-bearing for a first run:
   degraded mode, and these run during provisioning and again on every
   launch, into a hidden console where a traceback goes nowhere. Failures
   are logged and swallowed; the return value carries the outcome.
+
+Not raising is not the same as not trying again, and conflating the two is
+what left a 311 MB model unfetched after one dropped connection. A transfer
+that fails part-way is retried, bounded by the project-wide
+``MAX_CONSECUTIVE_FAILURES``, and resumed from the bytes already on disk
+whenever the server honours a ``Range`` request. What is *not* retried is
+anything deterministic — a 404, the size cap, and above all a digest
+mismatch: re-fetching a file that failed verification must never be allowed
+to eventually succeed.
 """
 
 from __future__ import annotations
@@ -40,6 +49,21 @@ logger = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 120.0
 _CHUNK_BYTES = 1024 * 1024
+
+# The project-wide circuit breaker, spelled the way every other retry loop
+# here spells it. Three attempts, not three retries: a transfer that has
+# dropped three times is a link that is not going to deliver 311 MB today,
+# and provisioning has other files to fetch.
+MAX_CONSECUTIVE_FAILURES = 3
+
+# Waited between attempts, doubling. Short enough that a blip costs seconds
+# and long enough that a rate-limited or restarting upstream gets a moment.
+_BACKOFF_SECONDS = 2.0
+
+# Status codes worth trying again. Everything else in the 4xx range is the
+# server answering the question — the file is not there, or we may not have
+# it — and asking again cannot change the answer.
+_RETRYABLE_STATUS = frozenset({408, 425, 429})
 
 # A URL up to (and not including) its query string. The trailing class excludes
 # whitespace, quotes and the closing brackets a URL is usually reported inside,
@@ -255,20 +279,49 @@ def parse_download_block(raw: Any, *, where: str) -> PinnedSource | None:
             ", ".join(missing_digest),
         )
         return None
+    # The cap is the last thing that can throw here, and this function's whole
+    # contract is that it RETURNS None rather than raising — every caller
+    # treats an unusable block as "not fetchable", which is the same degraded
+    # mode as a failed download. A hand-edited `max_download_mb: "2 GB"` would
+    # otherwise take the fetch script down instead of skipping one artifact.
+    try:
+        cap = int(max_mb)
+    except (TypeError, ValueError):
+        logger.warning(
+            "%s: download block has a max_download_mb that is not a number (%r) — "
+            "cannot fetch safely",
+            where,
+            max_mb,
+        )
+        return None
+    if cap <= 0:
+        logger.warning(
+            "%s: download block has a max_download_mb of %d — a cap that refuses "
+            "everything is not a cap", where, cap
+        )
+        return None
     return PinnedSource(
         base_url=base_url,
         files=files,
-        max_download_mb=int(max_mb),
+        max_download_mb=cap,
         sources=sources,
     )
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(_CHUNK_BYTES), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def _discard(tmp: Path, label: str) -> None:
+    """Remove a partial file, and never raise doing it.
+
+    `missing_ok=True` swallows only `FileNotFoundError`. Every other `OSError`
+    — a `.part` held open by a virus scanner, a read-only directory — still
+    propagates, and these calls sit on the terminal paths of `_download_one`,
+    outside any handler. The module's first invariant is that a failed fetch
+    is a return value rather than an exception; an unlink that could throw put
+    that in the hands of the filesystem.
+    """
+    try:
+        tmp.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.info("%s: could not remove %s (%s)", label, tmp.name, exc)
 
 
 def scrub_url_credentials(text: str) -> str:
@@ -297,10 +350,132 @@ def scrub_url_credentials(text: str) -> str:
     return _URL_USERINFO_RE.sub(r"\1<redacted>@", _URL_QUERY_RE.sub(r"\1?<redacted>", text))
 
 
-def _download_one(url: str, dest: Path, expected_sha256: str, max_bytes: int, label: str) -> bool:
-    """Stream `url` into `dest`, installing only on a digest match."""
+def _is_transient(exc: BaseException) -> bool:
+    """Whether trying `exc` again could plausibly produce a different answer.
+
+    The split this module got wrong for a long time. A dropped connection, a
+    read timeout, a reset or a 5xx describes the link or the moment, not the
+    file — those are worth another attempt. A 404, a 403 or a malformed URL
+    describes the request, and repeating it just spends the operator's time
+    reaching the same conclusion three times.
+
+    An exception this does not recognise is treated as terminal on purpose:
+    an unexpected failure inside a loop that retries it is how a first run
+    turns into a hang. That includes httpx not being importable at all,
+    which is why the import is guarded here as well as everywhere else in
+    this module: a classifier that raises would defeat the never-raise
+    invariant it is called from.
+    """
+    try:
+        import httpx
+    except ImportError:
+        return False
+
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        return status in _RETRYABLE_STATUS or 500 <= status < 600
+    # Every network-level failure httpx raises — timeouts, connection and
+    # read errors, and `RemoteProtocolError`, which is the exact
+    # "Server disconnected without sending a response" this was built for.
+    return isinstance(exc, httpx.TransportError)
+
+
+def _resumable_prefix(tmp: Path) -> tuple[Any, int]:
+    """The digest and length of the partial bytes already written.
+
+    Re-read from disk rather than carried over from the failed attempt: the
+    handle was closed by an exception, and what is on disk is the only thing
+    that can be resumed from. Hashing 300 MB costs about a second and buys
+    back the 300 MB that would otherwise be fetched again.
+
+    An unreadable partial answers `(fresh digest, 0)`, i.e. start over.
+    """
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with tmp.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(_CHUNK_BYTES), b""):
+                digest.update(chunk)
+                size += len(chunk)
+    except OSError:
+        return hashlib.sha256(), 0
+    return digest, size
+
+
+def _attempt_transfer(
+    url: str, tmp: Path, name: str, max_bytes: int, resume_from: int
+) -> tuple[str, int]:
+    """One pass at the transfer, returning `(outcome, bytes on disk)`.
+
+    The outcome is the sha256 of everything written, or the literal
+    ``"oversized"`` when the size cap was hit; a transport failure is raised
+    for the caller to classify. Nothing here installs anything — the digest
+    check and the rename belong to the caller, which is what keeps a retry
+    from ever being able to install a file that failed verification.
+    """
     import httpx
 
+    digest = hashlib.sha256()
+    received = 0
+    headers: dict[str, str] = {}
+    if resume_from:
+        digest, received = _resumable_prefix(tmp)
+        if received:
+            headers["Range"] = f"bytes={received}-"
+
+    # The whole transfer sits inside this `with`, and the rename sits
+    # outside it: Windows refuses to rename a file that still has an
+    # open handle, so installing from inside the writer would fail on
+    # exactly the platform this ships on.
+    with httpx.stream(
+        "GET", url, headers=headers, follow_redirects=True, timeout=_TIMEOUT_SECONDS
+    ) as resp:
+        resp.raise_for_status()
+        # 206 is the server agreeing to continue where we stopped. Anything
+        # else — including a 200 from a server that ignored the header — is
+        # the whole file arriving again, so the bytes on disk are discarded
+        # rather than prepended to a second copy of themselves.
+        resuming = bool(headers) and getattr(resp, "status_code", 200) == 206
+        if not resuming:
+            digest = hashlib.sha256()
+            received = 0
+        expected = _expected_bytes(resp)
+        if resuming and expected is not None:
+            expected += received
+        report = _progress_reporter(name, expected)
+        # A zero at the start so the shell can name the file it is about
+        # to spend minutes on, rather than showing nothing until the
+        # first threshold is crossed. On a resume it is the offset, so the
+        # bar picks up where it left off instead of snapping back to zero.
+        report(received, force=True)
+        with tmp.open("ab" if resuming else "wb") as fh:
+            for chunk in resp.iter_bytes(_CHUNK_BYTES):
+                received += len(chunk)
+                if received > max_bytes:
+                    # Checked while streaming rather than from the
+                    # Content-Length header: a wrong or absent header
+                    # would let an endpoint gone wrong fill the disk
+                    # long before the digest check could reject it.
+                    return "oversized", received
+                digest.update(chunk)
+                fh.write(chunk)
+                report(received)
+        report(received, force=True)
+    return digest.hexdigest(), received
+
+
+def _download_one(url: str, dest: Path, expected_sha256: str, max_bytes: int, label: str) -> bool:
+    """Stream `url` into `dest`, installing only on a digest match.
+
+    Retries a transient failure up to `MAX_CONSECUTIVE_FAILURES` attempts,
+    resuming from the partial file when the server allows it. Terminal
+    failures — the size cap, a digest mismatch, a 404 — stop on the spot.
+
+    A `.part` left over from an earlier RUN is not resumed: it may be bytes
+    of a different pin published under the same filename, and while the
+    digest check would catch that, it would catch it after a full download.
+    Resume applies within one call, where the partial's provenance is known.
+    """
     # httpx logs every request line at INFO, and a HuggingFace download
     # redirects to a signed CDN URL whose query string is ~700 characters of
     # policy and signature. These scripts run with INFO on so their own
@@ -309,82 +484,114 @@ def _download_one(url: str, dest: Path, expected_sha256: str, max_bytes: int, la
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     tmp = dest.with_name(dest.name + ".part")
-    digest = hashlib.sha256()
-    received = 0
-    oversized = False
+    logger.info("%s: downloading %s", label, dest.name)
+    resume_from = 0
+    for attempt in range(1, MAX_CONSECUTIVE_FAILURES + 1):
+        try:
+            outcome, _received = _attempt_transfer(
+                url, tmp, dest.name, max_bytes, resume_from
+            )
+        except Exception as exc:  # noqa: BLE001 — offline/upstream/disk are all the same outcome
+            transient = _is_transient(exc)
+            retrying = transient and attempt < MAX_CONSECUTIVE_FAILURES
+            logger.warning(
+                "%s: %s %s on attempt %d of %d (%s)%s",
+                label,
+                dest.name,
+                "was interrupted" if transient else "could not be downloaded",
+                attempt,
+                MAX_CONSECUTIVE_FAILURES,
+                scrub_url_credentials(str(exc)),
+                "" if retrying else " — it stays unavailable until this "
+                "succeeds; the app continues without it.",
+            )
+            if not retrying:
+                _discard(tmp, label)
+                return False
+            # The partial stays on disk precisely so the next attempt can
+            # continue it. `_attempt_transfer` discards it itself if the
+            # server will not resume.
+            try:
+                resume_from = tmp.stat().st_size
+            except OSError:
+                resume_from = 0
+            if resume_from:
+                logger.info(
+                    "%s: retrying %s from %.1f MB already on disk",
+                    label,
+                    dest.name,
+                    resume_from / (1024 * 1024),
+                )
+            time.sleep(_BACKOFF_SECONDS * (2 ** (attempt - 1)))
+            continue
+
+        if outcome == "oversized":
+            logger.warning(
+                "%s: %s exceeded the catalog size cap (%d MB) — nothing installed.",
+                label,
+                dest.name,
+                max_bytes // (1024 * 1024),
+            )
+            _discard(tmp, label)
+            return False
+
+        if outcome != expected_sha256:
+            # Deterministic, and the one failure where retrying would be
+            # actively wrong: a second fetch of a corrupted or substituted
+            # artifact must never be allowed to eventually "succeed".
+            logger.warning(
+                "%s: checksum mismatch for %s (expected %s, got %s) — refusing to "
+                "install a corrupted or tampered file. Not retried: the same "
+                "bytes would fail the same check.",
+                label,
+                dest.name,
+                expected_sha256,
+                outcome,
+            )
+            _discard(tmp, label)
+            return False
+
+        try:
+            tmp.replace(dest)
+        except OSError as exc:
+            logger.warning("%s: could not install %s: %s", label, dest.name, exc)
+            _discard(tmp, label)
+            return False
+        logger.info(
+            "%s: wrote %s (%d bytes, sha256 verified)", label, dest, dest.stat().st_size
+        )
+        return True
+
+    return False  # unreachable: every path in the loop returns or continues
+
+
+def _discard_stale_partial(dest: Path, label: str) -> None:
+    """Remove the `.part` wreckage of a transfer that was killed outright.
+
+    Every failure path inside `_download_one` cleans up after itself, but a
+    process that is KILLED mid-transfer — provisioning cancelled, the machine
+    shut down — has no failure path to run. What it leaves is up to 311 MB of
+    a file that will never be resumed: resume is within one call by design, so
+    the next attempt truncates rather than continues.
+
+    Called on the SKIP branch, which is where it matters. Once the real file
+    is installed, anything beside it under `.part` is litter, and litter of
+    this size is the operator's disk.
+    """
+    partial = dest.with_name(dest.name + ".part")
     try:
-        logger.info("%s: downloading %s", label, dest.name)
-        # The whole transfer sits inside this `with`, and the rename sits
-        # outside it: Windows refuses to rename a file that still has an
-        # open handle, so installing from inside the writer would fail on
-        # exactly the platform this ships on.
-        with httpx.stream(
-            "GET", url, follow_redirects=True, timeout=_TIMEOUT_SECONDS
-        ) as resp:
-            resp.raise_for_status()
-            report = _progress_reporter(dest.name, _expected_bytes(resp))
-            # A zero at the start so the shell can name the file it is about
-            # to spend minutes on, rather than showing nothing until the
-            # first threshold is crossed.
-            report(0, force=True)
-            with tmp.open("wb") as fh:
-                for chunk in resp.iter_bytes(_CHUNK_BYTES):
-                    received += len(chunk)
-                    if received > max_bytes:
-                        # Checked while streaming rather than from the
-                        # Content-Length header: a wrong or absent header
-                        # would let an endpoint gone wrong fill the disk
-                        # long before the digest check could reject it.
-                        oversized = True
-                        break
-                    digest.update(chunk)
-                    fh.write(chunk)
-                    report(received)
-            report(received, force=True)
-    except Exception as exc:  # noqa: BLE001 — offline/upstream/disk are all the same outcome
-        logger.warning(
-            "%s: could not download %s (%s) — it stays unavailable until this "
-            "succeeds; the app continues without it.",
-            label,
-            dest.name,
-            scrub_url_credentials(str(exc)),
-        )
-        tmp.unlink(missing_ok=True)
-        return False
-
-    if oversized:
-        logger.warning(
-            "%s: %s exceeded the catalog size cap (%d MB) — nothing installed.",
-            label,
-            dest.name,
-            max_bytes // (1024 * 1024),
-        )
-        tmp.unlink(missing_ok=True)
-        return False
-
-    actual = digest.hexdigest()
-    if actual != expected_sha256:
-        logger.warning(
-            "%s: checksum mismatch for %s (expected %s, got %s) — refusing to "
-            "install a corrupted or tampered file.",
-            label,
-            dest.name,
-            expected_sha256,
-            actual,
-        )
-        tmp.unlink(missing_ok=True)
-        return False
-
-    try:
-        tmp.replace(dest)
-    except OSError as exc:
-        logger.warning("%s: could not install %s: %s", label, dest.name, exc)
-        tmp.unlink(missing_ok=True)
-        return False
+        size = partial.stat().st_size
+    except OSError:
+        return
+    _discard(partial, label)
+    if partial.exists():
+        return  # `_discard` already said why
     logger.info(
-        "%s: wrote %s (%d bytes, sha256 verified)", label, dest, dest.stat().st_size
+        "%s: removed %s left by an interrupted download (%.1f MB reclaimed)",
+        label,
+        partial.name,
+        size / (1024 * 1024),
     )
-    return True
 
 
 def ensure_files(
@@ -429,6 +636,7 @@ def ensure_files(
         # that documented, supported setup into a refusal.
         if lexical.exists() and not force:
             logger.info("%s: %s already present, skipping", label, filename)
+            _discard_stale_partial(lexical, label)
             continue
 
         # Containment governs the WRITE, which is the only thing it protects.

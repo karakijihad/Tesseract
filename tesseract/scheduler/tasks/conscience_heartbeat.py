@@ -8,13 +8,18 @@ Emits one JSONL line per run to
 home/logs/conscience/drift-YYYY-MM-DD.jsonl. The Mirror
 `/api/conscience/drift` route reads the latest file for display.
 
-When the worst-status band changes between consecutive reports
-(`ok` ↔ `warn` ↔ `bad`), a `conscience_drift` envelope is broadcast
-to every live Mirror WS so the operator gets a toast without having
-to open the Conscience tab.
+Two envelopes, and the quiet one is why the tab used to look dead:
 
-Disabled by default in `schedule.yaml` — operator opts in via Mirror
-schedule view once they want the tab populated.
+- `conscience_drift` fires only when the worst-status band CHANGES
+  (`ok` ↔ `warn` ↔ `bad`) and carries a toast — escalation stings,
+  recovery reassures.
+- `conscience_report` fires on every successful write and carries no
+  toast. Band changes are the rare case: an install where everything is
+  healthy emits `ok, ok, ok…` forever and would never push, and the
+  first-ever report cannot be a transition by construction
+  (`_detect_transition` returns None with no previous report). So an
+  open Conscience tab was waiting on an event a healthy system does not
+  generate.
 """
 
 from __future__ import annotations
@@ -35,13 +40,10 @@ from tesseract.conscience.memory_writer import (
     write_drift_entry,
 )
 from tesseract.conscience.reader import load_latest_report
-from tesseract.orchestrator.autonomy.models import AgendaSource, RiskClass
-from tesseract.orchestrator.autonomy.publishers import publish_to_bus
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.scheduler.types import JobContext, JobResult
 
 log = logging.getLogger(__name__)
-
 
 
 Status = Literal["ok", "warn", "bad"]
@@ -108,13 +110,19 @@ class ConscienceHeartbeatJob(BaseJob):
                     }
                 delivered = await _broadcast_transition(ctx.app, transition)
                 mood_nudged = _nudge_mood(ctx.app, transition)
-                # AU-20 §10 retrofit — turn the drift transition into a
-                # self_reflection agenda candidate. Escalations
-                # (ok→warn/bad, warn→bad) route through OPERATOR_GATE
-                # since corrective action usually needs operator review;
-                # recoveries route through PROPOSE so the kernel can
-                # acknowledge without gating.
-                _publish_drift_transition(transition, ctx)
+                # This used to publish the transition as a `self_reflection`
+                # agenda candidate, because an agenda item was the only way it
+                # had of reaching the operator. It is a stage of the nightly
+                # pass now, and the watchman reads `logs/conscience/` and puts
+                # any non-ok signal in the report — so the finding still
+                # arrives, without a queue entry standing in for a sentence.
+
+            # Every successful write pushes, transition or not. Without this an
+            # open tab only ever refreshes on a band change — which a healthy
+            # install never produces, and which the first-ever report cannot be.
+            report_delivered = 0
+            if write_ok:
+                report_delivered = await _broadcast_report(ctx.app, report_json)
 
             summary = report.summary
             detail = (
@@ -131,6 +139,7 @@ class ConscienceHeartbeatJob(BaseJob):
                 "window_hours": cfg.window_hours,
                 "enabled_job_count": enabled_job_count,
                 "write_ok": write_ok,
+                "report_ws_count": report_delivered,
             }
             if write_ok and transition is not None:
                 payload["transition"] = transition
@@ -157,47 +166,6 @@ class ConscienceHeartbeatJob(BaseJob):
                 detail=f"unhandled: {exc!r}",
                 duration_ms=(time.monotonic() - t0) * 1000.0,
             )
-
-
-_ESCALATIONS: frozenset[tuple[Status, Status]] = frozenset({
-    ("ok", "warn"),
-    ("ok", "bad"),
-    ("warn", "bad"),
-})
-
-
-def _publish_drift_transition(transition: dict, ctx: JobContext) -> None:
-    """One-line bus publish per AU-20 §10. Escalation routes through
-    OPERATOR_GATE (operator usually needs to act); recovery routes
-    through PROPOSE (kernel acknowledges, may auto-resolve). No-op when
-    no bus is registered."""
-    frm = transition.get("from")
-    to = transition.get("to")
-    is_escalation = (frm, to) in _ESCALATIONS
-    risk = RiskClass.OPERATOR_GATE if is_escalation else RiskClass.PROPOSE
-    changed = transition.get("changed_signals") or []
-    evidence_ids = [str(c.get("name") or "") for c in changed if c.get("name")][:8]
-    memory_id = transition.get("memory_id")
-    if memory_id:
-        evidence_ids.append(str(memory_id))
-    payload = {
-        "observation": (
-            f"conscience drift {frm}->{to}; "
-            f"signals_changed={len(changed)} flapping={bool(transition.get('flapping'))}"
-        ),
-        "suggested_risk_class": risk.value,
-        "evidence_ids": evidence_ids,
-        "memory_id": memory_id,
-        "source_handler": "conscience_heartbeat",
-    }
-    # event_id keys on the transition pair + run_id so back-to-back
-    # ticks emitting the same pair don't collide; new transitions get
-    # a fresh agenda candidate.
-    publish_to_bus(
-        AgendaSource.SELF_REFLECTION,
-        payload,
-        event_id=f"evt_conscience_{frm}_{to}_{ctx.run_id[:12]}",
-    )
 
 
 def _resolve_conscience_dir(ctx: JobContext) -> Path:
@@ -333,6 +301,40 @@ async def _broadcast_transition(app: Any, transition: dict) -> int:
         except Exception:
             log.exception(
                 "conscience_heartbeat: send_envelope failed for %s",
+                getattr(sess, "session_id", "?"),
+            )
+    return delivered
+
+
+async def _broadcast_report(app: Any, report_json: dict) -> int:
+    """Push the report itself to every live WS. Returns the delivery count.
+
+    Deliberately thinner than `_broadcast_transition`: no session injection and
+    no toast. A report that says the same thing as the last one is not news to
+    the operator, but it IS the difference between a tab showing today's scrape
+    and a tab showing whatever it fetched when it first mounted.
+    """
+    sessions = _server_sessions(app)
+    if not sessions:
+        return 0
+
+    from tesseract.mirror.server.envelope import make_envelope
+    from tesseract.mirror.server.session import send_envelope
+
+    delivered = 0
+    for sess in sessions.values():
+        env = make_envelope(
+            "conscience_report",
+            "background",
+            getattr(sess, "session_id", ""),
+            report_json,
+        )
+        try:
+            await send_envelope(sess, env)
+            delivered += 1
+        except Exception:
+            log.exception(
+                "conscience_heartbeat: report send_envelope failed for %s",
                 getattr(sess, "session_id", "?"),
             )
     return delivered

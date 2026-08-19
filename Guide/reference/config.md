@@ -17,10 +17,13 @@ Configuration is a set of YAML files under `tesseract/config/`. Model choices, b
 | --- | --- |
 | `agenda-mappers.yaml` | how raw signals become agenda candidates |
 | `agenda.yaml` | autonomy's queue, its gates and its worker budgets |
+| `atlas.yaml` | the derived map over memory and the vault — how long a derived connection stands before it wants review |
 | `autonomy-watchlist.yaml` | what autonomy keeps an eye on |
+| `boot.yaml` | what the app prepares when it starts, in what order, and how much of it you wait for |
 | `channels.yaml` | outbound channels |
 | `cockpit.yaml` | the spatial interface |
 | `conscience.yaml` | the self-check pass |
+| `controller-boot.yaml` | what the headless helper beside the app prepares when it starts, and in what order |
 | `hardware.yaml` | what the machine can do, detected at first run |
 | `identity.yaml` | who the assistant is |
 | `janitor.yaml` | cleanup sweeps |
@@ -31,6 +34,7 @@ Configuration is a set of YAML files under `tesseract/config/`. Model choices, b
 | `open_verb.yaml` | what 'open' resolves to |
 | `permissions.yaml` | AUTO / ASK / DENY for every tool — the authority |
 | `providers.yaml` | the catalog of providers and their model entries |
+| `retention.yaml` | how long each thing is kept, and whether it is archived or deleted when the window passes |
 | `roles.yaml` | which model does which job, and each role's daily cap |
 | `runtime.yaml` | process and lifecycle settings |
 | `schedule.yaml` | recurring jobs and how often they run |

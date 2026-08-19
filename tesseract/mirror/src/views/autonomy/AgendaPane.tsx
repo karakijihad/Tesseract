@@ -8,10 +8,14 @@
 // S2: per-row Snooze / Boost / Cancel buttons. Clicking the row body
 // (anywhere outside a button) opens the detail modal.
 
+import { Block } from '../../components/common/Block';
 import React from 'react';
 import type { AgendaItem } from '../../lib/api';
 import { Markdown } from '../../components/common/Markdown';
 import { useAutonomyStore } from '../../stores/autonomy';
+import { Hint } from '../../components/ui/Hint';
+import { Button } from '../../components/common/Button';
+import { Row, RowActions } from '../../components/common/Row';
 
 interface AgendaPaneProps {
   items: AgendaItem[];
@@ -42,11 +46,10 @@ const RISK_LABEL: Record<string, string> = {
   absolute_deny: 'deny',
 };
 
-// AU-23 — strategist rows get a distinctive label + accent chip class so
-// operator-attended portfolio initiatives stand out from ambient sources.
-const SOURCE_LABEL: Record<string, string> = {
-  strategist: 'Strategist',
-};
+// A source whose raw enum value does not read well in a chip gets a label
+// here. Empty today: the live sources — operator, recovery, provider_watch,
+// follow_up — all read as themselves.
+const SOURCE_LABEL: Record<string, string> = {};
 
 function _fmtScore(score: number): string {
   return score.toFixed(1);
@@ -66,31 +69,30 @@ export function AgendaPane({ items, status, error }: AgendaPaneProps): React.Rea
 
   if (status === 'error') {
     return (
-      <section className="runtime-block autonomy-pane autonomy-pane--agenda">
-        <div className="runtime-block__title">Agenda</div>
+      <Block title="Agenda">
         <p className="t-meta">Failed to load: {error}</p>
-      </section>
+      </Block>
     );
   }
 
   if (status !== 'ready' && active.length === 0) {
     return (
-      <section className="runtime-block autonomy-pane autonomy-pane--agenda">
-        <div className="runtime-block__title">Agenda</div>
+      <Block title="Agenda">
         <p className="t-meta">Loading…</p>
-      </section>
+      </Block>
     );
   }
 
   return (
-    <section className="runtime-block autonomy-pane autonomy-pane--agenda">
-      <div className="runtime-block__title">
-        Agenda
-        <span className="t-meta" style={{ marginLeft: 8 }}>{active.length} active</span>
-        {unvettedCount > 0 && (
-          <span className="t-meta" style={{ marginLeft: 8 }}>{unvettedCount} pending vet</span>
-        )}
-      </div>
+    <Block
+      title="Agenda"
+      meta={
+        <>
+          {active.length} active
+          {unvettedCount > 0 && ` · ${unvettedCount} pending vet`}
+        </>
+      }
+    >
 
       {active.length === 0 ? (
         <p className="t-meta">No active items — nothing running. New work lands here as mappers fire.</p>
@@ -99,18 +101,12 @@ export function AgendaPane({ items, status, error }: AgendaPaneProps): React.Rea
           {active.slice(0, 10).map((item) => {
             const busy = pending.has(item.id);
             return (
-              <li
+              <Row
+                as="li"
                 key={item.id}
-                className={`autonomy-row autonomy-row--${item.status} autonomy-row--clickable${busy ? ' is-busy' : ''}`}
+                className={`autonomy-row autonomy-row--${item.status}${busy ? ' is-busy' : ''}`}
                 onClick={() => openDetail(item.id)}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    openDetail(item.id);
-                  }
-                }}
+                ariaLabel={`Open ${item.goal}`}
               >
                 <div className="autonomy-row__head">
                   <span className={`autonomy-chip autonomy-chip--${item.status}`}>
@@ -135,38 +131,32 @@ export function AgendaPane({ items, status, error }: AgendaPaneProps): React.Rea
                       .join(' · ')}
                   </div>
                 )}
-                <div
-                  className="autonomy-row__actions"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <button
-                    type="button"
-                    className="autonomy-btn"
-                    onClick={() => void boostItem(item.id)}
-                    disabled={busy}
-                    title="Operator priority +5"
-                  >
-                    Boost
-                  </button>
-                  <button
-                    type="button"
-                    className="autonomy-btn"
-                    onClick={() => void snoozeItem(item.id)}
-                    disabled={busy}
-                    title="Operator priority −2"
-                  >
-                    Snooze
-                  </button>
-                  <button
-                    type="button"
-                    className="autonomy-btn autonomy-btn--danger"
+                <RowActions className="autonomy-row__actions">
+                  <Hint label="Operator priority +5">
+                    <Button
+                      onClick={() => void boostItem(item.id)}
+                      disabled={busy}
+                    >
+                      Boost
+                    </Button>
+                  </Hint>
+                  <Hint label="Operator priority −2">
+                    <Button
+                      onClick={() => void snoozeItem(item.id)}
+                      disabled={busy}
+                    >
+                      Snooze
+                    </Button>
+                  </Hint>
+                  <Button
+                    tone="danger"
                     onClick={() => void cancelItem(item.id)}
                     disabled={busy}
                   >
                     Cancel
-                  </button>
-                </div>
-              </li>
+                  </Button>
+                </RowActions>
+              </Row>
             );
           })}
           {active.length > 10 && (
@@ -174,6 +164,6 @@ export function AgendaPane({ items, status, error }: AgendaPaneProps): React.Rea
           )}
         </ul>
       )}
-    </section>
+    </Block>
   );
 }

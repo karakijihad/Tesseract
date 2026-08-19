@@ -9,6 +9,7 @@
 // kernel persists its per-tick records — for S1, this view is good
 // enough to surface activity.
 
+import { Block } from '../../components/common/Block';
 import React from 'react';
 import type { AgendaItem, GovernorTickPayload } from '../../lib/api';
 
@@ -70,8 +71,7 @@ export function DecisionLogPane({ items, lastTick }: DecisionLogPaneProps): Reac
   const rows = _rows(items, lastTick);
 
   return (
-    <section className="runtime-block autonomy-pane autonomy-pane--decisions">
-      <div className="runtime-block__title">Recent decisions</div>
+    <Block title="Recent decisions">
 
       {rows.length === 0 ? (
         <p className="t-meta">No decisions yet — kernel is idle.</p>
@@ -89,6 +89,6 @@ export function DecisionLogPane({ items, lastTick }: DecisionLogPaneProps): Reac
           ))}
         </ul>
       )}
-    </section>
+    </Block>
   );
 }

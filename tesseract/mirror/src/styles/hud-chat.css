@@ -15,7 +15,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid transparent;
+  border: var(--stroke-1) solid transparent;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-secondary);
@@ -49,12 +49,12 @@
   max-height: min(480px, calc(100vh - 120px));
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--panel-border, rgba(255, 255, 255, 0.1));
+  border: var(--stroke-1) solid var(--panel-border, var(--border-visible));
   border-radius: var(--radius-md);
-  background: var(--panel-bg, rgba(12, 12, 16, 0.96));
+  background: var(--panel-bg);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 12px 32px var(--scrim-lg);
   z-index: 30;
   animation: hud-chat-slide-up var(--motion-fast) var(--ease-out, ease-out);
   overflow: hidden;
@@ -75,44 +75,30 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 10px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  padding: var(--space-6) var(--space-10);
+  border-bottom: var(--stroke-1) solid var(--border-muted);
 }
 
 .hud-chat-panel-title {
-  font-size: 11px;
+  font-size: var(--t-caption-size);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-meta);
-}
-
-.hud-chat-panel-close {
-  border: none;
-  background: transparent;
-  color: var(--text-meta);
-  cursor: pointer;
-  font-size: 16px;
-  line-height: 1;
-  padding: 0 4px;
-}
-
-.hud-chat-panel-close:hover {
-  color: var(--accent-bright);
 }
 
 .hud-chat-panel-scroll {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 8px 10px;
+  padding: var(--space-8) var(--space-10);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-6);
 }
 
 .hud-chat-panel-empty {
-  font-size: 11px;
-  padding: 10px 6px;
+  font-size: var(--t-caption-size);
+  padding: var(--space-10) var(--space-6);
   text-align: center;
 }
 
@@ -144,92 +130,31 @@
   display: flex;
   align-items: center;
   gap: var(--space-xs);
-  padding: 6px 8px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding: var(--space-6) var(--space-8);
+  border-top: var(--stroke-1) solid var(--border-muted);
 }
 
 .hud-chat-input-field {
   flex: 1 1 auto;
   min-width: 0;
   height: 26px;
-  padding: 0 8px;
+  padding: 0 var(--space-8);
   border-radius: var(--radius-sm);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.04);
+  border: var(--stroke-1) solid var(--border-muted);
+  background: var(--wash-sm);
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--t-caption-size);
   outline: none;
   transition: border-color var(--motion-fast) var(--ease-out);
 }
 
 .hud-chat-input-field:focus {
   border-color: var(--accent);
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--wash-md);
 }
 
 .hud-chat-input-field::placeholder {
   color: var(--text-meta);
-}
-
-.hud-chat-input-send,
-.hud-chat-input-attach {
-  height: 26px;
-  width: 26px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-  flex-shrink: 0;
-}
-
-.hud-chat-input-attach {
-  font-size: 16px;
-}
-
-.hud-chat-input-send:hover:not(:disabled),
-.hud-chat-input-attach:hover:not(:disabled) {
-  color: var(--accent-bright);
-  background: var(--accent-dim);
-}
-
-.hud-chat-input-send:disabled,
-.hud-chat-input-attach:disabled {
-  cursor: default;
-  color: var(--text-meta);
-  opacity: 0.5;
-}
-
-/* Q3 frontend — "redirect now", mirrors ChatInput.chat-steer-btn's
-   --warn accent so the verb reads the same across surfaces. */
-.hud-chat-input-steer {
-  height: 26px;
-  width: 26px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--warn);
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-  flex-shrink: 0;
-}
-
-.hud-chat-input-steer:hover {
-  color: var(--warn);
-  background: var(--accent-dim);
-}
-
-.hud-chat-file-input {
-  display: none;
 }
 
 /* Pending-attachment chip strip — sits between scrollback and composer
@@ -237,21 +162,21 @@
 .hud-chat-attachments {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-4);
   flex-wrap: wrap;
-  padding: 4px 10px;
+  padding: var(--space-4) var(--space-10);
 }
 
 .hud-chat-attachment-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 6px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-6);
+  border: var(--stroke-1) solid var(--border-muted);
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--wash-sm);
   color: var(--text-meta);
-  font-size: 11px;
+  font-size: var(--t-caption-size);
   line-height: 1.2;
   max-width: 160px;
 }
@@ -262,29 +187,15 @@
   white-space: nowrap;
 }
 
-.hud-chat-attachment-remove {
-  border: none;
-  background: transparent;
-  color: var(--text-meta);
-  cursor: pointer;
-  font-size: 13px;
-  line-height: 1;
-  padding: 0 2px;
-}
-
-.hud-chat-attachment-remove:hover {
-  color: var(--accent-bright);
-}
-
 .hud-chat-upload-error {
-  font-size: 11px;
+  font-size: var(--t-caption-size);
   color: var(--text-meta);
-  padding: 0 10px 4px;
+  padding: 0 var(--space-10) var(--space-4);
 }
 
 /* Q2 frontend — .chat-queue-pill base chrome lives in globals.css
    (shared with ChatInput); .hud-chat-panel is a column flex container
    (unlike ChatInput's row-wrap), so it only needs matching margin here. */
 .hud-chat-panel .chat-queue-pill {
-  margin: 0 10px 4px;
+  margin: 0 var(--space-10) var(--space-4);
 }

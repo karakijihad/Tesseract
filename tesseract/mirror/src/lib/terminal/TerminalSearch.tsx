@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTerminalStore } from '../../stores/terminal';
+import { Hint } from '../../components/ui/Hint';
+import { Input } from '../../components/common/Input';
+import { CloseButton } from '../../components/common/CloseButton';
+import { IconButton } from '../../components/common/IconButton';
 
 interface TerminalSearchProps {
   paneId: string;
@@ -45,20 +49,28 @@ export function TerminalSearch({ paneId, onClose }: TerminalSearchProps) {
   );
 
   return (
+    // brand-exempt: not a control — the panel floats over a terminal whose
+    // canvas takes focus on click, so it holds the click rather than letting
+    // the pane underneath steal focus mid-search.
     <div className="wt-search" onClick={(e) => e.stopPropagation()}>
-      <input
-        ref={inputRef}
+      <Input
+        inputRef={inputRef}
         className="wt-search-input"
-        type="text"
         value={value}
-        onChange={(e) => setValue(e.target.value)}
+        onChange={setValue}
         onKeyDown={onKeyDown}
         placeholder="Find in terminal"
         spellCheck={false}
       />
-      <button className="wt-search-btn" onClick={() => search('prev')} title="Previous (Shift+Enter)">↑</button>
-      <button className="wt-search-btn" onClick={() => search('next')} title="Next (Enter)">↓</button>
-      <button className="wt-search-btn" onClick={close} title="Close (Esc)">×</button>
+      <Hint label="Previous (Shift+Enter)">
+        <IconButton onClick={() => search('prev')} ariaLabel="Previous match">↑</IconButton>
+      </Hint>
+      <Hint label="Next (Enter)">
+        <IconButton onClick={() => search('next')} ariaLabel="Next match">↓</IconButton>
+      </Hint>
+      <Hint label="Close (Esc)">
+        <CloseButton size="inline" onClick={close} ariaLabel="Close search" />
+      </Hint>
     </div>
   );
 }

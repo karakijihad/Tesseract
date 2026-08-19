@@ -25,6 +25,14 @@ class ScheduleUpdateInput(BaseModel):
         default=None,
         description="Toggle the job on/off. Leave unset to keep current.",
     )
+    summary: str | None = Field(
+        default=None,
+        description=(
+            "Replace what this job says it is for — the line the operator reads "
+            "in WHAT-RUNS.md. Only their own rows: what a job the app ships is "
+            "for belongs to the app. Leave unset to keep current."
+        ),
+    )
     model_role: str | None = Field(
         default=None,
         description=(
@@ -36,9 +44,15 @@ class ScheduleUpdateInput(BaseModel):
 
     @model_validator(mode="after")
     def _at_least_one_field(self) -> "ScheduleUpdateInput":
-        if self.cadence is None and self.enabled is None and self.model_role is None:
+        if (
+            self.cadence is None
+            and self.enabled is None
+            and self.model_role is None
+            and self.summary is None
+        ):
             raise ValueError(
-                "schedule_update requires at least one of cadence / enabled / model_role"
+                "schedule_update requires at least one of cadence / enabled / "
+                "model_role / summary"
             )
         return self
 
@@ -48,17 +62,24 @@ class ScheduleUpdateTool(Tool):
 
     risk_class: ClassVar[str] = "propose"
 
+    group: ClassVar[str] = "time"
+    summary: ClassVar[str] = (
+        "Changes a registered job's cadence, enabled state, model role or "
+        "description in place."
+    )
+    use_when: ClassVar[str] = (
+        "Use to adjust or disable an existing job while keeping it registered, "
+        "or to fill in what one of the operator's own rows is for when the "
+        "tracker reports it has no summary."
+    )
+    not_when: ClassVar[str] = (
+        "deleting a job entirely, which is `schedule_remove`; firing it once now, which is "
+        "`schedule_run`; a one-time reminder, which is `alarm_set`."
+    )
+
     @property
     def name(self) -> str:
         return "schedule_update"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Update a registered scheduler job — change cadence, toggle "
-            "enabled, or override the LLM model role. ASK-gated. Persists "
-            "to schedule.yaml and takes effect on the next tick (no restart)."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:
@@ -84,6 +105,9 @@ class ScheduleUpdateTool(Tool):
             if inp.enabled is not None:
                 scheduler.set_enabled(inp.name, inp.enabled)
                 applied["enabled"] = inp.enabled
+            if inp.summary is not None:
+                scheduler.set_summary(inp.name, inp.summary)
+                applied["summary"] = inp.summary
             if inp.model_role is not None:
                 scheduler.set_model_role(inp.name, inp.model_role)
                 applied["model_role"] = inp.model_role if inp.model_role else None

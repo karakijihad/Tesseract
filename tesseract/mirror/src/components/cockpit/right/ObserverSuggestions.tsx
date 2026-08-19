@@ -2,6 +2,9 @@ import { useState } from 'react';
 import { useEntityName } from '../../../hooks/useEntityName';
 import type { MemorySuggestionKind, MemoryTarget } from '../../../lib/types';
 import { useSuggestionsStore, type SuggestionEntry } from '../../../stores/suggestions';
+import { Hint } from '../../ui/Hint';
+import { CloseButton } from '../../common/CloseButton';
+import { Disclosure } from '../../common/Disclosure';
 
 function formatTarget(t: MemoryTarget): string {
   if (t.kind === 'memory_path') return t.path;
@@ -42,28 +45,28 @@ export function ObserverSuggestions() {
         return (
           <li key={entry.observation_id} className="suggestion-row">
             <div className="suggestion-row-head">
-              <button
-                type="button"
+              <Disclosure
+                variant="row"
                 className="suggestion-summary"
-                onClick={() => setExpandedId(expanded ? null : entry.observation_id)}
-                aria-expanded={expanded}
+                onToggle={() => setExpandedId(expanded ? null : entry.observation_id)}
+                open={expanded}
               >
                 <span className={`${kindClass(entry.kind)} t-meta`}>{entry.kind}</span>
                 <span className="suggestion-target t-caption">{formatTarget(entry.target)}</span>
-                <span className={`${confidenceClass(entry.confidence)} t-meta`} title={`confidence ${entry.confidence.toFixed(2)}`}>
-                  {entry.confidence.toFixed(2)}
-                </span>
+                <Hint label={`confidence ${entry.confidence.toFixed(2)}`}>
+                  <span className={`${confidenceClass(entry.confidence)} t-meta`}>
+                    {entry.confidence.toFixed(2)}
+                  </span>
+                </Hint>
                 <span className="suggestion-reason t-caption">{entry.reason}</span>
-              </button>
-              <button
-                type="button"
-                className="suggestion-dismiss t-meta"
-                onClick={() => dismiss(entry.observation_id)}
-                aria-label={`Dismiss ${entry.kind} suggestion`}
-                title={`Dismiss this suggestion (${entityName} already saw it once on its turn after firing)`}
-              >
-                ×
-              </button>
+              </Disclosure>
+              <Hint label={`Dismiss this suggestion (${entityName} already saw it once on its turn after firing)`}>
+                <CloseButton
+                  size="inline"
+                  onClick={() => dismiss(entry.observation_id)}
+                  ariaLabel={`Dismiss ${entry.kind} suggestion`}
+                />
+              </Hint>
             </div>
             {expanded && (
               <pre className="suggestion-json t-caption">

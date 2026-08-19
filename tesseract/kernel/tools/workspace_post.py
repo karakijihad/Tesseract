@@ -13,7 +13,7 @@ LLM-side surface so the assistant can post during a normal turn.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Literal, Optional
+from typing import Any, Callable, ClassVar, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -55,6 +55,18 @@ class WorkspacePostTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "asking-without-blocking"
+    summary: ClassVar[str] = "Open a new, self-initiated note in the operator's Workspace Inbox."
+    use_when: ClassVar[str] = (
+        "Use to surface something without interrupting the chat thread. Replies "
+        "land as `[workspace_comment_on_<event_id>]` on a later turn."
+    )
+    not_when: ClassVar[str] = (
+        "a reply inside a thread that already exists, use `workspace_reply`; an "
+        "ambient or scheduler-job signal, routed through the autonomy bus instead."
+    )
+
     def __init__(
         self,
         store: EventStore,
@@ -71,15 +83,6 @@ class WorkspacePostTool(Tool):
     @property
     def name(self) -> str:
         return "workspace_post"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Post a self-initiated note into the operator's Workspace Inbox. "
-            "Use when you want to surface something without interrupting the "
-            "chat thread. Operator can reply via comments — replies arrive on "
-            "your next turn as `[workspace_comment_on_<event_id>]`."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

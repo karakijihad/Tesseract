@@ -336,3 +336,26 @@ def load_agent_question_timeout_s(path: Path) -> float:
             f"runtime.yaml::agent_question_timeout_s must be positive, got {raw!r}"
         )
     return value
+
+
+def _load_positive_int(path: Path, key: str, minimum: int) -> int:
+    """Shared reader for the plain positive-int knobs. Raises loudly on a
+    missing file or key — no hardcoded infrastructure defaults, per project
+    rule."""
+    cfg = load_runtime_config(path)
+    raw = cfg.get(key)
+    if raw is None:
+        raise ValueError(f"runtime.yaml missing {key!r} at {path}")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{key} must be int, got {raw!r}") from exc
+    if value < minimum:
+        raise ValueError(f"{key} must be >={minimum}, got {value}")
+    return value
+
+
+def load_screen_look_answer_chars(path: Path) -> int:
+    """Return `screen_look_answer_chars` from runtime.yaml — how much of the
+    vision model's answer comes back to the caller."""
+    return _load_positive_int(path, "screen_look_answer_chars", 80)

@@ -19,7 +19,9 @@ export function handleCli(env: Envelope): void {
       const data = env.data as unknown as CliStartData;
       chat.startCli(cid, data.call_id, data.tool);
       setOrbState("spawning");
-      useToolActivityStore.getState().setLastTool(data.tool);
+      // Same call id the tool-call event carried: a delegate emits both, and
+      // the store counts a call id once.
+      useToolActivityStore.getState().setLastTool(data.tool, data.call_id);
       break;
     }
     case "cli_output": {

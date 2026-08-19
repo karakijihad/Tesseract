@@ -155,7 +155,7 @@ def list_frontmatter(
 class MemoryStore:
     def __init__(self, store_dir: Path) -> None:
         self._store_dir = store_dir
-        self._wnts = WhatNotToSave(store_dir=store_dir)
+        self._wnts = WhatNotToSave()
         # Parsed-frontmatter cache for list_all — path -> (mtime_ns, size,
         # frontmatter-or-None). The lock serializes concurrent scans:
         # list_all runs both on the loop thread and under asyncio.to_thread

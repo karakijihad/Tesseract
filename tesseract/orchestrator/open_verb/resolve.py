@@ -19,6 +19,7 @@ from tesseract.config.open_verb import OpenConfig
 from tesseract.orchestrator.open_verb.asset_token import sign
 from tesseract.orchestrator.open_verb import suffixes
 from tesseract.orchestrator.open_verb.classify import Intent, TargetKind, classify
+from tesseract.orchestrator.open_verb.media import embed_url
 from tesseract.orchestrator.open_verb.probe import _redacted, probe_path, probe_url
 from tesseract.paths import home_dir, install_root
 from tesseract.permissions.path_validator import validate_path
@@ -270,26 +271,36 @@ def _resolve_path(path: Path, kind: str) -> Resolution:
 
 
 async def _resolve_url(url: str, kind: str, config: OpenConfig) -> Resolution:
+    # A video share link is probed as its embed endpoint or not at all: the
+    # share page refuses framing and the player does not, so asking the wrong
+    # one of the two sends every video to a browser tab.
+    embed = embed_url(url)
     probe = await probe_url(
-        url,
+        embed or url,
         timeout_s=config.probe_timeout_s,
         blocked_networks=config.blocked_networks,
     )
     if probe.blocked:
         raise RefusedTarget(
-            f"{_redacted(probe.final_url or url)} resolves into a network this "
-            f"will not reach"
+            f"{_redacted(probe.final_url or embed or url)} resolves into a "
+            f"network this will not reach"
         )
 
     ctype = probe.content_type
-    final = probe.final_url or url
+    final = probe.final_url or embed or url
+    # Sent out to the browser, a share link goes as the operator wrote it. The
+    # bare player is what the cockpit wanted; a tab wants the page around it.
+    outward = url if embed else final
 
     def inside(surface_type: str) -> Resolution:
+        # The card loads the player; the target stays the address the operator
+        # named. `_to_os` reads the latter, so asking for the browser after all
+        # opens the page rather than the bare embed.
         return Resolution(
             destination="canvas",
             handler="surface",
             reason=f"opened {_redacted(final)} in the cockpit",
-            canonical_target=final,
+            canonical_target=outward,
             resolved_kind=kind,
             surface_type=surface_type,
             props={"url": final},
@@ -300,7 +311,7 @@ async def _resolve_url(url: str, kind: str, config: OpenConfig) -> Resolution:
             destination="os",
             handler="url",
             reason=why,
-            canonical_target=final,
+            canonical_target=outward,
             resolved_kind=kind,
         )
 
@@ -318,13 +329,15 @@ async def _resolve_url(url: str, kind: str, config: OpenConfig) -> Resolution:
         if probe.frameable:
             return inside("webview")
         return outside(
-            f"{_redacted(final)} refuses to be embedded — opened it in your browser"
+            f"{_redacted(outward)} refuses to be embedded — opened it in your browser"
         )
 
     if not ctype and probe.status == 0:
-        return outside(f"could not reach {_redacted(final)} to check — opened it in your browser")
+        return outside(
+            f"could not reach {_redacted(outward)} to check — opened it in your browser"
+        )
 
     return outside(
         f"{ctype or 'that content type'} is not something the cockpit renders — "
-        f"opened {_redacted(final)} in your browser"
+        f"opened {_redacted(outward)} in your browser"
     )

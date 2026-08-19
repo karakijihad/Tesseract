@@ -106,6 +106,7 @@ def build_chat_session(wiring: ChatSessionWiring) -> "ChatSession":
         lane_manager_provider=wiring.lane_manager_provider,
         named_lane_manager_provider=wiring.named_lane_manager_provider,
         ask_fn=wiring.ask_fn,
+        cost_ledger=wiring.cost_ledger,
         status_emit=wiring.status_emit,
         session_emit=wiring.session_emit,
         spawn_depth_cap=wiring.spawn_depth_cap,

@@ -42,13 +42,20 @@ class FileReadTool(Tool):
     # would otherwise treat as fresh system text. ChatSession wraps the
     # output in the UNTRUSTED_TOOL_OUTPUT envelope before history append.
     untrusted_source: ClassVar[bool] = True
+
+    group: ClassVar[str] = "files-on-disk"
+    summary: ClassVar[str] = "Read a file's contents as numbered lines."
+    use_when: ClassVar[str] = (
+        "You know the path and want its contents, or a specific line range of them."
+    )
+    not_when: ClassVar[str] = (
+        "Use `grep` when you want the matching lines rather than the whole file, "
+        "`glob` when you don't know the path yet, and `pdf_read` for a PDF."
+    )
+
     @property
     def name(self) -> str:
         return "file_read"
-
-    @property
-    def description(self) -> str:
-        return "Read the contents of a file. Returns numbered lines."
 
     @property
     def input_schema(self) -> type[BaseModel]:

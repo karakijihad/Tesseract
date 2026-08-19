@@ -29,6 +29,9 @@ import {
 } from '../../lib/uploadValidation';
 import { Hint } from '../ui/Hint';
 import { backendAssetUrl } from '../../lib/endpoints';
+import { CloseButton } from '../common/CloseButton';
+import { ComposerButton } from '../common/ComposerButton';
+import { FileTrigger, type FileTriggerHandle } from '../common/FileTrigger';
 
 interface Props {
   variant: 'inline' | 'floating';
@@ -41,7 +44,7 @@ export function ChatInput({ variant }: Props) {
   const prevStateRef = useRef<EntityState>('idle');
   const hintRef = useRef<SlashCommandHintHandle | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const fileInputRef = useRef<FileTriggerHandle | null>(null);
   const historyIdxRef = useRef<number | null>(null);
   const draftRef = useRef<string>('');
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
@@ -56,6 +59,8 @@ export function ChatInput({ variant }: Props) {
   const voiceMode = useVoiceStore((s) => s.voiceMode);
   const voiceState = useVoiceStore((s) => s.state);
   const partialTranscript = useVoiceStore((s) => s.partialTranscript);
+  const notHeard = useVoiceStore((s) => s.notHeard);
+  const woken = useVoiceStore((s) => s.woken);
   const history = useMemo(
     () =>
       messages
@@ -115,7 +120,7 @@ export function ChatInput({ variant }: Props) {
   useEffect(() => {
     setPendingAttachments([]);
     setUploadError(null);
-    if (fileInputRef.current) fileInputRef.current.value = '';
+    fileInputRef.current?.reset();
   }, [sessionId]);
 
   useLayoutEffect(() => {
@@ -403,7 +408,7 @@ export function ChatInput({ variant }: Props) {
       useToastStore.getState().push(`Attach failed: ${msg}`, 'warning');
     } finally {
       setIsUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
+      fileInputRef.current?.reset();
     }
   };
 
@@ -462,14 +467,11 @@ export function ChatInput({ variant }: Props) {
                   <span className="pending-attachment-doc">PDF</span>
                 )}
                 <span className="pending-attachment-name">{att.filename}</span>
-                <button
-                  type="button"
-                  className="pending-attachment-remove"
+                <CloseButton
+                  size="inline"
                   onClick={() => removeAttachment(att)}
-                  aria-label={`Remove ${att.filename}`}
-                >
-                  x
-                </button>
+                  ariaLabel={`Remove ${att.filename}`}
+                />
               </div>
             ))}
           </div>
@@ -477,19 +479,34 @@ export function ChatInput({ variant }: Props) {
         {previewChip && (
           <div className="chat-input-preview-chip" aria-live="polite">{previewChip}</div>
         )}
+        {woken && (
+          // Shown WHILE the operator is still speaking. The gate decides per
+          // frame now, so this is the answer to "did it hear me" arriving at
+          // the only time it is useful — before they have said the rest.
+          <div className="chat-input-preview-chip is-woken" aria-live="polite">
+            <span className="chat-input-woken-mark">heard you</span>
+            keep going
+          </div>
+        )}
+        {notHeard && (
+          // The wake gate refused this. Shown rather than suppressed: the
+          // preview had already vanished on speech-end, and nothing
+          // replacing it is what makes a missed wake word read as a dead
+          // mic. It fades itself — see `NOT_HEARD_MS`.
+          <div className="chat-input-preview-chip is-not-heard" aria-live="polite">
+            <span className="chat-input-not-heard-mark">not heard</span>
+            {notHeard}
+          </div>
+        )}
         {uploadError && <div className="chat-upload-error">{uploadError}</div>}
         {queueLabel && (
           <div className="chat-queue-pill t-meta" aria-label={queueLabel}>{queueLabel}</div>
         )}
-        <input
+        <FileTrigger
           ref={fileInputRef}
-          type="file"
-          className="chat-file-input"
           accept={uploadAccept}
           multiple
-          onChange={(e) => {
-            if (e.currentTarget.files) void uploadFiles(e.currentTarget.files);
-          }}
+          onFiles={(files) => void uploadFiles(files)}
         />
         <textarea
           ref={textareaRef}
@@ -507,15 +524,14 @@ export function ChatInput({ variant }: Props) {
           rows={1}
         />
         <Hint label={`Attach files. ${uploadHelp}`} position="top" maxWidth={280}>
-          <button
-            type="button"
-            className="chat-btn chat-attach-btn"
-            onClick={() => fileInputRef.current?.click()}
+          <ComposerButton
+            verb="attach"
+            onClick={() => fileInputRef.current?.open()}
             disabled={disabled || isUploading}
-            aria-label="Attach files"
+            ariaLabel="Attach files"
           >
             +
-          </button>
+          </ComposerButton>
         </Hint>
         {showStop ? (
           <>
@@ -525,38 +541,31 @@ export function ChatInput({ variant }: Props) {
                 position="top"
                 maxWidth={260}
               >
-                <button
-                  type="button"
-                  className="chat-btn chat-steer-btn"
-                  onClick={handleSteer}
-                  aria-label="Redirect now"
-                >
+                <ComposerButton verb="steer" onClick={handleSteer} ariaLabel="Redirect now">
                   ↪
-                </button>
+                </ComposerButton>
               </Hint>
             )}
             <Hint label={isStreaming ? 'Stop generating' : 'Stop voice'} position="top">
-              <button
-                type="button"
-                className="chat-btn chat-stop-btn"
+              <ComposerButton
+                verb="stop"
                 onClick={isStreaming ? handleStop : handleStopVoice}
-                aria-label={isStreaming ? 'Stop generating' : 'Stop voice'}
+                ariaLabel={isStreaming ? 'Stop generating' : 'Stop voice'}
               >
                 ■
-              </button>
+              </ComposerButton>
             </Hint>
           </>
         ) : (
           <Hint label="Send message" position="top">
-            <button
-              type="button"
-              className="chat-btn"
+            <ComposerButton
+              verb="send"
               onClick={handleSend}
               disabled={disabled || isUploading || (!value.trim() && pendingAttachments.length === 0)}
-              aria-label="Send message"
+              ariaLabel="Send message"
             >
               ↵
-            </button>
+            </ComposerButton>
           </Hint>
         )}
       </div>

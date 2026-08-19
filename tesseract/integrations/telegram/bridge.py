@@ -22,10 +22,12 @@ from tesseract.integrations._channel_attachment import (
 )
 from tesseract.integrations._channel_gate import (
     _PER_TURN_ATTR,
+    PendingAsks,
     build_channel_ask_fn,
+    cancel_chat_asks,
     reset_per_turn_state,
+    resolve_channel_ask,
 )
-from tesseract.integrations._channel_tier import build_tiered_ask_fn
 from tesseract.integrations._channel_progress import (
     ProgressEvent,
     ProgressThrottler,
@@ -35,7 +37,11 @@ from tesseract.integrations._channel_uploads import (
     StoredChannelAttachment,
     save_channel_attachment,
 )
-from tesseract.integrations._channels_config import ChannelsConfig, channel_key_env
+from tesseract.integrations._channels_config import (
+    ChannelsConfig,
+    GatePolicy,
+    channel_key_env,
+)
 from tesseract.integrations._chat_memory import ChatMemoryService
 from tesseract.integrations._conversation_store import ConversationStore
 from tesseract.integrations._url_extract import (
@@ -133,6 +139,23 @@ async def _noop_status_emit(*args, **kwargs) -> None:
     return None
 
 
+#: Inbound kinds a decoder reads, and what reading one produces. The channel
+#: document renders this: the assistant was told for weeks that it could not
+#: transcribe voice, in an apology example written by hand, while
+#: `_decode_voice` had been transcribing it all along. Prose about what the
+#: runtime can do belongs to the runtime.
+DECODED_KINDS: dict[str, str] = {
+    "voice": "transcribed",
+    "photo": "described",
+    "document": "text-extracted",
+}
+
+#: Kinds with no extractor. They are still fetched and stored, so a later turn
+#: can reference the file ("edit the GIF you sent yesterday"); they keep
+#: `no_handler` because no text came out of them.
+PERSISTED_KINDS: tuple[str, ...] = ("audio", "video", "video_note", "animation", "sticker")
+
+
 class TelegramBridge:
     """Telegram long-polling bridge — first concrete :class:`ChannelAdapter`.
 
@@ -160,9 +183,10 @@ class TelegramBridge:
         self._app = app
         self._state = StateBundle(env_seed=env_seed_chat_ids)
         self._api: TelegramAPI | None = None
-        # Session 1 (2026-05-16) — owns per-chat rolling summary, end-of-
-        # conversation reflection, and auto-recall on inbound. ``None`` is
-        # legal (minimal fixtures); the bridge no-ops cleanly when missing.
+        # Owns the per-chat rolling summary and auto-recall on inbound. The
+        # end-of-conversation recap is not its job any more — every entry point
+        # earns the same one, written by the capture funnel. ``None`` is legal
+        # (minimal fixtures); the bridge no-ops cleanly when missing.
         self._chat_memory = chat_memory
         # One ServerSession per chat_id — each remote user gets isolated
         # chat history and a private inactivity-reset clock. Operator's
@@ -186,12 +210,16 @@ class TelegramBridge:
         # 2026-05-17 — ASK → Telegram round-trip. When the channel gate
         # fires, the bridge sends an inline-keyboard prompt to the
         # operator's chat. We stash ``event_id → {chat_id, message_id,
-        # args_hash, tool_name}`` so the callback handler can apply the
-        # right approval token and edit the right message. In-memory
-        # only: a bridge restart drops pending prompts (the operator
-        # falls back to the Mirror UI's approve button, which reads from
-        # the persisted workspace event).
+        # tool_name}`` so the callback handler can edit the right message.
+        # In-memory only, and deliberately so: the turn that a prompt is
+        # attached to lives in this process, so a restart ends both together
+        # and a tap afterwards is honestly reported as too late.
         self._pending_approval_messages: dict[str, dict[str, Any]] = {}
+        # ``event_id -> PendingAsk`` for gated calls whose turn is parked
+        # waiting on an answer. Shared with the Mirror inbox route (which
+        # reaches it through ``app['telegram_bridge']``) so a tap on either
+        # surface resolves the one future the turn is awaiting.
+        self._pending_channel_asks: PendingAsks = {}
         self._started_at = datetime.now(timezone.utc).isoformat()
         self._last_poll_at: str | None = None
         self._error_count = 0
@@ -377,12 +405,6 @@ class TelegramBridge:
         for session in list(self._sessions.values()):
             await self._cancel_session_turn(session)
         self._sessions.clear()
-        chat_memory = getattr(self, "_chat_memory", None)
-        if chat_memory is not None:
-            try:
-                await chat_memory.shutdown()
-            except Exception:
-                log.exception("telegram: chat_memory shutdown failed")
         if self._api is not None:
             try:
                 await self._api.aclose()
@@ -413,6 +435,16 @@ class TelegramBridge:
                 updates = await self._api.get_updates(
                     offset=offset,
                     timeout=_POLL_TIMEOUT_SECONDS,
+                    # Declared at the call site because this loop is what
+                    # decides which kinds it can dispatch, and Telegram
+                    # filters the rest SERVER-side: an update type missing
+                    # here is never delivered and leaves no trace anywhere
+                    # to notice it by. `callback_query` carries the approval
+                    # keyboard's taps, and its absence meant every ✓ Approve
+                    # since the button shipped was swallowed before it
+                    # reached the bridge — while the handler's unit tests
+                    # passed, because they call it directly.
+                    allowed_updates=("message", "callback_query"),
                 )
                 self._last_poll_at = datetime.now(timezone.utc).isoformat()
                 backoff = _BACKOFF_INITIAL_SECONDS
@@ -497,6 +529,20 @@ class TelegramBridge:
         if lock is None:
             lock = asyncio.Lock()
             self._chat_locks[message.chat_id] = lock
+        # BEFORE the lock, never inside it. A turn parked on an approval
+        # prompt holds this lock, so a new message that waited for the lock
+        # first could never reach the code that releases it — the operator
+        # would be talking to a bot that had gone deaf until the gate's
+        # timeout expired. Sending another message means moving on from the
+        # prompt, so the pending calls are refused and the turn completes.
+        superseded = cancel_chat_asks(
+            self._channel_asks(), str(message.chat_id),
+        )
+        for entry in superseded:
+            log.info(
+                "telegram: new message superseded pending ask %s (tool=%s)",
+                entry.event_id, entry.tool_name,
+            )
         async with lock:
             try:
                 await self._handle_message(message)
@@ -730,6 +776,10 @@ class TelegramBridge:
         # the turn logic doesn't branch on its presence.
         on_progress = self._build_progress_callback(message.chat_id, placeholder_id)
         throttler = on_progress._throttler  # for stop() on completion
+        # `placeholder_id` is no longer fixed for the turn: every `<intent>`
+        # retires one and opens the next. Read the live value back before
+        # anything edits "the placeholder".
+        progress_state = on_progress._state
 
         # Session 1 (2026-05-16) — recall context is *per-turn ephemeral*.
         # It wraps the body the model sees but is NOT persisted into the
@@ -749,7 +799,22 @@ class TelegramBridge:
         # to comment on as text. Runs concurrently with the recall
         # query so the slower of the two bounds the wait.
         urls = find_urls(message.text)
-        url_task = asyncio.create_task(extract_urls_to_context(urls)) if urls else None
+        # The extraction is gated as `tavily_extract`, using this chat's own
+        # context and ASK channel — the same decision the tool would get if
+        # the assistant had asked for the page itself.
+        chat_session = getattr(session, "chat_session", None)
+        url_task = (
+            asyncio.create_task(
+                extract_urls_to_context(
+                    urls,
+                    context=getattr(chat_session, "tool_context", None),
+                    ask_fn=getattr(chat_session, "ask_fn", None),
+                    policy=getattr(chat_session, "policy", None),
+                )
+            )
+            if urls
+            else None
+        )
 
         # When chat_memory is missing (minimal harness), still resolve the
         # URL task so it does not dangle. The result is dropped because
@@ -811,6 +876,7 @@ class TelegramBridge:
             log.exception("telegram: chat turn failed for chat_id=%s", message.chat_id)
             await throttler.stop()
             await _cancel_task(typing_task)
+            placeholder_id = progress_state["placeholder_id"]
             if placeholder_id is not None:
                 await self._edit_or_fallback(
                     message.chat_id,
@@ -819,24 +885,13 @@ class TelegramBridge:
                 )
             return
         await throttler.stop()
+        placeholder_id = progress_state["placeholder_id"]
         await _cancel_task(typing_task)
 
         apply_retention_inplace(
             session, self._retention,
             chat_memory=chat_memory, channel=self.name, chat_id=chat_key,
         )
-
-        # Session 1 (2026-05-16) — schedule the deferred reflection. Cancels
-        # any prior pending reflection for this chat so only true idle
-        # (no message for ``reflection_delay_s``) writes a memory entry.
-        if chat_memory is not None:
-            try:
-                await chat_memory.on_turn_completed(self.name, chat_key)
-            except Exception:
-                log.exception(
-                    "telegram: chat_memory.on_turn_completed failed for chat=%s",
-                    chat_key,
-                )
 
         # A1 — workspace-gate visibility. Any forced-ASK posture (the 5
         # forced-ASK bash_security checks, file_write, agent_promote,
@@ -864,7 +919,7 @@ class TelegramBridge:
             reply_to = message.message_id if placeholder_id is None else None
             # Session 3 (2026-05-16) — per-chat voice-reply toggle. When
             # the operator flipped ``/voice_on``, synthesise the reply
-            # via local Piper TTS and ship as a voice note. Track
+            # via the configured TTS lane and ship as a voice note. Track
             # synthesis success separately from the cosmetic placeholder
             # edit so a failed placeholder edit (rate limit, message too
             # old) AFTER a successful voice send doesn't trigger a
@@ -1077,12 +1132,14 @@ class TelegramBridge:
     async def _decode_attachment(
         self, att: ChannelAttachment, message: TelegramMessage | None = None,
     ) -> ChannelAttachment:
-        if att.kind == "voice":
-            return await self._decode_voice(att, message)
-        if att.kind == "photo":
-            return await self._decode_photo(att, message)
-        if att.kind == "document":
-            return await self._decode_document(att, message)
+        decoders = {
+            "voice": self._decode_voice,
+            "photo": self._decode_photo,
+            "document": self._decode_document,
+        }
+        decoder = decoders.get(att.kind)
+        if decoder is not None:
+            return await decoder(att, message)
         # Session 1 (2026-05-16) — kinds without a text extractor still get
         # persisted when they carry a file_id, so operators can re-open
         # the video / audio / sticker / animation later and the assistant sees a
@@ -1090,7 +1147,7 @@ class TelegramBridge:
         # the GIF you sent yesterday"). Status stays ``no_handler`` — we
         # deliberately do not promote to ``ready`` because no text was
         # extracted.
-        if att.kind in ("audio", "video", "video_note", "animation", "sticker"):
+        if att.kind in PERSISTED_KINDS:
             return await self._persist_undecoded(att, message)
         return att
 
@@ -1529,21 +1586,42 @@ class TelegramBridge:
         the edit_fn is a no-op so the turn still runs and lands its
         reply via the fresh-send fallback path.
         """
-        if placeholder_id is None:
-            async def edit_fn(text: str) -> None:
-                pass
-        else:
-            async def edit_fn(text: str) -> None:
-                await self._edit_progress(chat_id, placeholder_id, text)
+        # Mutable because an `<intent>` retires the placeholder it lands in
+        # and opens a fresh one. The caller reads it back off the callback so
+        # the final reply edits whichever placeholder is current.
+        state: dict[str, int | None] = {"placeholder_id": placeholder_id}
+
+        async def edit_fn(text: str) -> None:
+            pid = state["placeholder_id"]
+            if pid is None:
+                return
+            await self._edit_progress(chat_id, pid, text)
+
         throttler = ProgressThrottler(edit_fn)
 
         async def _on_progress(event: ProgressEvent) -> None:
             line = format_progress_line(event)
             if not line:
                 return
+            if event.kind == "intent":
+                # The assistant said this, so it stays in the chat: the
+                # placeholder holding it is retired and the rest of the turn
+                # continues under a new one. Same funnel as the cockpit, where
+                # the intent is a block in the transcript rather than a status
+                # line that the answer overwrites.
+                #
+                # The swap happens FIRST so a coalesced flush still in flight
+                # lands on the new placeholder rather than overwriting the
+                # sentence in the old one.
+                retiring = state["placeholder_id"]
+                state["placeholder_id"] = await self._send_thinking_placeholder(chat_id)
+                if retiring is not None:
+                    await self._edit_progress(chat_id, retiring, line)
+                return
             await throttler.emit(line)
 
         _on_progress._throttler = throttler  # type: ignore[attr-defined]
+        _on_progress._state = state  # type: ignore[attr-defined]
         return _on_progress
 
     async def _edit_progress(self, chat_id: int, message_id: int, text: str) -> None:
@@ -1710,18 +1788,11 @@ class TelegramBridge:
         )
 
         chat_key = str(chat_id)
-        # ``_state`` is missing in fixture-only tests that bypass
-        # :meth:`__init__` (``TelegramBridge.__new__`` + manual attribute
-        # assignment). Fall back to the operator default so the helper
-        # remains callable in those harnesses.
-        tier = "operator"
-        state = getattr(self, "_state", None)
-        if state is not None:
-            tier = state.poll_state.user_tier.get(chat_key, "operator")
-        # Stash the tier on the session so the post-turn surface logic
-        # (e.g. headless-ASK fallback message) can quote it back to the
-        # remote user and so future channel-tier hooks can read it.
-        setattr(session, "channel_tier", tier)
+        # `channel_tier` was stashed here for the friend-tier hooks; both the
+        # denylist and the tier-based error redaction are gone (2026-08-15)
+        # and nothing reads it, so it is not set. Who may talk to this bot at
+        # all remains the allowlist's job — `is_allowed` / `is_blocked` — and
+        # that is untouched.
         setattr(session, "channel_chat_id", chat_key)
 
         # P6 §G3 (idle-wake-design.md) — wire spawn-wake parity onto headless
@@ -1736,15 +1807,16 @@ class TelegramBridge:
         )
 
         # CR-5 — install the channel-aware ASK gate. ``gate_policy.on_ask``
-        # picks between ``workspace_nudge`` (emit a ``agent_post`` so the
-        # operator returns to a queue of "please approve" notes) and
+        # picks between ``workspace_nudge`` (ask the operator on the
+        # workspace inbox + the Telegram keyboard and wait for the answer,
+        # exactly as the cockpit's ``ask_fn`` waits on its WS reply) and
         # ``deny`` (legacy ``_deny_ask`` semantics for any channel that
         # explicitly opts back in).
         on_ask = "workspace_nudge"
-        ttl_s = 1800
+        decision_timeout_s = GatePolicy().decision_timeout_s
         if cfg is not None and cfg.telegram.gate_policy is not None:
             on_ask = cfg.telegram.gate_policy.on_ask
-            ttl_s = cfg.telegram.gate_policy.approve_next_turn_ttl_s
+            decision_timeout_s = cfg.telegram.gate_policy.decision_timeout_s
 
         if on_ask == "workspace_nudge":
             event_store = self._app.get("workspace_event_store")
@@ -1755,19 +1827,20 @@ class TelegramBridge:
                 display_name=display_name,
                 event_store=event_store,
                 conversation_store=getattr(self, "_conversations", None),
-                approve_next_turn_ttl_s=ttl_s,
-                broadcast=self._build_workspace_broadcaster(),
+                pending_asks=self._channel_asks(),
+                decision_timeout_s=decision_timeout_s,
+                ask_on_channel=self._build_channel_asker(chat_key),
             )
-            # M3 — wrap with the tier-aware pre-check so friend-tier
-            # sessions deny mission/terminal/delegation/source-edit/
-            # promotion tools before the gate ever emits a workspace
-            # nudge. operator-tier sessions get the inner gate untouched.
-            ask_fn = build_tiered_ask_fn(
-                tier=tier,
-                inner=inner_ask,
-                channel=self.name,
-                chat_id=chat_key,
-            )
+            # The friend-tier denylist that used to wrap this is gone
+            # (2026-08-15). It was installed only around the ask_fn, so any
+            # posture resolving straight to AUTO — every tool in the
+            # `headless` override block — skipped it entirely: the gate never
+            # reached the ASK branch, and the wrapper never ran. It denied
+            # nothing in the one mode where it mattered while reading like a
+            # restriction, which is worse than not being there. This install
+            # is single-operator; who may talk to the bot at all is the
+            # allowlist's job (`is_allowed` / `is_blocked`), and that stands.
+            ask_fn = inner_ask
             # ``chat_session`` is a MagicMock in some fixture-only tests that
             # bypass ``_build_chat_session``; guard so the gate install does
             # not crash on missing attributes there.
@@ -1778,6 +1851,22 @@ class TelegramBridge:
                 log.debug("channel gate: skipped ask_fn install on stub chat_session")
 
         return session
+
+    def _channel_asks(self) -> PendingAsks:
+        """The pending-ask registry, lazily allocated.
+
+        ``__init__`` always creates it. The lazy path exists for tests that
+        build a partial bridge with ``__new__`` to exercise session wiring
+        without a network stack — the same seam ``_conversations`` is read
+        through. Allocating here rather than raising keeps that working
+        without letting two callers hold different dicts: the first call
+        installs the one everything else then reads.
+        """
+        existing = getattr(self, "_pending_channel_asks", None)
+        if existing is None:
+            existing = {}
+            self._pending_channel_asks = existing
+        return existing
 
     def _build_workspace_broadcaster(self):
         """Return a coroutine that fans a workspace event to attached
@@ -1807,44 +1896,39 @@ class TelegramBridge:
                     "telegram: workspace broadcast failed for gate event %s",
                     getattr(event, "event_id", "?"),
                 )
-            payload = getattr(event, "payload", None) or {}
-            kind = getattr(event, "kind", "")
-            if kind != "agent_post" or payload.get("channel") != channel:
-                return
-            try:
-                await self._send_approval_prompt(event)
-            except Exception:
-                log.exception(
-                    "telegram: approval prompt push failed for event %s",
-                    getattr(event, "event_id", "?"),
-                )
-
         return _broadcast
 
-    async def _send_approval_prompt(self, event) -> None:
-        """Push an inline-keyboard ASK prompt to the originating chat.
+    def _build_channel_asker(self, chat_id: int):
+        """Return the gate's ``ask_on_channel`` for this chat.
 
-        Called from ``_build_workspace_broadcaster`` after the gate has
-        appended its workspace event. Stores the resulting
-        ``(message_id, event_id, args_hash)`` triple on
-        ``_pending_approval_messages`` so the callback handler can edit
-        the prompt to "✓ Approved" / "✗ Rejected" once the operator taps.
+        The question goes to the thread the request came from, and nowhere
+        else. This is the whole wall: the operator answers on the surface they
+        are already holding, exactly as the cockpit answers in the cockpit.
+        """
+
+        async def _ask(prompt_id: str, tool_name: str, args: dict, reason: str) -> bool:
+            return await self._send_approval_prompt(
+                chat_id=chat_id, prompt_id=prompt_id,
+                tool_name=tool_name, reason=reason,
+            )
+
+        return _ask
+
+    async def _send_approval_prompt(
+        self, *, chat_id: int, prompt_id: str, tool_name: str, reason: str,
+    ) -> bool:
+        """Push an inline-keyboard ASK prompt to the chat, and say if it landed.
+
+        Returns False when the operator cannot see the question, so the gate
+        refuses immediately instead of parking the chat on a prompt that was
+        never delivered. Stores ``(message_id, prompt_id, tool_name)`` on
+        ``_pending_approval_messages`` so the callback handler can edit the
+        prompt to "✓ Approved" / "✗ Rejected" once they tap.
         """
         if self._api is None:
-            return
-        payload = event.payload or {}
-        chat_id_str = str(payload.get("chat_id") or "")
-        try:
-            chat_id = int(chat_id_str)
-        except (TypeError, ValueError):
-            log.warning("approval_prompt: chat_id %r not int — skipping", chat_id_str)
-            return
-        tool_name = str(payload.get("tool") or "?")
-        reason = str(payload.get("reason") or "").strip()
-        args_hash = str(payload.get("args_hash") or "")
-        event_id = str(getattr(event, "event_id", ""))
-        if not event_id:
-            return
+            return False
+        reason = (reason or "").strip()
+        event_id = prompt_id
         # callback_data cap is 64 bytes. event_id is ~16 chars hex, so
         # `g:<event_id>:a` fits comfortably (~20 bytes).
         cb_approve = f"g:{event_id}:a"
@@ -1856,7 +1940,7 @@ class TelegramBridge:
         markup = {
             "inline_keyboard": [
                 [
-                    {"text": "✓ Approve next turn", "callback_data": cb_approve},
+                    {"text": "✓ Approve", "callback_data": cb_approve},
                     {"text": "✗ Reject", "callback_data": cb_reject},
                 ],
             ],
@@ -1871,19 +1955,24 @@ class TelegramBridge:
             )
         except TelegramAPIError as exc:
             log.warning("approval_prompt: send_message failed: %s", exc)
-            return
+            return False
         msg_id = (
             (result.get("result") or {}).get("message_id")
             if isinstance(result.get("result"), dict)
             else result.get("message_id")
         )
-        if msg_id is not None:
-            self._pending_approval_messages[event_id] = {
-                "chat_id": chat_id,
-                "message_id": int(msg_id),
-                "args_hash": args_hash,
-                "tool_name": tool_name,
-            }
+        if msg_id is None:
+            log.warning(
+                "approval_prompt: Telegram accepted the send but returned no "
+                "message_id — treating %s as undelivered", prompt_id,
+            )
+            return False
+        self._pending_approval_messages[event_id] = {
+            "chat_id": chat_id,
+            "message_id": int(msg_id),
+            "tool_name": tool_name,
+        }
+        return True
 
     async def _handle_callback_query(self, callback: dict[str, Any]) -> None:
         """Dispatch an inline-keyboard tap from the operator's Telegram.
@@ -1903,6 +1992,7 @@ class TelegramBridge:
         try:
             chat_id = int(chat.get("id"))
         except (TypeError, ValueError):
+            log.warning("telegram: callback dropped — no chat id in %r", chat)
             await self._safe_answer_callback(cb_id, "Bad chat context.")
             return
         message_id = (callback.get("message") or {}).get("message_id")
@@ -1910,139 +2000,69 @@ class TelegramBridge:
         # never let a friend-tier user flip it.
         tier = self._state.poll_state.user_tier.get(str(chat_id), "operator")
         if tier != "operator":
+            log.warning(
+                "telegram: callback refused — chat=%s tier=%s is not operator",
+                chat_id, tier,
+            )
             await self._safe_answer_callback(cb_id, "Not authorized.", show_alert=True)
             return
         parts = data.split(":", 2)
         if len(parts) != 3 or parts[0] != "g":
+            log.warning("telegram: callback data not a gate decision: %r", data)
             await self._safe_answer_callback(cb_id, "Unknown action.")
             return
         _, event_id, action = parts
         if action not in {"a", "r"}:
+            log.warning("telegram: callback verb %r is neither approve nor reject", action)
             await self._safe_answer_callback(cb_id, "Unknown action.")
             return
-        store = self._app.get("workspace_event_store") if hasattr(self._app, "get") else None
-        pending = self._pending_approval_messages.pop(event_id, None)
-        if pending is None:
-            # Pre-2026-05-19: a Mirror-backend restart between the gate-
-            # event post and the operator's Telegram tap voided the tap
-            # (``_pending_approval_messages`` is in-memory). Now we
-            # recover from the persisted workspace event itself —
-            # ``args_hash`` + ``tool`` live on the payload, the
-            # callback already gives us ``chat_id`` / ``message_id``.
-            # If the event has already been decided (approved /
-            # rejected / deleted) we still tell the operator gently
-            # rather than re-flipping the token.
-            pending = self._recover_pending_from_store(
-                store, event_id, chat_id, message_id,
+        log.info(
+            "telegram: callback %s for %s from chat=%s",
+            "approve" if action == "a" else "reject", event_id, chat_id,
+        )
+        # Housekeeping only — the row exists so a stale prompt does not leak;
+        # the decision itself is keyed on the parked future, not on it.
+        self._pending_approval_messages.pop(event_id, None)
+        approved = action == "a"
+        # The turn is parked on this future. Resolving it IS the approval —
+        # there is no token to record and nothing to retry later, because the
+        # call the operator is looking at has not happened yet and is waiting
+        # on this answer. `update_event_status` is the gate's job once it
+        # wakes, so that one event is closed by one writer.
+        entry = resolve_channel_ask(
+            self._channel_asks(), event_id, approved=approved,
+        )
+        if entry is None:
+            # Nobody is waiting: the wait timed out, a new message cancelled
+            # it, or Mirror answered a moment earlier. Say so rather than
+            # reporting a decision that changed nothing.
+            log.info(
+                "telegram: callback %s arrived after the call stopped waiting",
+                event_id,
             )
-            if pending is None:
-                await self._safe_answer_callback(
-                    cb_id, "Prompt expired — open Mirror to re-decide.",
-                )
-                if message_id is not None:
-                    await self._safe_strip_keyboard(chat_id, int(message_id))
-                return
-        if action == "a":
-            session = self._sessions.get(chat_id)
-            if session is None:
-                await self._safe_answer_callback(
-                    cb_id, "No live session for this chat.",
-                )
-                return
-            # 1800s TTL matches the bridge gate_policy default.
-            from tesseract.integrations._channel_gate import record_approval_by_hash
-            record_approval_by_hash(
-                session, args_hash=pending["args_hash"], ttl_s=1800,
+            await self._safe_answer_callback(
+                cb_id, "Too late — that call already stopped waiting.",
             )
-            if store is not None:
-                try:
-                    store.update_event_status(
-                        event_id, "approved", reason="telegram_approve_tap",
-                    )
-                except Exception:
-                    log.exception("telegram: update_event_status failed")
             if message_id is not None:
                 await self._safe_strip_keyboard(
                     chat_id, int(message_id),
-                    suffix=f"\n\n✓ Approved — the assistant will retry `{pending['tool_name']}` next turn.",
+                    suffix="\n\n⏱ Expired — the assistant stopped waiting for an answer.",
                 )
-            await self._safe_answer_callback(cb_id, "Approved.")
-        else:  # reject
-            if store is not None:
-                try:
-                    store.update_event_status(
-                        event_id, "rejected", reason="telegram_reject_tap",
-                    )
-                except Exception:
-                    log.exception("telegram: update_event_status failed")
-            if message_id is not None:
-                await self._safe_strip_keyboard(
-                    chat_id, int(message_id), suffix="\n\n✗ Rejected.",
-                )
-            await self._safe_answer_callback(cb_id, "Rejected.")
+            return
+        if message_id is not None:
+            await self._safe_strip_keyboard(
+                chat_id, int(message_id),
+                suffix=(
+                    f"\n\n✓ Approved — running `{entry.tool_name}` now."
+                    if approved else "\n\n✗ Rejected."
+                ),
+            )
+        await self._safe_answer_callback(cb_id, "Approved." if approved else "Rejected.")
         log.info(
             "telegram: callback %s event=%s by user=%s",
             "approve" if action == "a" else "reject", event_id,
             (from_user.get("username") or from_user.get("id") or "?"),
         )
-
-    def _recover_pending_from_store(
-        self,
-        store: Any,
-        event_id: str,
-        chat_id: int,
-        message_id: Any,
-    ) -> dict[str, Any] | None:
-        """Reconstruct a ``_pending_approval_messages`` row from the
-        persisted workspace event.
-
-        Returns ``None`` when the event is missing, decided
-        (``approved``/``rejected``/``deleted``), or its payload doesn't
-        carry ``args_hash``. The caller treats ``None`` as
-        "tap not recoverable" and asks the operator to use Mirror.
-        """
-        if store is None or not event_id:
-            return None
-        try:
-            event = store.get_event(event_id)
-        except Exception:
-            log.exception(
-                "telegram: workspace_event_store.get_event raised for %s",
-                event_id,
-            )
-            return None
-        if event is None:
-            return None
-        if getattr(event, "kind", "") != "agent_post":
-            return None
-        if getattr(event, "status", "") != "pending":
-            return None
-        payload = getattr(event, "payload", None) or {}
-        if not isinstance(payload, dict):
-            return None
-        args_hash = str(payload.get("args_hash") or "")
-        tool_name = str(payload.get("tool") or "?")
-        if not args_hash:
-            return None
-        # ``chat_id`` / ``message_id`` come from the live callback —
-        # the bridge no longer needs the originally-sent message_id
-        # to honor the tap, only to render the post-decision badge.
-        msg_int: int | None
-        try:
-            msg_int = int(message_id) if message_id is not None else None
-        except (TypeError, ValueError):
-            msg_int = None
-        log.info(
-            "telegram: recovered pending approval for event=%s tool=%s "
-            "from workspace_event_store after in-memory miss",
-            event_id, tool_name,
-        )
-        return {
-            "chat_id": chat_id,
-            "message_id": msg_int,
-            "args_hash": args_hash,
-            "tool_name": tool_name,
-        }
 
     async def _safe_answer_callback(
         self, cb_id: str, text: str, *, show_alert: bool = False,
@@ -2370,8 +2390,8 @@ class TelegramBridge:
         """Send a voice note (Session 2 2026-05-16).
 
         Exactly one of ``text`` / ``audio_bytes`` must be set:
-        - ``text`` — synthesised via ``app['tts_engine']`` (local Piper
-          by default per roles.yaml::voice.tts.primary), then transcoded
+        - ``text`` — synthesised via ``app['tts_engine']`` (whichever lane
+          roles.yaml::voice.tts.primary names), then transcoded
           WAV → OGG/Opus via :func:`wav_bytes_to_ogg_opus` so Telegram
           renders the voice-note UI.
         - ``audio_bytes`` — already-encoded OGG/Opus bytes; sent as-is.

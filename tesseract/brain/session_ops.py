@@ -12,17 +12,10 @@ import copy
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from tesseract.brain.boot import MemoryBundle
 from tesseract.brain.chat import ChatSession
-from tesseract.brain.session_store import (
-    SessionState,
-    default_session_name,
-    load_session,
-    save_session,
-)
 from tesseract.kernel.adapters.base import AdapterOptions, ChunkType, ModelAdapter
 
 if TYPE_CHECKING:
@@ -355,21 +348,6 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def do_save(
-    session: ChatSession,
-    sessions_dir: Path,
-    name: str | None,
-    model: str,
-    started_at: str,
-) -> Path:
-    """Persist the current session history. Empty/None ``name`` falls back
-    to ``default_session_name()``. ``.json`` suffix is stripped."""
-    chosen = (name or "").strip() or default_session_name()
-    if chosen.endswith(".json"):
-        chosen = chosen[:-5]
-    return save_session(sessions_dir, chosen, model, started_at, session.history)
-
-
 def do_reset(session: ChatSession) -> str:
     """Wipe history (system prompt preserved). Returns the new ``started_at``."""
     session.reset()
@@ -444,25 +422,6 @@ def do_stats(session: ChatSession) -> dict[str, Any]:
         "summary_chars": summary_chars,
         "summary_char_budget": session.summary_char_budget,
     }
-
-
-def do_load(sessions_dir: Path, name: str) -> SessionState | None:
-    """Read a saved session file. ``.json`` suffix optional. Returns None on miss.
-
-    Resume path — the caller (``apply_loaded_session``) overwrites the
-    live chat history, so pass ``strip_reasoning=True`` to drop expired
-    reasoning blobs before they reach the API.
-    """
-    chosen = name.strip()
-    if chosen.endswith(".json"):
-        chosen = chosen[:-5]
-    return load_session(sessions_dir / f"{chosen}.json", strip_reasoning=True)
-
-
-def apply_loaded_session(session: ChatSession, state: SessionState) -> str:
-    """Replace history with a loaded ``SessionState``. Returns its ``started_at``."""
-    session.history = list(state.history)
-    return state.started_at
 
 
 def do_set_mode(policy: "PermissionPolicy", mode: str) -> str:

@@ -1,5 +1,9 @@
+import { useEffect, useState } from 'react';
+
 import { useCostStore } from '../../../stores/cost';
 import { formatUsd, colorBand } from '../../../lib/money';
+import { getCostWindows, type CostWindowsResponse } from '../../../lib/api';
+import { Hint } from '../../ui/Hint';
 
 // The summary of everything that spends: chat, the observer, delegated
 // agents, subagents and the autonomy kernel. The ledger has always rolled
@@ -36,11 +40,66 @@ function groupFor(role: string): string {
   return 'other';
 }
 
+/** The week and month figures come from the ledger FILE; the live counters
+ *  hold today and nothing else.
+ *
+ *  Fetched once, when the section mounts. Deliberately not per turn: the route
+ *  replays the whole ledger, and the only thing that moves between fetches is
+ *  today's spend — which is displayed live immediately above, so the operator
+ *  is never shown two different numbers for the same day.
+ *
+ *  `null` while unknown, so the panel says nothing rather than drawing a zero
+ *  it has not read.
+ */
+function useCostWindows() {
+  const [windows, setWindows] = useState<CostWindowsResponse | null>(null);
+  useEffect(() => {
+    let live = true;
+    getCostWindows()
+      .then((w) => { if (live) setWindows(w); })
+      // A ledger that has never been written is not an error worth shouting
+      // about — the section simply has no history to show yet.
+      .catch(() => { if (live) setWindows(null); });
+    return () => { live = false; };
+  }, []);
+  return windows;
+}
+
+/** What a window is being compared against, in words.
+ *
+ * Refuses rather than guesses: a trend needs the span before it to have
+ * actually happened, and an install four days old comparing this week against
+ * a week that predates it would report every figure as a rise from nothing.
+ */
+function trendOf(
+  win: { days: number; spent_usd: number; previous_usd: number },
+  historyDays: number,
+): { text: string; direction: 'up' | 'down' | 'flat' | 'unknown' } {
+  if (historyDays <= win.days) {
+    return { text: 'no earlier period to compare', direction: 'unknown' };
+  }
+  const prev = win.previous_usd;
+  if (prev === 0) {
+    return win.spent_usd > 0
+      ? { text: 'nothing spent in the period before', direction: 'up' }
+      : { text: 'nothing spent in either period', direction: 'flat' };
+  }
+  const pct = Math.round(((win.spent_usd - prev) / prev) * 100);
+  if (pct === 0) return { text: `level with the previous ${win.days} days`, direction: 'flat' };
+  return {
+    text: `${Math.abs(pct)}% ${pct > 0 ? 'more' : 'less'} than the previous ${win.days} days`,
+    direction: pct > 0 ? 'up' : 'down',
+  };
+}
+
+const ARROW: Record<string, string> = { up: '▲', down: '▼', flat: '—', unknown: '·' };
+
 export function SpendSection() {
   const globalState = useCostStore((s) => s.globalState);
   const perRole = useCostStore((s) => s.perRole);
   const overageUnlocked = useCostStore((s) => s.overageUnlocked);
   const voiceProviders = useCostStore((s) => s.voiceProviders);
+  const windows = useCostWindows();
 
   const totals = new Map<string, number>();
   // A group's ceiling is the sum of the sub-caps its roles carry. Roles
@@ -127,12 +186,14 @@ export function SpendSection() {
                     <span className="t-meta">{r.label}</span>
                     <span className="t-caption spend-row-figure">
                       {formatUsd(r.spent)}
-                      {r.cap !== null && (
-                        <span className="t-meta spend-row-cap">
-                          {' / '}
-                          {formatUsd(r.cap)}
-                        </span>
-                      )}
+                      <span className="t-meta spend-row-cap">
+                        {/* Said rather than left blank. A figure with nothing
+                            after it reads as a denominator someone forgot,
+                            next to seven rows that have one — and the answer
+                            is that these roles have no ceiling, which is a
+                            fact worth seeing rather than an absence. */}
+                        {r.cap !== null ? ` / ${formatUsd(r.cap)}` : ' · no cap'}
+                      </span>
                     </span>
                   </li>
                 ))}
@@ -142,6 +203,35 @@ export function SpendSection() {
                 backend sets `blocked` from spent >= cap whether or not the
                 operator approved continuing, so checking it first would
                 report an approved overage as a refusal. */}
+            {windows && (
+              <ul className="right-section-list spend-windows">
+                {(['week', 'month'] as const).map((key) => {
+                  const win = windows.windows[key];
+                  const trend = trendOf(win, windows.history_days);
+                  return (
+                    <li key={key}>
+                      <span className="t-meta">
+                        {key === 'week' ? 'last 7 days' : 'last 30 days'}
+                      </span>
+                      <span className="t-caption spend-row-figure">
+                        {formatUsd(win.spent_usd)}
+                        {/* The direction is never left to a bare arrow: an
+                            arrow says something changed, not what it is being
+                            measured against, and "up" against no earlier
+                            period at all is the reading this avoids. */}
+                        <Hint label={trend.text}>
+                          <span
+                            className={`t-meta spend-trend spend-trend--${trend.direction}`}
+                          >
+                            {' '}{ARROW[trend.direction]}
+                          </span>
+                        </Hint>
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
             <div className="t-meta spend-date">
               since midnight
               {isOverage

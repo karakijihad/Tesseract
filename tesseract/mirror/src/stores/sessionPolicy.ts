@@ -39,7 +39,7 @@ export const useSessionPolicyStore = create<SessionPolicyState>((set) => ({
         loaded: true,
       });
     } catch {
-      // Leave defaults; SessionPolicySection will surface the error
+      // Leave defaults; SessionControlSection will surface the error
       // when the operator opens the Settings panel.
     }
   },

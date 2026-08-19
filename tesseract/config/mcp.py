@@ -97,6 +97,11 @@ class MCPServerBind:
     # invariant), NOT a bind — the MCP server is embedded in the Mirror app and
     # served on the Mirror socket. Only max_connections/ask_hold_timeout_s are
     # consumed at runtime.
+    #
+    # `enabled` is the one field read before any of the others matter: when it
+    # is false the server is never constructed, so /mcp has nothing to hand a
+    # request and says the surface is off rather than that it is broken.
+    enabled: bool
     host: str
     port: int
     token_secret_env: str
@@ -238,6 +243,7 @@ def _load_server(raw: dict[str, Any]) -> MCPServerBind:
     if not isinstance(block, dict):
         raise RuntimeError("mcp.yaml missing required 'server' block")
     try:
+        enabled = bool(block["enabled"])
         host = str(block["host"])
         port = int(block["port"])
         token_secret_env = str(block["token_secret_env"])
@@ -264,6 +270,7 @@ def _load_server(raw: dict[str, Any]) -> MCPServerBind:
     if idle_timeout_s <= 0:
         raise RuntimeError("mcp.yaml server.idle_timeout_s must be positive")
     return MCPServerBind(
+        enabled=enabled,
         host=host,
         port=port,
         token_secret_env=token_secret_env,

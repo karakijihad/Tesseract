@@ -113,7 +113,7 @@ async def _maybe_emit_tts_sentences(
     final answer sentences both speak in source order. ``kind`` is the
     ``<intent>``/``<spoken>``/``<answer>`` label from
     ``_split_text_for_surfaces`` and rides through to the provider as a
-    preset hint (Piper picks a different voicing per kind).
+    preset hint (each lane voices the two kinds differently).
 
     ``spoken`` is the abbreviated spoken form of a long reply. Seeing one
     latches the turn: every later ``answer`` delta still streams to screen
@@ -246,7 +246,7 @@ async def _chained_tts_synth(
     if result is None:
         return
     audio_bytes, provider = result
-    await _emit_tts_chunk(session, audio_bytes, provider, is_final=False)
+    await _emit_synthesized_chunk(app, session, audio_bytes, provider, is_final=False)
 
 
 async def _emit_voice_overage_ask(
@@ -356,6 +356,134 @@ async def _emit_tts_failure_instruction(
     ))
 
 
+def clear_fallback_notices(app: web.Application) -> None:
+    """Let every session hear about the next substitution.
+
+    Called where a lane's latch is cleared — the operator unloading it from
+    Settings, which is what makes the chain able to recover. Without this the
+    announcement is once per session FOREVER: a lane repaired and then failing
+    again for a different reason would fall through in silence for the rest of
+    the session, which is the exact defect the announcement exists to remove,
+    one repair later.
+
+    The HUD's marker is unaffected either way; this is only the sentence.
+    """
+    for session in (app.get("server_sessions") or {}).values():
+        try:
+            session.tts_fallback_notified = False
+        except Exception:  # noqa: BLE001 — a session that will not take it is not a failed unload
+            continue
+
+
+def _lane_engine(app: web.Application, lane: str) -> str:
+    """The engine name for a lane key, for a sentence a person reads.
+
+    Asked of the engine rather than parsed out of the key, because the key is
+    not what it looks like: `boot.py::_materialize_provider` sets `provider`
+    to the bare catalog MODEL id — `af_heart`, `hfc_female` — deliberately, so
+    the cost ledger can debit without a second mapping. Splitting it on dots
+    yielded `af_heart`, and the HUD would have read `voice · af_heart` while
+    every test hand-built a three-part ref that production never emits.
+
+    The engine already knows which id belongs to which lane, so the comparison
+    is exact and nothing has to be kept in step. An unrecognised key answers
+    itself: a lane outside the two shipped ones is still better named by its
+    id than by a guess.
+    """
+    engine = app.get("tts_engine")
+    if engine is None or not lane:
+        return lane
+    if lane == getattr(engine, "kokoro_provider_key", ""):
+        return "kokoro"
+    if lane == getattr(engine, "gemini_provider_key", ""):
+        return "cloud"
+    return lane
+
+
+def _lane_substitution(app: web.Application, provider: str) -> tuple[bool, str]:
+    """Whether `provider` is a lane the chain fell through to, and why.
+
+    The requirement this exists for is the operator's, and it is wider than
+    the lane: **no silent fallback.** The cloud voice speaking because
+    Kokoro's model never downloaded is the app substituting one answer for
+    another — and a paid one for a free one — and doing it quietly is what
+    made a failed 311 MB download look like a working install.
+
+    Returns `(False, "")` when the lane that spoke is the one that was
+    chosen, which is almost every call.
+    """
+    engine = app.get("tts_engine")
+    if engine is None or not provider:
+        return False, ""
+    primary = getattr(engine, "provider_key", "")
+    if not primary or provider == primary:
+        return False, ""
+    if primary == getattr(engine, "kokoro_provider_key", ""):
+        reason = getattr(engine, "kokoro_disabled_reason", "")
+    elif primary == getattr(engine, "gemini_provider_key", ""):
+        reason = getattr(engine, "gemini_disabled_reason", "")
+    else:
+        reason = ""
+    return True, reason
+
+
+async def _announce_lane_substitution(
+    session: "ServerSession", speaking: str, primary: str, reason: str
+) -> None:
+    """Say once that a different voice is speaking, and say why if it is known.
+
+    Takes engine NAMES, already resolved by `_lane_engine`. On the session
+    rather than the turn: the condition outlives the turn, and the answer to
+    "why is it still saying this" is the HUD's lane marker rather than a toast
+    on every reply. Cleared when the operator unloads a lane, so a fresh
+    failure after a repair gets a fresh sentence.
+    """
+    if getattr(session, "tts_fallback_notified", False):
+        return
+    session.tts_fallback_notified = True
+    detail = f" ({reason[:160]})" if reason else ""
+    await send_envelope(session, make_voice_instruction(
+        session.session_id,
+        instruction=(
+            f"{primary} could not speak, so {speaking} is speaking "
+            f"instead{detail}."
+        ),
+    ))
+
+
+async def _emit_synthesized_chunk(
+    app: web.Application,
+    session: "ServerSession",
+    audio_bytes: bytes,
+    provider: str,
+    *,
+    is_final: bool,
+) -> None:
+    """Emit one synthesized chunk, marking and announcing a substituted lane.
+
+    Both synth paths — the streaming staircase and the single-shot flush —
+    go through here, so neither can grow a copy of the rule that forgets to
+    say a different voice is speaking.
+    """
+    substituted, reason = _lane_substitution(app, provider)
+    engine = _lane_engine(app, provider)
+    if substituted:
+        await _announce_lane_substitution(
+            session,
+            engine,
+            _lane_engine(app, app["tts_engine"].provider_key),
+            reason,
+        )
+    await _emit_tts_chunk(
+        session,
+        audio_bytes,
+        provider,
+        is_final=is_final,
+        is_fallback=substituted,
+        engine=engine,
+    )
+
+
 async def _synthesize_sentence_audio(
     app: web.Application,
     session: "ServerSession",
@@ -411,6 +539,8 @@ async def _emit_tts_chunk(
     provider: str,
     *,
     is_final: bool,
+    is_fallback: bool = False,
+    engine: str = "",
 ) -> None:
     """Assign the next per-turn sequence number and emit a ``tts_chunk``
     envelope. Sequence assignment must happen at emission time (not
@@ -455,6 +585,8 @@ async def _emit_tts_chunk(
         provider=provider,
         sequence=seq,
         is_final=is_final,
+        is_fallback=is_fallback,
+        engine=engine,
     ))
 
 
@@ -489,7 +621,7 @@ async def _synthesize_and_emit_sentence(
     if result is None:
         return
     audio_bytes, provider = result
-    await _emit_tts_chunk(session, audio_bytes, provider, is_final=is_final)
+    await _emit_synthesized_chunk(app, session, audio_bytes, provider, is_final=is_final)
 
 
 async def _flush_tts_terminator(

@@ -62,7 +62,7 @@ export class ParticleSystem {
   private color!: THREE.Color;
   private _popColor = new THREE.Color();
   private _popAmp = 0;
-  private _popHex = '#7c6cf0'; // --accent (tokens.css)
+  private _popHex = '#7c6cf0'; // placeholder; every pop sets it via setPopVisual
   /** Valence ∈ [-1, +1]. Drives a subtle ±10% L / ±7% S lift on the base color
    *  so positive valence reads as "lit up", negative as "subdued". Hue drift
    *  is applied separately upstream via `valenceToHueDelta`. */

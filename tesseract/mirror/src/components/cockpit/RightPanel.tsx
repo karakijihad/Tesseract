@@ -1,7 +1,9 @@
 import { useCallback, useState } from 'react';
+import { Tabs } from '../common/Tabs';
 import { BreakersSection } from './right/BreakersSection';
 import { ObserverSection } from './right/ObserverSection';
 import { SpendSection } from './right/SpendSection';
+import { PulseTailSection } from './right/PulseTailSection';
 import { useCostStore } from '../../stores/cost';
 import { useHealthStore } from '../../stores/health';
 import { useObservationsStore } from '../../stores/observations';
@@ -9,8 +11,8 @@ import { formatUsd } from '../../lib/money';
 
 // Tabs, not stacked collapsibles. Opening one section used to move the others
 // down the panel, so the thing you were reading walked away from the pointer.
-// One body is mounted at a time and the panel never reflows; the rail carries
-// each tab's headline figure so switching is a choice, not a hunt.
+// One body is mounted at a time and the panel never reflows; each tab carries
+// its headline figure so switching is a choice, not a hunt.
 const TABS = [
   { key: 'cost', label: 'Cost' },
   { key: 'breakers', label: 'Breakers' },
@@ -57,24 +59,13 @@ export function RightPanel() {
 
   return (
     <div className="right-panel-inner">
-      <div className="monitor-tabs" role="tablist" aria-label="Monitor sections">
-        {TABS.map((tab) => {
-          const count = badge(tab.key);
-          return (
-            <button
-              key={tab.key}
-              type="button"
-              role="tab"
-              aria-selected={active === tab.key}
-              className={`monitor-tab t-meta${active === tab.key ? ' is-active' : ''}`}
-              onClick={() => select(tab.key)}
-            >
-              {tab.label}
-              {count !== null && <span className="monitor-tab-badge">{count}</span>}
-            </button>
-          );
-        })}
-      </div>
+      <Tabs
+        items={TABS.map((t) => ({ ...t, badge: badge(t.key) }))}
+        active={active}
+        onSelect={select}
+        label="Monitor sections"
+        fill
+      />
       <div className="right-panel-body monitor-body" role="tabpanel">
         <div className="cat-section">
           {active === 'cost' && <SpendSection />}
@@ -82,6 +73,7 @@ export function RightPanel() {
           {active === 'observer' && <ObserverSection />}
         </div>
       </div>
+      <PulseTailSection />
     </div>
   );
 }

@@ -8,9 +8,10 @@
 // prop-driven pattern the other panes use, e.g. JournalPane) and a
 // connected `PrunedPane` wrapper that self-loads from the store. The
 // pruned ledger isn't part of the fetchAll() dashboard fan-out, so the
-// wrapper owns its own mount-time fetch (like CodeDriftChip /
-// NotificationsPane).
+// wrapper owns its own mount-time fetch (like NotificationsPane).
 
+import { Block } from '../../components/common/Block';
+import { Button } from '../../components/common/Button';
 import { useEffect } from 'react';
 import type { PrunedResponse } from '../../lib/api';
 import { formatRelative } from '../../lib/time';
@@ -56,19 +57,17 @@ export function PrunedPaneView({
 }: PrunedPaneViewProps): React.ReactElement {
   if (prunedStatus === 'error') {
     return (
-      <section className="runtime-block autonomy-pane autonomy-pane--pruned">
-        <div className="runtime-block__title">Pruned</div>
+      <Block title={null}>
         <p className="t-meta">Failed to load pruned ledger.</p>
-      </section>
+      </Block>
     );
   }
 
   if (pruned === null) {
     return (
-      <section className="runtime-block autonomy-pane autonomy-pane--pruned">
-        <div className="runtime-block__title">Pruned</div>
+      <Block title={null}>
         <p className="t-meta">Loading…</p>
-      </section>
+      </Block>
     );
   }
 
@@ -78,22 +77,18 @@ export function PrunedPaneView({
   const recent = pruned.records.slice(0, RECENT_CAP);
 
   return (
-    <section className="runtime-block autonomy-pane autonomy-pane--pruned" data-testid="autonomy-pruned-pane">
-      <div className="runtime-block__title">
-        Pruned
-        <span className="t-meta" style={{ marginLeft: 8 }}>
+    <Block
+      title={null}
+      meta={
+        <>
           {DEFAULT_WINDOW_HOURS}h window · {pruned.records.length} records
-        </span>
-        <button
-          type="button"
-          className="autonomy-view__refresh"
-          style={{ marginLeft: 8 }}
-          onClick={onRefresh}
-          aria-label="refresh pruned ledger"
-        >
-          refresh
-        </button>
-      </div>
+          <Button onClick={onRefresh} ariaLabel="refresh pruned ledger">
+            refresh
+          </Button>
+        </>
+      }
+      testId="autonomy-pruned-pane"
+    >
 
       {sources.length === 0 ? (
         <p className="t-meta">Nothing pruned in this window.</p>
@@ -124,14 +119,12 @@ export function PrunedPaneView({
                     </td>
                   ))}
                   <td>
-                    <button
-                      type="button"
-                      className="autonomy-btn"
+                    <Button
                       onClick={() => onMute(source, !muted)}
                       disabled={busy}
                     >
                       {muted ? 'Muted' : 'Mute'}
-                    </button>
+                    </Button>
                   </td>
                 </tr>
               );
@@ -160,7 +153,7 @@ export function PrunedPaneView({
           ))}
         </ul>
       )}
-    </section>
+    </Block>
   );
 }
 

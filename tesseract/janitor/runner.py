@@ -1,6 +1,6 @@
 """Sweep orchestrator — the one entry all three call sites share.
 
-The four sweeps are independent, so they run concurrently on a thread
+The three sweeps are independent, so they run concurrently on a thread
 pool (parallel-by-default); one sweep failing is recorded in
 `SweepReport.errors` and never aborts the others. Every sweep appends a
 JSONL row to `runtime/logs/janitor/sweeps.jsonl`."""
@@ -15,7 +15,6 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .archives import sweep_archives
 from .config import JanitorConfig, load_janitor_config
 from .models import Finding, SweepReport
 from .processes import sweep_processes
@@ -24,11 +23,14 @@ from .sessions import sweep_sessions
 
 log = logging.getLogger(__name__)
 
+# Three, not four. File ageing — lane archives and per-boot backend logs —
+# left for `config/retention.yaml` and the nightly `retention` stage: what is
+# left here is live, and that is why the janitor still runs at every
+# supervisor boot while retention runs once a night.
 _SWEEPS = (
     ("processes", sweep_processes),
     ("scratch", sweep_scratch),
     ("sessions", sweep_sessions),
-    ("archives", sweep_archives),
 )
 
 

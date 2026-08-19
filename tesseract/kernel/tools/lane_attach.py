@@ -26,17 +26,17 @@ class LaneAttachTool(Tool):
     default_posture = "auto"
     risk_class: ClassVar[str] = "autonomous"
 
+    group: ClassVar[str] = "long-running-collaborators"
+    summary: ClassVar[str] = "Re-establish visibility on a live lane, returning a fresh snapshot and cursor."
+    use_when: ClassVar[str] = "Use once per lane after a brain restart, before resuming lane_read/lane_send on it."
+    not_when: ClassVar[str] = (
+        "opening a new lane, which is `lane_open`; probing status without needing a cursor, "
+        "which is `lane_status`."
+    )
+
     @property
     def name(self) -> str:
         return "lane_attach"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Re-attach to a live lane after a brain restart or initial "
-            "discovery. Returns snapshot + next_cursor so the brain can "
-            "tail events from where the last reader left off."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

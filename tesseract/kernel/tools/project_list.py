@@ -22,17 +22,17 @@ class ProjectListTool(Tool):
 
     risk_class: ClassVar[str] = "autonomous"
 
+    group: ClassVar[str] = "projects"
+    summary: ClassVar[str] = "List every registered project, its root, git identity, and which is active."
+    use_when: ClassVar[str] = (
+        "Use before `project_open`, `project_link`, or `project_new` to see "
+        "what is registered and which project is currently active."
+    )
+    not_when: ClassVar[str] = ""
+
     @property
     def name(self) -> str:
         return "project_list"
-
-    @property
-    def description(self) -> str:
-        return (
-            "List every registered project with its root, git identity and "
-            "verification commands, and say which one is active. Read-only. "
-            "Use before project_open to see what is available."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

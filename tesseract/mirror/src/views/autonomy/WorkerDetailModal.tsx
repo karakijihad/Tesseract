@@ -5,9 +5,11 @@
 // surface, transcript link, artifacts. Mirrors AgendaDetailModal's
 // shell so the visual language stays consistent.
 
-import React, { useEffect } from 'react';
+import React from 'react';
 import { useAutonomyStore } from '../../stores/autonomy';
 import type { WorkerDetail } from '../../lib/api';
+import { CloseButton } from '../../components/common/CloseButton';
+import { Modal } from '../../components/common/Modal';
 
 function _fmtIso(iso: string | null | undefined): string {
   if (!iso) return '—';
@@ -40,27 +42,16 @@ export function WorkerDetailModal(): React.ReactElement | null {
   const error = useAutonomyStore((s) => s.workerDetailError);
   const close = useAutonomyStore((s) => s.closeWorkerDetail);
 
-  useEffect(() => {
-    if (selectedId == null) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') close();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [selectedId, close]);
-
   if (selectedId == null) return null;
 
   return (
-    <div className="autonomy-modal-backdrop" onClick={close}>
-      <div
-        className="autonomy-modal"
-        onClick={(e) => e.stopPropagation()}
-        data-testid="worker-detail-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="worker-modal-title"
-      >
+    <Modal
+      onClose={close}
+      ariaLabel="worker detail"
+      ariaLabelledBy="worker-modal-title"
+      className="autonomy-modal"
+      testId="worker-detail-modal"
+    >
         <div className="autonomy-modal__head">
           <div className="autonomy-modal__title" id="worker-modal-title">
             {worker ? (
@@ -83,14 +74,7 @@ export function WorkerDetailModal(): React.ReactElement | null {
               <div className="t-meta t-mono">{selectedId}</div>
             )}
           </div>
-          <button
-            type="button"
-            className="autonomy-modal__close"
-            onClick={close}
-            aria-label="close detail"
-          >
-            ✕
-          </button>
+          <CloseButton onClick={close} ariaLabel="close detail" />
         </div>
 
         {status === 'loading' && (
@@ -234,7 +218,6 @@ export function WorkerDetailModal(): React.ReactElement | null {
             )}
           </>
         )}
-      </div>
-    </div>
+    </Modal>
   );
 }

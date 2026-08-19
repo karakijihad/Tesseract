@@ -30,35 +30,21 @@ _RISK_SCORE: dict[RiskClass, float] = {
 }
 
 
+# One entry per live source. `agenda.yaml::source_trust` overrides these; the
+# fallbacks live here so scoring works before config is read.
+#
+# The scale is about EVIDENCE, not enthusiasm. The operator asking outranks
+# everything; a recovery pass is nearly as trusted because it reports a fact the
+# runtime observed; a probe result is a measurement; a follow-up is a heuristic
+# read of a summary another worker wrote, which is the weakest thing here that
+# still describes something that happened. Every source that scored an inference
+# — dwell time, a model's idea of what might be worth doing, a web sweep — was
+# deleted rather than re-weighted, because no weight makes a guess into evidence.
 _DEFAULT_SOURCE_TRUST: dict[AgendaSource, float] = {
     AgendaSource.OPERATOR: 1.0,
-    AgendaSource.PROVIDER_WATCH: 0.6,
-    AgendaSource.VAULT_SIGNAL: 0.3,
     AgendaSource.RECOVERY: 0.95,
-    AgendaSource.SELF_REFLECTION: 0.2,
-    # operator_view — operator-attention signals from the Mirror WS
-    # (long-dwell, paired_with_failure). Trust on par with channel
-    # because the operator is directly involved in producing the
-    # signal, but it's still ambient — not an explicit ask.
-    AgendaSource.OPERATOR_VIEW: 0.5,
-    # AU-23 — strategist is a deliberate weekly curator (1-3 high-conviction
-    # initiatives). Trust above ambient self_reflection because every
-    # initiative ships with operator_review and explicit success criteria;
-    # below scheduler/operator because the operator hasn't yet endorsed it.
-    AgendaSource.STRATEGIST: 0.65,
-    # P7 Task 2 — Codex-grounded research pass (outdated deps, upstream
-    # releases, applicable improvements). Above ambient self_reflection
-    # (pattern-matching over recent activity) because findings are
-    # evidence-grounded in an actual read of the target; below
-    # provider_watch because it's still an autonomous ambient sweep, not
-    # an explicit operator ask.
-    AgendaSource.REPO_UPGRADE: 0.4,
-    # P7 Task 2b — identity-anchored web discovery (query-gen + evaluation
-    # over web_search/tavily + optional feeds). Less grounded than
-    # repo_upgrade (no direct read of a target); above ambient
-    # self_reflection because every proposal carries an explicit
-    # "why us / why now" line and an operator_review gate.
-    AgendaSource.SCOUT: 0.35,
+    AgendaSource.PROVIDER_WATCH: 0.6,
+    AgendaSource.FOLLOW_UP: 0.4,
 }
 
 
@@ -71,9 +57,6 @@ class AgendaWeights:
     risk_weight: float = -10.0
     budget_remaining_weight: float = 5.0
     source_trust_weight: float = 8.0
-    # Task 2B — agent-vetter usefulness signal. Default 0.0 keeps scoring
-    # unchanged until agenda.yaml::scoring.vet_weight is configured.
-    vet_weight: float = 0.0
     age_cap_hours: float = DEFAULT_AGE_CAP_HOURS
     source_trust: dict[AgendaSource, float] = field(
         default_factory=lambda: dict(_DEFAULT_SOURCE_TRUST)
@@ -127,7 +110,6 @@ def score_item(
         "risk": weights.risk_weight * risk,
         "budget_remaining": weights.budget_remaining_weight * budget_ratio,
         "source_trust": weights.source_trust_weight * trust,
-        "vet": weights.vet_weight * item.vet_score,
     }
     total = sum(components.values())
     return total, components

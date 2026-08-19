@@ -1,7 +1,7 @@
 """First-run Ollama bring-up for every model config points at.
 
 `provision.rs` installs Python, dependencies, a Chromium build and the
-Piper voice model on first run. Nothing installed Ollama, so a fresh
+voice model on first run. Nothing installed Ollama, so a fresh
 install on someone else's machine came up with semantic search silently
 off — `memory_search` fell back to BM25 and the only signal was a doctor
 line the operator had to think to run.
@@ -23,7 +23,7 @@ install downloads exactly what it always did. Point a role at
 
 The installer URL is NOT config: this
 script downloads and EXECUTES what that URL serves, so it stays source —
-operator-reviewed like `fetch_piper_voice`'s pinned upstream — rather than
+operator-reviewed like `fetch_kokoro_voice`'s pinned upstream — rather than
 sitting in a YAML file where a write would become arbitrary code execution
 during install.
 

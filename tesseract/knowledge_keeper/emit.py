@@ -67,10 +67,11 @@ def _catalog_models(providers_yaml: Path, provider_slug: str) -> dict[str, dict[
     prov = api.get(yaml_key)
     if not isinstance(prov, dict):
         return {}
-    models = prov.get("models") or {}
-    if not isinstance(models, dict):
+    if not isinstance(prov.get("models") or {}, dict):
         return {}
-    return models
+    from tesseract.config.loader import _expanded_models
+
+    return dict(_expanded_models("api", yaml_key, prov))
 
 
 def _summary(kind_origin: KindOrigin, provider: str, model_id: str) -> str:

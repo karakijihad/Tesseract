@@ -7,6 +7,8 @@ FileReadTool, just a different decoder.
 from __future__ import annotations
 
 import asyncio
+from typing import ClassVar
+
 from tesseract.kernel.tools._path_anchor import ReadPathRefused, anchor_read_path
 
 from pydantic import BaseModel, Field
@@ -29,16 +31,18 @@ class PdfReadTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "files-on-disk"
+    summary: ClassVar[str] = "Extract text from a PDF by page range."
+    use_when: ClassVar[str] = (
+        "The file is a PDF. Pass `pages` (e.g. '1-5') for a long document — a "
+        "call is capped, so page ranges pull the rest."
+    )
+    not_when: ClassVar[str] = "Use `file_read` for any non-PDF text file."
+
     @property
     def name(self) -> str:
         return "pdf_read"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Extract text from a PDF file. Use `pages` (e.g. '1-5') for large PDFs. "
-            f"Capped at {_MAX_PAGES_PER_CALL} pages / {_MAX_CHARS_PER_CALL:,} chars per call."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

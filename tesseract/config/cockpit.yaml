@@ -25,3 +25,67 @@ activity:
   # last activity falls inside this window; older sessions stay on disk but
   # are not re-registered.
   rebuild_session_window_hours: 48
+
+kernel:
+  # What the Kernel rail draws under `tool dispatch`. A group is the unit the
+  # operator watches — the individual tool is what Pulse names — so the panel
+  # shows the group and the count of what fired under it.
+  #
+  # Every registered tool must match exactly one group.
+  # `generate_kernel_manifest.py --check` fails when one matches none or more
+  # than one, which is what stops a newly registered tool from quietly
+  # vanishing from the panel the way the hand-written list always let it.
+  #
+  # `kind` picks the marker the rail draws: store is an index read from, seat
+  # is a slot config fills, stage is a step the run passes through.
+  tool_groups:
+    - id: memory
+      label: memory
+      kind: store
+      tone: info
+      match: ["memory_*", "recall_history"]
+    - id: vault
+      label: vault
+      kind: store
+      tone: info
+      match: ["vault_*"]
+    - id: file
+      label: file
+      kind: stage
+      match: ["file_*", "glob", "grep", "pdf_read", "open", "project_*"]
+    - id: web
+      label: web
+      kind: stage
+      match: ["web_search", "tavily_*", "context7_lookup", "browser_*"]
+    - id: agents
+      label: agents
+      kind: seat
+      match:
+        ["agent_*", "invoke_agent", "delegate_*", "spawn_*", "session_*",
+         "lane_*", "skill_*", "controller_session_list",
+         "start_controller_session", "work_send", "tool_search"]
+    - id: channels
+      label: channels
+      kind: stage
+      match: ["channel_*", "chat_initiate", "workspace_*"]
+    - id: surface
+      label: surface
+      kind: stage
+      match: ["surface_*", "orb_visibility", "set_mood", "set_state",
+              "tasks_*", "ask_clarification", "image_generate"]
+    - id: schedule
+      label: schedule
+      kind: stage
+      match: ["schedule_*", "alarm_*"]
+    - id: self
+      label: self
+      kind: store
+      tone: info
+      match: ["soul_growth_propose", "propose_change", "conscience_status",
+              "diary_append", "log_triage", "brief_*", "agenda_comment"]
+    - id: shell
+      label: shell
+      kind: stage
+      tone: warn
+      match: ["bash", "os_launch", "os_open_url", "system_diagnose",
+              "screen_look"]

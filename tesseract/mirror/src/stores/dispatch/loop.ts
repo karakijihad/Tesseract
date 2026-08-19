@@ -229,7 +229,7 @@ export function handleLoop(env: Envelope, signals: Signals | null): void {
         name: data.name,
         input: data.input ?? {},
       });
-      useToolActivityStore.getState().setLastTool(data.name);
+      useToolActivityStore.getState().setLastTool(data.name, data.call_id);
       // Phase 4 — flag the call as background so DelegateCard renders
       // the "↻ background" badge. Only delegate_* / invoke_agent take
       // the background flag; other tools ignore it. Read defensively:
@@ -243,6 +243,7 @@ export function handleLoop(env: Envelope, signals: Signals | null): void {
     }
     case "stream_tool_result": {
       const data = env.data as unknown as StreamToolResultData;
+      useToolActivityStore.getState().markResult();
       chat.addToolResult(cid, {
         call_id: data.call_id,
         output: data.output,
@@ -282,16 +283,24 @@ export function handleLoop(env: Envelope, signals: Signals | null): void {
         // mode). Toast only — orb stays calm and no red error bubble in
         // chat. Mirrors `_handleCommandResult` severity gating.
         useToastStore.getState().push(msg, "warning");
-        // Self-heal ONLY when the missing session is the currently-persisted
-        // auto-resume target. Blanket-clearing on any "session not found"
-        // wipes a valid saveName when the operator types `/load typo` —
-        // then the next reload doesn't auto-resume the good session.
+        // Self-heal ONLY when the missing conversation is the currently-
+        // persisted auto-resume target. Blanket-clearing on any "session not
+        // found" wipes a valid target when the operator types `/load typo` —
+        // then the next reload doesn't auto-resume the good one. The message
+        // carries whatever they typed, which is a title or an id, so the
+        // comparison is against both.
         const notFound = /^session not found: (.+)$/.exec(msg);
         if (notFound) {
           const missing = notFound[1].trim();
           const sessions = useSessionStore.getState();
-          if (sessions.saveName === missing) {
-            sessions.setSaveName(null);
+          const target = sessions.sessions.find(
+            (s) => s.chat_id === sessions.lastChatId,
+          );
+          if (
+            sessions.lastChatId === missing ||
+            (target && target.title === missing)
+          ) {
+            sessions.setLastChatId(null);
           }
         }
         break;

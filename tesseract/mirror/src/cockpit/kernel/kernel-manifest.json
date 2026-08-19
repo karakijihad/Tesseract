@@ -1,0 +1,420 @@
+{
+  "generator": "tesseract/scripts/generate_kernel_manifest.py",
+  "flows": [
+    {
+      "id": "turn",
+      "label": "Turn",
+      "source": "brain/chat.py::send · brain/tools.py::execute_tool · lib/voice/{stt-stream,tts-player}.ts",
+      "nodes": [
+        {
+          "id": "input",
+          "label": "operator input",
+          "sub": "typed or spoken",
+          "kind": "stage",
+          "tone": "accent",
+          "signal": "turn.start"
+        },
+        {
+          "id": "stt",
+          "label": "STT",
+          "sub": "local.whisper",
+          "kind": "stage",
+          "depth": 1,
+          "signal": "voice.stt"
+        },
+        {
+          "id": "preflight",
+          "label": "cost preflight",
+          "sub": "blocks or asks",
+          "kind": "gate",
+          "tone": "warn",
+          "signal": "cost.preflight"
+        },
+        {
+          "id": "drains",
+          "label": "drains",
+          "sub": "comments · spawns",
+          "kind": "stage",
+          "signal": "turn.drains"
+        },
+        {
+          "id": "recall",
+          "label": "auto-recall",
+          "sub": "top-k memories",
+          "kind": "stage",
+          "signal": "memory.recall"
+        },
+        {
+          "id": "prompt",
+          "label": "prompt assembled",
+          "kind": "stage",
+          "signal": "turn.prompt"
+        },
+        {
+          "id": "stream",
+          "label": "stream",
+          "sub": "text · tool calls",
+          "kind": "stage",
+          "tone": "accent",
+          "signal": "turn.stream"
+        },
+        {
+          "id": "permission",
+          "label": "permission",
+          "sub": "AUTO · ASK · DENY",
+          "kind": "gate",
+          "depth": 1,
+          "tone": "warn",
+          "signal": "tool.permission"
+        },
+        {
+          "id": "dispatch",
+          "label": "tool dispatch",
+          "sub": "119 registered",
+          "kind": "stage",
+          "depth": 1,
+          "signal": "tool.dispatch"
+        },
+        {
+          "id": "g-memory",
+          "label": "memory",
+          "kind": "store",
+          "depth": 2,
+          "tools": [
+            "memory_forget",
+            "memory_get",
+            "memory_promote",
+            "memory_save",
+            "memory_search",
+            "memory_update",
+            "recall_history"
+          ],
+          "tone": "info"
+        },
+        {
+          "id": "g-vault",
+          "label": "vault",
+          "kind": "store",
+          "depth": 2,
+          "tools": [
+            "vault_ingest",
+            "vault_lint",
+            "vault_query",
+            "vault_search"
+          ],
+          "tone": "info"
+        },
+        {
+          "id": "g-file",
+          "label": "file",
+          "kind": "stage",
+          "depth": 2,
+          "tools": [
+            "file_copy",
+            "file_move",
+            "file_read",
+            "file_write",
+            "glob",
+            "grep",
+            "open",
+            "pdf_read",
+            "project_link",
+            "project_list",
+            "project_new",
+            "project_open"
+          ]
+        },
+        {
+          "id": "g-web",
+          "label": "web",
+          "kind": "stage",
+          "depth": 2,
+          "tools": [
+            "browser_click",
+            "browser_close",
+            "browser_fill_form",
+            "browser_navigate",
+            "browser_network_requests",
+            "browser_screenshot",
+            "browser_snapshot",
+            "context7_lookup",
+            "tavily_extract",
+            "tavily_search",
+            "web_search"
+          ]
+        },
+        {
+          "id": "g-agents",
+          "label": "agents",
+          "kind": "seat",
+          "depth": 2,
+          "tools": [
+            "agent_ask",
+            "agent_create",
+            "agent_promote",
+            "controller_session_list",
+            "delegate_agent_controller",
+            "delegate_auditor",
+            "delegate_coder",
+            "delegate_codex_exec",
+            "invoke_agent",
+            "lane_attach",
+            "lane_close",
+            "lane_list",
+            "lane_named_ensure",
+            "lane_named_get",
+            "lane_named_list",
+            "lane_open",
+            "lane_read",
+            "lane_send",
+            "lane_status",
+            "lane_turn",
+            "session_close",
+            "session_list",
+            "session_open",
+            "session_result",
+            "session_send",
+            "skill_create",
+            "skill_promote",
+            "skill_refine",
+            "spawn_await",
+            "spawn_cancel",
+            "spawn_check",
+            "start_controller_session",
+            "tool_search",
+            "work_send"
+          ]
+        },
+        {
+          "id": "g-channels",
+          "label": "channels",
+          "kind": "stage",
+          "depth": 2,
+          "tools": [
+            "channel_history_read",
+            "channel_notify",
+            "channel_react",
+            "channel_send_animation",
+            "channel_send_document",
+            "channel_send_location",
+            "channel_send_photo",
+            "channel_send_poll",
+            "channel_send_sticker",
+            "channel_send_video",
+            "channel_send_video_note",
+            "channel_send_voice",
+            "chat_initiate",
+            "workspace_post",
+            "workspace_reply"
+          ]
+        },
+        {
+          "id": "g-surface",
+          "label": "surface",
+          "kind": "stage",
+          "depth": 2,
+          "tools": [
+            "ask_clarification",
+            "image_generate",
+            "orb_visibility",
+            "set_mood",
+            "set_state",
+            "surface_bind_session",
+            "surface_close",
+            "surface_create",
+            "surface_focus",
+            "surface_highlight",
+            "surface_list",
+            "surface_update",
+            "tasks_set",
+            "tasks_update"
+          ]
+        },
+        {
+          "id": "g-schedule",
+          "label": "schedule",
+          "kind": "stage",
+          "depth": 2,
+          "tools": [
+            "alarm_cancel",
+            "alarm_list",
+            "alarm_set",
+            "alarm_snooze",
+            "schedule_create",
+            "schedule_list",
+            "schedule_remove",
+            "schedule_run",
+            "schedule_update"
+          ]
+        },
+        {
+          "id": "g-self",
+          "label": "self",
+          "kind": "store",
+          "depth": 2,
+          "tools": [
+            "agenda_comment",
+            "brief_read",
+            "brief_render",
+            "conscience_status",
+            "diary_append",
+            "log_triage",
+            "propose_change",
+            "soul_growth_propose"
+          ],
+          "tone": "info"
+        },
+        {
+          "id": "g-shell",
+          "label": "shell",
+          "kind": "stage",
+          "depth": 2,
+          "tools": [
+            "bash",
+            "os_launch",
+            "os_open_url",
+            "screen_look",
+            "system_diagnose"
+          ],
+          "tone": "warn"
+        },
+        {
+          "id": "result",
+          "label": "result appended",
+          "sub": "↺ back to stream, to the cap",
+          "kind": "stage",
+          "depth": 1,
+          "signal": "tool.result"
+        },
+        {
+          "id": "tts",
+          "label": "TTS lane",
+          "sub": "local.kokoro",
+          "kind": "stage",
+          "depth": 1,
+          "signal": "voice.tts"
+        },
+        {
+          "id": "persist",
+          "label": "persist history",
+          "kind": "stage",
+          "signal": "turn.persist"
+        },
+        {
+          "id": "observer",
+          "label": "observer",
+          "sub": "suggestions → next turn",
+          "kind": "store",
+          "tone": "info",
+          "signal": "observer.fire"
+        }
+      ]
+    },
+    {
+      "id": "memory",
+      "label": "Memory",
+      "source": "memory/retrieval.py::RetrievalPipeline · memory/reranker.py",
+      "nodes": [
+        {
+          "id": "query",
+          "label": "query",
+          "kind": "stage",
+          "signal": "memory.query"
+        },
+        {
+          "id": "exact",
+          "label": "exact slug",
+          "sub": "stage 0 · skips the rest",
+          "kind": "stage",
+          "tone": "ok",
+          "signal": "memory.exact"
+        },
+        {
+          "id": "prefilter",
+          "label": "prefilter",
+          "sub": "stage A",
+          "kind": "stage",
+          "signal": "memory.prefilter"
+        },
+        {
+          "id": "bm25",
+          "label": "BM25 index",
+          "sub": "stage B · full index",
+          "kind": "store",
+          "depth": 1,
+          "tone": "info",
+          "signal": "memory.bm25"
+        },
+        {
+          "id": "vector",
+          "label": "vector index",
+          "sub": "stage B · full index",
+          "kind": "store",
+          "depth": 1,
+          "tone": "info",
+          "signal": "memory.vector"
+        },
+        {
+          "id": "rerank",
+          "label": "rerank",
+          "sub": "stage C · when installed",
+          "kind": "stage",
+          "signal": "memory.rerank"
+        },
+        {
+          "id": "block",
+          "label": "[recalled_memories]",
+          "sub": "one turn only",
+          "kind": "stage",
+          "tone": "ok",
+          "signal": "memory.injected"
+        }
+      ]
+    },
+    {
+      "id": "delegation",
+      "label": "Delegates",
+      "source": "roles.yaml::roles.coder / roles.auditor · kernel/tools/delegate_*.py",
+      "nodes": [
+        {
+          "id": "brain",
+          "label": "chat brain",
+          "sub": "tool call",
+          "kind": "stage",
+          "signal": "tool.dispatch"
+        },
+        {
+          "id": "gate",
+          "label": "permission",
+          "kind": "gate",
+          "tone": "warn",
+          "signal": "tool.permission"
+        },
+        {
+          "id": "seat",
+          "label": "the seat",
+          "sub": "cli.claude · cli.codex",
+          "kind": "seat",
+          "tone": "accent",
+          "signal": "delegate.spawn"
+        },
+        {
+          "id": "lane",
+          "label": "lane surface",
+          "sub": "streams while it runs",
+          "kind": "stage",
+          "depth": 1,
+          "signal": "delegate.stream"
+        },
+        {
+          "id": "completion",
+          "label": "completion",
+          "sub": "injected next turn, not awaited",
+          "kind": "stage",
+          "tone": "accent",
+          "signal": "delegate.complete"
+        }
+      ]
+    }
+  ]
+}

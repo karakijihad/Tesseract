@@ -25,6 +25,7 @@ from tesseract.capability import consent, models, system
 from tesseract.capability.state import (
     Advice,
     CapabilityState,
+    Consent,
     DependencyRecord,
     DependencyState,
     HardwareFacts,
@@ -209,9 +210,10 @@ def _remove_legacy_snapshot() -> bool:
 #: nobody — so a machine that lost its graphics card went on recommending the
 #: voice it could no longer keep up with, silently.
 _TTS_ADVICE = {
-    "kokoro-gpu": "This machine can now run the Natural voice comfortably.",
-    "piper-preferred": (
-        "The Light voice will keep up better than Natural on this machine now."
+    "kokoro-gpu": "This machine can now run the local voice comfortably.",
+    "kokoro-cpu": (
+        "Without a graphics card the local voice takes longer to start "
+        "speaking. The cloud voice starts faster, if you have a key set."
     ),
 }
 
@@ -245,6 +247,44 @@ def profile_advice(
                 f"This machine now looks different to TESSERACT "
                 f"({previous.hardware.profile} → {hardware.profile}). {detail}"
             ).strip(),
+            at=now_iso(),
+        )
+    ]
+
+
+def deferred_setup_advice(merged: dict[str, DependencyRecord]) -> list[Advice]:
+    """One line while an install that was never asked anything still has
+    unanswered questions.
+
+    The other half of `b1049faf`. A first run whose splash could not open
+    installs the app and nothing optional — which is right, and which would be
+    a dead end if nothing said so: every dependency reads `never_asked`, and
+    `never_asked` is deliberately not "needs attention", so the HUD's chip
+    stays silent and the operator has an app with no speech and no explanation.
+
+    Conditional on something still being unanswered rather than on the marker
+    alone, so it clears itself as the operator answers in Settings instead of
+    becoming a permanent line — which is how advice stops being read.
+    """
+    if not consent.setup_deferred():
+        return []
+    waiting = sorted(
+        record.id
+        for record in merged.values()
+        if record.consent is Consent.NEVER_ASKED
+        and record.state is DependencyState.ABSENT
+        and record.kind in ("model", "service")
+    )
+    if not waiting:
+        return []
+    return [
+        Advice(
+            id="setup-deferred",
+            text=(
+                "Setup could not open on this machine, so nothing optional was "
+                "downloaded — speech and semantic search are off. Turn on what "
+                "you want in Settings → Local models and it downloads then."
+            ),
             at=now_iso(),
         )
     ]
@@ -289,7 +329,7 @@ async def reconcile() -> CapabilityState:
         boot_id=boot_id,
         dependencies=merged,
         hardware=hardware,
-        advice=profile_advice(previous, hardware),
+        advice=profile_advice(previous, hardware) + deferred_setup_advice(merged),
     )
 
 

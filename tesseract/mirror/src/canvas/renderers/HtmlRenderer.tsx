@@ -6,6 +6,9 @@
 // tool authors pick inconsistent keys, and a wrong key used to render an
 // empty (black) card.
 
+import { useEffect } from 'react';
+
+import { Note } from '../../components/common/Note';
 import type { RendererProps } from './index';
 
 // An opaque origin throws `SecurityError` on `window.localStorage` /
@@ -71,10 +74,49 @@ function withStorageShim(html: string): string {
   return STORAGE_SHIM + html;
 }
 
-export function HtmlRenderer({ descriptor }: RendererProps) {
+// A frame nested inside this one inherits the opaque origin, so an embedded
+// player (YouTube et al.) throws reading storage at boot and paints black. The
+// markup is left exactly as authored — a nested frame that needs no storage
+// works fine, and removing it would break the ones that do — but the surface
+// says what is about to happen and which verb plays media instead, rather than
+// handing the operator a black rectangle and no reason.
+//
+// Matched rather than parsed: this is a caption on the card, not a security
+// boundary. The sandbox is the boundary and it holds whatever this reads.
+const NESTED_FRAME_RE = /<iframe\b[^>]*\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
+
+function nestedFrameSources(html: string): string[] {
+  const found: string[] = [];
+  for (const match of html.matchAll(NESTED_FRAME_RE)) {
+    const src = match[1] ?? match[2] ?? match[3] ?? '';
+    if (/^https?:\/\//i.test(src)) {
+      found.push(src);
+    }
+  }
+  return found;
+}
+
+export function HtmlRenderer({ descriptor, report }: RendererProps) {
   const props = descriptor.props ?? {};
   const html = String(props.html ?? props.text ?? props.content ?? props.body ?? '');
-  return (
+  const nested = nestedFrameSources(html);
+
+  // The caption below tells the operator; this tells the model. Without it
+  // the card is registered, drawn, and black, and `surface_list` calls that
+  // a surface like any other.
+  useEffect(() => {
+    if (!report) return;
+    if (html === '') {
+      report('errored', 'no markup: props carried none of html / text / content / body');
+    } else if (nested.length > 0) {
+      report(
+        'degraded',
+        `embeds ${nested.length} third-party page(s) — sandboxed into an opaque origin, so an embedded player paints black here. Use open target:"${nested[0]}" instead.`,
+      );
+    }
+  }, [report, html, nested.length, nested[0]]);
+
+  const frame = (
     <iframe
       className="surface-html"
       title={descriptor.title ?? 'html'}
@@ -82,5 +124,20 @@ export function HtmlRenderer({ descriptor }: RendererProps) {
       sandbox="allow-scripts"
       referrerPolicy="no-referrer"
     />
+  );
+  if (nested.length === 0) {
+    return frame;
+  }
+  return (
+    <div className="surface-html-nested">
+      <Note tone="warn">
+        This surface embeds {nested.length === 1 ? 'a page' : `${nested.length} pages`} from another
+        site. Authored markup is sandboxed into an opaque origin, so an embedded player renders as a
+        black pane here. To show something that already exists, use{' '}
+        <code>open target:"{nested[0]}"</code> — the runtime picks the surface and grants a player
+        what it needs.
+      </Note>
+      {frame}
+    </div>
   );
 }

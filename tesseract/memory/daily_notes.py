@@ -40,6 +40,24 @@ def _daily_frontmatter(date_str: str) -> str:
     )
 
 
+def section_exists(*, probe: str, daily_dir: Path, date: datetime) -> bool:
+    """Whether `<daily_dir>/YYYY-MM-DD.md` already contains `probe`.
+
+    The same test `append_section` makes before writing, exposed so a caller
+    can make it BEFORE doing expensive work. `chat_digest` paid for a model
+    call and then discovered the day was already digested; with a catch-up
+    walking several missed days that became several paid calls producing
+    nothing.
+    """
+    target = daily_dir / f"{date.strftime('%Y-%m-%d')}.md"
+    if not target.exists():
+        return False
+    try:
+        return probe in target.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+
 def append_section(
     *,
     header: str,

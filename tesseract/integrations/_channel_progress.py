@@ -23,7 +23,11 @@ from typing import Awaitable, Callable, Literal
 
 log = logging.getLogger(__name__)
 
-ProgressKind = Literal["elapsed", "tool_start", "tool_end"]
+#: `intent` is not progress scaffolding — it is the assistant's own
+#: sentence about what it is doing, the same block the cockpit renders.
+#: A channel is the same funnel, so it gets the same announcement; the
+#: adapter decides whether that lands as an edit or as its own message.
+ProgressKind = Literal["elapsed", "tool_start", "tool_end", "intent"]
 
 # Per-tool emoji prefix for the rendered one-liner. Anything missing
 # from this map falls through to ``default`` so a brand-new tool name
@@ -62,6 +66,8 @@ class ProgressEvent:
     tool_name: str = ""
     tool_args: dict | None = None
     elapsed_s: float = 0.0
+    #: The assistant's own words, for `kind="intent"`. Empty otherwise.
+    text: str = ""
 
 
 def emoji_for_tool(tool_name: str) -> str:
@@ -86,6 +92,11 @@ def format_progress_line(event: ProgressEvent) -> str:
     answer replaces them entirely when the turn lands; these strings
     are scaffolding, not transcript.
     """
+    if event.kind == "intent":
+        # Verbatim. Every other line here is scaffolding this module writes;
+        # this one is the assistant talking, and paraphrasing it would be the
+        # surface deciding what she said.
+        return (event.text or "").strip()
     if event.kind == "elapsed":
         elapsed = max(0, int(round(event.elapsed_s)))
         return f"🛠 still working on this — {elapsed}s in"

@@ -21,9 +21,12 @@
 ## Mechanisms
 
 - [Permissions](mechanisms/permissions.md)
+- [The wake word](mechanisms/wake-word.md)
 - [Memory and the vault](mechanisms/memory-and-vault.md)
 - [Prompts](mechanisms/prompts.md)
 - [Workspace](mechanisms/workspace.md)
+- [Connecting a CLI](mechanisms/connecting-a-cli.md)
+- [Updates and your settings](mechanisms/updates.md)
 
 ## Reference
 
@@ -32,6 +35,8 @@
 - [Models and roles](reference/models-and-roles.md)
 - [Configuration](reference/config.md)
 - [Costs](reference/costs.md)
+- [Background work](reference/pipeline.md)
+- [What runs on its own](reference/what-runs.md)
 
 ## The project
 

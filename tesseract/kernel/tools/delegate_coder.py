@@ -95,18 +95,22 @@ class DelegateCoderTool(Tool):
     # path left the other two open.
     untrusted_source: ClassVar[bool] = True
 
+    group: ClassVar[str] = "handing-work-off"
+    summary: ClassVar[str] = "Delegates a coding task to whichever CLI fills the coder seat."
+    use_when: ClassVar[str] = (
+        "Use for heavy builds, multi-file refactors, or large reads that need sustained "
+        "focus. Brief it with the root symptom, what you expected, and what you ruled out "
+        "— never your worry about the mess you made getting there."
+    )
+    not_when: ClassVar[str] = (
+        "Review, not build — use `delegate_auditor`. A persistent "
+        "controller session — use `delegate_agent_controller`. A markdown "
+        "sub-agent task — use `invoke_agent`."
+    )
+
     @property
     def name(self) -> str:
         return "delegate_coder"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Delegate a coding task to the coder seat — large reads, "
-            "multi-file refactors, careful builds. Which CLI fills the seat "
-            "is config (roles.yaml::coder); pass `provider` only to borrow "
-            "the other one for this call. Returns final output text."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { Hint } from '../../components/ui/Hint';
+import { Chip } from '../../components/common/Chip';
 
 interface Props {
   path: string;
@@ -14,7 +16,7 @@ interface Props {
 export function PathPill({ path, label }: Props) {
   const [copied, setCopied] = useState(false);
   if (!path) return null;
-  const onClick = async (e: React.MouseEvent<HTMLButtonElement>) => {
+  const onClick = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
       await navigator.clipboard.writeText(path);
@@ -25,16 +27,17 @@ export function PathPill({ path, label }: Props) {
     }
   };
   return (
-    <button
-      type="button"
-      className={`workspace-path-pill${copied ? ' is-copied' : ''}`}
-      title={`Click to copy: ${path}`}
-      onClick={onClick}
-    >
-      {label ?? path}
-      <span className="workspace-path-pill-hint t-meta">
-        {copied ? ' copied' : ' copy'}
-      </span>
-    </button>
+    <Hint label={`Click to copy: ${path}`}>
+      <Chip
+        className="workspace-path-pill"
+        active={copied}
+        onClick={onClick}
+      >
+        {label ?? path}
+        <span className="workspace-path-pill-hint t-meta">
+          {copied ? ' copied' : ' copy'}
+        </span>
+      </Chip>
+    </Hint>
   );
 }

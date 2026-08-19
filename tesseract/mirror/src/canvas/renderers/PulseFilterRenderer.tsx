@@ -3,6 +3,7 @@
 // in the pulse store so this card and the PulseStreamRenderer share it.
 
 import { Hint } from '../../components/ui/Hint';
+import { Chip } from '../../components/common/Chip';
 import type { PulseTag } from '../../lib/types';
 import { ALL_PULSE_TAGS, usePulseStore } from '../../stores/pulse';
 import type { RendererProps } from './index';
@@ -31,14 +32,14 @@ export function PulseFilterRenderer(_props: RendererProps) {
     <div className="pulse-filters pulse-filters--card">
       {ALL_PULSE_TAGS.map((tag) => (
         <Hint key={tag} label={`${tag} — ${TAG_HINTS[tag]}`} position="bottom" maxWidth={280}>
-          <button
-            type="button"
-            className={`ev-tag ${tag} pulse-filter-chip${isTagEnabled(tag) ? ' is-on' : ' is-off'}`}
+          <Chip
+            variant="tag"
+            className={`ev-tag ${tag}`}
+            active={isTagEnabled(tag)}
             onClick={() => toggleTag(tag)}
-            aria-pressed={isTagEnabled(tag)}
           >
             {tag}
-          </button>
+          </Chip>
         </Hint>
       ))}
     </div>

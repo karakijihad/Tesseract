@@ -1,6 +1,6 @@
-"""SkillRefinementJob — Phase 4 (capability-growth) 4b.
+"""Which skills are letting the assistant down, and a rewrite of the worst.
 
-Periodic scan of `logs/skills/usage.jsonl` (the 4a telemetry). A skill whose
+Scans `logs/skills/usage.jsonl`. A skill whose
 negative-outcome ratio (``error`` + ``correction`` over total loads) crosses a
 configured threshold within the window is flagged: the job files a
 ``skill_refinement`` inbox card. When a model role resolves, the job also asks
@@ -12,9 +12,13 @@ Detection needs no model — it is pure arithmetic over the usage log — so the
 card always fires for a genuinely underperforming skill. The LLM proposal is
 best-effort enrichment on top.
 
-Disabled by default in ``schedule.yaml``; the operator flips it on once the
-usage log has signal. Never raises — handler contract returns
-``JobResult(ok=False, ...)`` on failure.
+**Fired on volume, not on a clock.** Its row declares
+``when: skill_usage_volume`` — it runs once enough new skill uses have been
+logged to judge one, which is the question a cadence cannot answer: a weekly
+cron reads two data points as readily as two hundred. The threshold is
+``when_config.min_new_rows``.
+
+Never raises — handler contract returns ``JobResult(ok=False, ...)`` on failure.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from typing import Any
 
 from tesseract.brain.skill_usage import read_usage
 from tesseract.brain.skills import SKILL_FILENAME, list_skills_names
+from tesseract.orchestrator.outcome import RunOutcome
 from tesseract.paths import TESSERACT_HOME, home_logs_root
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.scheduler.role_chain import build_chain_for_job
@@ -80,19 +85,25 @@ class SkillRefinementJob(BaseJob):
             store = _resolve_store(ctx)
             already = _pending_refinement_skills(store)
             filed = 0
+            flag_only = 0
             for cand in candidates:
                 if filed >= max_cards:
                     break
                 if cand["skill"] in already:
                     continue
-                if await self._file_card(ctx, store, skills_dir, cand):
-                    filed += 1
+                proposed = await self._file_card(ctx, store, skills_dir, cand)
+                if proposed is None:
+                    continue
+                filed += 1
+                flag_only += 0 if proposed else 1
 
             return JobResult(
                 job_name=ctx.job_name,
                 run_id=ctx.run_id,
                 ok=True,
                 detail=f"candidates={len(candidates)} filed={filed}",
+                outcome=_outcome(candidates, filed, flag_only),
+                outcome_reason=_reason(candidates, filed, flag_only, ratio_threshold),
                 payload={
                     "candidates": [c["skill"] for c in candidates],
                     "filed": filed,
@@ -116,8 +127,13 @@ class SkillRefinementJob(BaseJob):
         store: Any,
         skills_dir: Path,
         cand: dict[str, Any],
-    ) -> bool:
-        """File one skill_refinement card. Returns True on success."""
+    ) -> bool | None:
+        """File one skill_refinement card.
+
+        `None` if it could not be filed; otherwise whether the card carries a
+        proposed rewrite. The caller needs the difference: a card that is only
+        a flag is the job's degraded path, not its output.
+        """
         from tesseract.workspace_events import WorkspaceEvent
 
         name = cand["skill"]
@@ -146,9 +162,9 @@ class SkillRefinementJob(BaseJob):
             store.append_event(event)
         except Exception:
             log.exception("skill_refinement: append card failed for %s", name)
-            return False
+            return None
         await _broadcast(ctx, event)
-        return True
+        return bool(proposed)
 
     async def _propose_revision(self, ctx: JobContext, current: str) -> str:
         """Best-effort LLM proposal of a revised SKILL.md. Empty on any miss
@@ -181,6 +197,35 @@ class SkillRefinementJob(BaseJob):
 
 
 # ─── Helpers ─────────────────────────────────────────────
+
+
+def _outcome(candidates: list[dict[str, Any]], filed: int, flag_only: int) -> RunOutcome:
+    """Which of the closed states this run was.
+
+    Nothing crossing the threshold is the healthy common case and says so.
+    A card filed with no proposed rewrite is DEGRADED rather than succeeded:
+    the job's contract is an applyable diff, and a flag the operator has to
+    act on by hand is less than that — arriving quietly as a success is how a
+    dead model role goes unnoticed for a month.
+    """
+    if not candidates or filed == 0:
+        return RunOutcome.SKIPPED_NO_WORK
+    return RunOutcome.DEGRADED if flag_only else RunOutcome.SUCCEEDED
+
+
+def _reason(
+    candidates: list[dict[str, Any]], filed: int, flag_only: int, threshold: float,
+) -> str:
+    if not candidates:
+        return f"no skill failed more than {round(threshold * 100)}% of its loads"
+    if filed == 0:
+        return "every underperforming skill already has a card waiting"
+    if flag_only:
+        return (
+            f"{flag_only} of {filed} card(s) carry no proposed rewrite — the model "
+            "was unavailable, so they are flags to refine by hand"
+        )
+    return ""
 
 
 def _rows_in_window(rows: list[dict[str, Any]], now: datetime, window_days: int) -> list[dict[str, Any]]:

@@ -8,7 +8,6 @@ scoring:
   risk_weight: -10.0                # penalty for items that need operator approval
   budget_remaining_weight: 5.0      # items with more budget headroom score higher
   source_trust_weight: 8.0          # trusted sources score higher (see source_trust below)
-  vet_weight: 12.0                  # boost for items that passed automated vetting
 
 age_score:
   unit: hours
@@ -21,20 +20,14 @@ risk_score:
   absolute_deny: 1.0e9              # effectively never selected
 
 # Trust weighting per event source (0.0-1.0 typical range). Higher trust
-# sources rank above lower ones when other scores are equal.
+# sources rank above lower ones when other scores are equal. One entry per
+# LIVE source — a weight for a source nothing produces is a setting that can
+# never apply, and there were six of them.
 source_trust:
   operator: 1.0
-  mission_reflection: 0.7
-  provider_watch: 0.6
-  repo_health: 0.4
-  memory_signal: 0.3
-  vault_signal: 0.3
   recovery: 0.95
-  self_reflection: 0.2
-  operator_view: 0.5
-  strategist: 0.65
-  repo_upgrade: 0.4
-  scout: 0.35
+  provider_watch: 0.6
+  follow_up: 0.4
 
 # Default token/time budgets per risk class. An item may raise its own cap
 # but never below these floors.
@@ -74,7 +67,13 @@ workspace_reply:
 
 # Kernel-wide selection caps for the autonomy loop.
 kernel:
-  tick_interval_seconds: 30         # how often the loop wakes when no event fires
+  # A FALLBACK, not a poll. Every event that reaches the bus wakes the kernel
+  # immediately, and so does a worker finishing — so this number is only what
+  # covers the things no event announces: a daily cap lifting at midnight, an
+  # item parked by a crash the reconciler has not seen, and a wake lost to a
+  # publisher that failed. It was 30 s when nothing woke the loop at all, which
+  # made it the only wake there was rather than the last resort it reads as.
+  tick_interval_seconds: 300
   top_k: 3                          # max items selected per tick
   max_concurrent_workers_total: 8   # hard ceiling across all worker lanes
   max_resume_attempts: 2            # re-proposals allowed for an interrupted item before
@@ -89,12 +88,12 @@ admission:
     threshold: 0.9                  # similarity ratio (0-1) above which two goals count as duplicates
     window_hours: 24
 
-# Automated vetting. Drafts from sources listed in vet_required start
-# hidden until a vetting pass promotes or rejects them.
-vetter:
-  enabled: true
-  vet_required: [self_reflection, memory_signal, vault_signal, repo_upgrade, scout]
-  max_unvetted_hours: 24            # promote a stuck unvetted item after this long
+# The vetter was a quality gate over sources that no longer emit — every entry
+# in its `vet_required` list is deleted, so it judged an empty queue on 117 of
+# its last 129 runs. `max_unvetted_hours` was its escape valve: the kernel
+# promoted anything the job left sitting. With the job gone the gate's only
+# remaining behaviour would have been to delay every draft by a day and then
+# admit it anyway, so the block, the gate and the valve went together.
 
 # Per-worker-kind wallclock budgets, in seconds (10-1800 enforced
 # elsewhere). A worker that exceeds its budget is parked (BLOCKED), not

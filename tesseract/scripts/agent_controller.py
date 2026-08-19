@@ -27,10 +27,21 @@ import os
 import secrets
 import signal
 import sys
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from tesseract.boot_graph import (
+    BootReport,
+    Layer,
+    SubstrateRegistry,
+    layers_for_reload,
+    load_graph,
+    run_layers,
+    validate,
+)
 from tesseract.config_seed import (
-    ensure_agents_seeded,
+    unseed_copied_agents,
+    unseed_copied_jobs,
     ensure_config_seeded,
     ensure_env_seeded,
     ensure_memory_store_seeded,
@@ -392,6 +403,113 @@ def _make_controller_session_emit(
     return _session_emit
 
 
+def controller_boot_graph_path() -> Path:
+    """Where the controller's own graph lives.
+
+    A second file rather than a section of `boot.yaml`. `load_graph` already
+    takes a path, and the validator's "registered but placed in no layer" rule
+    is asked of one registry — a shared file would fail that rule in both
+    processes unless each filtered the other's layers out first, which is a
+    filter wearing a field's name.
+    """
+    return config_dir() / "controller-boot.yaml"
+
+
+def _substrate_prepare(runtime: ControllerRuntime, method: str) -> Callable[[], None]:
+    """Turn a `_rebuild_*` into something the layer runner can report on.
+
+    The rebuilds answer by return — `(reloaded, failed)` — because callers
+    outside the boot path read them that way, and they swallow their own
+    exception on the way past. The runner answers by exception. This is the
+    joint between the two, and it exists so neither side has to lie.
+
+    Resolved by name at call time, not bound here: the runtime is a mutable
+    holder and a caller that swaps a rebuild must get the swapped one.
+    """
+
+    def prepare() -> None:
+        _reloaded, failed = getattr(runtime, method)()
+        if failed:
+            raise RuntimeError("; ".join(failed))
+
+    return prepare
+
+
+def build_controller_registry(runtime: ControllerRuntime) -> SubstrateRegistry:
+    """The controller's substrates, declared the way the Mirror's are.
+
+    Per-process by construction — these close over one `ControllerRuntime`,
+    which is why this is built rather than imported.
+
+    **Nothing here carries a `requires`.** The three authorities that answer it
+    — provider availability, artifact state, voice-lane primacy — apply to none
+    of the five: their absence is a degrade, not a machine with no use for
+    them. A gate that always answers `None` would be a declaration that says
+    nothing.
+
+    **And nothing sits below the warm line.** The daemon binds its port before
+    any of this runs and its readiness gate is `attach_runtime`, which takes
+    the lane manager as an argument — so this process's boundary is already
+    after all five.
+    """
+    reg = SubstrateRegistry()
+    reg.add(
+        "adapter",
+        _substrate_prepare(runtime, "_rebuild_adapter"),
+        holds_gil=False,
+        degrade=(
+            "dispatch is a no-op — an inbound turn still lands in the "
+            "transcript as user_text and nothing answers it"
+        ),
+        reload_on=("config", "roles", "all"),
+    )
+    reg.add(
+        "tool_registry",
+        _substrate_prepare(runtime, "_rebuild_tools"),
+        holds_gil=False,
+        degrade=(
+            "turns run with no tools and no permission policy — the model "
+            "answers from the prompt alone"
+        ),
+        reload_on=("tools", "all"),
+    )
+    reg.add(
+        "scheduler",
+        _substrate_prepare(runtime, "_rebuild_scheduler"),
+        holds_gil=False,
+        degrade=(
+            "the scheduler provider hands back None, so schedule_* tools "
+            "return a clean tool error instead of raising into the turn"
+        ),
+        reload_on=("tools", "all"),
+    )
+    reg.add(
+        "lane_manager",
+        _substrate_prepare(runtime, "_rebuild_lane_manager"),
+        holds_gil=False,
+        degrade=(
+            "lane_* tools and the daemon's lane.* IPC verbs find no manager "
+            "and refuse; lane state on disk is untouched and a restart "
+            "reattaches"
+        ),
+        # Declares no reload target, which is the whole point: lanes are live
+        # workers with file-canonical state, and a rebuild would orphan every
+        # in-flight one. Under this registry that is the default rather than a
+        # rule someone has to remember.
+    )
+    reg.add(
+        "system_prompt",
+        _substrate_prepare(runtime, "_rebuild_prompt"),
+        holds_gil=False,
+        degrade=(
+            "dispatch is a no-op — the same gate the adapter's absence trips, "
+            "and per-turn assembly has no boot-time fallback to fall back to"
+        ),
+        reload_on=("all",),
+    )
+    return reg
+
+
 class ControllerRuntime:
     """Mutable holder for the controller's brain wiring.
 
@@ -427,6 +545,12 @@ class ControllerRuntime:
         # Mirror/REPL ran with YAML-driven knobs.
         self.adapter_options: Any | None = None
         self.chat_brain_config: Any | None = None
+        # The whole `resolve_chat_brain_runtime()` tuple, kept so
+        # ``_rebuild_tools`` can hand it to ``build_tool_registry`` instead of
+        # resolving a second time. Resolving builds one SDK client per chain
+        # entry — measured at ~3.6s — and the daemon paid it twice on every
+        # boot and every reload for two copies of the same answer.
+        self.chat_runtime: Any | None = None
         # Audit-2 M2 — persistent ChatSession per controller session_id.
         # ``ChatSession.history`` is mutable per-turn; recreating the
         # session for each ``user_input`` discards conversation context
@@ -447,6 +571,48 @@ class ControllerRuntime:
         # whenever the lane manager is rebuilt so both holders stay in
         # lockstep (the binding wraps the underlying manager directly).
         self.named_lane_manager: Any | None = None
+        # Built lazily on first session — see `_get_cost_ledger`.
+        self._cost_ledger: Any | None = None
+        # The same registry, validator and layer runner the Mirror boots from.
+        # The substrates close over this instance, so the registry is built
+        # here; the layers load on first use so a runtime can be constructed
+        # in a process that has no config tree.
+        self.substrates = build_controller_registry(self)
+        self._boot_layers: tuple[Layer, ...] | None = None
+
+    @property
+    def boot_layers(self) -> tuple[Layer, ...]:
+        if self._boot_layers is None:
+            self._boot_layers = load_graph(controller_boot_graph_path())
+        return self._boot_layers
+
+    def _get_cost_ledger(self) -> Any | None:
+        """The controller's own CostLedger, built once.
+
+        Controller sessions ran with `cost_ledger=None`, so every paid call
+        made through one — chat-model AND vision, `screen_look` included —
+        was spent without a ledger row. The operator's spend view under-
+        reported by however much the controller did.
+
+        This is a second ledger INSTANCE, because the controller is a separate
+        process — but not a second budget. `check_preflight` revalidates
+        against `cost-tracking.jsonl` before it decides, and that file is the
+        canonical record every door writes to: the Mirror (which carries chat,
+        Telegram, voice and vision in one process) and this one. So the cap is
+        per-day across all of them rather than per-process, and a fifteenth
+        entry point would inherit the same gate for free.
+        """
+        if self._cost_ledger is None:
+            try:
+                from tesseract.brain.boot import build_cost_ledger
+
+                self._cost_ledger = build_cost_ledger()
+            except Exception:
+                # Best-effort, matching the daemon's brain-wiring invariant:
+                # an unbuildable ledger must not stop a session starting.
+                log.warning("controller: cost ledger unavailable", exc_info=True)
+                self._cost_ledger = None
+        return self._cost_ledger
 
     def _get_scheduler(self) -> Any | None:
         return self.scheduler
@@ -487,9 +653,15 @@ class ControllerRuntime:
             # Mirror/REPL wiring path).
             self.adapter_options = options
             self.chat_brain_config = chat_cfg
+            self.chat_runtime = (chat_cfg, adapter, options, adapter_chain)
             reloaded.append("adapter")
         except Exception as exc:  # noqa: BLE001
             log.exception("controller: adapter rebuild failed")
+            # Cleared, not left stale: a rebuild that failed means the config
+            # this tuple was resolved from is gone, and handing it to
+            # ``build_tool_registry`` would wire the registry to a chain the
+            # controller itself no longer uses.
+            self.chat_runtime = None
             failed.append(f"adapter: {exc}")
         return reloaded, failed
 
@@ -510,7 +682,13 @@ class ControllerRuntime:
             policy = load_permission_policy(
                 PERMISSIONS_YAML, workspace_root=str(home_dir())
             )
-            registry, *_ = build_tool_registry(policy=policy)
+            # ``_rebuild_adapter`` runs first on every path that reaches here
+            # (``initial_build``, and ``reload`` for config/roles/all); a
+            # tools-only reload is permissions.yaml, which does not touch the
+            # chain, so reusing the live one is also the correct answer.
+            registry, *_ = build_tool_registry(
+                policy=policy, chat_runtime=self.chat_runtime,
+            )
             self.tool_registry = registry
             self.policy = policy
             reloaded.append("tool_registry")
@@ -563,56 +741,51 @@ class ControllerRuntime:
         try:
             from tesseract.brain.prompt import assemble_system_prompt
 
-            self.system_prompt = assemble_system_prompt(mode="manifest")
+            self.system_prompt = assemble_system_prompt(
+                tool_registry_provider=lambda: self.tool_registry,
+            )
             reloaded.append("system_prompt")
         except Exception as exc:  # noqa: BLE001
             log.exception("controller: system prompt rebuild failed")
             failed.append(f"system_prompt: {exc}")
         return reloaded, failed
 
-    def initial_build(self) -> None:
-        """Best-effort build at boot. Failures are logged and leave the
-        holders at ``None``; the daemon stays alive (TC-4 invariant)."""
+    async def initial_build(self) -> BootReport:
+        """Best-effort build at boot, walked from `controller-boot.yaml`.
+
+        Failures are logged and leave the holders at ``None``; the daemon
+        stays alive (TC-4 invariant). The runner isolates each substrate for
+        the same reason the hand-written sequence wrapped itself in a
+        try/except, and each `prepare` is sync, so the runner sends it to a
+        thread rather than running it on the accept loop.
+        """
         try:
-            self._rebuild_adapter()
-            self._rebuild_tools()
-            self._rebuild_scheduler()
-            self._rebuild_lane_manager()
-            self._rebuild_prompt()
+            return await run_layers(self.boot_layers, self.substrates)
         except Exception:  # noqa: BLE001
             log.exception("controller: initial brain wiring failed")
+            return BootReport(prepared=(), skipped=(), failed=())
 
     async def reload(self, target: str) -> dict[str, list[str]]:
         """TC-5 reload callback invoked by the daemon after drain.
 
-        Targets follow :class:`ReloadMessage`:
-        - ``config`` / ``roles`` → rebuild adapter (providers.yaml /
-          roles.yaml feed the same ``resolve_chat_brain_runtime`` path)
-        - ``tools`` → rebuild tool registry (e.g. permissions.yaml)
-        - ``all`` → both, plus the system prompt
+        Which substrates a target re-prepares is declared by each substrate's
+        ``reload_on``, not decided here: ``config`` / ``roles`` reach the
+        adapter, ``tools`` the tool registry and the scheduler, ``all`` those
+        plus the system prompt.
+
+        ``lane_manager`` declares no reload target at all, which is how the
+        registry says "prepared once, never re-prepared". Lanes outlive every
+        reload: the lane processes are live workers, lane state is
+        file-canonical, and the brain's restart-recovery path is
+        ``lane.attach``, not "rebuild manager". A rebuild here would orphan
+        every in-flight lane.
         """
-        reloaded: list[str] = []
-        failed: list[str] = []
-        if target in ("config", "roles", "all"):
-            r, f = await asyncio.to_thread(self._rebuild_adapter)
-            reloaded.extend(r)
-            failed.extend(f)
-        if target in ("tools", "all"):
-            r, f = await asyncio.to_thread(self._rebuild_tools)
-            reloaded.extend(r)
-            failed.extend(f)
-            r, f = await asyncio.to_thread(self._rebuild_scheduler)
-            reloaded.extend(r)
-            failed.extend(f)
-        if target == "all":
-            r, f = await asyncio.to_thread(self._rebuild_prompt)
-            reloaded.extend(r)
-            failed.extend(f)
-        # X-4 — DO NOT rebuild self.lane_manager on reload. Lanes outlive
-        # any reload target (config/roles/tools): the lane processes are
-        # live workers, lane state is file-canonical, and the brain's
-        # restart-recovery path is `lane.attach`, not "rebuild manager".
-        # A rebuild here would orphan every in-flight lane.
+        report = await run_layers(
+            layers_for_reload(self.boot_layers, self.substrates, target),
+            self.substrates,
+        )
+        reloaded = list(report.prepared)
+        failed = [text for _id, text in report.failed]
         # Audit-2 M2 — drop cached ChatSession instances so the next turn
         # picks up the rebuilt adapter / tool registry / system prompt.
         # History is discarded with them; that matches Mirror's
@@ -687,11 +860,17 @@ class ControllerRuntime:
 
         def _prompt_builder() -> str:
             # Mirror reassembles the system prompt per turn so SOUL.md /
-            # IDENTITY.md edits land inside the active session. The
+            # SOUL.md edits land inside the active session. The
             # controller follows the same pattern; cached `system_prompt`
             # acts as the boot-time fallback when assembly fails.
             try:
-                base = assemble_system_prompt(mode="manifest")
+                # `session_registry`, not the controller's own: the seat
+                # constraint physically removes the other seats' delegate
+                # tools, and a map naming a tool this session cannot reach is
+                # the drift the map exists to remove.
+                base = assemble_system_prompt(
+                    tool_registry_provider=lambda: session_registry,
+                )
             except Exception:  # noqa: BLE001 — keep the turn alive
                 base = self.system_prompt or ""
             if seat_tool:
@@ -733,6 +912,7 @@ class ControllerRuntime:
             workspace_root=str(ROOT),
             session_id=record.session_id,
             cli_sink=_make_controller_cli_sink(daemon, record.session_id),
+            cost_ledger=self._get_cost_ledger(),
             scheduler_provider=self._get_scheduler,
             tool_registry_provider=lambda: session_registry,
             # Scoped to the session's own principal. The raw managers live in
@@ -1000,13 +1180,48 @@ async def run_controller(*, host: str = "127.0.0.1", port: int = 0) -> int:
     controller_id = _mint_controller_id()
     token = _load_token()
     drain_timeout = _load_drain_timeout_seconds()
+    # Before the port, and loudly. TC-4's liveness invariant covers brain
+    # wiring — a substrate that raises leaves the daemon answering — but a
+    # malformed graph is a broken install, and `initial_build` swallows what it
+    # is handed. Validating inside it would produce a daemon that reports ready
+    # and has prepared nothing, which is why the Mirror validates in
+    # `_on_startup` rather than in its background task.
     runtime = ControllerRuntime()
-    runtime.initial_build()
-
+    validate(runtime.boot_layers, runtime.substrates)
+    # The port opens BEFORE the brain is built, and that ordering is the whole
+    # point. `dispatcher.ensure_daemon_running` probes with a TCP connect and
+    # gives up after 25s; `initial_build` measured 17.4s on an idle machine, so
+    # building first put the entire brain in front of the first connect and
+    # left a 7.6s margin that vanished under load — which is how a delegation
+    # got "daemon spawned but did not become reachable". Binding first answers
+    # that probe truthfully and moves the wait onto the one request that needs
+    # the brain, where `_await_warm` holds it.
     daemon = ControllerDaemon(
         controller_id=controller_id,
         token=token,
         registry=SessionRegistry(),
+        drain_timeout_seconds=drain_timeout,
+        warmup=True,
+    )
+    await daemon.start(host=host, port=port)
+    listening = (
+        f"controller: listening on {daemon.address[0]}:{daemon.address[1]} "
+        f"(id={controller_id}, drain={drain_timeout:.0f}s)"
+    )
+    print(listening, flush=True)
+    # Logged as well as printed, and not redundantly: the print is the line a
+    # person reads in the spawn log, and it carries no timestamp — which is
+    # exactly why the boot duration behind this fix had to be measured against
+    # the PREVIOUS line rather than read off directly.
+    log.info("%s", listening)
+
+    # Off the loop, and not optional: this is seconds of synchronous CPU and
+    # file IO, and running it here would block the accept loop — the port would
+    # be open and nothing would answer on it, which is the same failure wearing
+    # a different hat. Every substrate's `prepare` is a plain callable, which
+    # the layer runner dispatches through `asyncio.to_thread`.
+    await runtime.initial_build()
+    daemon.attach_runtime(
         dispatch_turn=runtime.make_dispatch_turn(),
         reload_callback=runtime.reload,
         on_session_deleted=runtime.drop_session,
@@ -1017,13 +1232,11 @@ async def run_controller(*, host: str = "127.0.0.1", port: int = 0) -> int:
         # CV-1 — named-lane binding layer over the same manager, so Mirror's
         # lane bridge can resolve + ensure named lanes via IPC.
         named_lane_manager=runtime.named_lane_manager,
-        drain_timeout_seconds=drain_timeout,
     )
-    await daemon.start(host=host, port=port)
-    print(
-        f"controller: listening on {daemon.address[0]}:{daemon.address[1]} "
-        f"(id={controller_id}, drain={drain_timeout:.0f}s)",
-        flush=True,
+    log.info(
+        "controller: brain wiring attached — %s:%s ready",
+        daemon.address[0],
+        daemon.address[1],
     )
 
     stop_event = asyncio.Event()
@@ -1089,13 +1302,13 @@ def main(argv: list[str] | None = None) -> int:
     # (already seeded on disk) or run directly per this module's own
     # `python -m tesseract.scripts.agent_controller` entry point. Same
     # seed-before-boot order as `mirror/server/__main__.py::main` and
-    # `supervisor/__main__.py::main` — without this, `run_controller` ->
-    # `ControllerRuntime.initial_build` -> `build_tool_registry` ->
-    # `agents_dir()` hits an empty TESSERACT_HOME/agents on a fresh
-    # relocated home and every built-in agent load hard-fails.
+    # `supervisor/__main__.py::main`. Agent cards no longer need seeding —
+    # they are read from the app tree — but the copies an older install made
+    # still shadow them, so the unseed runs in the same slot.
     ensure_config_seeded()
     ensure_workspace_seeded()
-    ensure_agents_seeded()
+    unseed_copied_agents()
+    unseed_copied_jobs()
     ensure_env_seeded()
     ensure_memory_store_seeded()
     ensure_vault_seeded()
@@ -1114,9 +1327,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     # Durable rotating file — same pipeline as the Mirror backend
     # (tesseract/logsetup.py); the inherited console dies with the supervisor.
-    from tesseract.logsetup import attach_file_logging
+    from tesseract.logsetup import attach_file_logging, redact_credentials_in_logs
 
     attach_file_logging("agent-controller")
+    redact_credentials_in_logs()
     # After logging is attached AND after arg-parsing (so --help's SystemExit
     # short-circuits before this ever runs) — see the identical logging-order
     # comment in `mirror/server/__main__.py::main`.

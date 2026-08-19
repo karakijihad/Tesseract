@@ -22,6 +22,68 @@ from tesseract.mirror.server.tts import _cancel_tts_output
 log = logging.getLogger(__name__)
 
 
+def sessions_holding(app: web.Application, chat_id: str) -> list[ServerSession]:
+    """Every live session whose registry holds this chat.
+
+    A mutation that only touches disk is undone by the next
+    ``persist_session_chats``, which writes each live session's in-memory
+    ``chat_meta`` back over the record. That is not a race — it is the writer
+    doing its job over a change it was never told about. Both the REST routes
+    and the slash commands reach live state through this one function, because
+    they had drifted into two half-implementations of it.
+    """
+    return [
+        srv
+        for srv in (app.get("server_sessions") or {}).values()
+        if chat_id in (getattr(srv, "chat_meta", None) or {})
+    ]
+
+
+def would_orphan_a_session(app: web.Application, chat_id: str) -> bool:
+    """True if shelving this chat would leave some session with none open.
+
+    `ServerSession.archive_chat` raises on that, so it is asked BEFORE disk
+    moves rather than caught after: archiving on disk while a session keeps the
+    chat open is a state the next persist reverses.
+    """
+    return any(
+        chat_id in srv.chat_order and len(srv.chat_order) == 1
+        for srv in sessions_holding(app, chat_id)
+    )
+
+
+def chat_is_busy(app: web.Application, chat_id: str) -> bool:
+    """True while any live session has a turn running ON THIS CHAT.
+
+    `current_turn_tasks` is keyed by chat_id, so a background chat can be
+    mid-turn while another is active. The WS command dispatcher gates mutating
+    commands on `has_running_turn`; the REST routes had no equivalent, so a
+    delete could land on a chat still being written to and the turn's output
+    would go nowhere — `persist_session_chats` only walks `session.chats`.
+    """
+    for srv in sessions_holding(app, chat_id):
+        task = (getattr(srv, "current_turn_tasks", None) or {}).get(chat_id)
+        if task is not None and not task.done():
+            return True
+    return False
+
+
+def detach_deleted_chat(app: web.Application, chat_id: str) -> None:
+    """Drop a deleted chat from every live session, active-safely.
+
+    Popping the registries alone leaves a session whose ``active_chat_id`` and
+    ``chat_session`` still point at a chat no longer in ``chats`` — and since
+    `persist_session_chats` iterates ``chats``, everything typed there
+    afterwards is silently never written. Archiving first is what moves
+    ``active`` off it; call `would_orphan_a_session` before this.
+    """
+    for srv in sessions_holding(app, chat_id):
+        if chat_id in srv.chat_order:
+            srv.archive_chat(chat_id)
+        srv.chats.pop(chat_id, None)
+        srv.chat_meta.pop(chat_id, None)
+
+
 def _detach_outgoing_observer(
     app: web.Application, session: ServerSession, outgoing: Any
 ) -> None:
@@ -253,7 +315,7 @@ async def _handle_chat_restore(app: web.Application, session: ServerSession, dat
         meta = ChatMeta(
             chat_id=record.chat_id, title=record.title,
             created_at=record.created_at, started_at=record.started_at,
-            archived=False, turn_count=record.turn_count,
+            archived=False, turn_count=record.turn_count, model=record.model,
         )
         session.reopen_chat(chat_id, chat_session=cs, meta=meta)
         # Spawn push Stage 2 — a chat rebuilt from a prior-session record is a

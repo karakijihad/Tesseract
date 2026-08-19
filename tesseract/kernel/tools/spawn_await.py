@@ -45,18 +45,24 @@ class SpawnAwaitTool(Tool):
     # applies in `chat.py::_format_spawn_completion`; wrapping only the one
     # path left the other two open.
     untrusted_source: ClassVar[bool] = True
+
+    group: ClassVar[str] = "tracking-spawned-work"
+    summary: ClassVar[str] = (
+        "Blocks until a background spawn finishes and returns its full result."
+    )
+    use_when: ClassVar[str] = (
+        "Use only when a completed spawn's result said it was too large to "
+        "deliver whole and told you to fetch it here."
+    )
+    not_when: ClassVar[str] = (
+        "Routine retrieval — a finished spawn's output is delivered to you "
+        "automatically on your next turn without polling; don't call this or "
+        "`spawn_check` to wait for it."
+    )
+
     @property
     def name(self) -> str:
         return "spawn_await"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Block until a background spawn completes; return its "
-            "full result (same shape a foreground call would have "
-            "returned). Use after spawn_check shows status=running "
-            "and you genuinely need the output to continue."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

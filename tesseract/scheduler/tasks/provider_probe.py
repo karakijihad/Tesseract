@@ -1,4 +1,18 @@
-"""ProviderProbeJob — daily known-good probe across every active role.
+"""ProviderProbeJob — known-good probe across every active role.
+
+**Two entry points, one at a time.** It is a stage of the `consolidate` row —
+the nightly backstop — AND a row on `when: provider_failover`, which fires when
+real traffic has already fallen back from a primary. Both drive this same class,
+and the writer they share states a single-writer contract:
+`provider_health.py::_rotate_if_needed` warns that two callers can both observe
+an oversize file and race on `rename`, dropping a row on Windows or overwriting
+the archive on POSIX. `_ONE_AT_A_TIME` below is how that contract is kept now
+that a second caller exists — the failover the trigger reacts to can happen at
+any hour, including while the nightly pass is running.
+
+It calls each role's PRIMARY REF directly rather than riding a chain, which is
+why the row's manifest entry names `*` alongside the chain its other stages
+ride.
 
 For each role in ``roles.yaml::roles`` with ``mode: active``, the job
 looks up the primary catalog ref's ``kind`` (``chat`` / ``embedding`` /
@@ -10,9 +24,6 @@ On any ``ok=False`` row, the job ALSO publishes a ``provider_health``
 event to the AU-4 AgendaStore bus via the module-level publisher in
 :mod:`tesseract.orchestrator.autonomy.publishers`. AU-5's
 ``provider_watch`` mapper consumes those events; here we only emit.
-
-The job is **disabled by default** in ``schedule.yaml`` — operator opts
-in once the probe roster matches their cost / cadence preferences.
 """
 
 from __future__ import annotations
@@ -38,10 +49,22 @@ from tesseract.scheduler.types import JobContext, JobResult
 log = logging.getLogger(__name__)
 
 
+# Serialises the nightly stage against the failover row. Module-level and
+# asyncio-scoped because both callers run in the one Mirror event loop: the
+# scheduler dispatches every row and every stage there, so a lock here is the
+# whole guard. A second process would need the file lock the writer's docstring
+# names as the alternative; nothing runs this out of process today.
+_ONE_AT_A_TIME = asyncio.Lock()
+
+
 class ProviderProbeJob(BaseJob):
     uses_llm = False  # adapter is invoked via probe, not by the scheduler harness
 
     async def run(self, ctx: JobContext) -> JobResult:
+        async with _ONE_AT_A_TIME:
+            return await self._run(ctx)
+
+    async def _run(self, ctx: JobContext) -> JobResult:
         t0 = time.monotonic()
         try:
             bundle = _load_bundle_safely()

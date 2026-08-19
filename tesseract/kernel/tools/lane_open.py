@@ -54,18 +54,20 @@ class LaneOpenTool(Tool):
     default_posture = "ask"
     risk_class: ClassVar[str] = "operator_gate"
 
+    group: ClassVar[str] = "long-running-collaborators"
+    summary: ClassVar[str] = "Spawn a new unnamed CLI lane (claude or codex) that persists across turns."
+    use_when: ClassVar[str] = (
+        "Use to start a fresh, unnamed collaborator lane for one-off multi-turn work you drive "
+        "yourself with lane_send/lane_turn."
+    )
+    not_when: ClassVar[str] = (
+        "a lane bound to a reusable name, which is `lane_named_ensure`; a one-shot worker, which "
+        "is `delegate_coder`/`delegate_auditor`."
+    )
+
     @property
     def name(self) -> str:
         return "lane_open"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Spawn a new long-lived Claude / Codex lane the controller "
-            "owns. Returns the lane_id. Lanes survive brain restarts; "
-            "use lane_send to drive a turn, lane_read to tail events, "
-            "lane_close to terminate."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

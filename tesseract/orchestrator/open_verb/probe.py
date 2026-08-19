@@ -18,6 +18,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from tesseract import http_client
+
 log = logging.getLogger(__name__)
 
 # A redirect chain is walked by hand; this bounds it.
@@ -143,7 +145,7 @@ async def probe_url(
         return UrlProbe("", False, url, 0, blocked=True)
 
     try:
-        async with httpx.AsyncClient(
+        async with http_client.async_client(
             # Redirects are walked by hand, NOT followed automatically: a
             # public URL that 302s to 169.254.169.254 would otherwise carry the
             # probe straight past the network check that just passed. Every hop

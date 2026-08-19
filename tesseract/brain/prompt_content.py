@@ -21,8 +21,10 @@ logger = logging.getLogger("tesseract.brain.prompt")
 
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
 
-# OpenClaw agent-workspace bootstrap caps:
-# https://docs.openclaw.ai/concepts/agent-workspace
+# Bootstrap caps for the workspace documents inlined into every prompt. Two
+# ceilings rather than one: a single runaway file cannot crowd out the rest,
+# and the capsule as a whole stays inside a budget the smallest chat_brain in
+# `roles.yaml` can still carry a conversation inside.
 PER_FILE_CAP = 12_000
 MEMORY_CAPSULE_TOTAL_CAP = 60_000
 DAILY_FILES_TO_LOAD = 2  # today + yesterday
@@ -48,72 +50,66 @@ DIRECTIVES_BODY_PREVIEW_CHARS = 200
 
 CHANNEL_OVERLAY_HEADER = "# Channel overlay"
 
-# CR-3 — overlay appended to the base system prompt only for sessions with
-# ``kind="channel"``. Pure addition: it does not redact or contradict the
-# base prompt; it tells the assistant the conversational surface is a remote
-# messaging channel (no operator at the cockpit, markdown only, no
-# ``<intent>``/``<spoken>``/``<answer>`` scaffold, ASK gates have nobody to
-# approve).
-# ``{channel_name}`` is filled at render time so the overlay caches with
-# the static prefix for a given (kind, channel) pair across turns.
-CHANNEL_OVERLAY_TEMPLATE = (
-    f"{CHANNEL_OVERLAY_HEADER}\n\n"
-    "You are the assistant speaking through a remote messaging channel ({channel_name}) "
-    "to a user the operator approved.\n\n"
-    "- Reply in concise markdown — bullets, **bold**, *italic*, `code`, "
-    "[text](url). The channel bridge converts to the local format. No "
-    "`<intent>`, `<spoken>` or `<answer>` scaffolding in channel replies — "
-    "the channel bridge strips them, but emitting them wastes tokens. "
-    "Nothing is spoken aloud here, so there is no short spoken form to "
-    "give.\n"
-    "- Channel users see only your answer, not your tool calls, not your "
-    "reasoning. They appreciate brevity. Default target: under 800 chars.\n"
-    "- The operator is NOT at the cockpit when you receive a channel "
-    "message — ASK-gated tools have no one to approve. If a tool you want "
-    "to use would normally ASK, prefer to skip it for this turn and post "
-    "a `agent_post` workspace event explaining what you wanted to do; the "
-    "operator will pick it up when next at the desk. Continue the "
-    "conversation with \"I'll do that once the operator's back at the desk\".\n"
-    "- `<channel_attachment status=\"no_handler\">` blocks mean the operator "
-    "hasn't wired a decoder for that input kind. Apologize concretely "
-    "(\"I can't transcribe voice yet\"), offer one of: (a) delegate the "
-    "missing handler's build to Claude/Codex (lane_turn / delegate_*) for "
-    "the operator to review and promote, (b) post a "
-    "`agent_post` workspace nudge, or (c) ask the user to send text. "
-    "Pick (a) only if the gap is clearly a tool that could be built; (b) is "
-    "the safer default.\n"
-    "- `<channel_attachment status=\"extract_failed\">` means the decoder ran "
-    "but threw. The `<error>` payload is your debugging breadcrumb. "
-    "Apologize, surface the error class to the user only if it's "
-    "actionable (e.g. \"the PDF appears to be scanned — can you send a "
-    "text version?\"), otherwise abstract it (\"I had trouble reading "
-    "that file\").\n\n"
-    "**OUTBOUND TOOLS (call the tool, never paste internal URLs as text):**\n"
-    "- voice → `channel_send_voice(text=<reply>)` (spoken)\n"
-    "- image → `channel_send_photo(source_url=<image_generate URL>)` "
-    "(NEVER paste `/api/downloads/...` paths to a channel — Mirror-internal, "
-    "broken on the user side. On a Mirror surface it is the opposite: "
-    "`/api/home/{{downloads,vault,workshop}}/<path>` is how a local file "
-    "is put on screen)\n"
-    "- file → `channel_send_document(source_path=<path>)`\n"
-    "- video/animation/sticker/location/poll → `channel_send_{{video,animation,"
-    "sticker,location,poll}}` (auto-posture, fire when relevant)\n"
-    "- light ack → `channel_react(message_id=..., emoji=\"👍\")`\n"
-    "- past convo → `channel_history_read(days_back=N | date=... | substring=...)` "
-    "reads per-day logs in `logs/channels/{channel_name}/<chat_id>/conversations/` "
-    "— use this when the operator references something not in your window."
-)
+#: The document the overlay is read from, in the operator's workspace beside
+#: the three that inline on every turn.
+CHANNEL_DOCUMENT = "CHANNEL.md"
+
+#: Substituted at render time so the overlay caches with the static prefix for
+#: a given (kind, channel) pair across turns. `str.replace`, not `str.format` —
+#: the document is markdown full of braces (`/api/home/{downloads,vault,...}`)
+#: and formatting it would either raise or eat them.
+_CHANNEL_NAME_TOKEN = "{channel_name}"
 
 
-def build_channel_overlay(channel_name: str | None) -> str:
-    """Return the channel prompt overlay parameterized on ``channel_name``.
+def build_channel_overlay(
+    channel_name: str | None,
+    *,
+    workspace_root: Path | None = None,
+) -> str:
+    """The channel surface contract, read from `CHANNEL.md`.
+
+    It was a string constant in this module until the facts inside it drifted
+    twice in two days — an event kind named as a tool, and two attachment
+    statuses the runtime had emitted for weeks with nothing explaining them.
+    Three of its blocks are now generated from the code that owns them (the
+    outbound verbs from the registry, the statuses from
+    `_channel_attachment`, the gate from `channels.yaml` through its own
+    loader) and the rest is authored prose the operator can edit like any
+    other workspace document.
 
     Empty / missing ``channel_name`` falls back to a generic phrase so the
-    overlay still reads naturally for adapters that haven't wired a
-    display name into ``channels.yaml``.
+    overlay still reads naturally for an adapter with no display name wired.
+
+    A missing document renders a visible marker rather than an empty string:
+    assembly never dies on this block, and a channel turn that silently lost
+    its surface contract would answer in the cockpit's format with no sign
+    that anything was wrong.
     """
+    if workspace_root is not None:
+        root = workspace_root
+    else:
+        from tesseract.paths import workspace_dir
+
+        root = workspace_dir()
+    text = _read_file(root / CHANNEL_DOCUMENT)
+    if not text.strip():
+        # The shipped default, when the operator's workspace has not been
+        # seeded yet — a fresh home, or a test that points `TESSERACT_HOME` at
+        # a temp tree. The seed copies this same file, so falling back to it
+        # gives the contract the install would have had, rather than dropping
+        # the surface rules on a turn that needs them.
+        from tesseract.paths import TESSERACT_DIR
+
+        text = _read_file(TESSERACT_DIR / "workspace" / "_shipping" / CHANNEL_DOCUMENT)
+    if not text.strip():
+        logger.error("channel overlay: %s is missing or empty", root / CHANNEL_DOCUMENT)
+        return (
+            f"{CHANNEL_OVERLAY_HEADER}\n\n**{CHANNEL_DOCUMENT} is missing from the "
+            "workspace, so the rules for this surface are not loaded. Say so "
+            "rather than guessing at them.**"
+        )
     label = (channel_name or "").strip() or "a remote messaging channel"
-    return CHANNEL_OVERLAY_TEMPLATE.format(channel_name=label)
+    return text.strip().replace(_CHANNEL_NAME_TOKEN, label)
 
 
 def _strip_frontmatter(text: str) -> str:
@@ -161,30 +157,72 @@ def _pointer_exists(root: Path, pointer: str) -> bool:
     production). Pointers under `tesseract/workspace/...` resolve against
     `root` directly — never against a fixed on-disk layout relative to it,
     since `root` moves with `TESSERACT_HOME`. Any other pointer (e.g.
-    `Docs/Logs/CAPABILITIES.md`) is code-tree-relative and resolves
-    against `tesseract.paths.ROOT`, which travels with the install.
+    `Guide/README.md`) is code-tree-relative and resolves against
+    `tesseract.paths.ROOT`, which travels with the install.
     """
     if pointer.startswith(_WORKSPACE_POINTER_PREFIX):
         return (root / pointer[len(_WORKSPACE_POINTER_PREFIX):]).exists()
-    from tesseract.paths import ROOT
+    from tesseract.paths import ROOT, home_dir, readable_state_prefix
+
+    # A pointer under a readable state prefix is resolved the way `file_read`
+    # resolves it — against the STATE root. `autonomy/WHAT-RUNS.md` lives
+    # beside the reports the runtime writes about itself, not in the code tree,
+    # and checking it against `ROOT` would drop the pointer on every packaged
+    # install while finding it in a dev checkout, where the two coincide.
+    if readable_state_prefix(pointer):
+        return (home_dir() / pointer).exists()
     return (ROOT / pointer).exists()
+
+
+def _published_guide_line() -> str:
+    """Where the Guide is published, when `identity.yaml` names it.
+
+    Absent is not an error, and this is the one place in config handling where
+    that is the right call. `identity.yaml` lives in the operator's own config
+    tree and seeding is file-granular — `config_seed` copies files an install
+    lacks and never rewrites one it has — so a key added in a later release
+    reaches new installs only. Requiring it would break every existing install
+    on update, to state two links the assistant can do without.
+
+    The links are for HANDING TO SOMEONE. The Guide the assistant reads is the
+    one inside the app, which the update replaces wholesale and which therefore
+    describes the version actually running; the site describes whatever was
+    last published, and the two are not the same thing on any day a release is
+    in flight.
+    """
+    from tesseract.paths import home_dir
+
+    path = home_dir() / "config" / "identity.yaml"
+    try:
+        import yaml
+
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        published = (doc.get("documentation") or {}) if isinstance(doc, dict) else {}
+        site = str(published.get("site") or "").strip()
+    except (OSError, ValueError):
+        return ""
+    if not site:
+        return ""
+
+    return (
+        f"The same Guide is published at {site} — give a person that link "
+        "rather than pasting the file at them. Read your own copy, not the "
+        "site: yours ships inside this app and matches the version you are "
+        "running."
+    )
 
 
 def _build_manifest_block(root: Path) -> str:
     """Pointer block for manifest mode — tells the assistant what else exists.
 
-    AGENTS.md and FOUNDATION.md are inlined in manifest mode (operating rules
+    SOUL.md, USER.md and OPERATING.md are inlined in manifest mode (operating rules
     and the ethics are load-bearing), so neither is in this pointer list.
     """
     pointers: list[tuple[str, str, str]] = [
-        ("tesseract/workspace/TOOLS.md",      "tool conventions, gating responses, examples (inventory is in CAPABILITIES.md — autogenerated)", "read before invoking an unfamiliar tool or when deciding which tool fits"),
-        ("Docs/Logs/CAPABILITIES.md",         "LIVE tool roster — autogenerated from the registry every push; current count + description + safety/class/permission for every tool", "read when you need to know what tools exist right now or look up an unfamiliar tool's description"),
         ("Guide/README.md",                   "the guide written for the people who use this — what it is, how a turn works, how memory, voice, autonomy and delegation fit together, with a drawing per mechanism", "read when the operator asks how some part of you works, or when you need to explain yourself to someone who has never seen this before"),
         ("Guide/reference/permissions.md",    "which of your tools stop and ask and which run without asking — generated from permissions.yaml itself, so it cannot disagree with the gate", "read before telling the operator what you will or will not do unattended, rather than reasoning about it"),
-        ("tesseract/workspace/HEARTBEAT.md",  "scheduled consolidation checklist", "read before invoking the librarian or when the operator triggers /reflect"),
+        ("autonomy/WHAT-RUNS.md",             "what runs on this machine on its own and whether it actually ran — the app's schedules and the operator's, each with what it does, how it fires, when it last ran and how that went; re-derived every hour from the schedule, the run manifest and the run log, so it is never out of date", "read when the operator asks what is running, whether something fired, or why something did not"),
         ("tesseract/workspace/WORKSHOP.md",   "workshop/ layout and naming conventions", "read before writing any task artifact — every task gets its own dated folder"),
-        ("tesseract/workspace/BOOT.md",       "mood scale, expression conventions", "read before setting mood for the first time or when calibrating affect"),
-        ("tesseract/workspace/VOICE.md",      "how speech works here — the voice is a config ref, and no tool changes it", "read when the operator asks how you sound or asks you to change it"),
         ("tesseract/workspace/DIARY.md",      "first-person reflection log — write via diary_append; librarian distills into SOUL Growth", "read before deciding whether to log a self-observation, or when reviewing your own pattern of behaviour"),
     ]
     present = [(p, d, w) for (p, d, w) in pointers if _pointer_exists(root, p)]
@@ -198,6 +236,10 @@ def _build_manifest_block(root: Path) -> str:
     for rel, desc, when in present:
         lines.append(f"- `{rel}` — {desc}. *{when}.*")
     lines.append("")
+    published = _published_guide_line()
+    if published and any(p.startswith("Guide/") for p, _, _ in present):
+        lines.append(published)
+        lines.append("")
     lines.append(
         "You have a Workspace tab in the Mirror where the operator reviews "
         "your autonomous decisions, scheduler proposals, and any notes you "

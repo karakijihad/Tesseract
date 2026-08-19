@@ -49,9 +49,16 @@ _SUPPRESSED_LOGGERS: frozenset[str] = frozenset()
 # latter put it in the pulse's `errorsOnly` view beside real crashes. Add
 # narrowly, never broadly, and only for loggers whose warnings are all
 # operator-facing.
-_ELEVATED_LOGGERS: frozenset[str] = frozenset(
-    {"tesseract.scheduler.tasks.worker_liveness"}
-)
+_ELEVATED_LOGGERS: frozenset[str] = frozenset({
+    "tesseract.orchestrator.workers.liveness",
+    # One warning, and it is the operator's own row being dropped: a row in
+    # their `schedule.yaml` that overrides something the app no longer ships
+    # is skipped so the whole schedule still loads. Skipped is the right
+    # behaviour and silent is not — the row simply never fires, and the
+    # merged config is what the tracker renders, so it is not even visible
+    # there as a gap.
+    "tesseract.scheduler.config_loader",
+})
 
 
 class MirrorLogHandler(logging.Handler):

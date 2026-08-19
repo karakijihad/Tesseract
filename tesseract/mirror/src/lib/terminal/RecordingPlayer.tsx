@@ -5,6 +5,8 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { fetchRecordingText } from '../api';
 import { useTerminalStore } from '../../stores/terminal';
 import { resolveTheme, monoFontStack } from './theme';
+import { Hint } from '../../components/ui/Hint';
+import { CloseButton } from '../../components/common/CloseButton';
 
 interface AsciicastHeader {
   version: number;
@@ -146,7 +148,9 @@ export function RecordingPlayer({ recordingId, onClose }: RecordingPlayerProps) 
           {status === 'done' && 'done'}
           {status === 'error' && `error: ${err}`}
         </span>
-        <button className="wt-replay-close" onClick={onClose} title="Close (Esc)">×</button>
+        <Hint label="Close (Esc)">
+          <CloseButton onClick={onClose} ariaLabel="Close recording" />
+        </Hint>
       </div>
       <div className="wt-replay-host" ref={hostRef} />
     </div>

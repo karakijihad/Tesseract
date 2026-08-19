@@ -14,13 +14,37 @@ interface FrameBudget {
   maxSamples: number;
 }
 
-/** Tokens-mirrored hex (no CSS access from canvas). Keep in sync with `tokens.css`. */
-const POP_PALETTE: Record<PopKind, { amp: number; hex: string }> = {
-  success: { amp: 0.5, hex: '#9d8fff' }, // --accent-bright (tokens.css)
+/** The pop colours.
+ *
+ * `accentL` entries follow the LIVE accent at that lightness — Appearance moves
+ * `--accent-h`, the store pushes the recomputed triple in as `accentHsl`, and
+ * the base orb already follows it. A frozen hex could not, which is exactly
+ * what these two were: `#9d8fff` / `#7c6cf0` still claimed to mirror
+ * `--accent-bright` / `--accent` long after the accent became hue-driven, so
+ * the orb's body and its pop disagreed on any hue but the default.
+ *
+ * `hex` entries are the semantic colours, which Appearance does not move; they
+ * are still tokens-mirrored by hand because the canvas has no CSS access.
+ */
+const POP_PALETTE: Record<
+  PopKind,
+  { amp: number; hex?: string; accentL?: number }
+> = {
+  success: { amp: 0.5, accentL: 78 }, // --accent-bright
   error:   { amp: 0.85, hex: '#ff6b6b' }, // --bad
   cli_ok:  { amp: 0.4, hex: '#4ade80' }, // --ok
-  user:    { amp: 0.3, hex: '#7c6cf0' }, // --accent (tokens.css)
+  user:    { amp: 0.3, accentL: 68 }, // --accent
 };
+
+/** The live accent at a given lightness, as a string `THREE.Color.set()`
+ *  accepts. `accentHsl` is the `H S% L%` triple the entity store pushes from
+ *  `--accent-hsl`, so hue AND saturation come from the brand file and only the
+ *  lightness is the pop's own. Exported so it can be tested without standing
+ *  up a WebGL context. */
+export function accentAt(accentHsl: string, lightness: number): string {
+  const [h, s] = accentHsl.split(' ');
+  return `hsl(${parseFloat(h)}, ${parseFloat(s)}%, ${lightness}%)`;
+}
 
 /** State machine + rAF loop. Owns the animation lifecycle. */
 export class EntityController {
@@ -33,6 +57,10 @@ export class EntityController {
   private currentState: EntityState = 'idle';
   private isDreaming = false;
   private accentHsl = '246 83% 68%';
+  /** Resolved per state by `haze.ts` and pushed through the entity store —
+   *  the operator's own colour, the accent once they have moved it, or the
+   *  shipped default. `states.ts` holds only the last of the three. */
+  private hazes: Record<EntityState, string> | null = null;
 
   /** Lerp target particle count (smooth transition) */
   private targetCount = 3500;
@@ -85,6 +113,10 @@ export class EntityController {
   private _wobbleAmp = 0;
   /** Reaction pop transient amplitude. Decays at ~4/s (~250ms half-life). */
   private _popAmp = 0;
+  // Placeholder only: `_popAmp` starts at 0, so nothing is painted with this
+  // until `pulseEvent` replaces it with a live colour. Deliberately not
+  // labelled as a token — it is not one, and the label was what let the
+  // palette above drift.
   private _popHex = '#7c6cf0';
   /** Reduced-motion media query result. Cached at init; pop/wobble/sparkles
    *  collapse to opacity-only blip + no scale + capped sparkles when set. */
@@ -132,8 +164,12 @@ export class EntityController {
     const target = this._reducedMotion ? cfg.amp * 0.4 : cfg.amp;
     if (target > this._popAmp) {
       this._popAmp = target;
-      this._popHex = cfg.hex;
+      this._popHex = cfg.hex ?? this._accentAt(cfg.accentL as number);
     }
+  }
+
+  private _accentAt(lightness: number): string {
+    return accentAt(this.accentHsl, lightness);
   }
 
   getSignals(): IntensitySignals {
@@ -165,7 +201,22 @@ export class EntityController {
         this.particleSystem.setAccentHsl(s.accentHsl);
         this.ambientHaze.setAccentHsl(s.accentHsl);
       }
+      // The brand file reaching the canvas. `setPalette` and `setHazeColor`
+      // both no-op on an unchanged value, so this costs nothing on the writes
+      // that only moved the type scale or the font.
+      this.ambientHaze.setPalette(s.orbGround, s.orbDreaming);
+      if (s.hazes !== this.hazes) {
+        this.hazes = s.hazes;
+        this.ambientHaze.setHazeColor(this._hazeFor(this.currentState));
+      }
     });
+  }
+
+  /** The shipped default stands in until the store's first push, which arrives
+   *  before the first frame in the app and never arrives at all in a test that
+   *  drives the controller directly. */
+  private _hazeFor(state: EntityState): string {
+    return this.hazes?.[state] ?? ENTITY_STATES[state].hazeColor;
   }
 
   private _applyState(state: EntityState): void {
@@ -193,7 +244,7 @@ export class EntityController {
     this._baseEruptionRate = cfg.eruptionRate;
     this._baseEruptionStrength = cfg.eruptionStrength;
     this.ambientHaze.setAccentHsl(this.accentHsl);
-    this.ambientHaze.setHazeColor(cfg.hazeColor);
+    this.ambientHaze.setHazeColor(this._hazeFor(state));
     this._baseHazeIntensity = cfg.hazeIntensity;
     this.ambientHaze.setIntensity(cfg.hazeIntensity);
     this._updateTargetCount();

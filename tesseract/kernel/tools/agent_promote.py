@@ -1,7 +1,7 @@
 """agent_promote tool — move a quarantined agent into the active set.
 
 W7-A (audit M6 follow-up, 2026-04-29). `agent_create` writes new agents
-under `tesseract/agents/pending/` so they cannot be invoked even if the
+under `<home>/agents/pending/` so they cannot be invoked even if the
 ASK gate is somehow bypassed. `agent_promote` is the explicit operator
 action that moves a pending agent into the active directory and appends
 its row to `INDEX.md`. Returns ASK so the executor consults the operator
@@ -47,7 +47,9 @@ def promote_pending_agent(
             f"Pending: {pending or '(none)'}"
         )
 
-    if name in list_agents(agents_dir):
+    # Both roots: a pending card that took a shipped slug would be promoted
+    # into a shadow of it, silently retiring the app's agent.
+    if name in list_agents():
         return None, (
             f"Agent {name!r} already active. Remove it first if you "
             "want to replace it with the pending version."
@@ -105,6 +107,20 @@ class AgentPromoteTool(Tool):
 
     risk_class: ClassVar[str] = "operator_gate"
 
+    group: ClassVar[str] = "handing-work-off"
+    summary: ClassVar[str] = (
+        "Moves a quarantined agent from pending into the active, invokable "
+        "set."
+    )
+    use_when: ClassVar[str] = (
+        "Use after `agent_create` drafted an agent and the operator has "
+        "approved it — required before the agent can be invoked."
+    )
+    not_when: ClassVar[str] = (
+        "Drafting a new agent — use `agent_create`. Running an "
+        "already-active agent — use `invoke_agent`."
+    )
+
     def __init__(self, agents_dir: Path, event_store: Optional[EventStore] = None) -> None:
         """``event_store`` (Stage 10) lets a chat-side promotion settle any
         open `agent_approval` proposal card for the same agent, so the two
@@ -116,14 +132,6 @@ class AgentPromoteTool(Tool):
     @property
     def name(self) -> str:
         return "agent_promote"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Promote a quarantined agent from agents/pending/ to the active "
-            "set. Required before a newly created agent becomes invokable. "
-            "Operator-approval-gated."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

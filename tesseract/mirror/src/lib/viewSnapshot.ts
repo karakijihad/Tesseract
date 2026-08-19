@@ -12,6 +12,9 @@
 // the snapshot leaves the browser. Walks nested objects and arrays.
 
 import { useUIStore, type View } from '../stores/ui';
+import { usePanelStore } from '../cockpit/panelStore';
+import { useSurfacesStore } from '../stores/surfaces';
+import { usePulseStore } from '../stores/pulse';
 import { useSettingsStore } from '../stores/settings';
 import { useAutonomyStore } from '../stores/autonomy';
 import { useTerminalStore } from '../stores/terminal';
@@ -27,6 +30,28 @@ import { useWebSocketStore } from '../stores/websocket';
 export interface ViewSnapshot {
   view: View;
   view_state: Record<string, unknown>;
+  // Which panels are open, stacked how, and which has focus. Separate from
+  // `view_state` because it needs no per-view builder — the Mirror is one
+  // composited surface and panels are layers on it, so this describes a panel
+  // added next year without anyone writing code for it.
+  layers: Record<string, unknown>;
+}
+
+const TITLE_CHARS = 80;
+
+// `redactSecrets` filters by KEY name, which cannot help a secret sitting in a
+// title's VALUE — and a title is free text the assistant chose, riding every
+// turn from the orb view. These are the shapes a secret actually takes when it
+// ends up in one: a provider key prefix, a bearer token, a long unbroken
+// high-entropy run. Conservative on purpose: a false positive costs a card
+// title the model could have read, a false negative sends a key to a provider
+// on every turn.
+const SECRET_VALUE_RE =
+  /(sk-[A-Za-z0-9_-]{8,}|Bearer\s+\S+|xox[baprs]-\S+|gh[pousr]_[A-Za-z0-9]{8,}|[A-Za-z0-9_\-]{40,})/;
+
+function redactTitle(title: string): string {
+  const trimmed = title.slice(0, TITLE_CHARS);
+  return SECRET_VALUE_RE.test(trimmed) ? '[redacted title]' : trimmed;
 }
 
 const SECRET_KEY_RE = /(token|secret|password|api_?key|bot_?token)/i;
@@ -51,11 +76,7 @@ export function redactSecrets<T>(value: T): T {
 }
 
 function _settingsState(): Record<string, unknown> {
-  const { collapsedSections } = useSettingsStore.getState();
-  const open = Object.entries(collapsedSections)
-    .filter(([, collapsed]) => !collapsed)
-    .map(([section]) => section);
-  return { open_sections: open };
+  return { active_section: useSettingsStore.getState().activeSection };
 }
 
 function _autonomyState(): Record<string, unknown> {
@@ -79,8 +100,8 @@ function _terminalState(): Record<string, unknown> {
 }
 
 function _chatState(): Record<string, unknown> {
-  const { saveName } = useSessionStore.getState();
-  return { save_name: saveName ?? null };
+  const { lastChatId } = useSessionStore.getState();
+  return { chat_id: lastChatId ?? null };
 }
 
 function _scheduleState(): Record<string, unknown> {
@@ -122,11 +143,55 @@ function _identityState(): Record<string, unknown> {
 }
 
 function _pulseState(): Record<string, unknown> {
-  return {};
+  const entries = usePulseStore.getState().entries;
+  const by_severity: Record<string, number> = {};
+  for (const e of entries) {
+    const sev = String(e.severity ?? 'unknown');
+    by_severity[sev] = (by_severity[sev] ?? 0) + 1;
+  }
+  return { entry_count: entries.length, by_severity };
 }
 
+// The orb IS the canvas the assistant spawns cards onto, and this returned
+// `{}` — so on the one view where its own work is visible, it was told
+// nothing. Titles and types, not contents: what a card renders is the
+// renderer's business and, for an `html` surface, sealed inside a sandboxed
+// opaque origin that never reaches this process.
 function _orbState(): Record<string, unknown> {
-  return {};
+  const cards = useSurfacesStore.getState().surfacesFor('orb');
+  return {
+    surface_count: cards.length,
+    surfaces: cards.map((d) => ({
+      id: d.id,
+      type: d.type,
+      // Bounded: a title is free text the assistant chose, it rides on EVERY
+      // turn from this view, and `redactSecrets` filters key names rather than
+      // values — so a long or secret-bearing title would be sent whole,
+      // repeatedly. Enough to identify the card, not enough to be a payload.
+      title: d.title ? redactTitle(d.title) : null,
+    })),
+  };
+}
+
+// Which layers are open, stacked how, and which one has focus. Generic on
+// purpose: it needs no function per view, so a panel added later is described
+// without anyone remembering to describe it. Ordered front-most first — the
+// operator working on something is looking at the top of the stack.
+function _layers(): Record<string, unknown> {
+  const panels = usePanelStore.getState().panels;
+  const visible = panels
+    .filter((p) => p.open && !p.minimized)
+    .sort((a, b) => (b.z ?? 0) - (a.z ?? 0));
+  return {
+    focused: visible[0]?.id ?? null,
+    open: visible.map((p) => ({
+      id: p.id,
+      z: p.z,
+      maximized: p.maximized,
+      pinned: p.pinned,
+    })),
+    minimized: panels.filter((p) => p.open && p.minimized).map((p) => p.id),
+  };
 }
 
 const _STATE_BUILDERS: Record<View, () => Record<string, unknown>> = {
@@ -157,7 +222,14 @@ export function buildViewSnapshot(): ViewSnapshot {
     console.warn('[viewSnapshot] builder threw', err);
     raw = { __builder_error: true };
   }
-  return { view, view_state: redactSecrets(raw) };
+  let layers: Record<string, unknown>;
+  try {
+    layers = _layers();
+  } catch (err) {
+    console.warn('[viewSnapshot] layers threw', err);
+    layers = { __layers_error: true };
+  }
+  return { view, view_state: redactSecrets(raw), layers: redactSecrets(layers) };
 }
 
 // AU-21 — debounced WS emit
@@ -172,8 +244,12 @@ const DEBOUNCE_MS = 500;
 let _debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let _lastEmittedSignature: string | null = null;
 
+// Layers are part of the signature, not just the payload. Without them,
+// opening or focusing a panel produces an identical signature to the one
+// before it and the emit is suppressed as a duplicate — so the presence cache
+// would keep whatever layout it first saw.
 function _signature(snap: ViewSnapshot): string {
-  return JSON.stringify({ v: snap.view, s: snap.view_state });
+  return JSON.stringify({ v: snap.view, s: snap.view_state, l: snap.layers });
 }
 
 export function emitViewSnapshot(): void {
@@ -190,6 +266,7 @@ export function emitViewSnapshot(): void {
       useWebSocketStore.getState().sendMessage('view_snapshot', {
         view: snap.view,
         view_state: snap.view_state,
+        layers: snap.layers,
         ts: new Date().toISOString(),
       });
     } catch (err) {
@@ -207,6 +284,39 @@ export function installViewSnapshotWatcher(): void {
   useUIStore.subscribe((state) => {
     if (state.view !== lastView) {
       lastView = state.view;
+      emitViewSnapshot();
+    }
+  });
+  // Panels are the other half of "where is the operator". Summoning,
+  // focusing, minimising or closing one changes the answer without touching
+  // `view` at all, and the route watcher above cannot see any of it — so the
+  // presence cache used to describe a layout the operator had left behind.
+  // The debounce collapses a drag or a burst of z-changes into one envelope.
+  // Cards are the other thing that changes what the operator is looking at
+  // without touching `view` or the panels: the assistant spawns one, or the
+  // operator closes it, and the orb's own state block moves. Keyed on ids so a
+  // geometry drag does not emit — the same reason the panel signature ignores
+  // x/y/w/h.
+  let lastSurfaceSignature = "";
+  useSurfacesStore.subscribe((state) => {
+    const signature = Object.keys(state.byView["orb"] ?? {}).sort().join("|");
+    if (signature !== lastSurfaceSignature) {
+      lastSurfaceSignature = signature;
+      emitViewSnapshot();
+    }
+  });
+  let lastLayerSignature = "";
+  usePanelStore.subscribe((state) => {
+    // Built without an intermediate array: this runs on EVERY panel-store
+    // write, and a drag writes x/y/w/h at pointer-move frequency. None of
+    // those fields are in the signature, so the work would be pure waste.
+    let signature = "";
+    for (const p of state.panels) {
+      if (!p.open) continue;
+      signature += `${p.id}:${p.z}:${p.minimized ? 1 : 0}:${p.maximized ? 1 : 0}|`;
+    }
+    if (signature !== lastLayerSignature) {
+      lastLayerSignature = signature;
       emitViewSnapshot();
     }
   });

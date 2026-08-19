@@ -73,6 +73,17 @@ class MemorySearchTool(Tool):
 
     risk_class: ClassVar[str] = "autonomous"
 
+    group: ClassVar[str] = "remembering"
+    summary: ClassVar[str] = "Search the persistent memory store by query, ranked by relevance."
+    use_when: ClassVar[str] = (
+        "Use before answering anything touching past context — names, projects, "
+        "preferences, prior decisions — when you'd otherwise be guessing."
+    )
+    not_when: ClassVar[str] = (
+        "use `memory_get` when you already have the path; use `recall_history` "
+        "for session/workshop transcripts (non-authoritative)."
+    )
+
     def __init__(self, pipeline: RetrievalPipeline) -> None:
         self._pipeline = pipeline
 
@@ -86,14 +97,6 @@ class MemorySearchTool(Tool):
     @property
     def name(self) -> str:
         return "memory_search"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Search the persistent memory store for relevant memories. "
-            "Returns matching memories ranked by relevance. Pass scope="
-            "source|topic|global to read a derived tree instead."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:
@@ -140,9 +143,14 @@ class MemorySearchTool(Tool):
             parts.append("(exact slug match — high-trust hit)")
         for r in packet.results:
             via = "+".join(r.provenance) if r.provenance else "unknown"
+            # `source deleted` says the conversation this was learned from is
+            # gone, so there is nothing to re-read and no follow-up to quote.
+            # The fact itself is unchanged — an old lesson, not a doubtful one.
+            aged = ", source deleted" if r.source_deleted else ""
             header = (
                 f"[{r.mem_type.value}] {r.title} "
-                f"(id: {r.memory_id}, via: {via}, score: {r.score:.2f}, confidence: {r.confidence:.2f})"
+                f"(id: {r.memory_id}, via: {via}, score: {r.score:.2f}, "
+                f"confidence: {r.confidence:.2f}{aged})"
             )
             parts.append(f"{header}\n{r.body}")
         if work_history_hits:

@@ -80,10 +80,19 @@ def find_vision_entry() -> _VisionEntry | None:
     return None
 
 
-def _build_messages(image_bytes: bytes, *, mime: str, caption: str | None) -> list[dict]:
+def _build_messages(
+    image_bytes: bytes, *, mime: str, caption: str | None, prompt: str | None = None
+) -> list[dict]:
     encoded = base64.b64encode(image_bytes).decode("ascii")
     stripped = caption.strip() if caption else ""
-    prompt = _PROMPT_WITH_CAPTION + stripped if stripped else _PROMPT_NO_CAPTION
+    if prompt and prompt.strip():
+        # An explicit instruction replaces the captioning prompts outright.
+        # `screen_look` uses this to ASK something ("is the video card
+        # blank?") rather than receive a description and hope the answer is
+        # in it — a targeted pass is both more useful and cheaper.
+        prompt = prompt.strip()
+    else:
+        prompt = _PROMPT_WITH_CAPTION + stripped if stripped else _PROMPT_NO_CAPTION
     return [
         {
             "role": "user",
@@ -103,6 +112,7 @@ async def describe_image(
     cost_ledger: CostLedger | None = None,
     entry: _VisionEntry | None = None,
     max_chars: int = 800,
+    prompt: str | None = None,
 ) -> str:
     """Return a short natural-language description of ``image_bytes``.
 
@@ -117,7 +127,21 @@ async def describe_image(
     if chosen is None:
         raise ImageHandlerError("no vision-capable adapter available in chat_brain chain")
 
-    messages = _build_messages(image_bytes, mime=mime, caption=caption)
+    # Recording spend is not capping it. Every other paid path in the runtime
+    # gates on `check_preflight` BEFORE spending — chat.py, metered_adapter,
+    # observer, both voice engines — and vision was the one that did not, so an
+    # exhausted daily cap (or an operator pause) was observed after the fact
+    # rather than enforced. Raised as ImageHandlerError so callers that already
+    # handle a failed caption keep working unchanged.
+    if cost_ledger is not None:
+        from tesseract.brain.cost import BudgetExhausted
+
+        try:
+            cost_ledger.check_preflight(_VISION_ROLE)
+        except BudgetExhausted as exc:
+            raise ImageHandlerError(f"vision budget exhausted: {exc}") from exc
+
+    messages = _build_messages(image_bytes, mime=mime, caption=caption, prompt=prompt)
     text_parts: list[str] = []
     usage_dict: dict | None = None
     try:

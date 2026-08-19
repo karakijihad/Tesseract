@@ -13,8 +13,8 @@ import logging
 import os
 import re
 import shutil
+import threading
 import dataclasses
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -25,6 +25,7 @@ import yaml
 if TYPE_CHECKING:
     from tesseract.permissions.policy import PermissionPolicy
 
+from tesseract import http_client
 from tesseract.agents.loader import load_agent
 from tesseract.brain.cost import CostLedger
 from tesseract.brain.observer import Observer, build_observer_from_config
@@ -41,10 +42,12 @@ from tesseract.config.loader import (
     resolve_output_cap,
     resolve_temperature,
 )
+from tesseract.brain.lazy_adapter import LazyAdapter
 from tesseract.kernel.adapters.anthropic import AnthropicAdapter
 from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
 from tesseract.kernel.adapters.gemini import GeminiAdapter
 from tesseract.kernel.adapters.openai import OpenAIAdapter
+from tesseract.kernel.tools.base import check_tool_contract
 from tesseract.kernel.tools.agent_create import AgentCreateTool
 from tesseract.kernel.tools.agent_promote import AgentPromoteTool
 from tesseract.kernel.tools.skill_create import SkillCreateTool
@@ -140,6 +143,7 @@ from tesseract.kernel.tools.os_open_url import OsOpenUrlTool
 from tesseract.kernel.tools.surface_create import SurfaceCreateTool
 from tesseract.kernel.tools.surface_focus import SurfaceFocusTool
 from tesseract.kernel.tools.surface_highlight import SurfaceHighlightTool
+from tesseract.kernel.tools.screen_look import ScreenLookTool
 from tesseract.kernel.tools.surface_list import SurfaceListTool
 from tesseract.kernel.tools.surface_update import SurfaceUpdateTool
 from tesseract.kernel.tools.lane_send import LaneSendTool
@@ -183,93 +187,81 @@ from tesseract.scheduler.alarms import AlarmRegistry, alarms_state_path
 logger = logging.getLogger(__name__)
 
 from tesseract.paths import CONFIG_DIR, ROOT, TESSERACT_HOME, home_dir, home_logs_root, log_dir, workspace_dir
-from tesseract.paths import agents_dir as _home_agents_dir
+from tesseract.paths import user_agents_dir
 
 ENV_PATH = TESSERACT_HOME / ".env"
 PERMISSIONS_YAML = CONFIG_DIR / "permissions.yaml"
 VAULT_YAML = CONFIG_DIR / "vault.yaml"
 SESSIONS_DIR = TESSERACT_HOME / "sessions"
 
-# Lean-agent-os P1 Task 2 — tool-schema tiering. Every registered tool
-# defaults to `Tool.tier == "extended"` (schema hidden from the chat
-# model until `tool_search` surfaces it); the names below are marked
-# `tier = "core"` at the end of `build_tool_registry` so their schemas
-# are always in the per-turn payload. ~45 of ~125 registered tools —
-# "~40" sized
-# up slightly to keep each named category (memory/delegate/lane/file/
-# web/schedule/alarm/vault/surface) usable without a search round trip.
+# Tool-schema tiering. Every registered tool defaults to
+# `Tool.tier == "extended"` (schema hidden from the chat model until
+# `tool_search` surfaces it); the names below are marked `tier = "core"`
+# at the end of `build_tool_registry` so their schemas are always in the
+# per-turn payload. The set is sized to keep each named category
+# (memory/delegate/lane/file/web/schedule/alarm/vault/surface) usable
+# without a search round trip — deliberately not a count to hit, because
+# a size written here is a number nothing enforces and it drifted once.
 # Pin by literal registered name (`Tool.name`, not class name) — verify
 # with `registry.names()` before adding an entry, a typo here is a
 # silent no-op (see the RuntimeError guard in `_wire_tool_defaults`).
 _CORE_TOOL_NAMES: frozenset[str] = frozenset({
-    # memory
-    "memory_save", "memory_get", "memory_search",
-    "memory_update", "memory_promote", "memory_forget",
-    # delegate
-    "delegate_coder", "delegate_auditor", "delegate_codex_exec",
-    "delegate_agent_controller",
-    # lane
-    "lane_open", "lane_send", "lane_turn", "lane_read", "lane_status",
-    "lane_attach", "lane_close", "lane_list", "lane_named_ensure",
-    # controller / interactive session
-    "start_controller_session", "controller_session_list",
-    "session_open", "session_send", "session_result",
-    "session_close", "session_list",
-    # file
-    "file_read", "file_write", "glob", "grep",
-    # shell
-    "bash",
-    # web + docs
-    "web_search", "tavily_search", "tavily_extract",
-    "context7_lookup", "pdf_read",
-    # schedule
-    "schedule_create", "schedule_list", "schedule_update", "schedule_remove",
-    # alarm
-    "alarm_set", "alarm_cancel",
-    # channel
-    "channel_notify",
-    # surface — two distinct jobs, both core. `open` SHOWS something that
-    # already exists (a url, a file, a folder) and resolves the type itself, so
-    # nothing is guessed. `surface_create` AUTHORS a card from content the assistant
-    # generated — a live html app, a chart, a document it wrote — which `open`
-    # cannot do, because there is no target to resolve.
-    "open", "surface_create", "surface_update", "surface_list", "surface_close",
-    # browser — the assistant's own headless-Playwright eyes. The read-only observe
-    # verbs are core so "look at what I just rendered" is a reflex, not a
-    # tool_search away. (click/fill/close stay extended.)
-    "browser_navigate", "browser_snapshot", "browser_screenshot",
-    # vault
-    "vault_query", "vault_search",
-    # 2026-07-12 operator directive ("give the assistant all the access"): every tool
-    # an always-inlined rule card instructs is core — the prompt must never
-    # name a tool the model can't see. The long tail (channel_send_*, vault
-    # admin, browser extras) stays extended behind tool_search.
-    # spawns + delegation follow-through (05-parallel-delegation.md)
-    "spawn_check", "spawn_await", "spawn_cancel", "work_send",
-    "invoke_agent",
-    # workspace threads (07-workspace-thread-isolation.md)
-    "workspace_post", "workspace_reply", "ask_clarification",
-    # agenda comment auto-reply (Option-B durability, mirrors workspace_reply)
-    "agenda_comment",
-    # identity / state (13-state.md) + reflection write-backs
-    "set_mood", "set_state",
-    "diary_append", "soul_growth_propose",
-    # tasks (04-tasks.md)
+    # -- fires every turn -------------------------------------------------
+    # Doctrine, not preference: the rules cards make memory-first, affect and
+    # the task checklist per-turn behaviour, so a round trip for any of these
+    # is a round trip on every turn.
+    "memory_search", "memory_save",
+    "set_mood", "set_state", "diary_append",
     "tasks_set", "tasks_update",
-    # recall + proactive surfaces
-    "recall_history", "chat_initiate", "image_generate",
-    "alarm_list", "alarm_snooze",
-    "lane_named_get", "lane_named_list",
-    # meta
+    # -- the reflex of doing any work at all -------------------------------
+    "file_read", "file_write", "glob", "grep", "bash",
+    # -- showing and looking ----------------------------------------------
+    # `open` SHOWS something that already exists and resolves the type itself.
+    # `surface_create` AUTHORS a card from content she generated, which `open`
+    # cannot do because there is no target to resolve. Both are entry points;
+    # neither substitutes for the other.
+    "open", "surface_create", "surface_list",
+    # Her headless eyes, and the one that looks at the operator's real display.
+    # "Look at what I just rendered" must not cost a round trip while the
+    # operator is asking about it.
+    "browser_navigate", "browser_snapshot", "browser_screenshot", "screen_look",
+    # -- reaching outward --------------------------------------------------
+    "web_search", "vault_query",
+    # -- handing work off, and following it through ------------------------
+    # A delegation she cannot start is not one round trip away, it is none;
+    # and a spawn she cannot check is a hang rather than a wait.
+    "delegate_coder", "delegate_auditor", "invoke_agent",
+    "lane_turn", "lane_read",
+    "spawn_check", "spawn_await", "work_send",
+    # -- asking what is there ----------------------------------------------
+    # The set could ACT and could not ASK: `lane_turn` and `lane_read` without
+    # "which lanes exist", `spawn_check` and `spawn_await` without "which
+    # sessions are running", `open` without "which projects". Every one of
+    # these cost a `tool_search` round trip first, and `tool_search` topped the
+    # usage ledger as a result — a tool that reads like it earned its place and
+    # was really the working set reporting a hole.
+    #
+    # A status verb does not fire every turn, which is why a cut made on "what
+    # fires every turn" missed them. It fires at the START of a turn where the
+    # operator is away from the machine and cannot look for themselves — which
+    # is the case where a round trip costs the most.
+    "lane_list", "lane_status", "project_list", "session_list", "system_diagnose",
+    # -- the door to everything else ---------------------------------------
+    # The glossary names every registered tool every turn and an exact name
+    # returns that tool alone, so the long tail is one certain call away rather
+    # than a guess against a registry she cannot see. That is what makes this
+    # set a dial: it supersedes the 2026-07-12 directive's mechanism (pin every
+    # named tool) while keeping its promise (never name what she cannot reach).
     "tool_search",
 })
 
-# Core-pinned tools that only register when a chat adapter resolves (the
-# `invoke_adapter is not None and chat_cfg is not None` guard in
-# `build_tool_registry`). Their absence is legitimate in adapter-less
-# contexts — capability-matrix script, credential-less CI, minimal test
-# boots — so `_apply_tool_tiers` tolerates it instead of raising. Every
-# other `_CORE_TOOL_NAMES` entry still hard-fails when missing (typo net).
+# Tools that register CONDITIONALLY rather than always. Two jobs: a name
+# here is exempt from `_apply_tool_tiers`' missing-tool guard (so a core
+# entry that legitimately did not register does not hard-fail a
+# credential-less CI run or a minimal test boot), and `check_tool_claims`
+# unions this set so a workspace document may name one without the guard
+# calling it invented. Every other `_CORE_TOOL_NAMES` entry still hard-fails
+# when missing — that is the typo net.
 _CONDITIONAL_CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "session_open",
     "invoke_agent",  # same adapter guard as session_open
@@ -483,15 +475,18 @@ def load_chat_brain_config() -> ChatBrainConfig:
     return load_chat_brain_chain()[0]
 
 
-def load_chat_brain_chain() -> list[ChatBrainConfig]:
+def load_chat_brain_chain(bundle: ConfigBundle | None = None) -> list[ChatBrainConfig]:
     """Return the full ordered chat_brain fallback chain.
 
     Walks ``roles.chat_brain.primary`` then each of ``roles.chat_brain.fallbacks``,
     parses each into a typed ChatBrainConfig, and returns the list. Raises
     on missing role / missing required field — config errors fail loudly.
     Runtime availability (API keys, live endpoints) is a later concern.
+
+    ``bundle`` lets a caller assembling several views of the same config read
+    it once — matching ``load_chain_config``. Absent, it reads its own.
     """
-    bundle = load_bundle()
+    bundle = bundle or load_bundle()
     try:
         role = bundle.role("chat_brain")
     except ConfigError as exc:
@@ -668,14 +663,14 @@ def resolve_role_runtime(
                 role_name, idx, ref.ref, exc,
             )
             continue
-        try:
-            adapter = build_adapter(ref)
-        except RuntimeError as exc:
+        reason = adapter_unavailable_reason(ref)
+        if reason is not None:
             logger.info(
                 "resolve_role_runtime: role=%r idx=%d (%s/%s) unavailable: %s",
-                role_name, idx, cfg.provider, cfg.model, exc,
+                role_name, idx, cfg.provider, cfg.model, reason,
             )
             continue
+        adapter: ModelAdapter = LazyAdapter(ref)
         opts = adapter_options_from_chat_brain(cfg)
         # Stamp the actual role name into options.role so audit logs
         # show that the sub-session ran under (e.g.) ``agents_default``
@@ -747,36 +742,21 @@ def _summarize_chat_brain_failure(failures: list[str]) -> str:
     )
 
 
-_CHAIN_RESOLVE_MAX_WORKERS = 4
-
-
-def _resolve_chain_candidate(
-    idx: int, cfg: ChatBrainConfig,
-) -> tuple[ChatBrainConfig, ModelAdapter | None, AdapterOptions | None, str | None]:
-    """Build one chat_brain chain candidate. Failure is returned, not raised —
-    `resolve_chat_brain_runtime` may run this across threads via
-    `ThreadPoolExecutor.map`, which re-raises on `next()`; a raised
-    `RuntimeError` there would abort the whole map instead of letting
-    sibling candidates finish.
-    """
-    try:
-        adapter = build_chat_brain_adapter(cfg)
-    except RuntimeError as exc:
-        logger.info(
-            "chat_brain chain idx=%d (%s/%s) unavailable: %s",
-            idx, cfg.provider, cfg.model, exc,
-        )
-        return cfg, None, None, f"{cfg.provider} ({cfg.model}): {exc}"
-    options = adapter_options_from_chat_brain(cfg)
-    return cfg, adapter, options, None
-
-
-def resolve_chat_brain_runtime() -> tuple[
+#: What `resolve_chat_brain_runtime` returns: primary cfg, primary adapter,
+#: primary options, and the full built chain. Named because it is now passed
+#: BETWEEN builders rather than re-resolved by each of them — resolving costs
+#: seconds (one SDK client per chain entry), and the daemon used to pay it
+#: twice per boot, once in `_rebuild_adapter` and again inside
+#: `build_tool_registry`.
+ChatBrainRuntime = tuple[
     ChatBrainConfig,
     ModelAdapter,
     AdapterOptions,
     list[tuple[ModelAdapter, AdapterOptions]],
-]:
+]
+
+
+def resolve_chat_brain_runtime() -> ChatBrainRuntime:
     """Return the first available chat_brain entry plus the full live chain.
 
     `load_chat_brain_chain()` validates config shape; adapter construction is
@@ -789,30 +769,28 @@ def resolve_chat_brain_runtime() -> tuple[
     plain-language `summary` (for the caller — `_build_chat_infra` — to hand
     to a degraded placeholder adapter instead of leaving chat silently dead).
 
-    Candidates are independent (each builds its own SDK client from its own
-    config) — building them in parallel measurably cuts boot latency, since
-    SDK client construction spends real wall time on I/O the GIL releases
-    (TLS context / system trust-store setup), not pure CPU. Serial when the
-    chain is a single entry — a thread pool buys nothing there.
+    Nothing is constructed here. Each candidate is asked whether it WOULD
+    build — a dict lookup and a PATH probe — and the ones that would become
+    lazy entries that construct their client the first time a turn actually
+    reaches them. A thread pool used to overlap those constructions, three of
+    them per boot for a chain whose first entry answers almost every turn;
+    with nothing left to overlap it was deleted rather than kept idling.
     """
     chain_cfgs = load_chat_brain_chain()
-    indices = range(len(chain_cfgs))
-    if len(chain_cfgs) > 1:
-        # Capped rather than one worker per chain entry: the pool exists to
-        # overlap I/O waits, and the worker count is otherwise a YAML value
-        # spawning threads on every boot and every live config save.
-        workers = min(len(chain_cfgs), _CHAIN_RESOLVE_MAX_WORKERS)
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            results = list(pool.map(_resolve_chain_candidate, indices, chain_cfgs))
-    else:
-        results = [_resolve_chain_candidate(idx, cfg) for idx, cfg in zip(indices, chain_cfgs)]
     built_chain: list[tuple[ChatBrainConfig, ModelAdapter, AdapterOptions]] = []
     failures: list[str] = []
-    for cfg, adapter, options, failure in results:
-        if failure is not None:
-            failures.append(failure)
+    for idx, cfg in enumerate(chain_cfgs):
+        reason = adapter_unavailable_reason(cfg.ref)
+        if reason is not None:
+            logger.info(
+                "chat_brain chain idx=%d (%s/%s) unavailable: %s",
+                idx, cfg.provider, cfg.model, reason,
+            )
+            failures.append(f"{cfg.provider} ({cfg.model}): {reason}")
             continue
-        built_chain.append((cfg, adapter, options))
+        built_chain.append(
+            (cfg, LazyAdapter(cfg.ref), adapter_options_from_chat_brain(cfg))
+        )
     if not built_chain:
         detail = "no chat provider available — " + "; ".join(failures)
         raise ChatBrainUnavailable(detail, _summarize_chat_brain_failure(failures))
@@ -933,7 +911,9 @@ def load_embeddings_cfg() -> dict:
         return {}
     cfg: dict = {
         "provider": conn.name,
-        "base_url": conn.base_url or "http://localhost:11434",
+        # Loopback by address for the same reason `providers.yaml` uses one:
+        # `localhost` costs ~2s per connection failing over from ::1.
+        "base_url": conn.base_url or "http://127.0.0.1:11434",
         "model": ref.model.model,
         "dimensions": int(ref.model.fields.get("dimensions", 768)),
         "timeout_seconds": int(ref.model.fields.get("timeout_seconds", conn.timeout_seconds)),
@@ -1078,67 +1058,55 @@ def _reranker_cfg_from_ref(ref) -> dict:
 
 # ── Adapter + observer builders ──────────────────────────
 
-def build_adapter(ref: ResolvedRef) -> ModelAdapter:
-    """Construct a ModelAdapter from a resolved provider/model reference.
+#: The env var each key-gated adapter kind reads when the connection block
+#: names none of its own. Also the set of adapter kinds gated on a key at all —
+#: `cli` and `ollama` are gated on a binary instead.
+_DEFAULT_API_KEY_ENV = {
+    "gemini": "GOOGLE_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+}
 
-    Dispatch key is ``ref.connection.adapter`` (declared in providers.yaml).
-    Each branch reads exactly the connection fields it needs and raises on
-    missing API keys — no silent fallbacks. Disabled tier or provider
-    (``providers.yaml`` ``enabled: false``) raises before any network work
-    so the fallback chain skips this entry the same way it skips a missing
-    API key.
+
+def _api_key_env(conn) -> str:
+    return conn.api_key_env or _DEFAULT_API_KEY_ENV[conn.adapter]
+
+
+def adapter_unavailable_reason(ref: ResolvedRef) -> str | None:
+    """Why :func:`build_adapter` would refuse this ref, or None if it would build.
+
+    Every gate ``build_adapter`` applies lives here and only here, so asking
+    whether a provider is usable costs a dict lookup and a PATH probe — never
+    an SDK client. Constructing one to answer the question is what made
+    `/api/capabilities` a 5-27s route: the client the probe discards drags in
+    ~1,300 lazily-imported modules and reads the system CA bundle off disk to
+    build an SSL context, once per candidate, on every poll.
+
+    The message text is contractual: `_summarize_chat_brain_failure` and
+    `mirror/server/routes/_capability_report.py` both classify a failure by
+    reading it ("missing from .env" vs "disabled in providers.yaml").
     """
     conn = ref.connection
     if not conn.tier_enabled:
-        raise RuntimeError(
-            f"tier '{conn.tier}' is disabled in providers.yaml ({conn.tier}.enabled=false)"
-        )
+        return f"tier '{conn.tier}' is disabled in providers.yaml ({conn.tier}.enabled=false)"
     if not conn.enabled:
-        raise RuntimeError(
+        return (
             f"provider '{conn.tier}.{conn.name}' is disabled in providers.yaml "
             f"({conn.tier}.{conn.name}.enabled=false)"
         )
     adapter = conn.adapter
-    if adapter == "gemini":
-        api_key = os.environ.get(conn.api_key_env or "GOOGLE_API_KEY")
-        if not api_key:
-            raise RuntimeError(f"{conn.api_key_env or 'GOOGLE_API_KEY'} missing from .env")
-        return GeminiAdapter(
-            api_key=api_key,
-            timeout=conn.timeout_seconds,
-            max_retries=conn.max_retries,
-        )
-    if adapter == "openai":
-        api_key = os.environ.get(conn.api_key_env or "OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError(f"{conn.api_key_env or 'OPENAI_API_KEY'} missing from .env")
-        return OpenAIAdapter(
-            api_key=api_key,
-            base_url=conn.base_url or "https://api.openai.com/v1",
-            timeout=conn.timeout_seconds,
-            max_retries=conn.max_retries,
-            supports_prompt_cache_key=conn.supports_prompt_cache_key,
-            supports_stream_usage=conn.supports_stream_usage,
-            cache_routing_header=conn.cache_routing_header,
-        )
-    if adapter == "anthropic":
-        api_key = os.environ.get(conn.api_key_env or "ANTHROPIC_API_KEY")
-        if not api_key:
-            raise RuntimeError(f"{conn.api_key_env or 'ANTHROPIC_API_KEY'} missing from .env")
-        return AnthropicAdapter(
-            api_key=api_key,
-            timeout=conn.timeout_seconds,
-            max_retries=conn.max_retries,
-            base_url=conn.base_url,
-            health_check_model=ref.model.model,
-        )
+    if adapter in _DEFAULT_API_KEY_ENV:
+        key_env = _api_key_env(conn)
+        if not os.environ.get(key_env):
+            return f"{key_env} missing from .env"
+        return None
     if adapter == "cli":
         # Subprocess-backed adapter — uses the operator's CLI subscription
         # auth (no API key). `command` selects the binary; today only
         # `codex` is fully wired (parses `--json` event stream). `claude`
         # falls back to plain-text mode.
         if not conn.command:
-            raise RuntimeError(
+            return (
                 f"cli provider '{conn.tier}.{conn.name}' missing 'command' in providers.yaml"
             )
         # Mirror the API-key gate: if the binary isn't on PATH the chain
@@ -1147,10 +1115,102 @@ def build_adapter(ref: ResolvedRef) -> ModelAdapter:
         # pair check lives in `CLIAdapter.check_available` for runtime
         # health probes — keep both in sync if either lookup rule changes.
         if shutil.which(conn.command) is None and shutil.which(f"{conn.command}.cmd") is None:
-            raise RuntimeError(
+            return (
                 f"cli binary '{conn.command}' not on PATH "
                 f"(provider '{conn.tier}.{conn.name}')"
             )
+        return None
+    if adapter == "ollama":
+        if not conn.base_url:
+            return (
+                f"local provider '{conn.tier}.{conn.name}' missing 'base_url' in providers.yaml"
+            )
+        # Mirror the cli branch's binary gate: absent Ollama makes the chain
+        # skip this entry rather than hold an adapter that dies at first
+        # stream(). `ollama_exe`, not `shutil.which` — an install from the
+        # Settings panel completes inside this process and never updates its
+        # PATH. Imported here, not at module scope: `ollama_boot` imports
+        # `ollama_up` from this module.
+        from tesseract.memory.ollama_boot import ollama_exe
+        if ollama_exe() is None:
+            return (
+                f"ollama is not installed — '{ref.ref}' unavailable "
+                f"(install it from Settings → Local models)"
+            )
+        return None
+    return f"no adapter wired for adapter='{adapter}' (ref={ref.ref})"
+
+
+def adapter_class_for(ref: ResolvedRef) -> type[ModelAdapter]:
+    """Which class `build_adapter` would construct — without constructing it.
+
+    Exists for one caller: the chain's context-window guard asks every entry
+    it considers for a token estimate, and the estimate is a `staticmethod` on
+    the provider's class precisely so the guard can ask a fallback that has
+    never been built.
+
+    It is a second reading of `build_adapter`'s dispatch, which is the kind of
+    duplication this codebase refuses — so it is held by a test
+    (`test_lazy_adapter.py`) asserting every adapter name the shipped catalog
+    uses appears here. A branch added below and forgotten here fails that
+    test rather than silently estimating with the wrong heuristic.
+    """
+    from tesseract.kernel.adapters.cli import CLIAdapter
+
+    adapter = ref.connection.adapter
+    classes: dict[str, type[ModelAdapter]] = {
+        "gemini": GeminiAdapter,
+        "openai": OpenAIAdapter,
+        "anthropic": AnthropicAdapter,
+        "cli": CLIAdapter,
+        # Ollama serves an OpenAI-compatible surface, so the same class drives
+        # it — the same reason `build_adapter`'s ollama branch returns one.
+        "ollama": OpenAIAdapter,
+    }
+    if adapter not in classes:
+        raise RuntimeError(f"no adapter wired for adapter='{adapter}' (ref={ref.ref})")
+    return classes[adapter]
+
+
+def build_adapter(ref: ResolvedRef) -> ModelAdapter:
+    """Construct a ModelAdapter from a resolved provider/model reference.
+
+    Dispatch key is ``ref.connection.adapter`` (declared in providers.yaml).
+    Whether the ref is usable at all is :func:`adapter_unavailable_reason`'s
+    answer, asked once up front — so a disabled tier or provider, a missing
+    API key or an absent binary raises before any client is built, and the
+    fallback chain skips the entry.
+    """
+    reason = adapter_unavailable_reason(ref)
+    if reason is not None:
+        raise RuntimeError(reason)
+    conn = ref.connection
+    adapter = conn.adapter
+    if adapter == "gemini":
+        return GeminiAdapter(
+            api_key=os.environ.get(_api_key_env(conn), ""),
+            timeout=conn.timeout_seconds,
+            max_retries=conn.max_retries,
+        )
+    if adapter == "openai":
+        return OpenAIAdapter(
+            api_key=os.environ.get(_api_key_env(conn), ""),
+            base_url=conn.base_url or "https://api.openai.com/v1",
+            timeout=conn.timeout_seconds,
+            max_retries=conn.max_retries,
+            supports_prompt_cache_key=conn.supports_prompt_cache_key,
+            supports_stream_usage=conn.supports_stream_usage,
+            cache_routing_header=conn.cache_routing_header,
+        )
+    if adapter == "anthropic":
+        return AnthropicAdapter(
+            api_key=os.environ.get(_api_key_env(conn), ""),
+            timeout=conn.timeout_seconds,
+            max_retries=conn.max_retries,
+            base_url=conn.base_url,
+            health_check_model=ref.model.model,
+        )
+    if adapter == "cli":
         from tesseract.kernel.adapters.cli import CLIAdapter
         return CLIAdapter(
             command=conn.command,
@@ -1164,22 +1224,6 @@ def build_adapter(ref: ResolvedRef) -> ModelAdapter:
         # accounting and the chain's error taxonomy all already work. The
         # bare `base_url` stays what it is because the embedding path hits
         # `/api/embeddings` on it; only this branch appends `/v1`.
-        if not conn.base_url:
-            raise RuntimeError(
-                f"local provider '{conn.tier}.{conn.name}' missing 'base_url' in providers.yaml"
-            )
-        # Mirror the cli branch's binary gate: absent Ollama makes the chain
-        # skip this entry rather than hold an adapter that dies at first
-        # stream(). `ollama_exe`, not `shutil.which` — an install from the
-        # Settings panel completes inside this process and never updates its
-        # PATH. Imported here, not at module scope: `ollama_boot` imports
-        # `ollama_up` from this module.
-        from tesseract.memory.ollama_boot import ollama_exe
-        if ollama_exe() is None:
-            raise RuntimeError(
-                f"ollama is not installed — '{ref.ref}' unavailable "
-                f"(install it from Settings → Local models)"
-            )
         return OpenAIAdapter(
             # The daemon ignores auth entirely; the SDK requires a non-empty
             # string. No `api_key_env` exists on a local-tier provider.
@@ -1269,9 +1313,34 @@ def build_cost_ledger() -> CostLedger:
 
 # ── Memory + tool registry ───────────────────────────────
 
+# One client for every liveness probe, built on first use and never replaced.
+#
+# `httpx.get` builds a throwaway `Client` per call, and constructing one costs
+# ~1.5s on Windows — an SSL context over the certifi bundle and the system
+# trust store, paid whether or not the request is https. Settings polls this
+# probe every 30s and the panel blocks on it, so that construction was most of
+# a 2.9s `/api/system/ollama`. Reusing the client also keeps the loopback
+# connection in the pool instead of opening a socket per probe.
+#
+# `httpx.Client` is thread-safe, which is what the `asyncio.to_thread` callers
+# of `ollama_up` need. The lock guards construction only — two threads racing
+# here would otherwise each pay the 1.5s and one client would leak.
+_PROBE_CLIENT: httpx.Client | None = None
+_PROBE_CLIENT_LOCK = threading.Lock()
+
+
+def _probe_client() -> httpx.Client:
+    global _PROBE_CLIENT
+    if _PROBE_CLIENT is None:
+        with _PROBE_CLIENT_LOCK:
+            if _PROBE_CLIENT is None:
+                _PROBE_CLIENT = http_client.client()
+    return _PROBE_CLIENT
+
+
 def ollama_up(base_url: str, timeout: float = 2.0) -> bool:
     try:
-        r = httpx.get(f"{base_url.rstrip('/')}/api/tags", timeout=timeout)
+        r = _probe_client().get(f"{base_url.rstrip('/')}/api/tags", timeout=timeout)
         return r.status_code == 200
     except httpx.HTTPError:
         return False
@@ -1531,7 +1600,7 @@ def load_voice_config() -> dict:
     Each chain entry is the merged view of {connection + catalog model
     fields + per-ref settings overrides}, in that order — settings win.
     The `adapter` key is what the engine branches on (``local_whisper``
-    / ``gemini`` / ``piper``) to pick the right config object.
+    / ``gemini`` / ``kokoro``) to pick the right config object.
     Returns an empty dict when no ``voice:`` block exists.
     """
     bundle = load_bundle()
@@ -1569,6 +1638,12 @@ def load_voice_config() -> dict:
             "voices_file",
             "mix",
             "lang",
+            # Cloud TTS: the catalog names the endpoint (this model family
+            # is on the Interactions API, not the connection's chat base),
+            # the voice, and the one line of operator-set identity.
+            "base_url_override",
+            "voice",
+            "audio_profile",
         ):
             if k in provider.ref.model.fields:
                 merged[k] = provider.ref.model.fields[k]
@@ -1662,6 +1737,14 @@ def rebuild_adapters(app: Any) -> dict[str, Any]:
             logger.exception("rebuild_adapters: providers/roles in-memory refresh failed")
 
     # Chat adapters
+    #
+    # Drop boot's parked resolution first. `_build_chat_infra` consumes it, but
+    # a config save can land before STAGE 2 gets there — and what this function
+    # is about to resolve is newer than what boot parked, by definition.
+    try:
+        del app["chat_runtime"]
+    except (KeyError, TypeError):
+        pass
     try:
         chat_cfg, adapter, options, adapter_chain = resolve_chat_brain_runtime()
     except RuntimeError as exc:
@@ -1896,8 +1979,10 @@ def register_agent_session_tools(
     a credential/provider blip at boot removed ``invoke_agent`` for the
     life of the process and only a restart brought it back.
     """
+    # `None`, not the user root: both tools READ, so they want whichever
+    # card wins between the shipped tree and the operator's (AR-6).
     registry.register(InvokeAgentTool(
-        agents_dir=_home_agents_dir(),
+        agents_dir=None,
         adapter=adapter,
         options=options,
         parent_registry=registry,
@@ -1907,7 +1992,7 @@ def register_agent_session_tools(
         cost_ledger=cost_ledger,
     ))
     registry.register(SessionOpenTool(
-        agents_dir=_home_agents_dir(),
+        agents_dir=None,
         adapter=adapter,
         options=options,
         registry=registry,
@@ -1927,6 +2012,7 @@ def build_tool_registry(
     alarm_registry: AlarmRegistry | None = None,
     policy: "PermissionPolicy | None" = None,
     app: Any = None,
+    chat_runtime: ChatBrainRuntime | None = None,
 ) -> tuple[ToolRegistry, MoodState, MemoryBundle, AlarmRegistry]:
     """Register every tool the runtime knows how to execute.
 
@@ -1946,6 +2032,15 @@ def build_tool_registry(
     When provided, tools that broadcast WS envelopes (workspace_post /
     workspace_reply / chat_initiate) wire a lazy app_provider closure so
     their writes light up open tabs in realtime without a manual refresh.
+
+    ``chat_runtime`` is an already-resolved :data:`ChatBrainRuntime` for the
+    caller that resolved one moments ago. Absent, this resolves its own —
+    which builds an SDK client per chain entry and costs seconds, so a caller
+    that has the answer already should hand it over rather than let it be
+    computed twice. Sharing the adapter instances is safe: they are stateless
+    wrappers around HTTP/subprocess (see ``FallbackAdapter.fork``), and the
+    per-entry breaker state that is NOT shareable lives on the
+    ``FallbackAdapter`` this function builds for itself.
     """
     app_provider = (lambda: app) if app is not None else None
     registry = ToolRegistry()
@@ -2052,6 +2147,9 @@ def build_tool_registry(
     registry.register(SurfaceCloseTool())
     registry.register(SurfaceListTool())
     registry.register(SurfaceHighlightTool())
+    # The only tool that reads PIXELS. Everything else reports structure —
+    # which is why a card can be registered, listed, and blank.
+    registry.register(ScreenLookTool())
 
     # `open` resolves a target and dispatches to one of these; nothing selects
     # them directly. The canvas half stays ungated — rendering carries no
@@ -2130,7 +2228,9 @@ def build_tool_registry(
     registry.register(Context7LookupTool())
     registry.register(ConscienceStatusTool())
 
-    agents_dir = _home_agents_dir()
+    # The user root specifically: these two move files through
+    # `pending/` and `rejected/`, which only exist on the operator's side.
+    agents_dir = user_agents_dir()
     bundle = load_bundle()
     # AgentCreateTool only reads `models_config["roles"]` to validate the role
     # name on a new agent. Hand it the role keys in the legacy shape so that
@@ -2170,7 +2270,9 @@ def build_tool_registry(
     # prefix path in Librarian._write_section skips rather than promotes.
     chat_cfg: ChatBrainConfig | None
     try:
-        chat_cfg, chat_adapter, chat_options, chat_chain = resolve_chat_brain_runtime()
+        chat_cfg, chat_adapter, chat_options, chat_chain = (
+            chat_runtime if chat_runtime is not None else resolve_chat_brain_runtime()
+        )
     except RuntimeError as exc:
         logger.warning("chat_brain adapter unavailable (%s); librarian + vault_librarian will no-op their LLM paths", exc)
         chat_cfg = None
@@ -2394,6 +2496,10 @@ def _wire_tool_defaults(
                 f"tool '{tool.name}' (class {type(tool).__name__}) resolves "
                 f"tier={tier!r}; expected one of ('core','extended')."
             )
+        # The four contract fields, checked where the postures are. Lives in
+        # `kernel/tools/base.py` beside the fields it validates, so a tool
+        # author reads the rule in the file that declares it.
+        check_tool_contract(tool)
         class_defaults[tool.name] = posture
 
     if policy is None:

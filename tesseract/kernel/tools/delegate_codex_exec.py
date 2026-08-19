@@ -57,18 +57,21 @@ class DelegateCodexExecTool(Tool):
     default_posture: ClassVar[str] = "auto"
     risk_class: ClassVar[str] = "autonomous"
 
+    group: ClassVar[str] = "handing-work-off"
+    summary: ClassVar[str] = "Runs `codex exec` as a short-lived, read-only headless subprocess."
+    use_when: ClassVar[str] = (
+        "Use for a quick read-only audit, search, or second opinion with no "
+        "interactive back-and-forth — no daemon, no PTY, no survival across "
+        "a backend restart; retry on failure."
+    )
+    not_when: ClassVar[str] = (
+        "Interactive or writeable work — use `delegate_coder` or "
+        "`delegate_auditor`."
+    )
+
     @property
     def name(self) -> str:
         return "delegate_codex_exec"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Run `codex exec <prompt>` as a short-lived headless subprocess. "
-            "Use for read-only audits, searches, second opinions. Returns "
-            "stdout + exit code. No daemon, no PTY, no survival across "
-            "backend restart — short call, retry on failure."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

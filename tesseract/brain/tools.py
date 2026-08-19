@@ -30,6 +30,7 @@ from tesseract.kernel.tokenjuice import (
     project_rules_dir as _tj_project_rules_dir,
     user_rules_dir as _tj_user_rules_dir,
 )
+from tesseract.brain.tool_usage import record_tool_call
 from tesseract.kernel.adapters.cli import _HARD_ERROR_NEEDLES
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
 from tesseract.permissions import approval_log
@@ -288,6 +289,12 @@ async def execute_tool(
     )
     if denial is not None:
         return denial
+
+    # Recorded once the call is going to happen — after the permission gate,
+    # so a denial is not counted as usage, and before `run()`, so a tool that
+    # raises still counts. The question this answers is "did she reach for it",
+    # not "did it work".
+    await record_tool_call(tool_name, context.session_id)
 
     try:
         result = await tool.run(validated, context)

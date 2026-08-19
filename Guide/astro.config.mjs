@@ -22,6 +22,10 @@ export default defineConfig({
         ThemeSelect: './src/components/ThemeSelect.astro',
         // Starlight's head with the analytics beacon appended.
         Head: './src/components/Head.astro',
+        // Both print the version the pages describe; see each for why it is
+        // generated rather than typed.
+        SiteTitle: './src/components/SiteTitle.astro',
+        Footer: './src/components/Footer.astro',
       },
       // Someone who arrives at the documentation before the product has no
       // other route to the source from here.
@@ -60,9 +64,11 @@ export default defineConfig({
           label: 'Mechanisms',
           items: [
             { slug: 'mechanisms/permissions' },
+            { slug: 'mechanisms/wake-word' },
             { slug: 'mechanisms/memory-and-vault' },
             { slug: 'mechanisms/prompts' },
             { slug: 'mechanisms/workspace' },
+            { slug: 'mechanisms/updates' },
           ],
         },
         {
@@ -74,6 +80,8 @@ export default defineConfig({
             { slug: 'reference/models-and-roles' },
             { slug: 'reference/config' },
             { slug: 'reference/costs' },
+            { slug: 'reference/pipeline' },
+            { slug: 'reference/what-runs' },
           ],
         },
         {

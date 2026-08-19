@@ -9,22 +9,25 @@ from __future__ import annotations
 import asyncio
 import logging
 import shlex
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
 from aiohttp import web
 
-from tesseract.brain.boot import SESSIONS_DIR
 from tesseract.paths import TESSERACT_HOME
 from tesseract.brain.session_ops import reflect_in_background
 from tesseract.memory.log_notes import append_log_entry, resolve_runtime_subdir
-from tesseract.brain.session_store import (
-    default_session_name,
-    delete_session,
-    list_sessions,
-    load_session,
-    save_session,
-    session_file,
+from tesseract.mirror.server import chat_store
+from tesseract.mirror.server.chat_lifecycle import (
+    _handle_chat_archive,
+    _handle_chat_create,
+    _handle_chat_rename,
+    _handle_chat_restore,
+    _handle_chat_switch,
+    chat_is_busy,
+    detach_deleted_chat,
+    would_orphan_a_session,
 )
 from tesseract.mirror.server.envelope import make_envelope
 from tesseract.mirror.server.routes.system import soul_path
@@ -391,31 +394,69 @@ async def cmd_reflect(app: web.Application, session: ServerSession) -> None:
 
 
 async def cmd_sessions(session: ServerSession) -> None:
-    entries = list_sessions(SESSIONS_DIR, limit=20)
     payload = [
         {
-            "session_id": path.stem,
-            "started_at": state.started_at,
-            "ended_at": state.ended_at,
-            "turn_count": state.turn_count,
-            "model": state.model,
+            "chat_id": record.chat_id,
+            "title": record.title,
+            "created_at": record.created_at,
+            "started_at": record.started_at,
+            "ended_at": record.ended_at,
+            "turn_count": record.turn_count,
+            "model": record.model,
         }
-        for path, state in entries
+        for record in chat_store.list_records(limit=20)
     ]
     await send_envelope(session, make_envelope(
         "session_list", "session", session.session_id, {"sessions": payload},
     ))
 
 
-def _resolve_save_name(session: ServerSession, arg: str | None) -> str:
-    if arg:
-        return arg.removesuffix(".json")
-    if session.save_name:
-        return session.save_name
-    return default_session_name()
+def _known_chats(session: ServerSession) -> dict[str, str]:
+    """``chat_id -> title`` for every chat this session can reach.
+
+    On-disk records first, live meta second, so a title the operator renamed
+    this connection wins over the one last written.
+    """
+    known = {
+        record.chat_id: record.title
+        for record in chat_store.list_records(include_archived=True)
+    }
+    known.update({cid: meta.title for cid, meta in session.chat_meta.items()})
+    return known
+
+
+def _resolve_chat(session: ServerSession, arg: str) -> tuple[str | None, str]:
+    """Resolve what the operator typed to a chat_id. Returns ``(id, reason)``.
+
+    A conversation is named by its title now, and a title is neither unique nor
+    a filename, so an ambiguous one is reported rather than picked between —
+    the old store resolved a name to a path and so could not be wrong about
+    which conversation the operator meant.
+    """
+    arg = arg.strip()
+    known = _known_chats(session)
+    # TITLES FIRST, then the id namespace. Checking ids first meant a chat
+    # titled with another chat's uuid resolved to that other chat — the
+    # operator names what they can see, and what they can see is the title.
+    matches = [cid for cid, title in known.items() if title == arg]
+    if not matches:
+        folded = arg.casefold()
+        matches = [cid for cid, title in known.items() if title.casefold() == folded]
+    if len(matches) == 1:
+        return matches[0], ""
+    if matches:
+        return None, "ambiguous_name"
+    return (arg, "") if arg in known else (None, "not_found")
 
 
 async def cmd_save(app: web.Application, session: ServerSession, arg: str | None) -> None:
+    """Write the active chat's own record. An argument renames it.
+
+    There is nothing to name a save after: the conversation was given an id and
+    a ``created_at`` when it was created, and this writes back to that record.
+    So ``/save Something`` renames the chat rather than forking a second copy
+    of it under a different filename.
+    """
     opts = app["adapter_options"]
     if opts is None:
         await send_envelope(session, make_envelope(
@@ -434,63 +475,70 @@ async def cmd_save(app: web.Application, session: ServerSession, arg: str | None
             },
         ))
         return
-    name = _resolve_save_name(session, arg)
-    try:
-        path = save_session(
-            SESSIONS_DIR,
-            name,
-            opts.model,
-            session.started_at,
-            list(session.chat_session.history),
-        )
-    except ValueError:
+    chat_id = session.active_chat_id
+    meta = session.chat_meta.get(chat_id)
+    if meta is None:
         await send_envelope(session, make_envelope(
             "command_result", "command_result", session.session_id,
             {
                 "command": "save",
                 "ok": False,
-                "reason": f"not a usable session name: {name}",
-                "reason_code": "invalid_name",
+                "reason": f"no such chat: {chat_id}",
+                "reason_code": "unknown_chat",
                 "severity": "warning",
             },
         ))
         return
-    session.save_name = name
+    title = (arg or "").strip()
+    if title:
+        # The rename handler is what keeps live `chat_meta` and the record in
+        # lock-step, and it emits `chat_renamed` so the sidebar follows.
+        # Reaching it beats a second title writer here.
+        await _handle_chat_rename(app, session, {"chat_id": chat_id, "title": title})
+    chat_store.persist_session_chats(session, model=opts.model)
     await send_envelope(session, make_envelope(
         "session_saved", "session", session.session_id,
-        {"session_id": session.session_id, "save_name": name, "path": str(path)},
+        {
+            "session_id": session.session_id,
+            "chat_id": chat_id,
+            "title": meta.title,
+            "path": str(chat_store.chats_dir() / f"{chat_id}.json"),
+        },
     ))
+
+
+def _not_found_message(arg: str, reason: str) -> str:
+    if reason == "ambiguous_name":
+        return f"more than one chat is called {arg} — use its id"
+    return f"session not found: {arg}"
 
 
 async def cmd_load(app: web.Application, session: ServerSession, arg: str | None) -> None:
+    """Open a conversation. Not a restore in the old sense — there is nothing
+    to copy anywhere: the chat keeps its id and its ``created_at``, and the
+    turns taken after this land in the same record.
+
+    An open chat is switched to; an archived one is un-archived and focused.
+    Both are the existing chat-lifecycle handlers, so the frontend sees the
+    same envelopes it sees when the operator clicks the chat in the sidebar.
+    """
     if not arg:
         await send_envelope(session, make_envelope(
             "stream_error", "loop", session.session_id,
-            {"message": "usage: /load <name>", "severity": "warning"},
+            {"message": "usage: /load <chat title or id>", "severity": "warning"},
         ))
         return
-    name = arg.removesuffix(".json")
-    path = session_file(SESSIONS_DIR, name)
-    state = load_session(path, strip_reasoning=True) if path is not None else None
-    if state is None:
+    chat_id, reason = _resolve_chat(session, arg)
+    if chat_id is None:
         await send_envelope(session, make_envelope(
             "stream_error", "loop", session.session_id,
-            {"message": f"session not found: {name}", "severity": "warning"},
+            {"message": _not_found_message(arg.strip(), reason), "severity": "warning"},
         ))
         return
-    session.chat_session.history = list(state.history)
-    session.save_name = name
-    session.started_at = state.started_at
-    session.turn_count = state.turn_count
-    await send_envelope(session, make_envelope(
-        "session_loaded", "session", session.session_id,
-        {
-            "session_id": session.session_id,
-            "save_name": name,
-            "turn_count": state.turn_count,
-            "history": state.history,
-        },
-    ))
+    if chat_id in session.chat_order:
+        await _handle_chat_switch(app, session, {"chat_id": chat_id})
+    else:
+        await _handle_chat_restore(app, session, {"chat_id": chat_id})
 
 
 async def cmd_reset(
@@ -498,31 +546,41 @@ async def cmd_reset(
     session: ServerSession,
     arg: str | None = None,
 ) -> None:
-    """Reset chat history.
+    """Reset the conversation.
 
     Two modes (operator picks via the frontend confirm dialog):
-    - ``arg in (None, "reflect")`` — autosave + background reflect + clear
-      (the original /reset behavior). Autosave is non-destructive: prior
-      turns land in ``tesseract/sessions/<save_name>.json`` before the
-      in-memory history is cleared.
-    - ``arg == "clear"`` — pure clear with zero side effects. No autosave,
-      no reflection, no envelope flagged for the auditor. Use when the
-      operator wants the chat to disappear entirely.
+    - ``arg in (None, "reflect")`` — keep the conversation, start a fresh one.
+      The active chat is written to its own record, archived, and a new chat
+      opens in its place; reflection runs in the background on a snapshot.
+    - ``arg == "clear"`` — the operator wants this conversation gone. The
+      history is wiped in place and the emptied record written, so disk agrees
+      with the screen. No reflection, no archive, nothing kept.
+
+    Reset used to write a snapshot under a new name and then wipe the chat in
+    place. Under one record per conversation there is no second file to hide
+    the transcript in — wiping in place IS deleting it — so keeping it means
+    keeping the record, and the operator reaches it in the drawer's archive
+    view.
     """
-    def _wipe_session_state() -> None:
+    arg_norm = (arg or "").strip().lower()
+    # `.get`, not `[...]`: `clear` is the operator asking for zero side effects
+    # and must not depend on chat infra having finished booting.
+    model = getattr(app.get("adapter_options"), "model", "") or ""
+
+    if arg_norm == "clear":
         session.chat_session.reset()
-        session.save_name = None
         session.started_at = datetime.now(timezone.utc).isoformat()
         session.turn_count = 0
-
-    arg_norm = (arg or "").strip().lower()
-    if arg_norm == "clear":
-        _wipe_session_state()
+        try:
+            chat_store.persist_session_chats(session, model=model)
+        except Exception:
+            log.exception("reset clear: persist failed for %s", session.session_id)
         await send_envelope(session, make_envelope(
             "session_reset", "session", session.session_id,
             {
                 "autosaved": False,
-                "save_name": None,
+                "chat_id": session.active_chat_id,
+                "title": None,
                 "path": None,
                 "reflected": False,
                 "reflect_saves": 0,
@@ -531,31 +589,33 @@ async def cmd_reset(
         ))
         return
 
-    autosave_name: str | None = None
-    autosave_path = None
-    if session.chat_session.history:
-        opts = app["adapter_options"]
-        if opts is not None:
-            autosave_name = session.save_name or default_session_name()
-            try:
-                autosave_path = save_session(
-                    SESSIONS_DIR,
-                    autosave_name,
-                    opts.model,
-                    session.started_at,
-                    list(session.chat_session.history),
-                )
-                log.info(
-                    "reset autosaved session %s to %s.json",
-                    session.session_id, autosave_name,
-                )
-            except Exception:
-                log.exception("reset autosave failed for %s", session.session_id)
-                autosave_name = None
-    # Layer D — reflect runs in the BACKGROUND on a snapshot of history,
-    # then a `reflection_proposal` event lands in the workspace inbox.
-    # The wipe happens immediately so the operator gets control back in
-    # ~milliseconds instead of waiting 10–60s for the reflect LLM stream.
+    outgoing_id = session.active_chat_id
+    outgoing = session.chat_meta.get(outgoing_id)
+    kept = bool(session.chat_session.history)
+    if kept:
+        try:
+            chat_store.persist_session_chats(session, model=model)
+        except Exception:
+            # Refuse rather than reset. Archiving a conversation whose write
+            # just failed would shelve a transcript that exists only in memory,
+            # and sending `session_reset` would clear the screen showing it.
+            log.exception("reset: persist failed for %s", session.session_id)
+            await send_envelope(session, make_envelope(
+                "command_result", "command_result", session.session_id,
+                {
+                    "command": "reset",
+                    "ok": False,
+                    "reason": "could not write this conversation — nothing was reset",
+                    "reason_code": "persist_failed",
+                    "severity": "error",
+                },
+            ))
+            return
+    # Layer D — reflect runs in the BACKGROUND on a snapshot of history, then a
+    # `reflection_proposal` event lands in the workspace inbox. Fired before the
+    # new chat opens so it reads the conversation being left, and the operator
+    # gets control back in ~milliseconds instead of waiting 10-60s for the
+    # reflect LLM stream.
     on_complete, on_error = _make_reflect_callbacks(app, session, label="reset")
     refl_pending = reflect_in_background(
         session.chat_session,
@@ -563,13 +623,29 @@ async def cmd_reset(
         on_complete=on_complete,
         on_error=on_error,
     ) is not None
-    _wipe_session_state()
+    # An empty chat has nothing to keep, so archiving it and opening another
+    # empty one beside it would leave the operator two of the same thing.
+    if kept:
+        # Create BEFORE archiving: `archive_chat` refuses to archive the only
+        # open chat, and the new one is what the operator is left looking at.
+        await _handle_chat_create(app, session, {})
+        if session.active_chat_id == outgoing_id:
+            # Creation failed and said so with its own envelope. Nothing was
+            # reset — the history is still live under the same chat — so
+            # claiming otherwise would clear the operator's screen while the
+            # backend kept appending to the conversation they think is gone.
+            log.warning("reset: chat creation failed for %s, nothing reset", session.session_id)
+            return
+        await _handle_chat_archive(app, session, {"chat_id": outgoing_id})
+    session.started_at = datetime.now(timezone.utc).isoformat()
+    session.turn_count = 0
     await send_envelope(session, make_envelope(
         "session_reset", "session", session.session_id,
         {
-            "autosaved": autosave_name is not None,
-            "save_name": autosave_name,
-            "path": str(autosave_path) if autosave_path else None,
+            "autosaved": kept,
+            "chat_id": outgoing_id if kept else None,
+            "title": outgoing.title if (kept and outgoing) else None,
+            "path": str(chat_store.chats_dir() / f"{outgoing_id}.json") if kept else None,
             "reflected": "pending" if refl_pending else False,
             "reflect_saves": 0,
             "mode": "reflect",
@@ -593,12 +669,16 @@ async def cmd_compact(app: web.Application, session: ServerSession) -> None:
 
 
 async def cmd_compact_file(app: web.Application, session: ServerSession, arg: str | None) -> None:
-    """Compact a saved session file without disturbing the live session.
+    """Compact a stored conversation without disturbing the live one.
 
-    Temporarily swaps the live ChatSession's history with the file's history,
-    runs compact(), saves the compacted result back to disk, then restores.
-    Guarded by the busy-turn check in the dispatcher so the swap can't race
-    a live turn.
+    Temporarily swaps the live ChatSession's history with the record's, runs
+    compact(), writes the compacted result back to the SAME record, then
+    restores. Guarded by the busy-turn check in the dispatcher so the swap
+    can't race a live turn.
+
+    Identity is untouched: ``chat_id``, ``created_at`` and ``started_at`` come
+    off the record and go back onto it. Compacting a conversation is a shorter
+    transcript of the same conversation, not a new one.
     """
     opts = app["adapter_options"]
     if opts is None:
@@ -609,29 +689,37 @@ async def cmd_compact_file(app: web.Application, session: ServerSession, arg: st
     if not arg:
         await send_envelope(session, make_envelope(
             "stream_error", "loop", session.session_id,
-            {"message": "usage: /compact_file <name>", "severity": "warning"},
+            {"message": "usage: /compact_file <chat title or id>", "severity": "warning"},
         ))
         return
-    name = arg.removesuffix(".json")
-    path = session_file(SESSIONS_DIR, name)
-    state = load_session(path, strip_reasoning=True) if path is not None else None
-    if state is None:
+    # Persist BEFORE anything is read. The record is up to one autosave
+    # interval behind, and the compaction is written back over the live chat —
+    # so compacting a stale copy discards every turn taken since the last tick.
+    # It also has to happen before the lookup, or a live chat that has never
+    # been written yet reports itself missing.
+    try:
+        chat_store.persist_session_chats(session, model=opts.model)
+    except Exception:
+        log.exception("compact_file: pre-flush failed for %s", session.session_id)
+    chat_id, reason = _resolve_chat(session, arg)
+    record = chat_store.load_chat(chat_id) if chat_id else None
+    if record is None:
         await send_envelope(session, make_envelope(
             "stream_error", "loop", session.session_id,
-            {"message": f"session not found: {name}", "severity": "warning"},
+            {"message": _not_found_message(arg.strip(), reason), "severity": "warning"},
         ))
         return
 
     live_history = list(session.chat_session.history)
-    session.chat_session.history = list(state.history)
+    session.chat_session.history = list(record.history)
     try:
         before, after = await session.chat_session.compact()
     except Exception as exc:
-        log.exception("batch compact failed for %s", arg)
+        log.exception("batch compact failed for %s", record.chat_id)
         session.chat_session.history = live_history
         await send_envelope(session, make_envelope(
             "stream_error", "loop", session.session_id,
-            {"message": f"compact failed for {arg}: {exc}"},
+            {"message": f"compact failed for {record.title}: {exc}"},
         ))
         return
 
@@ -639,57 +727,109 @@ async def cmd_compact_file(app: web.Application, session: ServerSession, arg: st
     session.chat_session.history = live_history
 
     try:
-        save_session(SESSIONS_DIR, arg, state.model or opts.model, state.started_at, compacted_history)
+        chat_store.save_chat(replace(
+            record,
+            history=compacted_history,
+            model=record.model or opts.model,
+        ))
     except Exception as exc:
-        log.exception("save after batch compact failed for %s", arg)
+        log.exception("save after batch compact failed for %s", record.chat_id)
         await send_envelope(session, make_envelope(
             "stream_error", "loop", session.session_id,
-            {"message": f"save failed for {arg}: {exc}"},
+            {"message": f"save failed for {record.title}: {exc}"},
         ))
         return
+    # A chat still live in this session holds the pre-compaction history in
+    # memory, and the next persist would write it straight back over what was
+    # just saved. Bring the live copy along.
+    live = session.chats.get(record.chat_id)
+    if live is not None and live is not session.chat_session:
+        live.history = list(compacted_history)
+    elif live is not None:
+        session.chat_session.history = list(compacted_history)
 
     await send_envelope(session, make_envelope(
         "session_compact_file", "session", session.session_id,
-        {"save_name": arg, "tokens_before": before, "tokens_after": after},
+        {"chat_id": record.chat_id, "title": record.title,
+         "tokens_before": before, "tokens_after": after},
     ))
 
 
-async def cmd_delete(session: ServerSession, arg: str | None) -> None:
+def _delete_failed(session: ServerSession, reason: str, code: str, severity: str = "warning") -> dict:
+    return make_envelope(
+        "command_result", "command_result", session.session_id,
+        {
+            "command": "delete",
+            "ok": False,
+            "reason": reason,
+            "reason_code": code,
+            "severity": severity,
+        },
+    )
+
+
+async def cmd_delete(app: web.Application, session: ServerSession, arg: str | None) -> None:
+    """Delete a conversation's record, and the conversation with it.
+
+    Archive-before-delete (D1) is the same policy the REST route enforces: a
+    conversation the operator can still see in the sidebar is not one they have
+    decided to lose.
+
+    Takes ``app`` because a chat can be open in a SECOND connection that was
+    never told about the archive — nothing broadcasts one — and a delete that
+    cleaned only this session's registry would be undone by that connection's
+    next persist. `detach_deleted_chat` is the same cleanup the REST route runs.
+    """
     if not arg:
         await send_envelope(session, make_envelope(
             "stream_error", "loop", session.session_id,
-            {"message": "usage: /delete <name>", "severity": "warning"},
+            {"message": "usage: /delete <chat title or id>", "severity": "warning"},
         ))
         return
-    name = arg.removesuffix(".json")
-    ok, reason = delete_session(SESSIONS_DIR, name)
+    chat_id, resolve_reason = _resolve_chat(session, arg)
+    if chat_id is None:
+        await send_envelope(session, _delete_failed(
+            session, _not_found_message(arg.strip(), resolve_reason), resolve_reason,
+        ))
+        return
+    title = _known_chats(session).get(chat_id, chat_id)
+    if chat_id in session.chat_order:
+        await send_envelope(session, _delete_failed(
+            session, f"archive {title} before deleting it", "not_archived",
+        ))
+        return
+    if would_orphan_a_session(app, chat_id):
+        await send_envelope(session, _delete_failed(
+            session, f"{title} is the only chat open in another window", "last_open_chat",
+        ))
+        return
+    if chat_is_busy(app, chat_id):
+        await send_envelope(session, _delete_failed(
+            session, f"{title} is mid-turn — try again when it finishes", "chat_busy",
+        ))
+        return
+    ok, reason = chat_store.delete_chat(chat_id)
     if not ok:
         # not_found → warning (operator typo, recoverable, orb stays normal).
-        # io_error → error (filesystem fault, orb red). Discriminator in
-        # `severity` field per F2 phase plan §5b.
-        severity = "warning" if reason in ("not_found", "invalid_name") else "error"
+        # io_error → error (filesystem fault, orb red).
+        severity = "warning" if reason in ("not_found", "invalid_id") else "error"
         human = (
-            f"session not found: {name}"
+            f"session not found: {title}"
             if reason == "not_found"
-            else f"not a usable session name: {name}"
-            if reason == "invalid_name"
-            else f"delete failed for {name}: {reason}"
+            else f"not a usable chat id: {chat_id}"
+            if reason == "invalid_id"
+            else f"delete failed for {title}: {reason}"
         )
-        await send_envelope(session, make_envelope(
-            "command_result", "command_result", session.session_id,
-            {
-                "command": "delete",
-                "ok": False,
-                "reason": human,
-                "reason_code": reason,
-                "severity": severity,
-            },
-        ))
+        await send_envelope(session, _delete_failed(session, human, reason, severity))
         return
-    if session.save_name == name:
-        session.save_name = None
+    # EVERY live session, not just this one. An archived chat stays in `chats`
+    # for the restore window and teardown persists everything it holds, so a
+    # delete that cleaned one registry gets the conversation written back by
+    # another connection.
+    detach_deleted_chat(app, chat_id)
     await send_envelope(session, make_envelope(
-        "session_deleted", "session", session.session_id, {"save_name": name},
+        "session_deleted", "session", session.session_id,
+        {"chat_id": chat_id, "title": title},
     ))
     await cmd_sessions(session)
 
@@ -858,7 +998,7 @@ async def cmd_schedule_run_now(app: web.Application, session: ServerSession, arg
         await _emit_schedule_error(session, "schedule_not_found", f"no job named {name!r}", name)
         return
     scheduler.spawn_tracked_task(
-        scheduler.run_now(name),
+        scheduler.run_now(name, trigger="operator"),
         name=f"scheduler-run-now-{name}",
     )
     await _emit_schedule_state(session, "run_now", name, scheduler)

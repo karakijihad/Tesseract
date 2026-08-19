@@ -2,9 +2,9 @@
 
 Two sweeps in one tick:
 
-1. ``SessionMetadataIndex.prune_orphans()`` — drops session-metadata
-   rows whose ``file_path`` no longer exists on disk. Catches deletes
-   that bypassed the ``delete_session`` write-through (operator
+1. ``ChatMetadataIndex.prune_orphans()`` — drops chat-metadata rows
+   whose ``file_path`` no longer exists on disk. Catches deletes that
+   bypassed the ``chat_store.delete_chat`` write-through (operator
    ``rm`` from a shell, external sync, etc.).
 2. ``WorkIndex.prune_orphans()`` — drops session + workshop chunks
    whose ``source_path`` is gone. Catches the same class of drift
@@ -35,23 +35,23 @@ log = logging.getLogger(__name__)
 
 
 def _home() -> Path:
-    """Canonical env-or-default home resolution. Matches the hook
-    helpers in ``session_store.py`` and ``file_write.py``."""
+    """Canonical env-or-default home resolution. Matches the helpers in
+    ``chat_store.py`` and ``file_write.py``."""
     from tesseract.paths import TESSERACT_HOME as _DEFAULT_HOME
 
     return Path(os.environ.get("TESSERACT_HOME") or _DEFAULT_HOME)
 
 
-def _prune_session_metadata_sync(home: Path) -> int:
+def _prune_chat_metadata_sync(home: Path) -> int:
     """Open, prune, and close in one thread — sqlite3 connections are
     bound to the thread that created them."""
-    from tesseract.memory.session_metadata import SessionMetadataIndex
+    from tesseract.memory.chat_metadata import ChatMetadataIndex
 
-    sm = SessionMetadataIndex(home / "session_metadata.sqlite")
+    cm = ChatMetadataIndex(home / "chat_metadata.sqlite")
     try:
-        return sm.prune_orphans()
+        return cm.prune_orphans()
     finally:
-        sm.close()
+        cm.close()
 
 
 def _prune_work_index_sync(home: Path) -> int:
@@ -69,23 +69,23 @@ class WorkIndexSweepJob(BaseJob):
 
     async def run(self, ctx: JobContext) -> JobResult:
         t0 = time.monotonic()
-        sm_pruned = 0
+        cm_pruned = 0
         wi_pruned = 0
         errors: list[str] = []
 
         home = _home()
         # Both prunes are a sqlite scan + a per-row filesystem stat — off
         # the loop, and independent of each other.
-        sm_result, wi_result = await asyncio.gather(
-            asyncio.to_thread(_prune_session_metadata_sync, home),
+        cm_result, wi_result = await asyncio.gather(
+            asyncio.to_thread(_prune_chat_metadata_sync, home),
             asyncio.to_thread(_prune_work_index_sync, home),
             return_exceptions=True,
         )
-        if isinstance(sm_result, BaseException):
-            log.error("work_index_sweep: session_metadata prune failed", exc_info=sm_result)
-            errors.append(f"session_metadata: {sm_result!r}")
+        if isinstance(cm_result, BaseException):
+            log.error("work_index_sweep: chat_metadata prune failed", exc_info=cm_result)
+            errors.append(f"chat_metadata: {cm_result!r}")
         else:
-            sm_pruned = sm_result
+            cm_pruned = cm_result
 
         if isinstance(wi_result, BaseException):
             log.error("work_index_sweep: work_index prune failed", exc_info=wi_result)
@@ -95,7 +95,7 @@ class WorkIndexSweepJob(BaseJob):
 
         ok = not errors
         detail_parts = [
-            f"session_metadata_pruned={sm_pruned}",
+            f"chat_metadata_pruned={cm_pruned}",
             f"work_index_paths_pruned={wi_pruned}",
         ]
         if errors:
@@ -106,7 +106,7 @@ class WorkIndexSweepJob(BaseJob):
             ok=ok,
             detail=" ".join(detail_parts),
             payload={
-                "session_metadata_pruned": sm_pruned,
+                "chat_metadata_pruned": cm_pruned,
                 "work_index_paths_pruned": wi_pruned,
                 "errors": errors,
             },

@@ -78,8 +78,13 @@ interface WorkspaceState {
   appendComment: (comment: WorkspaceComment) => void;
   setThreadPending: (event_id: string, entry: ThreadPendingEntry | null) => void;
   refreshEvent: (event_id: string) => Promise<void>;
-  decide: (event_id: string, decision: 'approve' | 'reject' | 'resolve' | 'delete', reason?: string) => Promise<void>;
-  channelGate: (event_id: string, action: 'approve_next_turn' | 'reject_and_message', reply?: string) => Promise<void>;
+  /** Resolves `true` when the decision settled (applied, or the row was
+   *  already gone) and `false` when it did not — a 5xx, a network drop, a
+   *  parse failure. It reports rather than throws because a caller that only
+   *  wants the side effect should not have to catch; the bulk caller needs
+   *  the answer, and inferring it from a rejection is what a swallowing
+   *  `catch` makes impossible. `lastError` still carries the message. */
+  decide: (event_id: string, decision: 'approve' | 'reject' | 'resolve' | 'delete', reason?: string) => Promise<boolean>;
   comment: (event_id: string, body: string) => Promise<void>;
   markPanelSeen: (panel: 'inbox' | 'stream') => Promise<void>;
   unreadCount: () => number;
@@ -238,6 +243,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
           ? s.history.map((e) => (e.event_id === updated.event_id ? updated : e))
           : s.history,
       }));
+      return true;
     } catch (err) {
       const status = err instanceof HttpError ? err.status : 0;
       if (status === 404) {
@@ -249,28 +255,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         }));
         void get().fetchInbox();
         void get().fetchHistory();
-      } else {
-        // Real failure (5xx, network, parse). Keep the row in place so
-        // the operator can retry, surface the error so they can read it.
-        set({ lastError: (err as Error).message });
+        // Settled from the operator's side: the row is gone either way.
+        return true;
       }
-    }
-  },
-
-  channelGate: async (event_id, action, reply) => {
-    try {
-      const updated = await jpost<WorkspaceEvent>(
-        `/api/workspace/event/${event_id}/channel-gate`,
-        { action, reply: reply ?? '' },
-      );
-      set((s) => ({
-        events: s.events.filter((e) => e.event_id !== updated.event_id),
-        history: s.history.some((e) => e.event_id === updated.event_id)
-          ? s.history.map((e) => (e.event_id === updated.event_id ? updated : e))
-          : s.history,
-      }));
-    } catch (err) {
+      // Real failure (5xx, network, parse). Keep the row in place so
+      // the operator can retry, surface the error so they can read it.
       set({ lastError: (err as Error).message });
+      return false;
     }
   },
 

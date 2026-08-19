@@ -894,7 +894,8 @@ class OpenAIAdapter(ModelAdapter):
 
     # ─── Utilities ──────────────────────────────────────────────────────────
 
-    def count_tokens(self, messages: list[dict[str, Any]]) -> int:
+    @staticmethod
+    def count_tokens(messages: list[dict[str, Any]]) -> int:
         total = 0
         for msg in messages:
             if msg.get("_reasoning"):

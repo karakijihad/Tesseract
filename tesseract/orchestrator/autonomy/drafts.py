@@ -45,9 +45,17 @@ class AgendaItemDraft:
         *,
         now: datetime | None = None,
         status: AgendaStatus = AgendaStatus.PROPOSED,
+        budget_defaults: dict[RiskClass, tuple[int, int]] | None = None,
     ) -> AgendaItem:
+        """``budget_defaults`` is ``agenda.yaml::budget_defaults``, keyed by
+        risk class as ``(tokens_cap, seconds_cap)``. A draft that names its
+        own caps keeps them; everything else inherits the class floor. Until
+        this was threaded through, no producer set a cap at all, so the
+        governor's cost-spiral detector and the scoring term that reads
+        remaining headroom were both comparing against zero."""
         moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         slug = self.slug or self.goal[:40]
+        tokens_cap, seconds_cap = (budget_defaults or {}).get(self.risk_class, (0, 0))
         return AgendaItem(
             id=mint_agenda_id(slug, now=moment),
             created_at=moment,
@@ -58,8 +66,8 @@ class AgendaItemDraft:
             rationale=self.rationale,
             risk_class=self.risk_class,
             approvals_required=list(self.approvals_required),
-            budget_tokens_cap=self.budget_tokens_cap,
-            budget_seconds_cap=self.budget_seconds_cap,
+            budget_tokens_cap=self.budget_tokens_cap or tokens_cap,
+            budget_seconds_cap=self.budget_seconds_cap or seconds_cap,
             status=status,
             operator_priority=self.operator_priority,
         )

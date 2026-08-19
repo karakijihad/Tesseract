@@ -28,13 +28,17 @@ export function StreamingBubble() {
   return (
     <div className="message-row assistant is-streaming">
       <div className="streaming-bubble">
+        {/* Only the last segment is still being appended to; the ones before it
+            are finished text and must render exactly as they will after the
+            turn ends. */}
         {streamingSegments.length > 0
           ? streamingSegments.map((segment, idx) =>
-              renderSegment(segment, idx, currentToolCalls, currentToolResults))
+              renderSegment(segment, idx, currentToolCalls, currentToolResults,
+                idx === streamingSegments.length - 1))
           : (
             <>
               {streamingStatusText && renderIntent(streamingStatusText, 'status-fallback')}
-              {streamingText && renderAnswer(streamingText, 'answer-fallback')}
+              {streamingText && renderAnswer(streamingText, 'answer-fallback', true)}
             </>
           )}
         {!hasInterleaved && currentToolCalls.map((tc, idx) => (

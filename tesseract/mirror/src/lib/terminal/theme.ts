@@ -12,6 +12,8 @@ const FALLBACK: Required<Pick<ITheme,
   foreground: '#f5f5fa',
   cursor: '#9d8fff',
   cursorAccent: '#050508',
+  /* brand-exempt: this whole object is the palette used when the tokens are
+     unresolvable, so it cannot itself read one. */
   selectionBackground: 'rgba(124,108,240,0.25)',
   black: '#080810',
   red: '#ff6b6b',
@@ -21,6 +23,7 @@ const FALLBACK: Required<Pick<ITheme,
   magenta: '#f472b6',
   cyan: '#22d3ee',
   white: '#f5f5fa',
+  /* brand-exempt: see selectionBackground above — fallback palette. */
   brightBlack: 'rgba(234,234,248,0.55)',
   brightRed: '#ff4d6a',
   brightGreen: '#00e88f',

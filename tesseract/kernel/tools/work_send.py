@@ -64,18 +64,24 @@ class WorkSendTool(Tool):
     default_posture: ClassVar[str] = "ask"
     risk_class: ClassVar[str] = "operator_gate"
 
+    group: ClassVar[str] = "tracking-spawned-work"
+    summary: ClassVar[str] = (
+        "Sends a steering message into a running lane, session, or "
+        "controller session."
+    )
+    use_when: ClassVar[str] = (
+        "Use to course-correct or answer a question from work already in "
+        "flight — one verb, target auto-resolved — without waiting for it to "
+        "finish."
+    )
+    not_when: ClassVar[str] = (
+        "One-shot spawn handles, which have no input channel — "
+        "`spawn_cancel` and re-dispatch with the new instruction instead."
+    )
+
     @property
     def name(self) -> str:
         return "work_send"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Steer running background work: send a message into a named "
-            "lane, an interactive session, or a controller session — one "
-            "verb, target auto-resolved. One-shot spawn handles are not "
-            "steerable (no input channel): cancel + re-dispatch instead."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

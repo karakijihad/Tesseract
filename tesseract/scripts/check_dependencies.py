@@ -1,8 +1,8 @@
-"""Phase 18 Task C — capability detection.
+"""Capability detection — what this machine can do.
 
-Reports the host machine's hardware + tooling capability so the Mirror
-Settings panel can render a "System" subsection. Phase 17 will reuse
-the same script as a pre-flight gate inside `bootstrap.{ps1,sh,command}`.
+Reports the host's hardware + tooling capability so the Mirror Settings
+panel can render a "System" subsection, and so the bootstrap installer can
+use the same answers as a pre-flight gate rather than probing twice.
 
 Detected fields:
 - python_version: e.g. "3.12.7"

@@ -7,6 +7,7 @@
 import { useEffect, useState } from "react";
 
 import { decideParkedAsk, getParkedAsks, type ParkedAsk } from "../lib/api";
+import { Button } from "../components/common/Button";
 
 const POLL_MS = 2500;
 
@@ -64,22 +65,20 @@ export function ParkedAsksPane() {
             </span>
           </div>
           <div className="mcp-approvals__actions">
-            <button
-              type="button"
-              className="mcp-approvals__approve"
-              disabled={!!busy}
+            <Button
               onClick={() => void decide(a.approval_id, true)}
+              disabled={!!busy}
+              tone="good"
             >
               Approve
-            </button>
-            <button
-              type="button"
-              className="mcp-approvals__reject"
-              disabled={!!busy}
+            </Button>
+            <Button
               onClick={() => void decide(a.approval_id, false)}
+              disabled={!!busy}
+              tone="danger"
             >
               Deny
-            </button>
+            </Button>
           </div>
         </div>
       ))}

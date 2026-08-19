@@ -55,8 +55,8 @@ class ChannelSendVoiceInput(BaseModel):
     text: Optional[str] = Field(
         default=None,
         description=(
-            "Text to speak. Synthesised via the local TTS engine "
-            "(Piper primary per roles.yaml::voice.tts), then transcoded "
+            "Text to speak. Synthesised via the TTS lane "
+            "roles.yaml::voice.tts names, then transcoded "
             "to OGG/Opus so Telegram renders the voice-note UI."
         ),
     )
@@ -82,18 +82,21 @@ class ChannelSendVoiceTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "reaching-the-operator"
+    summary: ClassVar[str] = "Send a spoken voice note on an external chat channel."
+    use_when: ClassVar[str] = (
+        "Pass `text` for TTS synthesis (default, conversational) or `audio_path` for "
+        "a pre-rendered audio file. Renders as a playable voice-note bubble."
+    )
+    not_when: ClassVar[str] = (
+        "the content is a recording someone should download and keep — use "
+        "`channel_send_document` for that."
+    )
+
     @property
     def name(self) -> str:
         return "channel_send_voice"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Send a voice note on an external chat channel. Pass `text` for "
-            "TTS synthesis (default, conversational) or `audio_path` for a "
-            "pre-rendered OGG/Opus file. Telegram renders the round "
-            "voice-note UI."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:
@@ -193,18 +196,22 @@ class ChannelSendPhotoTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "reaching-the-operator"
+    summary: ClassVar[str] = "Send an image inline on an external chat channel."
+    use_when: ClassVar[str] = (
+        "Source is either `source_path` (vault/workspace/downloads file) or "
+        "`source_url` (typically an `image_generate` output URL). Renders inline "
+        "with an optional caption."
+    )
+    not_when: ClassVar[str] = (
+        "the operator needs the original file at full quality — `channel_send_document` "
+        "preserves it but drops the inline preview."
+    )
+
     @property
     def name(self) -> str:
         return "channel_send_photo"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Send an image on an external chat channel. Source is either "
-            "`source_path` (vault/workspace/downloads file) or `source_url` "
-            "(HTTP URL — typically the URL returned by `image_generate`). "
-            "Telegram renders the image inline with optional caption."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:
@@ -282,18 +289,23 @@ class ChannelSendDocumentTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "reaching-the-operator"
+    summary: ClassVar[str] = "Send a file as a downloadable document on an external chat channel."
+    use_when: ClassVar[str] = (
+        "Reads `source_path` and forwards it, any MIME type, so the operator can save "
+        "it on the far side of a channel — a Mirror URL is broken there, so a file "
+        "going to a channel must be sent this way, the opposite of `open`, which is "
+        "for a file the operator already has inside the Mirror."
+    )
+    not_when: ClassVar[str] = (
+        "the file is an image, video, animation, or audio clip that should render "
+        "inline instead — use the matching media verb (`channel_send_photo` and siblings)."
+    )
+
     @property
     def name(self) -> str:
         return "channel_send_document"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Send a file as a document on an external chat channel. Reads "
-            "from `source_path` and forwards as a Telegram document (any "
-            "MIME type). Use for PDFs, exports, text files, anything that "
-            "is not an image or audio."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:
@@ -342,7 +354,8 @@ class ChannelSendDocumentTool(Tool):
 
 def _make_media_tool(
     *, name_: str, adapter_method: str, kind_label: str,
-    description_text: str, allow_no_caption: bool = False,
+    summary_text: str, use_when_text: str, not_when_text: str,
+    allow_no_caption: bool = False,
 ):
     """Factory for video / animation / video_note tools (Session 3 2026-05-16).
 
@@ -372,13 +385,15 @@ def _make_media_tool(
         default_posture = "auto"
 
         risk_class: ClassVar[str] = "autonomous"
+
+        group: ClassVar[str] = "reaching-the-operator"
+        summary: ClassVar[str] = summary_text
+        use_when: ClassVar[str] = use_when_text
+        not_when: ClassVar[str] = not_when_text
+
         @property
         def name(self) -> str:
             return name_
-
-        @property
-        def description(self) -> str:
-            return description_text
 
         @property
         def input_schema(self) -> type[BaseModel]:
@@ -437,27 +452,39 @@ def _make_media_tool(
 
 ChannelSendVideoTool = _make_media_tool(
     name_="channel_send_video", adapter_method="send_video", kind_label="video",
-    description_text=(
-        "Send a video file (MP4 preferred) on an external chat channel. "
-        "Source is source_path (local file) or source_url (HTTP URL). "
-        "Telegram plays inline if streaming-friendly."
+    summary_text="Send a video file on an external chat channel.",
+    use_when_text=(
+        "Source is `source_path` (local file) or `source_url` (HTTP URL). Plays "
+        "inline when the format is streaming-friendly."
+    ),
+    not_when_text=(
+        "the clip is a short round bubble — use `channel_send_video_note`; or a "
+        "looping clip with no sound — use `channel_send_animation`."
     ),
 )
 
 ChannelSendAnimationTool = _make_media_tool(
     name_="channel_send_animation", adapter_method="send_animation", kind_label="animation",
-    description_text=(
-        "Send a GIF / animation on an external chat channel. Source is "
-        "source_path (local file) or source_url (HTTP URL). MP4 is the "
-        "Telegram-canonical animation format; raw GIFs also accepted."
+    summary_text="Send a looping GIF-style animation on an external chat channel.",
+    use_when_text=(
+        "Source is `source_path` (local file) or `source_url` (HTTP URL). A "
+        "canonical looping animation format is preferred; raw GIFs are also accepted."
+    ),
+    not_when_text=(
+        "the clip has sound or is meant to play once through — use `channel_send_video` instead."
     ),
 )
 
 ChannelSendVideoNoteTool = _make_media_tool(
     name_="channel_send_video_note", adapter_method="send_video_note", kind_label="video_note",
-    description_text=(
-        "Send a round video-note bubble on an external chat channel. "
-        "Telegram's circular short-form video format. No caption."
+    summary_text="Send a round short-form video-note bubble on an external chat channel.",
+    use_when_text=(
+        "Use for a quick face-to-camera style clip in the circular bubble format. "
+        "No caption is sent alongside it."
+    ),
+    not_when_text=(
+        "a caption matters or the clip is not meant to render as the round bubble — "
+        "use `channel_send_video` instead."
     ),
     allow_no_caption=True,
 )
@@ -492,17 +519,21 @@ class ChannelSendStickerTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "reaching-the-operator"
+    summary: ClassVar[str] = "Send a sticker on an external chat channel."
+    use_when: ClassVar[str] = (
+        "Pass `sticker_file_id` for a known CDN sticker (fast) or `sticker_path` for "
+        "a local file. Use for emotional punctuation that matches the conversational tone."
+    )
+    not_when: ClassVar[str] = (
+        "the reaction is to a specific message already sent — use `channel_react` instead "
+        "of sending a new sticker message."
+    )
+
     @property
     def name(self) -> str:
         return "channel_send_sticker"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Send a sticker. Pass sticker_file_id for a known CDN sticker "
-            "(fast) or sticker_path for a local WebP. Use for emotional "
-            "punctuation (👍 / 🔥 / 💯 / 💀 — match the conversational tone)."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:
@@ -573,17 +604,20 @@ class ChannelSendLocationTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "reaching-the-operator"
+    summary: ClassVar[str] = "Share a static map location on an external chat channel."
+    use_when: ClassVar[str] = (
+        "Use when the operator asks about a place and a map pin is the clearest answer "
+        "('where is the cafe', 'show me the airport')."
+    )
+    not_when: ClassVar[str] = (
+        "a text answer with an address or directions is clearer than a pin."
+    )
+
     @property
     def name(self) -> str:
         return "channel_send_location"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Share a static location on an external chat channel. Use "
-            "when the operator asks about a place and a map pin is the "
-            "clearest answer ('where is the cafe', 'show me the airport')."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:
@@ -638,16 +672,21 @@ class ChannelSendPollTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "reaching-the-operator"
+    summary: ClassVar[str] = "Send a multiple-choice poll on an external chat channel."
+    use_when: ClassVar[str] = (
+        "Useful for quick decisions with a handful of options ('lunch options?', "
+        "'which milestone do you want shipped first?')."
+    )
+    not_when: ClassVar[str] = (
+        "the question is open-ended or has only one sensible answer — `channel_notify` "
+        "carries a plain question just as well."
+    )
+
     @property
     def name(self) -> str:
         return "channel_send_poll"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Send a poll with 2-10 options. Useful for quick decisions "
-            "('lunch options?', 'which milestone do you want shipped first?')."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:
@@ -707,17 +746,21 @@ class ChannelReactTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "reaching-the-operator"
+    summary: ClassVar[str] = "React to an existing channel message with a single emoji."
+    use_when: ClassVar[str] = (
+        "Use as a lightweight acknowledgment on a specific message without sending a "
+        "full reply. Pass `emoji=null` to clear a prior reaction."
+    )
+    not_when: ClassVar[str] = (
+        "the ack needs its own words or is not tied to one existing message — send a "
+        "sticker or a `channel_notify` instead."
+    )
+
     @property
     def name(self) -> str:
         return "channel_react"
-
-    @property
-    def description(self) -> str:
-        return (
-            "React to a chat message with a single emoji. Use as a "
-            "lightweight ack ('👍 got it', '🔥 nice') without sending a "
-            "full reply. Pass emoji=null to clear a prior reaction."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

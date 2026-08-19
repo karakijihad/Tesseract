@@ -11,6 +11,13 @@
   (``moved`` / ``resized`` / ``closed`` / …). The canvas → tool half of
   ``surface.emit_event``. Persists the new geometry so a reload re-renders
   the surface where the operator left it.
+- ``POST /api/surfaces/{view}/{surface_id}/render`` — what the client did
+  with the card (``mounted`` / ``degraded`` / ``errored`` / ``unmounted``).
+  Its own route rather than another ``_OPERATOR_EVENTS`` member: the events
+  above are things the *operator* did and they persist geometry, while this
+  is the renderer talking about itself and is deliberately never written to
+  disk. Without it the only self-check the model has is ``surface_list``,
+  which reads back the store's own record of what the model asked for.
 
 POST (not PUT) for the write — the Mirror CORS middleware only allows
 ``DELETE/GET/PATCH/POST/OPTIONS`` cross-origin and the dev frontend calls
@@ -117,8 +124,33 @@ async def update_surface(request: web.Request) -> web.Response:
     return web.json_response({"surface": updated})
 
 
+async def post_render_report(request: web.Request) -> web.Response:
+    """Record the render outcome a client observed for one card."""
+    if safe_view(request.match_info["view"]) is None:
+        return web.json_response({"error": "invalid_view"}, status=400)
+    surface_id = request.match_info["surface_id"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"error": "invalid_schema"}, status=400)
+    status = body.get("status")
+    detail = body.get("detail", "")
+    if not isinstance(status, str) or not isinstance(detail, str):
+        return web.json_response({"error": "invalid_schema"}, status=400)
+    try:
+        report = get_surface_store().record_render(surface_id, status=status, detail=detail)
+    except ValueError as exc:
+        return web.json_response({"error": "invalid_status", "detail": str(exc)}, status=400)
+    if report is None:
+        return web.json_response({"error": "unknown_surface"}, status=404)
+    return web.json_response({"render": report})
+
+
 def register(app: web.Application) -> None:
     app.router.add_get("/api/surfaces/{view}", list_surfaces)
     app.router.add_post("/api/surfaces/{view}", create_surface)
     app.router.add_post("/api/surfaces/{view}/event", post_surface_event)
     app.router.add_post("/api/surfaces/{view}/{surface_id}/update", update_surface)
+    app.router.add_post("/api/surfaces/{view}/{surface_id}/render", post_render_report)

@@ -64,6 +64,13 @@ class MemoryFrontmatter(BaseModel):
     # Optional review/expiry. When in the past, retrieval drops the memory
     # from the prefilter (soft-delete; the file stays on disk for audit).
     expiry_at: datetime | None = None
+    # When the conversation this memory was learned from was deleted. Stamped
+    # by the record's own owner at the moment of the delete — `chat_store
+    # .delete_chat` reaches the recap by a derived id — never by a sweep
+    # guessing which memories have lost their source. The memory is untouched
+    # otherwise: what was learned outlives the conversation that taught it,
+    # and this only records that there is no transcript left to re-read.
+    source_deleted_at: datetime | None = None
 
     @field_validator("id")
     @classmethod
@@ -72,7 +79,7 @@ class MemoryFrontmatter(BaseModel):
             raise ValueError("Memory ID must start with 'mem_'")
         return v
 
-    @field_validator("created_at", "updated_at", "expiry_at")
+    @field_validator("created_at", "updated_at", "expiry_at", "source_deleted_at")
     @classmethod
     def _tz_aware(cls, v: datetime | None) -> datetime | None:
         # Naive timestamps (offset-less ISO strings in older/foreign
@@ -108,6 +115,13 @@ class MemoryFrontmatter(BaseModel):
             d["expiry_at"] = self.expiry_at.isoformat()
         else:
             d.pop("expiry_at", None)
+        # Dropped when unset rather than written as a null, so the field
+        # appears only on the memories it is true of — every other record
+        # round-trips byte-identical.
+        if self.source_deleted_at:
+            d["source_deleted_at"] = self.source_deleted_at.isoformat()
+        else:
+            d.pop("source_deleted_at", None)
         for field in ("source_path", "source_url", "source_type", "slug"):
             if not d.get(field):
                 d.pop(field, None)

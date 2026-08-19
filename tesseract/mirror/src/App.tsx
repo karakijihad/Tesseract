@@ -13,8 +13,8 @@ import { usePanelStore } from "./cockpit/panelStore";
 import { loadSlashCommands } from "./lib/slashCommands";
 import { installViewSnapshotWatcher } from "./lib/viewSnapshot";
 import { installClientErrorReporter } from "./lib/clientLog";
+import { installFullscreenKey } from "./lib/fullscreen";
 import { CockpitStage } from "./cockpit/CockpitStage";
-import { RegionCapture } from "./cockpit/RegionCapture";
 import { GlobalCanvas } from "./components/layout/GlobalCanvas";
 import { MotionTestPanel } from "./components/debug/MotionTestPanel";
 import { SessionDrawer } from "./components/sessions/SessionDrawer";
@@ -113,6 +113,8 @@ function App() {
     // Frontend errors → backend log; the packaged webview console is
     // invisible, so this is the only durable trace of a UI crash.
     installClientErrorReporter();
+    // F11. Maximise and minimise are the OS titlebar's and need nothing here.
+    return installFullscreenKey();
   }, []);
   const [showMotionPanel, setShowMotionPanel] = useState(() => {
     if (typeof window === "undefined") return false;
@@ -165,7 +167,6 @@ function App() {
   return (
     <>
       <CockpitStage />
-      <RegionCapture />
       <GlobalCanvas />
       <SessionDrawer />
       <ToastStack />

@@ -62,6 +62,18 @@ class ChatInitiateTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "being-present"
+    summary: ClassVar[str] = "Starts a new chat turn unprompted, without an inbound operator message."
+    use_when: ClassVar[str] = (
+        "Use for alerts, nudges, check-ins, or delegate/job results the operator should see now. "
+        "Be sparing — the chat tab is for live conversation, not a feed."
+    )
+    not_when: ClassVar[str] = (
+        "replying to what the operator just said, which needs no tool; a durable inbox item, "
+        "`workspace_post`; a push to an external chat channel, `channel_notify`."
+    )
+
     def __init__(self, app_provider: Optional[Callable[[], Any]] = None) -> None:
         """``app_provider`` resolves the Mirror ``web.Application`` at call
         time (closure pattern; matches scheduler_provider). REPL / unit
@@ -73,16 +85,6 @@ class ChatInitiateTool(Tool):
     @property
     def name(self) -> str:
         return "chat_initiate"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Speak first in the Mirror chat tab without an inbound operator "
-            "message. Use for alerts, nudges, check-ins, or delegate results "
-            "the operator should see right now. Distinct from workspace_post "
-            "(inbox feed) and channel_notify (Telegram). Be sparing — "
-            "the chat tab is for live conversation, not a feed."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

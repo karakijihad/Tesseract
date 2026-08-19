@@ -24,11 +24,23 @@ export function handleVoice(env: Envelope): void {
       }
       break;
     }
+    case "voice_woken": {
+      // The wake phrase landed, and the operator is probably still talking.
+      // This is the whole point of deciding per frame rather than at commit:
+      // "you were heard, keep going" can only be said while it is still
+      // useful to hear it.
+      useVoiceStore.getState().markWoken();
+      break;
+    }
     case "voice_final": {
       const data = env.data as unknown as VoiceFinalData;
       const text = (data.text ?? "").trim();
       const voice = useVoiceStore.getState();
       voice.setState("idle");
+      // The utterance is resolved, so the "heard you" marker has said what
+      // it had to say. Leaving it up would claim the NEXT thing spoken was
+      // already accepted.
+      voice.clearWoken();
       if (!text) {
         useToastStore.getState().push("Voice: nothing transcribed", "warning");
         break;
@@ -93,6 +105,13 @@ export function handleVoice(env: Envelope): void {
       // toast — a gate that nagged on every passing conversation would
       // be worse than no gate. The pulse row (pushed for every envelope
       // upstream in `handleEnvelope`) is where it is observable.
+      //
+      // The grey preview does NOT simply vanish, though. Speech-end wiped
+      // it a moment ago and nothing replaced it, which is exactly what
+      // made a missed wake word read as a dead microphone. `markNotHeard`
+      // puts it back for ~2s, marked, and lets it fade.
+      useVoiceStore.getState().clearWoken();
+      useVoiceStore.getState().markNotHeard();
       useVoiceStore.getState().setState("idle");
       break;
     }
@@ -108,6 +127,16 @@ export function handleVoice(env: Envelope): void {
         break;
       }
       const data = env.data as unknown as TtsChunkData;
+      // Which engine actually spoke, kept for the HUD. The terminator chunk
+      // carries no provider, so it is skipped rather than blanking the
+      // answer the moment the utterance ends. `engine` is the backend's
+      // resolved lane name; `provider` is the bare model id it falls back to
+      // for an install whose shell predates the field.
+      if (data.provider) {
+        useVoiceStore
+          .getState()
+          .setSpeakingLane(data.engine || data.provider, !!data.is_fallback);
+      }
       void ensureTtsPlayer().play({
         audio_b64: data.audio_b64,
         is_final: data.is_final,

@@ -1,5 +1,6 @@
 // TC-1 — JournalPane: reverse-chronological operator journal feed.
 
+import { Block } from '../../components/common/Block';
 import React from 'react';
 import type { OperatorJournalRow } from '../../lib/api';
 import { Markdown } from '../../components/common/Markdown';
@@ -41,25 +42,14 @@ function _renderDetail(row: OperatorJournalRow): React.ReactNode {
 export function JournalPane({ rows, status, error }: JournalPaneProps): React.ReactElement {
   if (status === 'error') {
     return (
-      <section
-        className="runtime-block autonomy-pane autonomy-pane--journal"
-        data-testid="autonomy-journal-pane"
-      >
-        <div className="runtime-block__title">Operator journal</div>
+      <Block title={null} testId="autonomy-journal-pane">
         <p className="t-meta">Failed to load: {error}</p>
-      </section>
+      </Block>
     );
   }
 
   return (
-    <section
-      className="runtime-block autonomy-pane autonomy-pane--journal"
-      data-testid="autonomy-journal-pane"
-    >
-      <div className="runtime-block__title">
-        Operator journal
-        <span className="t-meta" style={{ marginLeft: 8 }}>{rows.length}</span>
-      </div>
+    <Block title={null} meta={`${rows.length} entries`} testId="autonomy-journal-pane">
 
       {rows.length === 0 ? (
         <p className="t-meta">
@@ -95,6 +85,6 @@ export function JournalPane({ rows, status, error }: JournalPaneProps): React.Re
           })}
         </ul>
       )}
-    </section>
+    </Block>
   );
 }

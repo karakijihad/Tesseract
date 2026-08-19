@@ -28,6 +28,12 @@ the same config. Never fails provisioning — a setup this could not apply
 leaves the shipped defaults in place, which is a working install with a
 name the operator did not choose rather than no install at all.
 
+It does, however, EXIT NON-ZERO when answers existed and did not land, and
+the shell acts on that: the config the fetch stages read is then the shipped
+default and the ledger is empty, so an answered run whose answers were lost
+is treated as an unanswered one and downloads nothing optional. "Shipped
+defaults kept" stopped meaning "carry on and download them".
+
 Usage: python -m tesseract.scripts.apply_first_run_setup [--answers PATH]
 """
 
@@ -44,9 +50,30 @@ logger = logging.getLogger(__name__)
 
 _LABEL = "first-run setup"
 
-# The engines the form offers, mapped to the `providers.yaml` provider that
-# implements each. The form sends one of these keys, or "none".
-_TTS_PROVIDERS = {"kokoro": "kokoro", "piper": "piper"}
+
+class SetupNotApplied(RuntimeError):
+    """The operator's answers existed and did not reach the config.
+
+    Distinct from every other failure in this module, because the shell acts
+    on it: an answered run whose answers did not land is, for the purposes of
+    what may be downloaded, an unanswered one. The identity half stays
+    best-effort — an install with a name nobody chose is a working install —
+    but the half that decides what gets fetched cannot fail quietly, or the
+    shipped defaults become the answer.
+    """
+
+
+# The engines the form offers, mapped to the `providers.yaml` tier and
+# provider that implement each. The form sends one of these keys, or "none".
+#
+# Only a LOCAL engine has an `enabled` switch and a download to authorise —
+# `_engine_switches` reads this map for exactly that. The cloud lane is
+# reached through a key, so choosing it turns nothing on and fetches
+# nothing; it only decides which lane speaks first.
+_TTS_PROVIDERS = {"kokoro": "kokoro"}
+
+#: Every lane the form can make primary, `<answer>: (<tier>, <provider>)`.
+_TTS_LANES = {"kokoro": ("local", "kokoro"), "cloud": ("api", "google")}
 
 
 def answers_path() -> Path:
@@ -156,7 +183,7 @@ def apply_identity(answers: Mapping[str, Any]) -> list[str]:
     return sorted([*wanted, *(["wake_word.prefix"] if applied_prefix else [])])
 
 
-def _tts_voice_ref(provider: str, gender: str) -> str | None:
+def _tts_voice_ref(tier: str, provider: str, gender: str) -> str | None:
     """The catalog ref for `provider`'s voice matching `gender`.
 
     Read from the catalog rather than hardcoded so adding a voice to
@@ -164,44 +191,51 @@ def _tts_voice_ref(provider: str, gender: str) -> str | None:
     returns None and the shipped default voice stands — a preference we
     cannot honour is not a reason to leave the operator mute.
     """
-    from tesseract.config.loader import load_config
+    from tesseract.config.loader import _expanded_models, load_config
 
     bundle = load_config()
-    block = (bundle.providers_raw.get("local") or {}).get(provider) or {}
+    block = (bundle.providers_raw.get(tier) or {}).get(provider) or {}
     matches = [
         model_id
-        for model_id, entry in (block.get("models") or {}).items()
+        for model_id, entry in _expanded_models(tier, provider, block).items()
         if str((entry or {}).get("kind")) == "tts"
         and str((entry or {}).get("gender", "")).lower() == gender
     ]
     if not matches:
         return None
-    return f"local.{provider}.{sorted(matches)[0]}"
+    return f"{tier}.{provider}.{sorted(matches)[0]}"
+
+
+def _engine_switches(answers: Mapping[str, Any]) -> dict[str, bool]:
+    """Which speech providers this install turns on, from the form's answers.
+
+    One function because two of them disagreed, and the disagreement reached
+    disk: the writer of the config and the writer of the ledger each derived
+    the switches from the same answer separately, and recorded different
+    things — a refusal the operator never gave, beside the lane it claimed
+    they had refused.
+
+    Only local providers appear here. The cloud lane has no `enabled` switch
+    to set: it is reached through a key, and having no key is what turns it
+    off.
+    """
+    engine = str(answers.get("tts") or "").strip().lower()
+    enabled = {name: engine == name for name in _TTS_PROVIDERS}
+    enabled["whisper"] = bool(answers.get("stt"))
+    return enabled
 
 
 def apply_voice(answers: Mapping[str, Any]) -> list[str]:
-    """Enable the chosen engines and select the voice that speaks.
-
-    Choosing the lighter engine also drops the heavier one from the
-    fallback chain: a lane left in the chain has its model downloaded, so
-    keeping Kokoro as Piper's fallback would fetch the 338 MB the operator
-    just declined. The reverse is not symmetric — Piper stays behind Kokoro,
-    because it is small and it is what still speaks on a machine too slow
-    to synthesize with Kokoro in real time.
-    """
+    """Enable the chosen engines and select the voice that speaks."""
     from tesseract.lib.yaml_io import round_trip_yaml
     from tesseract.paths import config_dir
-    from tesseract.voice.lane_config import apply_tts_primary, drop_tts_fallbacks
+    from tesseract.voice.lane_config import apply_tts_primary
 
     engine = str(answers.get("tts") or "").strip().lower()
     gender = str(answers.get("gender") or "").strip().lower()
-    want_stt = bool(answers.get("stt"))
     changed: list[str] = []
 
-    enabled = {name: engine == name for name in _TTS_PROVIDERS}
-    if engine == "kokoro":
-        enabled["piper"] = True  # the lane that still speaks on a slow machine
-    enabled["whisper"] = want_stt
+    enabled = _engine_switches(answers)
 
     providers_path = config_dir() / "providers.yaml"
     if providers_path.exists():
@@ -224,24 +258,12 @@ def apply_voice(answers: Mapping[str, Any]) -> list[str]:
         )
 
     roles_path = config_dir() / "roles.yaml"
-    if engine in _TTS_PROVIDERS and roles_path.exists():
-        ref = _tts_voice_ref(_TTS_PROVIDERS[engine], gender) if gender else None
-        heavier: set[str] = set()
-        if engine == "piper":
-            heavier = {f"local.kokoro.{model_id}" for model_id in _kokoro_model_ids()}
-
-        def _apply_lane(doc: Any) -> None:
-            if ref:
-                apply_tts_primary(doc, ref)
-            if heavier:
-                drop_tts_fallbacks(doc, heavier)
-
-        if ref or heavier:
-            round_trip_yaml(roles_path, _apply_lane)
-            if ref:
-                changed.append(f"voice.tts.primary={ref}")
-            if heavier:
-                changed.append("voice.tts.fallbacks-=kokoro")
+    if engine in _TTS_LANES and roles_path.exists():
+        tier, provider = _TTS_LANES[engine]
+        ref = _tts_voice_ref(tier, provider, gender) if gender else None
+        if ref:
+            round_trip_yaml(roles_path, lambda doc: apply_tts_primary(doc, ref))
+            changed.append(f"voice.tts.primary={ref}")
     return changed
 
 
@@ -296,13 +318,6 @@ def apply_keys(answers: Mapping[str, Any]) -> list[str]:
         # a working one.
         logger.warning("%s: could not write .env (%s) — keys not applied", _LABEL, exc)
         return []
-
-
-def _kokoro_model_ids() -> list[str]:
-    from tesseract.config.loader import load_config
-
-    block = (load_config().providers_raw.get("local") or {}).get("kokoro") or {}
-    return sorted(block.get("models") or {})
 
 
 def _redact(path: Path, answers: Mapping[str, Any]) -> bool:
@@ -409,7 +424,7 @@ def _consume(path: Path, *, archive: bool = True) -> None:
 _CONSENT_FROM_ANSWERS = {
     "embeddings": ("ollama", "ollama-models"),
     "reranker": ("reranker",),
-    "gpu": ("gpu-acceleration",),
+    "browser": ("browser-engine",),
 }
 
 #: Form answer -> the `local.<provider>` switch that actually stops the
@@ -423,16 +438,20 @@ _CONSENT_FROM_ANSWERS = {
 #: This is the same mechanism `apply_voice` already uses for tts/stt, extended
 #: to the three answers step 2 added. The ledger still records WHY; this is
 #: what makes the answer bite.
+#:
+#: There is no `gpu` entry, and that is the design rather than an omission:
+#: acceleration has no switch of its own because `hardware.yaml` already
+#: declares which engine each extra exists to speed up, and those engines are
+#: what the operator chose one screen earlier. `provision_hardware` derives it
+#: — see `wanted_extras`.
+#: Each value is `(<section>, <block>)`, because not every optional thing is
+#: a local model provider: the browser engine is a `services:` entry, which
+#: is the same shape one level up — an `enabled` switch plus the `unlocks`
+#: list naming what it buys.
 _SWITCHES_FROM_ANSWERS = {
-    "embeddings": ("ollama",),
-    "reranker": ("onnx_reranker",),
-    # No provider of its own: `wanted_extras` drops an extra whose consumers
-    # are all disabled, and both consumers are the speech engines the operator
-    # answered separately. Declining acceleration therefore cannot be
-    # expressed as a switch without also turning off the engine it
-    # accelerates, so it is recorded as consent only and `provision_hardware`
-    # is left to decide from the hardware.
-    "gpu": (),
+    "embeddings": (("local", "ollama"),),
+    "reranker": (("local", "onnx_reranker"),),
+    "browser": (("services", "browser"),),
 }
 
 
@@ -446,12 +465,12 @@ def apply_optional_switches(answers: Mapping[str, Any]) -> list[str]:
     if not isinstance(optional, Mapping):
         return []
 
-    wanted: dict[str, bool] = {}
-    for key, providers in _SWITCHES_FROM_ANSWERS.items():
+    wanted: dict[tuple[str, str], bool] = {}
+    for key, targets in _SWITCHES_FROM_ANSWERS.items():
         if key not in optional:
             continue
-        for provider in providers:
-            wanted[provider] = bool(optional[key])
+        for target in targets:
+            wanted[target] = bool(optional[key])
     if not wanted:
         return []
 
@@ -466,26 +485,29 @@ def apply_optional_switches(answers: Mapping[str, Any]) -> list[str]:
     changed: list[str] = []
 
     def _apply(doc: Any) -> None:
-        local = doc.get("local")
-        if not isinstance(local, dict):
-            raise KeyError("local")
-        for provider, enabled in wanted.items():
-            block = local.get(provider)
+        for (section, name), enabled in wanted.items():
+            parent = doc.get(section)
+            if not isinstance(parent, dict):
+                raise KeyError(section)
+            block = parent.get(name)
             if not isinstance(block, dict):
                 logger.warning(
-                    "%s: providers.yaml has no local.%s - skipping", _LABEL, provider
+                    "%s: providers.yaml has no %s.%s - skipping", _LABEL, section, name
                 )
                 continue
             if bool(block.get("enabled", True)) == enabled:
                 continue
             block["enabled"] = enabled
-            changed.append(f"local.{provider}.enabled={str(enabled).lower()}")
+            changed.append(f"{section}.{name}.enabled={str(enabled).lower()}")
 
     try:
         round_trip_yaml(path, _apply)
     except KeyError as exc:
+        # Same reversal, same reason: these switches ARE what stops the
+        # fetchers downloading a declined extra. Reporting "not applied" and
+        # continuing meant the decline existed only in the log.
         logger.warning("%s: providers.yaml has no %s - switches not applied", _LABEL, exc)
-        return []
+        raise SetupNotApplied(f"optional switches were not applied: {exc}") from exc
     return changed
 
 
@@ -510,7 +532,7 @@ def apply_consent(answers: Mapping[str, Any]) -> list[str]:
 
     engine = str(answers.get("tts") or "").strip().lower()
     if engine:
-        for name in ("kokoro", "piper"):
+        for name in _TTS_PROVIDERS:
             decisions[name] = (
                 Consent.GRANTED if engine == name else Consent.DECLINED
             )
@@ -533,8 +555,15 @@ def apply_consent(answers: Mapping[str, Any]) -> list[str]:
     try:
         record(decisions, origin=ConsentOrigin.FIRST_RUN)
     except Exception as exc:  # noqa: BLE001
+        # Raised, not swallowed, and that is a deliberate reversal. This is
+        # where a DECLINE is written, and a decline that did not persist is
+        # indistinguishable from never having been asked — after which
+        # `wanted_extras` and the launch pass both read the shipped defaults
+        # and fetch what the operator just refused. The caller turns this into
+        # a non-zero exit, which the shell reads as "these answers did not
+        # land" and stops the optional downloads for exactly that reason.
         logger.warning("%s: could not record consent (%s)", _LABEL, exc)
-        return []
+        raise SetupNotApplied(f"consent was not recorded: {exc}") from exc
     granted = sorted(k for k, v in decisions.items() if v is Consent.GRANTED)
     declined = sorted(k for k, v in decisions.items() if v is Consent.DECLINED)
     return [f"consent granted={','.join(granted) or '-'} declined={','.join(declined) or '-'}"]
@@ -576,18 +605,36 @@ def apply_setup(path: Path | None = None) -> bool:
     return True
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    """Exit 0 when the answers landed — or when there were none to land.
+
+    Exit 1 when they existed and did not, and that return value is load-
+    bearing: the shell reads it and treats the run as unanswered, because the
+    config the fetch stages consult is then the shipped default and the ledger
+    is empty. It still does not FAIL provisioning — the app installs either
+    way, which is the trade this script has always made. What changed is that
+    "shipped defaults kept" stopped meaning "carry on and download them".
+
+    Before this, every failure here exited 0. The shell's downgrade could not
+    fire, and the test that proved the downgrade injected an error this
+    function never produced.
+    """
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--answers", help="path to the staged answers JSON")
-    args = parser.parse_args()
+    # `argv` explicit so a caller — a test, or another entry point — can drive
+    # this without `sys.argv` leaking in. Matches `launch_refresh.main`.
+    args = parser.parse_args(argv)
     try:
         apply_setup(Path(args.answers) if args.answers else None)
     except Exception as exc:  # noqa: BLE001
-        # Never fails provisioning: the shipped defaults are a working
-        # install with a name the operator did not pick, which beats no
-        # install at all. The Identity tab can set every one of these later.
+        # The identity half is still best-effort in effect: an install with a
+        # name the operator did not pick beats no install at all, and every
+        # one of these is settable in the Identity tab afterwards. The exit
+        # code speaks only to what may be DOWNLOADED on the strength of
+        # answers that did not arrive.
         logger.warning("%s could not be applied (%s) — shipped defaults kept", _LABEL, exc)
+        return 1
     return 0
 
 

@@ -179,13 +179,20 @@ class GrepTool(Tool):
 
     risk_class: ClassVar[str] = "autonomous"
 
+    group: ClassVar[str] = "files-on-disk"
+    summary: ClassVar[str] = "Search file contents for a regex pattern via ripgrep."
+    use_when: ClassVar[str] = (
+        "You want the matching lines, with file and line number, rather than "
+        "a whole file — the header reports the true match and file totals even when truncated."
+    )
+    not_when: ClassVar[str] = (
+        "Use `file_read` once you know which file and want its full contents, "
+        "or `glob` when you want paths rather than contents."
+    )
+
     @property
     def name(self) -> str:
         return "grep"
-
-    @property
-    def description(self) -> str:
-        return "Search file contents for a regex pattern. Returns matching lines with file paths and line numbers."
 
     @property
     def input_schema(self) -> type[BaseModel]:

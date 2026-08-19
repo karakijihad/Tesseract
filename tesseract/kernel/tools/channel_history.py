@@ -64,19 +64,22 @@ class ChannelHistoryReadTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "reaching-the-operator"
+    summary: ClassVar[str] = "Read past channel conversation directly from the per-day logs."
+    use_when: ClassVar[str] = (
+        "Use when memory_search plus the rolling summary return nothing for a topic "
+        "the operator references ('the trading bot we talked about yesterday'). Three "
+        "modes: single `date`, last `days_back` days, or a `substring` scan across all days."
+    )
+    not_when: ClassVar[str] = (
+        "the topic is recent enough that memory_search or the rolling summary already "
+        "covers it — reach for those first."
+    )
+
     @property
     def name(self) -> str:
         return "channel_history_read"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Read past conversation history for a channel chat directly "
-            "from the per-day JSONL logs. Use when memory_search + rolling "
-            "summary return nothing for a topic the operator references "
-            "('the trading bot we talked about yesterday'). Three modes: "
-            "single `date`, last `days_back` days, or `substring` scan."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

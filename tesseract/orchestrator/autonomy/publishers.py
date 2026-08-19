@@ -42,15 +42,42 @@ def get_active_bus() -> AutonomyEventBus | None:
     return _active_bus
 
 
+#: How many events each source has lost to a missing bus, this process.
+#: Read by `/api/autonomy` surfaces and by tests; the warning below fires only
+#: on the first drop per source, and this is what says how big the silence got.
+_dropped: dict[str, int] = {}
+
+
+def dropped_event_counts() -> dict[str, int]:
+    """Events discarded per source because no bus was registered."""
+    return dict(_dropped)
+
+
 def publish_to_bus(
     source: AgendaSource,
     payload: dict[str, Any],
     *,
     event_id: str | None = None,
 ) -> None:
-    """Sync publisher. Drops the event if no bus is registered."""
+    """Sync publisher. Drops the event if no bus is registered — and says so.
+
+    Six scheduler jobs reach the agenda only through here. Without a bus each
+    of them still runs, still logs success, and its findings go nowhere: a
+    scout that found three leads is indistinguishable from one that found
+    none. Dropping is the correct behaviour — there is nowhere to put the
+    event — but doing it quietly is not, so the first loss per source is a
+    warning and the rest are counted.
+    """
     bus = _active_bus
     if bus is None:
+        seen = _dropped.get(source.value, 0)
+        _dropped[source.value] = seen + 1
+        if seen == 0:
+            log.warning(
+                "autonomy publisher: no bus registered — discarding %s events "
+                "(the kernel is not running; this job's findings reach nothing)",
+                source.value,
+            )
         return
     event = AutonomyEvent.make(source, payload, event_id=event_id)
     try:
@@ -92,6 +119,7 @@ def make_workspace_event_forwarder(
 
 
 __all__ = [
+    "dropped_event_counts",
     "get_active_bus",
     "make_workspace_event_forwarder",
     "publish_to_bus",

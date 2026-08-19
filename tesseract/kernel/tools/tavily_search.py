@@ -47,17 +47,21 @@ class TavilySearchTool(Tool):
     default_posture = "ask"
 
     risk_class: ClassVar[str] = "propose"
+
+    group: ClassVar[str] = "searching-the-web"
+    summary: ClassVar[str] = "Web search via Tavily — LLM-optimized snippets with an optional synthesized answer."
+    use_when: ClassVar[str] = (
+        "Use for research questions where you need to answer something from the web, "
+        "not just survey what exists."
+    )
+    not_when: ClassVar[str] = (
+        "Use `web_search` for breadth over niche/news queries. Use `tavily_extract` once you "
+        "already have specific URLs and need their full readable content."
+    )
+
     @property
     def name(self) -> str:
         return "tavily_search"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Search the web via Tavily — LLM-optimized snippets with optional synthesized answer. "
-            "Use for research questions where you need digestible per-result content to answer. "
-            "Use web_search (Brave) for breadth / news / niche queries instead."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

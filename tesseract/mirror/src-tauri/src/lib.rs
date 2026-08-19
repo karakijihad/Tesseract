@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -7,6 +8,7 @@ use tauri::{Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 
 mod app_swap;
 mod exe_update;
+mod job;
 mod provision;
 mod repo;
 mod setup;
@@ -21,6 +23,15 @@ use provision::{
 
 struct SupervisorProc(Mutex<Option<Child>>);
 struct TesseractHome(PathBuf);
+
+/// Whether the cockpit has already been revealed.
+///
+/// Three things race to reveal it — the cockpit's own `cockpit_ready`, the
+/// watchdog that covers a cockpit which never calls, and the fatal path, which
+/// must not reveal at all once an error is on screen. The flag makes the first
+/// one win and the rest no-ops, so a slow warm-up followed by a late
+/// `cockpit_ready` cannot re-hide the splash over a running app.
+struct CockpitRevealed(AtomicBool);
 
 /// Poison-tolerant lock, matching `shell_log`'s existing recovery.
 ///
@@ -330,11 +341,57 @@ fn kill_process_tree(child: &mut Child) {
     let _ = child.wait();
 }
 
+/// How long the splash stays up when the cockpit never says it is ready.
+///
+/// Not the wait itself: the cockpit polls `/api/health` and calls
+/// `cockpit_ready` the moment the backend reports itself warm, with its own
+/// ceiling on that (`GIVE_UP_MS` in `lib/warmup.ts`). This covers the case
+/// where the cockpit's own JS never runs at all — a broken bundle, a webview
+/// that failed to load — where no signal is ever coming and the operator would
+/// otherwise hold a splash forever. Comfortably past the frontend's own
+/// give-up, so a slow boot is always reported rather than timed out behind
+/// its back; raise this if that one is raised.
+const REVEAL_WATCHDOG: Duration = Duration::from_secs(120);
+const REVEAL_WATCHDOG_TICK: Duration = Duration::from_millis(250);
+
+/// Close the splash and show the cockpit. Idempotent — the first caller wins.
+fn reveal_cockpit(handle: &tauri::AppHandle, why: &str) {
+    if let Some(state) = handle.try_state::<CockpitRevealed>() {
+        if state.0.swap(true, Ordering::SeqCst) {
+            return;
+        }
+    }
+    shell_log::log(&format!("revealing the cockpit ({why})"));
+    if let Some(splash) = handle.get_webview_window("splash") {
+        let _ = splash.close();
+    }
+    if let Some(main) = handle.get_webview_window("main") {
+        let _ = main.show();
+        let _ = main.set_focus();
+    }
+}
+
+/// The cockpit's own signal that the backend has finished preparing itself.
+///
+/// Checks its caller for the reason `quit_app` does: commands registered by
+/// the app are not covered by the capability system, and only the window this
+/// reveals has any business asking for it.
+#[tauri::command]
+fn cockpit_ready(app: tauri::AppHandle, window: tauri::Window) {
+    if window.label() != "main" {
+        shell_log::log_error(&format!(
+            "cockpit_ready refused: only the cockpit may call it, not '{}'",
+            window.label()
+        ));
+        return;
+    }
+    reveal_cockpit(&app, "backend warm");
+}
+
 /// Shared "provisioning just succeeded" tail: retries the voice-model fetch,
-/// starts the supervisor, and only then closes the splash and reveals the
-/// cockpit. Called for both an already-provisioned launch and a first-run
-/// success, so the two converge on identical behavior instead of duplicating
-/// it.
+/// starts the supervisor, and then hands the splash over to the warm-up wait.
+/// Called for both an already-provisioned launch and a first-run success, so
+/// the two converge on identical behavior instead of duplicating it.
 ///
 /// The window is revealed *after* the spawn succeeds, never before. Showing
 /// it first meant a failed spawn (missing interpreter, quarantined venv,
@@ -342,6 +399,13 @@ fn kill_process_tree(child: &mut Child) {
 /// silently failed, with the only diagnostic an `eprintln!` that goes nowhere
 /// in a console-less GUI process. A backend that did not start is now a
 /// visible error instead of a dead-looking app.
+///
+/// A spawn that succeeded is still not an app worth looking at: the backend
+/// spends its first several seconds building the tool registry, the chat
+/// chain, the voice runtime and the scheduler. Revealing on spawn is what put
+/// that work in front of the operator instead of behind the splash — panels
+/// filling in under them, a first message answered slower than the second.
+/// So the splash stays, and the cockpit — hidden, loaded, polling — says when.
 fn finish_provisioning_success(handle: &tauri::AppHandle, home: &PathBuf) {
     // Populates the remembered `uv` path before the refresh spawns anything:
     // `provision_hardware` needs it to install GPU wheels, and on an
@@ -356,11 +420,16 @@ fn finish_provisioning_success(handle: &tauri::AppHandle, home: &PathBuf) {
             if let Some(state) = handle.try_state::<SupervisorProc>() {
                 *lock_or_recover(&state.0) = Some(child);
             }
-            if let Some(splash) = handle.get_webview_window("splash") {
-                let _ = splash.close();
-            }
-            if let Some(main) = handle.get_webview_window("main") {
-                let _ = main.show();
+            match handle.get_webview_window("splash") {
+                Some(splash) => {
+                    let _ = splash.emit("shell-warming", ());
+                    start_reveal_watchdog(handle.clone());
+                }
+                // No splash means nothing to wait behind, so waiting only
+                // costs the operator an empty desktop for the length of the
+                // watchdog. Reveal on spawn — the behaviour before the hold
+                // existed, and the right one when there is no hold.
+                None => reveal_cockpit(handle, "no splash to wait behind"),
             }
         }
         Err(e) => report_fatal(
@@ -371,6 +440,33 @@ fn finish_provisioning_success(handle: &tauri::AppHandle, home: &PathBuf) {
             ),
         ),
     }
+}
+
+/// Reveal the cockpit anyway if nothing ever asks.
+///
+/// Polled rather than slept flat so a `report_fatal` landing during the wait
+/// ends the watchdog instead of throwing the main window up over the error
+/// message a minute later.
+fn start_reveal_watchdog(handle: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + REVEAL_WATCHDOG;
+        loop {
+            if let Some(state) = handle.try_state::<CockpitRevealed>() {
+                if state.0.load(Ordering::SeqCst) {
+                    return;
+                }
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(REVEAL_WATCHDOG_TICK);
+        }
+        shell_log::log_error(
+            "the cockpit never reported itself ready — revealing it anyway; \
+             see runtime/logs/supervisor.log if it is not usable",
+        );
+        reveal_cockpit(&handle, "watchdog");
+    });
 }
 
 /// Surfaces an unrecoverable startup failure instead of leaving the user with
@@ -384,6 +480,12 @@ fn finish_provisioning_success(handle: &tauri::AppHandle, home: &PathBuf) {
 /// otherwise lose.
 fn report_fatal(handle: &tauri::AppHandle, msg: &str) {
     shell_log::log_error(msg);
+    // Claims the reveal so nothing later takes it: an error on screen is the
+    // final state, and the warm-up watchdog throwing the cockpit up over it a
+    // minute later would bury the only explanation the operator has.
+    if let Some(state) = handle.try_state::<CockpitRevealed>() {
+        state.0.store(true, Ordering::SeqCst);
+    }
     if let Some(splash) = handle.get_webview_window("splash") {
         let _ = splash.emit("shell-fatal", msg.to_string());
         let _ = splash.set_focus();
@@ -503,6 +605,8 @@ pub fn run() {
             exe_update::exe_update_check,
             exe_update::exe_update_apply,
             setup::submit_first_run_setup,
+            setup::pending_setup_form,
+            cockpit_ready,
             quit_app
         ])
         .setup(|app| {
@@ -511,32 +615,22 @@ pub fn run() {
             app.manage(SupervisorProc(Mutex::new(None)));
             app.manage(TesseractHome(home.clone()));
             app.manage(update::UpdateInProgress::new());
+            app.manage(CockpitRevealed(AtomicBool::new(false)));
 
-            // Decide window flow up front: already-provisioned skips the splash
-            // entirely and shows the cockpit immediately; a fresh install shows
-            // the splash and the background thread swaps it for main on success.
-            // A dev run counts as provisioned — it uses the repo checkout and
-            // must never provision a per-user tree it will not read.
-            let already = dev_interpreter_override().is_some() || is_provisioned(&home);
-            let handle = app.handle().clone();
-            if already {
-                // Every launch, not just first-run provisioning: retries the
-                // optional-asset fetches (voice models, reranker, embeddings)
-                // if a previous attempt failed (offline, transient outage) and
-                // spawns the supervisor. See `refresh_optional_assets`'s own
-                // doc comment.
-                std::thread::spawn(move || finish_provisioning_success(&handle, &home));
-                return Ok(());
-            }
-
-            // First run. The splash opens on the setup form and provisioning
-            // does NOT start here — it starts when the form is submitted
-            // (`setup::submit_first_run_setup`), because the answers decide
-            // what gets downloaded. Declining speech is only meaningful if it
-            // happens before the model would have been fetched.
+            // Every launch opens the splash, and both flows end the same way:
+            // it stays up until the backend reports itself warm. A fresh
+            // install fills it with the setup form and the provisioning run
+            // first; an already-provisioned one goes straight to the warm-up
+            // wait. A dev run counts as provisioned — it uses the repo
+            // checkout and must never provision a per-user tree it will not
+            // read.
+            //
             // Undecorated, so drag/minimise/close come from the page's own
-            // header strip. Opens at the tallest state (the setup form) so it
-            // fits without a scrollbar, and resizable rather than fixed.
+            // header strip. Opens at the PROVISIONING height rather than the
+            // form's, because that is the state it opens in — building it
+            // tall would flash a mostly-empty 940px window for as long as it
+            // takes the page to resize itself down. Resizable rather than
+            // fixed.
             //
             // The minimum height must stay BELOW the shortest state the page
             // resizes itself to (`HEIGHTS` in splash.html): Windows enforces a
@@ -544,25 +638,108 @@ pub fn run() {
             // including a programmatic one, so a floor above those values
             // silently clamps them and the short states keep the tall window.
             // `set_size` still resolves, so nothing reports the failure.
+            let dev = dev_interpreter_override().is_some();
+            let already = dev || is_provisioned(&home);
+            // An install that finished without anyone answering the form — a
+            // splash that would not open, a manifest that would not build —
+            // is provisioned and still has a question outstanding. It gets the
+            // form on this launch instead of going straight to the cockpit,
+            // because the marker that stops it reinstalling used to stop it
+            // being asked as well, permanently, over a window that failed once.
+            //
+            // The dev override is excluded rather than merely unlikely to
+            // qualify: a repo checkout has no per-user marker to read, and a
+            // developer who has one from a real install must not be handed a
+            // setup form by `pnpm tauri dev`.
+            let resume_setup = already && !dev && provision::setup_unanswered(&home);
+            // Warming and resuming are the two shapes of an already-installed
+            // launch, and they are mutually exclusive — named once here so the
+            // window's URL and its title cannot disagree about which is which.
+            let warming = already && !resume_setup;
+            let handle = app.handle().clone();
+            // `?warming=1` rather than an event: the page would otherwise open
+            // on the first-run wording ("Preparing first-run setup…") and only
+            // correct itself once the supervisor spawn returns, which is a
+            // visible half-second of the wrong sentence on every launch.
+            //
+            // A resume launch is NOT a warming one: the page would open on
+            // "Getting everything ready…" and then be interrupted by a form,
+            // which reads as the app changing its mind. It opens on the same
+            // progress view a first run does, and the form replaces it.
+            let splash_url = if warming {
+                "splash.html?warming=1"
+            } else {
+                "splash.html"
+            };
             let splash =
-                WebviewWindowBuilder::new(app, "splash", WebviewUrl::App("splash.html".into()))
-                    .title("Setting up TESSERACT")
-                    .inner_size(460.0, 840.0)
+                WebviewWindowBuilder::new(app, "splash", WebviewUrl::App(splash_url.into()))
+                    .title(if warming {
+                        "Starting TESSERACT"
+                    } else {
+                        "Setting up TESSERACT"
+                    })
+                    .inner_size(460.0, 372.0)
                     .min_inner_size(400.0, 280.0)
                     .center()
                     .decorations(false)
                     .resizable(true)
                     .build();
-            if splash.is_err() {
-                // No window means no form and therefore no submit to wait for.
-                // Provisioning on the shipped defaults is the only outcome
-                // left that produces a working install; waiting forever for a
-                // form nobody can fill in is not.
-                shell_log::log_error(
-                    "could not open the setup window — provisioning with the shipped defaults",
-                );
-                setup::start_provisioning(handle, home);
+
+            if resume_setup {
+                // The app is installed and nothing here reinstalls it: this
+                // opens the form the earlier run could not, and the operator's
+                // answers run the fetch stages that run skipped. A window that
+                // will not open again costs nothing — `offer_deferred_setup`
+                // starts the backend as any other launch would, and the marker
+                // still says `unanswered`, so the next launch tries again.
+                if let Err(e) = &splash {
+                    shell_log::log_error(&format!("could not open the setup window ({e})"));
+                }
+                setup::offer_deferred_setup(handle, home);
+                return Ok(());
             }
+
+            if already {
+                // Every launch, not just first-run provisioning: retries the
+                // optional-asset fetches (voice models, reranker, embeddings)
+                // if a previous attempt failed (offline, transient outage) and
+                // spawns the supervisor. See `refresh_optional_assets`'s own
+                // doc comment. A splash that would not open is handled there,
+                // by revealing on spawn rather than waiting behind a window
+                // that does not exist.
+                if let Err(e) = &splash {
+                    shell_log::log_error(&format!("could not open the launch window ({e})"));
+                }
+                std::thread::spawn(move || finish_provisioning_success(&handle, &home));
+                return Ok(());
+            }
+
+            // First run. The splash opens on the progress view and the app
+            // installs immediately: the clone, Python, the venv and the
+            // dependency set are required, so showing them as a question was
+            // only ever a question with one answer. The form opens on top of
+            // that install once there is an interpreter to build it from
+            // (`setup::start_provisioning` → `setup-form`), and the stages that
+            // download something optional wait for it — declining a lane is
+            // still only meaningful before the model would have been fetched.
+            if let Err(e) = &splash {
+                // No window means no form, and no form means nobody was asked
+                // anything. Provisioning still runs — waiting forever for a
+                // form nobody can fill in is not an outcome — but it installs
+                // the APP and nothing optional: no speech models, no reranker,
+                // no Ollama installer. Several gigabytes arriving on a
+                // stranger's machine because a window failed to open is the
+                // one thing the consent ledger exists to prevent, and the
+                // thing that would have asked is the thing that broke.
+                //
+                // Started the same way either way, and that is the change: the
+                // fallback is no longer a second entry point into provisioning
+                // but the same one finding no window to open a form in. It
+                // says so in `setup::form_manifest`, once, rather than here
+                // and there.
+                shell_log::log_error(&format!("could not open the setup window ({e})"));
+            }
+            setup::start_provisioning(handle, home);
             Ok(())
         })
         .build(tauri::generate_context!())

@@ -267,6 +267,17 @@ class SessionOpenTool(Tool):
     default_posture: ClassVar[str] = "auto"
     risk_class: ClassVar[str] = "propose"
 
+    group: ClassVar[str] = "long-running-collaborators"
+    summary: ClassVar[str] = "Open a new interactive session against claude, codex, or a named agent."
+    use_when: ClassVar[str] = (
+        "Use to start a scoped per-chat conversation you drive with session_send, distinct from "
+        "a controller-owned lane."
+    )
+    not_when: ClassVar[str] = (
+        "a standing named collaborator surviving restarts, which is `lane_named_ensure`; a "
+        "one-shot worker, which is `delegate_coder`/`delegate_auditor`."
+    )
+
     def __init__(
         self,
         agents_dir=None,
@@ -286,14 +297,6 @@ class SessionOpenTool(Tool):
     @property
     def name(self) -> str:
         return "session_open"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Open an interactive multi-turn session against a backend: "
-            '"claude", "codex" (CLI subprocess), or a named agent slug. '
-            "Returns a session handle for use with session_send / session_result / session_close."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:
@@ -430,16 +433,20 @@ class SessionSendTool(Tool):
     default_posture: ClassVar[str] = "auto"
     risk_class: ClassVar[str] = "propose"
 
+    group: ClassVar[str] = "long-running-collaborators"
+    summary: ClassVar[str] = "Send a follow-up message to an open session and return its reply."
+    use_when: ClassVar[str] = (
+        "Use for each turn of an open session; background=true returns a spawn handle instead "
+        "of blocking."
+    )
+    not_when: ClassVar[str] = (
+        "the lane equivalent, which is `lane_send`/`lane_turn`; re-fetching a background turn's "
+        "result later, which is `session_result`."
+    )
+
     @property
     def name(self) -> str:
         return "session_send"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Send a follow-up message to an open session. "
-            "Returns the response or a spawn handle when background=true."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:
@@ -498,16 +505,17 @@ class SessionResultTool(Tool):
     default_posture: ClassVar[str] = "auto"
     risk_class: ClassVar[str] = "autonomous"
 
+    group: ClassVar[str] = "long-running-collaborators"
+    summary: ClassVar[str] = "Collect the result of a session's most recent background turn."
+    use_when: ClassVar[str] = "Use only after a session_send/session_open call made with background=true."
+    not_when: ClassVar[str] = (
+        "a foreground call's reply, already in that call's own return value; a lane's reply, "
+        "which is `lane_read`/`lane_turn`."
+    )
+
     @property
     def name(self) -> str:
         return "session_result"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Collect the result of the most recent background turn for the given session. "
-            "Blocks (optionally with timeout) until the turn is complete."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:
@@ -544,13 +552,14 @@ class SessionCloseTool(Tool):
     default_posture: ClassVar[str] = "auto"
     risk_class: ClassVar[str] = "autonomous"
 
+    group: ClassVar[str] = "long-running-collaborators"
+    summary: ClassVar[str] = "Close a session and free its resources. Idempotent on an already-closed handle."
+    use_when: ClassVar[str] = "Use when a session's conversation is finished."
+    not_when: ClassVar[str] = "terminating a lane's CLI process, which is `lane_close`."
+
     @property
     def name(self) -> str:
         return "session_close"
-
-    @property
-    def description(self) -> str:
-        return "Close a session and free its resources. Idempotent — safe to call on an already-closed handle."
 
     @property
     def input_schema(self) -> type[BaseModel]:
@@ -598,13 +607,17 @@ class SessionListTool(Tool):
     default_posture: ClassVar[str] = "auto"
     risk_class: ClassVar[str] = "autonomous"
 
+    group: ClassVar[str] = "long-running-collaborators"
+    summary: ClassVar[str] = "List every open interactive session with its handle and target."
+    use_when: ClassVar[str] = "Use to see what sessions are open before sending to or closing one."
+    not_when: ClassVar[str] = (
+        "lanes, which is `lane_list`/`lane_named_list`; controller sessions, which is "
+        "`controller_session_list`."
+    )
+
     @property
     def name(self) -> str:
         return "session_list"
-
-    @property
-    def description(self) -> str:
-        return "List all open interactive sessions. Returns handle + target for each."
 
     @property
     def input_schema(self) -> type[BaseModel]:

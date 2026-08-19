@@ -40,12 +40,16 @@ log = logging.getLogger(__name__)
 
 
 def _mcp_block() -> dict[str, Any]:
-    """The clients and the verb surface from ``mcp.yaml``.
+    """Everything the MCP tab renders: the switch, the address, the one token,
+    and the verb surface that token unlocks.
 
-    Beside the tokens on purpose: a bearer token is meaningless until you can
-    see what it unlocks, and the answer is exactly this file's verb map. Best
-    effort — an unloadable MCP config must not take the whole keys view with
-    it, since the keys above it are the reason a fresh install opens this
+    The verbs sit beside the token on purpose — a bearer token is meaningless
+    until you can see what it opens, and the answer is exactly this file's
+    verb map. Reported whether or not the server is enabled, because what the
+    surface WOULD be is what the operator is deciding about.
+
+    Best effort — an unloadable MCP config must not take the whole keys view
+    with it, since the keys above it are the reason a fresh install opens this
     section at all.
     """
     from tesseract.paths import config_dir
@@ -55,24 +59,31 @@ def _mcp_block() -> dict[str, Any]:
 
         config = load_mcp_config(config_dir() / "mcp.yaml")
     except Exception as exc:  # noqa: BLE001 — reported, never raised at the operator
-        return {"clients": [], "verbs": [], "endpoint": None, "error": str(exc)}
+        return {
+            "enabled": False,
+            "client": None,
+            "verbs": [],
+            "endpoint": None,
+            "error": str(exc),
+        }
 
     values = env_file.read_values()
-    clients = [
-        {
+    # One identity, so one row. `config.clients` is still a list — the loader's
+    # invariants allow a second one to be added later — but this view speaks
+    # for the operator client, which is the one an outside tool connects as.
+    client = next((c for c in config.clients if c.trust_tier == "operator"), None)
+    verbs = [
+        {"verb": verb, "posture": posture} for verb, posture in sorted(config.verbs.items())
+    ]
+    return {
+        "enabled": config.server.enabled,
+        "client": None if client is None else {
             "name": client.name,
             "token_env": client.token_env,
             "trust_tier": client.trust_tier,
             "in_file": bool(values.get(client.token_env, "").strip()),
             "active": bool((os.environ.get(client.token_env) or "").strip()),
-        }
-        for client in config.clients
-    ]
-    verbs = [
-        {"verb": verb, "posture": posture} for verb, posture in sorted(config.verbs.items())
-    ]
-    return {
-        "clients": clients,
+        },
         "verbs": verbs,
         "endpoint": f"http://{config.server.host}:{config.server.port}/mcp",
         "error": None,
@@ -89,7 +100,7 @@ def _build_report() -> dict[str, Any]:
     for spec in specs:
         section = index.get(spec.section)
         if section is None:
-            section = {"title": spec.section, "advanced": spec.advanced, "keys": []}
+            section = {"title": spec.section, "keys": []}
             index[spec.section] = section
             sections.append(section)
         in_file_value = values.get(spec.name, "").strip()
@@ -194,11 +205,10 @@ async def env_keys_generate(request: web.Request) -> web.Response:
     if not isinstance(name, str) or not name:
         return web.json_response({"error": "name required"}, status=400)
 
-    mcp = _mcp_block()
-    token_envs = {client["token_env"] for client in mcp["clients"]}
-    if name not in token_envs:
+    client = _mcp_block()["client"]
+    if client is None or name != client["token_env"]:
         return web.json_response(
-            {"error": f"{name!r} is not an MCP client token in mcp.yaml"}, status=400
+            {"error": f"{name!r} is not the MCP client token in mcp.yaml"}, status=400
         )
 
     token = env_file.generate_token()
@@ -211,10 +221,55 @@ async def env_keys_generate(request: web.Request) -> web.Response:
     return web.json_response({"name": name, "token": token, "report": _build_report()})
 
 
+async def env_keys_mcp_enabled(request: web.Request) -> web.Response:
+    """POST /api/env-keys/mcp — open or shut the MCP surface.
+
+    Body: ``{"enabled": true|false}``. Writes ``mcp.yaml::server.enabled``
+    through a round-trip so the file keeps the comments that explain it, and
+    takes effect on the next start: the server is constructed once, during
+    startup, and there is no half-built state worth inventing to avoid a
+    restart the operator is already being offered on this screen.
+
+    Localhost-only, like every other writing handler here. Turning this on is
+    what makes the runtime reachable by another program at all.
+    """
+    if not is_localhost_request(request):
+        return web.json_response({"error": "localhost only"}, status=401)
+
+    body = await _json_body(request)
+    if isinstance(body, web.Response):
+        return body
+
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        return web.json_response({"error": "enabled must be true or false"}, status=400)
+
+    from tesseract.lib.yaml_io import round_trip_yaml
+    from tesseract.paths import config_dir
+
+    try:
+        round_trip_yaml(
+            config_dir() / "mcp.yaml",
+            lambda doc: doc["server"].__setitem__("enabled", enabled),
+        )
+    except Exception as exc:  # noqa: BLE001 — reported, never raised at the operator
+        return web.json_response({"error": f"could not write mcp.yaml: {exc}"}, status=500)
+
+    log.info("env-keys: mcp surface set to enabled=%s", enabled)
+    return web.json_response({"enabled": enabled, "report": _build_report()})
+
+
 def register(app: web.Application) -> None:
     app.router.add_get("/api/env-keys", env_keys_status)
     app.router.add_post("/api/env-keys", env_keys_write)
     app.router.add_post("/api/env-keys/generate", env_keys_generate)
+    app.router.add_post("/api/env-keys/mcp", env_keys_mcp_enabled)
 
 
-__all__ = ["register", "env_keys_status", "env_keys_write", "env_keys_generate"]
+__all__ = [
+    "register",
+    "env_keys_status",
+    "env_keys_write",
+    "env_keys_generate",
+    "env_keys_mcp_enabled",
+]

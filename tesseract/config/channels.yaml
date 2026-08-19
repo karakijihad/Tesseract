@@ -43,7 +43,9 @@ defaults:
   # on_ask: deny rejects the action outright.
   gate_policy:
     on_ask: workspace_nudge
-    approve_next_turn_ttl_s: 1800
+    # How long a gated call waits for you to approve or reject it before
+    # refusing itself. Sending another message cancels the wait.
+    decision_timeout_s: 1800
 
 # ────────────────────────────────────────────────────────────────────
 # Telegram
@@ -66,7 +68,8 @@ telegram:
   # requests) always get through regardless of these caps.
   outbound_rate:
     default_per_hour: 6
-    per_category: {}                  # e.g. agenda_started: 12
+    per_category:
+      runtime_report: 2               # the watchman checks hourly and only pings on a defect; two an hour is already a bad day
 
   # Notification categories the operator has muted via the dashboard.
   muted_categories: []

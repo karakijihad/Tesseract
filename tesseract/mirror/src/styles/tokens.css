@@ -18,6 +18,15 @@
   --bg-elevated: #121220;             /* cards, inputs */
   --bg-overlay:  rgba(0,0,0,0.5);    /* HUD bar, scrims */
 
+  /* The orb's own two brand colours. Everything else about the orb is
+     modulation — amplitude, rate, curl, eruption — and none of that is a brand
+     value. These two are: the ground its haze sits on, and the one colour that
+     is a MOOD rather than a state, worn while dreaming. The canvas is WebGL and
+     cannot read a custom property, so `appearance.ts` reads them here and
+     pushes them through the entity store, the same path `--accent-hsl` takes. */
+  --orb-ground:   var(--bg-void);      /* the haze's ground — follows the app */
+  --orb-dreaming: #6b21a8;             /* worn only while dreaming */
+
   /* Ink scale (text primitives) */
   --ink-100: #f5f5fa;                       /* near-white, OLED-friendly */
   --ink-72:  rgba(234,234,248,0.72);        /* secondary */
@@ -27,12 +36,21 @@
   /* Accent — the assistant violet (operator-preferred). Single source for UI *and*
      the WebGL orb: GlobalCanvas reads --accent-hsl at boot and pushes it
      through the entity store, so this block recolors both. Atmosphere,
-     synapse glows, and frosted surfaces all key off --accent-hsl too. */
-  --accent-hsl:    246 83% 68%;
-  --accent:        #7c6cf0;
-  --accent-bright: #9d8fff;
-  --accent-dim:    rgba(124,108,240,0.15);
-  --accent-glow:   rgba(124,108,240,0.25);
+     synapse glows, and frosted surfaces all key off --accent-hsl too.
+
+     Split into h/s/l and everything else DERIVED from it, so recoloring the
+     app is one number. The literals that were here (#7c6cf0, #9d8fff, two
+     rgba()) each had to be re-derived by hand and were the reason the accent
+     could not be a setting — Appearance writes --accent-h and the whole
+     palette, orb included, follows. */
+  --accent-h: 246;
+  --accent-s: 83%;
+  --accent-l: 68%;
+  --accent-hsl:    var(--accent-h) var(--accent-s) var(--accent-l);
+  --accent:        hsl(var(--accent-hsl));
+  --accent-bright: hsl(var(--accent-h) var(--accent-s) 78%);
+  --accent-dim:    hsl(var(--accent-hsl) / 0.15);
+  --accent-glow:   hsl(var(--accent-hsl) / 0.25);
 
   /* Semantic color primitives */
   --ok:    #4ade80;
@@ -75,10 +93,96 @@
   --cyan-dim:  rgba(0,212,232,0.15);
   --pink-dim:  rgba(255,110,180,0.15);
 
-  /* Legacy border primitives (kept for surviving component refs) */
-  --border-subtle:  rgba(255,255,255,0.04);
-  --border-muted:   rgba(255,255,255,0.08);
-  --border-visible: rgba(255,255,255,0.12);
+  /* Border primitives — three weights of the white scale below, named for what
+     they are used AS. They point at `--wash-*` rather than repeating its
+     numbers: the same value under two names is the divergence this file
+     exists to prevent, and it had already happened here. */
+  --border-subtle:  var(--wash-sm);
+  --border-muted:   var(--wash-lg);
+  --border-visible: var(--wash-xl);
+
+  /* -----------------------------------------------------------
+     ALPHA RAMP — five steps, and every one DERIVES from a semantic
+     colour rather than repeating its channels.
+
+     This is what makes the brand file the brand file: change `--ok` and
+     every ok-coloured wash, border and glow in the app follows. Before
+     these existed the app carried 149 rgba() literals in 21 stylesheets,
+     and they had drifted into eight different greens for "connected",
+     five reds for "denied" and three blues for "info" — each one a
+     surface that Appearance could never reach.
+
+     `color-mix` because it takes the token, not its numbers. An `rgba()`
+     built from digits is a copy the moment it is written.
+     ----------------------------------------------------------- */
+  --step-wash:   6%;   /* a tint you read as a surface, not a colour */
+  --step-soft:   12%;  /* chip and pill grounds */
+  --step-edge:   22%;  /* borders that belong to a state */
+  --step-strong: 32%;  /* hover on a stated ground */
+  --step-bold:   45%;  /* a rule or marker that must carry alone */
+
+  --ok-wash:   color-mix(in srgb, var(--ok) var(--step-wash), transparent);
+  --ok-soft:   color-mix(in srgb, var(--ok) var(--step-soft), transparent);
+  --ok-edge:   color-mix(in srgb, var(--ok) var(--step-edge), transparent);
+  --ok-strong: color-mix(in srgb, var(--ok) var(--step-strong), transparent);
+  --ok-bold:   color-mix(in srgb, var(--ok) var(--step-bold), transparent);
+
+  --warn-wash:   color-mix(in srgb, var(--warn) var(--step-wash), transparent);
+  --warn-soft:   color-mix(in srgb, var(--warn) var(--step-soft), transparent);
+  --warn-edge:   color-mix(in srgb, var(--warn) var(--step-edge), transparent);
+  --warn-strong: color-mix(in srgb, var(--warn) var(--step-strong), transparent);
+  --warn-bold:   color-mix(in srgb, var(--warn) var(--step-bold), transparent);
+
+  --bad-wash:   color-mix(in srgb, var(--bad) var(--step-wash), transparent);
+  --bad-soft:   color-mix(in srgb, var(--bad) var(--step-soft), transparent);
+  --bad-edge:   color-mix(in srgb, var(--bad) var(--step-edge), transparent);
+  --bad-strong: color-mix(in srgb, var(--bad) var(--step-strong), transparent);
+  --bad-bold:   color-mix(in srgb, var(--bad) var(--step-bold), transparent);
+
+  --info-wash:   color-mix(in srgb, var(--info) var(--step-wash), transparent);
+  --info-soft:   color-mix(in srgb, var(--info) var(--step-soft), transparent);
+  --info-edge:   color-mix(in srgb, var(--info) var(--step-edge), transparent);
+  --info-strong: color-mix(in srgb, var(--info) var(--step-strong), transparent);
+  --info-bold:   color-mix(in srgb, var(--info) var(--step-bold), transparent);
+
+  /* The four above carry all five steps whether or not every one is in use
+     today: a reader picks a step by name, and a ramp with holes in it is how
+     someone ends up writing the missing one as a literal. Below are the two
+     colours that carry only the steps they need — they are not states a
+     surface reaches for freely. */
+  --cyan-wash: color-mix(in srgb, var(--cyan) var(--step-wash), transparent);
+  --cyan-soft: color-mix(in srgb, var(--cyan) var(--step-soft), transparent);
+
+  --ok-muted-edge: color-mix(in srgb, var(--ok-muted) var(--step-edge), transparent);
+  --ok-muted-bold: color-mix(in srgb, var(--ok-muted) var(--step-bold), transparent);
+
+  /* Scrims — black over whatever is beneath. Five steps, because a modal
+     backdrop, a glass bar and a hover veil are different weights of the
+     same act and the app had ten of them. */
+  --scrim-xs: rgba(0,0,0,0.20);
+  --scrim-sm: rgba(0,0,0,0.30);
+  --scrim-md: rgba(0,0,0,0.45);
+  --scrim-lg: rgba(0,0,0,0.60);
+  --scrim-xl: rgba(0,0,0,0.70);
+
+  /* Washes — white over a dark ground. The one white scale in the app;
+     `--border-subtle/muted/visible` above are three of these steps under the
+     name of what they are used as. */
+  --wash-xs: rgba(255,255,255,0.02);
+  --wash-sm: rgba(255,255,255,0.04);
+  --wash-md: rgba(255,255,255,0.06);
+  --wash-lg: rgba(255,255,255,0.08);
+  --wash-xl: rgba(255,255,255,0.12);
+
+  /* Glass — the ground under a floating panel, card or overlay. One hue and
+     one lightness, four weights. Nine surfaces had written their own
+     `hsl(248 30% N% / a)` at three lightnesses and five alphas, so panels
+     sitting beside each other were different glass. */
+  --glass-hsl:   248 30% 10%;
+  --glass-thin:  hsl(var(--glass-hsl) / 0.42);
+  --glass-sheer: hsl(var(--glass-hsl) / 0.58);
+  --glass-deep:  hsl(var(--glass-hsl) / 0.72);
+  --glass-solid: hsl(var(--glass-hsl) / 0.82);
 
   /* -----------------------------------------------------------
      LAYER 2 — SEMANTIC ALIASES (purpose-named, components use these)
@@ -116,16 +220,66 @@
   --bg-card:     #14141e;
   --bg-hover:    #1a1a28;
   --border:      #1e1e30;
-  --border-glow: hsla(var(--accent-hsl), 0.15);
+  --border-glow: hsl(var(--accent-hsl) / 0.15);
 
   /* -----------------------------------------------------------
      SPACING
      ----------------------------------------------------------- */
-  --space-xs: 4px;
-  --space-sm: 8px;
-  --space-md: 16px;
-  --space-lg: 24px;
-  --space-xl: 32px;
+  /* The number IS the pixel value. A five-step xs/sm/md/lg/xl scale described
+     22% of the padding, margin and gap declarations in this tree — the other
+     78% sat between its steps, so the scale was one nobody could follow and
+     every surface reached for a literal instead. Widening rather than rounding
+     was the call: rounding moves layout on every surface, and unlike colour
+     snapping there is no threshold that makes that invisible.
+
+     A step exists here because the app uses it, so the set is a census rather
+     than a design. Adding one is cheap; reaching for a literal is what is not
+     allowed. */
+  --space-1:  1px;
+  --space-2:  2px;
+  --space-3:  3px;
+  --space-4:  4px;
+  --space-5:  5px;
+  --space-6:  6px;
+  --space-7:  7px;
+  --space-8:  8px;
+  --space-9:  9px;
+  --space-10: 10px;
+  --space-12: 12px;
+  --space-14: 14px;
+  --space-16: 16px;
+  --space-18: 18px;
+  --space-20: 20px;
+  --space-22: 22px;
+  --space-24: 24px;
+  --space-26: 26px;
+  --space-28: 28px;
+  --space-30: 30px;
+  --space-32: 32px;
+  --space-40: 40px;
+  --space-48: 48px;
+  /* One half-step, and only because a 1.5px gap is a hairline the layout
+     depends on rather than a value anyone would round. */
+  --space-1-5: 1.5px;
+
+  /* The original five, unchanged in value, kept so nothing already written
+     breaks and so a surface can still say "one standard gap" rather than
+     naming a number. */
+  --space-xs: var(--space-4);
+  --space-sm: var(--space-8);
+  --space-md: var(--space-16);
+  --space-lg: var(--space-24);
+  --space-xl: var(--space-32);
+
+  /* Border and outline WIDTHS — a different axis from space, which is why no
+     space token owns them. `--border` above is a colour, so these are strokes.
+     A negative space value is written `calc(var(--space-6) * -1)` at its call
+     site rather than tokenised: six sites, and a `--space-neg-6` would double
+     the scale to serve them. */
+  --stroke-1: 1px;
+  --stroke-2: 2px;
+  --stroke-3: 3px;
+  --stroke-4: 4px;
 
   /* -----------------------------------------------------------
      RADIUS
@@ -134,59 +288,97 @@
   --radius-sm: 7px;
   --radius-md: 10px;
   --radius-lg: 14px;
+  /* Fully round — chips, pills, the canvas control buttons. Not a step on
+     the scale above but a distinct shape, and it was being reached for as
+     `var(--radius-pill, 999px)` at five call sites against a token that had
+     never been defined. */
+  --radius-pill: 999px;
 
   /* -----------------------------------------------------------
      MOTION
      ----------------------------------------------------------- */
+  /* Interaction — how long the app takes to answer a pointer. */
+  --motion-instant: 80ms;
   --motion-fast:   120ms;
   --motion-med:    250ms;
   --motion-slow:   400ms;
+
+  /* Ambient — the tempo of things that move on their own: pulsing dots,
+     spinners, the nebula. They are here for the same reason the interaction
+     steps are: they were 1s / 1.1s / 1.2s / 1.4s / 1.5s / 1.6s / 1.8s / 2s
+     across nine stylesheets, so four indicators pulsing side by side never
+     agreed, and nothing could slow the app down in one place. */
+  --motion-beat:    1.2s;
+  --motion-breathe: 1.6s;
+  --motion-swell:   2s;
+  --motion-ring:    3s;
+  --motion-drift:   26s;
+
   --ease-out:    cubic-bezier(0.25, 0.1, 0.25, 1);
   --ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);
 
   /* -----------------------------------------------------------
      TYPOGRAPHY
      ----------------------------------------------------------- */
-  --font-ui:      'Space Grotesk', system-ui, sans-serif;
-  --font-body:    'Space Grotesk', system-ui, sans-serif;
+  /* The faces the operator can choose between, declared here because a font
+     stack belongs to the brand file and nowhere else. Appearance sets
+     `--font-app` to one of them; everything the app renders follows, because
+     the two faces below are the only ones any surface names. */
+  --font-choice-grotesk: 'Space Grotesk', system-ui, sans-serif;
+  --font-choice-outfit:  'Outfit', system-ui, sans-serif;
+  --font-choice-mono:    'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  --font-choice-system:  system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+
+  /* The chosen one. Appearance switches it by stamping `data-font` on the
+     root element rather than by writing a stack from TypeScript — which keeps
+     every face named in this file, and only in this file. */
+  --font-app:     var(--font-choice-grotesk);
+
+  --font-ui:      var(--font-app);
+  --font-body:    var(--font-app);
   /* A real monospace face. This read 'Space Grotesk' — the UI font — so every
      code span, fence, path and t-mono chip rendered proportional while
      JetBrains Mono was downloaded on every load and named by nothing. */
   --font-mono:    'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
   --font-display: var(--font-ui);
 
-  /* Type scale — 7 tiers */
-  --t-meta-size:     10px;
+  /* Type scale — 7 tiers, every one a multiple of one number.
+     Appearance sets --type-scale; nothing else in the app knows the sizes,
+     so the whole hierarchy grows and shrinks in proportion and no surface
+     can opt out of an operator's choice. */
+  --type-scale: 1;
+
+  --t-meta-size:     calc(10px * var(--type-scale));
   --t-meta-family:   var(--font-ui);
   --t-meta-color:    var(--ink-55);
 
-  --t-caption-size:  11px;
+  --t-caption-size:  calc(11px * var(--type-scale));
   --t-caption-family: var(--font-ui);
   --t-caption-color: var(--ink-72);
 
-  --t-body-size:     13px;
+  --t-body-size:     calc(13px * var(--type-scale));
   --t-body-family:   var(--font-body);
   --t-body-color:    var(--ink-100);
   --t-body-lh:       1.55;
 
-  --t-ui-size:       14px;
+  --t-ui-size:       calc(14px * var(--type-scale));
   --t-ui-family:     var(--font-ui);
   --t-ui-color:      var(--ink-100);
   --t-ui-weight:     500;
 
-  --t-sub-size:      16px;
+  --t-sub-size:      calc(16px * var(--type-scale));
   --t-sub-family:    var(--font-ui);
   --t-sub-color:     var(--ink-100);
   --t-sub-weight:    500;
   --t-sub-tracking:  -0.003em;
 
-  --t-head-size:     19px;
+  --t-head-size:     calc(19px * var(--type-scale));
   --t-head-family:   var(--font-ui);
   --t-head-color:    var(--ink-100);
   --t-head-weight:   600;
   --t-head-tracking: -0.005em;
 
-  --t-display-size:     26px;
+  --t-display-size:     calc(26px * var(--type-scale));
   --t-display-family:   var(--font-ui);
   --t-display-color:    var(--ink-100);
   --t-display-weight:   600;
@@ -200,14 +392,29 @@
    font-size / color on text is a migration bug.
    ============================================================= */
 
+/* A TIER CARRIES A SIZE, NOT A VOICE.
+   `t-meta` was the one tier that also forced `text-transform: uppercase`, so
+   everything small in the app was shouted whether or not it was a label —
+   "available in the installed app" as a sentence, a hint reading "Backend
+   Python edited since boot", and a Windows path rendered
+   `C:\USERS\MAN00\DESKTOP\...`. That is why meta text looked inconsistent
+   against itself: the same class was doing duty as both a size and a role.
+   Uppercase is now `.t-label`, which composes on top of any tier. */
 .t-meta {
   font-size: var(--t-meta-size);
   font-family: var(--t-meta-family);
   color: var(--t-meta-color);
   font-weight: 400;
   line-height: 1.4;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
+}
+
+/* The label voice — the eyebrow over a value, the caption on a stat. A role,
+   so it sits beside a tier rather than inside one. Tracking comes with it:
+   uppercase needs the extra letter-spacing that lowercase does not. */
+.t-label {
   text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .t-caption {
@@ -261,3 +468,11 @@
   line-height: 1.15;
   letter-spacing: var(--t-display-tracking);
 }
+
+/* -----------------------------------------------------------
+   FONT CHOICE — see `--font-choice-*` above.
+   ----------------------------------------------------------- */
+:root[data-font="grotesk"] { --font-app: var(--font-choice-grotesk); }
+:root[data-font="outfit"]  { --font-app: var(--font-choice-outfit); }
+:root[data-font="mono"]    { --font-app: var(--font-choice-mono); }
+:root[data-font="system"]  { --font-app: var(--font-choice-system); }

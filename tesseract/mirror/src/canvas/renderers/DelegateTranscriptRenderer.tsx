@@ -14,6 +14,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useConversationStore } from '../../stores/conversation';
 import type { ToolCall, ToolResult } from '../../lib/types';
 import type { RendererProps } from './index';
+import { Hint } from '../../components/ui/Hint';
+import { Disclosure } from '../../components/common/Disclosure';
 
 const VISIBLE_ENTRIES = 200;
 const PROMPT_PREVIEW_CHARS = 220;
@@ -179,14 +181,18 @@ export function DelegateTranscriptRenderer({ descriptor }: RendererProps) {
             : 'running…'}
         </span>
         {startedAt && (
-          <span title={new Date(startedAt).toLocaleString()}>{formatElapsed(startedAt)}</span>
+          <Hint label={new Date(startedAt).toLocaleString()}>
+            <span>{formatElapsed(startedAt)}</span>
+          </Hint>
         )}
         <span>
           {lineCount} line{lineCount === 1 ? '' : 's'}
         </span>
-        <span className="spawn-drawer-callid" title={callId}>
-          {callId.slice(0, 8)}
-        </span>
+        <Hint label={callId}>
+          <span className="spawn-drawer-callid">
+            {callId.slice(0, 8)}
+          </span>
+        </Hint>
       </div>
       <div ref={bodyRef} className="spawn-drawer-body">
         {prompt !== null && (
@@ -198,21 +204,23 @@ export function DelegateTranscriptRenderer({ descriptor }: RendererProps) {
                 : prompt}
             </div>
             {promptIsLong && (
-              <button
-                type="button"
+              <Disclosure
+                open={promptExpanded}
+                onToggle={() => setPromptExpanded((v) => !v)}
                 className="spawn-drawer-expand"
-                onClick={() => setPromptExpanded((v) => !v)}
               >
                 {promptExpanded ? 'collapse' : 'show full prompt'}
-              </button>
+              </Disclosure>
             )}
             {chips.length > 0 && (
               <div className="spawn-drawer-chips">
                 {chips.map((c) => (
-                  <span key={c.key} className="spawn-drawer-chip" title={c.value}>
-                    <span className="spawn-drawer-chip-key">{c.key}</span>
-                    <span className="spawn-drawer-chip-val">{c.value}</span>
-                  </span>
+                  <Hint label={c.value}>
+                    <span key={c.key} className="spawn-drawer-chip">
+                      <span className="spawn-drawer-chip-key">{c.key}</span>
+                      <span className="spawn-drawer-chip-val">{c.value}</span>
+                    </span>
+                  </Hint>
                 ))}
               </div>
             )}

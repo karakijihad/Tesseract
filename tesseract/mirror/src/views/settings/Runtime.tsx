@@ -2,6 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 
 import { BACKEND_BASE } from '../../lib/endpoints';
 import type { RecoverySummaryPayload } from '../autonomy/RecoveryPane';
+import { Block } from '../../components/common/Block';
+import { Button } from '../../components/common/Button';
+import { Hint } from '../../components/ui/Hint';
+import { useAutonomyStore } from '../../stores/autonomy';
+import { Note } from '../../components/common/Note';
 
 // AU-1 — supervisor visibility panel. Polls /api/runtime/status every
 // 5 seconds. Reports supervisor alive / pid, backend uptime, last
@@ -12,10 +17,11 @@ import type { RecoverySummaryPayload } from '../autonomy/RecoveryPane';
 // supervisor.pid}); the backend just reads them. Supervisor never
 // talks to Mirror — file-based status only.
 //
-// 2026-05-18: relocated from Settings into the Autonomy view. The
-// embedded RecoveryPane was dropped — the Autonomy side column already
-// renders one from the WS-driven autonomy store, so we no longer
-// duplicate "Last recovery" across two surfaces.
+// Back in Settings, under About (operator, 2026-08-13): uptime, PIDs and the
+// runtime directory answer "what is this install", which is what About is,
+// and they were never about the agenda they sat beside. The embedded
+// RecoveryPane stays dropped — the Autonomy side column renders one from the
+// WS-driven autonomy store, so "Last recovery" is not duplicated.
 
 interface RuntimeStatus {
   supervisor: {
@@ -47,6 +53,7 @@ interface RuntimeStatus {
 }
 
 // Supervisor status panel — display-only; the UI copy below quotes this value.
+const SHUTDOWN_KEY = 'runtime:shutdown';
 const POLL_INTERVAL_MS = 30_000;
 
 
@@ -107,18 +114,64 @@ export function RuntimeSection() {
 
   const label = supervisorLabel(status);
 
+  // Restart-needed and shutdown are runtime facts, so they live with the
+  // runtime rather than in the Autonomy header, where they read as something
+  // the agenda had done (operator, 2026-08-14).
+  const runtimeShutdown = useAutonomyStore((st) => st.runtimeShutdown);
+  const pendingActions = useAutonomyStore((st) => st.pendingActions);
+  const shutdownBusy = pendingActions.has(SHUTDOWN_KEY);
+  const [shutdownArmed, setShutdownArmed] = useState(false);
+
+  // Confirm-then-fire: the first click arms, a second within 6s calls
+  // /api/runtime/shutdown.
+  useEffect(() => {
+    if (!shutdownArmed) return;
+    const t = setTimeout(() => setShutdownArmed(false), 6000);
+    return () => clearTimeout(t);
+  }, [shutdownArmed]);
+
+  const onShutdownClick = () => {
+    if (shutdownBusy) return;
+    if (!shutdownArmed) {
+      setShutdownArmed(true);
+      return;
+    }
+    setShutdownArmed(false);
+    void runtimeShutdown();
+  };
+
+  let shutdownLabel = 'shutdown';
+  if (shutdownBusy) shutdownLabel = 'shutting down…';
+  else if (shutdownArmed) shutdownLabel = 'confirm shutdown';
+
   return (
-    <section className="settings-section">
-      <h3 className="settings-section__title">
-        Runtime
-        <span className={`runtime-pill runtime-pill--${label.tone}`}>{label.text}</span>
-      </h3>
-      <p className="t-meta">
-        AU-1 supervisor: respawns Mirror on crash, refuses to respawn after operator_quit,
-        latches after 3 crashes in 5 minutes. Launch with{' '}
+    <Block
+      title="Runtime"
+      meta={
+        <>
+          <span className={`runtime-pill runtime-pill--${label.tone}`}>{label.text}</span>
+          <Hint label="Operator-initiated clean shutdown (operator_quit intent — the supervisor will not respawn)">
+            <Button
+              tone="danger"
+              active={shutdownArmed}
+              onClick={onShutdownClick}
+              disabled={shutdownBusy}
+              ariaLabel="shutdown backend"
+              testId="runtime-shutdown"
+            >
+              {shutdownLabel}
+            </Button>
+          </Hint>
+        </>
+      }
+    >
+      <Note>
+        The supervisor respawns Mirror on crash, refuses to respawn after
+        operator_quit, and latches after 3 crashes in 5 minutes. Launch with{' '}
         <code>tesseract-start.bat</code> (Windows) or{' '}
-        <code>python -m tesseract.supervisor</code>. Status polls every {POLL_INTERVAL_MS / 1000}s.
-      </p>
+        <code>python -m tesseract.supervisor</code>. Status polls every{' '}
+        {POLL_INTERVAL_MS / 1000}s.
+      </Note>
 
       <dl className="runtime-kv">
         <dt>Backend uptime</dt>
@@ -128,30 +181,40 @@ export function RuntimeSection() {
         <dt>Supervisor pid</dt>
         <dd>{status?.supervisor.pid ?? '—'}</dd>
         <dt>Runtime dir</dt>
-        <dd className="t-meta runtime-kv__path">{status?.runtime_dir ?? '—'}</dd>
+        {/* No `t-meta` here. The tier dropped this one value to 9px while its
+            three siblings rendered at 12.6px, so a four-row list read as two
+            different kinds of fact. The path only needs to wrap. */}
+        <dd className="runtime-kv__path">{status?.runtime_dir ?? '—'}</dd>
       </dl>
 
       {status?.intent && (
-        <div className="runtime-block">
-          <div className="runtime-block__title">Last persisted intent</div>
+        <Block
+          title="Last persisted intent"
+          titleHint={
+            'Why the backend stopped LAST time, written by whoever stopped it and read by ' +
+            'the supervisor on the next launch. `operator_quit` means you asked it to stop, ' +
+            'so the supervisor deliberately did not respawn it; anything else is a stop the ' +
+            'supervisor treats as a crash and recovers from. This is history, not the ' +
+            'current state — a stale record beside a live backend is normal.'
+          }
+        >
           <pre className="runtime-block__pre t-meta">
             {JSON.stringify(status.intent, null, 2)}
           </pre>
-        </div>
+        </Block>
       )}
 
       {status?.crash_storm && (
-        <div className="runtime-block runtime-block--danger">
-          <div className="runtime-block__title">Crash storm latched</div>
+        <Block title="Crash storm latched" tone="bad">
           <p className="t-meta">{status.crash_storm.reason}</p>
-          <p className="t-meta">
+          <Note tone="warn">
             Clear with <code>tesseract\scripts\clear_crash_storm.bat</code> or{' '}
             <code>python -m tesseract.scripts.clear_crash_storm</code>.
-          </p>
-        </div>
+          </Note>
+        </Block>
       )}
 
-      {error && <div className="settings-error">runtime status: {error}</div>}
-    </section>
+      {error && <Note tone="bad">runtime status: {error}</Note>}
+    </Block>
   );
 }

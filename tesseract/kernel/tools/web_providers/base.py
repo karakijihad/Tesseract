@@ -15,6 +15,7 @@ from typing import Any, Callable, Literal
 
 import httpx
 
+from tesseract import http_client
 from tesseract.kernel.tools.base import ToolResult
 
 # Called as `note_tripwire(drift_kind, evidence)` on every failure branch.
@@ -191,7 +192,7 @@ async def fetch_json(
     headers = provider.auth_headers(api_key)
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with http_client.async_client(timeout=timeout) as client:
             if provider.http_method == "GET":
                 r = await client.get(provider.endpoint, headers=headers, params=request)
             elif provider.http_method == "POST":

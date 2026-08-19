@@ -155,16 +155,19 @@ class GlobTool(Tool):
 
     risk_class: ClassVar[str] = "autonomous"
 
+    group: ClassVar[str] = "files-on-disk"
+    summary: ClassVar[str] = "Find files by path/name pattern, newest first."
+    use_when: ClassVar[str] = (
+        "You know a filename or path shape but not the contents — '*', '**', "
+        "'?', '[seq]' and brace alternation '{a,b}' are supported."
+    )
+    not_when: ClassVar[str] = (
+        "Use `grep` when the question is about file contents rather than paths."
+    )
+
     @property
     def name(self) -> str:
         return "glob"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Find files matching a glob pattern, newest first. Supports '*', "
-            "'**', '?', '[seq]' and brace alternation '{a,b}'."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

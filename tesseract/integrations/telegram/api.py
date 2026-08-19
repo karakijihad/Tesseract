@@ -12,6 +12,7 @@ from typing import Any
 
 import httpx
 
+from tesseract import http_client
 from tesseract.integrations._channel_attachment import ChannelAttachment
 
 _API_BASE = "https://api.telegram.org"
@@ -45,7 +46,7 @@ class TelegramAPI:
             raise ValueError("TelegramAPI requires a bot token")
         self._token = token
         self._base_url = base_url.rstrip("/")
-        self._client = httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT)
+        self._client = http_client.async_client(timeout=_DEFAULT_TIMEOUT)
 
     async def aclose(self) -> None:
         await self._client.aclose()

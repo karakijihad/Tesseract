@@ -118,26 +118,20 @@ class LaneTurnTool(Tool):
     # path left the other two open.
     untrusted_source: ClassVar[bool] = True
 
+    group: ClassVar[str] = "long-running-collaborators"
+    summary: ClassVar[str] = "Send a message into a lane and wait for that one turn's reply, in one call."
+    use_when: ClassVar[str] = (
+        "Use as the default way to drive a lane collaborator: one call in, one reply out; "
+        "backgrounds by default so you stay free meanwhile."
+    )
+    not_when: ClassVar[str] = (
+        "firing a message without waiting, or fetching a lane's output later, which is "
+        "`lane_send` plus `lane_read`."
+    )
 
     @property
     def name(self) -> str:
         return "lane_turn"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Send a message into a named or raw lane and track the turn — "
-            "the default verb for Claude/Codex lane collaboration. "
-            "Backgrounds by default: returns a spawn_handle immediately; "
-            "the reply arrives via spawn_check / spawn_await or the "
-            "completion note. The wait follows the lane's event stream "
-            "until turn_ended; timeout_s bounds silence (a stalled lane), "
-            "not total turn duration — long active turns are normal. On "
-            "stall, returns partial events + cursor (turn_completed=False) "
-            "so the caller can lane_read later. is_error reflects the lane "
-            "turn's own outcome when it completes (turn_ended.is_error), "
-            "not just tool-plumbing failures."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

@@ -8,8 +8,6 @@ that is a fact about the catalog rather than a wrinkle worth abstracting away:
   switching model size switches pin.
 - **kokoro** pins once on the *connection*, because every catalogued voice is
   a mix over the same two files.
-- **piper** pins per *voice*, so a chain of three voices is three pins landing
-  in one directory.
 - **reranker** pins on the model entry, beside the filenames it loads.
 
 Resolution reuses the same public helpers the fetch scripts use —
@@ -28,6 +26,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Mapping
 
 from tesseract.capability import pins
 from tesseract.capability.state import (
@@ -40,21 +39,23 @@ from tesseract.capability.state import (
 
 logger = logging.getLogger(__name__)
 
-#: Download sizes, in the decimal megabytes the operator is quoted elsewhere.
+#: Where each optional artifact's `download_mb` sits in `providers.yaml`.
 #:
-#: Literals, and they have to be: `max_download_mb` in the catalog is a
-#: REFUSAL CAP (2048 against a ~1.6 GB whisper), not a size, and rendering a
-#: figure from it would tell the operator a 1.6 GB model is a 2 GB one. These
-#: are facts about the artifact — the same bytes on every machine — which is
-#: why they may be shown at all; see the phase file's copy rule.
+#: Paths into config, never figures. The numbers live beside the pins they
+#: describe, so re-measuring one is a catalog edit and nothing here moves —
+#: which is the whole reason this replaced a literal that a second copy in
+#: `splash.html` had to be kept in step with by a test.
 #:
-#: The splash carries the same three facts as its own literal, because it runs
-#: before Python exists. A test reconciles the two rather than trusting them.
-LANE_SIZES_MB: dict[str, int] = {
-    "whisper": 1600,
-    "kokoro": 340,
-    "piper": 65,
-    "reranker": 23,
+#: `max_download_mb` is deliberately not used for this: it is a REFUSAL CAP
+#: (2048 against a 1,622 MB whisper) and quoting it would tell the operator a
+#: 1.6 GB model is a 2 GB one.
+#:
+#: Whisper is absent because it pins per checkpoint — `_whisper_download_mb`
+#: resolves the one this machine was actually given.
+_SIZE_PATHS: dict[str, tuple[str, ...]] = {
+    "kokoro": ("local", "kokoro", "download"),
+    "embeddings": ("local", "ollama"),
+    "browser": ("services", "browser"),
 }
 
 #: State precedence when a lane has several pins and they disagree. `stale`
@@ -68,6 +69,118 @@ _SEVERITY = {
     DependencyState.UNKNOWN: 1,
     DependencyState.OK: 0,
 }
+
+
+#: What each optional artifact is CALLED to the operator, keyed the way
+#: `download_sizes_mb` prices it.
+#:
+#: One place, because a capability can be turned on in two: the setup form
+#: offers it, and Settings → Capabilities offers it again months later. Named
+#: differently in the two, they read as two different things.
+DOWNLOAD_LABELS: dict[str, str] = {
+    "whisper": "Speech recognition",
+    "kokoro": "The local voice",
+    "embeddings": "Semantic search",
+    "reranker": "Better ranking",
+    "browser": "Reading web pages",
+}
+
+
+def _dig(raw: Mapping[str, Any], path: tuple[str, ...]) -> Any:
+    node: Any = raw
+    for key in path:
+        if not isinstance(node, Mapping):
+            return None
+        node = node.get(key)
+    return node
+
+
+def _as_mb(value: Any) -> int | None:
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return None
+    return size if size > 0 else None
+
+
+def _whisper_download_mb(raw: Mapping[str, Any], checkpoint: str | None) -> int | None:
+    """The size of one checkpoint — the catalog's, or the one asked for.
+
+    `provision_hardware` writes `model:` per machine before anything is
+    fetched, so the entry has to be read rather than a fixed key looked up.
+    Reading the largest pin is what made the setup form quote 1,600 MB of
+    speech recognition to a laptop that was about to download 148.
+    """
+    models = _dig(raw, ("local", "whisper", "models"))
+    if not isinstance(models, Mapping):
+        return None
+    for entry in models.values():
+        if not isinstance(entry, Mapping):
+            continue
+        downloads = entry.get("downloads")
+        if not isinstance(downloads, Mapping):
+            continue
+        block = downloads.get(checkpoint or str(entry.get("model") or ""))
+        if isinstance(block, Mapping):
+            return _as_mb(block.get("download_mb"))
+    return None
+
+
+def download_sizes_mb(
+    providers_raw: Mapping[str, Any] | None = None,
+    *,
+    stt_model: str | None = None,
+) -> dict[str, int]:
+    """What each optional artifact costs to fetch, read from the catalog.
+
+    Keyed the way the setup form and the capability report both name these —
+    `whisper`, `kokoro`, `reranker`, `embeddings`, `browser`. An entry whose
+    figure is missing or unreadable is left out rather than guessed: a row
+    with no size is a row the operator can still judge, and an invented one
+    is not.
+
+    `stt_model` names a checkpoint to price INSTEAD of the one the catalog
+    currently carries, and the setup form is why it exists: the form runs
+    before `provision_hardware` has written this machine's choice, so the only
+    honest figure to quote is the one the machine's profile is about to
+    select.
+
+    A catalog that will not load yields nothing. This is what a number on a
+    screen is drawn from, never what decides whether a download may happen.
+    """
+    if providers_raw is None:
+        try:
+            from tesseract.config.loader import load_config
+
+            providers_raw = load_config().providers_raw
+        except Exception as exc:  # noqa: BLE001 — a size is never worth a crash
+            logger.warning("capability: could not read download sizes (%s)", exc)
+            return {}
+
+    sizes: dict[str, int] = {}
+    for lane, path in _SIZE_PATHS.items():
+        block = _dig(providers_raw, path)
+        size = _as_mb(block.get("download_mb")) if isinstance(block, Mapping) else None
+        if size is not None:
+            sizes[lane] = size
+
+    whisper = _whisper_download_mb(providers_raw, stt_model)
+    if whisper is not None:
+        sizes["whisper"] = whisper
+
+    # The reranker pins on its model entry, and which entry is the operator's
+    # to choose in `roles.yaml`. Every entry under the provider carries the
+    # same artifact class, so the first one with a figure is the answer —
+    # naming a model id here would be a fourth copy of a choice config owns.
+    rerankers = _dig(providers_raw, ("local", "onnx_reranker", "models"))
+    if isinstance(rerankers, Mapping):
+        for entry in rerankers.values():
+            block = entry.get("download") if isinstance(entry, Mapping) else None
+            size = _as_mb(block.get("download_mb")) if isinstance(block, Mapping) else None
+            if size is not None:
+                sizes["reranker"] = size
+                break
+    return sizes
 
 
 @dataclass(frozen=True)
@@ -153,32 +266,6 @@ def kokoro_lane() -> ModelLane:
     )
 
 
-def piper_lane() -> ModelLane:
-    from tesseract.lib.pinned_fetch import parse_download_block
-    from tesseract.voice import model_files
-    from tesseract.voice.model_files import configured_refs
-
-    refs = configured_refs("tts", "piper")
-    if not refs:
-        return ModelLane(id="piper", configured=False)
-
-    dest = model_files.lane_dir("piper")
-    locations: list[PinnedLocation] = []
-    for ref in refs:
-        source = parse_download_block(
-            ref.model.fields.get("download"), where=f"providers.yaml::{ref.ref}"
-        )
-        if source is None:
-            continue
-        locations.append(_source_to_location(source, dest))
-    if not locations:
-        return ModelLane(id="piper", unresolvable="no configured voice has a readable pin")
-    # Every configured voice, not only the primary: a fallback whose files are
-    # missing is a lane that fails the moment the one ahead of it does, which
-    # is the one moment it was supposed to help.
-    return ModelLane(id="piper", locations=locations)
-
-
 def reranker_lane() -> ModelLane:
     from tesseract.brain.boot import load_reranker_cfg
     from tesseract.lib.pinned_fetch import parse_download_block
@@ -198,7 +285,7 @@ def reranker_lane() -> ModelLane:
 
 
 #: Every model lane, in the order a person would care about them.
-LANE_RESOLVERS = (whisper_lane, kokoro_lane, piper_lane, reranker_lane)
+LANE_RESOLVERS = (whisper_lane, kokoro_lane, reranker_lane)
 
 
 def resolve_lane(resolver) -> ModelLane:  # noqa: ANN001
@@ -217,14 +304,24 @@ def resolve_lane(resolver) -> ModelLane:  # noqa: ANN001
 
 
 def check_lane(
-    lane: ModelLane, recorded: dict[str, VerifiedPin] | None = None
+    lane: ModelLane,
+    recorded: dict[str, VerifiedPin] | None = None,
+    sizes: Mapping[str, int] | None = None,
 ) -> DependencyRecord:
     """Judge one lane against its pins.
 
     Blocking: it may hash a file that has never been seen before. Callers on
     the event loop run this in a thread.
+
+    `sizes` is `download_sizes_mb()` already resolved. `load_config` has no
+    cache and re-parses both YAML files on every call, so a pass that let each
+    lane resolve its own did the work three times per pass and logged the same
+    warning three times on a tree with no config yet. Optional, because a
+    caller judging one lane on its own should not have to know that.
     """
-    size_mb = LANE_SIZES_MB.get(lane.id)
+    if sizes is None:
+        sizes = download_sizes_mb()
+    size_mb = sizes.get(lane.id)
 
     if lane.unresolvable:
         return DependencyRecord(
@@ -289,8 +386,10 @@ def check_all(
 ) -> list[DependencyRecord]:
     """Every model lane, judged. Blocking; run it in a thread."""
     recorded = recorded or {}
+    # Once for the pass, not once per lane.
+    sizes = download_sizes_mb()
     out: list[DependencyRecord] = []
     for resolver in LANE_RESOLVERS:
         lane = resolve_lane(resolver)
-        out.append(check_lane(lane, recorded.get(lane.id)))
+        out.append(check_lane(lane, recorded.get(lane.id), sizes))
     return out

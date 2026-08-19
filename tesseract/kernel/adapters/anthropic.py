@@ -267,7 +267,8 @@ class AnthropicAdapter(ModelAdapter):
 
         yield StreamChunk(type=ChunkType.STOP, stop_reason=stop_reason, raw={"usage": usage_raw})
 
-    def count_tokens(self, messages: list[dict[str, Any]]) -> int:
+    @staticmethod
+    def count_tokens(messages: list[dict[str, Any]]) -> int:
         """Best-effort token estimate via word count.
 
         The Messages API exposes ``client.messages.count_tokens()``, but it's

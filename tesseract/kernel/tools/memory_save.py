@@ -65,6 +65,18 @@ class MemorySaveTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "remembering"
+    summary: ClassVar[str] = "Write a new durable memory to the persistent store."
+    use_when: ClassVar[str] = (
+        "Use to capture a fact, decision, or preference worth remembering across "
+        "sessions — one memory per fact, tagged for later retrieval."
+    )
+    not_when: ClassVar[str] = (
+        "use `memory_update` when revising something already saved; use "
+        "`diary_append` for self-reflection about the assistant itself."
+    )
+
     def __init__(
         self,
         store: MemoryStore,
@@ -82,10 +94,6 @@ class MemorySaveTool(Tool):
     @property
     def name(self) -> str:
         return "memory_save"
-
-    @property
-    def description(self) -> str:
-        return "Save a memory to the persistent memory store. Use for facts, decisions, preferences, or references worth remembering across sessions."
 
     @property
     def input_schema(self) -> type[BaseModel]:

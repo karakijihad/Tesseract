@@ -324,10 +324,12 @@ class EventStore:
             result = [ev for ev in result if ev.kind in kinds]
         if status is not None:
             result = [ev for ev in result if ev.status == status]
-        # Two-pass stable sort: newest first, then priority desc preserves
-        # the ts order within each priority bucket.
+        # Newest first, and only that. Priority used to be the primary key,
+        # which buried a note written minutes ago under a day of `p=8`
+        # recovery_summary boots — the inbox stopped reading like an inbox.
+        # Priority is still carried on the event and the panel badges it;
+        # what it no longer does is decide where a row sits.
         result.sort(key=lambda e: e.ts, reverse=True)
-        result.sort(key=lambda e: -e.priority)
         return result[:limit]
 
     def get_event(self, event_id: str) -> WorkspaceEvent | None:

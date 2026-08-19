@@ -66,6 +66,62 @@ _CLIENT_NAME_BY_KIND: dict[str, str] = {
     "terminal": "terminal-manual",
 }
 
+def ensure_runtime_tokens(mcp_cfg: MCPConfig) -> list[str]:
+    """Mint the identities the runtime issues to its own child processes.
+
+    These are not credentials anyone types. Every process this app spawns is
+    handed exactly one of them and stripped of the rest, so ownership on the
+    lane surface means something and a spawned CLI cannot come back in
+    holding the operator's bearer. That only works if they EXIST, and
+    ``provision`` refuses outright when one is unset — "refusing to provision
+    a dead hub connection" — so on a fresh install the terminal reached no
+    hub at all until somebody hand-generated three secrets they had no way to
+    know they needed. ``mcp.yaml`` called them auto-provisioned for a year
+    while nothing provisioned them.
+
+    Written to ``.env`` AND into this process's environment, because
+    provisioning happens later in the same boot and a value only on disk
+    would not be read until the next one.
+
+    The operator client is deliberately not here. That one is a decision —
+    it is what lets something outside this machine's app talk in, so it stays
+    a button the operator presses.
+    """
+    import os
+
+    from tesseract import env_file
+
+    runtime_names = set(_CLIENT_NAME_BY_KIND.values())
+    on_disk = env_file.read_values()
+    minted: dict[str, str] = {}
+    for client in mcp_cfg.clients:
+        if client.name not in runtime_names:
+            continue
+        if (os.environ.get(client.token_env) or "").strip():
+            continue
+        existing = (on_disk.get(client.token_env) or "").strip()
+        if existing:
+            # On disk but not in this environment — seeded by a previous boot
+            # and never loaded, or written by the operator by hand. Adopt it
+            # rather than replacing it: a rotation nobody asked for would
+            # orphan whatever is already holding the old value.
+            os.environ[client.token_env] = existing
+            continue
+        minted[client.token_env] = env_file.generate_token()
+
+    if not minted:
+        return []
+    try:
+        env_file.set_values(minted)
+    except OSError:
+        log.exception("mcp: could not write runtime tokens to .env")
+        return []
+    os.environ.update(minted)
+    # Names only, never values — this log ships inside bug reports.
+    log.info("mcp: minted runtime identities %s", ", ".join(sorted(minted)))
+    return sorted(minted)
+
+
 _CLAUDE_CONFIG_NAME = ".claude.json"
 _PROJECT_CONFIG_NAME = ".mcp.json"
 _CODEX_BLOCK_HEADER = "[mcp_servers.tesseract]"

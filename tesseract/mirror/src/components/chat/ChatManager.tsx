@@ -2,6 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import { useConversationStore } from '../../stores/conversation';
 import { useWebSocketStore } from '../../stores/websocket';
 import { BACKEND_BASE } from '../../lib/endpoints';
+import { Hint } from '../ui/Hint';
+import { CloseButton } from '../common/CloseButton';
+import { MenuItem } from '../common/MenuItem';
+import { Disclosure } from '../common/Disclosure';
+import { Chip } from '../common/Chip';
+import { Button } from '../common/Button';
+import { Input } from '../common/Input';
+import { IconButton } from '../common/IconButton';
 
 // D5 (locked) — max open chats; the backend auto-archives the oldest past this,
 // so the manager disables "+ New chat" at the cap rather than silently dropping
@@ -144,36 +152,34 @@ export function ChatManager() {
 
   return (
     <div className="chat-mgr" ref={rootRef}>
-      <button
-        type="button"
+      <Chip
         className="chat-mgr-trigger"
-        aria-haspopup="menu"
-        aria-expanded={open}
+        ariaHasPopup="menu"
+        ariaExpanded={open}
         onClick={() => (open ? closePanel() : setOpen(true))}
       >
         <span className="chat-mgr-caret" aria-hidden="true">▾</span>
-        <span className="chat-mgr-active-title" title={activeTitle}>{activeTitle}</span>
+        <Hint label={activeTitle}>
+          <span className="chat-mgr-active-title">{activeTitle}</span>
+        </Hint>
         {anyApproval && (
-          <span
-            className="chat-tab-approval"
-            title="A background chat is awaiting approval"
-            aria-label="A background chat is awaiting approval"
-          />
+          <Hint label="A background chat is awaiting approval">
+            <span
+              className="chat-tab-approval"
+              aria-label="A background chat is awaiting approval"
+            />
+          </Hint>
         )}
         <span className="chat-mgr-count t-meta">{orderedIds.length}/{MAX_OPEN_CHATS}</span>
-      </button>
+      </Chip>
 
       {open && (
         <div className="chat-mgr-panel" role="menu">
-          <button
-            type="button"
-            className="chat-mgr-new"
-            disabled={atCap}
-            title={atCap ? `Max ${MAX_OPEN_CHATS} open chats` : 'New chat'}
-            onClick={() => send('chat.create', {})}
-          >
-            + New chat
-          </button>
+          <Hint label={atCap ? `Max ${MAX_OPEN_CHATS} open chats` : 'New chat'}>
+            <Button disabled={atCap} onClick={() => send('chat.create', {})}>
+              + New chat
+            </Button>
+          </Hint>
 
           <div className="chat-mgr-list">
             {orderedIds.length === 0 && <div className="chat-mgr-empty t-meta">No open chats</div>}
@@ -182,13 +188,16 @@ export function ChatManager() {
               const title = slice?.title || 'Chat';
               const isActive = id === activeChatId;
               return (
-                <div key={id} className={`chat-mgr-row${isActive ? ' is-active' : ''}`} role="menuitem">
+                // The row is a strip holding one menu item and its actions;
+                // the item inside it is what the menu contains.
+                <div key={id} className="chat-mgr-row" role="none">
                   {renamingId === id ? (
-                    <input
+                    <Input
                       className="chat-mgr-rename"
                       autoFocus
                       value={draft}
-                      onChange={e => setDraft(e.target.value)}
+                      ariaLabel={`Rename ${title}`}
+                      onChange={setDraft}
                       onBlur={() => commitRename(id)}
                       onKeyDown={e => {
                         if (e.key === 'Enter') commitRename(id);
@@ -197,39 +206,36 @@ export function ChatManager() {
                     />
                   ) : (
                     <>
-                      <button
-                        type="button"
-                        className="chat-mgr-row-label"
-                        title={title}
-                        onClick={() => switchTo(id)}
-                        onDoubleClick={() => beginRename(id, title)}
-                      >
-                        {isActive && <span className="chat-mgr-active-dot" aria-hidden="true" />}
-                        <span className="chat-mgr-row-title">{title}</span>
-                        {slice?.isStreaming && <span className="chat-tab-pulse" aria-hidden="true" />}
-                        {(slice?.pendingApprovals?.length ?? 0) > 0 && (
-                          <span className="chat-tab-approval" title="Awaiting approval" aria-label="Awaiting approval" />
-                        )}
-                      </button>
+                      <Hint label={title}>
+                        <MenuItem
+                          className="chat-mgr-row-label"
+                          active={isActive}
+                          onClick={() => switchTo(id)}
+                          onDoubleClick={() => beginRename(id, title)}
+                        >
+                          {isActive && <span className="chat-mgr-active-dot" aria-hidden="true" />}
+                          <span className="chat-mgr-row-title">{title}</span>
+                          {slice?.isStreaming && <span className="chat-tab-pulse" aria-hidden="true" />}
+                          {(slice?.pendingApprovals?.length ?? 0) > 0 && (
+                            <Hint label="Awaiting approval">
+                              <span className="chat-tab-approval" aria-label="Awaiting approval" />
+                            </Hint>
+                          )}
+                        </MenuItem>
+                      </Hint>
                       <div className="chat-mgr-row-actions">
-                        <button
-                          type="button"
-                          className="chat-mgr-icon t-meta"
-                          aria-label="Rename chat"
-                          title="Rename"
-                          onClick={() => beginRename(id, title)}
-                        >
-                          ✎
-                        </button>
-                        <button
-                          type="button"
-                          className="chat-mgr-icon t-meta"
-                          aria-label="Archive chat"
-                          title="Archive (recoverable)"
-                          onClick={() => send('chat.archive', { chat_id: id })}
-                        >
-                          ✕
-                        </button>
+                        <Hint label="Rename">
+                          <IconButton ariaLabel="Rename chat" onClick={() => beginRename(id, title)}>
+                            ✎
+                          </IconButton>
+                        </Hint>
+                        <Hint label="Archive (recoverable)">
+                          <CloseButton
+                            size="inline"
+                            ariaLabel="Archive chat"
+                            onClick={() => send('chat.archive', { chat_id: id })}
+                          />
+                        </Hint>
                       </div>
                     </>
                   )}
@@ -239,15 +245,15 @@ export function ChatManager() {
           </div>
 
           <div className="chat-mgr-archived">
-            <button
-              type="button"
-              className="chat-mgr-archived-header t-meta"
-              aria-expanded={archivedOpen}
-              onClick={toggleArchived}
+            <Disclosure
+              variant="row"
+              open={archivedOpen}
+              onToggle={toggleArchived}
+              className="chat-mgr-archived-header"
             >
               <span>Archived{archivedRows ? ` (${archivedRows.length})` : ''}</span>
               <span aria-hidden="true">{archivedOpen ? '▾' : '▸'}</span>
-            </button>
+            </Disclosure>
             {archivedOpen && (
               <div className="chat-mgr-archived-list">
                 {archivedError && <div className="chat-mgr-empty t-meta">Couldn’t load archived chats</div>}
@@ -257,38 +263,31 @@ export function ChatManager() {
                 )}
                 {!archivedError && archivedRows?.map(r => (
                   <div key={r.chat_id} className="chat-mgr-archived-row">
-                    <span className="chat-mgr-archived-title" title={r.title}>{r.title || 'Chat'}</span>
+                    <Hint label={r.title}>
+                      <span className="chat-mgr-archived-title">{r.title || 'Chat'}</span>
+                    </Hint>
                     {confirmDeleteId === r.chat_id ? (
                       <span className="chat-mgr-confirm">
                         <span className="chat-mgr-confirm-label t-meta">Delete forever?</span>
-                        <button
-                          type="button"
-                          className="chat-mgr-confirm-yes"
-                          onClick={() => deletePermanently(r.chat_id)}
-                        >
+                        <Button tone="danger" onClick={() => deletePermanently(r.chat_id)}>
                           Delete
-                        </button>
-                        <button type="button" className="chat-mgr-icon t-meta" onClick={() => setConfirmDeleteId(null)}>
-                          Cancel
-                        </button>
+                        </Button>
+                        <Button onClick={() => setConfirmDeleteId(null)}>Cancel</Button>
                       </span>
                     ) : (
                       <span className="chat-mgr-archived-actions">
                         {deleteErrorId === r.chat_id && (
                           <span className="chat-mgr-delete-error t-meta">Couldn’t delete</span>
                         )}
-                        <button type="button" className="chat-mgr-restore" onClick={() => restore(r.chat_id)}>
-                          Restore
-                        </button>
-                        <button
-                          type="button"
-                          className="chat-mgr-icon t-meta"
-                          aria-label="Delete permanently"
-                          title="Delete permanently"
-                          onClick={() => { setDeleteErrorId(null); setConfirmDeleteId(r.chat_id); }}
-                        >
-                          🗑
-                        </button>
+                        <Button onClick={() => restore(r.chat_id)}>Restore</Button>
+                        <Hint label="Delete permanently">
+                          <IconButton
+                            ariaLabel="Delete permanently"
+                            onClick={() => { setDeleteErrorId(null); setConfirmDeleteId(r.chat_id); }}
+                          >
+                            🗑
+                          </IconButton>
+                        </Hint>
                       </span>
                     )}
                   </div>

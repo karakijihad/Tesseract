@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { postOperatorPost } from '../../lib/api';
+import { Hint } from '../../components/ui/Hint';
+import { Button } from '../../components/common/Button';
+import { Textarea } from '../../components/common/Textarea';
 
 type SpeechRecognitionLike = {
   continuous: boolean;
@@ -43,14 +46,11 @@ export function VoiceComposer() {
 
   if (!supported) {
     return (
-      <button
-        type="button"
-        className="workspace-voice-trigger is-disabled"
-        disabled
-        title="Voice composer unavailable — your browser doesn't expose SpeechRecognition"
-      >
-        Voice unavailable
-      </button>
+      <Hint label="Voice composer unavailable — your browser doesn't expose SpeechRecognition">
+        <Button onClick={() => {}} disabled>
+          Voice unavailable
+        </Button>
+      </Hint>
     );
   }
 
@@ -106,34 +106,32 @@ export function VoiceComposer() {
 
   return (
     <div className="workspace-voice">
-      <button
-        type="button"
-        className={`workspace-voice-trigger${listening ? ' is-listening' : ''}`}
+      <Button
         onClick={listening ? stop : start}
-        aria-pressed={listening}
+        active={listening}
       >
         {listening ? 'Stop' : 'Voice'}
-      </button>
+      </Button>
       {(listening || transcript) && (
         <div className="workspace-voice-panel">
-          <textarea
+          <Textarea
             className="workspace-voice-text"
             value={transcript}
-            onChange={(e) => setTranscript(e.target.value)}
+            onChange={setTranscript}
             placeholder={listening ? 'Listening…' : 'Edit then send'}
+            ariaLabel="Voice transcript"
             rows={2}
             disabled={busy}
           />
           <div className="workspace-voice-row">
             {error && <span className="workspace-voice-error t-caption">{error}</span>}
-            <button
-              type="button"
-              className="workspace-voice-send"
+            <Button
+              tone="primary"
               onClick={() => void submit()}
               disabled={busy || !transcript.trim()}
             >
               {busy ? 'Sending…' : 'Post'}
-            </button>
+            </Button>
           </div>
         </div>
       )}

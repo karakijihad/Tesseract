@@ -502,7 +502,8 @@ class CLIAdapter(ModelAdapter):
         except asyncio.TimeoutError:
             log.warning("%s subprocess did not exit within 5s after kill", self.command)
 
-    def count_tokens(self, messages: list[dict[str, Any]]) -> int:
+    @staticmethod
+    def count_tokens(messages: list[dict[str, Any]]) -> int:
         total = 0
         for msg in messages:
             content = msg.get("content", "")

@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useTasksStore, type TaskItem } from '../../stores/tasks';
+import { Disclosure } from '../common/Disclosure';
 
 const STATUS_GLYPH: Record<TaskItem['status'], string> = {
   pending: '▢',     // ☐
@@ -48,22 +49,14 @@ export function TodosCard() {
         </div>
       ))}
       {hiddenCount > 0 && (
-        <button
-          type="button"
-          className="todos-card-toggle"
-          onClick={() => setShowCompleted(true)}
-        >
+        <Disclosure open={false} onToggle={() => setShowCompleted(true)}>
           … +{hiddenCount} completed
-        </button>
+        </Disclosure>
       )}
       {showCompleted && completed.length > 0 && (
-        <button
-          type="button"
-          className="todos-card-toggle"
-          onClick={() => setShowCompleted(false)}
-        >
+        <Disclosure open onToggle={() => setShowCompleted(false)}>
           collapse completed
-        </button>
+        </Disclosure>
       )}
     </div>
   );

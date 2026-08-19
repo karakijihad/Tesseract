@@ -16,17 +16,21 @@ you stop talking.
 ## The gate
 
 Then the interesting part. Not everything said in a room is addressed to the
-assistant, so a transcript has to clear a **wake gate** before it becomes a
+assistant, so an utterance has to clear a **wake gate** before it becomes a
 turn.
 
-The match is deliberately fuzzy rather than exact. Speech-to-text renders the
-same name differently from one utterance to the next — sometimes as one token,
-sometimes as two — so the gate scores the leading words by edit distance across
-a window either side of the expected phrase width, and compares that score to a
-threshold.
+The gate listens to the **sound** of the phrase, not to a transcription of it:
+a recogniser restricted to your two words, which hears them or hears nothing.
+That ordering matters more than it looks: because the decision needs no
+transcript, speech that was not addressed to the assistant is **never
+transcribed at all**. It does not reach a speech engine, local or otherwise.
 
-A transcript that fails is **discarded down a different path**. It does not
+An utterance that fails is **discarded down a different path**. It does not
 become a quiet turn, and it does not become a turn you have to undo.
+
+The wake word passes everything through until you have said the phrase once in
+Settings and watched it land — see
+[The wake word](../mechanisms/wake-word.md).
 
 ## Speaking
 

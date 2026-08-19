@@ -26,17 +26,17 @@ class LaneNamedListTool(Tool):
     default_posture = "auto"
     risk_class: ClassVar[str] = "autonomous"
 
+    group: ClassVar[str] = "long-running-collaborators"
+    summary: ClassVar[str] = "List every persistent name-to-lane_id binding, orphans included."
+    use_when: ClassVar[str] = "Use to see all named lanes at once rather than checking one name."
+    not_when: ClassVar[str] = (
+        "one name's binding, which is `lane_named_get`; live lanes by id, which is `lane_list`; "
+        "a binding's liveness, which is `lane_status`."
+    )
+
     @property
     def name(self) -> str:
         return "lane_named_list"
-
-    @property
-    def description(self) -> str:
-        return (
-            "List all named-lane bindings (name → lane_id + kind + model). "
-            "Does not filter orphans — use lane_status to check liveness. "
-            "Read-only."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

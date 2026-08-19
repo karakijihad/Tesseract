@@ -15,6 +15,8 @@ import logging
 
 from aiohttp import web
 
+from tesseract.mirror.server.tts import clear_fallback_notices
+
 log = logging.getLogger(__name__)
 
 # lane -> (fetcher, presence probe, what to call it in a message). Both
@@ -30,7 +32,6 @@ def _lanes() -> dict[str, tuple]:
     if not _MODEL_LANES:
         from tesseract.scripts import (
             fetch_kokoro_voice,
-            fetch_piper_voice,
             fetch_whisper_model,
         )
 
@@ -44,11 +45,6 @@ def _lanes() -> dict[str, tuple]:
                 fetch_kokoro_voice.ensure_kokoro_models,
                 fetch_kokoro_voice.models_present,
                 "Kokoro voice model",
-            ),
-            piper=(
-                fetch_piper_voice.ensure_configured_voices,
-                fetch_piper_voice.voices_present,
-                "Piper voice model",
             ),
         )
     return _MODEL_LANES
@@ -99,7 +95,7 @@ async def _run_download(app, lane: str) -> None:
 async def model_download(request: web.Request) -> web.Response:
     """POST /api/system/models/download — fetch one lane's model files.
 
-    Body: ``{"lane": "whisper" | "kokoro" | "piper"}``.
+    Body: ``{"lane": "whisper" | "kokoro"}``.
 
     Returns once the work is SCHEDULED, matching the Ollama install route:
     the Whisper snapshot alone is 1.6 GB, and holding the request open for it
@@ -162,50 +158,6 @@ async def whisper_action(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "message": "local Whisper model cache cleared"})
 
 
-async def piper_status(request: web.Request) -> web.Response:
-    engine = request.app.get("tts_engine")
-    if engine is None or not hasattr(engine, "piper_status"):
-        return web.json_response({
-            "configured": False,
-            "model_path": "",
-            "config_path": "",
-            "sample_rate": None,
-            "preload": False,
-            "presets": [],
-            "disabled": False,
-            "disabled_reason": "",
-            "loaded": False,
-            "cached": [],
-            "provider_key": "",
-            **await _download_fields(request.app, "piper"),
-        })
-    return web.json_response({**engine.piper_status(), **await _download_fields(request.app, "piper")})
-
-
-async def piper_action(request: web.Request) -> web.Response:
-    engine = request.app.get("tts_engine")
-    if engine is None or not hasattr(engine, "unload_piper"):
-        return web.json_response({"error": "local Piper unavailable"}, status=503)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid_json"}, status=400)
-    action = body.get("action")
-    if action == "unload":
-        engine.unload_piper()
-        return web.json_response({"ok": True, "message": "local Piper model cache cleared"})
-    if action == "warm":
-        try:
-            await engine.warm_up_piper()
-        except Exception as exc:
-            return web.json_response(
-                {"error": f"piper warm-up failed: {exc}"},
-                status=503,
-            )
-        return web.json_response({"ok": True, "message": "local Piper voice warmed"})
-    return web.json_response({"error": "action must be 'unload' or 'warm'"}, status=400)
-
-
 async def kokoro_status(request: web.Request) -> web.Response:
     engine = request.app.get("tts_engine")
     if engine is None or not hasattr(engine, "kokoro_status"):
@@ -240,6 +192,10 @@ async def kokoro_action(request: web.Request) -> web.Response:
     action = body.get("action")
     if action == "unload":
         engine.unload_kokoro()
+        # The lane can speak again after this, so the "a different voice is
+        # speaking" notice has to be able to fire again too — it latches once
+        # per session and nothing else clears it.
+        clear_fallback_notices(request.app)
         return web.json_response({"ok": True, "message": "local Kokoro model cache cleared"})
     if action == "warm":
         try:

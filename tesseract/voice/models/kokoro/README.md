@@ -64,10 +64,21 @@ surprised"), mid-sentence mood changes, reference-audio cloning, SSML,
 and pitch shift independent of speed. Lock the timbre with a blend, and
 shape delivery with punctuation.
 
-## Versus Piper
+## Versus the cloud lane
 
-Piper is the other shipped lane and the configured fallback. It is one
-ONNX file per voice, no blending, no multilingual — but several times
-faster than realtime on CPU where Kokoro is close to 1x, and a much
-smaller dependency footprint. That is the trade: Kokoro sounds better,
-Piper still speaks on a slow machine.
+The cloud lane is what sits behind this one in the chain, for the case no
+local model is on disk at all — an install that declined the download, or
+a machine with no room for it. Without it, declining the local voice
+means no voice.
+
+The trade runs the other way from the files above: the cloud lane
+downloads nothing and speaks well on any machine, but it needs an API
+key, it is billed per second of speech, and it cannot speak without a
+network. Kokoro is free at use-time and works offline once its two files
+are here.
+
+Direction is where they differ in kind. Kokoro takes numbers — `speed`,
+`sentence_silence` — because a local voice IS its model file. The cloud
+lane takes prose: a `style` and a `pace` written as natural language.
+Those knobs are not interchangeable, which is why the preset editor is
+per-adapter and refuses a value the lane cannot honour.

@@ -24,20 +24,20 @@ class AlarmSnoozeTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "time"
+    summary: ClassVar[str] = "Postpones a pending alarm's next fire without canceling it."
+    use_when: ClassVar[str] = (
+        "Use after the operator says snooze it or not now. A recurring alarm's cycle is kept."
+    )
+    not_when: ClassVar[str] = "deleting the alarm entirely, which is `alarm_cancel`."
+
     def __init__(self, alarm_registry: AlarmRegistry) -> None:
         self._registry = alarm_registry
 
     @property
     def name(self) -> str:
         return "alarm_snooze"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Postpone a pending alarm. For recurring alarms the cycle is kept — "
-            "only the upcoming fire is shifted. Use after an operator says "
-            "'snooze it' or 'not now'."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

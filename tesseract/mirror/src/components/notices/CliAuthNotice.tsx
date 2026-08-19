@@ -5,6 +5,7 @@ import {
   useCapabilityNoticeStore,
 } from "../../stores/capabilityNotice";
 import "./CliAuthNotice.css";
+import { Button } from "../common/Button";
 
 // cli-auth DESIGN.md §5 — non-blocking, dismissible first-run notice. Shown
 // when any role is broken (primary is an unauthenticated cli provider with
@@ -42,21 +43,10 @@ export function CliAuthNotice() {
         ))}
       </ul>
       <div className="cli-auth-notice__actions">
-        <button
-          type="button"
-          className="cli-auth-notice__btn cli-auth-notice__btn--primary"
-          onClick={() => void verify()}
-          disabled={verifying}
-        >
+        <Button tone="primary" onClick={() => void verify()} disabled={verifying}>
           {verifying ? "Verifying…" : "Verify"}
-        </button>
-        <button
-          type="button"
-          className="cli-auth-notice__btn"
-          onClick={() => void dismiss()}
-        >
-          Dismiss
-        </button>
+        </Button>
+        <Button onClick={() => void dismiss()}>Dismiss</Button>
       </div>
     </div>
   );

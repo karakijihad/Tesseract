@@ -1,14 +1,21 @@
 // audio surface — plays `props.url` inline. No dependency; the browser's own
 // transport is the whole UI.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { backendAssetUrl } from '../../lib/endpoints';
 import type { RendererProps } from './index';
 
-export function AudioRenderer({ descriptor }: RendererProps) {
+export function AudioRenderer({ descriptor, report }: RendererProps) {
   const [failed, setFailed] = useState(false);
   const src = descriptor.props?.url;
+  const missing = typeof src !== 'string' || !src;
+
+  useEffect(() => {
+    if (!report) return;
+    if (missing) report('errored', 'no audio: props.url is missing or not a string');
+    else if (failed) report('errored', 'the audio format is not supported here');
+  }, [report, missing, failed]);
 
   if (typeof src !== 'string' || !src) {
     return <div className="surface-media surface-media--empty t-meta">no audio</div>;

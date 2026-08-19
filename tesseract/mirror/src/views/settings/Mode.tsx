@@ -1,9 +1,13 @@
+import { Note } from "../../components/common/Note";
 import { useCallback, useEffect, useState } from "react";
 
-import { Hint } from "../../components/ui/Hint";
 import { useEntityName } from "../../hooks/useEntityName";
 import { postMode } from "../../lib/api";
 import { useIdentityStore } from "../../stores/identity";
+import { Block } from '../../components/common/Block';
+import { Button } from '../../components/common/Button';
+import { Modal } from '../../components/common/Modal';
+import { Segmented } from '../../components/common/Segmented';
 
 // While `securityMode` is unhydrated, retry the identity fetch on this
 // cadence. The store only hydrates on WS-open; if that single fetch lands
@@ -71,66 +75,39 @@ export function ModeSection() {
   );
 
   return (
-    <section className="settings-section">
-      <h3 className="settings-section__title">Security mode</h3>
-      <div className="mode-toggle" role="radiogroup" aria-label="Security mode">
-        {MODES.map((m) => {
-          const active = securityMode === m.id;
-          return (
-            <Hint key={m.id} label={m.hint} position="top" maxWidth={220}>
-              <button
-                type="button"
-                role="radio"
-                aria-checked={active}
-                className={`mode-option${active ? " mode-option--active" : ""}`}
-                onClick={() => selectMode(m.id)}
-              >
-                {m.label}
-              </button>
-            </Hint>
-          );
-        })}
-      </div>
+    <Block title="Security mode">
+      <Segmented
+        items={MODES.map((m) => ({ key: m.id, label: m.label, hint: m.hint }))}
+        value={securityMode as Mode}
+        onSelect={(id) => void selectMode(id)}
+        label="Security mode"
+      />
       {securityMode === "headless" && (
-        <div className="headless-banner" role="status">
-          All tool calls auto-approved in headless mode.
-        </div>
+        <Note tone="warn">All tool calls auto-approved in headless mode.</Note>
       )}
-      {error && <div className="settings-error">{error}</div>}
+      {error && <Note tone="bad">{error}</Note>}
       {pending && (
-        <div
-          className="mode-modal"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="mode-modal-title"
+        <Modal
+          onClose={() => setPending(null)}
+          ariaLabel="lower security mode"
+          ariaLabelledBy="mode-modal-title"
+          className="confirm-modal"
         >
-          <div className="mode-modal__card">
-            <h4 id="mode-modal-title" className="mode-modal__title">
-              Lower security mode?
-            </h4>
-            <p className="mode-modal__body">
-              {entityName} will auto-approve more actions in <strong>{pending}</strong>{" "}
-              mode.
-            </p>
-            <div className="mode-modal__actions">
-              <button
-                type="button"
-                className="mode-modal__btn"
-                onClick={() => setPending(null)}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="mode-modal__btn mode-modal__btn--primary"
-                onClick={confirmDowngrade}
-              >
-                Confirm
-              </button>
-            </div>
+          <h4 id="mode-modal-title" className="confirm-modal__title">
+            Lower security mode?
+          </h4>
+          <p className="confirm-modal__body">
+            {entityName} will auto-approve more actions in <strong>{pending}</strong>{" "}
+            mode.
+          </p>
+          <div className="confirm-modal__actions">
+            <Button onClick={() => setPending(null)}>Cancel</Button>
+            <Button tone="primary" onClick={confirmDowngrade}>
+              Confirm
+            </Button>
           </div>
-        </div>
+        </Modal>
       )}
-    </section>
+    </Block>
   );
 }

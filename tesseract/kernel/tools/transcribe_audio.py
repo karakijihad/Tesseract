@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -38,8 +38,7 @@ class TranscribeAudioInput(BaseModel):
     attachment_id: str = Field(
         description=(
             "Attachment ID of an audio file the operator uploaded in this "
-            "session. Audio is transcribed via the local Whisper engine "
-            "(no per-call cost)."
+            "session."
         ),
         min_length=1,
     )
@@ -50,22 +49,25 @@ class TranscribeAudioTool(Tool):
     default_posture = "auto"
 
     risk_class: ClassVar[str] = "autonomous"
+
+    group: ClassVar[str] = "looking-for-yourself"
+    summary: ClassVar[str] = "Hear an audio attachment the operator uploaded earlier in this session."
+    use_when: ClassVar[str] = (
+        "You need the words in an older audio attachment — the operator asks "
+        "what was said in a file already discussed."
+    )
+    not_when: ClassVar[str] = (
+        "audio on the operator's most recent message, which is transcribed "
+        "before you ever see it — calling this for that attachment does the "
+        "same work twice."
+    )
+
     def __init__(self, stt_engine: "STTEngine | None" = None) -> None:
         self._stt_engine = stt_engine
 
     @property
     def name(self) -> str:
         return "transcribe_audio"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Transcribe a previously-uploaded audio attachment using the "
-            "local Whisper engine. Returns the transcript text. Note: "
-            "audio attached to the operator's most recent message is "
-            "auto-transcribed before you see it — only call this tool "
-            "for ad-hoc re-transcription of older attachments."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:
@@ -90,8 +92,8 @@ class TranscribeAudioTool(Tool):
         if self._stt_engine is None:
             return ToolResult(
                 output=(
-                    "audio_transcribe unavailable: STT engine not "
-                    "initialized in this runtime"
+                    "transcribe_audio unavailable: no speech engine is "
+                    "initialised in this runtime"
                 ),
                 is_error=True,
             )
@@ -103,7 +105,7 @@ class TranscribeAudioTool(Tool):
             from tesseract.mirror.server.uploads._storage import _attachment_file_path
         except ImportError:
             return ToolResult(
-                output="audio_transcribe unavailable: Mirror upload module not loaded",
+                output="transcribe_audio unavailable: Mirror upload module not loaded",
                 is_error=True,
             )
 
@@ -131,9 +133,9 @@ class TranscribeAudioTool(Tool):
 
         if context is not None and context.status_emit is not None:
             try:
-                await context.status_emit(
-                    f"transcribing audio via local.whisper.local_whisper… ({att.filename})"
-                )
+                # No model ref here. The engine is wired by config and a
+                # status string naming one is wrong the moment the yaml moves.
+                await context.status_emit(f"transcribing audio… ({att.filename})")
             except Exception:  # noqa: BLE001
                 logger.debug("transcribe_audio: status_emit failed", exc_info=True)
 

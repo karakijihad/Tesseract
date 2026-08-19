@@ -34,18 +34,17 @@ class LaneNamedGetTool(Tool):
     default_posture = "auto"
     risk_class: ClassVar[str] = "autonomous"
 
+    group: ClassVar[str] = "long-running-collaborators"
+    summary: ClassVar[str] = "Look up the lane_id currently bound to a named lane, without opening one."
+    use_when: ClassVar[str] = "Use to resolve a name to its live lane_id, or confirm whether a binding exists."
+    not_when: ClassVar[str] = (
+        "every binding at once, which is `lane_named_list`; every live lane, which is `lane_list`; "
+        "creating the binding, which is `lane_named_ensure`."
+    )
+
     @property
     def name(self) -> str:
         return "lane_named_get"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Return the current binding for a named lane "
-            "(coder/claude, auditor/codex, etc.) — lane_id + kind + "
-            "model + working_dir. Returns bound=false when no binding "
-            "exists. Read-only; use lane_named_ensure to create."
-        )
 
     @property
     def input_schema(self) -> type[BaseModel]:

@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import secrets
+import threading
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -70,12 +71,22 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
         raise
 
 
+# One writer at a time for `index.jsonl`. Until the kernel's ingest moved to a
+# worker thread, every caller of `_append_index` ran on the one event loop and
+# cooperative scheduling serialised them for free; now a thread doing the drain
+# and a coroutine reconciling a finished worker can reach this at the same
+# instant. The file is deliberately not the source of truth, so the cost of an
+# interleaved write is a torn audit row rather than lost state — which is worth
+# a lock and not worth a redesign.
+_INDEX_LOCK = threading.Lock()
+
+
 def _append_index(row: dict[str, Any]) -> None:
     """Append a single JSON line to ``index.jsonl``. Best-effort: write failures log and fall through."""
     path = agenda_index_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
+        with _INDEX_LOCK, path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, default=str) + "\n")
     except OSError:
         log.exception("agenda: index.jsonl append failed")
@@ -271,16 +282,34 @@ class AgendaStore:
     def list_active(self) -> list[AgendaItem]:
         return list(self.iter_active())
 
+    def _pool(self, items: list[AgendaItem] | None):
+        """The caller's already-read active set, or a fresh read.
+
+        Four scanners take the same optional set — a caller admitting one draft
+        used to pay four walks of the store, and one draining ten events forty.
+        The fallback stays because the `None` path is live: `routes/agenda.py`
+        calls `find_dedupe` with nothing to hand it.
+        """
+        return items if items is not None else self.iter_active()
+
     def find_dedupe(
         self,
         goal: str,
         source: AgendaSource,
+        *,
+        items: list[AgendaItem] | None = None,
     ) -> AgendaItem | None:
         """Scan active items for a matching (goal, source) pair. Used
         by AU-5 mappers to avoid re-admitting the same observer signal
-        every minute. Linear scan; volume is small enough."""
+        every minute. Linear scan; volume is small enough.
+
+        ``items`` lets a caller that already holds the active set pass it in
+        rather than making this walk the directory again. Four scanners on this
+        class each read it for themselves, so a caller admitting one draft paid
+        four walks — and one draining ten events paid forty.
+        """
         key = dedupe_key(goal, source)
-        for item in self.iter_active():
+        for item in self._pool(items):
             if dedupe_key(item.goal, item.source) == key:
                 return item
         return None
@@ -293,6 +322,7 @@ class AgendaStore:
         threshold: float,
         window_hours: int,
         now: datetime | None = None,
+        items: list[AgendaItem] | None = None,
     ) -> AgendaItem | None:
         """Near-duplicate of an existing ACTIVE item from the SAME source
         created within ``window_hours``. Similarity = difflib
@@ -303,7 +333,7 @@ class AgendaStore:
         moment = now or datetime.now(timezone.utc)
         cutoff = moment - timedelta(hours=window_hours)
         normalised = " ".join(goal.lower().split())
-        for item in self.iter_active():
+        for item in self._pool(items):
             if item.source != source:
                 continue
             created = item.created_at
@@ -317,12 +347,16 @@ class AgendaStore:
                 return item
         return None
 
-    def count_open_by_source(self, source: AgendaSource) -> int:
+    def count_open_by_source(
+        self, source: AgendaSource, *, items: list[AgendaItem] | None = None
+    ) -> int:
         """Count active (non-terminal) items with this source."""
-        return sum(1 for item in self.iter_active() if item.source == source)
+        return sum(1 for item in self._pool(items) if item.source == source)
 
-    def count_open_total(self) -> int:
+    def count_open_total(self, *, items: list[AgendaItem] | None = None) -> int:
         """Count all active (non-terminal) items."""
+        if items is not None:
+            return len(items)
         return sum(1 for _ in self.iter_active())
 
     # -- scoring -------------------------------------------------------
@@ -344,19 +378,6 @@ class AgendaStore:
             self.recompute_score(item)
         items.sort(key=lambda i: (-i.priority_score, i.created_at))
         return items
-
-    # -- budget accounting --------------------------------------------
-
-    def today_spend(self) -> dict[str, int]:
-        """Aggregate tokens + seconds spent across active items.
-        Kernel hook for the daily cap check; cap enforcement itself
-        lands in AU-5 / AU-6."""
-        tokens = 0
-        seconds = 0
-        for item in self.iter_active():
-            tokens += item.budget_tokens_spent
-            seconds += item.budget_seconds_spent
-        return {"tokens": tokens, "seconds": seconds}
 
     # -- archive -------------------------------------------------------
 
@@ -433,7 +454,6 @@ def load_weights_from_yaml(path: Path) -> AgendaWeights:
         source_trust_weight=float(
             scoring_raw.get("source_trust_weight", defaults.source_trust_weight)
         ),
-        vet_weight=float(scoring_raw.get("vet_weight", defaults.vet_weight)),
         age_cap_hours=float(age_raw.get("cap", defaults.age_cap_hours)),
         source_trust=trust_map,
     )
