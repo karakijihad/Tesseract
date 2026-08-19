@@ -29,7 +29,7 @@ import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -705,17 +705,26 @@ def _last_activity_date(record: ChatRecord) -> str | None:
         return None
 
 
-def archive_stale_open_chats(today: str | None = None) -> int:
-    """Day-rollover — auto-archive open chats last touched before today.
+def archive_stale_open_chats(
+    today: str | None = None, *, keep_days: int = 0
+) -> int:
+    """Auto-archive open chats whose last activity predates the window.
 
-    Operator request (2026-07-05): a fresh Mirror connection on a new local
+    Two callers, one rule. The day rollover leaves ``keep_days`` at 0, so the
+    cutoff is today and anything last touched on an earlier day is archived:
+    operator request (2026-07-05), a fresh Mirror connection on a new local
     calendar day should seed a blank chat rather than resume yesterday's
     thread, while cost/turns (already day-scoped elsewhere) reset in step.
-    Called by ``session.py::_restore_persisted_chats`` before it rebuilds the
-    tab strip from disk — archiving (not deleting) means the stale chat stays
-    fully reachable via ``GET /api/chats?include_archived=1`` and the
-    ``chat.restore`` WS command, same as any operator-archived chat. A record
-    with no parseable timestamp is left open (fail-safe, not fail-archive).
+    The retention sweep passes the window from ``retention.yaml``, where
+    ``keep_days`` has always meant days since activity — a chat active inside
+    it stays open.
+
+    Called by ``chat_restore.py`` before it rebuilds the tab strip from disk —
+    archiving (not deleting) means the stale chat stays fully reachable via
+    ``GET /api/chats?include_archived=1`` and the ``chat.restore`` WS command,
+    same as any operator-archived chat. A record with no parseable timestamp is
+    left open (fail-safe, not fail-archive), and so is one stamped in the
+    FUTURE: a clock that ran ahead is not a reason to shelve a conversation.
     Returns the count archived.
 
     Known limitation: this reads/writes the global on-disk chat library with
@@ -727,14 +736,17 @@ def archive_stale_open_chats(today: str | None = None) -> int:
     unhandled; a session/tab that hits it can always re-fetch via
     ``GET /api/chats``.
     """
-    today = today or datetime.now().astimezone().date().isoformat()
+    anchor = date.fromisoformat(
+        today or datetime.now().astimezone().date().isoformat()
+    )
+    cutoff = (anchor - timedelta(days=max(keep_days, 0))).isoformat()
     archived = 0
     for row in list_chats():
         record = load_chat(row["chat_id"])
         if record is None:
             continue
         last_active = _last_activity_date(record)
-        if last_active is not None and last_active != today:
+        if last_active is not None and last_active < cutoff:
             if set_archived(record.chat_id, True):
                 archived += 1
     return archived

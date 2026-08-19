@@ -65,19 +65,25 @@ def observer_logs(keep_days: int, action: Action) -> Swept:
 
 
 def sessions(keep_days: int, action: Action) -> Swept:
-    """The live session drawer. Always an archive — `may_delete` is False.
+    """The live chat drawer. Always an archive — `may_delete` is False.
 
-    The move itself stays in `session_store.archive_old_sessions`, which the
-    REPL and the Mirror also call: this tree's policy is a window, not a second
-    implementation of what archiving a session means.
+    Archiving is a FLAG on the record, not a move. The old version relocated
+    files into `sessions/archive/YYYY-MM/`, which made a conversation's
+    location encode its state — so its path changed when nothing about the
+    conversation had. `chat_store.archive_stale_open_chats` flips
+    `archived: true` in place, the drawer's archive view already renders it,
+    and the chat keeps the id and the creation stamp it was born with.
+
+    `keep_days` still means days since activity, which is what it meant when
+    it moved files, so an operator's `retention.yaml` window is unchanged.
+    Counted as `moved` because that is this table's word for "aged out but
+    still here" — nothing is deleted, and the count is chats, not files.
     """
-    from tesseract.brain.session_store import archive_old_sessions
-    from tesseract.paths import home_dir
+    from tesseract.mirror.server import chat_store
 
-    root = home_dir() / "sessions"
-    if not root.is_dir():
+    if not chat_store.chats_dir().is_dir():
         return Swept()
-    return Swept(moved=len(archive_old_sessions(root, days=keep_days)))
+    return Swept(moved=chat_store.archive_stale_open_chats(keep_days=keep_days))
 
 
 def lane_archives(keep_days: int, action: Action) -> Swept:

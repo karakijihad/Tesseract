@@ -17,11 +17,11 @@ import time
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 
-from tesseract.brain.boot import SESSIONS_DIR
 from tesseract.paths import TESSERACT_HOME
-from tesseract.brain.session_store import SessionState, list_sessions
 from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
 from tesseract.memory.daily_notes import append_section, section_exists
+from tesseract.mirror.server import chat_store
+from tesseract.mirror.server.chat_store import ChatRecord
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.brain.cost.metered_adapter import meter_chain
 from tesseract.scheduler.role_chain import build_chain_for_role, resolve_role_name
@@ -49,10 +49,13 @@ class ChatDigestJob(BaseJob):
         t0 = time.monotonic()
         try:
             target_date = (ctx.fired_at - timedelta(days=1)).date()
-            session_dir = _resolve_session_dir(ctx)
+            # No directory to resolve: `chat_store` owns the records and
+            # reads TESSERACT_HOME at call time, so a test scopes its writes
+            # with the env var rather than with a config key nothing shipped
+            # ever set.
             # Off the loop: reads + fully parses every active session file
             # (up to 10k) to find yesterday's.
-            sessions = await asyncio.to_thread(_collect_sessions, target_date, session_dir)
+            sessions = await asyncio.to_thread(_collect_sessions, target_date)
             if not sessions:
                 return JobResult(
                     job_name=ctx.job_name,
@@ -165,18 +168,6 @@ class ChatDigestJob(BaseJob):
             )
 
 
-def _resolve_session_dir(ctx: JobContext) -> Path:
-    override = ctx.config.get("session_dir")
-    if override:
-        return Path(override)
-    app = ctx.app
-    if app is not None and hasattr(app, "get"):
-        tdir = app.get("tesseract_dir")
-        if tdir is not None:
-            return Path(tdir) / "sessions"
-    return SESSIONS_DIR
-
-
 def _resolve_daily_dir(ctx: JobContext) -> Path:
     override = ctx.config.get("daily_dir")
     if override:
@@ -236,28 +227,33 @@ def _resolve_adapter_chain(ctx: JobContext) -> list[tuple[ModelAdapter, AdapterO
     return [(adapter, app.get("adapter_options") or AdapterOptions())]
 
 
-def _collect_sessions(target: date, session_dir: Path) -> list[SessionState]:
-    """Return every session whose wall-clock span covers `target`.
+def _collect_sessions(target: date) -> list[ChatRecord]:
+    """Return every chat record whose wall-clock span covers `target`.
+
+    Reads the chat records, which are the only session record there is.
+    ARCHIVED ONES INCLUDED, deliberately: this job runs the morning after the
+    day it summarises, and the first connection of a new day archives every
+    chat left open on the previous one — so filtering them out would make the
+    digest read an empty tree exactly when it has the most to say. Archiving
+    is a shelf, not a retraction.
 
     Pre-fix, sessions were bucketed by a single `ended_at or started_at`
-    stamp, so a session that crossed midnight (e.g. 23:30 D → 00:10 D+1)
+    stamp, so a session that crossed midnight (e.g. 23:30 D -> 00:10 D+1)
     landed entirely in D+1's digest, and D's digest missed the content.
-    We now include a session if `target` falls within `[start.date(), end.date()]`.
-    Cross-midnight sessions therefore appear in both D's and D+1's digest;
+    We now include a record if `target` falls within `[start.date(), end.date()]`.
+    Cross-midnight conversations therefore appear in both D's and D+1's digest;
     the LLM is told the target date so each summary stays focused.
     """
-    if not session_dir.exists():
-        return []
-    kept: list[SessionState] = []
-    for _path, state in list_sessions(session_dir, limit=10_000):
-        start_dt = _parse_stamp(state.started_at)
-        end_dt = _parse_stamp(state.ended_at) or start_dt
+    kept: list[ChatRecord] = []
+    for record in chat_store.list_records(include_archived=True):
+        start_dt = _parse_stamp(record.started_at)
+        end_dt = _parse_stamp(record.ended_at) or start_dt
         if start_dt is None:
             continue
         start_d = start_dt.astimezone(timezone.utc).date()
         end_d = (end_dt or start_dt).astimezone(timezone.utc).date()
         if start_d <= target <= end_d:
-            kept.append(state)
+            kept.append(record)
     return kept
 
 
@@ -281,7 +277,7 @@ def _message_date(msg: dict) -> date | None:
 
 
 def _build_transcript(
-    sessions: list[SessionState],
+    sessions: list[ChatRecord],
     max_chars: int,
     target: date,
 ) -> str:

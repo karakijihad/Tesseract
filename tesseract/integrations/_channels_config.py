@@ -4,7 +4,7 @@ Two-tier shape (2026-05-18 refactor):
 
 * **Global ``defaults:``** — settings that apply to every channel
   adapter unless the channel block sparse-overrides them. Today:
-  ``retention``, ``attachments``, ``extract``, ``cost``, ``gate_policy``.
+  ``attachments``, ``extract``, ``cost``, ``gate_policy``.
 * **Per-channel block (``telegram:``, ``whatsapp:``, …)** — fields
   intrinsic to ONE channel: ``enabled``, ``display_name``, ``brief_push``,
   ``outbound_rate``, ``muted_categories``. Any of the global blocks
@@ -105,16 +105,6 @@ class GatePolicy(BaseModel):
     decision_timeout_s: int = Field(default=1800, ge=60, le=86_400)
 
 
-class RetentionBlock(BaseModel):
-    """Sliding-window retention. Hard ints — `Defaults.retention` always
-    has values; channel overrides also have values (no ``None``).
-    Channels that don't want to override leave the key out entirely."""
-
-    model_config = _FROZEN
-    max_turns_in_context: int = Field(default=20, gt=0)
-    inactivity_reset_minutes: int = Field(default=360, gt=0)
-
-
 # -- Per-channel-only blocks (no inheritance — these are intrinsic) ---
 
 
@@ -133,7 +123,6 @@ class Defaults(BaseModel):
     """Global defaults — every channel inherits these unless overridden."""
 
     model_config = _FROZEN
-    retention: RetentionBlock = RetentionBlock()
     attachments: AttachmentCaps = AttachmentCaps()
     extract: ExtractCaps = ExtractCaps()
     cost: CostCaps = CostCaps()
@@ -142,7 +131,7 @@ class Defaults(BaseModel):
 
 class ChannelOverrides(BaseModel):
     """Per-channel block. Channel-specific fields PLUS optional sparse
-    overrides for any global block (``retention`` / ``attachments`` /
+    overrides for any global block (``attachments`` /
     ``extract`` / ``cost`` / ``gate_policy``). A ``None`` override —
     or omitting the key entirely — inherits from ``defaults``.
     """
@@ -156,7 +145,6 @@ class ChannelOverrides(BaseModel):
     outbound_rate: OutboundRate = OutboundRate()
     muted_categories: list[str] = Field(default_factory=list)
     # Sparse overrides — None means inherit from ``defaults``.
-    retention: RetentionBlock | None = None
     attachments: AttachmentCaps | None = None
     extract: ExtractCaps | None = None
     cost: CostCaps | None = None
@@ -174,7 +162,6 @@ class ResolvedChannel:
     brief_push: bool
     outbound_rate: OutboundRate
     muted_categories: list[str]
-    retention: RetentionBlock
     attachments: AttachmentCaps
     extract: ExtractCaps
     cost: CostCaps
@@ -228,7 +215,6 @@ class ChannelsConfig(BaseModel):
             brief_push=override.brief_push,
             outbound_rate=override.outbound_rate,
             muted_categories=list(override.muted_categories),
-            retention=override.retention or self.defaults.retention,
             attachments=override.attachments or self.defaults.attachments,
             extract=override.extract or self.defaults.extract,
             cost=override.cost or self.defaults.cost,
@@ -247,7 +233,6 @@ class ChannelsConfig(BaseModel):
             brief_push=False,
             outbound_rate=OutboundRate(),
             muted_categories=[],
-            retention=self.defaults.retention,
             attachments=self.defaults.attachments,
             extract=self.defaults.extract,
             cost=self.defaults.cost,

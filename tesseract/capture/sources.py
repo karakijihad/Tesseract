@@ -15,7 +15,6 @@ same record whichever entry point they arrived through, and that is what makes
 from __future__ import annotations
 
 import logging
-import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Iterable
@@ -87,7 +86,9 @@ def _ordered(turns: Iterable[Turn]) -> tuple[Turn, ...]:
     return tuple(sorted(turns, key=lambda t: t.at))
 
 
-def mirror_chats(tail_turns: int, *, lookback_hours: int) -> list[Conversation]:
+def mirror_chats(
+    tail_turns: int, *, lookback_hours: int, now: datetime
+) -> list[Conversation]:
     """The cockpit's own chats, from `sessions/chats/`.
 
     The chat files are what a reconnect reads, so they are current for a chat
@@ -124,7 +125,7 @@ def mirror_chats(tail_turns: int, *, lookback_hours: int) -> list[Conversation]:
     try:
         records = chat_store.list_records(
             include_archived=True,
-            touched_since=time.time() - lookback_hours * 3600,
+            touched_since=(now - timedelta(hours=lookback_hours)).timestamp(),
         )
     except OSError:
         log.exception("capture: could not list the chats directory")
@@ -182,7 +183,9 @@ def _channel_chat_dirs() -> list[tuple[str, str]]:
     return found
 
 
-def channel_chats(tail_turns: int, *, lookback_hours: int) -> list[Conversation]:
+def channel_chats(
+    tail_turns: int, *, lookback_hours: int, now: datetime
+) -> list[Conversation]:
     """Every channel conversation, from the per-chat conversation store.
 
     The store is walked rather than the registered adapters: a chat held over
@@ -197,9 +200,7 @@ def channel_chats(tail_turns: int, *, lookback_hours: int) -> list[Conversation]
     from tesseract.integrations._conversation_store import ConversationStore
 
     store = ConversationStore()
-    oldest_day = (
-        datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
-    ).date()
+    oldest_day = (now - timedelta(hours=lookback_hours)).date()
     out: list[Conversation] = []
     for channel, chat_id in _channel_chat_dirs():
         if not _touched_since(channel, chat_id, oldest_day):

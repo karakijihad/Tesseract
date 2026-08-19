@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
 
 from tesseract.capture.reflect import ReflectOutcome, reflect
 from tesseract.capture.sources import COLLECTORS, Conversation, idle_conversations
@@ -47,11 +46,22 @@ class ConversationReflectJob(BaseJob):
             if bundle is None:
                 return _result(ctx, t0, ok=True, detail="no memory bundle")
 
+            # THE STAGE'S CLOCK, not the wall's. `job_stage` replays a
+            # date-scoped stage once per day its watermark says it missed, and
+            # hands each replay that day's `fired_at`. Reading `now()` instead
+            # made this stage the one enrolled in that walk and deaf to it: a
+            # conversation quiet since Friday is outside a Monday-now lookback
+            # in every replay, so a weekend of downtime lost its recaps and
+            # nothing anywhere said so. There is nothing to select from a day
+            # you refuse to be standing in.
+            now = ctx.fired_at
             # The collectors share nothing and both walk the disk, so they run
             # together; one unreadable tree must not cost the other's recaps.
             gathered = await asyncio.gather(
                 *(
-                    asyncio.to_thread(collect, tail_turns, lookback_hours=lookback_hours)
+                    asyncio.to_thread(
+                        collect, tail_turns, lookback_hours=lookback_hours, now=now
+                    )
                     for collect in COLLECTORS
                 ),
                 return_exceptions=True,
@@ -71,7 +81,7 @@ class ConversationReflectJob(BaseJob):
 
             due = idle_conversations(
                 conversations,
-                now=datetime.now(timezone.utc),
+                now=now,
                 idle_minutes=idle_minutes,
                 lookback_hours=lookback_hours,
             )
@@ -94,7 +104,7 @@ class ConversationReflectJob(BaseJob):
                         conv,
                         bundle=bundle,
                         watermarks=watermarks,
-                        now=datetime.now(timezone.utc),
+                        now=now,
                     )
                 except Exception:
                     failed += 1

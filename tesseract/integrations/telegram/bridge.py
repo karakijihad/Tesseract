@@ -57,11 +57,10 @@ from tesseract.integrations._handlers.voice import (
     VoiceHandlerError,
     transcribe_voice_audio,
 )
-from tesseract.integrations._retention import (
-    RetentionPolicy,
-    apply_retention,
-    policy_for_channel,
-    should_reset_for_inactivity,
+from tesseract.integrations._channel_session import (
+    compact_after_turn,
+    is_new_local_day,
+    offer_a_fresh_session,
 )
 from tesseract.integrations.telegram.api import (
     TelegramAPI,
@@ -175,7 +174,6 @@ class TelegramBridge:
         token: str,
         app: web.Application,
         conversation_store: ConversationStore,
-        retention_policy: RetentionPolicy,
         env_seed_chat_ids: str | None = None,
         chat_memory: ChatMemoryService | None = None,
     ) -> None:
@@ -195,7 +193,6 @@ class TelegramBridge:
         # do not show up in the cockpit session list.
         self._sessions: dict[int, ServerSession] = {}
         self._conversations = conversation_store
-        self._retention = retention_policy
         self._poll_task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
         # Per-chat serialization for parallel inbound handling. The poll
@@ -418,91 +415,6 @@ class TelegramBridge:
         # call — silently breaking the Restart button.
         self._stop_event = asyncio.Event()
 
-    def set_retention_policy(self, policy: RetentionPolicy) -> None:
-        """Live-reload hook fired by :func:`config_watcher.reload_channels`."""
-        self._retention = policy
-
-    # -- poll loop ---------------------------------------------------------
-
-    async def _poll_loop(self) -> None:
-        assert self._api is not None
-        backoff = _BACKOFF_INITIAL_SECONDS
-        while not self._stop_event.is_set():
-            try:
-                offset = None
-                if self._state.poll_state.last_update_id is not None:
-                    offset = self._state.poll_state.last_update_id + 1
-                updates = await self._api.get_updates(
-                    offset=offset,
-                    timeout=_POLL_TIMEOUT_SECONDS,
-                    # Declared at the call site because this loop is what
-                    # decides which kinds it can dispatch, and Telegram
-                    # filters the rest SERVER-side: an update type missing
-                    # here is never delivered and leaves no trace anywhere
-                    # to notice it by. `callback_query` carries the approval
-                    # keyboard's taps, and its absence meant every ✓ Approve
-                    # since the button shipped was swallowed before it
-                    # reached the bridge — while the handler's unit tests
-                    # passed, because they call it directly.
-                    allowed_updates=("message", "callback_query"),
-                )
-                self._last_poll_at = datetime.now(timezone.utc).isoformat()
-                backoff = _BACKOFF_INITIAL_SECONDS
-            except asyncio.CancelledError:
-                raise
-            except TelegramAPIError as exc:
-                self._error_count += 1
-                log.warning("telegram: getUpdates failed (%s); retrying in %.1fs", exc, backoff)
-                await self._sleep_or_stop(backoff)
-                backoff = min(backoff * 2.0, _BACKOFF_MAX_SECONDS)
-                continue
-            except Exception:
-                self._error_count += 1
-                log.exception("telegram: poll loop crashed; retrying in %.1fs", backoff)
-                await self._sleep_or_stop(backoff)
-                backoff = min(backoff * 2.0, _BACKOFF_MAX_SECONDS)
-                continue
-
-            for raw in updates:
-                update_id = raw.get("update_id") if isinstance(raw, dict) else None
-                if isinstance(update_id, int):
-                    self._state.poll_state.last_update_id = update_id
-                # 2026-05-17 — inline-keyboard callbacks from ASK prompts
-                # arrive under `callback_query`, not `message`. Dispatch
-                # them inline (they're cheap — one approval token write +
-                # one editMessageText) rather than through the per-chat
-                # task pool. Approval state must be applied BEFORE the
-                # next inbound that hashes the same args, so synchronous
-                # is the right choice.
-                if isinstance(raw, dict) and isinstance(raw.get("callback_query"), dict):
-                    try:
-                        await self._handle_callback_query(raw["callback_query"])
-                    except Exception:
-                        log.exception("telegram: callback_query handler crashed")
-                    continue
-                message = parse_message_update(raw) if isinstance(raw, dict) else None
-                if message is None:
-                    # DIAGNOSTIC (MO-10-followup) — dump the top-level keys
-                    # of any update parse-rejected so we can see whether
-                    # voice messages arrive under `message` or under
-                    # `edited_message`/`business_message`/some other kind.
-                    if isinstance(raw, dict):
-                        log.warning(
-                            "telegram: parse_message_update returned None for update_id=%s keys=%s",
-                            update_id, sorted(raw.keys()),
-                        )
-                        msg_node = raw.get("message") if isinstance(raw.get("message"), dict) else None
-                        if msg_node is not None:
-                            log.warning(
-                                "telegram: parse-rejected message keys=%s chat=%s",
-                                sorted(msg_node.keys()),
-                                (msg_node.get("chat") or {}).get("type"),
-                            )
-                    continue
-                self._spawn_handler(message)
-            with self._state.with_lock():
-                save_state(self._state.state_path, self._state.poll_state)
-
     def _spawn_handler(self, message: TelegramMessage) -> None:
         """Background-task a single inbound so the poll loop stays responsive.
 
@@ -686,6 +598,11 @@ class TelegramBridge:
                 },
                 attachments=decoded,
             ),
+        )
+        # Read BEFORE the write below overwrites it: the question is whether
+        # the PREVIOUS message fell on an earlier day.
+        crossed_into_a_new_day = is_new_local_day(
+            self._state.poll_state.last_message_ts.get(chat_key)
         )
         with self._state.with_lock():
             self._state.poll_state.last_message_ts[chat_key] = now_iso
@@ -888,8 +805,8 @@ class TelegramBridge:
         placeholder_id = progress_state["placeholder_id"]
         await _cancel_task(typing_task)
 
-        apply_retention_inplace(
-            session, self._retention,
+        await compact_after_turn(
+            session.chat_session,
             chat_memory=chat_memory, channel=self.name, chat_id=chat_key,
         )
 
@@ -958,6 +875,11 @@ class TelegramBridge:
                     placeholder_id=placeholder_id,
                     reply_to_message_id=reply_to,
                 )
+            await offer_a_fresh_session(
+                crossed_into_a_new_day=crossed_into_a_new_day,
+                chat_session=session.chat_session,
+                send=lambda text: self._send_outbound(message.chat_id, text),
+            )
         elif placeholder_id is not None:
             # Turn produced no reply (cancellation, empty stream, or
             # every step gated). Replace the "thinking…" placeholder
@@ -3191,55 +3113,10 @@ def _coerce_chat_id(user_id: str) -> int:
         raise ValueError(f"telegram: user_id must be an integer chat_id, got {user_id!r}") from exc
 
 
-def apply_retention_inplace(
-    session: ServerSession,
-    policy: RetentionPolicy,
-    *,
-    chat_memory: ChatMemoryService | None = None,
-    channel: str | None = None,
-    chat_id: str | None = None,
-) -> None:
-    """Trim the live ``ChatSession.history`` to the policy window in place.
-
-    Session 1 (2026-05-16) — when ``chat_memory`` + ``channel`` + ``chat_id``
-    are supplied, the rows about to be evicted are forwarded to
-    :meth:`ChatMemoryService.append_evictions` so the rolling per-chat
-    summary picks them up before they vanish from the in-memory window.
-    Failures in the summary path are logged and swallowed — retention
-    trimming itself never blocks on a wedged disk.
-    """
-    prior = list(session.chat_session.history)
-    trimmed = apply_retention(prior, policy)
-    if (
-        chat_memory is not None
-        and channel is not None
-        and chat_id is not None
-        and len(prior) > len(trimmed)
-    ):
-        kept_ids = {id(row) for row in trimmed}
-        evicted = [row for row in prior if id(row) not in kept_ids]
-        # Drop leading-system rows from eviction reporting — they are
-        # static frame and would just noise up the summary.
-        evicted = [
-            row for row in evicted
-            if not (isinstance(row, dict) and row.get("role") == "system")
-        ]
-        if evicted:
-            try:
-                chat_memory.append_evictions(channel, str(chat_id), evicted)
-            except Exception:
-                log.exception(
-                    "telegram: append_evictions failed for %s/%s",
-                    channel, chat_id,
-                )
-    session.chat_session.history = trimmed
-
-
 def build_telegram_bridge(
     app: web.Application,
     *,
     conversation_store: ConversationStore | None = None,
-    retention_policy: RetentionPolicy | None = None,
 ) -> TelegramBridge | None:
     # The variable's NAME comes from the channel's own block, so
     # `channels.yaml::telegram.api_key_env` is the authority rather than a
@@ -3250,7 +3127,6 @@ def build_telegram_bridge(
         log.info("telegram: %s not set; bridge disabled", key_env)
         return None
     store = conversation_store or app.get("conversation_store") or ConversationStore()
-    policy = retention_policy or policy_for_channel("telegram")
     chat_memory = ChatMemoryService(
         conversation_store=store,
         memory_bundle=app.get("memory_bundle"),
@@ -3259,7 +3135,6 @@ def build_telegram_bridge(
         token=token,
         app=app,
         conversation_store=store,
-        retention_policy=policy,
         env_seed_chat_ids=os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS"),
         chat_memory=chat_memory,
     )

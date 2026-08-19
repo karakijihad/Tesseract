@@ -346,26 +346,21 @@ async def reload_vault(app: web.Application) -> None:
 
 
 async def reload_channels(app: web.Application) -> None:
-    """`channels.yaml` → refresh the typed config + each adapter's retention.
+    """`channels.yaml` → refresh the typed config.
 
-    Two steps:
+    Re-reads the file into the typed :class:`ChannelsConfig` and stashes it on
+    ``app["channels_config"]`` so later reads (attachment caps, the gate
+    policy, the channel document's generated regions) see the new values on the
+    next turn.
 
-    1. Re-read ``channels.yaml`` into the typed :class:`ChannelsConfig`
-       (CR-1) and stash it on ``app["channels_config"]`` so later
-       phases (CR-2 caps, CR-3 prompt overlay, CR-5 gate_policy) see
-       the new values on the next read.
-    2. Refresh the per-channel ``RetentionPolicy`` on every registered
-       adapter that implements ``set_retention_policy`` (legacy path —
-       MO-9-10).
-
-    Either step's failure surfaces as a toast; a validation error in
-    step 1 short-circuits step 2 so the bridge does not silently keep
-    running on stale caps.
+    It used to push a `RetentionPolicy` at every adapter as a second step. That
+    policy carried a 20-turn window and an inactivity reset, and both are gone:
+    a channel session compacts like the cockpit's
+    (`integrations/_channel_session.py`), which needs no per-channel knob and
+    so needs no reload.
     """
     try:
-        from tesseract.integrations import list_channels
         from tesseract.integrations._channels_config import load_channels_config
-        from tesseract.integrations._retention import policy_for_channel
     except Exception as exc:
         log.exception("config_watcher: channels.yaml import failed")
         await _emit_failed(app, "channels.yaml", str(exc))
@@ -378,17 +373,8 @@ async def reload_channels(app: web.Application) -> None:
         await _emit_failed(app, "channels.yaml", str(exc))
         return
     app["channels_config"] = typed
-
     refreshed: list[str] = []
-    for adapter in list_channels():
-        setter = getattr(adapter, "set_retention_policy", None)
-        if setter is None:
-            continue
-        try:
-            setter(policy_for_channel(adapter.name, typed))
-            refreshed.append(adapter.name)
-        except Exception:
-            log.exception("config_watcher: %s.set_retention_policy failed", adapter.name)
+
     summary = (
         f"channels.yaml reloaded ({', '.join(refreshed)})"
         if refreshed

@@ -13,11 +13,11 @@
 # and any channel-specific fields.
 
 defaults:
-  # Sliding-window chat-session retention. One turn = one user message +
-  # one assistant reply, so history cap = max_turns_in_context * 2 entries.
-  retention:
-    max_turns_in_context: 20
-    inactivity_reset_minutes: 360     # minutes of inactivity before the session resets
+  # No retention knob. A channel session is bounded by COMPACTION, the same
+  # hook and the same threshold the cockpit uses — `roles.yaml::chat_brain`
+  # owns it, and a per-channel copy would only let the two disagree. The one
+  # boundary a channel has of its own is a new local day, which is offered
+  # rather than taken (`integrations/_channel_session.py`).
 
   # Per-kind attachment size/duration caps. Anything larger is rejected.
   attachments:
@@ -75,7 +75,6 @@ telegram:
   muted_categories: []
 
   # ─── Optional per-channel overrides (uncomment to override defaults) ───
-  # retention:        { max_turns_in_context: 30, inactivity_reset_minutes: 120 }
   # attachments:      { document: { max_bytes: 52428800 } }
   # extract:          { document_chars: 12000 }
   # cost:             { daily_max_usd: 5.00 }

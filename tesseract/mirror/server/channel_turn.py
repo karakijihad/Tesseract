@@ -146,6 +146,14 @@ async def _start_channel_turn(
             text = "".join(intent_buf).strip()
             intent_buf.clear()
             if text:
+                # Logged because the alternative is unobservable: the intent
+                # leaves as a placeholder edit, which the conversation store
+                # never records, so a live test could not tell "the model sent
+                # no intent" from "the intent never reached the chat".
+                log.info(
+                    "channel turn: intent -> %s (%d chars)",
+                    session.session_id, len(text),
+                )
                 await _safe_progress(ProgressEvent(kind="intent", text=text))
 
         try:

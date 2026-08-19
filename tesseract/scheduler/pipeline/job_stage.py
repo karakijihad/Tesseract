@@ -73,11 +73,14 @@ def job_stage(
     """Declare `job` as a stage. The module keeps its own home under
     `scheduler/tasks/` and stays importable and runnable on its own.
 
-    `per_day=True` marks a job that derives ONE calendar day from
-    `ctx.fired_at` — `chat_digest`, `daily_writer` and `feedback_sweep` all do
-    (`(fired_at - 1 day).date()`). Such a job cannot cover a gap by being
-    called once, so the wrapper walks the missed days instead of handing it a
-    window it does not read.
+    `per_day=True` marks a job that **cannot cover a gap by being called
+    once**, so the wrapper walks the missed days instead of handing it a window
+    it does not read. Two shapes qualify: one that derives a single calendar
+    day from `ctx.fired_at` — `chat_digest`, `daily_writer` and `feedback_sweep`
+    all do (`(fired_at - 1 day).date()`) — and one that selects against a bounded
+    window ending there, which `conversation_reflect` does with its lookback.
+    Overlapping windows are safe on the second kind because the job keeps a
+    position per item; without one, a walk would redo work rather than resume.
     """
 
     async def body(ctx: StageContext) -> StageReport:

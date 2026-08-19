@@ -172,6 +172,14 @@ CAPTURE_ROW = register_row(
                 kind=StageKind.DETERMINISTIC,
                 budget_seconds=120,
                 report=_reflect_report,
+                # It selects against a window ending at `fired_at`, so one
+                # call can only ever cover the last two days — a machine off
+                # over a weekend came back, asked Monday's question three
+                # times, and lost Friday's conversations with nothing to say
+                # so. The walk is what a gap needs, and the overlap it creates
+                # costs nothing: a conversation already recapped is
+                # `up_to_date` on the second day that sees it.
+                per_day=True,
             ),
         ),
     )

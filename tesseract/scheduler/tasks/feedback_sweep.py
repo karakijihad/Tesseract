@@ -22,11 +22,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from tesseract.brain.boot import SESSIONS_DIR
-from tesseract.brain.session_store import SessionState, list_sessions
 from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
 from tesseract.memory.store import MemoryStore
 from tesseract.paths import TESSERACT_HOME, log_dir
+from tesseract.mirror.server import chat_store
+from tesseract.mirror.server.chat_store import ChatRecord
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.scheduler.role_chain import build_chain_for_job
 from tesseract.scheduler.types import JobContext, JobResult
@@ -67,10 +67,11 @@ class FeedbackSweepJob(BaseJob):
         t0 = time.monotonic()
         try:
             target_date = (ctx.fired_at - timedelta(days=1)).date()
-            session_dir = _resolve_session_dir(ctx)
+            # No directory to resolve — see `chat_digest`; `chat_store`
+            # owns the records and resolves TESSERACT_HOME at call time.
             # Off the loop: reads + fully parses every active session file
             # (up to 10k) to find yesterday's.
-            sessions = await asyncio.to_thread(_collect_sessions, target_date, session_dir)
+            sessions = await asyncio.to_thread(_collect_sessions, target_date)
             if not sessions:
                 return _ok(ctx, t0, target_date, 0, 0, "no sessions to sweep")
 
@@ -148,18 +149,6 @@ def _ok(
     )
 
 
-def _resolve_session_dir(ctx: JobContext) -> Path:
-    override = ctx.config.get("session_dir")
-    if override:
-        return Path(override)
-    app = ctx.app
-    if app is not None and hasattr(app, "get"):
-        tdir = app.get("tesseract_dir")
-        if tdir is not None:
-            return Path(tdir) / "sessions"
-    return SESSIONS_DIR
-
-
 def _resolve_store_dir(ctx: JobContext) -> Path:
     override = ctx.config.get("store_dir")
     if override:
@@ -222,19 +211,23 @@ def _build_prompt(
     )
 
 
-def _collect_sessions(target_date: Any, session_dir: Path) -> list[SessionState]:
-    if not session_dir.exists():
-        return []
-    kept: list[SessionState] = []
-    for _path, state in list_sessions(session_dir, limit=10_000):
-        start = _parse_stamp(state.started_at)
-        end = _parse_stamp(state.ended_at) or start
+def _collect_sessions(target: Any) -> list[ChatRecord]:
+    """Every chat record whose wall-clock span covers `target`.
+
+    Archived records included — this runs the morning after the day it reads,
+    and the first connection of a new day archives what was left open on the
+    previous one. Same shape and same reason as `chat_digest._collect_sessions`.
+    """
+    kept: list[ChatRecord] = []
+    for record in chat_store.list_records(include_archived=True):
+        start = _parse_stamp(record.started_at)
+        end = _parse_stamp(record.ended_at) or start
         if start is None:
             continue
         start_d = start.astimezone(timezone.utc).date()
         end_d = (end or start).astimezone(timezone.utc).date()
-        if start_d <= target_date <= end_d:
-            kept.append(state)
+        if start_d <= target <= end_d:
+            kept.append(record)
     return kept
 
 
@@ -247,19 +240,53 @@ def _parse_stamp(stamp: str | None) -> datetime | None:
         return None
 
 
+def _message_date(msg: dict) -> Any:
+    """The local calendar date one turn was said on, or None if unstamped."""
+    stamp = msg.get("timestamp")
+    if not isinstance(stamp, str) or not stamp.strip():
+        return None
+    dt = _parse_stamp(stamp)
+    if dt is None:
+        return None
+    return dt.astimezone(timezone.utc).date()
+
+
 def _build_transcript(
-    sessions: list[SessionState],
+    sessions: list[ChatRecord],
     max_chars: int,
     target_date: Any,
 ) -> str:
+    """The turns actually said on `target_date`, across every record covering it.
+
+    Filtered per MESSAGE, not per record, and that is load-bearing now: a
+    record is a whole conversation for its whole life, where the file this used
+    to read was one connection's snapshot. A chat the operator keeps open for a
+    week covers every day in it, so without this the sweep would hand the model
+    the entire history each night, stamped as one day's — and re-propose the
+    same directives from it every night after.
+
+    A record with no stamped messages at all contributes all of them, the same
+    fallback `chat_digest` makes: an unstamped turn is old history, and losing
+    it is worse than dating it loosely.
+    """
     parts: list[str] = []
     total = 0
     for s in sessions:
+        has_message_timestamps = any(
+            _message_date(msg) is not None
+            for msg in s.history
+            if msg.get("role") in ("user", "assistant")
+        )
         for msg in s.history:
             if msg.get("_reasoning"):
                 continue
             role = msg.get("role")
             if role not in ("user", "assistant"):
+                continue
+            msg_day = _message_date(msg)
+            if msg_day is not None and msg_day != target_date:
+                continue
+            if msg_day is None and has_message_timestamps:
                 continue
             content = msg.get("content") or ""
             if not isinstance(content, str) or not content.strip():
@@ -393,18 +420,20 @@ def _write_jsonl(
     log_dir: Path,
     target_date: Any,
     proposals: list[dict[str, Any]],
-    sessions: list[SessionState],
+    sessions: list[ChatRecord],
 ) -> Path:
     log_dir.mkdir(parents=True, exist_ok=True)
     path = log_dir / f"{target_date.isoformat()}.jsonl"
-    session_ids = [getattr(s, "session_id", "") or "" for s in sessions]
+    # The chat id, not `record.session_id` — that is a uuid minted per
+    # WebSocket connection, so it names nothing a reader could open.
+    chat_ids = [getattr(s, "chat_id", "") or "" for s in sessions]
     written_at = datetime.now(timezone.utc).isoformat()
     with path.open("w", encoding="utf-8") as fh:
         for prop in proposals:
             entry = {
                 "written_at": written_at,
                 "target_date": target_date.isoformat(),
-                "source_session_ids": session_ids,
+                "source_chat_ids": chat_ids,
                 **prop,
             }
             fh.write(json.dumps(entry) + "\n")
