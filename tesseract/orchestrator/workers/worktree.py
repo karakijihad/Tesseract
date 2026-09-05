@@ -24,7 +24,7 @@ Staleness:
   ``base_sha``. On finalize, ``is_stale`` compares it to the current
   live ``HEAD``; mismatch means a hot upgrade landed on the live tree
   between worktree spawn and worker completion. The captured patch may
-  no longer apply cleanly — UpgradeManager surfaces ``worktree_stale``
+  not apply cleanly — UpgradeManager surfaces ``worktree_stale``
   to the operator and lets them rebase-or-retry.
 
 The git CLI is shelled out (``git -C <repo> worktree …``) rather than
@@ -121,8 +121,8 @@ def _run_git(
 
 
 def _resolve_head(repo_root: Path) -> str:
-    """Live ``HEAD`` sha — call-time, no cache. UpgradeManager and
-    AU-12 finalize both rely on this returning the *current* tip, not
+    """Live ``HEAD`` sha — call-time, no cache. UpgradeManager and the
+    finalize path both rely on this returning the *current* tip, not
     a snapshot, so a hot upgrade landing between spawn and finalize is
     visible."""
     return _run_git(["rev-parse", "HEAD"], cwd=repo_root).stdout.strip()
@@ -403,21 +403,51 @@ def prune_archives(
     in place — better to keep stale archives than discard a worker's
     work because of a metadata gap.
 
-    Returns the list of pruned worker ids. Non-``done`` terminals
-    (``failed`` / ``blocked`` / ``interrupted`` / ``cancelled``) are
-    NEVER pruned, regardless of age — the operator may need them to
-    recover lost work.
+    Returns the list of pruned worker ids. Two rules decide, and the
+    second is what makes the first affordable:
+
+    * Non-``done`` terminals (``failed`` / ``blocked`` / ``interrupted``
+      / ``cancelled``) are NEVER pruned on age alone, because the
+      operator may need them to recover lost work.
+    * A copy that records NO CHANGES holds no work to recover, whatever
+      the status says, and ages like any other. ``capture_diff`` writes
+      ``diff.patch`` only when the worker touched something, so its
+      absence is the archive's own account of having nothing in it. A
+      worker that died before it edited anything leaves a pristine copy
+      of the tree, and keeping those forever is how the archive came to
+      be the largest thing here with nothing in it worth keeping.
+
+    That second rule applies to a copy with no record too. The reason to
+    keep one is work that might be lost, and there is demonstrably none.
+    The companion ``autonomy/<worker_id>`` branch is left intact by
+    ``archive`` either way, so a worker that DID commit is still
+    reachable through git after its copy ages out.
     """
     threshold_dt = (now or datetime.now(timezone.utc))
     pruned: list[str] = []
     for worker_id, entry, mtime in iter_archive_entries():
         record = (records or {}).get(worker_id)
-        if record is None or record.status != WorkerStatus.DONE:
+        finished = record is not None and record.status == WorkerStatus.DONE
+        # Asked of the archive rather than of the record: the patch is the
+        # copy's own account of whether there is anything in it, and it is
+        # written only when the worker changed something.
+        try:
+            holds_work = (entry / "diff.patch").exists()
+        except OSError:
+            holds_work = True
+        if not finished and holds_work:
             continue
         age_days = (threshold_dt - mtime).total_seconds() / 86400.0
         if age_days < retention_days:
             continue
         shutil.rmtree(entry, ignore_errors=True)
+        # `ignore_errors` keeps one locked copy from stopping the sweep, and
+        # it also swallows the failure. The count is reported on the panel as
+        # what this machine threw away, so what is still on disk is not
+        # counted as gone.
+        if entry.exists():
+            log.warning("worktree archive %s could not be removed", worker_id)
+            continue
         pruned.append(worker_id)
     return pruned
 

@@ -13,12 +13,12 @@ import {
   formatDaily,
   formatInterval,
   humanizeDelta,
-  nextFireTime,
   parseCadence,
-  validateCron,
   validateDaily,
   validateInterval,
 } from './cadence';
+import { readCadence } from '../../lib/api';
+import type { CadenceReading } from '../../lib/types';
 
 interface Props {
   jobName: string;
@@ -38,10 +38,13 @@ const MODE_LABELS: Record<CadenceMode, string> = {
 };
 
 const MODE_HINTS: Record<CadenceMode, string> = {
-  interval: 'Every N units — fires N seconds/minutes/hours/days after its last run. Good for heartbeats and polling.',
+  interval: 'Every so often. It fires the given gap after its last run, which suits heartbeats and polling.',
   daily: 'Once per day at a fixed wall-clock time. Good for nightly rollups and morning digests.',
-  cron: 'Full 5-field cron expression (min hour day-of-month month day-of-week). For anything irregular — weekdays only, every 15 min, 1st of month, etc.',
+  cron: 'Full 5-field cron expression (min hour day-of-month month day-of-week). For anything irregular: weekdays only, every 15 min, 1st of month, etc.',
 };
+
+/** Long enough that typing a cron field does not ask on every keystroke. */
+const READ_DEBOUNCE_MS = 250;
 
 const CRON_PLACEHOLDERS: Record<keyof CronFields, string> = {
   minute: 'min',
@@ -65,26 +68,67 @@ export function CadencePicker({ jobName, value, onCommit, onCancel, embedded = f
       ? initial.fields
       : { minute: '0', hour: '*', dom: '*', month: '*', dow: '*' },
   );
-  const { cadenceString, validationError } = useMemo(() => {
+  // The picker's own fields are its own business: how many minutes is a
+  // question about this form. Whether the SCHEDULER will take the string they
+  // make is not, and answering it here is what put four cadences out of reach
+  // that the runtime would have run.
+  const { cadenceString, localError } = useMemo(() => {
     if (mode === 'interval') {
       const err = validateInterval(interval);
-      return { cadenceString: err ? '' : formatInterval(interval), validationError: err };
+      return { cadenceString: err ? '' : formatInterval(interval), localError: err };
     }
     if (mode === 'daily') {
       const err = validateDaily(daily);
-      return { cadenceString: err ? '' : formatDaily(daily), validationError: err };
+      return { cadenceString: err ? '' : formatDaily(daily), localError: err };
     }
-    const err = validateCron(cron);
-    return { cadenceString: err ? '' : formatCron(cron), validationError: err };
+    return { cadenceString: formatCron(cron), localError: null as string | null };
   }, [mode, interval, daily, cron]);
 
+  const [reading, setReading] = useState<CadenceReading | null>(null);
+  const [reachedIt, setReachedIt] = useState(true);
+
+  useEffect(() => {
+    if (localError || !cadenceString) {
+      setReading(null);
+      return;
+    }
+    let live = true;
+    const timer = window.setTimeout(() => {
+      readCadence(cadenceString)
+        .then((r) => {
+          if (!live) return;
+          setReading(r);
+          setReachedIt(true);
+        })
+        .catch(() => {
+          if (!live) return;
+          setReading(null);
+          setReachedIt(false);
+        });
+    }, READ_DEBOUNCE_MS);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [cadenceString, localError]);
+
+  const validationError = localError ?? (reading && !reading.ok ? reading.problem : null);
+  // Saving is allowed while the answer is in flight and when the backend could
+  // not be reached: the scheduler refuses a cadence it will not take, with its
+  // own sentence, and a form that blocks on its own uncertainty is the thing
+  // this replaced.
+  const settled = !localError && !!cadenceString && (reading === null ? !reachedIt : reading.ok);
+
   const previewLabel = useMemo(() => {
-    if (validationError || !cadenceString) return validationError ?? 'enter a cadence';
-    const next = nextFireTime(cadenceString);
-    if (!next) return 'could not resolve next fire';
-    const hhmmss = next.toLocaleTimeString([], { hour12: false });
-    return `next: ${hhmmss} (${humanizeDelta(next.getTime() - Date.now())})`;
-  }, [cadenceString, validationError]);
+    if (localError) return localError;
+    if (!cadenceString) return 'enter a cadence';
+    if (!reachedIt) return 'the app could not be reached, so this is unchecked';
+    if (!reading) return 'reading it';
+    if (!reading.ok) return reading.problem;
+    if (!reading.nextFireAt) return reading.words;
+    const next = new Date(reading.nextFireAt);
+    return `${reading.words}, next in ${humanizeDelta(next.getTime() - Date.now())}`;
+  }, [cadenceString, localError, reading, reachedIt]);
 
   useEffect(() => {
     if (embedded) return;
@@ -99,12 +143,12 @@ export function CadencePicker({ jobName, value, onCommit, onCancel, embedded = f
   // Empty string is also pushed when validation fails so the parent can
   // disable its submit button accordingly.
   useEffect(() => {
-    if (embedded) onCommit(validationError ? '' : cadenceString);
+    if (embedded) onCommit(settled ? cadenceString : '');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cadenceString, validationError, embedded]);
+  }, [cadenceString, settled, embedded]);
 
   const handleSave = () => {
-    if (validationError || !cadenceString) return;
+    if (!settled) return;
     onCommit(cadenceString);
   };
 
@@ -178,7 +222,7 @@ export function CadencePicker({ jobName, value, onCommit, onCancel, embedded = f
           <Button
             tone="primary"
             onClick={handleSave}
-            disabled={!!validationError || !cadenceString}
+            disabled={!settled}
           >
             save
           </Button>

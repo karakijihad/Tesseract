@@ -1,5 +1,14 @@
 """BashTool — executes shell commands with security layer.
 
+**Where it runs.** The open project's root, which is what `git` already
+resolves, or `cwd` when the caller names one. It used to be
+`ToolContext.workspace_root` always: the code tree, fixed when the session was
+built, which `project_open` does not move. A command aimed at the project the
+operator had open therefore ran in this repository instead, silently and
+successfully, and one of them rewrote the wrong repository's `origin`. The two
+tools that both run git had to agree on where "here" is.
+
+
 Not concurrent-safe, not read-only. Requires Stage 2 security layer.
 Commands pass through 26 numbered bash security checks before
 execution. The 20 absolute-DENY checks block hard at
@@ -14,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import pathlib
 
 from pydantic import BaseModel, Field
 
@@ -59,6 +69,69 @@ def _extract_locked_yaml(command: str) -> str:
 class BashInput(BaseModel):
     command: str = Field(description="The shell command to execute")
     timeout: float = Field(default=_DEFAULT_TIMEOUT, gt=0, le=600, description="Timeout in seconds (max 600)")
+    cwd: str | None = Field(
+        default=None,
+        description=(
+            "Where to run it. Defaults to the open project's root, the same "
+            "directory `git` acts on, so a command about the work you have "
+            "open runs where that work is. Name one only to run somewhere "
+            "else."
+        ),
+    )
+
+
+def _working_dir(inp: "BashInput", context: ToolContext) -> str:
+    """Where the command runs: what the caller named, else the open project,
+    else the workspace root.
+
+    **Both new answers are checked against the seal, and refused rather than
+    relocated.** `bash_security`'s sealed-tree DENY reads the command TEXT, so
+    it cannot see a directory handed to the subprocess beside it: `echo x >
+    note.txt` names nothing sealed and lands wherever this says. A caller that
+    named a directory on purpose is told no, which is the choice `git_tool`
+    already made and for the reason its docstring gives — silently moving
+    someone who typed a path is worse than telling them.
+
+    `workspace_root` is the one that is MOVED rather than refused, because
+    nobody chose it: it is what is left when the caller named nothing and no
+    project is open, and in an installed app it IS the sealed code tree.
+    Refusing it would take the shell out of the product; running in it would
+    write into the tree an update wipes. `safe_cwd` is the answer the runtime
+    already gives to this exact fact for CLI delegates, and it is a no-op
+    outside an install, where the root is not sealed and comes back unchanged.
+
+    Raises `SealViolation` for the two a caller DID choose, which `run` turns
+    into an answer.
+    """
+    from tesseract.orchestrator.seal_guard import assert_cwd_outside_seal, safe_cwd
+
+    if inp.cwd and inp.cwd.strip():
+        named = inp.cwd.strip()
+        assert_cwd_outside_seal(named)
+        return named
+    fallback = str(safe_cwd(context.workspace_root))
+    try:
+        from tesseract.orchestrator.projects.store import ProjectStore
+
+        active = ProjectStore().active()
+    except Exception:  # noqa: BLE001 — a broken registry is not this tool's error
+        # Said out loud. The fallback is right, and running somewhere the
+        # caller did not expect with no trace is the failure this whole fix
+        # exists to close: `git` raises here, and a shell that quietly
+        # disagrees with it is the same silence in a different tool.
+        logger.warning(
+            "bash: the project registry could not be read, so the command runs "
+            "in %s rather than the open project", fallback,
+            exc_info=True,
+        )
+        return fallback
+    if active is None:
+        return fallback
+    root = pathlib.Path(active.root)
+    if not root.is_dir():
+        return fallback
+    assert_cwd_outside_seal(root)
+    return str(root)
 
 
 class BashTool(Tool):
@@ -81,16 +154,17 @@ class BashTool(Tool):
         "Runs a raw shell command through the operating system."
     )
     use_when: ClassVar[str] = (
-        "Use for an actual shell operation no dedicated tool covers — running "
+        "Use for an actual shell operation no dedicated tool covers, such as running "
         "a script, a build, a git command, a package manager."
     )
     not_when: ClassVar[str] = (
         "Reading a file's contents (`file_read`), searching file contents or "
         "names (`grep`, `glob`), or writing or editing a file (`file_write`) "
-        "— those tools exist so this one doesn't have to, and reaching for "
+        "Those tools exist so this one does not have to, and reaching for "
         "bash to cat/grep/echo something costs an operator prompt for "
         "nothing. Most commands prompt the operator before running."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -150,12 +224,19 @@ class BashTool(Tool):
                     is_error=True,
                 )
 
+        from tesseract.orchestrator.seal_guard import SealViolation
+
+        try:
+            where = _working_dir(inp, context)
+        except SealViolation as exc:
+            return ToolResult(output=f"bash: {exc}", is_error=True)
+
         try:
             process = await asyncio.create_subprocess_shell(
                 inp.command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=context.workspace_root,
+                cwd=where,
             )
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(),

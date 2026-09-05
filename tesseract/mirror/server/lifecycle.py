@@ -1,11 +1,10 @@
 """Mirror backend shutdown-intent helper.
 
 Single home for the "write ``intent.json`` before exit" logic so every
-clean-shutdown path goes through the same call. AU-1 wires this from
-``_on_shutdown`` (signal-driven, SIGTERM/SIGINT from the supervisor or
-operator terminal). AU-1 S2 will add a ``POST /api/runtime/shutdown``
-route that goes through the same helper before triggering the aiohttp
-shutdown.
+clean-shutdown path goes through the same call. ``_on_shutdown`` wires
+it (signal-driven, SIGTERM/SIGINT from the supervisor or operator
+terminal), and ``POST /api/runtime/shutdown`` goes through the same
+helper before triggering the aiohttp shutdown.
 
 The intent file is the only signal the supervisor has for "this was
 orderly, not a crash" — without this hook, every shutdown looks like a

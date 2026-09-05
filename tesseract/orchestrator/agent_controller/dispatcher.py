@@ -559,11 +559,10 @@ async def tail_until_assistant_text(
     the budget. Stops on the first closed (``partial=False``)
     assistant_text event OR on disconnect OR on cancel.
 
-    Reviewer Bug 2 fix: cancel responsiveness was previously limited
-    to ``idle_timeout_seconds`` because the loop only checked
-    ``cancel_event`` between pushes. Now we race the inbox future
-    against ``cancel_event.wait()`` so a cancel fires within one
-    event-loop turn no matter how long the controller has been silent.
+    The inbox future is raced against ``cancel_event.wait()`` so a cancel
+    fires within one event-loop turn no matter how long the controller has
+    been silent. Checking ``cancel_event`` only between pushes would limit
+    cancel responsiveness to ``idle_timeout_seconds``.
     """
     assistant_text: list[str] = []
     saw_assistant = False

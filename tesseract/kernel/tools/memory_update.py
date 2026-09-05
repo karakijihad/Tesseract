@@ -13,8 +13,9 @@ from pydantic import BaseModel, Field
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
 from tesseract.memory.embeddings import EmbeddingIndex
 from tesseract.memory.index import MemoryIndex
+from tesseract.memory.related_block import strip_related_block
 from tesseract.memory.store import MemoryStore
-from tesseract.memory.types import MemoryFrontmatter
+from tesseract.memory.types import MemoryFrontmatter, lead_paragraph
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,13 @@ class MemoryUpdateInput(BaseModel):
     content: str | None = Field(default=None, description="New body content")
     title: str | None = Field(default=None, description="New title")
     importance: int | None = Field(default=None, ge=1, le=10, description="New importance 1-10")
+    summary: str | None = Field(
+        default=None,
+        description=(
+            "New one-line hook, written for scanning. Only supply this when "
+            "the hook itself should change; a content edit re-derives it."
+        ),
+    )
     tags: list[str] | None = Field(default=None, description="New tags (replaces existing)")
     source_path: str | None = Field(default=None, description="Vault-relative path to link")
     source_url: str | None = Field(default=None, description="Original URL if web source")
@@ -38,13 +46,14 @@ class MemoryUpdateTool(Tool):
     group: ClassVar[str] = "remembering"
     summary: ClassVar[str] = "Revise an existing memory's content, title, importance, or tags."
     use_when: ClassVar[str] = (
-        "Use to amend a memory once a fact changes. Pass the memory id — "
+        "Use to amend a memory once a fact changes. Pass the memory id. "
         "`memory_search` results carry it."
     )
     not_when: ClassVar[str] = (
         "use `memory_save` to create a new fact; use `memory_promote` for "
         "lifecycle actions like archive/merge/bump."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(
         self,
@@ -80,7 +89,12 @@ class MemoryUpdateTool(Tool):
         new_importance = inp.importance if inp.importance is not None else fm.importance
         new_tags = inp.tags if inp.tags is not None else fm.tags
         new_body = inp.content if inp.content is not None else body
-        new_summary = new_body[:100] if inp.content and len(new_body) > 100 else fm.summary
+        if inp.summary is not None:
+            new_summary = inp.summary.strip()
+        elif inp.content is not None:
+            new_summary = lead_paragraph(strip_related_block(new_body))
+        else:
+            new_summary = fm.summary
 
         new_source_path = inp.source_path if inp.source_path is not None else fm.source_path
         new_source_url = inp.source_url if inp.source_url is not None else fm.source_url

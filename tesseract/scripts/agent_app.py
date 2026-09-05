@@ -1025,14 +1025,13 @@ class AgentApp(App[int]):
         # Audit-3 M5 — per-worker live job state for the
         # BackgroundJobsBar. Keyed by worker_id.
         self._jobs: dict[str, dict[str, Any]] = {}
-        # Background-spawn linkage (2026-05-24): delegate_* with
-        # background=True returns immediately with a handle, so its
-        # tool_result fires (and pops the ToolBlock) BEFORE the
-        # subprocess streams cli_chunks — which used to spawn a
-        # confusing second "cli delegate_coder" orphan block (operator
-        # "why two claude"). We instead route the spawn to the rail:
-        # map the delegate's tool_use_id -> spawn handle, buffer the
-        # stream under the handle, and let the detail pane show it.
+        # Background-spawn linkage: delegate_* with background=True returns
+        # immediately with a handle, so its tool_result fires (and pops the
+        # ToolBlock) BEFORE the subprocess streams cli_chunks, which on its
+        # own spawns a confusing second "cli delegate_coder" orphan block.
+        # The spawn is routed to the rail instead: map the delegate's
+        # tool_use_id -> spawn handle, buffer the stream under the handle,
+        # and let the detail pane show it.
         self._spawn_tool_to_handle: dict[str, str] = {}
         self._spawn_streams: dict[str, list[str]] = {}
         # Audit-3 M8 — active theme name + ring buffer of recent raw
@@ -1449,11 +1448,10 @@ class AgentApp(App[int]):
                 text, approved=cmd == ":approve"
             )
             return
-        # Audit-3 M6 — Textual TUI used to only special-case `:quit` /
-        # `:approve` / `:deny`, sending every other line as user_input.
-        # The legacy CLI supports a full `/-command` surface; restore
-        # parity here so /help, /clear, /sessions, /new, /delete, /title,
-        # /reload, /detach, /quit, /shutdown all work in the new UI.
+        # Special-casing `:quit` / `:approve` / `:deny` alone would send
+        # every other line as user_input. The full `/-command` surface has
+        # parity here, so /help, /clear, /sessions, /new, /delete, /title,
+        # /reload, /detach, /quit and /shutdown all work.
         if is_slash_command(text):
             await self._handle_slash(text)
             return

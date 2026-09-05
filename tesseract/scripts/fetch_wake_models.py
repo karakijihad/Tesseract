@@ -1,9 +1,17 @@
 """First-run fetch for the wake-word keyword model.
 
-One archive, pinned in ``mirror.yaml::identity.wake_word.download`` and
+One archive, pinned in ``identity.yaml::wake_word.download`` and
 verified against its sha256 before anything is unpacked. It holds the
-transducer the gate decodes through, and its own README declares it
-Apache-2.0.
+transducer the gate decodes through.
+
+The archive's own README declares Apache-2.0, and so does the sherpa-onnx
+source. What that declaration does not settle is the training data: the
+model comes from GigaSpeech XL, whose terms of access say non-commercial
+research and education, while the same corpus is also published carrying
+an Apache-2.0 badge, and its publishers have an open disagreement about
+which governs a model trained on it. So the publisher's declaration is
+recorded as what it is, a declaration, and ``NOTICE.md`` carries the
+unresolved question rather than either asserting or denying it.
 
 The release publishes no per-file downloads, so 18 MB arrives to keep the
 ~5.5 MB the gate loads: the int8 encoder/decoder/joiner plus the two
@@ -40,11 +48,11 @@ from tesseract.lib.pinned_fetch import (
 logger = logging.getLogger(__name__)
 
 _LABEL = "wake model fetch"
-_WHERE = "mirror.yaml::identity.wake_word.download"
+_WHERE = "identity.yaml::wake_word.download"
 
 
 def _wake_block() -> dict[str, Any] | None:
-    """The `identity.wake_word` block, or None if it cannot be read.
+    """The `wake_word` block, or None if it cannot be read.
 
     Read straight off the YAML rather than through `load_server_config`: this
     runs during provisioning, before there is a server, and a wake fetch must
@@ -53,20 +61,19 @@ def _wake_block() -> dict[str, Any] | None:
     """
     import yaml
 
-    from tesseract.mirror.server.config import MIRROR_YAML
+    from tesseract.mirror.server.config import IDENTITY_YAML
 
     try:
         # Parsed here rather than through `config.py`'s private helper: this
         # runs during provisioning and only needs one block, so it should not
         # depend on a symbol that module is free to rename.
-        mirror = yaml.safe_load(MIRROR_YAML.read_text(encoding="utf-8")) or {}
+        identity = yaml.safe_load(IDENTITY_YAML.read_text(encoding="utf-8")) or {}
     except Exception as exc:  # noqa: BLE001 - unreadable config is "nothing to do"
-        logger.warning("%s: could not read %s: %s", _LABEL, MIRROR_YAML, exc)
+        logger.warning("%s: could not read %s: %s", _LABEL, IDENTITY_YAML, exc)
         return None
-    if not isinstance(mirror, dict):
-        logger.warning("%s: %s is not a mapping — nothing to fetch", _LABEL, MIRROR_YAML)
+    if not isinstance(identity, dict):
+        logger.warning("%s: %s is not a mapping — nothing to fetch", _LABEL, IDENTITY_YAML)
         return None
-    identity = mirror.get("identity") or {}
     block = identity.get("wake_word")
     return block if isinstance(block, dict) else None
 
@@ -74,7 +81,7 @@ def _wake_block() -> dict[str, Any] | None:
 def _pinned_source() -> PinnedSource | None:
     block = _wake_block()
     if block is None:
-        logger.warning("%s: no identity.wake_word block — nothing to fetch", _LABEL)
+        logger.warning("%s: no wake_word block — nothing to fetch", _LABEL)
         return None
     return parse_download_block(block.get("download"), where=_WHERE)
 

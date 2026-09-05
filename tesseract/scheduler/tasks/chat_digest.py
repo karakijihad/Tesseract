@@ -74,10 +74,10 @@ class ChatDigestJob(BaseJob):
                 )
 
             # Before anything expensive: a day already digested costs nothing.
-            # The probe used to run inside `append_section`, i.e. AFTER the
-            # model call, so re-firing on a written day still paid for a digest
-            # and threw it away — 12.7s and `wrote=False` in AR-3's live pass,
-            # multiplied once the pipeline began walking missed days.
+            # The probe inside `append_section` runs AFTER the model call, so
+            # re-firing on a written day pays for a digest and throws it away:
+            # 12.7s and `wrote=False` on a live pass, multiplied once the
+            # pipeline walks missed days.
             daily_dir = _resolve_daily_dir(ctx)
             header = f"## [chat_digest] {target_date.isoformat()}"
             if section_exists(
@@ -127,7 +127,7 @@ class ChatDigestJob(BaseJob):
                     job_name=ctx.job_name,
                     run_id=ctx.run_id,
                     ok=False,
-                    detail="chain exhausted — no digest produced",
+                    detail="chain exhausted, no digest produced",
                     payload={
                         "target_date": target_date.isoformat(),
                         "sessions": len(sessions),

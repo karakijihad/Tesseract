@@ -61,7 +61,6 @@ class VaultIndexer:
         self._fts_index = fts_index
         self._breaker = CircuitBreaker(
             name="vault_indexer",
-            max_failures=3,
             log_dir=log_dir,
         )
 
@@ -207,9 +206,18 @@ class VaultIndexer:
                 except Exception:
                     logger.warning("FTS add failed for %s", cid)
 
-            if self._embeddings is not None and not self._breaker.is_tripped:
+            # The subject is the file, not the chunk: one document skipped is
+            # one thing kept from the vault, however many chunks it holds.
+            if self._embeddings is not None and self._breaker.allow(
+                subject=f"embeddings for {vault_rel_path}"
+            ):
                 try:
                     await self._embeddings.add(cid, chunk_text)
+                    # Paired with the `record_failure` below: without it the
+                    # count only ever grows, so three failures spread over a
+                    # process lifetime trip a breaker that has been working in
+                    # between, and nothing ever closes it again.
+                    self._breaker.record_success()
                 except Exception as e:
                     self._breaker.record_failure(str(e))
                     logger.warning("Embedding failed for %s: %s", cid, e)

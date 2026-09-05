@@ -3,7 +3,7 @@
 Diverges from `tesseract/context/circuit_breaker.py` in one way: this
 variant auto-closes after a 60 s cooldown so a transient adapter outage
 doesn't leave the observer dead until disarm. Consolidation with the
-shared class is a candidate for Phase 4 once disarm semantics land.
+shared class waits on disarm semantics.
 """
 
 from __future__ import annotations

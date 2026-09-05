@@ -38,9 +38,10 @@ class ProjectOpenTool(Tool):
         "directory new lanes default into. Use `project_list` for ids first."
     )
     not_when: ClassVar[str] = (
-        "showing a file, folder, URL or app, which is `open` — this only "
+        "showing a file, folder, URL or app, which is `open`. This only "
         "switches which project is active."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -86,21 +87,26 @@ class ProjectOpenTool(Tool):
                 is_error=True,
             )
 
-        # Activate first. Provisioning grants trust and rewrites CLI config;
-        # doing it ahead of a set_active that then fails would leave the machine
-        # wired for a project the registry never switched to.
-        try:
-            opened = store.set_active(inp.project_id)
-        except (UnknownProjectError, ProjectStoreError, OSError) as exc:
-            return ToolResult(output=f"project_open: {exc}", is_error=True)
-
         try:
             # project_link and project_new both refuse a sealed root; without
             # the same check here a hand-edited registry could make one active,
             # and every default-cwd lane would then fail at spawn with the
             # refusal coming from somewhere the operator never called.
+            #
+            # It runs BEFORE set_active because it reads nothing set_active
+            # produces: `root` came off the registered project above. Asking
+            # afterwards left a refused project active with nothing to roll it
+            # back, which is the state the check exists to prevent.
             assert_cwd_outside_seal(root)
         except SealViolation as exc:
+            return ToolResult(output=f"project_open: {exc}", is_error=True)
+
+        # Activate before provisioning. Provisioning grants trust and rewrites
+        # CLI config; doing it ahead of a set_active that then fails would leave
+        # the machine wired for a project the registry never switched to.
+        try:
+            opened = store.set_active(inp.project_id)
+        except (UnknownProjectError, ProjectStoreError, OSError) as exc:
             return ToolResult(output=f"project_open: {exc}", is_error=True)
 
         provision_note = await trust_and_provision(root)

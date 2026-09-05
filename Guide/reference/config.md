@@ -8,36 +8,37 @@ description: "Configuration is a set of YAML files under `tesseract/config/`. Mo
 
 Configuration is a set of YAML files under `tesseract/config/`. Model choices, budgets, postures and timeouts live here rather than in the code, so changing one is an edit to a file you own. Infrastructure values — model ids, endpoints, timeouts — are required rather than defaulted, so a missing one raises at boot naming the key it wanted instead of quietly substituting something.
 
-> These are the **shipped defaults**. Every value here lives in a config
-> file you own once TESSERACT is installed, so your copy may differ — and
-> should, once you tune it.
+> These are the **shipped defaults**. What you can change lives in a
+> config file you own once TESSERACT is installed, so your copy may
+> differ, and should, once you tune it.
 
 
 | File | Governs |
 | --- | --- |
 | `agenda-mappers.yaml` | how raw signals become agenda candidates |
 | `agenda.yaml` | autonomy's queue, its gates and its worker budgets |
-| `atlas.yaml` | the derived map over memory and the vault — how long a derived connection stands before it wants review |
-| `autonomy-watchlist.yaml` | what autonomy keeps an eye on |
+| `atlas.yaml` | the derived map over memory, the vault and what the machine did — how long a derived connection stands before it wants review |
 | `boot.yaml` | what the app prepares when it starts, in what order, and how much of it you wait for |
-| `channels.yaml` | outbound channels |
+| `channels.yaml` | the channels it can talk on, and what each one will accept |
 | `cockpit.yaml` | the spatial interface |
 | `conscience.yaml` | the self-check pass |
 | `controller-boot.yaml` | what the headless helper beside the app prepares when it starts, and in what order |
 | `hardware.yaml` | what the machine can do, detected at first run |
-| `identity.yaml` | who the assistant is |
+| `identity.yaml` | who the assistant is, who you are, and the phrase that wakes it |
 | `janitor.yaml` | cleanup sweeps |
 | `mcp.yaml` | TESSERACT's own MCP server — how other tools reach it |
 | `mcp_servers.yaml` | the allowlist of outside MCP servers it may call |
 | `memory.yaml` | retrieval, decay and consolidation |
-| `mirror.yaml` | the desktop interface |
+| `mirror.yaml` | the desktop interface and the server behind it |
 | `open_verb.yaml` | what 'open' resolves to |
 | `permissions.yaml` | AUTO / ASK / DENY for every tool — the authority |
 | `providers.yaml` | the catalog of providers and their model entries |
 | `retention.yaml` | how long each thing is kept, and whether it is archived or deleted when the window passes |
 | `roles.yaml` | which model does which job, and each role's daily cap |
+| `routing.yaml` | where each kind of message the app sends on its own is delivered |
 | `runtime.yaml` | process and lifecycle settings |
 | `schedule.yaml` | recurring jobs and how often they run |
 | `terminal.yaml` | the built-in terminal |
 | `tokenjuice.yaml` | token accounting |
 | `vault.yaml` | the research library and how it is indexed |
+| `working_set.yaml` | which tools the assistant sees without having to look them up |

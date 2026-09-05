@@ -1,11 +1,28 @@
-"""Process sweep — reap fingerprinted orphans.
+"""Process sweep — reap orphans the runtime launched.
 
-Kill rule (fixed here, not configurable): a process dies only when its
-command line matches a configured fingerprint AND it is an orphan —
-its parent is gone (psutil guards pid reuse via create_time). Always
-skipped, regardless of orphanhood: the janitor's own ancestry, pids
-claimed via `<home>/run/*.pid` (detached-by-design supervisor/backend,
-see pidfile.py), and a controller daemon with a fresh heartbeat."""
+Kill rule (fixed here, not configurable): a process dies only when it is
+an orphan — its parent is gone (psutil guards pid reuse via create_time)
+— AND it is identified as ours. Always skipped, regardless of orphanhood:
+the janitor's own ancestry, pids claimed via `<home>/run/*.pid`
+(detached-by-design supervisor/backend, see pidfile.py), and a controller
+daemon with a fresh heartbeat.
+
+Identity comes in three rungs, narrowest first:
+
+1. **The mark.** `TESSERACT_REAPABLE`, written into the environment of
+   every CLI the runtime spawns (`cli_utils.py::mark_reapable`) and read
+   back with `psutil.Process().environ()`. A marked orphan is ours no
+   matter what its command line says, which is what closes the leak: a
+   seat pointed at a CLI nobody wrote a pattern for still gets reaped.
+2. **The derived CLI fingerprints**, built from `providers.yaml`'s
+   `cli.*.command` values so no CLI binary is named twice. These fire
+   ONLY when the environment could not be read at all — an unreadable
+   environment must degrade to the old regex behaviour, never to "not
+   ours, leave it running". Where it CAN be read, unmarked means foreign,
+   and the operator's own `claude -p` in a terminal survives the sweep.
+3. **The hand-written patterns in `janitor.yaml`**, which describe
+   processes the runtime did not launch and therefore cannot mark. They
+   are matched regardless of the mark."""
 
 from __future__ import annotations
 
@@ -19,6 +36,8 @@ from typing import Iterable
 
 import psutil
 
+from tesseract.kernel.adapters.cli_utils import REAPABLE_ENV
+
 from .config import JanitorConfig
 from .models import Finding
 from .pidfile import claimed_pids
@@ -26,6 +45,57 @@ from .pidfile import claimed_pids
 log = logging.getLogger(__name__)
 
 _TERMINATE_GRACE_S = 3.0
+
+
+def _command_pattern(command: str) -> str:
+    """Match `command` where it stands as the executable of a command line.
+
+    A whole whitespace-delimited token that is the command itself or a path
+    ending in it, with the Windows extensions npm and the installers add.
+    Broad enough to cover every real invocation (that is what the degraded
+    rung owes), and narrow enough that a `--config ...\.claude\settings.json`
+    argument is not a match.
+    """
+    return (
+        r'(?:^|[\s"])(?:[^\s"]*[\\/])?'
+        + re.escape(command)
+        + r'(?:\.exe|\.cmd|\.bat)?"?(?=\s|$)'
+    )
+
+
+def _derived_cli_fingerprints() -> list[tuple[str, re.Pattern[str]]]:
+    """One fingerprint per `providers.yaml` cli command — the only place a
+    CLI binary is named. Read fresh: a provider added at 14:00 is covered by
+    the 15:15 sweep.
+
+    An unreadable catalog costs the degraded rung and nothing else — the mark
+    needs no config to be read — so it is logged rather than raised, which
+    would take the whole sweep down over a file this half does not own.
+    """
+    try:
+        from tesseract.config.loader import cli_commands, load_config
+
+        commands = cli_commands(load_config().providers_raw)
+    except Exception:  # noqa: BLE001 — the mark path is unaffected
+        log.warning(
+            "janitor: providers.yaml unreadable; sweeping without the derived "
+            "CLI fingerprints. Marked orphans are still reaped."
+        )
+        return []
+    return [(f"cli-{c}", re.compile(_command_pattern(c))) for c in sorted(commands)]
+
+
+def _reapable_owner(proc: psutil.Process) -> tuple[str | None, bool]:
+    """`(owner, readable)` from the process's environment.
+
+    `readable=False` is not evidence the process is foreign: `environ()`
+    raises for another user's processes and is unimplemented in some
+    sandboxes. The caller degrades to the fingerprints there.
+    """
+    try:
+        return proc.environ().get(REAPABLE_ENV), True
+    except (psutil.Error, OSError, NotImplementedError):
+        return None, False
 
 
 def _own_ancestry() -> set[int]:
@@ -73,7 +143,8 @@ def sweep_processes(
     procs: Iterable[psutil.Process] | None = None,
 ) -> list[Finding]:
     """`procs` is injectable for tests; defaults to the live process table."""
-    patterns = [(fp.id, re.compile(fp.pattern)) for fp in cfg.process_fingerprints]
+    foreign = [(fp.id, re.compile(fp.pattern)) for fp in cfg.process_fingerprints]
+    blind = foreign + _derived_cli_fingerprints()
     skip = _own_ancestry() | claimed_pids() | _controller_claim(cfg)
     findings: list[Finding] = []
     to_kill: list[tuple[psutil.Process, str, str]] = []
@@ -85,8 +156,23 @@ def sweep_processes(
             cmdline = " ".join(proc.cmdline())
             if not cmdline:
                 continue
-            hit = next((fid for fid, rx in patterns if rx.search(cmdline)), None)
-            if hit is None or not _is_orphan(proc):
+            # Orphanhood first: it is the cheaper half of the kill rule, and
+            # reading an environment is not free on a live process table.
+            if not _is_orphan(proc):
+                continue
+            owner, readable = _reapable_owner(proc)
+            if owner:
+                hit: str | None = f"mark:{owner}"
+            else:
+                hit = next(
+                    (
+                        fid
+                        for fid, rx in (foreign if readable else blind)
+                        if rx.search(cmdline)
+                    ),
+                    None,
+                )
+            if hit is None:
                 continue
             target = f"pid={proc.pid} [{hit}] {cmdline[:120]}"
             if dry_run:

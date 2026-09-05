@@ -1,10 +1,33 @@
 /* === MESSAGE BUBBLES === */
+/* The rail beside the transcript. The rail is a column of its own, so the
+   view is a row and the thread keeps the column layout it always had. */
 .chat-view {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   flex: 1;
   overflow: hidden;
   position: relative;
+}
+
+.chat-thread {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+/* One quiet line above the transcript: exactly when this conversation began,
+   right-aligned, and nothing else. Padded past the rail's edge tab, which is
+   16px wide and absolutely placed at the top of this same boundary. */
+.chat-head {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--space-10) var(--space-20) var(--space-8) var(--space-24);
+  border-bottom: var(--stroke-1) solid var(--panel-border);
+  color: var(--text-meta);
 }
 
 .chat-scroll {
@@ -143,116 +166,6 @@
   flex-shrink: 0;
 }
 
-/* mirror-multi-chat P3 — horizontal chat tab strip above the message list.
-   Mirrors the ConversationsPane rail's active-state pattern; all hint/meta
-   text uses var(--text-meta) / .t-meta per the hint-token hard rule. */
-/* multichat-redesign — dropdown chat manager. Replaces the horizontal tab
-   strip; retains .chat-tab-pulse + .chat-tab-approval (reused for the per-row
-   streaming/approval dots and the trigger's aggregate approval signal). */
-.chat-mgr {
-  position: relative;
-  flex-shrink: 0;
-  padding: var(--space-6) var(--space-10);
-  border-bottom: var(--stroke-1) solid var(--panel-border);
-  background: var(--bg-surface);
-}
-.chat-mgr-caret { flex-shrink: 0; color: var(--text-meta); }
-.chat-mgr-active-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.chat-mgr-count { flex-shrink: 0; margin-left: auto; padding-left: var(--space-8); }
-.chat-mgr-panel {
-  position: absolute;
-  top: 100%;
-  left: 10px;
-  z-index: 6;
-  margin-top: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  min-width: 260px;
-  max-width: 340px;
-  max-height: 60vh;
-  overflow-y: auto;
-  background: var(--bg-elevated);
-  border: var(--stroke-1) solid var(--panel-border);
-  border-radius: var(--radius-sm);
-  box-shadow: 0 6px 20px var(--scrim-md);
-}
-.chat-mgr-list { display: flex; flex-direction: column; }
-.chat-mgr-empty { padding: var(--space-8) var(--space-12); }
-.chat-mgr-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-6);
-  padding: var(--space-2) var(--space-6) var(--space-2) var(--space-10);
-}
-/* Placement only. The chat in view is lit by the row's own `is-active` —
-   which chat is current is a property of the control you click, not of the
-   strip of actions beside it. */
-.chat-mgr-row-label {
-  flex: 1;
-  min-width: 0;
-}
-.chat-mgr-active-dot {
-  flex-shrink: 0;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent);
-}
-.chat-mgr-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat-mgr-row-actions { display: flex; align-items: center; gap: var(--space-2); flex-shrink: 0; }
-/* PLACEMENT ONLY — the field is `.input`; it stands in for a row and takes
-   the row's width. */
-.chat-mgr-rename {
-  flex: 1;
-  min-width: 0;
-  margin: var(--space-4) var(--space-2);
-}
-.chat-mgr-archived { border-top: var(--stroke-1) solid var(--panel-border); }
-/* Placement only — the count sits left, the caret right. */
-.chat-mgr-archived-header { justify-content: space-between; }
-.chat-mgr-archived-list { display: flex; flex-direction: column; }
-.chat-mgr-archived-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-8);
-  padding: var(--space-6) var(--space-10) var(--space-6) var(--space-12);
-}
-.chat-mgr-archived-row:hover { background: var(--accent-dim); }
-.chat-mgr-archived-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-secondary);
-}
-.chat-mgr-archived-actions,
-.chat-mgr-confirm { display: flex; align-items: center; gap: var(--space-4); flex-shrink: 0; }
-.chat-mgr-confirm-label,
-.chat-mgr-delete-error { white-space: nowrap; }
-.chat-tab-pulse {
-  flex-shrink: 0;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent-bright);
-  animation: chat-tab-pulse var(--motion-beat) ease-in-out infinite;
-}
-@keyframes chat-tab-pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
-/* P4 — pending-approval badge: a background chat is blocked on a tool ASK.
-   Steady (not pulsing) amber dot — reads as "needs you" vs. the streaming
-   pulse's "working". */
-.chat-tab-approval {
-  flex-shrink: 0;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent-bright);
-  box-shadow: 0 0 4px var(--accent-bright);
-}
 /* Chat + voice cost chips, relocated out of the bottom HUD into the chat
    tab. Sits above the composer; reuses the `.hud-stats` chip styling. */
 .chat-cost-strip {

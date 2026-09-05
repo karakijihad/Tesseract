@@ -46,6 +46,25 @@ def current_boot_id() -> str:
         return _current
 
 
+def boot_started_at(boot_id: str) -> datetime | None:
+    """When the process carrying this id started, or None if it is not one.
+
+    The id is minted while logging is armed, which is the earliest thing this
+    process does, so it is the closest thing to a process start stamp anything
+    holds. Recovery needs it to tell state left by a PREVIOUS process from
+    state this one has already created: the two are indistinguishable on disk,
+    and closing the second kind would kill live work.
+
+    Parsed here rather than where it is needed, because the format is declared
+    here and a second reader of it is a second thing to fix.
+    """
+    stamp = boot_id.rsplit("-", 1)[0] if boot_id.count("-") >= 2 else ""
+    try:
+        return datetime.strptime(stamp, _FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
 def reset_boot_id_for_tests() -> None:
     """Forget the minted id. Tests only — a process gets one boot."""
     global _current
@@ -53,4 +72,4 @@ def reset_boot_id_for_tests() -> None:
         _current = None
 
 
-__all__ = ["current_boot_id", "mint_boot_id", "reset_boot_id_for_tests"]
+__all__ = ["boot_started_at", "current_boot_id", "mint_boot_id", "reset_boot_id_for_tests"]

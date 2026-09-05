@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { isEnvelope } from "../lib/envelope";
+import type { EnvelopeCategory } from "../lib/types";
 import { fetchEventsSince } from "../lib/api";
 import { WS_URL } from "../lib/endpoints";
 import { nextDelay } from "../lib/backoff";
@@ -16,7 +17,6 @@ import { useToastStore } from "./toasts";
 import { useAlarmsStore } from "./alarms";
 import { useScheduleStore } from "./schedule";
 import { useConscienceStore } from "./conscience";
-import { useAgentsStore } from "./agents";
 import { useAutonomyStore } from "./autonomy";
 import { useActivityStore } from "./activity";
 import { useToolsStore } from "./tools";
@@ -50,6 +50,20 @@ interface WebSocketState {
   sendBinary: (buffer: ArrayBufferLike) => void;
   setSessionId: (id: string) => void;
 }
+
+/** Backend channels that ship a `{kind, channel, session_id, ts, data}` record
+ *  (events.py) instead of the standard Envelope, and the category each becomes.
+ *
+ *  `surface` carries Surface Protocol events, where session_id is the view
+ *  name; `activity` carries Unified Activity deltas, where it is the
+ *  activity_id; `panel` says one cached fetch is out of date. Replay is dropped
+ *  at the WS pump for all three — each has a REST catch-up path.
+ */
+const REKEYED_CHANNELS: Record<string, EnvelopeCategory> = {
+  surface: "canvas",
+  activity: "activity",
+  panel: "panel",
+};
 
 export const useWebSocketStore = create<WebSocketState>((set, get) => {
   let _socket: WebSocket | null = null;
@@ -175,7 +189,6 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => {
         useAlarmsStore.getState().fetchAlarms();
         useScheduleStore.getState().fetchJobs();
         useConscienceStore.getState().fetchDrift();
-        useAgentsStore.getState().fetchAll();
         // tools.load() guards against re-fetch when `tools !== null` —
         // pass force=true so reconnect after a failed first load can
         // actually replace the stale state.
@@ -227,14 +240,13 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => {
                 useSessionStore.getState().setLastChatId(null);
               } else {
                 // Outside the resume cutoff — leave the pointer intact so the
-                // operator can still see + manually /load it from the
-                // SessionDrawer, but surface a toast so they know why the
-                // session didn't auto-resume. Phase 18 audit m1 — message
-                // now reflects the actual policy in force.
+                // operator can still reach the conversation from the chat
+                // rail, but surface a toast so they know why it did not
+                // auto-resume.
                 useToastStore
                   .getState()
                   .push(
-                    `"${match.title}" is ${describeResumeCutoff()} — open the Sessions drawer to /load manually.`,
+                    `"${match.title}" is ${describeResumeCutoff()}. Open it from the conversations rail to pick it up again.`,
                     "info",
                     6000,
                   );
@@ -275,31 +287,11 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => {
         // standard `{type, category, ..., timestamp}` Envelope before dispatch
         // so they flow through the same handler chain.
         const rec = raw as Record<string, unknown>;
-        if (rec && rec.channel === "surface" && typeof rec.kind === "string") {
-          // Y-2 — Surface Protocol events. Re-key to the standard Envelope
-          // with category 'canvas'; session_id carries the view name (see
-          // orchestrator/surfaces/events.py).
+        const category = rec ? REKEYED_CHANNELS[String(rec.channel)] : undefined;
+        if (category && typeof rec.kind === "string") {
           raw = {
             type: rec.kind,
-            category: "canvas",
-            session_id:
-              typeof rec.session_id === "string" ? rec.session_id : "",
-            timestamp:
-              typeof rec.ts === "string" ? rec.ts : new Date().toISOString(),
-            data: (rec.data ?? {}) as Record<string, unknown>,
-          };
-        } else if (
-          rec &&
-          rec.channel === "activity" &&
-          typeof rec.kind === "string"
-        ) {
-          // AS-1/AS-2 — Unified Activity events. Re-key to the standard
-          // Envelope with category 'activity'; session_id carries the
-          // activity_id (orchestrator/activity/events.py). Replay is dropped at
-          // the WS pump — GET /api/activity is the catch-up path.
-          raw = {
-            type: rec.kind,
-            category: "activity",
+            category,
             session_id:
               typeof rec.session_id === "string" ? rec.session_id : "",
             timestamp:

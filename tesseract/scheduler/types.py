@@ -14,7 +14,7 @@ _NOT_OK_OUTCOMES = frozenset(
 )
 
 
-# Who caused this run. A `runs.jsonl` record used to carry no trigger at all,
+# Who caused this run. A `runs.jsonl` record carrying no trigger at all
 # so a hand-fired job and a cron tick were byte-identical in shape — which is
 # how a run at 08:50 against a 22:30 cadence got diagnosed as a scheduler bug
 # that did not exist. `manual` is deliberately NOT one of these: two different
@@ -52,7 +52,7 @@ class JobContext:
     model_role: str | None = field(default=None, compare=False)
     # The chain this run should ride, when the work names one instead of a
     # role. Roles are pillars — `chat_brain`, the seats, the defaults — and a
-    # background job that needed none of them used to get a role invented for
+    # background job that needs none of them would otherwise get a role invented for
     # it purely to hold a budget line. Naming the chain directly is what
     # removes the need for that invention. `model_role` still wins when both
     # are set: an operator's per-row override is an answer about which role,
@@ -69,6 +69,14 @@ class JobContext:
     # in ``role_chain.build_chain_for_role``). None for tests / ledger-disabled
     # boots — metering becomes a no-op. (2026-06-28 cost-ledger gap.)
     cost_ledger: Any = field(default=None, compare=False, repr=False)
+    # Where this row's messages go, from `schedule.yaml::jobs[].delivery`.
+    # `None` means the row said nothing and the kind's own row in
+    # `routing.yaml` decides; a tuple, empty included, is the row's own
+    # answer. A job that notifies passes it straight to
+    # `OutboundNotifier.notify(destinations=...)` — carried here rather than
+    # read from the schedule by each job, so a handler never has to know which
+    # row armed it.
+    delivery: tuple[str, ...] | None = field(default=None, compare=False)
     # One of TRIGGER_SOURCES, written into the run record by `scheduler/log.py`.
     # Defaults to `scheduled` so a context built outside the engine still
     # produces a valid record; the engine and the alarm runner always set it.

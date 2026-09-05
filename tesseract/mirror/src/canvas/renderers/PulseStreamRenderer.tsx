@@ -102,9 +102,9 @@ export function PulseStreamRenderer(_props: RendererProps) {
                 label="Pulse retention cap"
               />
               {cap === 'all' && (
-                <Hint label="No cap — long sessions may slow the panel">
+                <Hint label="No cap. A long session keeps every event, which can slow the panel.">
                   <span className="pulse-cap-warn t-meta">
-                    unbounded — may affect performance
+                    unbounded, may slow the panel
                   </span>
                 </Hint>
               )}

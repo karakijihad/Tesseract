@@ -1,0 +1,41 @@
+/* The line the transcript draws where the runtime started a turn itself. */
+
+.runtime-note {
+  padding: var(--space-4) 0;
+}
+
+.runtime-note__rule {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+}
+
+/* Same faintest rule the fold marker uses, for the same reason: neither is an
+   event worth a bordered card, and two quiet transcript entries drawn two
+   different ways would read as two different kinds of thing. */
+.runtime-note__rule::before,
+.runtime-note__rule::after {
+  content: '';
+  flex: 1;
+  height: var(--stroke-1);
+  background: var(--border-subtle);
+}
+
+.runtime-note__label,
+.runtime-note__toggle {
+  flex: none;
+  max-width: 60%;
+  text-align: center;
+}
+
+.runtime-note__label {
+  color: var(--text-meta);
+}
+
+.runtime-note__body {
+  margin: var(--space-6) auto 0;
+  max-width: 60%;
+  text-align: center;
+  white-space: pre-wrap;
+  color: var(--text-meta);
+}

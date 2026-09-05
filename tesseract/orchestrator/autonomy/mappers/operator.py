@@ -1,7 +1,7 @@
 """Operator → AgendaItemDraft.
 
-Operator-authored items flow in via ``POST /api/agenda/items`` (AU-4
-S2 routes) — they do not pass through the event bus today; this mapper
+Operator-authored items flow in via ``POST /api/agenda/items`` and do
+not pass through the event bus; this mapper
 exists for completeness so an operator entry point that publishes
 ``AgendaSource.OPERATOR`` to the bus (e.g. a future Telegram inbound
 command) yields the same draft shape.

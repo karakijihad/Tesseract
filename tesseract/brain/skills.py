@@ -19,7 +19,9 @@ same idiom as the permissions-drift logging in `brain/boot.py`).
 from __future__ import annotations
 
 import logging
+import os
 import re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -39,7 +41,7 @@ SKILL_FILENAME = "SKILL.md"
 # 256 KiB (PTY_LINE_CAP idiom: a code-level bound, not a config key).
 SKILL_MD_MAX_BYTES = 262_144
 
-# Phase 4 quarantine — mirrors agents/loader.py's pending/rejected split.
+# Quarantine — mirrors agents/loader.py's pending/rejected split.
 # A skill drafted unattended lands in `skills/pending/<name>/SKILL.md` and is
 # NEVER surfaced live until the operator promotes it; a rejected draft is
 # archived in `skills/rejected/<name>/`. Both dirnames (and __pycache__) are
@@ -47,6 +49,41 @@ SKILL_MD_MAX_BYTES = 262_144
 SKILL_PENDING_DIRNAME = "pending"
 SKILL_REJECTED_DIRNAME = "rejected"
 _SKIP_DIRNAMES = frozenset({SKILL_PENDING_DIRNAME, SKILL_REJECTED_DIRNAME, "__pycache__"})
+
+
+#: The lifecycle a playbook may declare. A revision is `draft` until it has
+#: been used, `active` while it is the one the assistant reaches for, and
+#: `retired` when a later revision replaced it or it measured worse than the
+#: one before. Closed: `playbook_contract` reports anything else.
+PLAYBOOK_STATUSES = ("draft", "active", "retired")
+
+#: Frontmatter keys that make a skill a PLAYBOOK. Declaring any one of them
+#: is declaring the whole contract, which `playbook_contract.gaps_for_skill`
+#: then checks. A skill declaring none is a plain skill and nothing here
+#: applies to it. `allowed-tools` is deliberately absent: it is the interop
+#: field a plain skill may carry too.
+PLAYBOOK_KEYS = frozenset({
+    "use_when", "not_when", "trigger", "preconditions", "steps",
+    "forbidden-tools", "expected_result", "failure_modes", "evidence",
+    "status", "confidence",
+})
+
+#: Everything a playbook owes: the keys above plus the two interop keys a
+#: plain skill may also carry, which is why those two do not make one.
+CONTRACT_KEYS = PLAYBOOK_KEYS | {"allowed-tools", "version"}
+
+
+@dataclass(frozen=True)
+class Step:
+    """One step of a playbook: what to do, and the tool it does it with.
+
+    `tool` is empty for a step the model takes without calling anything. A
+    named tool is checked against the registry at boot, because a playbook
+    whose step names a tool that is not there cannot run.
+    """
+
+    do: str
+    tool: str = ""
 
 
 @dataclass(frozen=True)
@@ -61,6 +98,33 @@ class SkillEntry:
     license: str = ""
     allowed_tools: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
+    # The playbook half. A procedure that worked, written down on the contract
+    # a tool's `use_when`/`not_when` and a manifest entry's summary already
+    # use: what shape of problem it answers, what must hold first, the steps
+    # and the tool each one uses, what done looks like, what goes wrong, and
+    # the turns it was learned from. Parsed tolerantly here; whether the
+    # declaration is complete is `playbook_contract`'s question, asked at
+    # boot, so a half-written playbook is a reported gap and never a skill
+    # that silently fails to load.
+    use_when: str = ""
+    not_when: str = ""
+    trigger: str = ""
+    preconditions: tuple[str, ...] = ()
+    steps: tuple[Step, ...] = ()
+    forbidden_tools: tuple[str, ...] = ()
+    expected_result: str = ""
+    failure_modes: tuple[str, ...] = ()
+    evidence: tuple[str, ...] = ()
+    status: str = ""
+    confidence: float | None = None
+    #: Which contract keys the frontmatter actually declared, so the contract
+    #: can tell a field left empty from one never written, and so a plain
+    #: skill is never held to a contract it did not sign.
+    declared: frozenset[str] = frozenset()
+
+    @property
+    def is_playbook(self) -> bool:
+        return bool(self.declared & PLAYBOOK_KEYS)
 
 
 def _load_skill(folder: Path) -> SkillEntry | None:
@@ -123,7 +187,63 @@ def _load_skill(folder: Path) -> SkillEntry | None:
         license=str(fm.get("license") or "").strip(),
         allowed_tools=_parse_allowed_tools(fm.get("allowed-tools")),
         metadata=fm.get("metadata") if isinstance(fm.get("metadata"), dict) else {},
+        use_when=_text(fm.get("use_when")),
+        not_when=_text(fm.get("not_when")),
+        trigger=_text(fm.get("trigger")),
+        preconditions=_lines(fm.get("preconditions")),
+        steps=_parse_steps(fm.get("steps")),
+        forbidden_tools=_parse_allowed_tools(fm.get("forbidden-tools")),
+        expected_result=_text(fm.get("expected_result")),
+        failure_modes=_lines(fm.get("failure_modes")),
+        evidence=_lines(fm.get("evidence")),
+        status=_text(fm.get("status")),
+        confidence=_number_or_none(fm.get("confidence")),
+        declared=frozenset(k for k in CONTRACT_KEYS if k in fm),
     )
+
+
+def _text(raw: Any) -> str:
+    return str(raw).strip() if raw is not None else ""
+
+
+def _lines(raw: Any) -> tuple[str, ...]:
+    """A list of strings, or one string, as a tuple. Anything else is empty:
+    the contract reports the field as missing rather than this guessing."""
+    if isinstance(raw, str):
+        return (raw.strip(),) if raw.strip() else ()
+    if isinstance(raw, (list, tuple)):
+        return tuple(str(item).strip() for item in raw if str(item).strip())
+    return ()
+
+
+def _parse_steps(raw: Any) -> tuple[Step, ...]:
+    """`steps:` as declared: a list of `{do, tool}` mappings, or bare strings
+    for a step that calls nothing. A mapping with no `do` is dropped, and the
+    contract sees a shorter list than the file wrote, which it reports."""
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    steps: list[Step] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            steps.append(Step(do=item.strip()))
+        elif isinstance(item, dict):
+            do = _text(item.get("do"))
+            if do:
+                steps.append(Step(do=do, tool=_text(item.get("tool"))))
+    return tuple(steps)
+
+
+def _number_or_none(raw: Any) -> float | None:
+    """`confidence` is `None` where nothing measured it, and a bare word in
+    the field is the same as nothing rather than a number invented for it."""
+    if isinstance(raw, bool) or raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    try:
+        return float(str(raw).strip())
+    except ValueError:
+        return None
 
 
 def _parse_allowed_tools(raw: Any) -> tuple[str, ...]:
@@ -174,6 +294,253 @@ def load_skills(skills_dir: Path) -> list[SkillEntry]:
         if entry is not None:
             entries.append(entry)
     return entries
+
+
+#: Where a replaced revision goes: `<name>/history/<version>/SKILL.md`.
+#: Inside the skill's own folder, so `load_skills` never lists it (it reads
+#: one `SKILL.md` per top-level folder) and `skill_usage.skill_name_for_path`
+#: never counts a read of it as a load (it wants exactly `<name>/SKILL.md`).
+SKILL_HISTORY_DIRNAME = "history"
+
+
+def keep_predecessor(folder: Path, live: SkillEntry, proposed: SkillEntry) -> str | None:
+    """Before a revision replaces the live SKILL.md, keep the live one.
+
+    A revision never overwrites its predecessor, because the whole point of a
+    version is that a later one which measures worse can be compared against,
+    and returned to, a record that still exists. Returns an error string and
+    keeps nothing when the proposal is not a later revision, or when the
+    archive slot is already taken (which would be overwriting a predecessor
+    after all). A plain skill keeps nothing and is replaced as before: its
+    `version` is the interop field, free-form, and orders nothing.
+    """
+    if not live.is_playbook:
+        return None
+    from tesseract.brain.playbook_contract import version_number
+
+    before = version_number(live.version)
+    after = version_number(proposed.version)
+    if before is None or after is None:
+        return (
+            f"version {live.version!r} to {proposed.version!r} cannot be ordered; "
+            "a revision carries a whole number greater than the one before it"
+        )
+    if after <= before:
+        return (
+            f"version {proposed.version!r} is not later than the live "
+            f"{live.version!r}; a revision never overwrites its predecessor"
+        )
+    slot = folder / SKILL_HISTORY_DIRNAME / live.version
+    if (slot / SKILL_FILENAME).exists():
+        # A kept copy that IS the live file is a replace that died between
+        # the archive and the swap: the slot is this revision's, not a
+        # predecessor's, and refusing it would refuse every retry for good.
+        try:
+            same = (slot / SKILL_FILENAME).read_bytes() == (folder / SKILL_FILENAME).read_bytes()
+        except OSError:
+            same = False
+        if same:
+            return None
+        return f"history already holds version {live.version!r}; refusing to overwrite it"
+    try:
+        slot.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(folder / SKILL_FILENAME, slot / SKILL_FILENAME)
+    except OSError as exc:
+        return f"could not keep version {live.version!r}: {exc}"
+    return None
+
+
+_STATUS_LINE_RE = re.compile(r"^status:[^\n]*$", re.MULTILINE)
+
+
+def set_skill_status(folder: Path, status: str) -> str | None:
+    """Rewrite one line of the live SKILL.md's frontmatter: its `status`.
+
+    A status is lifecycle, not a revision: retiring a playbook that measured
+    worse than the one before it does not make a new version and keeps
+    nothing under `history/`. The line is replaced in place rather than the
+    frontmatter re-serialised, so the rest of the file is byte for byte what
+    the author wrote. Returns an error string or None.
+    """
+    if status not in PLAYBOOK_STATUSES:
+        return f"status {status!r} is not one of {', '.join(PLAYBOOK_STATUSES)}"
+    path = folder / SKILL_FILENAME
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return f"could not read {path}: {exc}"
+    match = _FRONTMATTER_RE.match(raw)
+    if not match:
+        return f"{path} has no frontmatter to set a status in"
+    block = match.group(1)
+    if _STATUS_LINE_RE.search(block):
+        block = _STATUS_LINE_RE.sub(f"status: {status}", block, count=1)
+    else:
+        block = f"{block}\nstatus: {status}"
+    updated = raw[: match.start(1)] + block + raw[match.end(1):]
+    tmp = path.with_suffix(".md.tmp")
+    try:
+        tmp.write_text(updated, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        return f"could not write {path}: {exc}"
+    return None
+
+
+def replace_skill_body(
+    skills_dir: Path,
+    name: str,
+    proposed_markdown: str,
+    *,
+    tool_names: frozenset[str] | None = None,
+) -> str | None:
+    """Validate a proposed SKILL.md and atomically replace the live one.
+
+    The one path that changes a live skill, called by the refinement card's
+    approve route and by `skill_refine` once its gate is answered. Refuses
+    before touching anything when the proposal fails the loader round-trip or
+    names a different skill, and, for a playbook, when it would not pass the
+    door a new one goes through (`skill_create.refuse_playbook`: a tool the
+    runtime lacks, a credential-bearing path, a path outside the home tree).
+    Then `keep_predecessor` archives the live revision and refuses a proposal
+    that is not a later one. If the replace itself fails after the archive
+    was made, the archive is taken back, so the slot is not consumed by a
+    revision that never landed. Returns an error string or None.
+    """
+    import tempfile
+
+    target = skills_dir / name / SKILL_FILENAME
+    if not target.exists():
+        return f"no active skill {name!r} to refine at {target}"
+    live = load_skill_folder(skills_dir / name)
+    if live is None:
+        return f"the live skill {name!r} does not parse, so nothing can be kept before replacing it"
+
+    tmp_root = Path(tempfile.mkdtemp())
+    tmp_folder = tmp_root / name
+    tmp_folder.mkdir(parents=True, exist_ok=True)
+    try:
+        (tmp_folder / SKILL_FILENAME).write_text(proposed_markdown, encoding="utf-8")
+        entry = load_skill_folder(tmp_folder)
+        if entry is None:
+            return "proposed SKILL.md failed loader validation (frontmatter/size)"
+        if entry.name != name:
+            return f"proposed frontmatter name {entry.name!r} must match {name!r}"
+        if entry.is_playbook:
+            from tesseract.kernel.tools.skill_create import refuse_playbook
+
+            refused = refuse_playbook(proposed_markdown, name, tool_names)
+            if refused:
+                return refused
+        kept = keep_predecessor(skills_dir / name, live, entry)
+        if kept is not None:
+            return kept
+    finally:
+        try:
+            (tmp_folder / SKILL_FILENAME).unlink(missing_ok=True)
+            tmp_folder.rmdir()
+            tmp_root.rmdir()
+        except OSError:
+            pass
+
+    tmp = target.with_suffix(".md.tmp")
+    try:
+        tmp.write_text(proposed_markdown, encoding="utf-8")
+        os.replace(str(tmp), str(target))
+    except OSError as exc:
+        stuck = _take_back_archive(skills_dir / name, live)
+        return f"skill refinement write failed: {exc}" + (f"; {stuck}" if stuck else "")
+    return None
+
+
+def _take_back_archive(folder: Path, live: SkillEntry) -> str | None:
+    """Remove the history slot `keep_predecessor` just made, if it still holds
+    exactly the live file: a replace that failed left the live revision in
+    place, and a slot that stayed would refuse every retry of the same
+    revision for good. Returns a sentence naming the slot when it could not
+    be removed, so the caller's error says what to delete by hand rather than
+    leaving a refusal nobody can explain."""
+    if not live.is_playbook or not live.version:
+        return None
+    slot = folder / SKILL_HISTORY_DIRNAME / live.version / SKILL_FILENAME
+    try:
+        if slot.exists() and slot.read_bytes() == (folder / SKILL_FILENAME).read_bytes():
+            slot.unlink()
+            slot.parent.rmdir()
+    except OSError as exc:
+        logger.warning("skills: could not take back the archive at %s", slot, exc_info=True)
+        return (
+            f"the copy kept at {slot} could not be removed ({exc}); delete it "
+            "before retrying, or the retry is refused as overwriting a kept revision"
+        )
+    return None
+
+
+def add_evidence(folder: Path, turn_ids: list[str], *, activate: bool = False) -> str | None:
+    """Record the turns that supported a playbook, and activate a draft.
+
+    The second-success rule lives here: a draft playbook whose steps carried
+    another task through is a procedure that has now worked twice, and it
+    becomes `active`. The frontmatter block is re-serialised (the order kept,
+    comments not), which is acceptable because a playbook is a machine-read
+    declaration and its body, where a person writes, is untouched. Returns an
+    error string or None.
+    """
+    path = folder / SKILL_FILENAME
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return f"could not read {path}: {exc}"
+    match = _FRONTMATTER_RE.match(raw)
+    if not match:
+        return f"{path} has no frontmatter"
+    try:
+        fm: Any = yaml.safe_load(match.group(1)) or {}
+    except yaml.YAMLError as exc:
+        return f"{path} frontmatter invalid: {exc}"
+    if not isinstance(fm, dict):
+        return f"{path} frontmatter must be a mapping"
+    have = [str(t) for t in (fm.get("evidence") or []) if str(t).strip()]
+    added = 0
+    for turn_id in turn_ids:
+        if turn_id and turn_id not in have:
+            have.append(turn_id)
+            added += 1
+    fm["evidence"] = have
+    # Only a turn the playbook had not seen counts as a second success. A
+    # task read twice (a pass that failed after writing, a position that did
+    # not move) brings the same turns back, and they must not activate the
+    # draft they were written from.
+    if activate and added and str(fm.get("status") or "") == "draft":
+        fm["status"] = "active"
+    block = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).rstrip()
+    updated = raw[: match.start(1)] + block + raw[match.end(1):]
+    tmp = path.with_suffix(".md.tmp")
+    try:
+        tmp.write_text(updated, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        return f"could not write {path}: {exc}"
+    return None
+
+
+def list_history(folder: Path) -> list[SkillEntry]:
+    """Every kept revision of one skill, oldest first by version number."""
+    history = folder / SKILL_HISTORY_DIRNAME
+    if not history.exists():
+        return []
+    from tesseract.brain.playbook_contract import version_number
+
+    kept: list[SkillEntry] = []
+    try:
+        slots = [p for p in history.iterdir() if p.is_dir()]
+    except OSError:
+        return []
+    for slot in slots:
+        entry = _load_skill(slot)
+        if entry is not None:
+            kept.append(entry)
+    return sorted(kept, key=lambda e: version_number(e.version) or 0)
 
 
 def list_skills_names(skills_dir: Path) -> list[str]:

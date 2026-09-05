@@ -1,11 +1,13 @@
 """agent_promote tool — move a quarantined agent into the active set.
 
-W7-A (audit M6 follow-up, 2026-04-29). `agent_create` writes new agents
-under `<home>/agents/pending/` so they cannot be invoked even if the
-ASK gate is somehow bypassed. `agent_promote` is the explicit operator
-action that moves a pending agent into the active directory and appends
-its row to `INDEX.md`. Returns ASK so the executor consults the operator
-even if a posture override would otherwise auto-allow.
+`agent_create` writes new agents under `<home>/agents/pending/` so they
+cannot be invoked even if the
+gate is somehow bypassed. `agent_promote` is the explicit action that moves
+a pending agent into the active directory and appends its row to
+`INDEX.md`. Its posture is `permissions.yaml`'s for the mode: `ask` under
+the shipped default, so the operator answers, and `auto` under `free`, where
+they have given the assistant that decision. Unattended (no `ask_fn`) an
+`ask` posture is refused; an `auto` one runs, which is what `free` means.
 """
 
 from __future__ import annotations
@@ -92,14 +94,13 @@ class AgentPromoteInput(BaseModel):
         default="agent",
         description=(
             "Promotion kind. 'agent' (default) runs the agents/pending → active "
-            "flow. 'tool' is rejected — tools are now built via delegation and "
+            "flow. 'tool' is rejected, because tools are built through delegation and "
             "promoted by hand by the operator, not through this tool."
         ),
     )
-    # MO-8-6 deviation from phase-MO-8-6 §2 (which spec'd default="tool"):
-    # defaulting to "agent" preserves backward compatibility with every
-    # existing call site (`AgentPromoteInput(name=...)`); flipping the
-    # default would silently break every legacy promote test on first call.
+    # Defaults to "agent" so every call site that passes only a name
+    # (`AgentPromoteInput(name=...)`) keeps working; flipping the default
+    # would silently change what those calls promote.
 
 
 class AgentPromoteTool(Tool):
@@ -114,12 +115,13 @@ class AgentPromoteTool(Tool):
     )
     use_when: ClassVar[str] = (
         "Use after `agent_create` drafted an agent and the operator has "
-        "approved it — required before the agent can be invoked."
+        "approved it. Required before the agent can be invoked."
     )
     not_when: ClassVar[str] = (
-        "Drafting a new agent — use `agent_create`. Running an "
-        "already-active agent — use `invoke_agent`."
+        "Drafting a new agent: use `agent_create`. Running an "
+        "already-active agent: use `invoke_agent`."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(self, agents_dir: Path, event_store: Optional[EventStore] = None) -> None:
         """``event_store`` (Stage 10) lets a chat-side promotion settle any
@@ -154,7 +156,9 @@ class AgentPromoteTool(Tool):
         )
         if inp.kind == "tool":
             return PermissionResult.DENY
-        return PermissionResult.ASK
+        # `permissions.yaml` decides, per mode, with no exception (operator,
+        # 2026-09-03). See `agent_create.check_permissions`.
+        return PermissionResult.PASSTHROUGH
 
     async def run(self, tool_input: BaseModel, context: ToolContext) -> ToolResult:
         inp = (

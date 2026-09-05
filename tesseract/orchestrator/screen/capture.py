@@ -7,14 +7,13 @@ started this line of work — while the desktop is already composited by the
 window manager, so what is on the glass is what gets read. It is also faster,
 because nothing re-renders, and it needs no Rust and no new installer.
 
-**One frame, one meaning: the display the app window sits on.** This module
-used to crop to the window rectangle. That sounds narrower, and was, but a
-window is only croppable while it is on the glass — minimised, closed or
-off-screen it is not. Each of those needed a fallback; the fallback needed a
-scope; the scope needed a caveat riding on the answer; and a title that is not
-identity needed an owner check to caption that caveat. None of it was the
-picture. Operator, 2026-08-16: *"taking a screenshot of a screen is taking it,
-and that's it."*
+**One frame, one meaning: the display the app window sits on.** Cropping to
+the window rectangle sounds narrower and is, but a window is only croppable
+while it is on the glass: minimised, closed or off-screen it is not. Each of
+those needs a fallback; the fallback needs a scope; the scope needs a caveat
+riding on the answer; and a title that is not identity needs an owner check
+to caption that caveat. None of it is the picture. Operator: *"taking a
+screenshot of a screen is taking it, and that's it."*
 
 The cost is stated rather than mitigated: anything else open on that display is
 in the frame. That is what the operator is looking at, and `screen_look` asks
@@ -24,9 +23,9 @@ The frame is never written to disk. It is a photograph of the operator's
 screen — it can hold a key, a private conversation, an unrelated
 application — so the bytes go to the vision model from memory and are dropped.
 
-`Pillow` does the grab. It is a declared dependency (`pyproject.toml`) rather
-than the transitive it used to be, because a missing one here is the assistant
-silently losing its eyes.
+`Pillow` does the grab. It is a declared dependency (`pyproject.toml`) and
+not a transitive one, because a missing one here is the assistant silently
+losing its eyes.
 """
 
 from __future__ import annotations
@@ -256,11 +255,11 @@ def _grab() -> Capture:
 async def capture_screen() -> Capture:
     """Capture the display the app window is on, at its native resolution.
 
-    Nothing is written to disk and nothing is scaled down. The frame used to be
-    resized to a configured longest edge to hold the cost of a look down; image
-    tokens do scale with area, but on the flash-tier role that bills this the
-    difference is a rounding error per call, and the resolution it cost is the
-    difference between reading an error message on screen and guessing at it.
+    Nothing is written to disk and nothing is scaled down. Resizing to a
+    configured longest edge holds the cost of a look down, and image tokens do
+    scale with area, but on the flash-tier role that bills this the difference
+    is a rounding error per call, against the difference between reading an
+    error message on screen and guessing at it.
 
     Off the loop: a desktop grab plus a PNG encode is tens of milliseconds,
     over the 50 ms budget that keeps health checks and WS heartbeats answering.

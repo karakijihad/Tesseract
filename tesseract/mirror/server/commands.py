@@ -11,6 +11,7 @@ import logging
 import shlex
 from dataclasses import replace
 from datetime import datetime, timezone
+from collections.abc import Callable
 from typing import Any
 
 from aiohttp import web
@@ -30,8 +31,10 @@ from tesseract.mirror.server.chat_lifecycle import (
     would_orphan_a_session,
 )
 from tesseract.mirror.server.envelope import make_envelope
+from tesseract.mirror.server.handoff import hand_off, reflect_callbacks
 from tesseract.mirror.server.routes.system import soul_path
 from tesseract.mirror.server.session import ServerSession, send_envelope
+from tesseract.permissions.policy import VALID_MODES
 from tesseract.scheduler.alarm_parser import (
     ALARM_HANDLER_DOTPATH,
     parse_alarm_spec,
@@ -44,123 +47,19 @@ __all__ = ["ALARM_HANDLER_DOTPATH", "parse_alarm_spec", "parse_alarm_when", "par
 log = logging.getLogger(__name__)
 
 OBSERVER_MODES = {"meta", "maintenance"}
-SECURITY_MODES = {"max", "standard", "headless"}
-
-
-def _make_reflect_callbacks(
-    app: web.Application, session: ServerSession, label: str
-) -> "tuple":
-    """Build (on_complete, on_error) callbacks for `reflect_in_background`.
-
-    `on_complete`: writes a session `reflection_proposal` event to the
-    workspace inbox carrying the actual save list (one bullet per
-    `memory_save` / `diary_append` / `soul_growth_propose` call observed)
-    so the operator sees *what* was saved, not just a count. The
-    `mission_reflection_proposal` kind is historical-records-only — its
-    producer (`app.py::_on_reflection_persisted`) was removed with the
-    mission engine; the kind stays defined so old workspace events still
-    deserialize.
-    `on_error`: writes the same kind with `priority=7` so failures rise
-    above ambient inbox noise rather than getting buried in logs.
-    """
-    async def on_complete(saves: list[dict[str, Any]], reason: str) -> None:
-        try:
-            from tesseract.workspace_events.events import WorkspaceEvent
-            from tesseract.workspace_events.broadcast import broadcast_workspace_event
-
-            store = app.get("workspace_event_store")
-            if store is None:
-                log.warning("reflect proposal skipped — no workspace_event_store on app")
-                return
-            count = len(saves)
-            event_id = (
-                f"evt_refl_session_{session.session_id[:16]}_"
-                f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')}"
-            )
-            if count:
-                bullet_lines: list[str] = []
-                for s in saves[:6]:
-                    tool = s.get("tool", "?")
-                    title = s.get("title") or s.get("snippet") or "(no title)"
-                    status = s.get("status") or ""
-                    status_tag = f" [{status}]" if status and status not in {"saved", "completed"} else ""
-                    bullet_lines.append(f"- [{tool}]{status_tag} {title}")
-                if count > 6:
-                    bullet_lines.append(f"- … and {count - 6} more")
-                summary = (
-                    f"Reflection complete: {count} write{'s' if count != 1 else ''}. "
-                    "Expand for paths and content.\n"
-                    + "\n".join(bullet_lines)
-                )[:1200]
-            else:
-                summary = "Reflection complete: nothing load-bearing to save."
-            event = WorkspaceEvent(
-                event_id=event_id,
-                ts=datetime.now(timezone.utc).isoformat(),
-                kind="reflection_proposal",
-                source="agent",
-                title=f"Session reflection ({label})",
-                summary=summary,
-                payload={
-                    "session_id": session.session_id,
-                    "saves_count": count,
-                    "saves": saves,
-                    "reason": reason,
-                    "label": label,
-                },
-            )
-            store.append_event(event)
-            await broadcast_workspace_event(app, event)
-        except Exception:
-            log.exception(
-                "reflect_in_background on_complete: emit proposal failed (%s)", label
-            )
-
-    async def on_error(exc: BaseException, reason: str) -> None:
-        try:
-            from tesseract.workspace_events.events import WorkspaceEvent
-            from tesseract.workspace_events.broadcast import broadcast_workspace_event
-
-            store = app.get("workspace_event_store")
-            if store is None:
-                return
-            event_id = (
-                f"evt_refl_err_{session.session_id[:16]}_"
-                f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')}"
-            )
-            event = WorkspaceEvent(
-                event_id=event_id,
-                ts=datetime.now(timezone.utc).isoformat(),
-                kind="reflection_proposal",
-                source="agent",
-                title=f"Session reflection failed ({label})",
-                summary=f"Reflection raised {type(exc).__name__}: {exc}"[:1200],
-                priority=7,
-                payload={
-                    "session_id": session.session_id,
-                    "reason": reason,
-                    "label": label,
-                    "error_type": type(exc).__name__,
-                },
-            )
-            store.append_event(event)
-            await broadcast_workspace_event(app, event)
-        except Exception:
-            log.exception(
-                "reflect_in_background on_error: emit proposal failed (%s)", label
-            )
-
-    return on_complete, on_error
+#: Not a second list. `policy.VALID_MODES` is the authority and this name is
+#: kept so existing callers and the command registry read the same set.
+SECURITY_MODES = VALID_MODES
 
 
 async def cmd_mode(app: web.Application, session: ServerSession, arg: str | None) -> None:
-    """Change security mode from chat: `/mode <max|standard|headless>`.
+    """Change security mode from chat: `/mode <max|free>`.
 
     Mirrors the REST `POST /api/mode` path (`routes/system.py::set_mode`):
     runtime-only mutation of `app["config"].permissions`, then broadcast
-    `mode_changed` to every live WS so all panes update in lockstep. Yaml
-    persistence is Phase 18 work — until then, mode reverts to the
-    permissions.yaml value on restart.
+    `mode_changed` to every live WS so all panes update in lockstep. Nothing
+    is persisted, so the mode reverts to the permissions.yaml value on
+    restart.
     """
     new_mode = (arg or "").strip().lower()
     if new_mode not in SECURITY_MODES:
@@ -204,8 +103,8 @@ async def cmd_observe(app: web.Application, session: ServerSession, arg: str | N
     against the current history and emits the resulting text via
     `observer_result`. Does NOT touch the stateful transcript; background
     incremental observation is owned exclusively by ObserverSubscriber
-    (armed via the Mirror toggle). Firing both paths here (pre-fix-pass
-    2026-04-20) doubled cost and raced with the subscriber's loop_end."""
+    (armed via the Mirror toggle). Firing both paths here would double the
+    cost and race with the subscriber's loop_end."""
     mode = (arg or "meta").strip() or "meta"
     if mode not in OBSERVER_MODES:
         await send_envelope(session, make_envelope(
@@ -243,9 +142,8 @@ async def cmd_observe(app: web.Application, session: ServerSession, arg: str | N
 
 async def cmd_soul_show(session: ServerSession) -> None:
     """Display-only — reads SOUL.md and emits `soul_updated` so the Mirror
-    the From-agent section refreshes. Does NOT trigger reflection. Formerly
-    `/reflect` (renamed 2026-04-20 F1); the misnamed command is why the
-    operator could not trigger real reflection from the Mirror.
+    the From-agent section refreshes. Does NOT trigger reflection, which is
+    why it is not called `/reflect`.
     """
     soul = soul_path()
     content = (
@@ -277,7 +175,7 @@ async def cmd_reflect(app: web.Application, session: ServerSession) -> None:
         except Exception:
             log.exception("pre-reflect distillation failed for %s", session.session_id)
 
-    base_complete, base_error = _make_reflect_callbacks(app, session, label="manual")
+    base_complete, base_error = reflect_callbacks(app, session, label="manual")
 
     async def _on_complete(saves: list[dict[str, Any]], reason: str) -> None:
         # Run the librarian consolidation pass + SOUL transparency notification
@@ -556,9 +454,8 @@ async def cmd_reset(
       history is wiped in place and the emptied record written, so disk agrees
       with the screen. No reflection, no archive, nothing kept.
 
-    Reset used to write a snapshot under a new name and then wipe the chat in
-    place. Under one record per conversation there is no second file to hide
-    the transcript in — wiping in place IS deleting it — so keeping it means
+    Under one record per conversation there is no second file to hide the
+    transcript in — wiping in place IS deleting it — so keeping it means
     keeping the record, and the operator reaches it in the drawer's archive
     view.
     """
@@ -571,8 +468,19 @@ async def cmd_reset(
         session.chat_session.reset()
         session.started_at = datetime.now(timezone.utc).isoformat()
         session.turn_count = 0
-        try:
+        def _persist_and_index() -> None:
             chat_store.persist_session_chats(session, model=model)
+            # And the recall chunks go with the transcript, here rather than at
+            # teardown: until this runs the cleared conversation is still
+            # searchable by its own content, which is the thing the operator
+            # just asked to be gone.
+            chat_store.index_chat(session.active_chat_id)
+
+        try:
+            # A thread, for the reason the autosave path takes one: this writes
+            # files and SQLite, and on the loop it stops everything including
+            # the health probe the supervisor kills the backend for missing.
+            await asyncio.to_thread(_persist_and_index)
         except Exception:
             log.exception("reset clear: persist failed for %s", session.session_id)
         await send_envelope(session, make_envelope(
@@ -589,9 +497,60 @@ async def cmd_reset(
         ))
         return
 
+    await start_fresh_chat(
+        app,
+        session,
+        on_persisted=lambda: hand_off(
+            app, session, session.chat_session, reason="ws_reset", label="reset"
+        ),
+    )
+
+
+async def start_fresh_chat(
+    app: web.Application,
+    session: ServerSession,
+    *,
+    chat_id: str | None = None,
+    on_persisted: Callable[[], bool] | None = None,
+) -> bool:
+    """Archive what is on screen and open a new chat in its place.
+
+    The cockpit's ending, and the one thing `/reset` and a turn that decided it
+    was finished must not answer twice. `after_turn` passes this as its
+    `ending`; a channel passes its own, because it has no chat to switch to.
+
+    Returns whether the operator is now looking at a different conversation.
+    Every `False` is a conversation still standing, and the caller must not
+    report a fresh start on the strength of one.
+
+    `chat_id` names the conversation being left, for a caller that has one.
+    A background turn runs against a chat that is not on screen, and opening a
+    new chat "in its place" would archive whatever the operator was reading
+    instead. So this only ends the chat in focus, and says so when asked for
+    another.
+
+    `on_persisted` is the caller's reflection, fired at the one moment that is
+    right for it: after the transcript is safely written and before the chat is
+    archived, so it reads the conversation being left. Not before this call,
+    because a persist that fails leaves the conversation live and a reflection
+    already fired would have paid for a model turn and posted a proposal about
+    a session that never ended. Not after, because by then the chat has moved.
+    Returns whatever it returns, which is whether reflection actually started.
+    """
     outgoing_id = session.active_chat_id
+    if chat_id is not None and chat_id != outgoing_id:
+        log.warning(
+            "not starting fresh: the turn ran in chat %s and the operator is "
+            "looking at %s, so nothing was archived",
+            chat_id, outgoing_id,
+        )
+        return False
     outgoing = session.chat_meta.get(outgoing_id)
+    model = getattr(app.get("adapter_options"), "model", "") or ""
+    # An empty chat has nothing to keep, so archiving it and opening another
+    # empty one beside it would leave the operator two of the same thing.
     kept = bool(session.chat_session.history)
+    reflecting = False
     if kept:
         try:
             chat_store.persist_session_chats(session, model=model)
@@ -610,22 +569,12 @@ async def cmd_reset(
                     "severity": "error",
                 },
             ))
-            return
-    # Layer D — reflect runs in the BACKGROUND on a snapshot of history, then a
-    # `reflection_proposal` event lands in the workspace inbox. Fired before the
-    # new chat opens so it reads the conversation being left, and the operator
-    # gets control back in ~milliseconds instead of waiting 10-60s for the
-    # reflect LLM stream.
-    on_complete, on_error = _make_reflect_callbacks(app, session, label="reset")
-    refl_pending = reflect_in_background(
-        session.chat_session,
-        reason="ws_reset",
-        on_complete=on_complete,
-        on_error=on_error,
-    ) is not None
-    # An empty chat has nothing to keep, so archiving it and opening another
-    # empty one beside it would leave the operator two of the same thing.
-    if kept:
+            return False
+        if on_persisted is not None:
+            try:
+                reflecting = bool(on_persisted())
+            except Exception:
+                log.exception("reset: reflection failed to start for %s", session.session_id)
         # Create BEFORE archiving: `archive_chat` refuses to archive the only
         # open chat, and the new one is what the operator is left looking at.
         await _handle_chat_create(app, session, {})
@@ -635,7 +584,7 @@ async def cmd_reset(
             # claiming otherwise would clear the operator's screen while the
             # backend kept appending to the conversation they think is gone.
             log.warning("reset: chat creation failed for %s, nothing reset", session.session_id)
-            return
+            return False
         await _handle_chat_archive(app, session, {"chat_id": outgoing_id})
     session.started_at = datetime.now(timezone.utc).isoformat()
     session.turn_count = 0
@@ -646,25 +595,68 @@ async def cmd_reset(
             "chat_id": outgoing_id if kept else None,
             "title": outgoing.title if (kept and outgoing) else None,
             "path": str(chat_store.chats_dir() / f"{outgoing_id}.json") if kept else None,
-            "reflected": "pending" if refl_pending else False,
+            "reflected": "pending" if reflecting else False,
             "reflect_saves": 0,
             "mode": "reflect",
         },
     ))
+    return kept
 
 
 async def cmd_compact(app: web.Application, session: ServerSession) -> None:
+    # Bound once. The fold, the tally it leaves behind and the stamp on the
+    # envelope are three facts about ONE conversation, and looking each of them
+    # up separately is how they come to disagree.
+    folded = session.chat_session
     try:
-        before, after = await session.chat_session.compact()
+        before, after = await folded.compact()
     except Exception as exc:
         log.exception("manual compact failed for %s", session.session_id)
         await send_envelope(session, make_envelope(
             "stream_error", "loop", session.session_id, {"message": f"compact failed: {exc}"},
         ))
         return
+    if after == before:
+        # `compact()` returns `(before, before)` for two unrelated reasons and
+        # they need different sentences. Neither is a compaction, so neither
+        # sends `session_compact`: that would toast `Compacted 4000 to 4000
+        # tok` and leave a permanent divider saying earlier messages were
+        # summarised when none were. The operator asked, so they get an answer
+        # either way, and when the summarizer failed they get told that rather
+        # than told their chat fits.
+        failed = getattr(folded, "_last_fold_outcome", "") == "summarizer_failed"
+        await send_envelope(session, make_envelope(
+            "command_result", "command_result", session.session_id,
+            {
+                "command": "compact",
+                "ok": not failed,
+                "reason": (
+                    "could not summarise this chat: the model that writes the "
+                    "summary returned nothing. Nothing was lost and nothing "
+                    "changed. Try again, and if it keeps happening the chat "
+                    "will keep growing."
+                    if failed
+                    else "nothing to summarise yet; this chat still fits"
+                ),
+                "severity": "warning" if failed else "info",
+            },
+        ))
+        return
     await send_envelope(session, make_envelope(
         "session_compact", "session", session.session_id,
-        {"tokens_before": before, "tokens_after": after, "trigger": "manual"},
+        {
+            "tokens_before": before,
+            "tokens_after": after,
+            "trigger": "manual",
+            # The turns the fold kept word for word. The transcript puts its
+            # divider in front of them rather than at the end, so the kept
+            # turns are not labelled as summarised.
+            "tail_turns": getattr(folded, "_last_fold_tail_turns", 0),
+        },
+        # `/compact` folds the chat on screen. The stamp is what puts the
+        # transcript's divider in that chat rather than in whichever one the
+        # reader switches to next.
+        chat_id=session.active_chat_id or None,
     ))
 
 
@@ -710,13 +702,25 @@ async def cmd_compact_file(app: web.Application, session: ServerSession, arg: st
         ))
         return
 
+    # The compaction runs over the RECORD's history, which came back through
+    # the persistence filter — so a reasoning item the live session was still
+    # holding is not in it, and the compacted result written back below drops
+    # it from memory too. Intended: a compaction rewrites the history anyway,
+    # and a reasoning item is only ever needed inside the turn that made it.
     live_history = list(session.chat_session.history)
+    # The held prompt sections go with the history, and come back with it. The
+    # fold releases them, and they belong to the conversation being moved
+    # aside, not to the one being compacted — without this the chat in focus
+    # re-reads its whole prefix because a different chat was compacted from
+    # the list.
+    live_hold = session.chat_session.head_hold
     session.chat_session.history = list(record.history)
     try:
         before, after = await session.chat_session.compact()
     except Exception as exc:
         log.exception("batch compact failed for %s", record.chat_id)
         session.chat_session.history = live_history
+        session.chat_session.head_hold = live_hold
         await send_envelope(session, make_envelope(
             "stream_error", "loop", session.session_id,
             {"message": f"compact failed for {record.title}: {exc}"},
@@ -725,6 +729,7 @@ async def cmd_compact_file(app: web.Application, session: ServerSession, arg: st
 
     compacted_history = list(session.chat_session.history)
     session.chat_session.history = live_history
+    session.chat_session.head_hold = live_hold
 
     try:
         chat_store.save_chat(replace(
@@ -742,11 +747,21 @@ async def cmd_compact_file(app: web.Application, session: ServerSession, arg: st
     # A chat still live in this session holds the pre-compaction history in
     # memory, and the next persist would write it straight back over what was
     # just saved. Bring the live copy along.
+    # Whoever ends up holding the FOLDED history releases the hold with it.
+    # The save and restore above are for the conversation that was moved
+    # aside and got its own history back unchanged; these two branches are the
+    # opposite case, where a session keeps the rewritten history, so its
+    # cached prefix is gone and a fresh capsule costs nothing. The second
+    # branch is `/compact_file` aimed at the chat already in focus, where the
+    # restore two lines up would otherwise leave the new history wearing the
+    # old conversation's hold.
     live = session.chats.get(record.chat_id)
     if live is not None and live is not session.chat_session:
         live.history = list(compacted_history)
+        live.refresh_head()
     elif live is not None:
         session.chat_session.history = list(compacted_history)
+        session.chat_session.refresh_head()
 
     await send_envelope(session, make_envelope(
         "session_compact_file", "session", session.session_id,
@@ -964,6 +979,12 @@ async def _cmd_schedule_set_enabled(
     except KeyError:
         await _emit_schedule_error(session, "schedule_not_found", f"no job named {name!r}", name)
         return
+    except ValueError as exc:
+        # A row that runs a tool the operator keeps behind a prompt cannot be
+        # armed, and the engine says why. Without this the refusal reached the
+        # operator as an unhandled command error.
+        await _emit_schedule_error(session, "schedule_refused", str(exc), name)
+        return
     action = "enabled" if enabled else "disabled"
     await _emit_schedule_state(session, action, name, scheduler)
 
@@ -996,6 +1017,17 @@ async def cmd_schedule_run_now(app: web.Application, session: ServerSession, arg
         scheduler.runtime_state(name)  # existence probe — KeyError surfaces synchronously
     except KeyError:
         await _emit_schedule_error(session, "schedule_not_found", f"no job named {name!r}", name)
+        return
+    # Asked here rather than left to `run_now`'s own refusal: this spawns a
+    # task, so an exception raised inside it is logged and never reaches the
+    # person who pressed the button twice.
+    if scheduler.is_running(name):
+        await _emit_schedule_error(
+            session,
+            "schedule_already_running",
+            f"{name} is already running. Wait for it to finish",
+            name,
+        )
         return
     scheduler.spawn_tracked_task(
         scheduler.run_now(name, trigger="operator"),

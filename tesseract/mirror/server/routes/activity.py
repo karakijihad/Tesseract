@@ -1,8 +1,8 @@
-"""AS-1 Phase 5 — Unified Activity Registry REST surface.
+"""Unified Activity Registry REST surface.
 
 ``GET /api/activity`` returns the current activity snapshot — the REST
 hydration the frontend reads on mount. The ``activity`` WS channel
-(``ws.py::_activity_events_pump``) then streams live deltas; replay is
+(``ws_connection.py::_channel_forward_pump``) then streams live deltas; replay is
 dropped there precisely because this endpoint is the catch-up path.
 
 Backend is the source of truth; the Mirror only reflects. The snapshot is

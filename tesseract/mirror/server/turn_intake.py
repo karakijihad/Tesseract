@@ -39,7 +39,7 @@ async def _start_turn(app: web.Application, session: ServerSession, data: dict) 
 
     text = (data.get("text") or "").strip()
     attachments = _validated_attachments(app, session, data.get("attachments"))
-    # MP-2: per-turn view-context snapshot from the Mirror. Stash on the
+    # Per-turn view-context snapshot from the Mirror. Stash on the
     # session — `_run_turn` consumes and clears before chat_session.send.
     snapshot = data.get("view_snapshot")
     snapshot = snapshot if isinstance(snapshot, dict) else None
@@ -67,12 +67,12 @@ async def _start_turn(app: web.Application, session: ServerSession, data: dict) 
         ))
         return
     if session.current_turn_task and not session.current_turn_task.done():
-        # conversation-layer Task 4.2 (Q2): a follow-up arriving mid-turn is
-        # a NORMAL turn, queued FIFO behind the active one — not a mid-turn
-        # inject. `enqueue_user_inject`/`pending_injected_messages` stay in
-        # place for the future Q3 steer command; this is no longer their
-        # default entry point (never silently dropped or coalesced — every
-        # arrival either queues or is loudly rejected as overflow below).
+        # A follow-up arriving mid-turn is a NORMAL turn, queued FIFO behind
+        # the active one, not a mid-turn inject.
+        # `enqueue_user_inject`/`pending_injected_messages` belong to the
+        # steer command, not to this path (nothing here is silently dropped
+        # or coalesced — every arrival either queues or is loudly rejected as
+        # overflow below).
         cid = session.active_chat_id
         queue = session.chat_queues.setdefault(cid, deque())
         from tesseract.config.runtime_limits import (
@@ -153,13 +153,11 @@ async def handle_steer(app: web.Application, session: ServerSession, data: dict)
     background chat, since `drain_next`'s fallback re-enters through
     `_start_turn`, which only ever targets the focused chat.
 
-    Review fix-pass (Task 5.2): the FOCUSED-chat degrade branch below (no
-    active turn → plain `_start_turn`) used to emit no envelope at all, so
-    the frontend's optimistic `steered: true` bubble (rendered at send
-    time, before this handler even runs) never got reconciled — a normal
-    turn permanently wore a "redirected" pill. Now emits `make_steered(...,
-    applied=False)` before starting the turn so the client can clear the
-    flag on that bubble.
+    The FOCUSED-chat degrade branch below (no active turn → plain
+    `_start_turn`) emits `make_steered(..., applied=False)` before starting
+    the turn. Without it the frontend's optimistic `steered: true` bubble,
+    rendered at send time before this handler runs, is never reconciled and
+    a normal turn permanently wears a "redirected" pill.
     """
     chat_id = data.get("chat_id") or session.active_chat_id
     text = (data.get("text") or "").strip()
@@ -194,17 +192,16 @@ async def _cancel_turn(app: web.Application, session: ServerSession) -> None:
     _cancel_tts_output(session)
     # Audit-3 #2/#4 — explicit cancel (operator stop button, voice
     # speech-start barge-in) drops the ENTIRE queued backlog too, not just
-    # one entry (Task 4.2 / Q2: clear-all). The operator's live intent is
+    # one entry, so a cancel clears all of them. The operator's live intent is
     # whatever comes next (the new voice utterance, or nothing); draining
     # stale queued turns after a cancel would surprise the operator with
     # replies they no longer wanted. Popping `chat_queues[active_chat_id]`
-    # drops the whole deque (Task 4.5 retired the `pending_user_payload`
-    # back-compat setter that used to do this). The same contract extends
-    # to mid-turn injected messages (Q3 steer) — they share the "queued
-    # during active turn" semantics.
+    # drops the whole deque. The same contract extends to mid-turn
+    # injected messages (steer) " + D + " they share the "queued during active
+    # turn" semantics.
     session.chat_queues.pop(session.active_chat_id, None)
     session.chat_session.pending_injected_messages = []
-    # WP-2: cancel ONLY affects the chat turn. Workspace synthetic turns
+    # Cancel ONLY affects the chat turn. Workspace synthetic turns
     # (in `synthetic_turn_tasks`) and their queued payloads live on
     # independent threads — the operator hitting Stop on the chat panel
     # is not a signal to abandon every open workspace comment thread.
@@ -243,8 +240,8 @@ async def drain_next(app: web.Application, session: ServerSession, chat_id: str 
     if queue is not None and not queue:
         session.chat_queues.pop(chat_id, None)
     if pending is None and cs.pending_injected_messages:
-        # Stranded Q3-steer injects (the explicit mid-turn inject path —
-        # Q2 no longer routes plain text here by default): the turn ended
+        # Stranded steer injects (the explicit mid-turn inject path,
+        # which plain text does not take): the turn ended
         # before a tool boundary ever drained them. Surface as a fresh turn
         # now. Each entry was already shown in chat as a queued_message
         # envelope, so the operator already saw it land — this just makes
@@ -265,11 +262,11 @@ async def drain_next(app: web.Application, session: ServerSession, chat_id: str 
 async def drain_stranded_background(
     app: web.Application, session: ServerSession, chat_id: str,
 ) -> None:
-    """Background-chat counterpart to `drain_next`'s stranded-inject fallback
-    (review fix-pass, Finding 1). Background (non-focused) chats never
+    """Background-chat counterpart to `drain_next`'s stranded-inject
+    fallback. Background (non-focused) chats never
     populate `chat_queues` — that FIFO queue is only ever filled for the
     active chat (see `_start_turn`) — so there is no queued follow-up to pop
-    here, only a possible Q3-steer inject that lost the race against this
+    here, only a possible steer inject that lost the race against this
     chat's own turn ending (the same race `drain_next` covers for the
     focused chat).
 

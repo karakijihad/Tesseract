@@ -56,12 +56,13 @@ class Context7LookupTool(Tool):
     summary: ClassVar[str] = "Fetches current library or framework API docs from Context7 by name or ID."
     use_when: ClassVar[str] = (
         "Use for any library or framework API question instead of guessing from training "
-        "knowledge — resolves a name to a Context7 ID and fetches docs scoped by topic."
+        "knowledge. Resolves a name to a Context7 ID and fetches docs scoped by topic."
     )
     not_when: ClassVar[str] = (
         "Use `web_search` or `tavily_search` for anything outside library documentation, "
         "such as news or general topics."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

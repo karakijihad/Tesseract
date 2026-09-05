@@ -107,10 +107,10 @@ def render_state_read_prefixes() -> str:
 def render_memory_probe() -> str:
     """The endpoint to probe when semantic search is offline.
 
-    Read from `providers.yaml` rather than written down. The document used to
-    say `localhost`, which on Windows resolves to `::1` first and spends ~2s
-    failing over to IPv4 before reaching a daemon that answers in 5ms — the
-    exact mistake the config file's own comment exists to stop.
+    Read from `providers.yaml` rather than written down. `localhost` in the
+    document resolves to `::1` first on Windows and spends ~2s failing over
+    to IPv4 before reaching a daemon that answers in 5ms — the exact mistake
+    the config file's own comment exists to stop.
     """
     import yaml
 
@@ -132,10 +132,10 @@ def render_gate_outcomes() -> str:
     instructions somewhere the operator cannot edit them, which is the
     opposite of what the workspace is for.
 
-    `NOT_APPROVED_CAUSE` is read as a field. It used to be sliced out of the
-    full sentence by splitting on an em-dash and a full stop, which coupled
-    this renderer to that sentence's punctuation — adding either character to
-    the refusal would have quietly truncated what the model is told.
+    `NOT_APPROVED_CAUSE` is read as a field rather than sliced out of the
+    full sentence: splitting on an em-dash and a full stop would couple this
+    renderer to that sentence's punctuation, so adding either character to the
+    refusal would quietly truncate what the model is told.
 
     Quoted rather than paraphrased because the model matches on what it
     actually receives, and the "not approved" wording is load-bearing in a way
@@ -155,10 +155,9 @@ def render_gate_outcomes() -> str:
 def render_bash_classes() -> str:
     """What the bash gate refuses, and what it merely asks about.
 
-    IS-5 closed this drift by writing the section to state no list at all,
-    which is safe and leaves the model told less than it could be — it cannot
-    warn the operator a prompt is coming, and it offers to retry things no
-    answer will ever let through.
+    Stating no list at all is safe and leaves the model told less than it
+    could be — it cannot warn the operator a prompt is coming, and it offers to
+    retry things no answer will ever let through.
 
     **Classes, never patterns.** A check that prints its own regex is an
     attack hint in an audit log, and the module says so where it defines them.
@@ -198,8 +197,11 @@ def render_temporal_fields() -> str:
 
     listed = ", ".join(f"`{field}`" for field in TEMPORAL_FIELDS[:-1])
     return (
-        f"The `Right now` block at the end of this prompt carries {listed} and "
-        f"`{TEMPORAL_FIELDS[-1]}`."
+        f"The `Right now` block carries {listed} and `{TEMPORAL_FIELDS[-1]}`. "
+        "It arrives in the `[runtime_state]` message at the end of the turn, "
+        "after the conversation and after the operator's own message, not in "
+        "this document, because it changes every minute and this document "
+        "does not."
     )
 
 
@@ -232,11 +234,11 @@ def render_channel_attachment_statuses() -> str:
 def render_channel_decoded_kinds() -> str:
     """What arrives readable, and what arrives as a file only.
 
-    The authored paragraph this replaces offered "I can't transcribe voice
-    yet" as the model's example apology. Voice has been transcribed since CR-2
-    — `_decode_voice` — and so have photos and documents. An apology for a
-    capability the runtime has is worse than no example, because the model
-    reads it as the answer rather than as a template.
+    An authored paragraph here offered "I can't transcribe voice yet" as the
+    model's example apology. `_decode_voice` transcribes voice, and photos
+    and documents decode too. An apology for a capability the runtime has is
+    worse than no example, because the model reads it as the answer rather
+    than as a template.
     """
     from tesseract.integrations.telegram.bridge import DECODED_KINDS, PERSISTED_KINDS
 
@@ -244,10 +246,10 @@ def render_channel_decoded_kinds() -> str:
     stored = ", ".join(f"`{kind}`" for kind in sorted(PERSISTED_KINDS))
     return (
         f"Read for you before the turn starts: {read}. Those arrive as text "
-        "you can act on.@N@@N@"
+        "you can act on.\n\n"
         f"Fetched and stored but never read: {stored}. You can refer to one in "
         "a later turn by what it was, but you have not seen inside it."
-    ).replace("@N@", chr(10))
+    )
 
 
 OPERATING_INSERTS: dict[str, Callable[[], str]] = {
@@ -334,13 +336,13 @@ def apply(text: str, *, path: Path, inserts: dict[str, Callable[[], str]] | None
 
     def _sub(match: re.Match[str]) -> str:
         name = match.group("name")
-        if name not in INSERTS:
+        if name not in inserts:
             raise KeyError(
                 f"{path.name} carries a generated region named {name!r} that no "
-                f"renderer produces. Known: {sorted(INSERTS)}."
+                f"renderer produces for it. Known here: {sorted(inserts)}."
             )
         seen.add(name)
-        body = INSERTS[name]().replace("\n", newline)
+        body = inserts[name]().replace("\n", newline)
         return f"{match.group('open')}{body}{match.group('close')}"
 
     out = _MARKER.sub(_sub, text)
@@ -351,6 +353,55 @@ def apply(text: str, *, path: Path, inserts: dict[str, Callable[[], str]] | None
             "to land is a fact the document has silently stopped stating."
         )
     return out
+
+
+def authored(text: str) -> str:
+    """Everything this script does not own, with the generated regions blanked.
+
+    What is left is the prose a person wrote, which is the half the generator
+    cannot keep in step and the half that actually drifts.
+    """
+    return _MARKER.sub(lambda m: m.group("open") + m.group("close"), text)
+
+
+def drifted() -> list[str]:
+    """Documents whose live copy and shipping seed no longer say the same thing.
+
+    **The generated regions were never the problem.** `_targets` renders both
+    trees and its own docstring says why. What is not covered is the AUTHORED
+    prose, which is hand-edited, and a change made to one copy and not the
+    other is invisible: `tesseract/workspace/` is gitignored per-machine state,
+    so `git status` shows nothing and a review sees a complete change. Measured
+    the hard way, 2026-09-01: a rewritten retrieval section went into the seed
+    alone, so every fresh install would have had it and the assistant on this
+    machine read the old text on every turn until the next reseed.
+
+    Reported and never repaired. The live copy is the operator's, and this
+    script may not decide their edit was a mistake; what it can do is refuse to
+    let the difference stay quiet.
+
+    **Only the documents `_targets` names**, which is `OPERATING.md` and
+    `CHANNEL.md`. `SOUL.md` and `DIARY.md` are written BY the assistant and
+    `USER.md` is what it has learned about the operator; none of the three has
+    a shipping twin it is supposed to match, and comparing them would be this
+    script forming an opinion about the assistant's own record.
+
+    Line endings are normalised first. `_shipping/` is CRLF and the live tree
+    is LF, by the convention `_read` exists to preserve, so comparing the bytes
+    reports every document as drifted on the first run.
+    """
+    def prose(path: Path) -> str:
+        return "\n".join(authored(_read(path)).splitlines())
+
+    seen: dict[str, dict[str, str]] = {}
+    for target in _targets():
+        side = "shipping" if "_shipping" in target.path.parts else "live"
+        seen.setdefault(target.path.name, {})[side] = prose(target.path)
+    return sorted(
+        name
+        for name, copies in seen.items()
+        if len(copies) == 2 and copies["live"] != copies["shipping"]
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -378,14 +429,25 @@ def main(argv: list[str] | None = None) -> int:
         else:
             stale.append(rel)
 
+    apart = drifted()
+    if apart:
+        print(
+            "\nthe authored prose differs between the live workspace and the "
+            "shipping seed in: " + ", ".join(apart)
+            + "\nThis script does not touch that prose, so it cannot fix it. "
+            "Edit whichever copy is behind: the live one is what this "
+            "machine's assistant reads on every turn, and the seed is what "
+            "every fresh install starts from.",
+            file=sys.stderr,
+        )
+
     if stale:
         print(
             "\nstale generated regions in: " + ", ".join(stale)
             + "\nrun: python -m tesseract.scripts.generate_workspace --write",
             file=sys.stderr,
         )
-        return 1
-    return 0
+    return 1 if (stale or apart) else 0
 
 
 if __name__ == "__main__":

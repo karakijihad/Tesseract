@@ -26,7 +26,18 @@ import {
   fetchAgendaComments,
   fetchGovernorState,
   fetchLatestRecovery,
+  fetchHealth,
+  fetchAutonomyAtlas,
+  fetchAutonomyHistory,
+  fetchAutonomyRetention,
+  fetchAutonomyChannels,
+  fetchAutonomyMemory,
+  fetchManaged,
+  fetchMachineMap,
+  fetchRoomLines,
   fetchOperatorJournal,
+  fetchOverview,
+  fetchPipeline,
   fetchPruned,
   fetchWorkerDetail,
   patchAgendaItem,
@@ -45,6 +56,17 @@ import {
   type GovernorStateResponse,
   type LatestRecoveryResponse,
   type OperatorJournalRow,
+  type OverviewResponse,
+  type HealthResponse,
+  type ChannelsResponse,
+  type AtlasResponse,
+  type HistoryResponse,
+  type RetentionResponse,
+  type MemoryResponse,
+  type ManagedResponse,
+  type MachineMapResponse,
+  type PipelineResponse,
+  type RoomLinesResponse,
   type PrunedResponse,
   type WorkerDetail,
 } from '../lib/api';
@@ -53,6 +75,15 @@ import { useToastStore } from './toasts';
 import { useWebSocketStore } from './websocket';
 
 type AsyncStatus = 'idle' | 'loading' | 'ready' | 'error';
+
+/** One step down inside a room. `kind` says what the pane should render and
+ *  `id` says which one; the room owns the rendering, this owns the trail. */
+export interface AutonomyLevel {
+  kind: 'entry' | 'agent' | 'agenda' | 'worker' | 'step';
+  id: string;
+  /** What the breadcrumb calls it. */
+  label: string;
+}
 
 interface SectionState<T> {
   data: T;
@@ -95,11 +126,103 @@ interface AutonomyState {
 
   fetchAll: () => Promise<void>;
   fetchAgenda: () => Promise<void>;
+  fetchHistory: () => Promise<void>;
   fetchWorkers: () => Promise<void>;
   fetchGovernor: () => Promise<void>;
   fetchRecovery: () => Promise<void>;
   fetchJournal: () => Promise<void>;
   journal: SectionState<OperatorJournalRow[]>;
+  // The operations strip. Fed by REST alone for now: the pipeline emits no
+  // envelope of its own yet, so the strip decides it is stale from the age of
+  // its own last fetch rather than from a socket it does not listen to.
+  pipeline: SectionState<PipelineResponse | null>;
+  fetchPipeline: () => Promise<void>;
+
+  // The floor plan's map. Declared shape from the backend, and state on the
+  // nodes that have a producer. REST like the strip, and for the same reason:
+  // nothing broadcasts a node's state yet.
+  map: SectionState<MachineMapResponse | null>;
+  fetchMap: () => Promise<void>;
+
+  // The Health room's one feed. REST like the strip and the map: the watchman
+  // writes its sweep every quarter of an hour and nothing broadcasts one, so
+  // what this can honestly detect is its own payload going stale.
+  health: SectionState<HealthResponse | null>;
+  fetchHealth: () => Promise<void>;
+
+  // Managed system: the scheduled rows, the agents and the alarms, each split
+  // by who wrote it. REST for the same reason as the rest of this panel, and
+  // re-read after every action rather than patched here: what a row's state
+  // means is the backend's answer, and deciding it after a click is how a
+  // second definition of it starts.
+  managed: SectionState<ManagedResponse | null>;
+  fetchManaged: () => Promise<void>;
+
+  // Memory: the library, what the last pass changed in it, and whether it
+  // can be searched. Held here rather than fetched by the room, because the
+  // rail's mark says whether retrieval is impaired whether or not it is open.
+  memory: SectionState<MemoryResponse | null>;
+  fetchMemory: () => Promise<void>;
+
+  // Channels: whether anything the app writes can reach the operator. Held
+  // here rather than fetched by the room, because the rail's own band carries
+  // what it last sent whether or not the room is open.
+  channels: SectionState<ChannelsResponse | null>;
+  fetchChannels: () => Promise<void>;
+
+  // Atlas: whether the map of how everything connects is current, and what
+  // the last pass over it found. Held here for the same reason as the rest:
+  // the rail carries the room's mark whether or not the room is open.
+  atlas: SectionState<AtlasResponse | null>;
+  fetchAtlas: () => Promise<void>;
+
+  // What it throws away: the trees with a window, the ones kept on purpose,
+  // and the ones nothing has decided about. Held here for the same reason as
+  // the rest: the rail carries the room's mark whether or not it is open.
+  retention: SectionState<RetentionResponse | null>;
+  /** Two weeks of the three numbers Health is asked about.
+   *
+   *  Deliberately NOT in `fetchAll`: no rail mark reads it, so a panel
+   *  load that skipped it costs nothing, and it opens a few megabytes of
+   *  log. The Health room asks for it when it is opened. */
+  history: SectionState<HistoryResponse | null>;
+  fetchRetention: () => Promise<void>;
+
+  // When the scheduler last told us it had changed a row. An open entry card
+  // watches this so a cadence it just set is re-read from the backend rather
+  // than assumed: the command answers with an envelope, not with a response,
+  // so there is nothing to await at the point of the click.
+  scheduleTouchedAt: number;
+  markScheduleTouched: () => void;
+
+  // Overview: what wants the operator, what is working, and what ran while
+  // they were away. The join behind the first band is the backend's, so this
+  // holds a payload rather than assembling one.
+  overview: SectionState<OverviewResponse | null>;
+  fetchOverview: () => Promise<void>;
+
+  // The rail's written lines. One feed, keyed by room, and the frontend
+  // authors none of it: a room described in TSX is a room whose description
+  // goes stale on its own.
+  roomLines: SectionState<RoomLinesResponse | null>;
+  fetchRoomLines: () => Promise<void>;
+  /** Everything the Managed system room shows: its rows AND its sentence.
+   *  Four callers wanted both and three of them asked for only the rows, so
+   *  the room header went on describing the state before the change. What a
+   *  re-read of this room IS belongs here, not in each caller's memory. */
+  rereadManagedRoom: () => Promise<void>;
+
+  // Where the operator is inside the open room. Level 0 is the room itself;
+  // every push renders INSIDE the pane rather than over it, which is the whole
+  // point: a floor plan you cannot see past has stopped being one.
+  //
+  // The stack is cleared when the rail changes room, because a crumb trail
+  // that survives into a different room names a place you are no longer in.
+  levels: AutonomyLevel[];
+  pushLevel: (level: AutonomyLevel) => void;
+  /** Return to `index`, dropping everything below it. */
+  goToLevel: (index: number) => void;
+  clearLevels: () => void;
   applyEnvelope: (env: Envelope) => void;
 
   // AU-7 Phase 3 — pruned ledger (admission-gate discards, by source ×
@@ -133,7 +256,7 @@ function _describeError(err: unknown): string {
 function _resolveSession(): string | null {
   const sid = useWebSocketStore.getState().sessionId;
   if (!sid) {
-    useToastStore.getState().push('No session id — connect first.', 'error');
+    useToastStore.getState().push('No session id. Connect first.', 'error');
     return null;
   }
   return sid;
@@ -163,11 +286,30 @@ export const useAutonomyStore = create<AutonomyState>((set, get) => ({
   governor: _section<GovernorStateResponse | null>(null),
   recovery: _section<LatestRecoveryResponse | null>(null),
   journal: _section<OperatorJournalRow[]>([]),
+  pipeline: _section<PipelineResponse | null>(null),
+  map: _section<MachineMapResponse | null>(null),
+  health: _section<HealthResponse | null>(null),
+  managed: _section<ManagedResponse | null>(null),
+  memory: _section<MemoryResponse | null>(null),
+  channels: _section<ChannelsResponse | null>(null),
+  atlas: _section<AtlasResponse | null>(null),
+  retention: _section<RetentionResponse | null>(null),
+  history: _section<HistoryResponse | null>(null),
+  scheduleTouchedAt: 0,
+  overview: _section<OverviewResponse | null>(null),
+  roomLines: _section<RoomLinesResponse | null>(null),
+  levels: [],
   pruned: null,
   prunedStatus: 'idle',
   pendingActions: new Set<string>(),
   selectedAgendaId: null,
-  openDetail: (id) => set({ selectedAgendaId: id }),
+  // Opening an item is a LEVEL, not a modal. Every pane that used to raise a
+  // card over itself calls this, so they all moved together.
+  openDetail: (id) => {
+    const item = get().agenda.data.find((i) => i.id === id);
+    set({ selectedAgendaId: id });
+    get().pushLevel({ kind: 'agenda', id, label: item?.goal ?? id });
+  },
   closeDetail: () => set({ selectedAgendaId: null }),
 
   selectedWorkerId: null,
@@ -175,6 +317,12 @@ export const useAutonomyStore = create<AutonomyState>((set, get) => ({
   workerDetailStatus: 'idle',
   workerDetailError: null,
   openWorkerDetail: async (id) => {
+    const known = get().workers.data.find((w) => w.id === id);
+    get().pushLevel({
+      kind: 'worker',
+      id,
+      label: known?.role || known?.kind || id,
+    });
     set({
       selectedWorkerId: id,
       workerDetail: null,
@@ -249,16 +397,247 @@ export const useAutonomyStore = create<AutonomyState>((set, get) => ({
   },
 
   fetchAll: async () => {
-    const { fetchAgenda, fetchWorkers, fetchGovernor, fetchRecovery, fetchJournal } = get();
+    const {
+      fetchAgenda,
+      fetchWorkers,
+      fetchGovernor,
+      fetchRecovery,
+      fetchJournal,
+      fetchPipeline,
+      fetchHealth,
+      fetchManaged,
+      fetchMemory,
+      fetchChannels,
+      fetchAtlas,
+      fetchRetention,
+      fetchOverview,
+      fetchRoomLines,
+      loadPruned,
+    } = get();
     // Each section tracks its own load state; settle independently so
     // one slow / down endpoint doesn't gate the others.
+    //
+    // Health is here rather than in its own room alone: the rail carries the
+    // room's line whether or not the room is open, and a rail that only knows
+    // what it is showing has stopped being the overview.
     await Promise.allSettled([
       fetchAgenda(),
       fetchWorkers(),
       fetchGovernor(),
       fetchRecovery(),
       fetchJournal(),
+      fetchPipeline(),
+      fetchHealth(),
+      fetchManaged(),
+      // The rail says whether anything can reach the operator, which is
+      // the one fact on this panel that is about the panel being read at
+      // all. It is not waited for by the room.
+      fetchMemory(),
+      fetchChannels(),
+      fetchAtlas(),
+      fetchRetention(),
+      // The room the panel opens on, and the room whose mark the rail draws
+      // first. Both need it before anything is clicked.
+      fetchOverview(),
+      // The rail carries a mark for Managed system whether or not the room is
+      // open, and `rooms.ts` reads it from this data: without it every load
+      // drew the no-producer mark on a room with a perfectly good producer.
+      fetchRoomLines(),
+      // The rail carries a line for every room whether or not it is open, and
+      // a room whose data nothing fetched cannot say what is in it.
+      loadPruned(),
     ]);
+  },
+
+  pushLevel: (level) =>
+    set((s) => {
+      const top = s.levels[s.levels.length - 1];
+      // Selecting the thing you are already looking at is not a new level.
+      if (top && top.kind === level.kind && top.id === level.id) return {};
+      // Neither is selecting a SIBLING of it. Opening one entry and then
+      // another from the wiring beside it is still one thing open, at the same
+      // depth, and stacking them made the trail read
+      // `Managed system > capture > watchman > capture > consolidate > ...`,
+      // which names no place anybody is. Only the top level renders, so every
+      // crumb under it was unreachable furniture. A level of the same KIND
+      // replaces the one it is a sibling of; a different kind is a real
+      // descent and pushes.
+      if (top && top.kind === level.kind) {
+        return { levels: [...s.levels.slice(0, -1), level] };
+      }
+      return { levels: [...s.levels, level] };
+    }),
+  goToLevel: (index) => set((s) => ({ levels: s.levels.slice(0, index) })),
+  clearLevels: () => set({ levels: [] }),
+
+  fetchMap: async () => {
+    set((s) => ({ map: { ...s.map, status: 'loading', error: null } }));
+    try {
+      const res = await fetchMachineMap();
+      set({ map: { data: res, status: 'ready', error: null, lastFetched: Date.now() } });
+    } catch (err) {
+      set((s) => ({ map: { ...s.map, status: 'error', error: _describeError(err) } }));
+    }
+  },
+
+  fetchHealth: async () => {
+    set((s) => ({ health: { ...s.health, status: 'loading', error: null } }));
+    try {
+      const res = await fetchHealth();
+      set({
+        health: { data: res, status: 'ready', error: null, lastFetched: Date.now() },
+      });
+    } catch (err) {
+      set((s) => ({
+        health: { ...s.health, status: 'error', error: _describeError(err) },
+      }));
+    }
+  },
+
+  fetchMemory: async () => {
+    set((s) => ({ memory: { ...s.memory, status: 'loading', error: null } }));
+    try {
+      const res = await fetchAutonomyMemory();
+      set({
+        memory: { data: res, status: 'ready', error: null, lastFetched: Date.now() },
+      });
+    } catch (err) {
+      set((s) => ({
+        memory: { ...s.memory, status: 'error', error: _describeError(err) },
+      }));
+    }
+  },
+
+  fetchAtlas: async () => {
+    set((s) => ({ atlas: { ...s.atlas, status: 'loading', error: null } }));
+    try {
+      const res = await fetchAutonomyAtlas();
+      set({
+        atlas: { data: res, status: 'ready', error: null, lastFetched: Date.now() },
+      });
+    } catch (err) {
+      set((s) => ({
+        atlas: { ...s.atlas, status: 'error', error: _describeError(err) },
+      }));
+    }
+  },
+
+  fetchRetention: async () => {
+    set((s) => ({ retention: { ...s.retention, status: 'loading', error: null } }));
+    try {
+      const res = await fetchAutonomyRetention();
+      set({
+        retention: {
+          data: res,
+          status: 'ready',
+          error: null,
+          lastFetched: Date.now(),
+        },
+      });
+    } catch (err) {
+      set((s) => ({
+        retention: { ...s.retention, status: 'error', error: _describeError(err) },
+      }));
+    }
+  },
+
+  fetchHistory: async () => {
+    set((s) => ({ history: { ...s.history, status: 'loading', error: null } }));
+    try {
+      const res = await fetchAutonomyHistory();
+      set({
+        history: { data: res, status: 'ready', error: null, lastFetched: Date.now() },
+      });
+    } catch (err) {
+      set((s) => ({
+        history: { ...s.history, status: 'error', error: _describeError(err) },
+      }));
+    }
+  },
+
+  fetchChannels: async () => {
+    set((s) => ({ channels: { ...s.channels, status: 'loading', error: null } }));
+    try {
+      const res = await fetchAutonomyChannels();
+      set({
+        channels: { data: res, status: 'ready', error: null, lastFetched: Date.now() },
+      });
+    } catch (err) {
+      set((s) => ({
+        channels: { ...s.channels, status: 'error', error: _describeError(err) },
+      }));
+    }
+  },
+
+  markScheduleTouched: () => set({ scheduleTouchedAt: Date.now() }),
+
+  fetchManaged: async () => {
+    set((s) => ({ managed: { ...s.managed, status: 'loading', error: null } }));
+    try {
+      const res = await fetchManaged();
+      set({
+        managed: { data: res, status: 'ready', error: null, lastFetched: Date.now() },
+      });
+    } catch (err) {
+      set((s) => ({
+        managed: { ...s.managed, status: 'error', error: _describeError(err) },
+      }));
+    }
+  },
+
+  fetchOverview: async () => {
+    set((s) => ({ overview: { ...s.overview, status: 'loading', error: null } }));
+    try {
+      const res = await fetchOverview();
+      set({
+        overview: { data: res, status: 'ready', error: null, lastFetched: Date.now() },
+      });
+    } catch (err) {
+      set((s) => ({
+        overview: { ...s.overview, status: 'error', error: _describeError(err) },
+      }));
+    }
+  },
+
+  rereadManagedRoom: async () => {
+    const { fetchManaged, fetchRoomLines } = get();
+    await Promise.all([fetchManaged(), fetchRoomLines()]);
+  },
+
+  fetchRoomLines: async () => {
+    set((s) => ({ roomLines: { ...s.roomLines, status: 'loading', error: null } }));
+    try {
+      const res = await fetchRoomLines();
+      set({
+        roomLines: { data: res, status: 'ready', error: null, lastFetched: Date.now() },
+      });
+    } catch (err) {
+      set((s) => ({
+        roomLines: { ...s.roomLines, status: 'error', error: _describeError(err) },
+      }));
+    }
+  },
+
+  fetchPipeline: async () => {
+    set((s) => ({ pipeline: { ...s.pipeline, status: 'loading', error: null } }));
+    try {
+      const res = await fetchPipeline();
+      set({
+        pipeline: {
+          data: res,
+          status: 'ready',
+          error: null,
+          lastFetched: Date.now(),
+        },
+      });
+    } catch (err) {
+      // The last payload is kept so the strip can say how old it is. It is
+      // NOT rendered as current: a stale run drawn as live is the failure
+      // the whole surface exists to prevent.
+      set((s) => ({
+        pipeline: { ...s.pipeline, status: 'error', error: _describeError(err) },
+      }));
+    }
   },
 
   fetchAgenda: async () => {
@@ -448,7 +827,7 @@ export const useAutonomyStore = create<AutonomyState>((set, get) => ({
     try {
       const res = await postResumeAgendaItem(id, { session_id: sid });
       useToastStore.getState().push(
-        res.noop ? 'Already past blocked — no resume needed' : 'Re-queued for next tick',
+        res.noop ? 'Already past blocked, so no resume is needed' : 'Re-queued for next tick',
         'info',
       );
       await get().fetchAgenda();

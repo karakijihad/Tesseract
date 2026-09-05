@@ -10,10 +10,10 @@ is expensive precisely when it fires: during diagnosis, where the next
 conclusion is built on top of it.
 
 So braces are expanded here rather than passed down, and any other syntax the
-engine silently degrades is refused by name. Two shapes also used to escape
-the handler entirely — an absolute pattern raises `NotImplementedError` and an
-empty one `ValueError`, neither of which is an `OSError` — so the tool crashed
-instead of answering.
+engine silently degrades is refused by name. Two shapes also escape the
+`OSError` handler entirely, an absolute pattern raising
+`NotImplementedError` and an empty one `ValueError`, so without this the
+tool crashes instead of answering.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 from tesseract.kernel.tools._path_anchor import (
     ReadPathRefused,
     anchor_read_path,
+    not_found_message,
     refuse_if_secret_path,
 )
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
@@ -141,8 +142,8 @@ def _reject_unsupported(pattern: str) -> None:
 def _mtime(path: Path) -> float:
     """Sort key that survives a file vanishing mid-walk.
 
-    A single unreadable entry used to abort the whole call through the
-    `OSError` handler, discarding every result already found.
+    A single unreadable entry must not abort the whole call through the
+    `OSError` handler and discard every result already found.
     """
     try:
         return path.stat().st_mtime
@@ -158,12 +159,13 @@ class GlobTool(Tool):
     group: ClassVar[str] = "files-on-disk"
     summary: ClassVar[str] = "Find files by path/name pattern, newest first."
     use_when: ClassVar[str] = (
-        "You know a filename or path shape but not the contents — '*', '**', "
+        "You know a filename or path shape but not the contents. '*', '**', "
         "'?', '[seq]' and brace alternation '{a,b}' are supported."
     )
     not_when: ClassVar[str] = (
         "Use `grep` when the question is about file contents rather than paths."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -189,7 +191,9 @@ class GlobTool(Tool):
             return ToolResult(output=str(exc), is_error=True)
 
         if not search_dir.exists():
-            return ToolResult(output=f"Directory not found: {search_dir}", is_error=True)
+            return ToolResult(
+                output=not_found_message("Directory", inp.path, search_dir), is_error=True
+            )
 
         try:
             _reject_unsupported(inp.pattern)
@@ -225,8 +229,8 @@ class GlobTool(Tool):
                     if context.cancel_event.is_set():
                         return found
                     # Resolved ONCE and reused for both checks. Containment and
-                    # the secret check each used to resolve independently,
-                    # which cost three syscalls per hit for one question.
+                    # the secret check resolving independently costs three
+                    # syscalls per hit for one question.
                     try:
                         real_hit = hit.resolve()
                         real_hit.relative_to(base)

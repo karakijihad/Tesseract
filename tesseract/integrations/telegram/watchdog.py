@@ -64,7 +64,7 @@ class WatchdogConfig:
     def from_env(cls) -> "WatchdogConfig":
         from tesseract.integrations._channels_config import channel_key_env
 
-        key_env = channel_key_env("telegram", "TELEGRAM_BOT_TOKEN")
+        key_env = channel_key_env("telegram")
         token = (os.environ.get(key_env) or "").strip()
         if not token:
             raise RuntimeError(f"{key_env} not set — watchdog requires it")

@@ -99,34 +99,37 @@ DEFAULT_AGENT_SELF_AGENT = "agent-self"
 # fallback (memory + vault + web search + brief output).
 DEFAULT_MARKDOWN_AGENT = "research-brief"
 
-# Known *model role* names from ``tesseract/config/roles.yaml``. Codex
-# audit 2026-05-19 P0 #1: the kernel used to store ``self._rationale_role``
-# (a model role) in ``WorkerRecord.role`` — which the runner then passed
-# to ``invoke_agent`` as an agent slug, breaking every dispatch with
-# ``Unknown agent: 'agents_default'``. Kernel no longer fills the field,
-# but this set defends against (a) legacy records on disk from before
-# the fix, (b) operator-pinned items that mis-use the field. Anything
-# in here is rejected as a slug and the default is used instead.
-_KNOWN_MODEL_ROLE_NAMES: frozenset[str] = frozenset({
-    "chat_brain",
-    "observer_agent",
-    "mission_planner",
-    "claude_cli",
-    "codex_cli",
-    "coder",
-    "auditor",
-    "agents_default",
-    "subagents_default",
-    "channel_vision",
-    "watchman",
-    "vision_agent",
-    "image_generator",
-    "audio_transcribe",
-    "stt",
-    "tts",
-    "embeddings",
-    "reranker",
-})
+def _model_role_names() -> frozenset[str]:
+    """The model-role names in ``roles.yaml``, read from the file.
+
+    A model role in ``WorkerRecord.role`` reaches ``invoke_agent`` as an agent
+    slug and breaks the dispatch with ``Unknown agent: 'agents_default'``. The
+    kernel does not fill the field; this defends against records already on
+    disk and operator-pinned items that mis-use it.
+
+    Read rather than listed, because the list that used to be here went stale
+    in both directions at once and the test written to catch that had been
+    failing in the tree. `load_bundle` re-reads on every call and parses only
+    when the file changed, so this also follows a role added while the runtime
+    is up, which a frozen copy could not.
+
+    Never raises. A config that will not load is a bigger failure being
+    reported elsewhere, and this is a guard on a dispatch path: it degrades to
+    the hyphen and ref-shape rules below rather than taking the dispatch down
+    with it.
+    """
+    try:
+        from tesseract.brain.boot import load_bundle
+        from tesseract.config.loader import model_role_names
+
+        return model_role_names(load_bundle())
+    except Exception:  # noqa: BLE001
+        log.warning(
+            "kernel_worker_runner: could not read roles.yaml to check an agent "
+            "slug, so only the shape rules apply to this one",
+            exc_info=True,
+        )
+        return frozenset()
 
 
 def _resolve_agent_slug(record_role: str | None, default: str) -> str:
@@ -138,7 +141,7 @@ def _resolve_agent_slug(record_role: str | None, default: str) -> str:
     value = (record_role or "").strip()
     if not value:
         return default
-    if value in _KNOWN_MODEL_ROLE_NAMES:
+    if value in _model_role_names():
         return default
     if "." in value:  # provider-ref like ``api.openai.gpt54_mini``
         return default
@@ -402,6 +405,14 @@ class KernelWorkerRunner:
                 "ok": False,
                 "summary": summary or (result.deny_reason or reason),
                 "reason": reason,
+                # The one failure branch that named nothing. Its three
+                # siblings below set an `error_class`, and the watchman groups
+                # failed workers BY that field — so every tool error, whatever
+                # caused it, arrived as one bucket called `<kind>/failed` and
+                # the report could not say which fault it was. The tool names
+                # its own exception when it knows it; `reason` is the floor so
+                # that no failure is ever unlabelled again.
+                "error_class": meta.get("error_class") or reason,
                 "error_message": result.deny_reason or summary,
                 "timed_out": timed_out,
                 "outcome": outcome,
@@ -468,7 +479,7 @@ def _route_for_kind(record: WorkerRecord) -> tuple[str | None, Any]:
         agent_name = _resolve_agent_slug(record.role, DEFAULT_AGENT_SELF_AGENT)
         return "invoke_agent", {"name": agent_name, "task": prompt, "background": False}
     if record.kind is WorkerKind.AGENT_CONTROLLER:
-        # 2026-05-24 — accepted OPERATOR_GATE items now flow into a
+        # Accepted OPERATOR_GATE items now flow into a
         # fresh controller session whose chat brain orchestrates
         # claude / codex / agents. The dispatcher's
         # ``ensure_daemon_running`` is a safety net if the supervisor's

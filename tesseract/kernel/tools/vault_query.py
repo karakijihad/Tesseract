@@ -12,8 +12,8 @@ Use when:
 Distinct from vault_search: vault_search scans raw file chunks (BM25/vector).
 vault_query reads the compiled wiki pages (structured summaries with links).
 
-Scoping (Phase 4 of vault-librarian-rewire) is a deterministic two-pass
-traversal over the compound wiki Phase 3 builds. Pass 1 (seed) keyword-matches
+Scoping is a deterministic two-pass traversal over the compound wiki.
+Pass 1 (seed) keyword-matches
 INDEX.md + per-page `title`/`concepts` frontmatter. Pass 2 (expand) unions each
 seed's `related_slugs:` + `backlinks_from:`, dedupes, and caps. Scoping is
 token-free; `VaultLibrarian.synthesize_query()` reasons over the expanded set.
@@ -64,15 +64,20 @@ class VaultQueryTool(Tool):
     group: ClassVar[str] = "research-library"
     summary: ClassVar[str] = "Synthesizes an answer from the vault's compiled wiki of topic-grouped summaries."
     use_when: ClassVar[str] = (
-        "Use for \"what do we have on X\" questions — reads compiled wiki pages, linked "
-        "to related sources, and returns a synthesized answer. Reach for it BEFORE "
-        "answering a question about prior topics, files or research from your own "
-        "knowledge: the vault is the authoritative recall surface and your prior is not."
+        "Use for \"what do we have on X\" about a subject the library holds "
+        "research on: documents, articles, PDFs, snapshots. It answers from "
+        "the compiled wiki, so it is the fastest way in. Reach for it BEFORE "
+        "answering from your own knowledge, because the vault is the "
+        "authoritative surface and your prior is not."
     )
     not_when: ClassVar[str] = (
-        "Use `vault_search` when you want raw passages or exact chunk matches instead of a "
-        "synthesized answer. The vault is the operator's own library, distinct from the web."
+        "for what the OPERATOR decided or prefers, use `memory_search`: that "
+        "is their record and this is their library. Use `vault_search` when "
+        "you need the exact passage rather than a summary, or when the page "
+        "was compiled before the document you are being asked about. The "
+        "vault is the operator's own library and is not the web."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(
         self,

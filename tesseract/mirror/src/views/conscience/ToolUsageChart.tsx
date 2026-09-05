@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 
 import { Disclosure } from '../../components/common/Disclosure';
+import { Meter } from '../../components/common/Meter';
 import { Segmented } from '../../components/common/Segmented';
 import type { ToolUsageWindow } from '../../stores/conscience';
 
@@ -18,30 +19,43 @@ import type { ToolUsageWindow } from '../../stores/conscience';
  * and see a zero next to it. Ranking only what was used would hide exactly
  * that, so the count leads and the names are one disclosure away.
  *
- * A readout, not a control. `_CORE_TOOL_NAMES` lives in the sealed app tree,
- * so nothing here can change what loads — IS-11 moves it into config, and a
- * disabled knob in the meantime would promise something the build cannot do.
+ * Marked with what each tool COSTS, not only what it was worth: a tool
+ * described on every turn is paid for whether or not it was called, so the
+ * ones to look at are the carried names sitting in the unused list. The
+ * switch that changes that is one section over, under Working set.
  */
 export function ToolUsageChart({
   windows,
   total,
   roster,
+  carried,
 }: {
   windows: ToolUsageWindow[];
   total: number;
   roster: boolean;
+  /** Tools described on every turn, or `null` while the roster is still
+   *  loading. Null rather than an empty set: "nothing is carried" is a
+   *  sentence this panel would otherwise print about a fetch in flight. */
+  carried: Set<string> | null;
 }) {
   const [days, setDays] = useState<number>(windows[0]?.days ?? 7);
   const [showUnused, setShowUnused] = useState(false);
   const active = windows.find((w) => w.days === days) ?? windows[0];
 
-  const { used, unused } = useMemo(() => {
+  const { used, unused, unusedCarried } = useMemo(() => {
     const rows = active?.tools ?? [];
+    const idle = rows.filter((r) => r.calls === 0).map((r) => r.tool);
     return {
       used: rows.filter((r) => r.calls > 0),
-      unused: rows.filter((r) => r.calls === 0).map((r) => r.tool),
+      // Carried first: those are the ones costing something for nothing, and
+      // burying them alphabetically among ninety others hides the reading.
+      unused: [...idle].sort((a, b) => {
+        const weight = Number(!!carried?.has(b)) - Number(!!carried?.has(a));
+        return weight !== 0 ? weight : a.localeCompare(b);
+      }),
+      unusedCarried: idle.filter((name) => carried?.has(name)).length,
     };
-  }, [active]);
+  }, [active, carried]);
 
   const max = Math.max(1, ...used.map((r) => r.sessions));
 
@@ -81,15 +95,14 @@ export function ToolUsageChart({
           {used.map((r) => (
             <li key={r.tool} className="tool-usage__row">
               <span className="tool-usage__name">{r.tool}</span>
-              <span className="tool-usage__track">
-                <span
-                  className="tool-usage__bar"
-                  style={{ width: `${(r.sessions / max) * 100}%` }}
-                />
-              </span>
+              <Meter value={r.sessions / max} />
               <span className="tool-usage__figures t-meta">
                 {r.sessions} {r.sessions === 1 ? 'session' : 'sessions'} ·{' '}
                 {r.calls} {r.calls === 1 ? 'call' : 'calls'}
+                {/* The promotion half of the same decision: a tool it reaches
+                    for often but has to look up first pays a search every
+                    time. */}
+                {carried && !carried.has(r.tool) ? ' · looked up first' : ''}
               </span>
             </li>
           ))}
@@ -98,7 +111,7 @@ export function ToolUsageChart({
 
       <figcaption className="tool-usage__caption t-meta">
         Ranked by how many separate sessions called each tool, never by raw
-        calls. {roster ? '' : 'The registry was unavailable, so this lists only what the ledger holds — a tool absent here may exist and simply never have been called. '}
+        calls. {roster ? '' : 'The registry was unavailable, so this lists only what the ledger holds. A tool absent here may exist and simply never have been called. '}
       </figcaption>
 
       {roster && unused.length > 0 && (
@@ -114,13 +127,19 @@ export function ToolUsageChart({
           {showUnused && (
             <div id="tool-usage-unused">
               <p className="t-meta tool-usage__unused-lead">
-                The interesting half. A tool here is a demotion candidate —
-                unless it is one you were sure got used, which is the reading
-                this panel exists for.
+                The interesting half.{' '}
+                {!carried
+                  ? 'A tool here is worth switching off, unless it is one you were sure got used, which is the reading this panel exists for.'
+                  : unusedCarried > 0
+                    ? `${unusedCarried} of these are described to the assistant on every turn anyway, marked below and listed first. Those are the ones that cost something for nothing.`
+                    : 'None of these are described on every turn, so none of them is costing anything.'}
               </p>
               <ul className="tool-usage__unused">
                 {unused.map((name) => (
-                  <li key={name} className="t-meta">
+                  <li
+                    key={name}
+                    className={`t-meta${carried?.has(name) ? ' is-carried' : ''}`}
+                  >
                     {name}
                   </li>
                 ))}

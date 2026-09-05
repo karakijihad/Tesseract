@@ -19,192 +19,6 @@
   overflow: hidden;
 }
 
-.autonomy-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
-  gap: var(--space-md);
-  min-height: 0;
-  flex: 1;
-  overflow: hidden;
-}
-
-.autonomy-grid__col {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-md);
-  min-height: 0;
-  min-width: 0;
-  overflow-y: auto;
-  /* overflow-y:auto leaves overflow-x computed as `auto`, which surfaces a
-     horizontal scrollbar the moment a row holds an unbreakable string (long
-     URL). Long text wraps below; the panel never scrolls sideways. */
-  overflow-x: hidden;
-  padding-right: var(--space-xs);
-}
-
-.autonomy-pane__group {
-  margin-top: var(--space-sm);
-}
-
-.autonomy-pane__group-title {
-  font-size: var(--t-meta-size);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-meta);
-  margin-bottom: var(--space-xs);
-}
-
-.autonomy-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-xs);
-}
-
-.autonomy-list__divider {
-  font-size: var(--t-meta-size);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-meta);
-  padding-top: var(--space-xs);
-  border-top: var(--stroke-1) solid var(--panel-border);
-}
-
-.autonomy-row {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-xs) var(--space-sm);
-  border: var(--stroke-1) solid var(--panel-border);
-  border-radius: var(--radius-sm);
-  /* A row sits INSIDE a `Block`, so it has to be lighter than the card, not
-     the app background — on the void it read as a black hole in the card. */
-  background: var(--bg-elevated);
-  min-width: 0;
-}
-
-.autonomy-row__head {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-6);
-  align-items: center;
-  font-size: var(--t-caption-size);
-}
-
-.autonomy-row__goal {
-  font-family: var(--font-ui);
-  font-size: var(--t-body-size);
-  color: var(--text-primary);
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-.autonomy-row__rationale,
-.autonomy-row__components,
-.autonomy-row__gates {
-  font-size: var(--t-caption-size);
-  line-height: 1.4;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-.autonomy-row__score {
-  margin-left: auto;
-  font-family: var(--font-ui);
-  font-size: var(--t-caption-size);
-  color: var(--text-meta);
-}
-
-.autonomy-chip {
-  display: inline-flex;
-  align-items: center;
-  font-family: var(--font-ui);
-  font-size: var(--t-meta-size);
-  text-transform: lowercase;
-  padding: var(--space-1) var(--space-6);
-  border-radius: 999px;
-  border: var(--stroke-1) solid var(--panel-border);
-  color: var(--text-meta);
-  background: var(--bg-elevated);
-}
-
-/* status chips */
-.autonomy-chip--proposed       { color: var(--text-meta); }
-.autonomy-chip--selected       { color: var(--accent); border-color: var(--accent); }
-.autonomy-chip--running        { color: var(--ok); border-color: var(--ok); }
-.autonomy-chip--queued         { color: var(--text-meta); }
-.autonomy-chip--spawning       { color: var(--accent); border-color: var(--accent); }
-.autonomy-chip--awaiting_io    { color: var(--warn); border-color: var(--warn); }
-.autonomy-chip--awaiting_operator {
-  color: var(--warn);
-  border-color: var(--warn);
-  background: var(--warn-soft);
-}
-.autonomy-chip--resume_queued  { color: var(--accent); }
-.autonomy-chip--blocked        { color: var(--bad); border-color: var(--bad); }
-.autonomy-chip--done           { color: var(--ok); }
-.autonomy-chip--failed         { color: var(--bad); border-color: var(--bad); }
-.autonomy-chip--cancelled      { color: var(--text-meta); }
-.autonomy-chip--interrupted    { color: var(--warn); }
-.autonomy-chip--pause          { color: var(--bad); border-color: var(--bad); }
-.autonomy-chip--broken         { color: var(--bad); border-color: var(--bad); }
-.autonomy-chip--ok             { color: var(--ok); border-color: var(--ok); }
-.autonomy-chip--decision       { color: var(--text-primary); }
-.autonomy-chip--detector       { color: var(--warn); }
-
-/* risk chips */
-.autonomy-chip--risk-autonomous     { color: var(--ok); }
-.autonomy-chip--risk-propose        { color: var(--accent); }
-.autonomy-chip--risk-operator_gate  { color: var(--warn); }
-.autonomy-chip--risk-absolute_deny  { color: var(--bad); border-color: var(--bad); }
-
-/* source chips — most use the default chip styling; strategist gets a
-   distinctive accent so operator-attended portfolio initiatives stand
-   out from ambient observer/scheduler rows (AU-23). */
-.autonomy-chip--src-strategist {
-  color: var(--accent);
-  border-color: var(--accent);
-  letter-spacing: 0.04em;
-}
-
-/* TC-1 journal chips — each event_type gets its own subtle tint so the
-   operator can scan the feed without reading every label. */
-.autonomy-chip--journal-approval        { color: var(--accent); }
-.autonomy-chip--journal-dispatch        { color: var(--text-primary); }
-.autonomy-chip--journal-outcome         { color: var(--ok); }
-.autonomy-chip--journal-advice_only     { color: var(--warn); }
-.autonomy-chip--journal-follow_up_draft { color: var(--accent); }
-
-.autonomy-journal {
-  max-height: 260px;
-  overflow-y: auto;
-}
-.autonomy-row--journal {
-  border-color: var(--border-muted);
-  background: transparent;
-}
-.autonomy-row--journal-advice_only {
-  border-color: var(--warn-strong);
-  background: var(--warn-wash);
-}
-
-.autonomy-row--awaiting_operator {
-  border-color: var(--warn-bold);
-  background: var(--warn-wash);
-}
-
-.autonomy-row--blocked,
-.autonomy-row--pause {
-  border-color: var(--bad-strong);
-  background: var(--bad-wash);
-}
-
-.autonomy-row--broken {
-  border-color: var(--bad-strong);
-}
-
 /* `--mono-stack` was never defined, so the class named "mono" rendered in the
    UI face wherever it was used. */
 .t-mono {
@@ -212,127 +26,851 @@
   font-size: var(--t-caption-size);
 }
 
-/* ── S2 actions ───────────────────────────────────────── */
+/* ── Overview ─────────────────────────────────────────────────────────────
+   Four figures over three bands of state lines, and no shape of its own. The
+   room the panel opens on is the one that has to fit a screen, so everything
+   here is type and space: no card, no border, no container. */
 
-/* The cursor and the focus ring belong to `Row` (ui.css). What is left is the
-   card's own answer to being pointed at — a border, where the terminal tab
-   answers with a ground. */
-.autonomy-row.row:hover {
-  border-color: var(--text-meta);
+.autonomy-figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-28);
+  padding-bottom: var(--space-2);
 }
 
-.autonomy-row.is-busy {
-  opacity: 0.6;
-}
-
-/* PLACEMENT ONLY — the slot is `RowActions`, which lays the buttons out. A
-   card's actions sit under its body rather than beside it. */
-.autonomy-row__actions {
-  margin-top: var(--space-xs);
-}
-
-/* ── Detail modal ─────────────────────────────────────── */
-
-/* SIZE ONLY — the ground, the border and the scrim behind it are `Modal`'s. */
-.autonomy-modal {
-  max-width: 760px;
-  width: 100%;
-  max-height: 80vh;
-  padding: var(--space-md);
+.autonomy-figure {
   display: flex;
   flex-direction: column;
-  gap: var(--space-md);
+  gap: var(--space-1);
 }
 
-.autonomy-modal__head {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-md);
-}
-.autonomy-modal__title {
+.autonomy-figure__n {
+  font-family: var(--font-mono);
   font-size: var(--t-sub-size);
+  font-weight: var(--t-sub-weight);
   color: var(--text-primary);
-  flex: 1;
-}
-.autonomy-modal__section {
-  border-top: var(--stroke-1) solid var(--panel-border);
-  padding-top: var(--space-sm);
-}
-.autonomy-modal__section-title {
-  font-size: var(--t-meta-size);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-meta);
-  margin-bottom: var(--space-xs);
+  font-variant-numeric: tabular-nums;
 }
 
-.autonomy-modal__score {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  column-gap: var(--space-md);
-  row-gap: var(--space-2);
+/* The one number the operator should look at, and the only colour on the
+   row. A figure that is merely a count says so by staying the text colour. */
+.autonomy-figure__n--warn {
+  color: var(--warn);
+}
+
+.autonomy-figure__l {
+  display: block;
+}
+
+/* ── Levels ───────────────────────────────────────────────────────────────
+   A level opens INSIDE the pane. The breadcrumb is the way back, and escape
+   is the other half of it. */
+
+.crumbs {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-6);
   font-family: var(--font-ui);
   font-size: var(--t-caption-size);
 }
-.autonomy-modal__score-key {
-  color: var(--text-meta);
-}
-.autonomy-modal__score-val {
-  color: var(--text-primary);
-  text-align: right;
+
+.crumbs__step {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-6);
 }
 
-/* Code-drift chip — persistent header companion to the toast. */
-.notifications-pane__list {
-  list-style: none;
+.crumbs__sep { color: var(--text-disabled); }
+
+.crumbs__trailing { margin-left: auto; }
+
+.crumb {
   padding: 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--text-meta);
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+  transition: color var(--motion-fast) var(--ease-out);
+  /* A crumb names where you are, and some producers write a paragraph into
+     the field others write three words into. The full text is in the pane
+     below it. */
+  max-width: 32ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crumb:hover { color: var(--text-primary); }
+
+.crumb:focus-visible {
+  outline: var(--stroke-2) solid var(--accent);
+  outline-offset: var(--space-2);
+}
+
+/* Where you are does not navigate, so it is not a control. */
+.crumb--here {
+  color: var(--text-primary);
+  cursor: default;
+  max-width: 48ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── the map ───────────────────────────────────────────────────────────────
+   The shape of the machine, drawn from the route. Colour is spent the way the
+   track spends it: a node that is fine is a tint, and full colour goes only to
+   the ones that want the operator. A node nothing reports on is an outline —
+   the state the pre-rewrite CSS had and the rewrite dropped, which is how five
+   signals came to render as calm forever.
+
+   Nothing here animates. No transition, no pulse, no travelling dash: motion
+   on this surface is reserved for an event that arrived, and nothing sends one
+   yet. */
+
+.machine-map {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.machine-map__svg {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.map-band {
+  font-family: var(--t-meta-family);
+  font-size: var(--t-meta-size);
+  fill: var(--text-meta);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.map-edge {
+  fill: none;
+  /* The wiring IS the picture here, not a divider between two things, and the
+     border ramp tops out at 0.12 white, which reads as a smudge. A drawn line
+     is the thing being looked at, so it takes a text weight. What this surface
+     really wants is a mark token of its own, and that is AR-9's to settle when
+     it rebuilds the graph. */
+  stroke: var(--text-disabled);
+  stroke-width: var(--stroke-1);
+}
+
+.map-divider {
+  stroke: var(--border-subtle);
+  stroke-width: var(--stroke-1);
+}
+
+.map-node__box {
+  fill: var(--bg-elevated);
+  stroke: var(--text-disabled);
+  stroke-width: var(--stroke-1);
+}
+
+.map-node__name {
+  font-family: var(--t-caption-family);
+  font-size: var(--t-caption-size);
+  /* A node's own name is the thing being read, not a caption about it. */
+  fill: var(--text-primary);
+}
+
+.map-node--running  .map-node__box { fill: var(--accent-dim); stroke: var(--accent); }
+.map-node--idle     .map-node__box { fill: var(--ok-wash); stroke: var(--ok-edge); }
+.map-node--pending  .map-node__box { fill: var(--wash-lg); stroke: var(--border-muted); }
+.map-node--degraded .map-node__box { fill: var(--warn-wash); stroke: var(--warn); }
+.map-node--failed   .map-node__box { fill: var(--bad-wash); stroke: var(--bad); }
+.map-node--refused  .map-node__box { fill: var(--warn-wash); stroke: var(--warn-edge); }
+.map-node--unknown  .map-node__box { fill: none; stroke: var(--border-muted); }
+.map-node--not_instrumented .map-node__box {
+  fill: none;
+  stroke: var(--border-visible);
+  stroke-dasharray: var(--space-3) var(--space-3);
+}
+.map-node--not_instrumented .map-node__name { fill: var(--text-secondary); }
+
+.map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
   margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.map-legend__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+.map-legend__mark {
+  width: var(--space-9);
+  height: var(--space-9);
+  border-radius: var(--radius-xs);
+  background: var(--bg-elevated);
+  border: var(--stroke-1) solid var(--border-muted);
+}
+
+.map-legend__mark.map-node--running  { background: var(--accent-dim); border-color: var(--accent); }
+.map-legend__mark.map-node--idle     { background: var(--ok-wash); border-color: var(--ok-edge); }
+.map-legend__mark.map-node--pending  { background: var(--wash-lg); }
+.map-legend__mark.map-node--degraded { background: var(--warn-wash); border-color: var(--warn); }
+.map-legend__mark.map-node--failed   { background: var(--bad-wash); border-color: var(--bad); }
+.map-legend__mark.map-node--refused  { background: var(--warn-wash); border-color: var(--warn-edge); }
+.map-legend__mark.map-node--unknown  { background: none; }
+.map-legend__mark.map-node--not_instrumented {
+  background: none;
+  border-style: dashed;
+  border-color: var(--border-visible);
+}
+
+.map-note {
+  margin: 0;
+}
+
+/* ── the room template ──────────────────────────────────────────
+   One shape for every room on this panel: a band at the top that says where
+   you are and what is in this room, the room itself in the middle, and a band
+   at the bottom carrying what it just did. Neither band scrolls and both run
+   the full width, so moving between rooms never moves the furniture.
+
+   Level 3 renders in the middle. Level 4, the wiring of whatever is open,
+   renders beside it rather than over it. */
+
+.room {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  /* The container is the SHELL, not the middle band, because a container query
+     styles a container's descendants and never the container itself. Named on
+     `.room__mid` it silently did nothing, and level 4 stacked at every width.
+     The two are the same inline size, so the query means what it always meant. */
+  container-type: inline-size;
+  container-name: mid;
+}
+
+.room__top {
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  padding: var(--space-14) var(--space-20) var(--space-12);
+  border-bottom: var(--stroke-1) solid var(--panel-divider);
 }
-.notifications-pane__row {
-  display: grid;
-  grid-template-columns: 1fr auto auto;
+
+.room__where {
+  display: flex;
   align-items: center;
-  gap: var(--space-sm);
-  font-size: var(--t-caption-size);
+  gap: var(--space-8);
 }
-.notifications-pane__cat {
-  font-family: var(--font-ui);
+
+/* What the room is for, under what is in it. One line, and it never moves,
+   so a reader learns it once and skims past it after that. */
+.room__purpose {
+  margin: 0;
+  max-width: 76ch;
+}
+
+.room__said {
+  margin: 0;
+  font-size: var(--t-ui-size);
+  line-height: 1.45;
   color: var(--text-primary);
+  max-width: 84ch;
+  text-wrap: balance;
 }
 
-/* ── Pruned pane (AU-7 Phase 3) ───────────────────────── */
+/* Counted facts, until the written line exists. Same slot, same rank, so the
+   band does not move when the sentence arrives. */
+.room__facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-6) var(--space-20);
+  font-size: var(--t-caption-size);
+  color: var(--text-secondary);
+}
 
-.pruned-table {
+/* Level 4 sits BESIDE level 3 when the room can afford two columns, and UNDER
+   it when it cannot. Nothing is hidden either way: this panel lives in a glass
+   panel the operator can drag, and at 600px a 44% column left the map 145px
+   wide, which drew the machine as a row of dashes. A container query, because
+   what decides this is the room's width and not the window's. */
+.room__mid {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.room__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-14) var(--space-20) var(--space-16);
+  overflow-y: auto;
+  /* What a row inside this room can afford is decided by the ROOM's width. The
+     panel is draggable, so the window's width answers a different question. */
+  container-type: inline-size;
+  container-name: room;
+}
+
+.room__side {
+  flex: 0 1 auto;
+  /* Stacked, it takes a share of the room rather than half of it: what you
+     opened is the thing you came for, and its wiring is the answer to a second
+     question. */
+  max-height: 42%;
+  min-width: 0;
+  min-height: 0;
+  padding: var(--space-14) var(--space-18);
+  border-top: var(--stroke-1) solid var(--panel-divider);
+  background: var(--wash-xs);
+  overflow: auto;
+}
+
+/* A drawing of the whole machine has a size below which it stops being a
+   drawing. It scrolls inside its own band rather than shrinking to dashes, and
+   the page under it never scrolls sideways. */
+.room__side .machine-map__svg {
+  min-width: 560px;
+}
+
+@container mid (min-width: 720px) {
+  .room__mid {
+    flex-direction: row;
+  }
+
+  .room__side {
+    flex: 0 0 44%;
+    max-height: none;
+    border-top: none;
+    border-left: var(--stroke-1) solid var(--panel-divider);
+  }
+}
+
+.room__bottom {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-10) var(--space-20) var(--space-12);
+  border-top: var(--stroke-1) solid var(--panel-divider);
+  background: var(--wash-xs);
+}
+
+.room__tail-label {
+  margin-bottom: var(--space-2);
+}
+
+.room__unwired {
+  margin: 0;
+}
+
+.room__tail-line {
+  display: grid;
+  grid-template-columns: var(--space-48) 96px minmax(0, 1fr);
+  gap: var(--space-12);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta-size);
+  color: var(--text-meta);
+}
+
+.room__tail-line--warn { color: var(--warn); }
+.room__tail-line--bad  { color: var(--bad); }
+
+.room__tail-at,
+.room__tail-src,
+.room__tail-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room__tail-src { color: var(--text-secondary); }
+
+/* Placement only: the rail's standing note carries the view's one control
+   under it, and a note and a button on one line wrap badly at rail width. */
+.autonomy-rail-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-8);
+}
+
+/* ── the panel's one line, and the heading over a group of them ──
+   Health, Managed system, Memory and Channels are the same act, so they are
+   the same shape. Bare on purpose: the diagnosis that produced this design was
+   six bordered cards inside a bordered pane, so a line has a state edge and
+   nothing else. That is what lets a room hold twenty facts without a
+   scrollbar. */
+
+.autonomy-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.autonomy-band {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: var(--space-16) 0 var(--space-5);
+}
+
+.autonomy-band__count {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.state-strip {
+  display: flex;
+  flex-direction: column;
+}
+
+/* The name column is `fit-content` rather than a fixed width, because this
+   panel lives in a glass panel the operator can drag narrow: a 148px column
+   holding the word `providers` left the SENTENCE eleven characters wide, which
+   is the half a person is actually reading. Names align in a column again the
+   moment the room is wide enough to afford it, which is the container query
+   below rather than a viewport one: what decides this is the panel's width,
+   not the window's. */
+/* NARROW, which is the width the operator actually meets this panel at.
+   Six columns need about 300px of fixed width before the sentence gets any,
+   and the room is about 265px wide at the cockpit's default panel size: the
+   sentence column computed to ZERO and the goal on every held row rendered at
+   no width at all, present in the DOM and invisible. Measured 2026-08-25.
+   So under the threshold below the row is two lines: what it is and when, then
+   the sentence under them across the full width. */
+.state-line {
+  display: grid;
+  grid-template-columns: var(--space-3) minmax(0, 1fr) auto auto;
+  grid-template-areas:
+    "edge name value when"
+    "edge said said said"
+    "edge acts acts acts"
+    "more more more more";
+  align-items: center;
+  gap: 0 var(--space-12);
+  min-height: 31px;
+  /* The breathing room belongs to the ROW. On the clamped sentence it clipped
+     at the padding box while the clamp measured the content box, so a third
+     line showed through as a sliver under the ellipsis. */
+  padding: var(--space-5) 0;
+  border-bottom: var(--stroke-1) solid var(--panel-divider);
+  font-size: var(--t-caption-size);
+  color: var(--text-secondary);
+}
+
+.state-line__edge { grid-area: edge; }
+.state-line__name { grid-area: name; }
+.state-line__said { grid-area: said; }
+.state-line__value { grid-area: value; }
+.state-line__when { grid-area: when; }
+/* Who wrote this row. It sits beside the name where the room is wide enough to
+   hold a column for it, and right of the sentence where it is not: the narrow
+   row already spends its first line on the name, when it next fires and the
+   clock, and a fourth cell there computes the name to nothing at the width the
+   operator actually meets this panel at.
+
+   Both layouts are a MODIFIER and not the row's own shape. An empty column
+   still pays for its gap, so putting the cell in the base grid would take
+   width off the sentence in the four rooms that mark nothing. `StateStrip`
+   sets the class when a line in it carries a mark, so no room has to
+   remember. */
+.state-line__tag { grid-area: tag; text-align: right; white-space: nowrap; }
+
+/* This rule outranks the WIDE `.state-line` below it: a container query adds
+   no specificity, so `.state-strip--tagged .state-line` beats a bare
+   `.state-line` wherever both apply. The wide layout works only because it is
+   RESTATED for a tagged strip inside that block. Anything added to the wide
+   `.state-line` has to be added to its twin there as well. */
+.state-strip--tagged .state-line {
+  grid-template-areas:
+    "edge name value when"
+    "edge said said tag"
+    "edge acts acts acts"
+    "more more more more";
+}
+/* What the line contains, opened. Full width under the whole row, and an auto
+   row with nothing in it collapses, so a line with nothing under it pays for
+   none of this. */
+.state-line__more { grid-area: more; min-width: 0; }
+/* An auto row with nothing in it collapses, so a row with no controls is not
+   paying for the one that would carry them. */
+.state-line > .row__actions { grid-area: acts; }
+
+/* WIDE. One line, with the sentence between the name and the numbers, which is
+   the shape the design was drawn at. */
+@container room (min-width: 560px) {
+  .state-line {
+    grid-template-columns: var(--space-3) 148px minmax(0, 1fr) auto auto auto;
+    grid-template-areas:
+      "edge name said value when acts"
+      "more more more more more more";
+  }
+
+  /* Beside the name, where there is width for a column of its own. */
+  .state-strip--tagged .state-line {
+    grid-template-columns: var(--space-3) 148px auto minmax(0, 1fr) auto auto auto;
+    grid-template-areas:
+      "edge name tag said value when acts"
+      "more more more more more more more";
+  }
+
+  .state-strip--tagged .state-line__tag {
+    text-align: left;
+  }
+
+  .state-line > .row__actions {
+    grid-area: acts;
+  }
+}
+
+.state-line__edge {
+  align-self: stretch;
+  margin: var(--space-6) 0;
+  border-radius: var(--space-2);
+  background: var(--border-muted);
+}
+
+.state-line__name {
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Two lines, then it stops. One producer writes three words into this field
+   and another writes a sentence, so a row that grows to fit the longest one is
+   a room that moves whenever the machine does. */
+.state-line__said {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.35;
+  overflow: hidden;
+}
+
+/* A strip whose lines open onto nothing shows the whole sentence. See
+   `StateStrip`'s `whole` prop for why. */
+.state-strip--whole .state-line__said {
+  display: block;
+  overflow: visible;
+}
+
+.state-line__value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  /* It sits in an `auto` column, which takes its content's width and leaves
+     the sentence beside it the remainder. A 49 character reason slug therefore
+     ate the row and the goal it belonged to rendered at nothing. One line,
+     capped, and the full text is on the card the row opens. */
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.state-line__when {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  min-width: 44px;
+  text-align: right;
+}
+
+/* One colour per state, and the same eight the strip and the map paint.
+   `test_the_states_the_view_can_render.py` fails when a state the backend can
+   write has no rule here. */
+.state-line--running  > .state-line__edge { background: var(--accent); }
+.state-line--idle     > .state-line__edge { background: var(--ok-edge); }
+.state-line--pending  > .state-line__edge { background: var(--wash-lg); }
+.state-line--degraded > .state-line__edge { background: var(--warn); }
+.state-line--failed   > .state-line__edge { background: var(--bad); }
+.state-line--refused  > .state-line__edge { background: var(--warn-edge); }
+.state-line--unknown  > .state-line__edge { background: var(--wash-md); }
+
+/* The CHILD, in every one of these. A run's steps are a strip inside its own
+   line, so a descendant selector painted every nested step with the outer
+   run's state: one failed night turned twenty steps red, and the last rule in
+   the file won because they all weigh the same. */
+
+/* Nothing produces this, which is not a health state and must never read as a
+   quiet one. A broken bar rather than a faint one. */
+.state-line--not_instrumented > .state-line__edge {
+  background: repeating-linear-gradient(
+    var(--border-visible) 0 var(--space-4),
+    transparent var(--space-4) var(--space-8)
+  );
+}
+
+.state-line--degraded > .state-line__said { color: var(--warn); }
+.state-line--failed   > .state-line__said { color: var(--bad); }
+
+/* ── one entry, opened ────────────────────────────────────────────
+   The manifest's own prose at the top, the facts around it under, then how it
+   has been going. Nothing here is a card in a card: the shell already frames
+   it and the diagnosis that produced this design was six bordered boxes deep. */
+
+.entry-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.entry-card__summary {
+  margin: 0;
+  font-size: var(--t-ui-size);
+  line-height: 1.5;
+  color: var(--text-primary);
+  max-width: 76ch;
+}
+
+.entry-card__why {
+  margin: 0;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  max-width: 76ch;
+}
+
+.entry-card__facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  gap: var(--space-12) var(--space-24);
+}
+
+.entry-fact {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.entry-fact__value {
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+/* A chain names the models it tries, so two of them on one line read as one
+   list of six. */
+.entry-card__chain {
+  display: block;
+}
+
+/* Why a fact carries no control. Its own line under the value, at the point
+   where the change would have been made. */
+.entry-fact__note {
+  display: block;
+  margin-top: var(--space-2);
+}
+
+/* What a step is for, under what it said this time. Two different questions
+   about one step, so they are two lines and not one sentence. */
+.entry-step__for {
+  display: block;
+}
+
+.entry-step__held {
+  margin: var(--space-4) 0 0;
+}
+
+/* A fact being changed. Fields on one line, then the two actions on the next,
+   rather than letting them wrap wherever they land: a fact is about 230px wide
+   in the two column grid at the cockpit's default panel size, so a field and
+   two buttons never share a line and letting flex decide left `cancel` alone
+   under a field. */
+.entry-edit {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-4);
+}
+
+.entry-edit__fields,
+.entry-edit__acts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+/* Placement only. What the field looks like is the field's own. */
+.entry-edit__field {
+  flex: 1 1 6rem;
+  min-width: 0;
+}
+
+.entry-edit__time {
+  flex: 0 0 auto;
+}
+
+/* The controls a card carries, at the foot of the section they act on. A card
+   is read before it is acted on, so they sit under what they act on rather
+   than in a header above it. */
+.entry-card__acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+  padding-top: var(--space-4);
+}
+
+/* ── managed system ───────────────────────────────────────────────
+   Two rosters and the alarms, one list each, with who wrote a row marked on
+   the row. The room adds two things to the state line: the picker across the
+   top, and the controls that act on one row. */
+
+.managed-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-12);
+  flex-wrap: wrap;
+}
+
+/* The controls belong to the row, so they arrive with it. Hidden until the
+   row is pointed at or something inside it takes focus: eleven rows each
+   carrying three buttons is a forest, and the point of a 31px row with a
+   state edge and no chrome is that a room holds twenty facts without one.
+   `:focus-within` is what keeps them reachable from the keyboard. */
+.state-acts {
+  display: flex;
+  gap: var(--space-6);
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--ease-out);
+}
+
+.state-line:hover .state-acts,
+.state-line:focus-within .state-acts {
+  opacity: 1;
+}
+
+/* ── two weeks of one number ──────────────────────────────────────
+   One series per chart, so the title names it and there is no legend. The
+   readout carries the value under the pointer, which is why no number sits on
+   every bar. */
+
+.plot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-top: var(--space-8);
+}
+
+.plot__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-8);
+}
+
+.plot svg {
   width: 100%;
-  border-collapse: collapse;
+  height: 46px;
+  display: block;
+  overflow: visible;
+}
+
+/* The bars carry the panel's own meanings and nothing else: a chart is not
+   allowed a palette of its own any more than a room is. A zero is furniture
+   whatever the series means, so it never takes the series colour.
+
+   The bar is also the thing you point at, so the cursor changes at the edge of
+   its own box and nowhere else. A transparent full-height column in front of
+   it was the first attempt: it made the whole chart read as one clickable
+   surface, with the pointer changing over empty space above a bar that was not
+   there. */
+.plot__bar { fill: var(--warn); cursor: pointer; }
+.plot__bar--bad { fill: var(--bad); }
+.plot__bar--calm { fill: var(--accent); }
+.plot__bar--zero { fill: var(--text-dim); }
+
+/* The day's whole column, behind its bar, carrying the readout and NOT the
+   cursor. It is what makes every day reachable: the smallest bar on the errors
+   chart is under two pixels tall and six of fourteen days are zero. Giving it
+   `cursor: pointer` too is what made the chart read as one clickable slab, so
+   it deliberately has none. */
+.plot__col { fill: transparent; }
+
+.plot__base { stroke: var(--border-muted); stroke-width: 1; }
+
+.plot__foot {
+  display: flex;
+  justify-content: space-between;
+}
+
+.plot__why {
+  margin: var(--space-2) 0 0;
+  max-width: 74ch;
+}
+
+/* The window field, on a row in Thrown away. Width only: a number of days is
+   three digits at the outside and the app's field is sized for a sentence, so
+   full width here would push the sweep's own line off the row. What it looks
+   like is `Input`'s. */
+.retention-days {
+  width: 4.5rem;
+}
+
+/* A row that is waiting on a decision. Revealing on hover is right for a long
+   list where acting is occasional and wrong for a room that exists for things
+   nothing can do without you: every held item stated a reason and offered no
+   next step, because the next step was under the pointer. */
+.state-acts--waiting {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .state-acts {
+    transition: none;
+  }
+}
+
+/* ── one agent, opened ────────────────────────────────────────────
+   The entry card's shape, with the card's own markdown under the facts. */
+
+.agent-card__editor {
+  min-height: 320px;
+  font-family: var(--font-mono);
   font-size: var(--t-caption-size);
-  margin-top: var(--space-xs);
-  margin-bottom: var(--space-sm);
 }
 
-.pruned-table th,
-.pruned-table td {
-  padding: var(--space-3) var(--space-6);
-  text-align: left;
-  border-bottom: var(--stroke-1) solid var(--panel-border);
+.agent-card__sections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
 }
 
-.pruned-table th {
-  font-weight: normal;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+.agent-card__section {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--t-caption-size);
+  color: var(--text-secondary);
 }
 
-.pruned-table td:first-child {
-  color: var(--text-primary);
-  font-family: var(--font-ui);
+/* A node that opens the thing it stands for, and the one you are looking at. */
+.map-node--opens {
+  cursor: pointer;
 }
 
-/* Recurrent-useless signal — a source pruning heavily in the window. */
-.pruned-table__row--hot td:first-child {
-  color: var(--warn);
-  font-weight: 600;
+.map-node--opens:focus-visible {
+  outline: var(--stroke-2) solid var(--accent);
+  outline-offset: var(--space-2);
+}
+
+.map-node--here .map-node__box {
+  stroke: var(--accent);
+  stroke-width: var(--stroke-2);
 }

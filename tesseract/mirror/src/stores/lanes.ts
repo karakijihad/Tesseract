@@ -5,6 +5,15 @@
 // new events since the cursor, `send` posts a follow-up. The lane authority
 // is the controller daemon; Mirror reaches it via the REST bridge
 // (routes/lanes.py). Events accumulate per lane, deduped by cursor.
+//
+// A lane event's cursor is the byte offset of its line in `events.jsonl`, so
+// it identifies the event in the lane's log and nothing else can carry two of
+// them. Two things used to put the same offset in the list twice: a read that
+// outlived the 1.5s poll interval, and a second card open on the same lane.
+// Both sent a request holding a cursor a still-unfinished read was about to
+// advance, so both appended the same byte range. `polling` stops the second
+// request; `mergeEvents` is the backstop that holds the invariant whatever
+// the wire delivers.
 
 import { create } from 'zustand';
 
@@ -69,6 +78,31 @@ const EMPTY: LaneState = {
   goneStreak: 0,
 };
 
+/** One read in flight per lane. Not per card: two cards on one lane share
+ *  the store's cursor, so they must share the guard too. */
+const polling = new Set<string>();
+
+/** Append `fresh` to `prev`, keeping one event per cursor and the order the
+ *  lane wrote them in. An event with no cursor carries no identity, so it is
+ *  never deduped away. Returns `prev` itself when nothing is new, so a poll
+ *  that finds no work does not re-render the card. */
+function mergeEvents(prev: LaneEvent[], fresh: LaneEvent[]): LaneEvent[] {
+  if (fresh.length === 0) return prev;
+  const seen = new Set<string>();
+  for (const e of prev) if (e.cursor !== undefined) seen.add(e.cursor);
+  const added: LaneEvent[] = [];
+  for (const e of fresh) {
+    if (e.cursor === undefined) {
+      added.push(e);
+      continue;
+    }
+    if (seen.has(e.cursor)) continue;
+    seen.add(e.cursor);
+    added.push(e);
+  }
+  return added.length > 0 ? [...prev, ...added] : prev;
+}
+
 function laneUrl(laneId: string, suffix = ''): string {
   return `${BACKEND_BASE}/api/lanes/${encodeURIComponent(laneId)}${suffix}`;
 }
@@ -88,7 +122,7 @@ export const useLanesStore = create<LanesStore>((set, get) => ({
         next_cursor?: string;
         status?: LaneStatus;
       };
-      const events = Array.isArray(snap.recent_events) ? snap.recent_events : [];
+      const events = mergeEvents([], Array.isArray(snap.recent_events) ? snap.recent_events : []);
       set((s) => {
         const prev = s.byLane[laneId];
         // Re-attach signal: fire only when this is a genuine reconnect to a
@@ -124,6 +158,8 @@ export const useLanesStore = create<LanesStore>((set, get) => ({
   },
 
   poll: async (laneId) => {
+    if (polling.has(laneId)) return;
+    polling.add(laneId);
     const cur = get().byLane[laneId]?.cursor ?? '';
     try {
       const [readResp, statusResp] = await Promise.all([
@@ -144,7 +180,7 @@ export const useLanesStore = create<LanesStore>((set, get) => ({
             ...s.byLane,
             [laneId]: {
               ...prev,
-              events: fresh.length > 0 ? [...prev.events, ...fresh] : prev.events,
+              events: mergeEvents(prev.events, fresh),
               cursor: read.next_cursor ?? prev.cursor,
               status: status ?? prev.status,
               offline: false,
@@ -156,6 +192,8 @@ export const useLanesStore = create<LanesStore>((set, get) => ({
       });
     } catch {
       set((s) => ({ byLane: { ...s.byLane, [laneId]: { ...(s.byLane[laneId] ?? EMPTY), offline: true } } }));
+    } finally {
+      polling.delete(laneId);
     }
   },
 

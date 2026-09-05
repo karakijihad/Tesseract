@@ -53,7 +53,7 @@ def _validate_segment(value: str, kind: str) -> str:
     `agents/loader.py::_is_unsafe_agent_name` uses for the same class of sink.
 
     A denylist, where `surfaces/persistence.py::safe_view` and
-    `session_store.py::_is_valid_slug` are charset allowlists — deliberately,
+    `chat_record.py::is_valid_chat_id` are charset allowlists — deliberately,
     and this is the one place the asymmetry is correct. `mint_agenda_id` builds
     an id from a goal fragment with `str.isalnum`, which is Unicode-aware, so a
     goal in any script mints a legal id that an ASCII allowlist would refuse —
@@ -92,7 +92,7 @@ def agenda_comments_path(item_id: str) -> Path:
 
 
 def source_pauses_path() -> Path:
-    """Single durable state file for AU-6 governor source pauses.
+    """Single durable state file for governor source pauses.
     Survives restart so a pause cannot be cleared by reboot."""
     return agenda_root() / "source-pauses.json"
 

@@ -43,6 +43,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from tesseract import http_client
+from tesseract.orchestrator.provider_failure import FAULT_ORIGIN_KEY, FAULT_OURS
 from tesseract.kernel.tools.base import (
     PermissionResult,
     Tool,
@@ -75,7 +76,7 @@ class ImageGenerateInput(BaseModel):
         default=None,
         description=(
             "Shape of the generated image (gemini_images profile). Omit to let "
-            "the model choose one that suits the subject — it does this well, so "
+            "the model choose one that suits the subject. It does this well, so "
             "only set it when the frame is part of the request (a square avatar, "
             "a 16:9 header). Ignored by the xai_images profile."
         ),
@@ -98,8 +99,8 @@ class ImageGenerateTool(Tool):
     # is paid, if cheap).
     default_posture = "auto"
 
-    # Network egress + writes a file to downloads/ — `propose` per the
-    # AU-3 reviewer (image artifact is a user-visible state change).
+    # Network egress + writes a file to downloads/ — `propose`, because an
+    # image artifact is a user-visible state change.
     risk_class: ClassVar[str] = "propose"
     group: ClassVar[str] = "showing-the-operator"
     summary: ClassVar[str] = (
@@ -111,9 +112,10 @@ class ImageGenerateTool(Tool):
         "result under downloads and returns its URL."
     )
     not_when: ClassVar[str] = (
-        "`open` to show an image that already exists — this tool MAKES one, "
+        "`open` to show an image that already exists. This tool MAKES one, "
         "it doesn't display one."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -146,17 +148,18 @@ class ImageGenerateTool(Tool):
             bundle = load_config()
             role = bundle.role(inp.model_role)
         except Exception as exc:  # noqa: BLE001
-            return ToolResult(
-                output=f"{inp.model_role} role unavailable: {exc}",
-                is_error=True,
-            )
+            return _local_failure(f"{inp.model_role} role unavailable: {exc}")
 
         if role.mode != "active" or role.primary is None:
-            return _emit_unavailable(
+            # OURS: nothing was asked of anyone. The exhausted-chain return at
+            # the end of this method is deliberately NOT marked — by then every
+            # entry has been attempted, and the last error came from a
+            # provider.
+            return _local_failure(_emit_unavailable(
                 context, inp.model_role,
                 f"{inp.model_role} role is inactive in roles.yaml — wire a "
                 f"provider and set `mode: active` to enable",
-            )
+            ).output)
 
         # Operation = image-to-image when a source image is supplied, else
         # text-to-image. The chain is filtered by each model's declared
@@ -168,15 +171,17 @@ class ImageGenerateTool(Tool):
         source_image_b64: str | None = None
         if op == "image_to_image":
             source_image_b64 = await _resolve_uploaded_image(
-                inp.image_attachment_id or "", session_id,
+                inp.image_attachment_id or "",
+                session_id,
+                channel=context.channel if context is not None else "",
+                channel_chat_id=(
+                    context.channel_chat_id if context is not None else ""
+                ),
             )
             if source_image_b64 is None:
-                return ToolResult(
-                    output=(
-                        f"image-to-image requested but source attachment "
-                        f"{inp.image_attachment_id!r} could not be loaded"
-                    ),
-                    is_error=True,
+                return _local_failure(
+                    f"image-to-image requested but source attachment "
+                    f"{inp.image_attachment_id!r} could not be loaded"
                 )
 
         # `skip_reason` records why entries were passed over (disabled / no
@@ -195,8 +200,20 @@ class ImageGenerateTool(Tool):
             if not bool(caps.get(op, False)):
                 skip_reason = f"{ref.ref}: no `{op}` capability"
                 continue
+            # Gated HERE, per entry, and not by a `depends_on` on the class:
+            # `model_role` is a per-call input, and this walks a chain, so
+            # which provider is behind a call is not known until this line.
+            # A class-level declaration would name the default and shut the
+            # wrong entry whenever a caller asked for another one.
+            from tesseract.brain import tool_availability as availability
+
+            shut = availability.refusal(ref.ref, f"image {op}")
+            if shut is not None:
+                skip_reason = f"{ref.ref}: {shut[1]}"
+                continue
             result = await self._attempt(ref, inp, op, source_image_b64, context)
             if result is not None and not result.is_error:
+                availability.note_success(ref.ref)
                 return result
             if result is not None:
                 attempt_error = result.output
@@ -208,6 +225,34 @@ class ImageGenerateTool(Tool):
             f"({attempt_error or skip_reason})",
         )
 
+    async def attempt_ref(
+        self,
+        ref_name: str,
+        tool_input: ImageGenerateInput,
+        context: ToolContext,
+    ) -> ToolResult:
+        """One named catalog entry, asked directly, with nothing behind it.
+
+        `run` above walks the role's chain and returns the first entry that
+        answers, which is what a caller who wants an image needs and the wrong
+        answer for a caller asking whether THIS entry is alive: a fallback
+        asked through its role is the primary answering under the fallback's
+        name. The health probe is the only caller, and text-to-image is the
+        only operation it asks for.
+        """
+        try:
+            from tesseract.config.loader import load_config
+            ref = load_config().resolve(ref_name)
+        except Exception as exc:  # noqa: BLE001
+            return _local_failure(f"{ref_name}: not in the catalog ({exc})")
+        conn = ref.connection
+        if not conn.tier_enabled or not conn.enabled:
+            return _local_failure(f"{ref.ref}: provider disabled in providers.yaml")
+        caps = ref.model.fields.get("capabilities") or {}
+        if not bool(caps.get("text_to_image", False)):
+            return _local_failure(f"{ref.ref}: no `text_to_image` capability")
+        return await self._attempt(ref, tool_input, "text_to_image", None, context)
+
     async def _attempt(
         self,
         ref: Any,
@@ -215,35 +260,28 @@ class ImageGenerateTool(Tool):
         op: str,
         source_image_b64: str | None,
         context: ToolContext,
-    ) -> ToolResult | None:
+    ) -> ToolResult:
         """One provider attempt. Returns a success ToolResult, or an
         is_error ToolResult (the caller advances to the next chain entry)."""
         conn = ref.connection
 
         base_url = ref.model.fields.get("base_url_override")
         if not isinstance(base_url, str) or not base_url:
-            return ToolResult(
-                output=f"{ref.ref}: catalog entry has no `base_url_override`",
-                is_error=True,
+            return _local_failure(
+                f"{ref.ref}: catalog entry has no `base_url_override`"
             )
 
         api_key_env = conn.api_key_env or ""
         api_key = os.environ.get(api_key_env, "")
         if not api_key:
-            return ToolResult(
-                output=f"{ref.ref}: env var {api_key_env!r} not set",
-                is_error=True,
-            )
+            return _local_failure(f"{ref.ref}: env var {api_key_env!r} not set")
 
         payload_profile = ref.model.fields.get("payload_profile")
         if not isinstance(payload_profile, str) or not payload_profile:
-            return ToolResult(
-                output=(
-                    f"{ref.ref}: catalog entry has no `payload_profile` — every "
-                    f"`kind: image_generation` entry must name the request "
-                    f"contract it speaks (see providers.yaml)"
-                ),
-                is_error=True,
+            return _local_failure(
+                f"{ref.ref}: catalog entry has no `payload_profile` — every "
+                f"`kind: image_generation` entry must name the request "
+                f"contract it speaks (see providers.yaml)"
             )
 
         await _emit_status(
@@ -256,7 +294,7 @@ class ImageGenerateTool(Tool):
                 source_image_b64,
             )
         except _ProfileError as exc:
-            return ToolResult(output=f"{ref.ref}: {exc}", is_error=True)
+            return _local_failure(f"{ref.ref}: {exc}")
 
         timeout = float(conn.timeout_seconds)
         try:
@@ -549,6 +587,17 @@ async def _emit_status(context: ToolContext, message: str) -> None:
         logger.debug("image_generate: status_emit failed", exc_info=True)
 
 
+def _local_failure(message: str) -> ToolResult:
+    """A failure that happened BEFORE any request left this machine.
+
+    Marked, because the provider health probe reads this tool's results and
+    cannot otherwise tell a missing API key from a provider that refused. It
+    was recording both as the provider's fault, which puts this runtime's own
+    misconfiguration into a record the operator reads as a provider outage.
+    """
+    return ToolResult(output=message, is_error=True, metadata={FAULT_ORIGIN_KEY: FAULT_OURS})
+
+
 def _emit_unavailable(context: ToolContext, role_name: str, message: str) -> ToolResult:
     """Send the operator a status line for a soft-fail and return is_error=True.
 
@@ -567,13 +616,39 @@ def _emit_unavailable(context: ToolContext, role_name: str, message: str) -> Too
 
 
 def _note_image_tripwire(role: str, ref: str, drift_kind: str, evidence: dict) -> None:
-    """AU-14 14b production tripwire. Wraps the JSONL telemetry write so the
-    tool's error paths don't import the orchestrator module eagerly."""
+    """Production tripwire. Wraps the JSONL telemetry write so the
+    tool's error paths don't import the orchestrator module eagerly.
+
+    It also COUNTS the failure against that entry's breaker. The two are one
+    call because they fire at exactly the same five places — every point where
+    this tool has decided a provider is at fault — and a telemetry write that
+    trips nothing is what left a paid image provider being retried on every
+    request with the runtime saying so in a log nobody reads.
+    """
     try:
         from tesseract.orchestrator.provider_health import note_production_tripwire
+
         note_production_tripwire(role, ref, drift_kind, evidence)
     except Exception:  # noqa: BLE001
         logger.debug("image_generate: tripwire write failed", exc_info=True)
+    # The provider's own words where the site recorded them, and the HTTP
+    # status alongside, because a 429 carrying an unhelpful sentence is still
+    # a rate limit and `classify` can only know that from the code.
+    detail = str(
+        evidence.get("error")
+        or evidence.get("reason")
+        or evidence.get("body")
+        or drift_kind
+    )
+    status = evidence.get("status_code")
+    try:
+        from tesseract.brain.tool_availability import note_provider_failure
+
+        note_provider_failure(
+            ref, detail, status=int(status) if status is not None else None
+        )
+    except Exception:  # noqa: BLE001 — telemetry never breaks a turn
+        logger.debug("image_generate: could not record %s", ref, exc_info=True)
 
 
 # Empirical floor: a real 1024×1024 JPEG/PNG runs ~80-300 KB; a uniform frame
@@ -589,18 +664,8 @@ def _looks_like_uniform_image(image_bytes: bytes) -> bool:
     return len(image_bytes) < _UNIFORM_IMAGE_BYTE_FLOOR
 
 
-async def _resolve_uploaded_image(
-    attachment_id: str,
-    session_id: str,
-) -> str | None:
-    """Read a previously-uploaded image attachment and return it base64.
-
-    The bytes are passed through as stored, so callers that must declare a
-    mime type read it off the magic bytes (`_mime_from_b64`) rather than
-    assuming the upload was any particular format.
-    """
-    if not attachment_id:
-        return None
+def _session_image_path(attachment_id: str, session_id: str):
+    """Path of a Mirror session upload, or None when it is not one."""
     try:
         from tesseract.mirror.server.uploads import load_attachment
         from tesseract.mirror.server.uploads._storage import _attachment_file_path
@@ -609,8 +674,38 @@ async def _resolve_uploaded_image(
     att = load_attachment(session_id, attachment_id)
     if att is None or att.kind != "image":
         return None
-    path = _attachment_file_path(att)
+    return _attachment_file_path(att)
+
+
+async def _resolve_uploaded_image(
+    attachment_id: str,
+    session_id: str,
+    channel: str = "",
+    channel_chat_id: str = "",
+) -> str | None:
+    """Read a previously-uploaded image attachment and return it base64.
+
+    Two stores hold one: Mirror keeps chat uploads under a session id, while a
+    channel bridge keeps inbound media under channel + chat, keyed by the
+    adapter's own file handle. A channel attachment id is that handle, so the
+    session store is asked first and the channel index only when it declines.
+
+    ``channel_chat_id`` is the adapter's chat id, never ``ToolContext.chat_id``:
+    the uploads tree is filed under the former, and the durable conversation id
+    matches no directory in it.
+
+    The bytes are passed through as stored, so callers that must declare a
+    mime type read it off the magic bytes (`_mime_from_b64`) rather than
+    assuming the upload was any particular format.
+    """
+    if not attachment_id:
+        return None
+    path = _session_image_path(attachment_id, session_id)
+    if path is None and channel and channel_chat_id:
+        from tesseract.integrations._channel_uploads import resolve_channel_image
+
+        path = await resolve_channel_image(channel, channel_chat_id, attachment_id)
     if path is None:
         return None
-    raw = await asyncio.get_event_loop().run_in_executor(None, path.read_bytes)
+    raw = await asyncio.get_running_loop().run_in_executor(None, path.read_bytes)
     return base64.b64encode(raw).decode("ascii")

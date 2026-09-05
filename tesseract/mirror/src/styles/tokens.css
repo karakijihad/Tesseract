@@ -81,6 +81,46 @@
   --brand-claude: #d97757;
   --brand-codex:  #10a37f;
 
+  /* The graph surface. One categorical colour per kind of record.
+
+     COLOUR MEANS KIND, NEVER HEALTH. `--ok` / `--warn` / `--bad` stay reserved
+     for state, so nothing on the map can be read as a record being in trouble.
+     A new kind means a new colour decided here, never a reused state token.
+
+     The first six came from the walked reference build and were validated
+     there for colour vision deficiency and for contrast against a near-black
+     panel. The last four were added when the map gained the compartments it
+     had been promising, and they are placed for hue separation from the six
+     and from each other — every one of the ten is at least 25 degrees of hue
+     from its nearest neighbour — but they have NOT been through the same
+     walk, and saying so is more use than implying they have. What carries the
+     difference where colour alone stops separating things is the shape: a
+     record the machine ACTED on is drawn as a triangle, a diamond or a
+     square, and those three are legible without colour at all. */
+  --graph-memory:     #3987e5;   /* what it learnt */
+  --graph-wiki:       #d95926;   /* a page it keeps for good */
+  --graph-source:     #199e70;   /* the raw file a page was made from */
+  --graph-entity:     #d55181;   /* a person or a thing it names */
+  --graph-run:        #c98500;   /* something its body did */
+  --graph-feedback:   #9085e9;   /* something the watchman filed */
+  --graph-tree:       #17b3c4;   /* what it gathered under one heading */
+  --graph-tag:        #93b83c;   /* a label it files things under */
+  --graph-agenda:     #b95ed6;   /* something it decided to do */
+  --graph-capability: #4fa63a;   /* a part of what it is made of */
+  --graph-playbook:   #8fb324;   /* a way it learned to do something */
+
+  /* The links. Their own tokens, because the map used the surface wash ramp
+     for them and a wash is a panel fill: at 4% white a one-pixel line over a
+     near-black panel measured alpha 7 of 255 on the live canvas, so all 663
+     of them rendered as nothing and the map was six hundred loose dots. A
+     link is the one thing on this surface that has to be seen.
+
+     Two, and they are far enough apart to tell without a legend: a link that
+     crosses between two compartments is what makes this one brain rather than
+     four piles, and 4% against 6% was not a difference anybody could see. */
+  --graph-link:          rgba(234,234,248,0.28);
+  --graph-link-crossing: rgba(155,178,255,0.68);
+
   /* Dim variants (for chip/pill backgrounds) */
   --green:     #00e88f;
   --green-dim: rgba(0,232,143,0.15);
@@ -270,6 +310,18 @@
   --space-md: var(--space-16);
   --space-lg: var(--space-24);
   --space-xl: var(--space-32);
+
+  /* The bottom HUD's own height. A token because two surfaces need it: the bar
+     itself, and anything that has to sit clear of it (the surface dock). */
+  --hud-h: 48px;
+
+  /* How tall the map is when it is drawn INSIDE the Atlas room rather than
+     filling a panel of its own. A height and not a share of the viewport: the
+     room is a scrolling column, so a viewport share would make the picture
+     grow past the bands that explain it on a tall screen and vanish on a short
+     one. Tall enough to be a picture, short enough that the first band under
+     it is on screen with it. */
+  --atlas-map-h: 420px;
 
   /* Border and outline WIDTHS — a different axis from space, which is why no
      space token owns them. `--border` above is a colour, so these are strokes.

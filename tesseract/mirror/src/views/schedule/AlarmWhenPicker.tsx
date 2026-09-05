@@ -41,7 +41,7 @@ const MODE_LABELS: Record<AlarmMode, string> = {
 };
 
 const MODE_HINTS: Record<AlarmMode, string> = {
-  once: 'One-shot — fires N hours/minutes/seconds from now, then disappears.',
+  once: 'Once. It fires the given time from now, then disappears.',
   interval: 'Repeats every N hours/minutes/seconds. First fire is one interval from now.',
   daily: 'One fire per day at a fixed wall-clock time. Good for morning reminders.',
   weekly: 'One fire per week on a specific weekday at a fixed wall-clock time.',

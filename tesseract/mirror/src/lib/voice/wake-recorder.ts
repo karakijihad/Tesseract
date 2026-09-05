@@ -101,11 +101,11 @@ export class WakeRecorder {
 
       const audio = await utterance;
       if (audio === null) {
-        throw new Error("nothing heard — check the microphone and try again");
+        throw new Error("nothing heard. Check the microphone and try again.");
       }
       const seconds = audio.length / SAMPLE_RATE;
       if (seconds * 1000 < MIN_TAKE_MS) {
-        throw new Error(`that take was ${seconds.toFixed(1)}s — say it again`);
+        throw new Error(`that take was only ${seconds.toFixed(1)}s. Say it again.`);
       }
       return { audio_b64: toBase64(audio), seconds };
     } finally {

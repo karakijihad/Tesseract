@@ -15,3 +15,70 @@ import Analytics from '@vercel/analytics/astro';
 
 <Default><slot /></Default>
 <Analytics />
+
+{/*
+  Click a diagram to see it larger. Pure enhancement: the drawing on the page
+  is already full-width and legible, so with this script blocked nothing is
+  lost and nothing looks broken. <dialog>.showModal() brings focus trapping
+  and Escape-to-close with it, which is most of why it is used here.
+*/}
+<script>
+  const isDiagram = (img: HTMLImageElement) =>
+    /\.svg(\?|$)/.test(img.getAttribute('src') ?? '');
+
+  const attach = () => {
+    const diagrams = Array.from(
+      document.querySelectorAll<HTMLImageElement>('.sl-markdown-content img'),
+    ).filter(isDiagram);
+    if (diagrams.length === 0) return;
+
+    const dialog = document.createElement('dialog');
+    dialog.className = 'diagram-zoom';
+    const large = document.createElement('img');
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'diagram-zoom__close';
+    close.textContent = 'Close';
+    dialog.append(large, close);
+    document.body.append(dialog);
+
+    close.addEventListener('click', () => dialog.close());
+    // A click that lands on the backdrop reports the dialog itself as target.
+    dialog.addEventListener('click', (event) => {
+      if (event.target === dialog) dialog.close();
+    });
+    dialog.addEventListener('close', () => {
+      large.removeAttribute('src');
+    });
+
+    for (const img of diagrams) {
+      // A real button rather than role="button" on the image. Re-roling the
+      // img takes its image semantics away, so a screen reader stops calling
+      // it a diagram, and it means hand-rolling Enter and Space. Wrapping
+      // gives the browser's own activation, focus ring and keyboard handling,
+      // and leaves the image announced as an image.
+      const trigger = document.createElement('button');
+      trigger.type = 'button';
+      trigger.className = 'diagram-zoom-trigger';
+      trigger.setAttribute('aria-haspopup', 'dialog');
+      trigger.setAttribute(
+        'aria-label',
+        img.alt ? `Enlarge diagram: ${img.alt}` : 'Enlarge diagram',
+      );
+      img.replaceWith(trigger);
+      trigger.append(img);
+
+      trigger.addEventListener('click', () => {
+        large.src = img.currentSrc || img.src;
+        large.alt = img.alt;
+        dialog.showModal();
+      });
+    }
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', attach);
+  } else {
+    attach();
+  }
+</script>

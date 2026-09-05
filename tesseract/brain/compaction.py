@@ -2,9 +2,8 @@
 
 When conversation history grows past the model's context window, the
 older middle slice is summarized into a single `[Context from earlier]`
-message and the tail is kept verbatim. CR-0 (2026-05-22) replaced the
-original free-form 4-6 sentence paragraph with a structured 5-section
-output and an **append-not-resummarize** contract:
+message and the tail is kept verbatim. The output is a structured
+5-section summary under an **append-not-resummarize** contract:
 
 - First compaction → one `# Slice 1` block with five sub-sections.
 - Each subsequent compaction → a new `# Slice N` block APPENDED to the
@@ -20,6 +19,8 @@ so the summarizer's voice stays consistent within a session).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import logging
 from typing import Any
 
@@ -34,7 +35,39 @@ logger = logging.getLogger(__name__)
 # Magic prefix that marks the running-summary message. Used by
 # `ChatSession.compact` to detect a prior summary and switch into
 # append mode.
-RUNNING_SUMMARY_PREFIX = "[Context from earlier in this session]"
+# The one line that turns a fold into something recoverable. Compaction is
+# lossy by design, and the model reading the summary has no way to know that
+# the detail it is missing still exists — so it answers "I have no record of
+# that" about a conversation sitting on disk. That is exactly what a live
+# session did on 2026-08-23. Naming the tools here is deliberate: this text
+# rides directly above the summary, which is where the question gets asked.
+#
+# Two are named because they read different things and only one of them works
+# on a given surface. `channel_history_read` reads the per-day channel log,
+# which is written every turn, and is the one carried on every turn.
+# `recall_history` searches a work index written when a Mirror connection
+# CLOSES, so a live session — and a channel session, which may not close for
+# days — is not in it yet; it is also a `tool_search` away rather than carried,
+# because it reaches every conversation on the install with no per-caller
+# scoping and a channel can carry a reader who is not the operator.
+#
+#: The stable half, and the ONLY thing anything may match on. The prose above
+#: it is free to change; this is not. Lengthening the prefix and leaving the
+#: matcher pointed at the whole constant meant a summary already written under
+#: the old wording stopped being recognised as a summary — so the next
+#: compaction folded it back in as ordinary conversation and started a second
+#: running summary beside it, which is the one thing this module promises not
+#: to do.
+RUNNING_SUMMARY_TAG = "[Context from earlier in this session]"
+
+# Starts with the tag, and the tag is what `startswith` tests.
+RUNNING_SUMMARY_PREFIX = (
+    f"{RUNNING_SUMMARY_TAG} The turns below were folded into "
+    "the summary that follows. Nothing was lost: the full conversation is on "
+    "disk. channel_history_read reads this chat's own day log, and "
+    "recall_history searches past sessions. Look before telling the operator "
+    "you have no record of something."
+)
 
 # Section headers the summarizer must emit. Order is contractual —
 # callers that inspect or trim the summary scan in this order.
@@ -91,13 +124,34 @@ Rules:
 """
 
 
+@dataclass(frozen=True)
+class Compacted:
+    """What a fold produced, and what it cost to produce.
+
+    `usage` and `options` exist so the caller can bill it. This function runs a
+    real model call against a real provider, and for as long as it returned
+    only the summary that call was invisible: the chat chain is not
+    `MeteredAdapter`-wrapped, so the STOP chunk dropped here was the only place
+    the spend ever appeared. A fold sends the largest single input a session
+    ever sends, uncached, against a system prompt it has never seen.
+
+    `options` rather than the caller's own, because of the unwrap below: a fold
+    runs on the primary alone, so the model that answered is not necessarily
+    the one `ChatSession.options` names.
+    """
+
+    summary: str
+    usage: dict[str, Any]
+    options: AdapterOptions
+
+
 async def compact_history(
     adapter: ModelAdapter,
     options: AdapterOptions,
     history_to_summarize: list[dict[str, Any]],
     *,
     prior_summary: str | None = None,
-) -> str:
+) -> Compacted:
     """Summarize a slice of history into a structured 5-section block.
 
     When ``prior_summary`` is provided, the summarizer is told the
@@ -116,7 +170,7 @@ async def compact_history(
     primary and run the summarizer on that alone.
     """
     if not history_to_summarize:
-        return ""
+        return Compacted("", {}, options)
 
     # Avoid circular import — adapter_chain depends on this module's siblings.
     from tesseract.brain.adapter_chain import FallbackAdapter
@@ -149,19 +203,28 @@ async def compact_history(
     ]
 
     parts: list[str] = []
+    usage: dict[str, Any] = {}
     try:
         async for chunk in adapter.stream(messages=messages, options=options):
             if chunk.type == ChunkType.TEXT:
                 parts.append(chunk.text)
+            elif chunk.type == ChunkType.STOP:
+                raw = chunk.raw or {}
+                reported = raw.get("usage") if isinstance(raw, dict) else None
+                if isinstance(reported, dict):
+                    usage = reported
             elif chunk.type == ChunkType.ERROR:
                 logger.warning("compaction adapter error: %s", chunk.error)
-                return ""
+                # The spend still happened. A fold that failed on its last
+                # chunk consumed the same input as one that succeeded, and
+                # dropping it here is how an expensive failure reads as free.
+                return Compacted("", usage, options)
     except Exception as e:
         logger.exception("compaction failed: %s", e)
-        return ""
+        return Compacted("", usage, options)
 
     summary = "".join(parts).strip()
-    # CR-0 M6 — guard against malformed adapter output. The prompt asks
+    # Guard against malformed adapter output. The prompt asks
     # for 5 named ## sections; if any are missing the response is prose
     # or partial. Returning "" triggers the caller's "keep full history"
     # branch — same fallback as the empty-summary path.
@@ -171,8 +234,8 @@ async def compact_history(
             "sections); keeping full history. First 200 chars: %r",
             summary[:200],
         )
-        return ""
-    return summary
+        return Compacted("", usage, options)
+    return Compacted(summary, usage, options)
 
 
 def _validate_structured_summary(summary: str) -> bool:

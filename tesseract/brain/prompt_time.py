@@ -21,6 +21,7 @@ from typing import Mapping
 
 import yaml
 
+from tesseract.conscience.reader import report_counts
 from tesseract.paths import home_dir, log_dir
 
 # Logger name pinned to the historical "tesseract.brain.prompt" identity —
@@ -99,10 +100,24 @@ def _load_identity_config(path: Path) -> dict:
 def _drift_snippet(conscience_dir: Path | None = None) -> str:
     """Return a one-line drift summary when non-ok, else "".
 
-    Reads the latest `drift-*.jsonl` line from `tesseract/logs/conscience/`.
-    Returns empty string when healthy, when no report exists, or on any
-    parse error — this is *informational* for the prompt, never critical.
+    Reads the latest `drift-*.jsonl` line from the conscience log dir. Returns
+    empty string when healthy, when no report exists, or on any parse error.
+
+    **Informational for the prompt, never critical**, and that had been a
+    promise rather than a fact: the tallies moved from `summary` to `counts`
+    and this read `summary.get` on what had become a sentence, so a healthy
+    drift report took the whole system prompt down and with it the chat. The
+    shape question belongs to `conscience.reader.report_counts`; the guard
+    below is what makes the docstring true whatever else changes upstream.
     """
+    try:
+        return _drift_snippet_inner(conscience_dir)
+    except Exception:  # noqa: BLE001 — a drift line must never take the prompt down
+        logger.warning("drift snippet unavailable", exc_info=True)
+        return ""
+
+
+def _drift_snippet_inner(conscience_dir: Path | None = None) -> str:
     base = conscience_dir or _default_conscience_dir()
     if not base.exists():
         return ""
@@ -112,9 +127,9 @@ def _drift_snippet(conscience_dir: Path | None = None) -> str:
     report = _load_last_line(files[-1])
     if report is None:
         return ""
-    summary = report.get("summary") or {}
-    warn = int(summary.get("warn", 0))
-    bad = int(summary.get("bad", 0))
+    counts = report_counts(report)
+    warn = int(counts.get("warn", 0))
+    bad = int(counts.get("bad", 0))
     if warn == 0 and bad == 0:
         return ""  # Healthy — no prompt bloat.
     worst = "bad" if bad else "warn"
@@ -122,10 +137,10 @@ def _drift_snippet(conscience_dir: Path | None = None) -> str:
         s.get("name", "?") for s in (report.get("signals") or [])
         if s.get("status") in ("warn", "bad")
     ]
-    age = _age_from_iso(report.get("timestamp") or "")
+    age = age_from_iso(report.get("timestamp") or "")
     names = ", ".join(flagged) if flagged else "unknown"
     return (
-        f"- Drift: {worst} — {summary.get('ok', 0)} ok / {warn} warn / {bad} bad. "
+        f"- Drift: {worst} — {counts.get('ok', 0)} ok / {warn} warn / {bad} bad. "
         f"Flagged: {names}. (scraped {age}; call conscience_status for detail)"
     )
 
@@ -147,7 +162,10 @@ def _load_last_line(path: Path) -> dict | None:
         return None
 
 
-def _age_from_iso(iso: str) -> str:
+def age_from_iso(iso: str) -> str:
+    """How long ago, in the shortest true words. Shared: the drift line reads
+    it, and so does a spawn completion, which has to say when it finished or a
+    result from three days ago reads exactly like one from three seconds."""
     if not iso:
         return "unknown"
     try:

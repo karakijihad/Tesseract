@@ -33,7 +33,11 @@ MIRROR_SOURCE = "chat"
 class Turn:
     """One thing said, by one side."""
 
-    role: str  # "user" | "assistant"
+    #: "user", "assistant", or "runtime" — a turn the runtime wrote itself
+    #: (a wake nudge, a heartbeat report, a card press, the reflection
+    #: prompt, a folded-context block). A recap that filed those as the
+    #: operator claimed they had said things they never typed.
+    role: str
     text: str
     at: datetime
 
@@ -100,11 +104,10 @@ def mirror_chats(
     keyed off it names the same conversation forever. A filename minted from the
     clock on every connection is not identity and is not read here at all.
 
-    **The chat store does the walking.** This used to glob the directory itself
-    — the sixth such walk, which `session-record.md` forbids because the point
-    is one owner of the record rather than one directory. `list_records` is
-    that owner's listing, and `touched_since` is the question this collector
-    actually asks.
+    **The chat store does the walking.** Globbing the directory here would be a
+    sixth such walk, which `session-record.md` forbids because the point is one
+    owner of the record rather than one directory. `list_records` is that
+    owner's listing, and `touched_since` is the question this collector asks.
 
     **Filtered by mtime before anything is parsed**, which `touched_since`
     preserves. `load_chat` reads and parses a chat's WHOLE history, this runs
@@ -136,6 +139,8 @@ def mirror_chats(
             role = str(row.get("role") or "")
             if role not in ("user", "assistant"):
                 continue
+            if role == "user" and row.get("_runtime"):
+                role = "runtime"
             at = _parse_ts(row.get("timestamp"))
             text = _text_of(row.get("content"))
             if at is None or not text:
@@ -259,6 +264,44 @@ def _touched_since(channel: str, chat_id: str, oldest: date) -> bool:
 COLLECTORS: tuple[Collector, ...] = (mirror_chats, channel_chats)
 
 
+def live_conversation_keys() -> set[str]:
+    """Every conversation key that still has a transcript on disk.
+
+    Listings only, no parsing: this answers "is it there", which both sources
+    can settle from a directory walk, and it is asked about every recap the
+    store holds.
+
+    It lives here because this module is the one place that knows where a
+    conversation lives. The sweep that uses it asks whether a recap's source
+    is gone, and a sweep that knew the layouts itself would be a third opinion
+    about them, drifting the first time either moves.
+    """
+    keys: set[str] = set()
+    try:
+        from tesseract.mirror.server.chat_store import list_records
+
+        # Archived too: archiving is a shelf, not a deletion, and a recap
+        # whose chat was archived still has its transcript to point at.
+        keys.update(
+            f"{MIRROR_SOURCE}:{record.chat_id}"
+            for record in list_records(include_archived=True)
+        )
+    except Exception:
+        # One unreadable source must not make every recap on the other look
+        # orphaned, which would stamp "source deleted" on records whose
+        # conversations are sitting right there.
+        log.exception("capture: could not list the cockpit's chats")
+        raise
+    try:
+        keys.update(
+            f"channel:{channel}:{chat_id}" for channel, chat_id in _channel_chat_dirs()
+        )
+    except Exception:
+        log.exception("capture: could not list the channel chats")
+        raise
+    return keys
+
+
 def idle_conversations(
     conversations: Iterable[Conversation],
     *,
@@ -291,5 +334,6 @@ __all__ = [
     "Turn",
     "channel_chats",
     "idle_conversations",
+    "live_conversation_keys",
     "mirror_chats",
 ]

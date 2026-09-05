@@ -30,6 +30,15 @@ worth writing into the terms.
 
 ## Attribution
 
-Copyright is held by the author. The licence text is authoritative — this page
-is a summary written for readers, not legal advice, and where the two disagree
-the [licence](https://github.com/karakijihad/Tesseract/blob/main/LICENSE) wins.
+Copyright (C) 2026 TESSERACT. Developed and owned by [Jihad Karaki](https://github.com/karakijihad).
+
+The licence text is authoritative. This page is a summary written for readers,
+not legal advice, and where the two disagree the
+[licence](https://github.com/karakijihad/Tesseract/blob/main/LICENSE) wins.
+
+TESSERACT is built from other people's work and downloads more of it to your
+machine. Everything it uses, the speech models, the voices, the wake word, the
+search reranker and every software library, is listed with its own terms in
+[NOTICE.md](https://github.com/karakijihad/Tesseract/blob/main/NOTICE.md). One
+item there is worth reading before you rely on it commercially: the wake word
+model's licence is unsettled, for reasons that page explains.

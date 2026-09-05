@@ -13,14 +13,14 @@ from that repository. It installs for your Windows user account alone, so it
 does not ask for admin permission. Updates come the same way, so the app you
 install today is the one that keeps itself current.
 
-[Setting up](../about/setup.md) is the rest of it: what each key does, what
+[Setting up](/about/setup/) is the rest of it: what each key does, what
 happens when one is missing, and how to point TESSERACT at a different model.
 
 ## What first run does
 
 First run writes the configuration you own from then on: which models to use,
 which keys are present, what the hardware can do. Nothing in this guide's
-[reference](../reference/config.md) section is written to your machine — those
+[reference](/reference/config/) section is written to your machine — those
 pages describe the **shipped defaults**, which first run copies and then hands
 to you.
 

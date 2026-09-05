@@ -22,10 +22,10 @@ each part of it up.
 
 ## Start here
 
-- **[What it is](start/what-it-is.md)** — the idea, in a page.
-- **[Install](start/install.md)** — getting it running.
-- **[Setting up](about/setup.md)** — keys, models, and where your things live.
-- **[Your first hour](start/first-hour.md)** — what to try, and what to expect.
+- **[What it is](/start/what-it-is/)** — the idea, in a page.
+- **[Install](/start/install/)** — getting it running.
+- **[Setting up](/about/setup/)** — keys, models, and where your things live.
+- **[Your first hour](/start/first-hour/)** — what to try, and what to expect.
 
 ## How it works
 
@@ -34,25 +34,25 @@ need — most people stop at the second.
 
 | | |
 | --- | --- |
-| **L0** | [What it does](diagrams/L0-what-it-does.svg) — no jargon, ten seconds |
-| **L1** | [System context](anatomy/system-context.md) — every loop that touches a turn |
-| **L2** | [The agent loop](anatomy/agent-loop.md) · [Voice](anatomy/voice.md) · [Memory](anatomy/memory.md) · [Autonomy](anatomy/autonomy.md) · [Delegation](anatomy/delegation.md) |
+| **L0** | [What it does](/start/what-it-is/) — no jargon, ten seconds |
+| **L1** | [System context](/anatomy/system-context/) — every loop that touches a turn |
+| **L2** | [The agent loop](/anatomy/agent-loop/) · [Voice](/anatomy/voice/) · [Memory](/anatomy/memory/) · [Autonomy](/anatomy/autonomy/) · [Delegation](/anatomy/delegation/) |
 
 ## Reference
 
-- [Permissions](mechanisms/permissions.md) — what it will and will not do
-- [Memory and the vault](mechanisms/memory-and-vault.md) — two stores, two jobs
-- [Prompts](mechanisms/prompts.md) — what the model is actually told
-- [Workspace](mechanisms/workspace.md) — the files the assistant keeps about itself
-- [What it asks before doing](reference/permissions.md) — generated from the gate's own config
-- [Background work](reference/pipeline.md) — what it does while you are not asking
-- [Tools](reference/tools.md) · [Models and roles](reference/models-and-roles.md) · [Configuration](reference/config.md) · [Costs](reference/costs.md)
+- [Permissions](/mechanisms/permissions/) — what it will and will not do
+- [Memory and the vault](/mechanisms/memory-and-vault/) — two stores, two jobs
+- [Prompts](/mechanisms/prompts/) — what the model is actually told
+- [Workspace](/mechanisms/workspace/) — the files the assistant keeps about itself
+- [What it asks before doing](/reference/permissions/) — generated from the gate's own config
+- [Background work](/reference/pipeline/) — what it does while you are not asking
+- [Tools](/reference/tools/) · [Models and roles](/reference/models-and-roles/) · [Configuration](/reference/config/) · [Costs](/reference/costs/)
 
 ## The project
 
-- [Security](about/security.md) — what it assumes, what it refuses, what it cannot promise
-- [Changelog](about/changelog.md) — what changed in each release
-- [License](about/license.md) — AGPL-3.0, and what that means for you
+- [Security](/about/security/) — what it assumes, what it refuses, what it cannot promise
+- [Changelog](/about/changelog/) — what changed in each release
+- [License](/about/license/) — AGPL-3.0, and what that means for you
 
 Everything under `reference/` is generated from the running code, and the
 diagrams and pages are checked against the same facts. A number that no

@@ -1,10 +1,9 @@
 """memory_search tool — search memory by query.
 
-AU-16 S2 extension: when ``scope`` is one of ``"source"`` / ``"topic"`` /
+When ``scope`` is one of ``"source"`` / ``"topic"`` /
 ``"global"`` the tool reads the corresponding derived tree files under
 ``memory-store/trees/{source,topic,global}/`` instead of going through
-the BM25/FAISS pipeline. ``scope`` unset keeps the original behaviour
-byte-for-byte so every existing caller continues to work.
+the BM25/FAISS pipeline. ``scope`` unset keeps that pipeline.
 """
 
 from __future__ import annotations
@@ -26,7 +25,7 @@ class MemorySearchInput(BaseModel):
         default=None,
         description="Optional type filter: user, feedback, project, reference, conscience",
     )
-    # AU-16 S2 — tree-scoped retrieval. Unset keeps the legacy pipeline.
+    # Tree-scoped retrieval. Unset keeps the BM25/FAISS pipeline.
     scope: str | None = Field(
         default=None,
         description="Optional tree scope: source, topic, or global",
@@ -41,14 +40,14 @@ class MemorySearchInput(BaseModel):
     )
     since: str | None = Field(
         default=None,
-        description="ISO8601 timestamp — drop tree sections older than this",
+        description="ISO8601 timestamp. Drops tree sections older than this.",
     )
-    # CR-1 M2 (audit-2 follow-up) — surface non-authoritative session +
-    # workshop chunks in a separately-labeled trust block alongside the
-    # promoted memory hits. Default ON: the trust-text separation in
+    # Surface non-authoritative session + workshop chunks in a
+    # separately-labeled trust block alongside the promoted memory hits.
+    # Default ON: the trust-text separation in
     # `RetrievalPipeline.format_for_context` makes the boundary explicit,
-    # and the original CR-1 intent was that per-turn recall surface
-    # work history automatically. Set False to suppress (e.g. when the
+    # and per-turn recall is meant to surface work history without being
+    # asked. Set False to suppress (e.g. when the
     # caller deliberately wants promoted-memory only).
     include_work_history: bool = Field(
         default=True,
@@ -76,13 +75,20 @@ class MemorySearchTool(Tool):
     group: ClassVar[str] = "remembering"
     summary: ClassVar[str] = "Search the persistent memory store by query, ranked by relevance."
     use_when: ClassVar[str] = (
-        "Use before answering anything touching past context — names, projects, "
-        "preferences, prior decisions — when you'd otherwise be guessing."
+        "Use before answering anything that turns on what the operator has "
+        "decided, preferred or told you: names, projects, past choices. Their "
+        "own records, in their words. Every turn already arrives with a few "
+        "in the recalled-memories block, so reach for this when that block is "
+        "thin or the question is broader than what was said."
     )
     not_when: ClassVar[str] = (
-        "use `memory_get` when you already have the path; use `recall_history` "
-        "for session/workshop transcripts (non-authoritative)."
+        "for a subject the library holds RESEARCH on, `vault_query` answers "
+        "from the compiled wiki and is faster. For how two records RELATE "
+        "rather than what either says, use `atlas_query`. Use `memory_get` "
+        "when you already have the path, and `recall_history` for what was "
+        "said in a past session, which is recall rather than settled fact."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(self, pipeline: RetrievalPipeline) -> None:
         self._pipeline = pipeline

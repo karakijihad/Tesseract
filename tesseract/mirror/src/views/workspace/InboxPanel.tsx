@@ -1,6 +1,7 @@
 import { Select } from "../../components/common/Select";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useState, type KeyboardEvent } from 'react';
 import { useEntityName } from '../../hooks/useEntityName';
+import { useRowSelection } from '../../hooks/useRowSelection';
 import {
   useWorkspaceStore,
   type EventKind,
@@ -12,6 +13,7 @@ import { NewThreadButton } from './NewThreadButton';
 import { VoiceComposer } from './VoiceComposer';
 import { Hint } from '../../components/ui/Hint';
 import { Button } from '../../components/common/Button';
+import { BulkBar } from '../../components/common/BulkBar';
 import { Checkbox } from '../../components/common/Checkbox';
 import { Disclosure } from '../../components/common/Disclosure';
 import { Input } from '../../components/common/Input';
@@ -23,6 +25,7 @@ export const KIND_LABEL: Record<EventKind, string> = {
   agent_approval: 'Approval',
   skill_approval: 'Skill',
   skill_refinement: 'Skill fix',
+  working_set_proposal: 'What it carries',
   soul_proposal: 'Soul',
   change_proposal: 'Change',
   mission_reflection_proposal: 'Mission Reflection',
@@ -41,6 +44,7 @@ export const KIND_LABEL: Record<EventKind, string> = {
 // already happened or there's nothing to gate); they render Resolve only.
 const ACTIONABLE_KINDS = new Set<EventKind>([
   'change_proposal',
+  'working_set_proposal',
   'feedback_proposal',
   'feedback_sweep',
   'soul_proposal',
@@ -189,9 +193,7 @@ export function InboxPanel({
   const [page, setPage] = useState<number>(1);
   const [openId, setOpenId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
-  const selectAllRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     fetchInbox();
@@ -258,38 +260,11 @@ export function InboxPanel({
   // The count beside the verbs says exactly how many each one will touch.
   const pageIds = useMemo(() => paginated.map((e) => e.event_id), [paginated]);
 
-  // Selecting a row and then paging away should not leave a decision armed
-  // against something off-screen.
-  useEffect(() => {
-    setSelected((prev) => {
-      if (prev.size === 0) return prev;
-      const onPage = new Set(pageIds);
-      const next = new Set([...prev].filter((id) => onPage.has(id)));
-      return next.size === prev.size ? prev : next;
-    });
-  }, [pageIds]);
-
-  const allOnPageSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id));
-  const someOnPageSelected = pageIds.some((id) => selected.has(id));
-
-  // `indeterminate` is a DOM property with no React prop, so the shared
-  // Checkbox forwards a ref for exactly this.
-  useEffect(() => {
-    if (selectAllRef.current) {
-      selectAllRef.current.indeterminate = someOnPageSelected && !allOnPageSelected;
-    }
-  }, [someOnPageSelected, allOnPageSelected]);
-
-  const toggleOne = (id: string, next: boolean) =>
-    setSelected((prev) => {
-      const s = new Set(prev);
-      if (next) s.add(id);
-      else s.delete(id);
-      return s;
-    });
-
-  const toggleAllOnPage = (next: boolean) =>
-    setSelected(next ? new Set(pageIds) : new Set());
+  // Scoping, pruning, the tri-state header box and what survives a run are
+  // `useRowSelection`'s — the chat rail needs the same four and a second copy
+  // is what the hook exists to stop.
+  const sel = useRowSelection(pageIds);
+  const selected = sel.selected;
 
   const selectedEvents = useMemo(
     () => paginated.filter((e) => selected.has(e.event_id)),
@@ -348,16 +323,10 @@ export function InboxPanel({
           })
           .map((e) => e.event_id),
       );
-      // What survives: anything this verb did not touch, plus what it tried
-      // and could not do. Filtering on `failed` alone also dropped the rows
-      // that were selected but not ELIGIBLE — so on a mixed page, resolving
-      // the informational rows silently deselected the actionable ones beside
-      // them and the following Approve acted on nothing.
-      const attempted = new Set(targets.map((e) => e.event_id));
-      setSelected(
-        (prev) =>
-          new Set([...prev].filter((id) => !attempted.has(id) || failed.has(id))),
-      );
+      // What survives a run is the hook's rule, and the reason it is the
+      // hook's is written there: narrowing to `failed` alone also drops the
+      // rows that were selected but not ELIGIBLE for this verb.
+      sel.settle(targets.map((e) => e.event_id), failed);
       if (openId && !failed.has(openId) && targets.some((e) => e.event_id === openId)) {
         setOpenId(null);
       }
@@ -395,10 +364,10 @@ export function InboxPanel({
       <div className="workspace-view-controls">
         <label className="workspace-control workspace-control--select-all">
           <Checkbox
-            checked={allOnPageSelected}
-            onChange={toggleAllOnPage}
+            checked={sel.allVisibleSelected}
+            onChange={sel.toggleAll}
             disabled={pageIds.length === 0 || bulkBusy}
-            inputRef={selectAllRef}
+            inputRef={sel.selectAllRef}
             ariaLabel="select every row on this page"
           />
           <span className="t-meta">
@@ -444,65 +413,61 @@ export function InboxPanel({
         </span>
       </div>
 
-      {selected.size > 0 && (
-        <div className="workspace-bulk-bar" role="group" aria-label="Actions for selected rows">
-          <span className="t-meta workspace-bulk-bar__count">
-            {selected.size} selected on this page
-          </span>
-          <Hint label="Approve every selected row whose kind has a real backend effect">
-            <Button
-              tone="good"
-              onClick={() => void runBulk('approve')}
-              disabled={bulkBusy || eligible.approve.length === 0}
-            >
-              Approve {eligible.approve.length}
-            </Button>
-          </Hint>
-          <Hint label="Resolve every selected informational row — flips status without re-running an approval gate">
-            <Button
-              onClick={() => void runBulk('resolve')}
-              disabled={bulkBusy || eligible.resolve.length === 0}
-            >
-              Resolve {eligible.resolve.length}
-            </Button>
-          </Hint>
+      <BulkBar
+        count={selected.size}
+        onClear={sel.clear}
+        busy={bulkBusy}
+        scope="on this page"
+      >
+        <Hint label="Approve every selected row whose kind has a real backend effect">
           <Button
-            tone="danger"
-            onClick={() => {
-              const n = eligible.reject.length;
-              if (n === 0) return;
-              const r = window.prompt(
-                `Reason for rejecting ${n} item${n === 1 ? '' : 's'} (optional — ${entityName} sees it):`,
-                '',
-              );
-              if (r === null) return;
-              void runBulk('reject', r.trim() || undefined);
-            }}
-            disabled={bulkBusy || eligible.reject.length === 0}
+            tone="good"
+            onClick={() => void runBulk('approve')}
+            disabled={bulkBusy || eligible.approve.length === 0}
           >
-            Reject {eligible.reject.length}
+            Approve {eligible.approve.length}
           </Button>
+        </Hint>
+        <Hint label="Mark every selected row resolved. It changes the status without asking for approval again.">
           <Button
-            tone="danger"
-            onClick={() => {
-              const n = eligible.delete.length;
-              if (n === 0) return;
-              // The one verb here with no undo, and the only one that asks.
-              if (!window.confirm(`Delete ${n} item${n === 1 ? '' : 's'}? This cannot be undone.`)) {
-                return;
-              }
-              void runBulk('delete');
-            }}
-            disabled={bulkBusy || eligible.delete.length === 0}
+            onClick={() => void runBulk('resolve')}
+            disabled={bulkBusy || eligible.resolve.length === 0}
           >
-            Delete {eligible.delete.length}
+            Resolve {eligible.resolve.length}
           </Button>
-          <Button onClick={() => setSelected(new Set())} disabled={bulkBusy}>
-            Clear
-          </Button>
-          {bulkBusy && <span className="t-meta">working…</span>}
-        </div>
-      )}
+        </Hint>
+        <Button
+          tone="danger"
+          onClick={() => {
+            const n = eligible.reject.length;
+            if (n === 0) return;
+            const r = window.prompt(
+              `Reason for rejecting ${n} item${n === 1 ? '' : 's'} (optional, ${entityName} sees it):`,
+              '',
+            );
+            if (r === null) return;
+            void runBulk('reject', r.trim() || undefined);
+          }}
+          disabled={bulkBusy || eligible.reject.length === 0}
+        >
+          Reject {eligible.reject.length}
+        </Button>
+        <Button
+          tone="danger"
+          onClick={() => {
+            const n = eligible.delete.length;
+            if (n === 0) return;
+            // The one verb here with no undo, and the only one that asks.
+            if (!window.confirm(`Delete ${n} item${n === 1 ? '' : 's'}? This cannot be undone.`)) {
+              return;
+            }
+            void runBulk('delete');
+          }}
+          disabled={bulkBusy || eligible.delete.length === 0}
+        >
+          Delete {eligible.delete.length}
+        </Button>
+      </BulkBar>
 
       {attention > 0 && (
         <Note tone="warn" className="workspace-attention-banner">
@@ -567,7 +532,7 @@ export function InboxPanel({
                 <div className="workspace-event-select">
                   <Checkbox
                     checked={selected.has(ev.event_id)}
-                    onChange={(next) => toggleOne(ev.event_id, next)}
+                    onChange={(next) => sel.toggle(ev.event_id, next)}
                     disabled={bulkBusy}
                     ariaLabel={`select ${ev.title}`}
                   />
@@ -694,7 +659,7 @@ export function InboxPanel({
                               // archived beside the rejected agent and
                               // delivered to the agent on its next turn.
                               const r = window.prompt(
-                                `Reason for rejection (optional — ${entityName} sees it):`,
+                                `Reason for rejection (optional, ${entityName} sees it):`,
                                 '',
                               );
                               if (r === null) return; // cancelled

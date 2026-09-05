@@ -157,6 +157,33 @@ _INTERNAL_REF_ALLOWED: dict[str, frozenset[str]] = {
     "tesseract/mirror/vite.config.ts": frozenset({"test-tree"}),
 }
 
+# Verbatim third-party licence texts, copied from their stewards without edit.
+# Several carry contact addresses inside the licence itself: libgit2's COPYING
+# names the PCRE2 and zlib authors in the terms it grants under. Deleting one
+# would alter a licence text, which is the single thing this folder must never
+# do, so the email pattern alone is scoped off for them.
+#
+# Named files, not a directory rule. A `LICENSES/*.txt` glob would exempt the
+# next thing anyone drops in there, including a mis-saved draft or a corrupted
+# re-download, and every other pattern still firing would make that file look
+# scanned. Adding a licence text means adding its name here, which is the point
+# at which someone reads it.
+#
+# Narrow the other two ways as well: only the email pattern, so a Windows user
+# path or a credential inside one of these is still a finding, and the
+# operator-token scan below is untouched, because our own name appearing in an
+# upstream licence would be real.
+VERBATIM_LICENCE_TEXTS: frozenset[str] = frozenset(
+    {
+        "LICENSES/Apache-2.0.txt",
+        "LICENSES/GPL-2.0.txt",
+        "LICENSES/GPL-3.0.txt",
+        "LICENSES/LGPL-3.0.txt",
+        "LICENSES/MPL-2.0.txt",
+        "LICENSES/libgit2-COPYING.txt",
+    }
+)
+
 _GENERIC_PATTERNS: tuple[re.Pattern[str], ...] = (
     EMAIL_RE,
     WINDOWS_USER_PATH_RE,
@@ -253,7 +280,10 @@ def scan(root: Path, tokens_file: Path | None = None) -> list[str]:
         if body is None:
             continue  # genuinely binary asset — not a text scan target
         rel = path.relative_to(root)
+        upstream_licence = rel.as_posix() in VERBATIM_LICENCE_TEXTS
         for pattern in _GENERIC_PATTERNS:
+            if upstream_licence and pattern is EMAIL_RE:
+                continue
             for hit in pattern.findall(body):
                 value = hit if isinstance(hit, str) else hit[0]
                 if value in _KNOWN_SYNTHETIC_LITERALS:

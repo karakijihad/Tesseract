@@ -19,6 +19,7 @@ from tesseract.scheduler.pipeline.graph import (
     execution_order,
     producers,
 )
+from tesseract.scheduler.manifest.entry import MIN_SUMMARY_CHARS
 from tesseract.scheduler.pipeline.stage import Stage
 
 
@@ -63,11 +64,29 @@ def find_stage(name: str) -> tuple[Row, Stage] | None:
 
 
 def validate_rows(candidates: tuple[Row, ...] | None = None) -> None:
-    """Every row orders, and every import has a producer in another row."""
+    """Every row orders, every import has a producer, every stage says what
+    it does.
+
+    The summary floor is here rather than on `Stage.__post_init__` for the
+    reason the manifest puts its floor at `SchedulerEngine.start`: a test's
+    throwaway stage is not a shipped stage. What is checked is the REGISTERED
+    set — the work this repo ships — and a stage that cannot say what it does
+    renders as a blank cell in the Guide and a nameless node on the floor
+    plan.
+    """
     checked = rows() if candidates is None else candidates
     written = producers(stage for r in checked for stage in r.stages)
     for r in checked:
         execution_order(r.stages, external_reads=r.external_reads)
+        for stage in r.stages:
+            if len(stage.summary.strip()) < MIN_SUMMARY_CHARS:
+                raise PipelineDeclarationError(
+                    f"stage {stage.name!r} in row {r.name!r} has a "
+                    f"{len(stage.summary.strip())}-character summary — say what "
+                    f"it does in at least {MIN_SUMMARY_CHARS}, in the language "
+                    "an operator reads, because the Guide and the Autonomy "
+                    "panel both render this and neither has anywhere else to look"
+                )
         for name in r.imports:
             owners = [owner for owner in written.get(name, ()) if owner not in
                       {stage.name for stage in r.stages}]

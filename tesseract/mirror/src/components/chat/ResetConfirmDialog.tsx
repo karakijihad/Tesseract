@@ -41,7 +41,7 @@ export function ResetConfirmDialog() {
         <p className="reset-dialog-body t-meta">
           Reflect on the session before clearing? <strong>Reflect &amp; clear</strong>{' '}
           autosaves the transcript and runs reflection in the background.{' '}
-          <strong>Just clear</strong> wipes the chat with zero side effects — no save, no
+          <strong>Just clear</strong> wipes the chat with no side effects: no save, no
           reflection.
         </p>
         <div className="reset-dialog-actions">

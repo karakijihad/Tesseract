@@ -290,9 +290,9 @@ class MapperConfig:
     # from a model. Exempts FUZZY dedupe only — exact dedupe and the caps still
     # apply. It lives here, beside `dedupe_window_hours`, because that is where
     # a mapper author configures dedupe and therefore the only place they will
-    # look; it used to be a code-side frozenset they had no reason to know
-    # about. See the fuzzy check in `_persist_draft` for what goes wrong when a
-    # template goal is fuzzy-matched.
+    # look, rather than a code-side frozenset they have no reason to know
+    # about. See the fuzzy check in `_persist_draft` for what goes wrong when
+    # a template goal is fuzzy-matched.
     fuzzy_dedupe: bool = True
 
     @classmethod
@@ -346,7 +346,7 @@ class DaySpend:
 @dataclass
 class KernelTickResult:
     """Operator-facing record of one tick's decisions. The dashboard
-    will surface this in AU-7; tests assert on it."""
+    surfaces it; tests assert on it."""
 
     events_drained: int = 0
     drafts_emitted: int = 0
@@ -381,12 +381,26 @@ class AutonomyKernel:
         clock: Any | None = None,
         worker_runner: WorkerRunner | None = None,
         rationale_adapter: RationaleAdapter | None = None,
-        rationale_role: str = "agents_default",
         pause_store: PauseStore | None = None,
         follow_up_mapper: FollowUpMapper | None = None,
         daily_usd_spent: Callable[[], float] | None = None,
+        parked_notifier: Callable[[AgendaItem], Any] | None = None,
     ) -> None:
         self._agenda = agenda_store
+        # Told when an item parks because it needs the operator. The kernel
+        # does not know what a channel is: it hands over the item and the
+        # caller routes it, the same arrangement `KernelWorkerRunner` has for
+        # a worker that runs out of time.
+        #
+        # **Autonomy is automatic and this is the exception** (operator,
+        # 2026-09-01: "all autonomy is auto, except for major stuff that needs
+        # my opinion or needs me"). An item only reaches here when it declared
+        # an approval gate of its own and that gate is unfulfilled, so this
+        # fires for the work that said it needs a person and for nothing else.
+        # Measured the same day: 60 autonomy rows in the approval ledger and
+        # one denial in two and a half weeks, so ordinary work is already
+        # running without asking.
+        self._parked_notifier = parked_notifier
         # F6 — global daily USD accessor (CostLedger.snapshot global spent).
         # None in test fixtures / when no ledger is wired → USD cap skipped.
         self._daily_usd_spent = daily_usd_spent
@@ -398,7 +412,6 @@ class AutonomyKernel:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._runner: WorkerRunner = worker_runner or default_runner()
         self._rationale_adapter = rationale_adapter
-        self._rationale_role = rationale_role
         self._pause_store = pause_store
         # TC-7 — wire the follow-up mapper. Defaults to one over the same
         # agenda_store with default config; production wiring overrides
@@ -427,6 +440,11 @@ class AutonomyKernel:
         # Background tasks driving each in-flight worker. Kernel.stop()
         # awaits these to bound shutdown drain time.
         self._dispatch_tasks: set[asyncio.Task[None]] = set()
+        # Sent, not awaited. A channel send inside the tick would put the
+        # selection walk behind a network round trip, and a channel that hangs
+        # would stall the kernel. Drained on stop with the dispatches, because
+        # a notification abandoned at shutdown is a person not told.
+        self._notify_tasks: set[asyncio.Task[None]] = set()
 
     # -- Surface ------------------------------------------------------
 
@@ -461,8 +479,8 @@ class AutonomyKernel:
         reason: str = "",
         detector: str = "kernel",
     ) -> None:
-        """Park ``source`` until ``resume_source`` is called. AU-6: when
-        a ``pause_store`` is injected the pause is also persisted so it
+        """Park ``source`` until ``resume_source`` is called. When a
+        ``pause_store`` is injected the pause is also persisted so it
         survives backend restart."""
         self._paused_sources.add(source)
         if self._pause_store is not None:
@@ -503,12 +521,10 @@ class AutonomyKernel:
     async def start(self) -> None:
         if self.is_running:
             return
-        # Codex audit-2 2026-05-19 P2 — repair stale RUNNING / SELECTED
-        # agenda items whose linked workers are already terminal on disk.
-        # Without this, items left behind by pre-fix builds (where the
-        # reconciler didn't exist) stay misleading forever. One-shot
-        # operation at boot, then the in-process reconciler covers
-        # everything from here on.
+        # Repair stale RUNNING / SELECTED agenda items whose linked workers
+        # are already terminal on disk. Without this, an item left behind by
+        # a build with no reconciler stays misleading forever. One-shot at
+        # boot; the in-process reconciler covers everything after.
         try:
             await asyncio.to_thread(self.repair_stale_agenda_items)
         except Exception:
@@ -559,6 +575,12 @@ class AutonomyKernel:
                     "resume_requeued": 0, "resume_exhausted": 0}
         for item in list(self._agenda.iter_active()):
             if item.status is not AgendaStatus.RESUME_QUEUED:
+                continue
+            # A task has no workers to read, and nothing here may retry it: it
+            # waits in `resume_queued` for a conversation to take it up, however
+            # many restarts it has seen. Re-proposing it here spent the resume
+            # budget with nobody involved and blocked the task after two.
+            if item.source is AgendaSource.TASK:
                 continue
             resolved["resume_checked"] += 1
 
@@ -726,12 +748,13 @@ class AutonomyKernel:
         # Drain in-flight dispatch tasks against whatever budget remains.
         # Dispatches are not cancelled (workers finish on their own); a
         # stuck worker logs and we move on rather than hang shutdown.
-        if self._dispatch_tasks:
+        if self._dispatch_tasks or self._notify_tasks:
             remaining = max(0.0, deadline - loop.time())
             try:
                 await asyncio.wait_for(
                     asyncio.gather(
-                        *self._dispatch_tasks, return_exceptions=True
+                        *self._dispatch_tasks, *self._notify_tasks,
+                        return_exceptions=True,
                     ),
                     timeout=remaining,
                 )
@@ -837,18 +860,16 @@ class AutonomyKernel:
         pure CPU, and none of it awaits.
 
         **The active set is read ONCE for the whole drain, not once per draft.**
-        `_persist_draft` used to call `iter_active()` itself and then four store
-        scanners each walked it again, so a tick draining ten events paid about
-        fifty walks of every item on disk. Measured at 120 items, where one walk
-        is 24 ms: ~1.24 s of blocked loop, against 71 ms after the hoist and
-        nothing at all now that this runs off it.
+        `_persist_draft` calling `iter_active()` itself, with four store scanners
+        each walking it again, makes a tick draining ten events pay about fifty
+        walks of every item on disk. Measured at 120 items, where one walk is
+        24 ms: ~1.24 s of blocked loop, against 71 ms hoisted and nothing at all
+        off the loop.
 
-        **This is what the 2026-08-09 revert was about, and what makes it safe
-        now.** A thread hop is an await point, and the cap check used to read
-        the day's spend AFTER it — so a worker finishing mid-tick could move
-        the ledger under a decision already in progress. The wake reads its
-        spend once, before this line, so there is no longer a number for the
-        hop to shift.
+        **A thread hop is an await point**, so a cap check that reads the day's
+        spend AFTER it lets a worker finishing mid-tick move the ledger under a
+        decision already in progress. The wake reads its spend once, before this
+        line, leaving the hop no number to shift.
         """
         emitted = created = deduped = 0
         active = list(self._agenda.iter_active())
@@ -876,7 +897,7 @@ class AutonomyKernel:
     def _run_mapper(self, event: AutonomyEvent) -> list[AgendaItemDraft]:
         if not self._is_enabled(event.source):
             return []
-        # AU-6 — Governor hook. Per ``phase-AU-6 §7 step 4``, mappers
+        # Governor hook. Mappers
         # short-circuit when their source is paused so events do not even
         # become agenda items. Items minted before the pause still get
         # filtered at selection (``_select_and_dispatch`` below), so the
@@ -959,11 +980,10 @@ class AutonomyKernel:
             return False, True
 
         # Only a DIRECT operator request is exempt from pruning and caps.
-        # `OPERATOR_VIEW` used to share the exemption and should never have:
-        # it is ambient telemetry about where the operator was looking, not an
-        # instruction, and skipping all three gates below let it accumulate 8
-        # near-identical open items on the live install while every other
-        # source stayed capped.
+        # `OPERATOR_VIEW` does not share it: that is ambient telemetry about
+        # where the operator was looking, not an instruction, and skipping the
+        # three gates below accumulated eight near-identical open items on the
+        # live install while every other source stayed capped.
         if draft.source is not AgendaSource.OPERATOR:
             now = self._clock()
 
@@ -1030,11 +1050,10 @@ class AutonomyKernel:
                 )
                 return False, True
 
-        # Every admitted draft is PROPOSED. A vetting gate used to hold some
-        # sources in UNVETTED until a scheduled job judged them; the job and
-        # every source it gated are deleted, and a gate whose only remaining
-        # behaviour is a 24-hour delay before promoting anyway is worse than
-        # no gate. The status survives for items written while it existed.
+        # Every admitted draft is PROPOSED. Nothing holds a source in UNVETTED
+        # waiting for a scheduled judgement: a gate whose only behaviour is a
+        # 24-hour delay before promoting anyway is worse than no gate. The
+        # status survives on items written while one existed.
         item = draft.to_item(
             now=self._clock(),
             status=AgendaStatus.PROPOSED,
@@ -1050,6 +1069,40 @@ class AutonomyKernel:
         # both pass every dedupe gate and land as two items.
         active.append(item)
         return True, False
+
+    def _tell_the_operator(self, item: AgendaItem) -> None:
+        """Hand a parked item to whoever routes it. Never raises, never waits.
+
+        The kernel is not allowed to fail a tick over a message, and it is not
+        allowed to hold one either: whether the operator can be reached is the
+        notifier's problem and the routing table's, and both are downstream of
+        here.
+        """
+        if self._parked_notifier is None:
+            return
+        try:
+            result = self._parked_notifier(item)
+        except Exception:  # noqa: BLE001 — a message may fail; a tick may not
+            log.exception("autonomy: could not say that %s is waiting", item.id)
+            return
+        if not asyncio.iscoroutine(result):
+            return
+        task = asyncio.create_task(
+            self._notify_quietly(result, item.id),
+            name=f"autonomy-parked-{item.id}",
+        )
+        self._notify_tasks.add(task)
+        task.add_done_callback(self._notify_tasks.discard)
+
+    @staticmethod
+    async def _notify_quietly(coro: Any, item_id: str) -> None:
+        """The awaited half of the above, with the same rule: it may fail."""
+        try:
+            await coro
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            log.exception("autonomy: could not say that %s is waiting", item_id)
 
     # -- Selection + dispatch ----------------------------------------
 
@@ -1074,6 +1127,12 @@ class AutonomyKernel:
                 break
             if item.status != AgendaStatus.PROPOSED:
                 continue
+            # A task is worked in the conversation that proposed it, across
+            # its turns, and the record is what survives between them. Handing
+            # it to a worker here would do the work twice, once in the chat
+            # and once in the background, against one obligation.
+            if item.source is AgendaSource.TASK:
+                continue
             if item.source in self._paused_sources:
                 self._agenda.transition(
                     item,
@@ -1092,6 +1151,13 @@ class AutonomyKernel:
                     AgendaStatus.AWAITING_OPERATOR,
                     reason=REASON_AWAITING_OPERATOR,
                 )
+                # Say so. Until 2026-09-01 this parked in silence and the
+                # panel was the only place it showed, so work that declared
+                # it needs a person waited for that person to come and look.
+                # Once, not once a tick: an item that has left PROPOSED is
+                # skipped by the walk above, so it cannot come back through
+                # here without the operator answering first.
+                self._tell_the_operator(item)
                 rejections.append(
                     {"id": item.id, "reason": REASON_AWAITING_OPERATOR}
                 )
@@ -1169,10 +1235,11 @@ class AutonomyKernel:
         # ``record.role`` is the *agent slug pin* — only set when the
         # agenda item explicitly requests a specific agent (today: never
         # from the kernel itself). Codex audit 2026-05-19 P0 #1 caught
-        # the prior behaviour where we passed ``self._rationale_role``
-        # (a *model role* name like "agents_default") into the agent-slug
-        # field, and the runner then called ``invoke_agent(name="agents_default")``
-        # which failed every dispatch with ``Unknown agent: 'agents_default'``.
+        # the prior behaviour where we passed a *model role* name into the
+        # agent-slug field, and the runner then called `invoke_agent` with it
+        # and failed every dispatch on `Unknown agent`. The role it named is
+        # gone as well: it was stored and never read, while claiming autonomy's
+        # rationale rode a seat that also serves `invoke_agent`.
         # The runner falls back to ``DEFAULT_AGENT_SELF_AGENT`` / kind-specific
         # defaults when this field is empty.
         record = build_worker_record(
@@ -1311,10 +1378,9 @@ class AutonomyKernel:
 
         Non-terminal worker states (``QUEUED``, ``SPAWNING``, ``RUNNING``)
         are no-ops — a runner returning without driving the record to a
-        terminal status means it left the work in-flight (or the runner
-        is the default ``_NoopRunner`` used in tests / before AU-12 CLI
-        runners land). The reconciler must not synthesize a transition
-        in that case.
+        terminal status means it left the work in-flight (or it is the
+        default ``_NoopRunner``). The reconciler must not synthesize a
+        transition in that case.
         """
         if record.status not in WORKER_TERMINAL_STATUSES:
             return
@@ -1500,6 +1566,22 @@ class AutonomyKernel:
         return None
 
 
+def unfulfilled_gates(item: AgendaItem) -> list[str]:
+    """What the item is actually waiting on, in the operator's terms.
+
+    A gate is a kind and a target, and the pair is what makes the question
+    answerable: "operator_review" alone says a person is needed and not what
+    for.
+    """
+    return [
+        f"{gate.kind.value if hasattr(gate.kind, 'value') else gate.kind}: {gate.target}"
+        if gate.target
+        else str(gate.kind.value if hasattr(gate.kind, "value") else gate.kind)
+        for gate in item.approvals_required
+        if not gate.fulfilled
+    ]
+
+
 def _approvals_satisfied(item: AgendaItem) -> bool:
     if not item.approvals_required:
         return True
@@ -1514,11 +1596,12 @@ def build_kernel_from_configs(
     pause_store: PauseStore | None = None,
     worker_runner: WorkerRunner | None = None,
     daily_usd_spent: Callable[[], float] | None = None,
+    parked_notifier: Callable[[AgendaItem], Any] | None = None,
 ) -> AutonomyKernel:
     """Convenience used by the Mirror lifecycle. Reads both YAML files,
     builds the store + kernel. Caller is responsible for ``start``.
 
-    A ``pause_store`` may be injected so AU-6 governor pauses survive
+    A ``pause_store`` may be injected so governor pauses survive
     backend restart; when omitted the kernel falls back to its in-memory
     set (test fixtures stay light).
 
@@ -1543,6 +1626,7 @@ def build_kernel_from_configs(
         worker_runner=worker_runner,
         follow_up_mapper=follow_up_mapper,
         daily_usd_spent=daily_usd_spent,
+        parked_notifier=parked_notifier,
     )
 
 
@@ -1556,6 +1640,7 @@ __all__ = [
     "KernelTickResult",
     "MapperConfig",
     "REASON_AWAITING_OPERATOR",
+    "unfulfilled_gates",
     "REASON_DAILY_CAP_PAUSE",
     "REASON_DEDUPE_HIT",
     "REASON_GOVERNOR_PAUSED",

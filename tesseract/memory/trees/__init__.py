@@ -1,4 +1,4 @@
-"""AU-16 S2 — three derived trees built from the leaf stream.
+"""Three derived trees built from the leaf stream.
 
 Each tree is operator-readable markdown under
 ``<TESSERACT_HOME>/memory-store/trees/{source,topic,global}/``.
@@ -6,7 +6,7 @@ Each tree is operator-readable markdown under
 - ``source_tree`` — one file per source slug; newest seal section first.
 - ``topic_tree`` — one file per activated entity; lazy instantiation
   once the entity is referenced ≥``TOPIC_ACTIVATION_THRESHOLD`` times.
-- ``global_tree`` — one file per UTC date; daily roll-up of every seal.
+- ``global_tree`` — one file per local calendar date; daily roll-up of every seal.
 
 All three derive from ``Seal`` artefacts produced by ``SealJob`` (S1).
 Trees never write outside their own subdir; the vault stays untouched.

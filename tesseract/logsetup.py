@@ -19,8 +19,11 @@ the assistant down. Config errors are fail-loud, per project rule.
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
+import traceback
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Mapping
@@ -28,6 +31,7 @@ from typing import Any, Mapping
 import yaml
 
 from tesseract.bootid import current_boot_id
+from tesseract.lib.log_envelope import BAD, envelope
 from tesseract.lib.secret_patterns import CREDENTIAL_PATTERNS
 from tesseract.paths import CONFIG_DIR, log_dir, runtime_logs_root
 
@@ -131,6 +135,69 @@ def boot_log_path(process: str) -> Path:
     return log_dir("backend") / f"{process}-{current_boot_id()}.log"
 
 
+
+class _EnvelopeHandler(logging.Handler):
+    """Every ERROR the backend logs, written a second time as a record.
+
+    The backend's log is plain text and stays that way. Third-party libraries
+    log into it, its lines carry a local wall clock with no zone, and the
+    level lives inside the text rather than in a field. Making it structured
+    would mean owning the output of every dependency in the tree, which is not
+    a thing to own.
+
+    So it gains structured events BESIDE the text rather than instead of it.
+    The text file remains the forensic record, whole and uninterleaved, and
+    this writes one enveloped line per ERROR into a stream every other reader
+    can treat like the four that are structured at the source. What used to
+    happen instead: the watchman reopened every per-boot log, tailed it,
+    matched a regex for the level, and inferred a subject from the logger
+    name, which is seven of the fifteen findings on the traced pass coming
+    from the one stream that could say nothing about itself.
+
+    **It may not raise and it may not recurse.** A handler that logs on
+    failure is a handler that can loop, so a write that fails is dropped
+    silently. The text line is already on disk by then, so nothing is lost
+    that the operator could not still read.
+    """
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(level=logging.ERROR)
+        self.path = path
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            row = envelope(
+                stream="backend",
+                # ERROR and CRITICAL are both "something a person looks at".
+                # The distinction between them is the module author's and it
+                # stays in `detail` rather than becoming a third severity
+                # nothing downstream branches on.
+                severity=BAD,
+                subject=f"{record.levelname} from {record.name}",
+                # The runtime's own words: a level and a logger name, both
+                # chosen by whoever wrote the module. The MESSAGE is whatever
+                # the process was handed and it is not in the summary, which
+                # is the same line the report draws between what it composed
+                # and what it quoted.
+                summary=f"{record.name} logged an error",
+                detail={
+                    "level": record.levelname,
+                    "logger": record.name,
+                    "message": record.getMessage()[:2000],
+                },
+                ts=datetime.fromtimestamp(record.created, tz=timezone.utc),
+            )
+            with self.path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except Exception:  # noqa: BLE001 - a logging handler never raises
+            pass
+
+
+def backend_events_path(process: str) -> Path:
+    """Where this process's structured errors land, beside its text log."""
+    return log_dir("backend") / f"{process}-{current_boot_id()}.events.jsonl"
+
+
 def attach_file_logging(process: str, *, config_path: Path = MIRROR_YAML) -> Path | None:
     """Attach this process's file logging. Call once at start, after
     ``basicConfig``.
@@ -169,6 +236,7 @@ def attach_file_logging(process: str, *, config_path: Path = MIRROR_YAML) -> Pat
         logging.getLogger(__name__).info("file logging armed at %s", aggregate)
         return None
     root.addHandler(handler)
+    root.addHandler(_EnvelopeHandler(backend_events_path(process)))
     logging.getLogger(__name__).info(
         "file logging armed — this boot at %s, aggregate at %s", per_boot, aggregate
     )
@@ -176,6 +244,39 @@ def attach_file_logging(process: str, *, config_path: Path = MIRROR_YAML) -> Pat
 
 
 _REDACTED = "[redacted]"
+
+
+def scrub_log_text(text: str) -> str:
+    """Blank both kinds of credential in a line headed for a log or a surface.
+
+    Public because the filter below is not the only thing that needs it.
+    `mirror/server/log_forwarder.py` builds its own payload from the RAW
+    exception object rather than from what the filter rewrote, and a filter
+    cannot reach that: a filter can only mutate the record, and nothing it
+    writes touches `record.exc_info`. Attaching the filter to that handler
+    would not have fixed it either, which is why this is a function both call
+    rather than a filter one of them wears.
+
+    Two kinds, answering different questions. The patterns are SHAPES and
+    catch a provider token nobody registered. The store's values are EXACT
+    and catch the assistant's own accounts, whose tokens may look like
+    nothing in particular.
+
+    It never raises. Every caller is on a logging path, including the records
+    that report the credential store is unreadable, so an exception here takes
+    the log tree down with it.
+    """
+    try:
+        for pattern in CREDENTIAL_PATTERNS:
+            text = pattern.sub(_REDACTED, text)
+    except Exception:  # noqa: BLE001 — a bad pattern must not break logging
+        return text
+    try:
+        from tesseract.credentials.redaction import redact
+
+        return redact(text)
+    except Exception:  # noqa: BLE001 — no credential layer, or it could not read
+        return text
 
 
 class _CredentialRedactionFilter(logging.Filter):
@@ -192,9 +293,19 @@ class _CredentialRedactionFilter(logging.Filter):
     taken: it would throw away request logging that is genuinely useful in dev
     to fix a leak that is about the VALUE, not the logger.
 
-    Covers the record's MESSAGE. An attached traceback is formatted by the
-    handler afterwards and is not rewritten here, so a credential that appears
-    only inside an exception's frames still reaches the stream.
+    Two things are covered, and they answer different questions. The patterns
+    are shapes, and they catch a provider token nobody registered anywhere. The
+    store's own values are exact, and they catch the assistant's own accounts —
+    an account whose token has no recognisable prefix is invisible to a pattern
+    and obvious to an exact match.
+
+    **The traceback is covered too**, which it was not before. This filter used
+    to rewrite the record's MESSAGE and say in this docstring that an attached
+    exception was formatted by the handler afterwards and left alone. That is
+    the likeliest leak of the two: a request that fails with the credential in
+    a header raises with the header in a frame. The exception is formatted here
+    and the result parked on `record.exc_text`, which is exactly what
+    `logging.Formatter` reads before it would format one itself.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -202,15 +313,45 @@ class _CredentialRedactionFilter(logging.Filter):
             message = record.getMessage()
         except Exception:  # noqa: BLE001 — a bad format string is the handler's to report
             return True
-        redacted = message
-        for pattern in CREDENTIAL_PATTERNS:
-            redacted = pattern.sub(_REDACTED, redacted)
+        redacted = self._scrub(message)
         if redacted != message:
             # `args` are already interpolated into `redacted`; leaving them set
             # would make the handler interpolate a second time and raise.
             record.msg = redacted
             record.args = ()
+        self._scrub_traceback(record)
+        if isinstance(record.stack_info, str) and record.stack_info:
+            record.stack_info = self._scrub(record.stack_info)
         return True
+
+    @staticmethod
+    def _scrub(text: str) -> str:
+        return scrub_log_text(text)
+
+    def _scrub_traceback(self, record: logging.LogRecord) -> None:
+        """Format the exception now, scrubbed, so the handler uses ours.
+
+        `Formatter.format` only calls `formatException` when `exc_text` is
+        empty, so filling it is how a filter reaches a traceback at all. Set
+        only when scrubbing changed something, so a formatter with its own
+        `formatException` keeps it on every ordinary record.
+        """
+        if record.exc_text:
+            scrubbed = self._scrub(record.exc_text)
+            if scrubbed != record.exc_text:
+                record.exc_text = scrubbed
+            return
+        if not record.exc_info:
+            return
+        try:
+            formatted = "".join(traceback.format_exception(*record.exc_info))
+        except Exception:  # noqa: BLE001 — a broken exc_info is the handler's to report
+            return
+        if formatted.endswith("\n"):
+            formatted = formatted[:-1]
+        scrubbed = self._scrub(formatted)
+        if scrubbed != formatted:
+            record.exc_text = scrubbed
 
 
 def redact_credentials_in_logs() -> None:

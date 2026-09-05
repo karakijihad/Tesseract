@@ -12,9 +12,11 @@ entirely, the kernel proceeds with selection. The rationale falls back
 to ``model_rationale_unavailable`` so the dashboard surfaces the
 absence cleanly.
 
-The adapter is injectable. Production wiring resolves
-``roles.yaml::roles.agents_default`` (per AU-5 phase doc §Session 2);
-tests pass a mock that returns a deterministic string.
+The adapter is injectable: the caller hands in whatever it wants the
+explanation written by, and tests pass a mock that returns a deterministic
+string. It is deliberately not named here — autonomy names its own chains and
+carries its own ceiling, and a role named in a docstring is a claim that goes
+stale the moment the wiring moves.
 """
 
 from __future__ import annotations

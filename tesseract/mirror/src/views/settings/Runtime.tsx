@@ -76,7 +76,7 @@ function supervisorLabel(s: RuntimeStatus | null): {
   if (s.crash_storm) return { text: 'crash storm latched', tone: 'danger' };
   if (s.supervisor.alive) return { text: `alive (pid ${s.supervisor.pid})`, tone: 'ok' };
   if (s.supervisor.pid != null) return { text: `stale pid file (pid ${s.supervisor.pid})`, tone: 'warn' };
-  return { text: 'not running — backend started without supervisor', tone: 'warn' };
+  return { text: 'not running. The backend was started without it.', tone: 'warn' };
 }
 
 
@@ -150,7 +150,7 @@ export function RuntimeSection() {
       meta={
         <>
           <span className={`runtime-pill runtime-pill--${label.tone}`}>{label.text}</span>
-          <Hint label="Operator-initiated clean shutdown (operator_quit intent — the supervisor will not respawn)">
+          <Hint label="A clean shutdown you asked for. The supervisor will not start it again.">
             <Button
               tone="danger"
               active={shutdownArmed}
@@ -195,7 +195,7 @@ export function RuntimeSection() {
             'the supervisor on the next launch. `operator_quit` means you asked it to stop, ' +
             'so the supervisor deliberately did not respawn it; anything else is a stop the ' +
             'supervisor treats as a crash and recovers from. This is history, not the ' +
-            'current state — a stale record beside a live backend is normal.'
+            'the current state. A stale record beside a live backend is normal.'
           }
         >
           <pre className="runtime-block__pre t-meta">

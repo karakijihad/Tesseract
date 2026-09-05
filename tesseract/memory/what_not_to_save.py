@@ -1,10 +1,8 @@
 """WHAT_NOT_TO_SAVE exclusion policy.
 
-The exclusion rules are the pattern tuples below and nothing else. This module
-used to also parse `memory-store/WHAT_NOT_TO_SAVE.md` into a `categories` list
-that no code ever read, and warn when the file was absent — a warning about a
-parse whose result was discarded, on a file the loader's own root never held.
-The markdown is documentation for the operator; it configures nothing.
+The exclusion rules are the pattern tuples below and nothing else.
+`memory-store/WHAT_NOT_TO_SAVE.md` is documentation for the operator; it
+configures nothing, and nothing here parses it.
 
 Provides a should_save() check that runs before every memory write.
 """

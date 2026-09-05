@@ -13,11 +13,12 @@ Contract:
 - ``_SECRET_KEY_RE`` redaction re-applied here as belt-and-braces (the frontend
   already redacts; we never trust the WS payload).
 
-**This surface reports; it does not propose.** It used to publish every snapshot
-to the autonomy bus, where a mapper turned dwell time and tab-switching into paid
-work — inferring intent from ambient telemetry, which produced six agenda items
-and no outcome. The cache stays because it is cheap and answering "what is the
-operator looking at" is a fair question; deriving a task from the answer is not.
+**This surface reports; it does not propose.** Publishing every snapshot to
+the autonomy bus lets a mapper turn dwell time and tab-switching into paid
+work, inferring intent from ambient telemetry: six agenda items and no
+outcome. The cache stays because it is cheap and answering "what is the
+operator looking at" is a fair question; deriving a task from the answer
+is not.
 
 Single-operator MVP: state lives per ``aiohttp.web.Application`` instance so
 tests inject a fresh app without touching module-level state.
@@ -50,11 +51,10 @@ ALLOWED_VIEWS: frozenset[str] = frozenset(
         "terminal",
         "pulse",
         "identity",
-        "schedule",
-        "agents",
         "conscience",
         "channels",
         "workspace",
+        "graph",
         "settings",
     }
 )

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from tesseract.orchestrator.autonomy.paths import agenda_root
+from tesseract.lib import clock
 
 log = logging.getLogger(__name__)
 
@@ -33,7 +34,11 @@ def spend_dir() -> Path:
 
 
 def spend_path(day: date | None = None) -> Path:
-    stamp = (day or datetime.now(timezone.utc).date()).isoformat()
+    # THE OPERATOR'S DAY, which is what a daily cap means. On UTC the cap
+    # reset at 02:00 local in +02:00, so two hours of an evening spent
+    # against the next day's budget and the operator's own midnight moved
+    # nothing.
+    stamp = (day or clock.today()).isoformat()
     return spend_dir() / f"{stamp}.json"
 
 

@@ -152,7 +152,7 @@ def check_venv() -> DependencyRecord:
         "venv",
         "runtime",
         DependencyState.ABSENT,
-        "the Python environment is missing — the next launch will rebuild it",
+        "the Python environment is missing. The next launch will rebuild it",
     )
 
 
@@ -350,9 +350,11 @@ def check_package_conflicts() -> DependencyRecord:
         "package-conflicts",
         "packages",
         DependencyState.STALE,
-        f"{', '.join(present)} is installed alongside the accelerated build "
-        f"they replace — both unpack to the same place, so the next dependency "
-        f"reinstall could silently move speech back onto the processor",
+        f"{', '.join(present)} is installed beside the graphics build that "
+        f"replaces it. Both unpack into the same folder, so the next time "
+        f"packages are reinstalled, speech could quietly move back onto the "
+        f"processor and get slower. Remove it with: "
+        f"uv pip uninstall {' '.join(present)}",
     )
 
 
@@ -400,7 +402,7 @@ async def check_ollama() -> list[DependencyRecord]:
                 "ollama",
                 "service",
                 DependencyState.ABSENT,
-                "not installed — searching your memory and files falls back to "
+                "not installed, so searching your memory and files falls back to "
                 "matching words rather than meaning",
             )
         ]

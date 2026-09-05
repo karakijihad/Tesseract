@@ -145,7 +145,7 @@ export function handleLoop(env: Envelope, signals: Signals | null): void {
         typeof data.reason === "string"
           ? data.reason
           : "no active turn for that chat";
-      useToastStore.getState().push(`Steer not applied — ${reason}`, "warning");
+      useToastStore.getState().push(`Steer not applied. ${reason}`, "warning");
       break;
     }
     case "chat_queue_overflow": {
@@ -157,7 +157,7 @@ export function handleLoop(env: Envelope, signals: Signals | null): void {
       const size = typeof data.queue_size === "number" ? data.queue_size : "?";
       useToastStore
         .getState()
-        .push(`Message dropped — queue full (${size} pending)`, "warning");
+        .push(`Message dropped, the queue is full with ${size} pending`, "warning");
       break;
     }
     case "stream_user_inject": {
@@ -192,7 +192,7 @@ export function handleLoop(env: Envelope, signals: Signals | null): void {
             : "info";
       useToastStore
         .getState()
-        .push(`${kind} ${status}${summary ? ` — ${summary}` : ""}`, severity);
+        .push(`${kind} ${status}${summary ? `: ${summary}` : ""}`, severity);
       break;
     }
     case "tasks_state": {
@@ -314,7 +314,7 @@ export function handleLoop(env: Envelope, signals: Signals | null): void {
           const n = typeof data.resets === "number" ? data.resets : 1;
           chat.addStreamNote(
             cid,
-            `Tool-loop cap reset (#${n}) — ${useIdentityStore.getState().name || ENTITY_FALLBACK} is still working.`,
+            `Tool-loop cap reset (#${n}). ${useIdentityStore.getState().name || ENTITY_FALLBACK} is still working.`,
           );
           break;
         }
@@ -324,7 +324,7 @@ export function handleLoop(env: Envelope, signals: Signals | null): void {
         // toast, no red card — the runtime is already retrying.
         const provider = (data.provider_error || msg).split("\n")[0].trim();
         const tail = data.request_id ? ` (${data.request_id})` : "";
-        const note = `Provider hiccup on ${data.model ?? "unknown"} — ${provider}${tail}. Retrying via fallback.`;
+        const note = `Provider hiccup on ${data.model ?? "unknown"} at ${provider}${tail}. Trying the next one in the chain.`;
         chat.addStreamNote(cid, note);
         break;
       }

@@ -18,18 +18,40 @@ You are invoked by the `daily-brief` orchestrator. Your output is placed directl
 
 ```
 {
-  "since_hours": 24       # window size; default 24
+  "since_hours": 24,
+  "events": [
+    {
+      "kind": "change_proposal" | "nudge" | "operator_post" | ...,
+      "title": "...",
+      "summary": "...",              # the producer's own words
+      "status": "pending" | "approved" | "rejected" | "resolved" | ...,
+      "author": "Operator",
+      "at": "2026-08-26T09:14:00+00:00",
+      "decided_in_window": true      # the operator acted on it in this window
+    }
+  ],
+  "comments": [
+    {"author": "operator" | "agent", "body": "...", "at": "..."}
+  ]
 }
 ```
 
+`events` and `comments` are already filtered to the window. An event is in it
+if it was WRITTEN in the window or DECIDED in it, so a proposal raised days ago
+and approved yesterday appears with `decided_in_window: true` — that approval
+is usually the most meaningful thing in the day.
+
 ## Sources
 
-Read-only access through your existing read tools:
+You have no tool access in this invocation. The renderer reads the workspace
+event and comment streams, filters them to the window, and hands you the
+`events` and `comments` above. **Do not call any read tool** — the payload is
+the only authorized source, and inventing an event that is not in it is a
+contract violation.
 
-- Workspace events stream (changes the operator made through the Mirror — note edits, file moves, soul tuning, schedule edits).
-- Workspace comments stream (operator-side annotations on those events).
-
-Stay inside that 24-hour window. Older events have already been digested in earlier briefs.
+Raw event payloads, file paths and JSONL fragments are deliberately not in the
+payload, so there is nothing to quote even by accident. If both lists are
+empty the renderer does not invoke you at all.
 
 ## Output structure
 

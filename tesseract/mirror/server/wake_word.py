@@ -66,16 +66,16 @@ class WakeWordDecision:
 
 
 def parse_wake_word_config(identity: Mapping[str, Any], path: Path) -> WakeWordConfig:
-    """Read ``identity.wake_word`` out of a parsed mirror.yaml.
+    """Read ``wake_word`` out of a parsed identity.yaml.
 
     Every key is required — the threshold in particular has no in-source
     default, so a config missing it fails at load with the file named
     rather than silently gating on a number nobody chose.
     """
-    where = f"{path} identity.wake_word"
+    where = f"{path} wake_word"
     block = identity.get("wake_word")
     if not isinstance(block, dict):
-        raise RuntimeError(f"{path} missing required 'identity.wake_word' block")
+        raise RuntimeError(f"{path} missing required 'wake_word' block")
     for key in ("enabled", "prefix", "min_threshold", "boost"):
         if key not in block:
             raise RuntimeError(f"{where} missing required key: {key}")
@@ -447,9 +447,17 @@ async def evaluate_wake_gate(app: Any, audio: bytes) -> WakeWordDecision:
 
 def _spot_blocking(app: Any, audio: bytes, key: Any) -> bool:
     """The whole blocking half, in one worker thread."""
-    from tesseract.voice.wake_spotter import WakeModelsUnavailable
+    from tesseract.voice.wake_spotter import (
+        WakeModelsUnavailable,
+        unavailable_reason,
+    )
 
     spotter = spotter_blocking(app, key)
     if spotter is None:
-        raise WakeModelsUnavailable("the wake model is not installed")
+        # The reason, not a guess at it. `spotter_blocking` returns None for
+        # every load failure alike, and the one line the operator ever sees
+        # about a dead gate is built from this string.
+        raise WakeModelsUnavailable(
+            unavailable_reason() or "the wake decoder would not load"
+        )
     return spotter.spot(audio)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from aiohttp import web
 
@@ -15,7 +16,7 @@ from tesseract.mirror.server.session import (
     new_chat_session,
     send_envelope,
 )
-from tesseract.brain.session_store import sanitize_history_for_persistence
+from tesseract.mirror.server.chat_content import sanitize_history_for_persistence
 from tesseract.mirror.server.tts import _cancel_tts_output
 
 log = logging.getLogger(__name__)
@@ -87,11 +88,19 @@ def _open_chats_payload(session: ServerSession) -> list[dict[str, str]]:
     """The open-chat list for `session_created` (P3 reload hydration).
 
     Newest-first (``chat_order`` is insertion-ordered oldest→newest), each with
-    its sidebar title from ``chat_meta``. The frontend seeds its tab strip from
-    this so tabs survive a page reload.
+    its sidebar title and creation stamp from ``chat_meta``. The frontend seeds
+    its open-chat set from this so it survives a page reload.
+
+    ``created_at`` rides along because the conversation on screen shows its own
+    stamp, and the chat this connection just seeded is not on disk yet, so the
+    list of records cannot answer for it.
     """
     return [
-        {"chat_id": cid, "title": session.chat_meta[cid].title}
+        {
+            "chat_id": cid,
+            "title": session.chat_meta[cid].title,
+            "created_at": session.chat_meta[cid].created_at,
+        }
         for cid in reversed(session.chat_order)
         if cid in session.chat_meta
     ]
@@ -130,8 +139,11 @@ async def _handle_chat_create(app: web.Application, session: ServerSession, data
     # cut the outgoing chat's voice (D8).
     session.switch_chat(chat_id)
     _cancel_tts_output(session)
-    # Persist immediately so a freshly-created (empty) chat is in the library
-    # even if the connection drops before its first turn.
+    # Flush what this session already holds. The new chat is NOT among them:
+    # `chat_store._is_disposable` refuses a record for a blank nobody has
+    # renamed or archived, which is the rule that stops a dead file per
+    # connection, and a chat the operator just made is exactly that shape.
+    # The rail lists it from the open set until its first turn is written.
     try:
         chat_store.persist_session_chats(session)
     except Exception:
@@ -140,20 +152,104 @@ async def _handle_chat_create(app: web.Application, session: ServerSession, data
         "chat_created", "chat", session.session_id,
         {"chat_id": chat_id, "title": meta.title, "created_at": meta.created_at},
     ))
+    # The new chat's own measurements, the same way the switch path sends
+    # them. Creating a chat moves focus, and without this the counter kept
+    # showing the numbers of the conversation just left until the operator
+    # took a turn here.
+    from tesseract.mirror.server.turn_runner import emit_stats
+
+    await emit_stats(app, session, chat_id=chat_id)
+
+
+
+class ChatRebuildFailed(Exception):
+    """Carries the envelope reason a failed rebuild should report."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _rebuild_from_record(
+    app: web.Application, session: ServerSession, record: Any
+) -> tuple[Any, ChatMeta]:
+    """Build a live ChatSession + meta from a persisted record, or say why not.
+
+    A connection hydrates only the newest `MAX_OPEN_CHATS` conversations, so any
+    older one the operator reaches for exists on disk and nowhere in memory.
+    Both the restore path and the switch path need the same rebuild, and having
+    it once is what stops them drifting: the spawn re-wiring below is the half
+    that is easy to leave out, and leaving it out orphans every background task
+    the chat owned.
+    """
+    try:
+        cs = new_chat_session(app, session, kind=session.kind)
+    except ChatInfraNotReady as exc:
+        raise ChatRebuildFailed("infra_not_ready") from exc
+    except Exception as exc:
+        log.exception("chat rebuild failed for %s", record.chat_id)
+        raise ChatRebuildFailed("internal_error") from exc
+
+    cs.history = list(record.history)
+    cs.mark_vanished_spawns(record.session_id)
+    meta = ChatMeta(
+        chat_id=record.chat_id, title=record.title,
+        created_at=record.created_at, started_at=record.started_at,
+        archived=False, turn_count=record.turn_count, model=record.model,
+    )
+    return cs, meta
+
+
+def _wire_rebuilt_chat(
+    app: web.Application, session: ServerSession, chat_id: str, cs: Any
+) -> None:
+    """Re-associate a rebuilt ChatSession with the work it already owns."""
+    spawn_wake.wire_chat(app, session, chat_id, cs)
+    from tesseract.mirror.server.spawn_ownership import rebind_chat
+
+    rebind_chat(app, session, cs, chat_id)
+    cs.replay_undelivered_completions(chat_id)
 
 
 async def _handle_chat_switch(app: web.Application, session: ServerSession, data: dict) -> None:
     chat_id = data.get("chat_id")
     if not isinstance(chat_id, str):
         return
-    try:
-        session.switch_chat(chat_id)
-    except KeyError:
-        await send_envelope(session, make_envelope(
+
+    def _failed(reason: str) -> Any:
+        return make_envelope(
             "chat_switch_failed", "chat", session.session_id,
-            {"chat_id": chat_id, "reason": "unknown_chat"},
-        ))
-        return
+            {"chat_id": chat_id, "reason": reason},
+        )
+
+    if chat_id not in session.chats:
+        # Not open HERE is not the same as unknown. A connection hydrates only
+        # the newest `MAX_OPEN_CHATS`, and the conversations rail lists every
+        # chat on disk, so most rows the operator can click are not in memory.
+        # Refusing them made the rail's own reason for existing fail with an
+        # `unknown_chat` toast.
+        record = chat_store.load_chat(chat_id)
+        if record is None:
+            await send_envelope(session, _failed("unknown_chat"))
+            return
+        if record.archived:
+            # Archived chats are reached with `chat.restore`, which un-archives
+            # deliberately. A plain click must not do that silently.
+            await send_envelope(session, _failed("archived"))
+            return
+        try:
+            cs, meta = _rebuild_from_record(app, session, record)
+        except ChatRebuildFailed as exc:
+            await send_envelope(session, _failed(exc.reason))
+            return
+        session.reopen_chat(chat_id, chat_session=cs, meta=meta)
+        _wire_rebuilt_chat(app, session, chat_id, cs)
+    else:
+        try:
+            session.switch_chat(chat_id)
+        except KeyError:
+            await send_envelope(session, _failed("unknown_chat"))
+            return
     # inc.C2 dynamic voice — cut the chat we're leaving. `tts_suppressed` is now
     # live, so the previously-active turn (if still streaming) goes silent the
     # moment active_chat_id changes; cancelling its in-flight synth here stops
@@ -167,8 +263,19 @@ async def _handle_chat_switch(app: web.Application, session: ServerSession, data
     history = sanitize_history_for_persistence(session.chat_session.history)
     await send_envelope(session, make_envelope(
         "chat_switched", "chat", session.session_id,
-        {"chat_id": chat_id, "title": meta.title, "history": history},
+        # `created_at` is what the reader dates an unstamped message against.
+        # Per-message timestamps are recent; a record written before them
+        # rehydrates every message against this instead of against the clock,
+        # which would file a conversation from March under today for no reason
+        # but having been opened.
+        {"chat_id": chat_id, "title": meta.title, "history": history,
+         "created_at": meta.created_at},
     ))
+    # The new chat's own measurements. Stats are per conversation, so without
+    # this the reader is left holding the chat it just left.
+    from tesseract.mirror.server.turn_runner import emit_stats
+
+    await emit_stats(app, session, chat_id=chat_id)
 
 
 async def _handle_chat_archive(app: web.Application, session: ServerSession, data: dict) -> None:
@@ -285,7 +392,9 @@ async def _handle_chat_restore(app: web.Application, session: ServerSession, dat
     history = sanitize_history_for_persistence(session.chat_session.history)
     await send_envelope(session, make_envelope(
         "chat_restored", "chat", session.session_id,
+        # `created_at` for the same reason the switch frame carries it.
         {"chat_id": chat_id, "title": meta.title, "history": history,
+         "created_at": meta.created_at,
          "active_chat_id": session.active_chat_id},
     ))
 

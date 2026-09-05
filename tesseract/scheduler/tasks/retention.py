@@ -17,7 +17,8 @@ import asyncio
 import logging
 import time
 
-from tesseract.retention.policy import Policy, RetentionError, Swept, load_live
+from tesseract.retention import record
+from tesseract.retention.policy import RetentionError, Swept, load_live
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.scheduler.types import JobContext, JobResult
 
@@ -38,7 +39,7 @@ class RetentionJob(BaseJob):
             return _result(ctx, t0, ok=False, detail=f"unhandled: {exc!r}", payload={})
 
         results = await asyncio.gather(
-            *(asyncio.to_thread(_sweep_one, policy) for policy in policies),
+            *(asyncio.to_thread(policy.run) for policy in policies),
             return_exceptions=True,
         )
 
@@ -48,13 +49,14 @@ class RetentionJob(BaseJob):
         for policy, outcome in zip(policies, results):
             key = policy.tree.key
             if isinstance(outcome, BaseException):
-                errors.append(f"{key}: {outcome!r}")
+                errors.append(f"{key}: {_why(outcome)}")
                 log.exception("retention: %s failed", key, exc_info=outcome)
                 continue
             per_tree[key] = {
                 "moved": outcome.moved,
                 "removed": outcome.removed,
                 "failed": outcome.failed,
+                "held": outcome.held,
                 "keep_days": policy.keep_days,
                 "action": policy.action.value,
             }
@@ -62,10 +64,14 @@ class RetentionJob(BaseJob):
 
         detail = (
             f"moved={total.moved} removed={total.removed} "
-            f"failed={total.failed} over {len(per_tree)} tree(s)"
+            f"failed={total.failed} held={total.held} over {len(per_tree)} tree(s)"
         )
         if errors:
             detail += f"; {len(errors)} tree(s) errored"
+        # A `StageReport` carries one outcome and two totals, so the per-tree
+        # half of this payload has nowhere else to go. Written before the
+        # result is returned, and never able to change it.
+        record.write(per_tree, errors)
         return _result(
             ctx,
             t0,
@@ -79,13 +85,25 @@ class RetentionJob(BaseJob):
                 "moved": total.moved,
                 "removed": total.removed,
                 "failed": total.failed,
+                "held": total.held,
                 "errors": errors,
             },
         )
 
 
-def _sweep_one(policy: Policy) -> Swept:
-    return policy.run()
+def _why(exc: BaseException) -> str:
+    """What went wrong, without the path it went wrong ON.
+
+    This list is not a log line any more: it is persisted for the Autonomy
+    panel and relayed to whatever channel asks. An `OSError`'s `repr` carries
+    the filename, which sits under the operator's home directory and therefore
+    carries their username, so what reaches a screen is the class and the
+    system's own reason. The whole exception, path and traceback included, goes
+    to the backend log on the line above, which is where somebody debugging
+    this wants it.
+    """
+    reason = getattr(exc, "strerror", None)
+    return f"{type(exc).__name__}: {reason}" if reason else type(exc).__name__
 
 
 def _result(

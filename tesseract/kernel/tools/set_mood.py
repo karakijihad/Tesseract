@@ -46,7 +46,7 @@ class SetMoodTool(Tool):
     group: ClassVar[str] = "being-present"
     summary: ClassVar[str] = "Sets affective mood: intensity (energy) and valence (cool-warm tone)."
     use_when: ClassVar[str] = (
-        "Use when your affect has genuinely shifted and it matters — not as ornament every turn. "
+        "Use when your affect has genuinely shifted and it matters. Not as ornament every turn. "
         "Resets to neutral each turn; call again to carry it forward. Move in small steps "
         "(about ±0.1) unless the cause is genuinely big."
     )
@@ -54,6 +54,7 @@ class SetMoodTool(Tool):
         "what you're doing right now, which is `set_state`; whether the orb is on screen at all, "
         "which is `orb_visibility`."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(self, mood_state: MoodState) -> None:
         self._mood_state = mood_state
@@ -69,7 +70,7 @@ class SetMoodTool(Tool):
     def is_concurrency_safe(self) -> bool:
         # MoodState lives on the tool instance in the shared ToolRegistry —
         # two concurrent set() calls last-write-wins on intensity/valence.
-        # WP-2 synthetic registry will omit this tool entirely.
+        # The synthetic registry omits this tool entirely.
         return False
 
     def is_read_only(self) -> bool:

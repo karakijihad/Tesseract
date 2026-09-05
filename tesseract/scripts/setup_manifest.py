@@ -1,10 +1,10 @@
 """What the setup form should ask THIS machine, as JSON on stdout.
 
-The form used to run before anything existed — before the clone, before
-Python — so every figure on it was a literal in `splash.html` and a drift
-test held each one honest against the catalog it could not read. It could
-not know what the machine was either, which is why it quoted 1,600 MB of
-speech recognition to a laptop about to download 148.
+A form that runs before anything exists — before the clone, before Python —
+has to carry every figure as a literal in `splash.html`, with a drift test
+holding each one honest against the catalog it cannot read. It cannot know
+what the machine is either, which is how 1,600 MB of speech recognition
+gets quoted to a laptop about to download 148.
 
 The order changed: the required half is installed as progress and the form
 opens afterwards, on a tree that exists. So the page asks this module instead
@@ -81,13 +81,6 @@ _KEY_PROSE: dict[str, tuple[str, str, str, str]] = {
         "OpenAI",
         "https://platform.openai.com/signup",
         "The one key the shipped setup needs to hold a conversation.",
-    ),
-    "BUILD_NVIDIA_KEY": (
-        "Talking to you",
-        "NVIDIA build",
-        "https://build.nvidia.com/",
-        "Free, and no payment method. Background work runs here — without it "
-        "that work falls back to OpenAI and you pay for what you never see.",
     ),
     "GOOGLE_API_KEY": (
         "Talking to you",
@@ -232,10 +225,10 @@ def _machine() -> dict[str, Any]:
 def _speech(machine: dict[str, Any], sizes: dict[str, int]) -> dict[str, Any]:
     """The two speech questions, worded for the machine that is being asked.
 
-    The local-voice hint is the one that changes: it used to promise every
-    operator that speech "starts talking fastest on a machine with a graphics
-    card", which is a fact about someone else's computer on a machine with no
-    card. The probe has run by now, so it can say which of the two this is.
+    The local-voice hint is the one that changes. Promising every operator
+    that speech "starts talking fastest on a machine with a graphics card" is
+    a fact about someone else's computer on a machine with no card. The probe
+    has run by now, so it can say which of the two this is.
     """
     accelerated = machine["profile"] != "cpu"
     kokoro_mb = sizes.get("kokoro")

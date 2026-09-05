@@ -9,6 +9,7 @@ import type {
   SessionStatsData,
   SoulUpdatedData,
 } from "../../lib/types";
+import { foldCeiling } from "../../lib/types";
 import { useChannelsStore } from "../channels";
 import { useConversationStore } from "../conversation";
 import { useEntityStore } from "../entity";
@@ -35,8 +36,15 @@ export function handleSession(env: Envelope): void {
       // strip survives a reload. Falls back to seeding just the active slice
       // (inc.B) when the backend doesn't send the list (older backend).
       if (data.chats && data.chats.length > 0) {
+        // `created_at` is passed through as-is, undefined included: the
+        // store treats an absent stamp as "keep the one you hold", and
+        // coalescing to "" here would blank it instead.
         chat.hydrateChats(
-          data.chats.map((c) => ({ chatId: c.chat_id, title: c.title })),
+          data.chats.map((c) => ({
+            chatId: c.chat_id,
+            title: c.title,
+            createdAt: c.created_at,
+          })),
           data.active_chat_id,
         );
       } else {
@@ -48,7 +56,7 @@ export function handleSession(env: Envelope): void {
     case "session_list": {
       const data = env.data as unknown as SessionListData;
       sessions.setSessionList(data);
-      useUIStore.getState().setDrawerOpen(true);
+      useUIStore.getState().setChatRailOpen(true);
       break;
     }
     case "session_saved": {
@@ -80,18 +88,30 @@ export function handleSession(env: Envelope): void {
       const data = env.data as unknown as SessionCompactData;
       const tag = data.trigger === "auto" ? "Auto-compacted" : "Compacted";
       toasts.push(`${tag} ${data.tokens_before} → ${data.tokens_after} tok`);
+      // The toast is gone in five seconds; the divider stays where it
+      // happened. The backend stamps the chat that folded, which is not
+      // necessarily the one on screen when a background turn compacts, and
+      // says how many turns it kept verbatim so the divider lands in front of
+      // them rather than at the end.
+      chat.addFoldMarker(env.chat_id ?? null, data.tail_turns ?? 0);
       break;
     }
     case "session_stats": {
       const data = env.data as unknown as SessionStatsData;
-      sessions.setLatestStats(data);
+      // A conductor fan-out emits stats for chats nobody is looking at, and
+      // the Settings bar reads this store for its measured floor. Keeping a
+      // background chat's numbers would draw one conversation's shape while
+      // naming another's. Unstamped envelopes are session-scoped and stand.
+      const activeChatId = useConversationStore.getState().activeChatId;
+      if (env.chat_id == null || env.chat_id === activeChatId) {
+        sessions.setLatestStats(data, env.chat_id ?? activeChatId);
+      }
       const ui = useUIStore.getState();
       if (ui.pendingStatsToast) {
+        const ceiling = foldCeiling(data);
         const tokK = (data.tokens / 1000).toFixed(1);
-        const capK = (data.compact_threshold_tokens / 1000).toFixed(1);
-        const pct = Math.round(
-          (data.tokens / data.compact_threshold_tokens) * 100,
-        );
+        const capK = (ceiling / 1000).toFixed(1);
+        const pct = ceiling ? Math.round((data.tokens / ceiling) * 100) : 0;
         toasts.push(
           `Stats: ${data.turns} turns · ${tokK}k / ${capK}k tok (${pct}%)`,
         );

@@ -158,7 +158,7 @@ operator's toast.
 
 
 OnSessionDeleted = Callable[[str], Awaitable[None]]
-"""Audit-2 A1 — invoked AFTER ``_on_delete_session`` removes the
+"""Invoked AFTER ``_on_delete_session`` removes the
 session record + transcript. Lets the entry point's
 :class:`ControllerRuntime` drop its cached ``ChatSession`` for the
 deleted id so the in-memory cache doesn't leak entries that no longer
@@ -246,12 +246,12 @@ class ControllerDaemon(
         self._cancel_child = cancel_child
         self._reload_callback = reload_callback
         self._on_session_deleted = on_session_deleted
-        # X-4 Session C — controller-owned lane manager. The brain doesn't
+        # Controller-owned lane manager. The brain doesn't
         # have to be in-process; Mirror / TUI / scheduled jobs can drive
         # lanes by sending the seven `lane.*` IPC messages. None = no
         # lane surface; every lane.* request errors with `lane_manager_unwired`.
         self._lane_manager: Any | None = lane_manager
-        # CV-1 — name→lane_id binding layer (NamedLaneManager). Exposed over
+        # Name→lane_id binding layer (NamedLaneManager). Exposed over
         # IPC so Mirror can resolve + spawn the trio's named lanes. None =
         # lane_named_* requests error with `named_lane_manager_unwired`.
         self._named_lane_manager: Any | None = named_lane_manager
@@ -301,7 +301,7 @@ class ControllerDaemon(
         # asked to warm up behind an open port; every other construction is
         # ready the moment it exists, so no existing caller changes behaviour.
         #
-        # The port used to open after `initial_build()` returned, which put the
+        # Opening the port after `initial_build()` returns would put the
         # whole brain — FAISS, the memory index, the tool registry, the prompt
         # — in front of the first TCP connect. Measured at 17.4s on an idle
         # machine against the dispatcher's 25s spawn budget, and the margin is
@@ -315,7 +315,7 @@ class ControllerDaemon(
 
         self._stop_event = asyncio.Event()
         self._heartbeat_task: asyncio.Task | None = None
-        # AS-1 — relays the controller's `activity` bus channel to connected
+        # Relays the controller's `activity` bus channel to connected
         # Mirror clients. Started in `start`, cancelled in `stop`.
         self._activity_forwarder_task: asyncio.Task | None = None
         self._port_path: Path = port_file_path()
@@ -846,7 +846,7 @@ class ControllerDaemon(
             return False
         return True
 
-    # ── lane.* result helpers (X-4 Session C) ───────────────────────────
+    # ── lane.* result helpers ───────────────────────────
 
     async def _push_lane_result(
         self,

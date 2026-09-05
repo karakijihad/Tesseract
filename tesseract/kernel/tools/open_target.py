@@ -45,7 +45,7 @@ class OpenInput(BaseModel):
         default="auto",
         description=(
             "How to read `target`, when you already know. `auto` guesses, and "
-            "an existing file outranks every other reading — so a phrase that "
+            "an existing file outranks every other reading, so a phrase that "
             "happens to name a file on disk opens the file. Pin `search` to "
             "search for it anyway, `path` / `url` / `app` to say which of "
             "those it is. Cannot open anything `auto` would refuse."
@@ -70,21 +70,22 @@ class OpenTool(Tool):
     risk_class: ClassVar[str] = "autonomous"
     group: ClassVar[str] = "showing-the-operator"
     summary: ClassVar[str] = (
-        "Show the operator anything that exists — a URL, file, folder, app, or search."
+        "Show the operator anything that exists: a URL, a file, a folder, an app, or a search."
     )
     use_when: ClassVar[str] = (
         "One argument, and the runtime picks the surface: it renders in the "
         "cockpit where it can and hands off to the owning application where it "
-        "cannot. The result says which way it went — relay that, and never "
+        "cannot. The result says which way it went. Relay that, and never "
         "claim a card appeared without reading it."
     )
     not_when: ClassVar[str] = (
-        "You are authoring the content yourself — that is `surface_create`; "
+        "You are authoring the content yourself. That is `surface_create`; "
         "this shows a thing that exists, that one brings a thing into "
         "existence. And `browser_navigate` is not this verb however much its "
         "description sounds like it: it renders a screenshot, a still image, "
         "not a live page. \"Show me this\" is always `open`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

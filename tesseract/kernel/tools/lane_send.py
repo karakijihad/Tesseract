@@ -1,6 +1,6 @@
 """lane_send — send a follow-up message into a running lane.
 
-X-4 Session B. ASK-gated — each message drives a CLI turn that may
+ASK-gated — each message drives a CLI turn that may
 execute code / call subprocesses. The contract guarantees per-lane
 serial execution: `queue_depth` reports the backlog when sends arrive
 while the lane is `busy`."""
@@ -26,7 +26,7 @@ class LaneSendInput(BaseModel):
         default=False,
         description=(
             "When true, block (non-busy-wait) until THIS send's turn ends, "
-            "and return its reply — not just an acceptance. Timing from "
+            "and return its reply, not just an acceptance. Timing from "
             "cockpit.yaml conductor.relay_*. Falls back to plain send if the "
             "manager has no send_and_await."
         ),
@@ -54,6 +54,7 @@ class LaneSendTool(Tool):
         "reading a lane's output after firing, which is `lane_read`; one call that both sends and "
         "waits, which is `lane_turn`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

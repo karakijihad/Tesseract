@@ -2,10 +2,10 @@
 
 One definition of the voice model tree, shared by the runtime
 (``mirror/server/app.py::_build_voice_runtime``), the three fetch scripts,
-and the Settings status routes. It used to be spelled
+and the Settings status routes. Spelling
 ``Path(__file__).resolve().parents[N] / "voice" / "models" / <lane>`` at
-each site — the kind of duplication that drifts silently the first time one
-of them moves.
+each site is the kind of duplication that drifts silently the first time
+one of them moves.
 
 `configured_refs` is the other half: a fetch script must download exactly
 what the operator's config names and nothing else, so that declining a lane

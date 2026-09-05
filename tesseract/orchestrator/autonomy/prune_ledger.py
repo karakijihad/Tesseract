@@ -87,9 +87,8 @@ def _pruned_path() -> Path:
     """Resolve ``<TESSERACT_HOME>/logs/autonomy/pruned.jsonl`` at call time.
 
     `log_dir` resolves the home itself, so this reads the environment through
-    it rather than separately — two dead lines that computed a `home` nobody
-    used were removed, since they implied an override path the code no longer
-    expressed.
+    it rather than separately. Computing a `home` here would imply an
+    override path the code does not express.
     """
     return log_dir("autonomy") / "pruned.jsonl"
 

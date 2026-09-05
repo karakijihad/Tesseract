@@ -1,6 +1,6 @@
 """SQLite + FTS5 index over session transcripts and workshop artifacts.
 
-CR-1 (2026-05-22) — non-authoritative retrieval surface that complements
+Non-authoritative retrieval surface that complements
 the memory store. Chunks carry ``source`` ∈ {``"session"``, ``"workshop"``}
 provenance; callers (the ``recall_history`` tool, the future merged
 retrieval pipeline) must label results so the operator and the model
@@ -128,10 +128,69 @@ class WorkIndex:
             logger.warning("work_index add failed for %s/%s",
                            chunk.source, chunk.source_ref)
 
+    def replace_path(self, source_path: str, chunks: Iterable[WorkChunk]) -> int:
+        """Re-index one file: drop its old chunks and write the new ones, once.
+
+        **One commit for the file, where `add` does one per chunk.** Measured
+        2026-09-02 off the backend's own event-loop sampler: `add` and
+        `delete_by_path` accounted for 413 of the samples across 1015 seconds
+        of blocking, more than every other cause combined, because indexing one
+        conversation is one fsync per chunk and a long conversation is hundreds
+        of them. The insert was never the cost; the commit was.
+
+        **And it is one transaction, which `delete_by_path` plus a loop of
+        `add` never was.** A crash between them left the file's old chunks gone
+        and its new ones half written, so the conversation stayed unfindable
+        until something re-indexed it. Here the file is either its old self or
+        its new self.
+
+        Returns the number of chunks written. Errors are swallowed and logged,
+        because a transcript that failed to index is a worse search result and
+        a raise here would be a lost autosave.
+        """
+        try:
+            # Inside the try, because `chunks` is an Iterable and building the
+            # rows is the caller's generator running. A malformed transcript
+            # must cost a search result, never the autosave that was indexing
+            # it.
+            rows = [
+                (
+                    c.source,
+                    c.source_path,
+                    c.source_ref,
+                    "" if c.turn_idx is None else str(c.turn_idx),
+                    c.role or "",
+                    str(c.chunk_idx),
+                    c.ts,
+                    c.text,
+                )
+                for c in chunks
+            ]
+            conn = self._conn
+            conn.execute(
+                "DELETE FROM work_chunks WHERE source_path = ?", (source_path,)
+            )
+            conn.executemany(
+                "INSERT INTO work_chunks(source, source_path, source_ref, "
+                "turn_idx, role, chunk_idx, ts, text) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            conn.commit()
+            return len(rows)
+        except Exception:
+            logger.warning("work_index replace failed for %s", source_path)
+            try:
+                self._conn.rollback()
+            except Exception:  # noqa: BLE001 — nothing left to do about it
+                pass
+            return 0
+
     def delete_by_path(self, source_path: str) -> None:
         """Remove every chunk associated with ``source_path``.
 
-        Used by re-ingest paths so the next ``add`` doesn't double-count.
+        For a caller that is only removing. A caller that is re-indexing wants
+        `replace_path`, which does this and the writes in one transaction.
         """
         try:
             self._conn.execute(

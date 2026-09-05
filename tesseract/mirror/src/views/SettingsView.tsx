@@ -8,6 +8,7 @@ import { SETTINGS_GROUPS } from "./settings/nav";
 export function SettingsView() {
   return (
     <RailView
+      view="settings"
       groups={SETTINGS_GROUPS}
       label="Settings sections"
       searchable

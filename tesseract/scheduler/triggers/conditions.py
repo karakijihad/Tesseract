@@ -135,6 +135,71 @@ async def _skill_usage_volume(ctx: TriggerContext) -> Verdict:
     return Verdict(True, f"{fresh} new skill uses since the last pass")
 
 
+# ── volume: new tool-call rows ────────────────────────────
+
+
+async def _tool_usage_volume(ctx: TriggerContext) -> Verdict:
+    """Enough tool calls have been logged to say anything about which tools
+    are worth carrying. The dial is judged on use, so how much use has been
+    recorded since the last look is exactly what decides when to look again;
+    a cadence would read two calls as readily as two hundred."""
+    from tesseract.brain.tool_usage import usage_path
+
+    minimum = _threshold(ctx, "min_new_calls")
+    fresh = await asyncio.to_thread(_count_calls_newer, usage_path(), ctx.watermark)
+    if fresh < minimum:
+        return Verdict(False, f"{fresh} of {minimum} new tool calls since the last pass")
+    return Verdict(True, f"{fresh} new tool calls since the last pass")
+
+
+def _count_calls_newer(path: Any, watermark: datetime | None) -> int:
+    """Rows in the tool ledger stamped after the row's position.
+
+    Its own counter rather than `_count_newer`, because that one takes rows
+    already in memory under a `ts` key and this ledger writes `at_utc` and is
+    long enough to be worth streaming rather than parsing whole into a list.
+    """
+    import json
+    from pathlib import Path
+
+    target = Path(path)
+    if not target.is_file():
+        return 0
+    count = 0
+    try:
+        with target.open(encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if _is_newer(row.get("at_utc"), watermark):
+                    count += 1
+    except OSError:
+        return 0
+    return count
+
+
+# ── volume: tasks closed done ─────────────────────────────
+
+
+async def _tasks_done_volume(ctx: TriggerContext) -> Verdict:
+    """Enough tasks have closed `done` since the last pass to read for a
+    procedure. Off the agenda history rows, which are kept for good and
+    carry the closing time, so a task closed while the app was off still
+    counts on the next start."""
+    from tesseract.orchestrator.autonomy.agenda_history import done_since
+
+    minimum = _threshold(ctx, "min_new_tasks")
+    fresh = len(await asyncio.to_thread(done_since, ctx.watermark))
+    if fresh < minimum:
+        return Verdict(False, f"{fresh} of {minimum} tasks closed done since the last pass")
+    return Verdict(True, f"{fresh} tasks closed done since the last pass")
+
+
 def _is_newer(stamp: Any, watermark: datetime | None) -> bool:
     """Whether an ISO timestamp field is past the row's position.
 
@@ -227,7 +292,7 @@ async def _provider_failover(ctx: TriggerContext) -> Verdict:
 
 
 def _count_new_tripwires(watermark: datetime | None) -> int:
-    """One small JSONL per role, and only the tail matters.
+    """One small JSONL per ref, and only the tail matters.
 
     Rows carry `probed_at` and `source`; anything that is not a
     `production_tripwire` is a probe's own result and says nothing about real
@@ -273,6 +338,18 @@ CONDITIONS: dict[str, Condition] = {
             summary="enough new skill uses have been logged to judge one",
             required_config=("min_new_rows",),
             evaluate=_skill_usage_volume,
+        ),
+        Condition(
+            name="tool_usage_volume",
+            summary="enough tool calls have been logged to judge what is carried",
+            required_config=("min_new_calls",),
+            evaluate=_tool_usage_volume,
+        ),
+        Condition(
+            name="tasks_done_volume",
+            summary="enough tasks have closed done to read one for a procedure",
+            required_config=("min_new_tasks",),
+            evaluate=_tasks_done_volume,
         ),
         Condition(
             name="digest_volume",

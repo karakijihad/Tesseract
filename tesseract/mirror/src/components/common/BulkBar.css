@@ -1,0 +1,17 @@
+/* Only rendered while something is selected, so it is allowed to be loud: it
+   is the one bar on a surface whose buttons act on many rows at once. */
+.bulk-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border: var(--stroke-1) solid var(--accent-glow);
+  border-radius: var(--radius-xs);
+  background: var(--accent-dim);
+  flex-shrink: 0;
+}
+
+.bulk-bar__count {
+  margin-right: var(--space-4);
+}

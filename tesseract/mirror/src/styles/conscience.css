@@ -304,22 +304,6 @@
   white-space: nowrap;
 }
 
-.tool-usage__track {
-  display: block;
-  height: var(--space-3);
-  background: var(--panel-divider);
-  border-radius: 2px;
-  overflow: hidden;
-}
-
-.tool-usage__bar {
-  display: block;
-  height: 100%;
-  min-width: 2px;
-  background: var(--accent);
-  border-radius: 2px;
-}
-
 .tool-usage__figures {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -341,4 +325,553 @@
   flex-wrap: wrap;
   gap: var(--space-2) var(--space-4);
   font-family: var(--font-mono);
+}
+
+/* --- playbook usage -------------------------------------------------------
+   The same bar list as above, with one more column: how the turns that read a
+   playbook ended. The tool ledger cannot answer that, which is why this is a
+   second chart rather than a second series on the first. */
+
+.playbook-usage {
+  /* Its own container, because the Conscience panel declares none and the
+     reflow below has to answer to the width the chart actually gets. A rule
+     written against a container nobody declared is a rule that never fires. */
+  container-type: inline-size;
+  margin: 0;
+}
+
+.playbook-usage__count {
+  margin: 0;
+}
+
+.playbook-usage__bars {
+  list-style: none;
+  margin: var(--space-4) 0 0;
+  padding: 0;
+  /* The tracks live on the LIST, not on the row, because the property that
+     makes this readable is that every bar starts at the same x, and a grid
+     per row sizes its columns to that row's own name. The tool chart above
+     buys the same property with a fixed name column and pays for it in
+     ellipsis; a playbook slug is what tells two playbooks apart at its end,
+     so here the name takes the slack and the rows share one set of tracks. */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 6rem auto;
+  gap: var(--space-3) var(--space-3);
+}
+
+.playbook-usage__row {
+  display: grid;
+  /* Name, bar, figures, and the disclosure under all three, on the tracks the
+     list declares. Measured at the panel's own 576px: a fixed 12rem name
+     column clipped two of five playbooks. */
+  /* Explicit first, subgrid second: a browser without subgrid keeps tracks
+     that are merely per row, which is the old behaviour rather than a
+     collapsed layout. */
+  grid-template-columns: minmax(0, 1fr) 6rem auto;
+  grid-template-columns: subgrid;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
+.playbook-usage__name {
+  font-family: var(--font-mono);
+  font-size: var(--t-body-size);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.playbook-usage__figures {
+  font-variant-numeric: tabular-nums;
+}
+
+.playbook-usage__detail {
+  grid-column: 1 / -1;
+}
+
+.playbook-usage__revisions {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0 0 0 var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.playbook-usage__caption {
+  margin-top: var(--space-3);
+}
+
+.playbook-usage__unread-lead {
+  margin: var(--space-3) 0 var(--space-2);
+}
+
+.playbook-usage__unread {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  font-family: var(--font-mono);
+}
+
+/* Measured rather than guessed: the name column is 12rem, the bar floor is
+   3rem, and the longest figures line ("N reads, N of N worked, N corrected")
+   runs about 200px at meta size, which with the gaps is 472px. Above that the
+   three columns fit and the bars share one origin, which is the whole reason
+   for a fixed name column. Below it the name takes its own line and the bar
+   sits under it, because ellipsising a playbook slug loses the end of the
+   name and that is where these differ from each other. */
+@container (max-width: 480px) {
+  .playbook-usage__bars {
+    grid-template-columns: 1fr;
+  }
+
+  .playbook-usage__name {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
+/* The payload view — what rides every turn, before you type anything.
+
+   Grouped into blocks rather than run as one list: the three groups are the
+   reading, and a flat list of thirteen rows makes the reader do the sorting
+   the panel exists to have already done. Sized to stay legible if the type
+   scale goes up — no fixed row height, no truncated description. */
+
+.payload__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-10);
+  flex-wrap: wrap;
+}
+
+.payload__total {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-6);
+  font-variant-numeric: tabular-nums;
+}
+
+.payload__total strong {
+  font-size: var(--t-head-size);
+  letter-spacing: var(--t-head-tracking);
+}
+
+.payload__unit {
+  color: var(--text-secondary);
+}
+
+.payload__total-chars {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The sum written as a sum. Wraps to one term per line on a narrow panel
+   rather than shrinking, because a formula that has to be squinted at has
+   stopped being one. */
+.payload__formula {
+  list-style: none;
+  margin: var(--space-24) 0 0;
+  padding: var(--space-14) var(--space-16);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-10) var(--space-6);
+  background: var(--wash-xs);
+  border: var(--stroke-1) solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.payload__term {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+.payload__term-body {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-6);
+}
+
+.payload__operator {
+  color: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.payload__term-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.payload__term--sum .payload__term-value {
+  color: var(--accent-bright);
+}
+
+.payload__term-chars,
+.payload__term-name {
+  font-variant-numeric: tabular-nums;
+}
+
+.payload__swatch {
+  display: inline-block;
+  width: var(--space-10);
+  height: var(--space-10);
+  border-radius: 2px;
+  flex: none;
+}
+
+/* One block per group. */
+.payload__group-block {
+  margin-top: var(--space-24);
+}
+
+.payload__group-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  margin: 0 0 var(--space-10);
+  /* The same horizontal inset the rows carry, so the group total lines up
+     with the row figures below it instead of sitting against the edge. */
+  padding: 0 var(--space-8) var(--space-6);
+  border-bottom: var(--stroke-1) solid var(--border-subtle);
+  font-size: var(--t-body-size);
+  font-weight: 500;
+}
+
+.payload__group-total {
+  margin-inline-start: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.payload__rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.payload__row {
+  display: grid;
+  /* Stacked, not four columns. The panel is resizable and often narrow, and
+     at that width a name/description/bar/figure row squeezes the description
+     into four wrapped lines and clips the figure. Name and figure share the
+     top line because they are the two things scanned together; the sentence
+     gets the full width it needs; the bar spans the row as a rule under both. */
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "name    figures"
+    "descr   descr"
+    "bar     bar";
+  align-items: baseline;
+  gap: var(--space-6) var(--space-16);
+  padding: var(--space-10) var(--space-8);
+  border-radius: var(--radius-sm);
+}
+
+.payload__row > .payload__name { grid-area: name; }
+.payload__row > .payload__description { grid-area: descr; }
+.payload__row > .payload__track { grid-area: bar; }
+.payload__row > .payload__figures { grid-area: figures; }
+
+.payload__row--link:hover {
+  background: var(--wash-xs);
+}
+
+.payload__name {
+  font-family: var(--font-mono);
+  font-size: var(--t-body-size);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.payload__row--link .payload__name {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 0.2em;
+}
+
+.payload__description {
+  line-height: 1.45;
+}
+
+.payload__track {
+  position: relative;
+  display: block;
+  height: var(--space-4);
+  margin-top: var(--space-4);
+  background: var(--panel-divider);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.payload__bar {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  display: block;
+  min-width: 2px;
+  border-radius: 2px;
+}
+
+/* One hue per group, shared by the swatch in the formula and the bar in the
+   row, so the two are read as one picture. */
+.payload__bar--instructions,
+.payload__swatch--instructions { background: var(--accent); }
+.payload__bar--tools,
+.payload__swatch--tools        { background: var(--cyan); }
+.payload__bar--memory,
+.payload__swatch--memory       { background: var(--info); }
+
+.payload__figures {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-6);
+  justify-content: flex-end;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.payload__tokens {
+  font-weight: 600;
+}
+
+.payload__residency,
+.payload__delta {
+  margin: var(--space-24) 0 0;
+  line-height: 1.5;
+}
+
+.payload__caption {
+  margin-top: var(--space-16);
+  line-height: 1.5;
+}
+
+/* ── The working set: which tools ride every turn ──────────────────── */
+
+.working-set__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.working-set__count {
+  margin: 0;
+}
+
+.working-set__lead {
+  margin: var(--space-8) 0 0;
+}
+
+.working-set__group {
+  margin-top: var(--space-16);
+}
+
+.working-set__group-name {
+  margin: 0 0 var(--space-6);
+  font-size: var(--t-meta-size);
+  font-weight: var(--t-ui-weight);
+}
+
+.working-set__rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.working-set__row {
+  /* Switch, name, what it does, what it cost. The name column is fixed so
+     the sentences start at one x — a ragged left edge turns a list you scan
+     into a list you read. */
+  display: grid;
+  grid-template-columns: auto minmax(0, 11rem) 1fr auto;
+  align-items: center;
+  gap: var(--space-10);
+}
+
+.working-set__name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--t-body-size);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Same mark Settings puts beside a custom tool's name. */
+.working-set__tag {
+  flex: none;
+  font-family: var(--font-ui);
+  font-size: var(--t-meta-size);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: var(--space-1) var(--space-5);
+  border-radius: 3px;
+  border: var(--stroke-1) solid var(--panel-border);
+  color: var(--text-meta);
+  background: var(--bg-deep);
+}
+
+.working-set__summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.working-set__calls {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.working-set__caption {
+  margin-top: var(--space-16);
+}
+
+/* A tool nobody called that is described every turn anyway, and the same for
+   a playbook. The one row in the unused list worth acting on, so it is the one
+   row that is not grey. */
+.tool-usage__unused li.is-carried,
+.playbook-usage__unread li.is-carried {
+  color: var(--text-secondary);
+}
+
+/* ── The heatmap: the same ledger, shaped as days ──────────────────── */
+
+.tool-heatmap__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.tool-heatmap__count {
+  margin: 0;
+}
+
+.tool-heatmap__grid {
+  margin-top: var(--space-10);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.tool-heatmap__row,
+.tool-heatmap__axis,
+.tool-heatmap__scale {
+  display: grid;
+  /* Name, the days, the row's own total. The total is a column rather than a
+     hover, because a shade cannot be added up by eye. */
+  grid-template-columns: minmax(0, 11rem) 1fr 2.5rem;
+  align-items: center;
+  gap: var(--space-10);
+}
+
+.tool-heatmap__row {
+  border-radius: var(--radius-xs);
+}
+
+/* Focus lands on the row: the caption reads it out, so the ring has to say
+   which row is being read. */
+.tool-heatmap__row:focus-visible {
+  outline: var(--stroke-1) solid var(--accent);
+  outline-offset: 2px;
+}
+
+.tool-heatmap__total {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.tool-heatmap__scale {
+  margin-top: var(--space-16);
+}
+
+.tool-heatmap__swatches {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+}
+
+.tool-heatmap__swatch-step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-heatmap__swatch-step .tool-heatmap__cell {
+  width: var(--space-10);
+  min-height: var(--space-10);
+}
+
+.tool-heatmap__name {
+  font-family: var(--font-mono);
+  font-size: var(--t-meta-size);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-heatmap__cells {
+  display: grid;
+  grid-template-columns: repeat(var(--heatmap-columns), minmax(0, 1fr));
+  gap: var(--space-1);
+}
+
+.tool-heatmap__cell {
+  /* `--heatmap-fill` is 0 to 1, set per cell. The colour is mixed here so the panel
+     carries no palette of its own: change the accent and the heatmap
+     follows. */
+  aspect-ratio: 1;
+  min-height: 6px;
+  border-radius: 1px;
+  background: color-mix(
+    in srgb,
+    var(--accent) calc(var(--heatmap-fill) * 100%),
+    var(--panel-divider)
+  );
+}
+
+.tool-heatmap__axis {
+  margin-top: var(--space-6);
+}
+
+.tool-heatmap__dates {
+  display: flex;
+  justify-content: space-between;
+}
+
+.tool-heatmap__dates > span:nth-child(2) {
+  /* The middle label reads against the middle of the grid, not against the
+     gap its own width opens beside the other two. */
+  transform: translateX(-50%);
+  margin-left: 50%;
+}
+
+.tool-heatmap__caption {
+  margin-top: var(--space-10);
+}
+
+.tool-heatmap__readout {
+  /* Fixed height: the line is empty until something is hovered, and a grid
+     that jumps a row when the pointer enters it is worse than no readout. */
+  margin: var(--space-8) 0 0;
+  min-height: var(--space-16);
+  font-variant-numeric: tabular-nums;
 }

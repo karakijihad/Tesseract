@@ -1,8 +1,8 @@
-"""AS-1 — Unified Activity Registry data model.
+"""Unified Activity Registry data model.
 
 An ``ActivityRecord`` is a derived, in-memory projection of ONE running
 unit of the assistant's work — a headless delegate, a named lane, a controller
-session, and (AS-3) routines. It is NOT a new persistent
+session, and routines. It is NOT a new persistent
 store: the canonical truth lives in each substrate's own on-disk files
 (``lane.json``, ``named-lanes/*.json``, ``agent_controller/sessions/*.json``).
 The registry indexes them so the Mirror can reflect everything running in
@@ -21,9 +21,14 @@ from pydantic import BaseModel, Field
 # client connection (one per connected client) — the "who's in the chair"
 # record; action verbs it drives spawn their own kinds parented to it
 # (Doclog 2026-06-30 §MCP ActivityKind = mcp_session).
+# ``turn`` is the operator's own conversation turn, the one running unit this
+# registry did not carry. It was referenced from the start — ``parent_turn_id``
+# below names the turn a delegate was spawned from — and never registered, so
+# the panel's "working now" band could show six kinds of background work and
+# not the thing the person in front of it was waiting on.
 ActivityKind = Literal[
     "delegate", "lane", "controller_session", "routine",
-    "autonomy", "mcp_session",
+    "autonomy", "mcp_session", "turn",
 ]
 
 # Lifecycle state, normalized across substrates. ``input_required`` (trio
@@ -59,6 +64,11 @@ class ActivityRecord:
     transcript_ref: str | None = None  # path under TESSERACT_HOME (relative)
     goal: str | None = None  # the intent the unit was launched with (delegate task, …)
     result: str | None = None  # terminal outcome summary, set on a terminal transition
+    # The lane this unit runs its work on, when it has one. A delegation is a
+    # turn on an ephemeral lane, so it and that lane are the same running unit
+    # under two ids; naming the lane here is what lets the Mirror show one row
+    # for it and point that row at the lane's live event stream.
+    lane_id: str | None = None
     # The MCP client identity this unit of work belongs to. Empty means the
     # runtime's own work — routines, autonomy, the assistant's own sessions — which is
     # the operator's, and is what an MCP client scoping filter withholds.
@@ -86,6 +96,7 @@ class ActivityRecordOut(BaseModel):
     transcript_ref: str | None = None
     goal: str | None = None
     result: str | None = None
+    lane_id: str | None = None
     owner_principal: str = ""
     shared_with: list[str] = Field(default_factory=list)
     started_at: str
@@ -105,6 +116,7 @@ class ActivityRecordOut(BaseModel):
             transcript_ref=r.transcript_ref,
             goal=r.goal,
             result=r.result,
+            lane_id=r.lane_id,
             owner_principal=r.owner_principal,
             shared_with=list(r.shared_with),
             started_at=r.started_at,

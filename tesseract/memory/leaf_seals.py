@@ -1,4 +1,4 @@
-"""AU-16 S1 — seal artefacts produced by ``SealJob``.
+"""Seal artefacts produced by ``SealJob``.
 
 A seal is the durable record SealJob writes when a buffer's leaves are
 compressed into a single summary unit. S1 stores seals as standalone
@@ -35,6 +35,7 @@ from typing import Iterator
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from tesseract.lib.atomic_replace import replace_with_retry
 from tesseract.memory.leaves import _resolve_home
 
 log = logging.getLogger(__name__)
@@ -75,7 +76,7 @@ def write_seal(seal: Seal) -> Path:
         json.dumps(seal.model_dump(mode="json"), indent=2, sort_keys=False),
         encoding="utf-8",
     )
-    os.replace(tmp, target)
+    replace_with_retry(tmp, target)
     return target
 
 

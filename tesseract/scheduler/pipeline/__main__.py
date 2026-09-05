@@ -11,10 +11,11 @@ be run whole would take that away.
 
 **Most stages need the running backend.** `memory_lint` reads
 `app["memory_bundle"]`, `vault_lint` reads `app["tool_registry"]`, and there is
-no app in a bare CLI process — so run those through the Mirror
-(`/schedule-run-now consolidate`) and use this for the deterministic ones,
-for `--list` and for `--check`. Rather than let that be discovered as a
-confusing failure, `--stage` says which it is before it runs.
+no app in a bare CLI process. Each of those declares the key it cannot run
+without, so `--stage` says which it is before it runs rather than letting it be
+discovered as a confusing failure, and the same refusal is what the app itself
+gives when it is missing one. `run_stage` decides that for every caller; this
+module is one of them.
 """
 
 from __future__ import annotations
@@ -26,23 +27,10 @@ import sys
 
 from tesseract.paths import config_dir
 from tesseract.scheduler.pipeline.checks import run_config_checks
-from tesseract.scheduler.pipeline.registry import find_stage, row, rows
+from tesseract.scheduler.pipeline.registry import row, rows
+from tesseract.scheduler.pipeline.run_stage import run_stage
 from tesseract.scheduler.pipeline.runner import PipelineRunner
 from tesseract.scheduler.pipeline.stages import CAPTURE_ROW  # noqa: F401 — registers the rows
-
-
-# Stages whose job returns "<key> unavailable" without the running backend —
-# verified against each module's own early-return, not assumed. Running one of
-# these from a bare CLI process cannot work, so the CLI says which and where to
-# run it instead of producing a failed manifest row.
-NEEDS_APP: dict[str, str] = {
-    "memory_lint": "memory_bundle",
-    "memory_scrub": "memory_bundle",
-    "index_rebuild": "memory_bundle",
-    "librarian_heartbeat": "memory_bundle",
-    "dream_cycle": "memory_bundle",
-    "vault_lint": "tool_registry",
-}
 
 
 def _runner(target) -> PipelineRunner:
@@ -75,8 +63,8 @@ def main(argv: list[str] | None = None) -> int:
                     marks.append("walks-missed-days")
                 if stage.retries:
                     marks.append(f"retries={stage.retries}")
-                if stage.name in NEEDS_APP:
-                    marks.append(f"needs-{NEEDS_APP[stage.name]}")
+                for key in stage.needs_app:
+                    marks.append(f"needs-{key}")
                 print(
                     f"  {stage.name}\t{stage.cadence.value}\t{stage.kind.value}\t"
                     f"reads={','.join(stage.reads) or '-'}\t"
@@ -87,22 +75,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.stage:
-        found = find_stage(args.stage)
-        if found is None:
-            print(f"no stage named {args.stage!r}")
-            return 1
-        owner, _ = found
-        if args.stage in NEEDS_APP:
-            print(
-                f"{args.stage} reads the running backend "
-                f"({NEEDS_APP[args.stage]}), which a bare CLI process has no "
-                "handle on. Run it through the Mirror instead:\n"
-                f"  /schedule-run-now {owner.name}"
-            )
-            return 2
-        result = asyncio.run(_runner(owner).run_one(args.stage))
-        print(f"{result.stage}: {result.outcome.value} {result.reason}".rstrip())
-        return 0
+        # No app: this is a bare process, so a stage that declares one is
+        # refused here and runs from the app itself. The refusal is written
+        # once, in `run_stage`, so every surface says the same thing.
+        result = asyncio.run(run_stage(args.stage))
+        print(result.line)
+        if result.ran:
+            return 0
+        # 1 for a name nothing declares, 2 for a stage this process cannot
+        # run. The old branch drew the same distinction and scripts read it.
+        return 1 if not result.found else 2
 
     if args.row:
         target = row(args.row)

@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from tesseract.lib.clock import to_local
+
 
 def _parse_header(header: str) -> tuple[str | None, str]:
     """Split a `## [type] title` header into `(type, title)`.
@@ -47,8 +49,14 @@ def append_log_entry(
     existing line's body for the target file. Never raises on ordinary
     filesystem misses — callers wrap in their own try/except.
     """
+    # The instant, in UTC, which is what the line's `ts` is built from below.
     when = date if date is not None else datetime.now(timezone.utc)
-    target = log_dir / f"{when.strftime('%Y-%m-%d')}.jsonl"
+    # The FILE is a calendar day and is named on the operator's clock, whether
+    # the caller passed a date or not. The nightly rollup passes local midnight
+    # and every other caller passed none, so a session ending after local
+    # midnight filed itself into the previous day's file beside a rollup
+    # covering a different span.
+    target = log_dir / f"{to_local(when).strftime('%Y-%m-%d')}.jsonl"
     log_dir.mkdir(parents=True, exist_ok=True)
 
     if idempotency_probe is not None and target.exists():

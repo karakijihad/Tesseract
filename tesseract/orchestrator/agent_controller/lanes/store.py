@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ._common import home_root
 from .models import Lane
+from tesseract.lib import clock
 
 # A charset whitelist, deliberately NOT the mint format. Every lane verb takes
 # the id straight from the client, so a `..`, a separator or an absolute path
@@ -112,7 +113,8 @@ def archive_lane(lane_id: str) -> Path:
     src = lane_dir(lane_id)
     if not src.exists():
         raise FileNotFoundError(f"cannot archive missing lane {lane_id}")
-    bucket = datetime.now(timezone.utc).strftime("%Y-%m")
+    # The month the operator archived it in, not Greenwich's.
+    bucket = clock.today().strftime("%Y-%m")
     dest_parent = archive_root() / bucket
     dest_parent.mkdir(parents=True, exist_ok=True)
     dest = dest_parent / validate_lane_id(lane_id)

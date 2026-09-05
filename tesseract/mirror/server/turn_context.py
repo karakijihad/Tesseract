@@ -1,9 +1,9 @@
-"""Per-task turn context for parallel synthetic workspace turns (WP-2).
+"""Per-task turn context for parallel synthetic workspace turns.
 
 Replaces ``session.workspace_origin`` (a single mutable session attribute) with
 task-local context variables. ``asyncio.create_task`` snapshots the current
-context, so each spawned turn gets its own view; concurrent chat + synthetic
-turns no longer step on each other.
+context, so each spawned turn gets its own view and concurrent chat +
+synthetic turns cannot step on each other.
 
 Usage::
 
@@ -13,10 +13,9 @@ Usage::
     finally:
         current_workspace_origin.reset(token)
 
-In the serial pre-WP-2 path this behaves identically to the old session
-attribute — ``set()`` writes the value in the running task's context,
-descendants see it, peers do not, and the ``reset()`` in finally restores
-the prior state.
+On a serial path this behaves like a plain attribute: ``set()`` writes the
+value in the running task's context, descendants see it, peers do not, and
+the ``reset()`` in finally restores the prior state.
 """
 
 from __future__ import annotations
@@ -31,14 +30,12 @@ from typing import Any
 class TurnState:
     """Per-turn mutable state, owned by a single ``_run_turn`` invocation.
 
-    Codex-fix M1 (2026-05-23): the following fields used to live on
-    ``ServerSession`` (one shared instance) and got mutated during the
-    ``_handle_stream_chunk`` callback path. Under WP-2 concurrent
-    synthetic turns those mutations raced — one turn's finalizer could
-    consume the OTHER turn's reply-success flag or clear a still-pending
-    tool-name-by-call mapping mid-flight. Moving them into a per-turn
-    object keyed via :data:`current_turn_state` ContextVar makes each
-    turn fully owns its mutable state.
+    These fields are per-turn, not per-session. On ``ServerSession`` (one
+    shared instance) they are mutated during the ``_handle_stream_chunk``
+    callback path, and concurrent synthetic turns race there: one turn's
+    finalizer consumes the OTHER turn's reply-success flag, or clears a
+    still-pending tool-name-by-call mapping mid-flight. Keying them via the
+    :data:`current_turn_state` ContextVar gives each turn its own.
 
     ``ServerSession``'s same-named attributes remain in place as
     transitional fallbacks for any code path the migration may have
@@ -53,7 +50,7 @@ class TurnState:
     deep_focus_latched: bool = False
     pending_happy_saves: set[str] = field(default_factory=set)
     # mirror-multi-chat P2 inc.C2: structured-tag stream-parser carry state.
-    # Used to live on ``ServerSession`` (one shared instance) and was safe only
+    # On ``ServerSession`` (one shared instance) this is safe only
     # while ``turn_stream_lock`` serialized ALL chat turns. inc.C2 drops that
     # lock for background turns so non-active chats stream text in parallel —
     # which means every turn now runs ``_split_text_for_surfaces`` concurrently.

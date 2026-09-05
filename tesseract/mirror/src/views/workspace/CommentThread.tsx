@@ -53,7 +53,7 @@ export function CommentThread({ event_id, comments }: Props) {
     pending?.state === 'thinking'
       ? `${entityName} is thinking…`
       : pending?.state === 'queued'
-        ? `${entityName} queued — waiting for current turn to finish…`
+        ? `${entityName} has it queued, waiting for the current turn to finish…`
         : null;
 
   return (
@@ -96,7 +96,7 @@ export function CommentThread({ event_id, comments }: Props) {
         <Textarea
           value={draft}
           onChange={setDraft}
-          placeholder={`Comment — ${entityName} will see this on the next turn`}
+          placeholder={`Comment. ${entityName} sees this on the next turn.`}
           rows={2}
           disabled={busy}
         />

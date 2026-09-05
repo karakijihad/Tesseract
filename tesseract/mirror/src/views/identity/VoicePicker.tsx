@@ -95,7 +95,7 @@ export function VoicePicker() {
         useToastStore
           .getState()
           .push(
-            `Voice saved, but the live rebuild failed — restart to apply. ${res.live_update_error ?? ""}`,
+            `Voice saved, but the live rebuild failed. Restart to apply it. ${res.live_update_error ?? ""}`,
             "warning",
           );
       }
@@ -124,7 +124,7 @@ export function VoicePicker() {
       // rather than "synthesis_failed".
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
-      useToastStore.getState().push(`Voice sample failed — ${msg}`, "error");
+      useToastStore.getState().push(`Voice sample failed. ${msg}`, "error");
     } finally {
       setPlaying(false);
     }
@@ -194,7 +194,7 @@ export function VoicePicker() {
           <span className="t-meta">“{catalog.sample_text}”</span>
         </div>
         <span className="t-meta identity-field-hint">
-          The sample speaks the selected voice — pick first, then play. Edit
+          The sample speaks the selected voice, so pick first and then play. Edit
           the line at <code>voice.test_sample</code> in <code>mirror.yaml</code>.
           Character (pace, variability) is per-surface{" "}
           <code>synthesis_presets</code> on the catalog entry; there is no

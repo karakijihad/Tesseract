@@ -8,6 +8,10 @@ import { useToastStore, type ToastKind } from "../../stores/toasts";
 export interface ResetOutcome {
   changed: string[];
   missing: string[];
+  /** Whether there was a factory copy to restore FROM. False in a dev
+   *  checkout, which keeps one config tree, and there "nothing changed" would
+   *  be claiming a comparison nobody made. */
+  has_defaults?: boolean;
 }
 
 interface Props {
@@ -40,13 +44,20 @@ export function ResetDefaults({ run, reach, onDone }: Props) {
   const onClick = async () => {
     setBusy(true);
     try {
-      const { changed, missing } = await run();
-      push(
-        changed.length === 0
-          ? "Already at the shipped defaults — nothing changed."
-          : `Reset ${changed.length} setting${changed.length === 1 ? "" : "s"}: ${changed.join(", ")}.`,
-        "info",
-      );
+      const { changed, missing, has_defaults: hasDefaults } = await run();
+      let message: string;
+      if (hasDefaults === false) {
+        message =
+          "This build keeps one config tree, so there are no shipped " +
+          "defaults to go back to. Nothing changed.";
+      } else if (changed.length === 0) {
+        message = "Already at the shipped defaults, so nothing changed.";
+      } else {
+        message = `Reset ${changed.length} setting${
+          changed.length === 1 ? "" : "s"
+        }: ${changed.join(", ")}.`;
+      }
+      push(message, "info");
       if (missing.length > 0) {
         // Not an error: the key is absent from this install's config and
         // `migrate_config_keys` adds it at the next boot. Saying so beats a

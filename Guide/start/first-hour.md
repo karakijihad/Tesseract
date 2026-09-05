@@ -7,7 +7,7 @@ description: Type or speak. Voice goes through a wake gate — it listens contin
 
 Type or speak. Voice goes through a wake gate — it listens continuously but
 only *acts* on speech addressed to it, and a phrase that does not clear the
-gate is discarded rather than quietly answered. See [Voice](../anatomy/voice.md).
+gate is discarded rather than quietly answered. See [Voice](/anatomy/voice/).
 
 ## Watch it ask
 
@@ -20,11 +20,11 @@ widening them is a decision you make rather than one made for you.
 
 Tell it something about how you work. Then start a new session and ask about
 it. What comes back was recalled, not retained in a context window — the
-difference is that it still works next week. See [Memory](../anatomy/memory.md).
+difference is that it still works next week. See [Memory](/anatomy/memory/).
 
 ## Leave it alone
 
 Come back and look at what it did while you were gone. Nothing it does
 unattended escapes the budget or the permission gate; see
-[Autonomy](../anatomy/autonomy.md) for the two gates every unattended action
+[Autonomy](/anatomy/autonomy/) for the two gates every unattended action
 passes through first.

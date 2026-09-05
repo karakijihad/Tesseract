@@ -1,10 +1,18 @@
 # Janitor — orphaned-process sweep policy.
 #
-# Kill rule is fixed in code: a process is only reaped when it matches a
-# fingerprint below AND is an orphan (its parent is dead). This config
-# cannot loosen the orphan requirement — it only names targets. Sweep
-# cadence lives in schedule.yaml. `pattern` is a regex matched against the
-# process's full command line.
+# Kill rule is fixed in code: a process is only reaped when it is an orphan
+# (its parent is dead) AND it is identified as ours. This config cannot
+# loosen the orphan requirement — it only names targets. Sweep cadence lives
+# in schedule.yaml. `pattern` is a regex matched against the process's full
+# command line.
+#
+# The patterns below describe processes THIS RUNTIME DID NOT LAUNCH, which is
+# why a regex is the only handle on them. Everything the runtime spawns
+# carries the `TESSERACT_REAPABLE` mark instead and needs no pattern here, so
+# a seat pointed at a CLI nobody anticipated is still swept. The CLI binaries
+# themselves are named once, in providers.yaml, and the janitor derives its
+# fallback fingerprints from that for the case where a process's environment
+# cannot be read at all.
 #
 # What is LEFT here is the live half: a process holding a port and a scratch
 # directory holding a lock are problems now, which is why this also runs at
@@ -20,14 +28,13 @@ process_fingerprints:
   - id: dev-http-server
     pattern: "-m http.server"
   # TESSERACT runtime processes (supervisor, mirror backend, controller)
-  # whose parent died without reaping them.
+  # whose parent died without reaping them. Deliberately a pattern and not a
+  # mark: the backend hands its environment to every subprocess it runs for
+  # the operator — a bash command, git, ollama — so marking it would put the
+  # reaper's mark on all of them. `-m tesseract.` names our own module
+  # invocations exactly and can never match someone else's process.
   - id: tesseract-runtime
     pattern: '-m tesseract\.'
-  # Headless Claude/Codex CLI lane processes.
-  - id: lane-claude
-    pattern: 'claude(\.exe)?"? -p '
-  - id: lane-codex
-    pattern: 'codex(\.exe)?"? exec'
 
 # Scratch directories deleted from the repo root and tesseract/.
 scratch_dir_globs:

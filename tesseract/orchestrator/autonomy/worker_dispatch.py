@@ -5,14 +5,13 @@ to an injectable :class:`WorkerRunner`.
 Per GOVERNANCE §6 "Restart-safe end-to-end": the durable record MUST
 land on disk *before* the runner starts. If the runner crashes or the
 backend exits between record-write and process-start, the next boot's
-RecoveryManager (AU-2 scan 2) classifies the record as ``interrupted``
+RecoveryManager classifies the record as ``interrupted``
 and the retry policy decides whether to resume.
 
 The runner itself is a :class:`Protocol` so test fixtures can pass
 an in-memory mock (immediate complete, deterministic exit, etc.)
-without spinning up subprocesses. Production wiring will provide a
-concrete runner per :class:`WorkerKind`; that lands when AU-5 wires
-real per-kind runners — the kernel only needs the contract.
+without spinning up subprocesses. Production wiring provides a concrete
+runner per :class:`WorkerKind`; the kernel only needs the contract.
 """
 
 from __future__ import annotations
@@ -53,11 +52,11 @@ class WorkerRunner(Protocol):
 # boot. It runs nothing, so it refuses: the record lands on disk and the
 # agenda item is parked for the operator rather than closed.
 #
-# It used to mark the worker DONE, and reconciliation then closed the
-# item as completed work. On a boot with no registry that made every
-# selected item read as finished, having done nothing at all — the same
-# empty-is-success defect the result vocabulary exists to remove, in the
-# one place where nothing whatsoever ran.
+# Marking the worker DONE instead would have reconciliation close the
+# item as completed work, so on a boot with no registry every selected
+# item reads as finished having done nothing — the empty-is-success
+# defect the result vocabulary exists to remove, in the one place where
+# nothing whatsoever ran.
 class _NoopRunner:
     """Default WorkerRunner. Records the dispatch and refuses it.
 

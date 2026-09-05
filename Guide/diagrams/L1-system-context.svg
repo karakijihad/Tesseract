@@ -23,11 +23,11 @@
   <rect x="0" y="0" width="936" height="380" fill="#0b0b16"/>
 
   <text x="16" y="26" font-family="JetBrains Mono, ui-monospace, monospace" font-size="10.5" letter-spacing="2.2" fill="#9d8fff">TESSERACT · SYSTEM CONTEXT</text>
-  <text x="16" y="44" font-family="JetBrains Mono, ui-monospace, monospace" font-size="10" fill="rgba(234,234,248,0.38)">every loop that touches a turn, and which of them outlive it</text>
+  <text x="16" y="44" font-family="JetBrains Mono, ui-monospace, monospace" font-size="10" fill="rgba(234,234,248,0.55)">every loop that touches a turn, and which of them outlive it</text>
 
   <!-- everything inside this band outlives a single turn -->
   <rect x="0" y="236" width="936" height="92" rx="4" fill="rgba(34,211,238,0.03)"/>
-  <text x="16" y="230" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" letter-spacing="1.4" fill="rgba(234,234,248,0.38)">ACROSS TURNS</text>
+  <text x="16" y="230" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" letter-spacing="1.4" fill="rgba(234,234,248,0.55)">ACROSS TURNS</text>
 
   <!-- one operator, two modalities -->
   <rect x="16" y="96" width="120" height="72" rx="3" fill="url(#s-node)" stroke="rgba(234,234,248,0.55)" stroke-width="1"/>
@@ -56,7 +56,7 @@
   <!-- the three things the turn loops with, ordered by how long the loop lives -->
   <rect x="740" y="60" width="132" height="44" rx="3" fill="url(#s-node)" stroke="rgba(234,234,248,0.55)" stroke-width="1"/>
   <text x="806" y="80" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#f5f5fa" text-anchor="middle">tools</text>
-  <text x="806" y="95" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9" fill="rgba(234,234,248,0.55)" text-anchor="middle">119 registered</text>
+  <text x="806" y="95" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9" fill="rgba(234,234,248,0.55)" text-anchor="middle">147 registered</text>
 
   <rect x="740" y="124" width="132" height="44" rx="3" fill="url(#s-node)" stroke="#7c6cf0" stroke-width="1.2" stroke-dasharray="4 3"/>
   <text x="806" y="144" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#9d8fff" text-anchor="middle">delegates</text>

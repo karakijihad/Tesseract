@@ -73,7 +73,7 @@ export function NewThreadButton({ source = 'button', buttonLabel = 'New' }: Prop
         />
         <Textarea
           className="workspace-modal-textarea"
-          placeholder={`Body — what should ${entityName} know?`}
+          placeholder={`Body: what should ${entityName} know?`}
           value={body}
           maxLength={4000}
           rows={6}

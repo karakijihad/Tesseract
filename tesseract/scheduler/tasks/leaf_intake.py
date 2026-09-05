@@ -1,11 +1,11 @@
 """Leaf intake — extraction and buffer append in one tick.
 
-The two halves of this pipeline used to be separate jobs on identical
-``*/5`` cadences. Extraction moves a leaf ``PENDING_EXTRACTION -> ADMITTED``
-and append moves it ``ADMITTED -> BUFFERED``, so a leaf needed two ticks to
-clear a pipeline that has no reason to pause in between. Running them in one
-job halves the scheduler wake-ups and lets a leaf reach ``BUFFERED``
-immediately.
+The two halves of this pipeline are one job. Extraction moves a leaf
+``PENDING_EXTRACTION -> ADMITTED`` and append moves it
+``ADMITTED -> BUFFERED``, so as separate jobs on identical ``*/5``
+cadences a leaf needs two ticks to clear a pipeline that has no reason to
+pause in between. One job halves the scheduler wake-ups and lets a leaf
+reach ``BUFFERED`` immediately.
 
 The stages are composed rather than inlined: each keeps its own per-tick cap
 and its own counters, so a failure stays attributable to the stage that

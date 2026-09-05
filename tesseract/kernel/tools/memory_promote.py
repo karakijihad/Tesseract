@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
 from tesseract.kernel.tools.soul_growth_propose import SoulGrowthProposeTool, SoulGrowthProposeInput
+from tesseract.kernel.workspace_changes import SOUL_GROWTH_SECTIONS
 from tesseract.memory.index import MemoryIndex
 from tesseract.memory.store import MemoryStore
 from tesseract.memory.types import Stability
@@ -63,6 +64,13 @@ class MemoryPromoteInput(BaseModel):
         default=None,
         description="For propose_soul_growth: distilled bullet (≤240 chars).",
     )
+    section: str | None = Field(
+        default=None,
+        description=(
+            "For propose_soul_growth: which part of the soul the bullet "
+            "belongs to. One of: " + ", ".join(SOUL_GROWTH_SECTIONS) + "."
+        ),
+    )
 
 
 class MemoryPromoteTool(Tool):
@@ -81,6 +89,7 @@ class MemoryPromoteTool(Tool):
         "use `memory_update` for a routine content edit; use `memory_forget` "
         "for permanent deletion."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(
         self,
@@ -236,7 +245,23 @@ class MemoryPromoteTool(Tool):
             return ToolResult(
                 output="propose_soul_growth requires `bullet`.", is_error=True,
             )
-        return await self._soul.run(SoulGrowthProposeInput(bullet=inp.bullet), ctx)
+        # Asked for here rather than defaulted. SOUL holds a section per kind
+        # of growth, and this door is a delegation: passing no section built an
+        # input the propose tool refuses outright, so the whole action raised
+        # instead of answering.
+        section = (inp.section or "").strip()
+        if section not in SOUL_GROWTH_SECTIONS:
+            return ToolResult(
+                output=(
+                    "propose_soul_growth requires `section`, one of: "
+                    + ", ".join(SOUL_GROWTH_SECTIONS)
+                    + "."
+                ),
+                is_error=True,
+            )
+        return await self._soul.run(
+            SoulGrowthProposeInput(section=section, bullet=inp.bullet), ctx
+        )
 
 
 def _append_with_separator(target_body: str, source_body: str, source_id: str) -> str:

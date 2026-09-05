@@ -1,4 +1,4 @@
-"""Workspace events / comments — Phase 1 of the Workspace tab.
+"""Workspace events / comments — the Workspace tab's store.
 
 `workspace_events` is the python module name; `tesseract/workspace/` on
 disk is the operator-private gitignored markdown directory (SOUL.md,

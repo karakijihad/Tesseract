@@ -20,10 +20,11 @@ interface Props {
 
 const SLUG_RE = /^[a-z0-9_]+$/;
 
-// The backend's floor, restated here only so the button can say no before the
-// round trip. The rule itself lives in `SchedulerEngine.add_job_runtime`, which
-// both creation doors go through.
-const MIN_SUMMARY_CHARS = 20;
+// The floor arrives with the handler list. It is the manifest's number and
+// the engine enforces it in `add_job_runtime`, which both creation doors go
+// through; this form only needs it to say no before the round trip. Until the
+// list lands there is nothing to check against, so the button stays shut.
+const FLOOR_UNKNOWN = Number.POSITIVE_INFINITY;
 
 const ON_FAILURE_OPTIONS: Array<{ value: 'log' | 'alert' | 'disable'; label: string }> = [
   { value: 'log', label: 'log' },
@@ -34,11 +35,15 @@ const ON_FAILURE_OPTIONS: Array<{ value: 'log' | 'alert' | 'disable'; label: str
 export function AddJobForm({ onClose }: Props) {
   const fetchJobs = useScheduleStore((s) => s.fetchJobs);
   const [handlers, setHandlers] = useState<ScheduleHandlerEntry[]>([]);
+  const [minSummary, setMinSummary] = useState(FLOOR_UNKNOWN);
   const [name, setName] = useState('');
   const [cadence, setCadence] = useState('1h');
   const [handler, setHandler] = useState('');
   const [summary, setSummary] = useState('');
-  const [enabled, setEnabled] = useState(true);
+  // Off, like the tool and the route it posts to. Writing a row down is
+  // describing a plan; arming it is agreeing to it. The box is right there and
+  // checking it is one click.
+  const [enabled, setEnabled] = useState(false);
   const [onFailure, setOnFailure] = useState<'log' | 'alert' | 'disable'>('log');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +52,7 @@ export function AddJobForm({ onClose }: Props) {
     fetchScheduleHandlers()
       .then((res) => {
         setHandlers(res.handlers);
+        setMinSummary(res.minSummaryChars);
         if (res.handlers.length > 0 && !handler) {
           setHandler(res.handlers[0].dotpath);
         }
@@ -59,7 +65,7 @@ export function AddJobForm({ onClose }: Props) {
 
   const nameValid = useMemo(() => SLUG_RE.test(name), [name]);
   const cadenceValid = cadence.trim().length > 0;
-  const summaryValid = summary.trim().length >= MIN_SUMMARY_CHARS;
+  const summaryValid = summary.trim().length >= minSummary;
   const canSubmit =
     nameValid && cadenceValid && summaryValid && handler && !submitting;
 

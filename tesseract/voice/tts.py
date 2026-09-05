@@ -1,11 +1,12 @@
 """TTSEngine — synthesis over the ordered lane chain named in config.
 
 The chain comes from `roles.yaml::voice.tts` (primary + fallbacks); the
-engine holds one config slot per adapter and tries them in that order.
-Two adapters ship by default: a local one first, so a fresh install
+engine holds one `TTSLane` per adapter in the chain and tries them in that
+order. Two adapters ship by default: a local one first, so a fresh install
 speaks with no key and no bill, and a cloud one behind it so a machine
 that never downloaded the local model still has a voice. Adding another
-is a provider module plus a slot here — the chain shape doesn't change.
+is a provider module, a name in `LANE_PROVIDERS`, and a lane in the dict
+the builder passes — the engine itself does not change.
 
 When every configured lane is down the engine raises and the caller
 degrades the reply to text.
@@ -18,10 +19,16 @@ Style/character is **preset-driven**, per provider:
 - Tone is fixed per-surface — no per-turn variation, no agent-side
   mutation surface. The operator retunes by editing the catalog.
 
-A lane that raises latches a `disabled_reason` and is skipped until it
-is unloaded from Settings; the sentence falls to the next lane in the
-chain. Local synthesis still debits the ledger at $0 so the spend rollup
-lists it as a zero-row.
+A lane that raises does NOT go down on the first failure, and does not
+stay down forever. It takes `MAX_CONSECUTIVE_FAILURES` in a row to latch
+a `disabled_reason`, a success anywhere in between clears the count, and
+the latch expires after the lane's `lane_cooldown_seconds` so the next
+sentence tries it again. Without both halves, one bad minute costs the
+voice for the life of the process and only the operator noticing the
+silence brings it back. Either way the sentence in hand falls to the next
+lane in the chain, and `lane_down_hook` fires when a lane latches so
+something can tell a person. Local synthesis still debits the ledger at $0
+so the spend rollup lists it as a zero-row.
 
 Sentence chunking is *not* applied here; callers (Mirror's WS handler)
 chunk before calling so envelopes stream in order.
@@ -33,8 +40,11 @@ import asyncio
 import contextlib
 import io
 import logging
+import time
 import wave
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from typing import Any
 
 from tesseract.brain.cost import CostLedger, TtsUsage
 from tesseract.voice.providers import (
@@ -45,6 +55,20 @@ from tesseract.voice.providers import (
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PRESET = "answer"
+
+#: Adapter name → the provider module that implements it. Every module here
+#: exposes the same two callables, `status(config)` and
+#: `synthesize(text, config, preset=...)`, which is what lets the engine hold
+#: lanes in a dict instead of a branch per lane.
+LANE_PROVIDERS = {
+    "kokoro": kokoro_tts_provider,
+    "gemini": gemini_tts_provider,
+}
+
+#: Consecutive failures on one lane before it latches off. The house circuit
+#: breaker: a `503` on the way to a working provider is not a broken lane, and
+#: treating it as one is how a whole day went by with nothing speaking.
+MAX_CONSECUTIVE_FAILURES = 3
 
 
 def _audio_seconds(audio: bytes) -> float:
@@ -72,8 +96,38 @@ def _audio_seconds(audio: bytes) -> float:
 
 class NoTTSLaneAvailable(RuntimeError):
     """Every configured lane is unconfigured or latched off. The caller
-    degrades to text rather than retrying — a lane only clears on an
-    operator unload."""
+    degrades to text rather than retrying — a latched lane clears on its own
+    cooldown or on an operator unload, not inside one call."""
+
+
+@dataclass
+class TTSLane:
+    """One lane of the chain: which adapter, its config, and why it is off.
+
+    `adapter` names an entry in `LANE_PROVIDERS`; the engine calls that
+    module and never learns which one it got. A `config` of `None` means the
+    operator's chain named the lane but the builder could not construct it,
+    which the engine skips the same way it skips a latched lane.
+    """
+
+    adapter: str
+    config: Any = None
+    disabled_reason: str = ""
+
+    def __post_init__(self) -> None:
+        if self.adapter not in LANE_PROVIDERS:
+            raise ValueError(
+                f"unknown TTS adapter {self.adapter!r}; "
+                f"known: {sorted(LANE_PROVIDERS)}"
+            )
+
+    @property
+    def provider(self) -> Any:
+        return LANE_PROVIDERS[self.adapter]
+
+    @property
+    def ready(self) -> bool:
+        return self.config is not None and not self.disabled_reason
 
 
 @dataclass
@@ -81,60 +135,98 @@ class TTSEngine:
     """TTS with an ordered fallback chain.
 
     `provider_key` is the primary lane's catalog id; the remaining
-    configured lanes are tried behind it. A lane is present only when
-    `_build_voice_runtime` found its entry in the chain, so a `*_config`
-    of `None` means "not in the operator's chain", not "failed"."""
+    configured lanes are tried behind it. `lanes` is keyed by catalog id,
+    so everything about a lane — its adapter, its config, whether it is
+    latched off, how long its cooldown runs — is reached by that one key."""
 
     cost_ledger: CostLedger | None
-    kokoro_config: kokoro_tts_provider.KokoroTTSConfig | None = None
-    gemini_config: gemini_tts_provider.GeminiTTSConfig | None = None
+    lanes: dict[str, TTSLane] = field(default_factory=dict)
     provider_key: str = ""
-    kokoro_provider_key: str = ""
-    gemini_provider_key: str = ""
-    kokoro_disabled_reason: str = ""
-    gemini_disabled_reason: str = ""
+    #: How long a latched lane stays down before it is tried again, keyed by
+    #: provider key. Comes off each lane's `settings:` block in `roles.yaml`,
+    #: because how long to wait out a local model's failure and a cloud
+    #: provider's are not the same number. A lane missing from here never
+    #: retries on its own, which is the pre-cooldown behaviour.
+    lane_cooldown_seconds: dict[str, float] = field(default_factory=dict)
+    #: Awaited once when a lane latches, with `(provider_key, reason)`. The
+    #: engine has no route to a person; whoever builds it does.
+    lane_down_hook: Callable[[str, str], Awaitable[None]] | None = None
+    _lane_failures: dict[str, int] = field(default_factory=dict)
+    _lane_retry_at: dict[str, float] = field(default_factory=dict)
+    #: The last thing each lane raised, latched or not. Kept so an exhausted
+    #: chain can still say WHY: with a breaker in front of the latch, every
+    #: lane can fail a sentence while none of them is off yet, and "no lane
+    #: available, all lanes ok" is not a sentence anyone can act on.
+    _lane_last_error: dict[str, str] = field(default_factory=dict)
+
+    # ---- lane lookup ----
+
+    def key_for_adapter(self, adapter: str) -> str:
+        """The catalog id of the lane running `adapter`, or `""`.
+
+        The two named surfaces below ask for a lane by what it IS — the local
+        model that can be unloaded — while everything else addresses lanes by
+        the catalog id the operator chose in Settings.
+        """
+        for key, lane in self.lanes.items():
+            if lane.adapter == adapter:
+                return key
+        return ""
+
+    def adapter_status(self, adapter: str) -> dict:
+        """Mirror Settings shape for the LocalModels panel — same envelope
+        as `STTEngine.local_status()`.
+
+        Asked of the ADAPTER rather than of a lane, because the panel renders
+        whether or not the operator's chain names one: a cloud-only chain has
+        no local lane and the panel still has to say so, in the same envelope
+        with the same keys. The provider answers that for a `None` config.
+        """
+        key = self.key_for_adapter(adapter)
+        lane = self.lanes.get(key)
+        status = LANE_PROVIDERS[adapter].status(lane.config if lane else None)
+        status["disabled"] = bool(lane.disabled_reason) if lane else False
+        status["disabled_reason"] = lane.disabled_reason if lane else ""
+        status["provider_key"] = key
+        return status
+
+    def disabled_reason(self, key: str) -> str:
+        lane = self.lanes.get(key)
+        return lane.disabled_reason if lane else ""
+
+    # ---- the two surfaces that name a lane ----
 
     def kokoro_status(self) -> dict:
-        """Mirror Settings shape for the LocalModels panel — same envelope
-        as `STTEngine.local_status()`."""
-        status = kokoro_tts_provider.status(self.kokoro_config)
-        status["disabled"] = bool(self.kokoro_disabled_reason)
-        status["disabled_reason"] = self.kokoro_disabled_reason
-        status["provider_key"] = self.kokoro_provider_key
-        return status
+        return self.adapter_status("kokoro")
 
     def unload_kokoro(self) -> None:
         """Clear the cached Kokoro+session handles and any latched
         failure reason. Operator-driven from Settings; called from
         Mirror shutdown to release the GPU arena cleanly."""
         kokoro_tts_provider.unload_models()
-        self.kokoro_disabled_reason = ""
+        self._clear_lane(self.key_for_adapter("kokoro"))
 
     def gemini_status(self) -> dict:
-        """Mirror Settings shape — same envelope as `kokoro_status()`.
-
-        There is no `unload_gemini()` counterpart: unload exists to free a
+        """There is no `unload_gemini()` counterpart: unload exists to free a
         loaded model and clear a latch, and this lane holds no model. Its
         latch clears on the next `_build_voice_runtime`, which is what a
         config edit already triggers.
         """
-        status = gemini_tts_provider.status(self.gemini_config)
-        status["disabled"] = bool(self.gemini_disabled_reason)
-        status["disabled_reason"] = self.gemini_disabled_reason
-        status["provider_key"] = self.gemini_provider_key
-        return status
+        return self.adapter_status("gemini")
 
     async def warm_up_kokoro(self) -> None:
         """Eager-load the Kokoro model + blend on boot so the first
         sentence doesn't pay the ONNX init latency. On failure the engine
         latches a `disabled_reason` and the chain falls through to the
         next lane — the next reload through Settings clears the latch."""
-        if self.kokoro_config is None:
+        key = self.key_for_adapter("kokoro")
+        lane = self.lanes.get(key)
+        if lane is None or lane.config is None:
             return
-        timeout = float(self.kokoro_config.timeout_seconds)
+        timeout = float(lane.config.timeout_seconds)
         try:
             await asyncio.wait_for(
-                kokoro_tts_provider.warm_up(self.kokoro_config),
+                kokoro_tts_provider.warm_up(lane.config),
                 timeout=timeout,
             )
         except asyncio.TimeoutError:
@@ -152,44 +244,95 @@ class TTSEngine:
             )
             return
         except Exception as exc:
-            self.kokoro_disabled_reason = str(exc)[:300]
+            # `_set_disabled` adds the cooldown, so a preload failure decays
+            # the same way a synthesis failure does rather than holding the
+            # lane down for the life of the process.
+            self._set_disabled(key, str(exc)[:300])
             raise
+
+    # ---- the chain ----
 
     def _lane_order(self) -> list[str]:
         """Primary first, then every other configured lane. Dedup keeps a
         lane from being tried twice when it *is* the primary."""
         order: list[str] = []
-        for key in (
-            self.provider_key,
-            self.kokoro_provider_key,
-            self.gemini_provider_key,
-        ):
-            if key and key not in order:
+        for key in (self.provider_key, *self.lanes):
+            if key and key in self.lanes and key not in order:
                 order.append(key)
         return order
 
     def _lane_ready(self, lane: str) -> bool:
-        if lane == self.kokoro_provider_key:
-            return self.kokoro_config is not None and not self.kokoro_disabled_reason
-        if lane == self.gemini_provider_key:
-            return self.gemini_config is not None and not self.gemini_disabled_reason
-        return False
+        """Configured, and not latched off. Asks; changes nothing.
+
+        A latch that has outlived its cooldown is cleared by `_expire_cooldowns`,
+        which `synthesize` runs first. Keeping that out of here means a caller
+        asking whether a lane is available cannot re-arm one by asking.
+        """
+        entry = self.lanes.get(lane)
+        return entry is not None and entry.ready
+
+    def _expire_cooldowns(self) -> None:
+        """Clear every latch that has served its cooldown.
+
+        Lazily, at the top of a turn rather than on a timer: nothing has to run
+        while the machine is quiet, and the first sentence after the cooldown is
+        the retry.
+        """
+        now = time.monotonic()
+        for lane, retry_at in list(self._lane_retry_at.items()):
+            if now < retry_at:
+                continue
+            logger.info("TTS lane %s is out of its cooldown — trying it again", lane)
+            self._clear_lane(lane)
 
     async def _synthesize_on(self, lane: str, text: str, preset: str) -> bytes:
-        if lane == self.kokoro_provider_key:
-            return await kokoro_tts_provider.synthesize(
-                text, self.kokoro_config, preset=preset,
-            )
-        return await gemini_tts_provider.synthesize(
-            text, self.gemini_config, preset=preset,
-        )
+        entry = self.lanes[lane]
+        return await entry.provider.synthesize(text, entry.config, preset=preset)
 
-    def _latch_disabled(self, lane: str, exc: Exception) -> None:
+    def _set_disabled(self, lane: str, reason: str) -> None:
+        """Latch `lane` off with `reason`, and stamp when it may be tried again.
+
+        A lane with no configured cooldown gets no expiry, so it stays down
+        until an unload or a rebuild clears it.
+        """
+        entry = self.lanes.get(lane)
+        if entry is None:
+            return
+        entry.disabled_reason = reason
+        cooldown = self.lane_cooldown_seconds.get(lane)
+        if cooldown:
+            self._lane_retry_at[lane] = time.monotonic() + float(cooldown)
+
+    def _clear_lane(self, lane: str) -> None:
+        """Forget everything that would keep `lane` from being tried."""
+        self._lane_failures.pop(lane, None)
+        self._lane_retry_at.pop(lane, None)
+        self._lane_last_error.pop(lane, None)
+        entry = self.lanes.get(lane)
+        if entry is not None:
+            entry.disabled_reason = ""
+
+    def _record_failure(self, lane: str, exc: Exception) -> str:
+        """Count one failure on `lane`. Returns the latch reason if this one
+        took it down, or `""` if the lane is still in the chain.
+
+        The count is CONSECUTIVE: a sentence that succeeds clears it, so three
+        scattered failures across a good hour never latch anything.
+        """
+        count = self._lane_failures.get(lane, 0) + 1
+        self._lane_failures[lane] = count
         reason = str(exc)[:300]
-        if lane == self.kokoro_provider_key:
-            self.kokoro_disabled_reason = reason
-        elif lane == self.gemini_provider_key:
-            self.gemini_disabled_reason = reason
+        self._lane_last_error[lane] = reason
+        if count < MAX_CONSECUTIVE_FAILURES:
+            return ""
+        self._set_disabled(lane, reason)
+        return reason
+
+    def _lane_note(self, lane: str) -> str:
+        """What to say about `lane` when the whole chain came up empty."""
+        return (
+            self.disabled_reason(lane) or self._lane_last_error.get(lane, "") or "ok"
+        )
 
     async def synthesize(
         self,
@@ -212,6 +355,10 @@ class TTSEngine:
         # field is recorded so the rollup can show them as zero-rows.
         char_count = len(text)
 
+        # Before the walk, so a lane whose cooldown ran out during the silence
+        # is back in the chain for this sentence rather than the next one.
+        self._expire_cooldowns()
+
         for lane in self._lane_order():
             if not self._lane_ready(lane):
                 continue
@@ -220,13 +367,26 @@ class TTSEngine:
             try:
                 audio = await self._synthesize_on(lane, text, preset)
             except Exception as exc:
-                self._latch_disabled(lane, exc)
+                reason = self._record_failure(lane, exc)
+                if not reason:
+                    logger.warning(
+                        "TTS lane %s failed (%d of %d before it is set aside); "
+                        "trying the next lane: %s",
+                        lane, self._lane_failures[lane], MAX_CONSECUTIVE_FAILURES,
+                        str(exc)[:200],
+                    )
+                    continue
                 logger.exception(
-                    "local TTS lane %s failed and is disabled until unload/restart; "
-                    "trying the next lane",
-                    lane,
+                    "TTS lane %s failed %d times in a row and is set aside for "
+                    "%.0fs; trying the next lane",
+                    lane, MAX_CONSECUTIVE_FAILURES,
+                    self.lane_cooldown_seconds.get(lane, 0.0),
                 )
+                if self.lane_down_hook is not None:
+                    with contextlib.suppress(Exception):
+                        await self.lane_down_hook(lane, reason)
                 continue
+            self._clear_lane(lane)
             if self.cost_ledger is not None:
                 self.cost_ledger.record_voice(
                     "tts",
@@ -235,9 +395,8 @@ class TTSEngine:
                 )
             return audio, lane
 
+        notes = ", ".join(f"{key}={self._lane_note(key)}" for key in self.lanes)
         raise NoTTSLaneAvailable(
             "no TTS lane available — configured lanes: "
-            f"{self._lane_order() or ['(none)']}; "
-            f"kokoro={self.kokoro_disabled_reason or 'ok'}, "
-            f"gemini={self.gemini_disabled_reason or 'ok'}"
+            f"{self._lane_order() or ['(none)']}; {notes or '(none)'}"
         )

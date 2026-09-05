@@ -25,13 +25,15 @@ from datetime import datetime, timezone
 from html import escape as html_escape
 from typing import Any, Awaitable, Callable
 
+from tesseract.workspace_events.events import DECIDABLE_KINDS, SETTLED
+
 log = logging.getLogger(__name__)
 
 # Commands a non-operator chat may invoke. Vestigial on a single-operator
 # install — `ctx.tier` resolves to "operator" for every chat, so this never
 # denies — and kept only because the dispatcher still reads it. The tool
-# denylist it used to mirror (`_channel_tier.FRIEND_DENIED_TOOLS`) is DELETED:
-# it lived in the ask_fn wrapper, so any AUTO posture skipped it entirely.
+# tool denylist it would mirror is DELETED: it lived in the ask_fn
+# wrapper, so any AUTO posture skipped it entirely.
 _FRIEND_ALLOWED: frozenset[str] = frozenset({"/status", "/help", "/clear"})
 
 CommandHandler = Callable[["TelegramCommandContext"], Awaitable[str]]
@@ -77,6 +79,7 @@ async def _handle_help(ctx: TelegramCommandContext) -> str:
         "Available commands:\n"
         "/status — bridge state (online/offline/busy)\n"
         "/queue — workspace inbox depth\n"
+        "/context — how full this conversation is\n"
         "/brief — latest daily brief summary\n"
         "/clear — clear this thread (asks YES/NO first)\n"
         "/voice_on — the assistant replies with voice notes\n"
@@ -95,20 +98,39 @@ async def _handle_queue(ctx: TelegramCommandContext) -> str:
     if event_store is None:
         return "Workspace event store not attached."
     try:
-        events = event_store.list_events(kinds=("agent_post",), limit=200)
+        events = event_store.list_events(kinds=DECIDABLE_KINDS, limit=200)
     except Exception:
         log.exception("commands: list workspace events failed")
         return "Queue lookup failed — see backend log."
-    open_count = 0
+    waiting: dict[str, int] = {}
     for ev in events or []:
-        # An event with `payload.status in {"open", None}` is unresolved.
-        # The schema doesn't reliably mark "resolved" so we treat any
-        # explicit closed marker as resolved and everything else as open.
-        payload = getattr(ev, "payload", {}) or {}
-        if isinstance(payload, dict) and payload.get("status") in ("approved", "rejected", "closed"):
+        if str(getattr(ev, "status", "") or "") in SETTLED:
             continue
-        open_count += 1
-    return f"Workspace inbox: {open_count} open item(s) waiting."
+        payload = getattr(ev, "payload", {}) or {}
+        if isinstance(payload, dict) and payload.get("status") in SETTLED:
+            continue
+        waiting[str(getattr(ev, "kind", "") or "something")] = (
+            waiting.get(str(getattr(ev, "kind", "") or "something"), 0) + 1
+        )
+    total = sum(waiting.values())
+    if not total:
+        return "Nothing is waiting on you."
+    # Named, not just counted. "3 items waiting" tells the operator to walk to
+    # their desk without telling them whether it is worth the walk, and this is
+    # the one view of the inbox a phone has.
+    listed = ", ".join(
+        f"{count} {kind.replace('_', ' ')}" for kind, count in sorted(waiting.items())
+    )
+    # No "needs the app" any more. That was true for the hour between this
+    # command learning to count properly and `workspace_decide` existing, and
+    # it stopped being true in the same session. A surface that tells the
+    # operator to go somewhere else, when it can in fact answer, is the fork
+    # this whole funnel exists to prevent — written in prose, which is the
+    # form of it that is hardest to notice.
+    return (
+        f"{total} thing(s) waiting on you: {listed}. "
+        "Ask me about any of them and I can approve or reject it here."
+    )
 
 
 async def _handle_brief(ctx: TelegramCommandContext) -> str:
@@ -132,9 +154,10 @@ async def _handle_brief(ctx: TelegramCommandContext) -> str:
             break
     if payload is None:
         return "No daily brief yet."
-    from tesseract.integrations.telegram.brief_push import format_exec_summary
+    from tesseract.integrations._brief_push import compose_brief
+    from tesseract.integrations.telegram.render import render_telegram
 
-    text = format_exec_summary(payload)
+    text = render_telegram(compose_brief(payload))
     return text or "Brief payload is empty."
 
 
@@ -153,6 +176,12 @@ async def _handle_clear(ctx: TelegramCommandContext) -> str:
     poll_state = ctx.bridge._state.poll_state  # noqa: SLF001
     with ctx.bridge._state.with_lock():  # noqa: SLF001
         poll_state.pending_clear[chat_key] = now_iso
+        # Asking to clear IS an interaction on this day. Only the ordinary
+        # turn used to stamp this, and both halves of the clear exchange
+        # return before reaching it, so the marker still held yesterday and
+        # the next real message was told again that a new day had started
+        # and offered the clear the operator had just done.
+        poll_state.last_message_ts[chat_key] = now_iso
         save_state(ctx.bridge._state.state_path, poll_state)  # noqa: SLF001
     return (
         "🧹 Clear this thread?\n"
@@ -163,7 +192,7 @@ async def _handle_clear(ctx: TelegramCommandContext) -> str:
 
 
 async def _handle_voice_on(ctx: TelegramCommandContext) -> str:
-    """Flip the per-chat ``reply_voice`` flag on (Session 3 2026-05-16).
+    """Flip the per-chat ``reply_voice`` flag on.
 
     Subsequent the assistant replies in this chat synthesise via the configured TTS lane
     and ship as voice notes instead of plain text. Operator-only — friend
@@ -183,7 +212,7 @@ async def _handle_voice_on(ctx: TelegramCommandContext) -> str:
 
 
 async def _handle_voice_off(ctx: TelegramCommandContext) -> str:
-    """Flip the per-chat ``reply_voice`` flag off (Session 3 2026-05-16)."""
+    """Flip the per-chat ``reply_voice`` flag off."""
     from tesseract.integrations.telegram.state import save_state
 
     chat_key = str(ctx.chat_id)
@@ -192,6 +221,30 @@ async def _handle_voice_off(ctx: TelegramCommandContext) -> str:
         poll_state.reply_voice.pop(chat_key, None)
         save_state(ctx.bridge._state.state_path, poll_state)  # noqa: SLF001
     return "📝 Voice replies <b>off</b>. Back to text."
+
+
+async def _handle_context(ctx: TelegramCommandContext) -> str:
+    """How full this conversation is, from the tool the assistant calls.
+
+    It runs `context_read` rather than measuring the session here. A command
+    that read the numbers itself would be a second answer to a question the
+    runtime already answers, and when the two drifted the operator would have
+    no way to tell which one had. No tier check of its own: the dispatcher
+    already refuses anything outside `_FRIEND_ALLOWED` before a handler runs.
+    """
+    from tesseract.kernel.tools.context_read import ContextReadInput, ContextReadTool
+
+    session = getattr(ctx.bridge, "_sessions", {}).get(ctx.chat_id)
+    chat_session = getattr(session, "chat_session", None)
+    if chat_session is None:
+        return (
+            "No conversation is open on this chat yet, so there is nothing to "
+            "measure. Send a message first."
+        )
+    result = await ContextReadTool().run(
+        ContextReadInput(), chat_session.tool_context
+    )
+    return result.output
 
 
 async def _handle_status(ctx: TelegramCommandContext) -> str:
@@ -209,6 +262,7 @@ async def _handle_status(ctx: TelegramCommandContext) -> str:
 _HANDLERS: dict[str, CommandHandler] = {
     "/help": _handle_help,
     "/queue": _handle_queue,
+    "/context": _handle_context,
     "/brief": _handle_brief,
     "/status": _handle_status,
     "/clear": _handle_clear,

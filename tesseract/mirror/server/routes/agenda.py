@@ -1,4 +1,4 @@
-"""AgendaStore REST routes — AU-4 S2.
+"""AgendaStore REST routes.
 
 Contract:
 
@@ -148,8 +148,8 @@ async def create_item(request: web.Request) -> web.Response:
     """POST /api/agenda — operator-authored item.
 
     Body: ``{session_id, goal, [rationale], [risk_class], [operator_priority]}``.
-    Source is forced to ``operator`` for this endpoint — observer / kernel
-    mappers go through AU-5, not this REST surface.
+    Source is forced to ``operator`` for this endpoint — observer and kernel
+    mappers do not go through this REST surface.
     """
     body, err = await _authed_body(request)
     if err is not None:

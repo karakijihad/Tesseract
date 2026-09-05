@@ -1,4 +1,4 @@
-"""Y-1 — per-view canvas state persistence.
+"""per-view canvas state persistence.
 
 Endpoints:
 
@@ -17,7 +17,7 @@ Canvas state lives at ``<TESSERACT_HOME>/workspace/canvas-state/<view>.json``
 the Surface Protocol persistence envelope. The file has two owners with
 disjoint keys: the frontend owns ``tldraw_snapshot`` + ``viewport`` (it
 POSTs them here on operator draw), and the backend ``SurfaceStore`` owns
-``surfaces`` (Y-2). So on POST we preserve whatever ``surfaces`` are on
+``surfaces``. So on POST we preserve whatever ``surfaces`` are on
 disk rather than let the frontend's payload clobber them. Both this route
 and the SurfaceStore read-merge to keep the other owner's key; because each
 read-modify-write is fully synchronous (no ``await`` between read and write)

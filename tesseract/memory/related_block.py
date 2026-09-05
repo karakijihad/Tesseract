@@ -39,6 +39,16 @@ _BLOCK_RE = re.compile(
 )
 
 
+def strip_related_block(body: str) -> str:
+    """Body with the auto-related block removed.
+
+    Anything deriving a summary from a body needs this. The block is link
+    machinery appended after the fact, so folding it in would put a wikilink
+    list into every surface that renders the summary.
+    """
+    return _BLOCK_RE.sub("\n", body).strip()
+
+
 def _normalize(items: Sequence[RelatedItem]) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     for it in items:

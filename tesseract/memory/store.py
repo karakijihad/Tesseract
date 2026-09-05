@@ -56,8 +56,8 @@ def _inject_kind_tag(frontmatter: MemoryFrontmatter) -> MemoryFrontmatter:
     the record's MemoryType value (``feedback`` / ``user`` / ``project`` /
     ``reference`` / ``conscience``).
 
-    The kind tag is the load-bearing addition for AU-16 — Obsidian's
-    graph view color groups key off ``tag:#<kind>``. Operator-set tags
+    The kind tag is load-bearing — Obsidian's graph view color groups
+    key off ``tag:#<kind>``. Operator-set tags
     survive after the kind tag. The function is idempotent — calling
     twice yields the same frontmatter.
     """
@@ -267,7 +267,7 @@ class MemoryStore:
                 subdir = self._type_to_subdir(frontmatter.type)
                 path = self._store_dir / subdir / f"{frontmatter.id}.md"
 
-        # AU-16 — every memory record gets a leading `kind` tag matching
+        # Every memory record gets a leading `kind` tag matching
         # its MemoryType so the Obsidian graph view's color groups fire
         # on the canonical store directly (no separate wiki mirror).
         # Operator-set tags survive AFTER the kind tag. Idempotent on
@@ -275,6 +275,38 @@ class MemoryStore:
         frontmatter = _inject_kind_tag(frontmatter)
         yaml_dict = frontmatter.to_yaml_dict()
         content = "---\n" + yaml.dump(yaml_dict, default_flow_style=False, sort_keys=False) + "---\n\n" + body
+
+        # A memory is the most durable of the four places a credential can
+        # land: it survives the conversation, it is retrieved into later
+        # prompts, and nothing asks before one is written. Here rather than in
+        # `memory_save` because this is the one function that puts a memory
+        # file on disk — the tool, `memory_update`, the librarian, the
+        # auto-linker and the cascade rewrites all arrive through it.
+        #
+        # The wall is on the way in at `brain/tools.py::execute_tool`, so this
+        # is a backstop. It REFUSES the write when the store cannot be read,
+        # which is the one degradation that is safe here: an unwritten memory
+        # is recoverable and a durable one is not.
+        try:
+            from tesseract.credentials.redaction import redact
+        except Exception:  # noqa: BLE001 — no credential layer, nothing to check
+            redact = None  # type: ignore[assignment]
+        if redact is not None:
+            try:
+                content = redact(content)
+            except Exception as exc:  # noqa: BLE001
+                self.log_event("writes.jsonl", {
+                    "memory_id": frontmatter.id,
+                    "type": frontmatter.type.value,
+                    "title": frontmatter.title,
+                    "status": "blocked",
+                    "reason": "credential_check_unavailable",
+                })
+                logger.error(
+                    "Memory %s not written: it could not be checked for "
+                    "credentials (%s)", frontmatter.id, exc,
+                )
+                return False
 
         tmp = path.with_suffix(".tmp")
         tmp.write_text(content, encoding="utf-8")

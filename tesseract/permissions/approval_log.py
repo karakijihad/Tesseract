@@ -72,6 +72,10 @@ PostureSource = Literal[
     "pty_delegate",
     "channel_mutation",
     "installed_tree",
+    #: An agenda item the operator approved or dropped from a channel. Its
+    #: own value because it is not a tool call and never was: nothing ran,
+    #: a piece of work the runtime had parked was released or ended.
+    "agenda_decision",
 ]
 #: `auto` is deliberately its own value rather than a second meaning for
 #: `allow_once`, and the distinction is the whole reason the ledger stays
@@ -107,14 +111,35 @@ def summarize_input(raw: dict[str, Any] | None) -> dict[str, Any]:
     return {k: _truncate_field(v) for k, v in raw.items()}
 
 
+def redacted_summary(tool: Any, raw: dict[str, Any] | None) -> dict[str, Any]:
+    """What the ledger may keep of `raw`: the tool's own redaction, summarised.
+
+    Redaction has to happen BEFORE the summary, because summarising only
+    truncates. `approvals.jsonl` records every ask whether the operator allowed
+    it or refused it, and is rolled to an archive rather than deleted, so it is
+    the longest-lived record of what the assistant tried to do.
+
+    A caller that hands over something which is not a `Tool` gets the base
+    class's answer rather than an error. That is not a control failing open:
+    the base implementation declares no redacted fields and passes the payload
+    through, which is exactly what every tool that declares none already gets.
+    What makes a field safe is the tool NAMING it, and a thing with no class to
+    name them on has none to protect.
+    """
+    from tesseract.kernel.tools.base import Tool
+
+    redact = getattr(type(tool), "redact_input", None)
+    return summarize_input(redact(raw) if callable(redact) else Tool.redact_input(raw))
+
+
 def ledger_path() -> Path:
     """Resolve the current ledger path, at call time.
 
     `runtime_logs_root()` does the resolving — it walks `install_root()`,
     which is `_home_at_call_time().parent`, so an overridden `TESSERACT_HOME`
-    is honoured without this function reading the env var itself. It used to
-    read it anyway, into a local that nothing then used, which made this look
-    like the place the override was applied and hid where it actually is.
+    is honoured without this function reading the env var itself. Reading it
+    here into an unused local would make this look like the place the
+    override is applied and hide where it actually is.
     """
     return runtime_logs_root() / "approvals.jsonl"
 

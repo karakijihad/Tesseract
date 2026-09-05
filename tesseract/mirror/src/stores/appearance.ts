@@ -10,9 +10,11 @@ const LS_KEY = 'appearance';
 /** Defaults live in `tokens.css`, not here — these are the values the file
  *  declares, repeated only so "reset" can clear the overrides and land back
  *  on them without reading the stylesheet. */
-/** Compact is the default (operator call, 2026-08-13) — the cockpit is a dense
- *  instrument panel, and 100% was sized for prose it does not show. */
-export const DEFAULT_TYPE_SCALE = 0.9;
+/** Regular is the default (operator call, 2026-08-20). Compact held it from
+ *  2026-08-13 on the argument that a dense instrument panel does not need
+ *  prose sizing; in use the app shows enough prose that 90% cost more in
+ *  legibility than it bought in density. */
+export const DEFAULT_TYPE_SCALE = 1;
 export const DEFAULT_ACCENT_HUE = 246;
 export const DEFAULT_FONT = 'grotesk';
 
@@ -24,9 +26,9 @@ export const DEFAULT_FONT = 'grotesk';
  *  font, and each is already bundled: choosing one downloads nothing.
  */
 export const APP_FONTS: { id: string; label: string; note: string }[] = [
-  { id: 'grotesk', label: 'Space Grotesk', note: 'The default — geometric, made for interfaces' },
+  { id: 'grotesk', label: 'Space Grotesk', note: 'The default. Geometric, made for interfaces.' },
   { id: 'outfit', label: 'Outfit', note: 'Rounder and wider; easier on long prose' },
-  { id: 'mono', label: 'JetBrains Mono', note: 'Fixed width everywhere — a terminal for a cockpit' },
+  { id: 'mono', label: 'JetBrains Mono', note: 'Fixed width everywhere, a terminal for a cockpit' },
   { id: 'system', label: 'System', note: "Whatever this machine already renders best" },
 ];
 

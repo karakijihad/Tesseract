@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 
-import type { DriftReport } from '../../stores/conscience';
+import { driftCounts, type DriftReport } from '../../stores/conscience';
 
 const STATUS = [
   { key: 'bad', label: 'Bad' },
@@ -35,10 +35,10 @@ export function DriftHistoryChart({ history }: { history: DriftReport[] }) {
         .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
         .map((h) => ({
           ts: h.timestamp,
-          ok: h.summary.ok,
-          warn: h.summary.warn,
-          bad: h.summary.bad,
-          total: h.summary.ok + h.summary.warn + h.summary.bad,
+          ok: driftCounts(h).ok,
+          warn: driftCounts(h).warn,
+          bad: driftCounts(h).bad,
+          total: driftCounts(h).ok + driftCounts(h).warn + driftCounts(h).bad,
         })),
     [history],
   );
@@ -64,7 +64,7 @@ export function DriftHistoryChart({ history }: { history: DriftReport[] }) {
               key={`${r.ts}-${i}`}
               className={`drift-chart__col${hovered === i ? ' is-read' : ''}`}
               tabIndex={0}
-              aria-label={`${new Date(r.ts).toLocaleString()} — ${r.ok} ok, ${r.warn} warn, ${r.bad} bad`}
+              aria-label={`${new Date(r.ts).toLocaleString()}: ${r.ok} ok, ${r.warn} warn, ${r.bad} bad`}
               onMouseEnter={() => setHovered(i)}
               onMouseLeave={() => setHovered((h) => (h === i ? null : h))}
               onFocus={() => setHovered(i)}

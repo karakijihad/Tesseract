@@ -73,13 +73,16 @@ class MemoryGetTool(Tool):
     group: ClassVar[str] = "remembering"
     summary: ClassVar[str] = "Read a line-range slice of one known memory-store markdown file."
     use_when: ClassVar[str] = (
-        "Use when you already know the memory-store path and want an exact, "
-        "line-numbered slice rather than a ranked search."
+        "Use when you already have the path, usually because the recalled-"
+        "memories block or a search result gave it to you, and you want the "
+        "whole record rather than the one line those show."
     )
     not_when: ClassVar[str] = (
-        "use `memory_search` when you don't already have the path. Refuses "
-        "identity files (MEMORY.md, WHAT_NOT_TO_SAVE.md)."
+        "use `memory_search` when you do not already have the path: this "
+        "reads one file and finds nothing. Refuses identity files (MEMORY.md, "
+        "WHAT_NOT_TO_SAVE.md)."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(self, *, memory_root: Path | None = None) -> None:
         self._memory_root = memory_root if memory_root is not None else TESSERACT_HOME / MEMORY_STORE_DIRNAME

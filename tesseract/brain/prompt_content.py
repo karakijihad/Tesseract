@@ -13,6 +13,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from tesseract.brain.playbook_contract import blocking_gaps
+from tesseract.brain.playbook_set import CARRIED_FILENAME, load_carried_names
 from tesseract.brain.skills import load_skills
 
 # Logger name pinned to "tesseract.brain.prompt" — see prompt_time.py's
@@ -28,7 +30,7 @@ _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
 PER_FILE_CAP = 12_000
 MEMORY_CAPSULE_TOTAL_CAP = 60_000
 DAILY_FILES_TO_LOAD = 2  # today + yesterday
-# AU-16 derived trees — number of freshest topic hubs (red) + source
+# Derived trees — number of freshest topic hubs (red) + source
 # rollups (yellow) to inline into the memory capsule. Each is _read_capped
 # so the total bound stays MEMORY_CAPSULE_TOTAL_CAP regardless.
 TOPIC_HUBS_TO_LOAD = 3
@@ -45,7 +47,11 @@ DIARY_DIGEST_CHAR_BUDGET = 2_000
 # auto_links dedup across both types; this just decides how much of the
 # result fits before the budget cuts in.
 DIRECTIVES_CHAR_BUDGET = 6_000
-DIRECTIVES_BODY_PREVIEW_CHARS = 200
+# No per-line ceiling, deliberately: a directive is a rule to obey, and half a
+# rule is a different rule rather than a shorter one. The budget above is the
+# only gate, and when it bites it drops whole records from the bottom and warns
+# — which says consolidation is overdue. Shortening every line instead would
+# hide that and weaken all of them.
 
 
 CHANNEL_OVERLAY_HEADER = "# Channel overlay"
@@ -59,6 +65,24 @@ CHANNEL_DOCUMENT = "CHANNEL.md"
 #: the document is markdown full of braces (`/api/home/{downloads,vault,...}`)
 #: and formatting it would either raise or eat them.
 _CHANNEL_NAME_TOKEN = "{channel_name}"
+
+
+
+def _today() -> _dt.date:
+    """The day the capsule and the diary select their files by.
+
+    A named seam, for the reason `prompt.py::_now_local` is one: these two
+    builders are declared `in_background`, which says nobody asks for their
+    bytes to move, and a date rollover is the clearest case of that — it moves
+    them with no write at all. A conversation holds them, so the rollover
+    costs nothing mid-conversation, but the seam still earns its keep: it was
+    not testable before, because the only way to move this clock was to patch
+    the shared `datetime` module for every caller in the process. Now a test
+    can move the day for these two builders and nothing else, and a section
+    that starts reading a FINER clock than this one is caught by an assertion
+    rather than by a bill.
+    """
+    return _dt.date.today()
 
 
 def build_channel_overlay(
@@ -222,7 +246,7 @@ def _build_manifest_block(root: Path) -> str:
         ("Guide/README.md",                   "the guide written for the people who use this — what it is, how a turn works, how memory, voice, autonomy and delegation fit together, with a drawing per mechanism", "read when the operator asks how some part of you works, or when you need to explain yourself to someone who has never seen this before"),
         ("Guide/reference/permissions.md",    "which of your tools stop and ask and which run without asking — generated from permissions.yaml itself, so it cannot disagree with the gate", "read before telling the operator what you will or will not do unattended, rather than reasoning about it"),
         ("autonomy/WHAT-RUNS.md",             "what runs on this machine on its own and whether it actually ran — the app's schedules and the operator's, each with what it does, how it fires, when it last ran and how that went; re-derived every hour from the schedule, the run manifest and the run log, so it is never out of date", "read when the operator asks what is running, whether something fired, or why something did not"),
-        ("tesseract/workspace/WORKSHOP.md",   "workshop/ layout and naming conventions", "read before writing any task artifact — every task gets its own dated folder"),
+        ("tesseract/workspace/WORKSHOP.md",   "workshop/ layout and naming conventions", "read before writing any task artifact — every project gets its own stable folder under projects/"),
         ("tesseract/workspace/DIARY.md",      "first-person reflection log — write via diary_append; librarian distills into SOUL Growth", "read before deciding whether to log a self-observation, or when reviewing your own pattern of behaviour"),
     ]
     present = [(p, d, w) for (p, d, w) in pointers if _pointer_exists(root, p)]
@@ -271,30 +295,158 @@ def _build_manifest_block(root: Path) -> str:
     return _section("Available reference", "\n".join(lines))
 
 
-def _build_skills_block(root: Path) -> str:
-    """Pointer block for the assistant's markdown skills (P6 Task 4/4b "workshop").
+#: The per-playbook marker on a line the turn is not carrying in full, and it
+#: is the same mark the tool map uses for the same reason. Naming which side
+#: of the line each one falls on is the point: a list that says "some arrive
+#: complete, the rest are a search away" and never says WHICH leaves the model
+#: unable to tell what a given line will cost it.
+_DEFERRED_MARK = " (search)"
 
-    Same shape as `_build_manifest_block`'s pointer list — name +
-    description only; the assistant `file_read`s the SKILL.md body on demand.
-    Bundled `scripts/` content (Task 4b) is never inlined here, and
-    listing a skill registers nothing — script execution stays on the
-    existing bash/subprocess ASK path. Empty/missing
-    `workspace/skills/` → "" (section omitted, zero noise).
+
+def _build_skills_block(root: Path) -> str:
+    """Pointer block for the assistant's markdown skills.
+
+    Same shape as `_build_manifest_block`'s pointer list — the assistant
+    `file_read`s the SKILL.md body on demand. Bundled `scripts/` content
+    (Task 4b) is never inlined here, and listing a skill registers nothing —
+    script execution stays on the existing bash/subprocess ASK path.
+    Empty/missing `workspace/skills/` → "" (section omitted, zero noise).
+
+    **A carried playbook arrives with its contract; the rest arrive as a
+    line.** `carried.txt` is the dial (`brain/playbook_set.py`), the same one
+    `working_set.yaml` is for tools, and this is where it is spent: a carried
+    playbook renders its version, its status and its `use_when`, which is what
+    lets the assistant reach for it without a round trip, and every other one
+    renders its description and the `(search)` mark. Nothing is hidden — a
+    playbook off the list is named here, so it can be looked for at all, which
+    is the whole reason the tool map lists all 150 tools rather than the 60
+    carrying a schema.
+
+    Plain skills are not on the dial. They carry a name and a description and
+    nothing else, so there is no contract to defer and no saving to make.
+
+    **WHAT A CARRIED PLAYBOOK ACTUALLY COSTS, and this function decides it:**
+    its description, `Playbook, v<version>, <status>.`, its `use_when`, and its
+    path. NOT its trigger, NOT its preconditions, NOT its steps. Those come
+    from `playbook_search`, which is the off-list path.
+
+    That sentence is repeated on five other surfaces, and three separate audit
+    findings landed on three different ones of them saying "steps" or "trigger"
+    where this renders neither. Anything that changes what this branch emits
+    changes all six, so they are listed rather than left to be found:
+
+      - `playbook_set.py::_BANNER`, written into the operator's `carried.txt`
+      - `scheduler/tasks/working_set_review.py::_explain`, on the proposal card
+      - `views/conscience/PlaybookUsageChart.tsx`, its head and three strings
+      - `SECURITY.md`, which ships and regenerates `Guide/about/security.md`
+      - `Docs/Logs/CODEMAP.md`
     """
-    skills = load_skills(root / "skills")
+    # A retired playbook is one a later revision replaced or one that measured
+    # worse than the revision before it. It stays on disk as a record and is
+    # not offered: listing it would be offering a procedure the runtime has
+    # already judged.
+    skills = [s for s in load_skills(root / "skills") if s.status != "retired"]
     if not skills:
         return ""
-    lines = [
+    cannot_run = blocking_gaps(skills)
+    chosen = load_carried_names(root / "skills" / CARRIED_FILENAME)
+    playbooks = [s for s in skills if s.is_playbook]
+    deferred = sum(1 for s in playbooks if s.name not in chosen)
+    lead = (
         f"You have {len(skills)} skill(s) — prose self-extensions you (or a "
         "delegate) drafted for a repeated chore or capability gap. Read the "
         "`SKILL.md` body with `file_read` before using one; don't guess "
-        "behavior from the name alone.",
-        "",
-    ]
+        "behavior from the name alone. A skill marked as a playbook is a "
+        "procedure that worked before: its `use_when` says when to reach for "
+        "it, and one marked *cannot run* is not to be used until it is fixed."
+    )
+    if deferred:
+        count = "One" if deferred == 1 else f"{deferred} of them"
+        lead += (
+            f" {count} marked (search): call `playbook_search` for one and its "
+            "trigger, steps and file arrive, then you can follow it. Marked "
+            "does not mean unavailable, it means one step away."
+        )
+    lines = [lead, ""]
     for skill in skills:
+        gap = cannot_run.get(skill.name)
+        if skill.is_playbook and skill.name not in chosen:
+            line = f"- `{skill.name}`{_DEFERRED_MARK} — {skill.description}"
+            # The one thing a pointer still says. A broken playbook the model
+            # searches for costs the search before it learns it cannot be
+            # followed, and this is a line of text against a wasted round trip.
+            if gap is not None:
+                line += f" *Cannot run: {gap.field} {gap.detail}.*"
+            lines.append(line)
+            continue
+        line = f"- `{skill.name}` — {skill.description}"
+        if skill.is_playbook:
+            line += f" Playbook, v{skill.version or '?'}, {skill.status or 'no status'}."
+            if skill.use_when:
+                line += f" Use when: {skill.use_when}"
+            if gap is not None:
+                line += f" *Cannot run: {gap.field} {gap.detail}.*"
+        # Relative, like every other pointer in this file, and computed here
+        # rather than at the top of the loop because a deferred playbook
+        # returns above without one.
+        #
+        # **It does not resolve in a packaged install, and that is a known
+        # open defect rather than an oversight.** `file_read` anchors a
+        # relative path against the CODE tree, and `workspace` is deliberately
+        # not in `paths.READABLE_STATE_PREFIXES`: every operator document in
+        # that tree is DENY for write, and a read allowlist entry would reach
+        # all five. So the read half of this pointer needs an owner the way
+        # `memory_get` owns memory-store, not a widened allowlist. Measured
+        # 2026-09-04: with `TESSERACT_HOME` off the code tree, both
+        # `tesseract/workspace/...` and `workspace/...` resolve to a file that
+        # is not there. Every pointer in `_build_manifest_block` has the same
+        # shape and the same defect, which is older than this block.
+        #
+        # An absolute path resolves everywhere and was tried. It puts the
+        # operator's home directory, and their username with it, into a prompt
+        # that reaches whichever provider `roles.yaml` names, on every turn.
+        # The repo scans shipped SOURCE for exactly that string and has
+        # nothing watching what the runtime composes at call time, so it went
+        # unnoticed until a security review. A broken pointer is the cheaper
+        # of the two.
         path = f"tesseract/workspace/skills/{skill.dirname}/SKILL.md"
-        lines.append(f"- `{skill.name}` — {skill.description} *(`{path}`)*")
+        lines.append(f"{line} *(`{path}`)*")
     return _section("Skills", "\n".join(lines))
+
+
+def _recent_then_named(directory: Path, count: int) -> list[Path]:
+    """The `count` most recently written files in a tree, in a stable order.
+
+    Two sorts, and the second one is the point. Picking by modification time
+    answers "what has the assistant been learning about lately", which is the
+    right question. Ordering the WINNERS by mtime as well answers nothing and
+    costs everything: writing one memory bumps one hub, the three chosen files
+    swap places, the system prompt changes, and the provider is handed a prompt
+    whose prefix it has never seen. That is a full re-read of ~88k tokens
+    because a file was touched.
+
+    Selection stays by recency; presentation is by name, so the same three
+    files render the same way until the SET changes.
+    """
+    if not directory.exists():
+        return []
+    chosen = sorted(
+        directory.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True
+    )[:count]
+    return sorted(chosen, key=lambda p: p.name)
+
+
+#: What the capsule IS, said in the capsule, because the capsule is the only
+#: thing in the prompt that knows. It is read once when a conversation begins
+#: and kept for the rest of it (`chat.py::_head_for_turn`), so without this the
+#: assistant reads it as "what memory holds" rather than "what memory held",
+#: and has no reason to go looking for anything newer. It has always been able
+#: to; it now knows when to.
+#:
+#: One fixed sentence, never interpolated: this block is held, and a lead that
+#: varied would move the head with nobody asking, which is the whole thing the
+#: hold exists to stop.
+_CAPSULE_LEAD = "What memory held when this conversation began. Search for anything newer."
 
 
 def _build_memory_capsule(memory_store_dir: Path) -> str:
@@ -326,13 +478,13 @@ def _build_memory_capsule(memory_store_dir: Path) -> str:
         return _section("Memory capsule", "\n\n".join(parts)) if parts else ""
 
     daily_dir = memory_store_dir / "daily"
-    today = _dt.date.today()
+    today = _today()
     for delta in range(DAILY_FILES_TO_LOAD):
         day = today - _dt.timedelta(days=delta)
         if not _add(f"daily/{day.isoformat()}.md", daily_dir / f"{day.isoformat()}.md"):
             break
 
-    # AU-16 derived trees — surface the consolidated views in the
+    # Derived trees — surface the consolidated views in the
     # capsule so the assistant sees "what he's been thinking about" without
     # having to call ``memory_search`` first. Order = global digest
     # (today's whole-system rollup) → freshest topic hubs (red nodes)
@@ -347,30 +499,18 @@ def _build_memory_capsule(memory_store_dir: Path) -> str:
             return _section("Memory capsule", "\n\n".join(parts)) if parts else ""
 
     topic_dir = memory_store_dir / "trees" / "topic"
-    if topic_dir.exists():
-        topic_files = sorted(
-            topic_dir.glob("*.md"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )[:TOPIC_HUBS_TO_LOAD]
-        for path in topic_files:
-            if not _add(f"trees/topic/{path.name}", path):
-                break
+    for path in _recent_then_named(topic_dir, TOPIC_HUBS_TO_LOAD):
+        if not _add(f"trees/topic/{path.name}", path):
+            break
 
     source_dir = memory_store_dir / "trees" / "source"
-    if source_dir.exists():
-        source_files = sorted(
-            source_dir.glob("*.md"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )[:SOURCE_ROLLUPS_TO_LOAD]
-        for path in source_files:
-            if not _add(f"trees/source/{path.name}", path):
-                break
+    for path in _recent_then_named(source_dir, SOURCE_ROLLUPS_TO_LOAD):
+        if not _add(f"trees/source/{path.name}", path):
+            break
 
     if not parts:
         return ""
-    return _section("Memory capsule", "\n\n".join(parts))
+    return _section("Memory capsule", f"{_CAPSULE_LEAD}\n\n" + "\n\n".join(parts))
 
 
 def _build_diary_digest(memory_store_dir: Path) -> str:
@@ -385,7 +525,7 @@ def _build_diary_digest(memory_store_dir: Path) -> str:
     if not diary_dir.exists():
         return ""
 
-    cutoff = _dt.date.today() - _dt.timedelta(days=DIARY_DIGEST_DAYS)
+    cutoff = _today() - _dt.timedelta(days=DIARY_DIGEST_DAYS)
     files: list[tuple[str, Path]] = []
     for path in diary_dir.glob("*.md"):
         try:
@@ -452,15 +592,12 @@ def _build_directives_section(
         return ""
 
     def _line(fm: Any) -> str:
-        body = (fm.summary or "").strip()
-        if not body:
-            preview = ""
-        else:
-            preview = body.splitlines()[0].strip()
-        if len(preview) > DIRECTIVES_BODY_PREVIEW_CHARS:
-            preview = preview[:DIRECTIVES_BODY_PREVIEW_CHARS].rstrip() + "…"
+        # The id rides along so a rule can be revised by name in one step
+        # (`memory_update mem_...`) instead of searched for.
+        rule = " ".join((fm.summary or "").split())
         title = fm.title.strip() or fm.id
-        return f"- [imp {fm.importance}] {title}: {preview}" if preview else f"- [imp {fm.importance}] {title}"
+        head = f"- [imp {fm.importance}] ({fm.id}) {title}"
+        return f"{head}: {rule}" if rule else head
 
     lines = [_line(fm) for fm in records]
     body = "\n".join(lines)

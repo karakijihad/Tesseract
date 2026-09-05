@@ -9,7 +9,7 @@ description: >
   autonomously. Emits a structured markdown audit file at
   `workshop/audits/<YYYY-MM-DD>/audit-<N>.md` using the
   Critical / Major / Minor / Informational severity grammar.
-underlying_tool: delegate_codex_exec
+underlying_tool: delegate_second_opinion
 default_posture: ask
 inputs:
   target: string        # risk surface or focus area (e.g. "permissions surface")

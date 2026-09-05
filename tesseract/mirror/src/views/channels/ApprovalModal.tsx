@@ -42,7 +42,7 @@ export function ApprovalModal({ channel, user, onClose }: ApprovalModalProps) {
 
   const _onConfirm = async () => {
     if (!sessionId) {
-      push('Channels: no operator session — open chat first', 'warning');
+      push('Channels: no session yet. Open chat first.', 'warning');
       return;
     }
     try {

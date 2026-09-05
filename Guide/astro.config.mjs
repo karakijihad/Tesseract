@@ -69,6 +69,7 @@ export default defineConfig({
             { slug: 'mechanisms/prompts' },
             { slug: 'mechanisms/workspace' },
             { slug: 'mechanisms/updates' },
+            { slug: 'mechanisms/connecting-a-cli' },
           ],
         },
         {

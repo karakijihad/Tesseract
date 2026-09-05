@@ -1,6 +1,6 @@
 """lane_named_get — look up the current lane_id bound to a named lane.
 
-X-5 Session A. Read-only (AUTO). Returns the binding (lane_id, kind,
+Read-only (AUTO). Returns the binding (lane_id, kind,
 mode, model, working_dir) or a `bound=false` shape when the name has
 no record. Does NOT open a lane on miss — callers wanting an open-on-
 miss flow use `lane_named_ensure`."""
@@ -41,6 +41,7 @@ class LaneNamedGetTool(Tool):
         "every binding at once, which is `lane_named_list`; every live lane, which is `lane_list`; "
         "creating the binding, which is `lane_named_ensure`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

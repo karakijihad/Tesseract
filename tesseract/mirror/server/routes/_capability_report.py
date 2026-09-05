@@ -22,11 +22,11 @@ def _bundle(bundle=None):
     """The config bundle, read once per report.
 
     Every section of this report is a different view of the same two YAML
-    files, and each section used to open them for itself — four `load_bundle()`
-    calls per request, twelve YAML parses, 96% of what the route cost once the
-    adapter construction was gone. Same fix `/api/agents` took: one bundle per
-    request, not one per consumer. `None` still reads its own, so a caller
-    holding one view (a test, a single section) is unchanged.
+    files, and a section that opens them for itself costs four `load_bundle()`
+    calls per request and twelve YAML parses, which was 96% of this route.
+    One bundle per request, not one per consumer, the same way `/api/agents`
+    does it. `None` still reads its own, so a caller holding one view (a test,
+    a single section) is unchanged.
     """
     if bundle is not None:
         return bundle
@@ -40,11 +40,11 @@ def _integrations(bundle=None) -> list[dict]:
     two files that declare them. Exactly one of `service` / `channel` names the
     block the row's switch writes.
 
-    It used to be a tuple here, which made this route a second registry
-    beside `providers.yaml` — and a third, since the first-run form kept its
-    own copy too. Now `providers.yaml::services` names the outside services
-    (Brave, Tavily) and each `channels.yaml` block names its own token, so
-    adding either kind is a config edit and this route follows.
+    A tuple here would make this route a second registry beside
+    `providers.yaml`, and the first-run form a third.
+    `providers.yaml::services` names the outside services (Brave, Tavily) and
+    each `channels.yaml` block names its own token, so adding either kind is a
+    config edit and this route follows.
 
     **Every service, not only the keyed ones.** The list was gated on
     `api_key_env`, which hid the browser engine — a service with a 700 MB
@@ -61,7 +61,7 @@ def _integrations(bundle=None) -> list[dict]:
     for name, block in services.items():
         if not isinstance(block, dict):
             continue
-        # The tool list travels as a LIST, not as the label it used to be
+        # The tool list travels as a LIST, not as a rendered label
         # joined into: the browser block unlocks seven verbs, and one row of
         # the panel cannot be seven times the width of the others. The panel
         # decides how many of them fit.

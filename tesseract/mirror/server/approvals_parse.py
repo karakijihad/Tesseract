@@ -3,7 +3,7 @@
 A permission decision at the operator boundary must be an explicit JSON
 boolean. Accepting truthy non-booleans (the string ``"false"``, ``1``, ``[]``)
 would let a malformed, stale, or direct local client invert a denial into an
-approval — a max-security violation (audit C1). Every decision surface (parked
+approval — a max-security violation. Every decision surface (parked
 REST, ASK-over-MCP REST, live WebSocket ``tool_response``) routes its
 ``approved`` value through :func:`parse_approved`.
 """

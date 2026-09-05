@@ -1,11 +1,11 @@
-"""AS-1 — the Unified Activity Registry.
+"""The Unified Activity Registry.
 
 A process-global, in-memory index of every running unit of the assistant's work.
 Each substrate (delegate / lane / controller session / …) reports in via
 best-effort hooks; every mutation publishes an ``activity`` event so the
 Mirror can reflect the live set. The registry owns NO persistent store —
 on a restart the persistent items (lanes, sessions) are re-indexed from
-their canonical on-disk files via ``rebuild_from_disk`` (AS-1 Phase 6);
+their canonical on-disk files via ``rebuild_from_disk``;
 ephemeral items (delegates) simply vanish, which is correct.
 
 Known limitation (2026-07-05): a FAILED routine or autonomy run transitions
@@ -34,7 +34,7 @@ from tesseract.orchestrator.activity.models import (
 
 log = logging.getLogger(__name__)
 
-# AS-1 gap-c: terminal ephemeral records (finished delegates) have no owner to
+# Terminal ephemeral records (finished delegates) have no owner to
 # remove them and would accumulate in the process-global registry until restart.
 # Bound by COUNT (not a time-TTL — avoids a hardcoded infra timeout): keep the
 # newest N finished ephemeral records for recent-history display, evict older.
@@ -80,7 +80,7 @@ class ActivityRegistry:
         self, max_keep: int = _MAX_TERMINAL_EPHEMERAL
     ) -> list[ActivityRecord]:
         """Evict the oldest terminal ephemeral records beyond ``max_keep``,
-        bounding registry growth between restarts (AS-1 gap-c). Returns the
+        bounding registry growth between restarts. Returns the
         evicted records (each also emits ``activity_removed``). ``updated_at``
         is ISO-8601, so a lexicographic sort is chronological."""
         with self._lock:

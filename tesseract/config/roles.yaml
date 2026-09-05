@@ -13,15 +13,13 @@
 # follows one. The Mirror config watcher detects the change and calls
 # `boot.rebuild_adapters` — no restart.
 #
-# Fresh-install defaults split across two keys, both listed in `.env.example`:
+# Fresh-install default, listed in `.env.example`:
 #
 #   OPENAI_API_KEY   — `chat_brain`, the conversational layer. Required to
-#                      hold a conversation at all.
-#   BUILD_NVIDIA_KEY — every background role (observer, sub-agents, autonomy,
-#                      image generation). NVIDIA's build tier is free, so this
-#                      keeps unattended work off your paid key. Omit it and
-#                      those roles fall through to their OpenAI fallback,
-#                      which works but bills you.
+#                      hold a conversation at all. Background roles lead with
+#                      `api.google.gemini_36_flash` and fall through to the
+#                      same OpenAI key, so a second key is optional rather
+#                      than expected.
 #
 # Voice (`stt`, `tts`, `audio_transcribe`) and `embeddings` run locally and
 # need no key at all. Add any other key from `.env.example` and its matching
@@ -66,47 +64,79 @@ reranker:
 # Selecting a model in Settings edits ONE role, so the first such edit
 # rewrites that role's refs in place and drops its `chain:` key. The other
 # roles on the chain do not move.
+# ─── Compaction ─────────────────────────────────────────────
+# One block for every role, because it describes how compaction works rather
+# than who is using it. A fold always leaves the head anchor and the verbatim
+# tail behind, whichever model is answering.
+compaction:
+  compact_ratio: 0.40         # compact once the payload passes this share of the
+                              # window, and 0.40 is what ships. THE dial: it is
+                              # what decides when a conversation folds, and
+                              # nothing else competes with it. A role may still
+                              # name its own `compact_threshold` and it wins;
+                              # none ships one, and the Settings pane writes
+                              # here.
+                              #
+                              # How high it can go depends on the chain: see
+                              # `max_prompt_chars` in providers.yaml, which is
+                              # per model because the limit is. Boot refuses a
+                              # ratio the tightest member cannot carry and
+                              # names the highest that fits.
+  headroom_multiplier: 1.2    # the trigger must clear that unfoldable floor by
+                              # this much. Below it a fold cannot get under the
+                              # line it just crossed, so it fires again every
+                              # turn and pays for a summary each time. The
+                              # runtime enforces this, rather than warning
+                              # about it in a comment.
+  comfortable_multiplier: 2.0 # what Settings marks as recommended. Advice, so
+                              # nothing refuses a setting below it.
+  prompt_char_budget: 900000  # FALLBACK ONLY. The ceiling on one assembled
+                              # prompt belongs to the model, and every chat
+                              # entry in providers.yaml declares its own
+                              # `max_prompt_chars`. This is what an entry that
+                              # declares none falls back to, so a new catalog
+                              # row is guarded before anyone remembers the
+                              # field.
+
 chains:
+  # Background work: one fast cheap model, then the chat key as a safety
+  # net. Everything unattended rides this.
   chain_1:
-    - api.nim.gpt_oss_120b
     - api.google.gemini_36_flash
     - api.openai.gpt56_luna
   chain_2:
-    - api.google.gemini_36_flash
-    - api.nim.gpt_oss_120b
-    - api.openai.gpt56_luna
-  chain_3:
     - api.openai.gpt56_luna
     - api.openai.gpt54_mini
     - api.xai.grok_43
-  chain_4:
+  chain_3:
     - cli.claude.opus_5
-  chain_5:
+  chain_4:
     - cli.codex.gpt56_terra
-  chain_6:
+  chain_5:
     - api.google.gemini_31_flash_image
     - api.xai.grok_imagine_image
-  chain_7:
+  chain_6:
     - local.whisper.local_whisper
 roles:
 
   chat_brain:
     mode: active
     # Fresh-install default: GPT-5.6 luna — cheap ($0.2/$1.2 per Mtok),
-    # 400K context, vision and PDF input, and reliable tool-calling. The
+    # 1.05M context, vision and PDF input, and reliable tool-calling. The
     # first fallback is the same key (gpt-5.4-mini), so a rate limit or
     # transient error still resolves on OPENAI_API_KEY alone. The Grok
     # fallback only activates once XAI_API_KEY is added to .env.
-    chain: chain_3
-    compact_threshold: 0.7        # compact when history >= 70% of context_window (raised from 0.4 — we have the room)
-    keep_recent_turns: 10         # legacy fallback; ignored when active_window_tokens is set
+    chain: chain_2
+    keep_recent_turns: 5          # how many recent turns a fold keeps word for word. A turn is one
+                                  # thing you said and everything the assistant did before you said
+                                  # the next thing, so five is five exchanges however many tool calls
+                                  # they carry. Together with the head anchor it is the floor
+                                  # compaction can never get under, which is why the runtime keeps
+                                  # FEWER than five when they do not fit under the trigger with
+                                  # `compaction.headroom_multiplier` to spare, and logs which. This
+                                  # was a token budget set by hand, and a hand-set number could not
+                                  # know what a turn weighed.
     head_anchor_messages: 3       # first N user messages preserved verbatim across every compaction (attention-sink anchor)
-    active_window_tokens: 60000   # token-budgeted verbatim tail. MUST stay well below the SMALLEST
-                                  # context_window*compact_threshold in the chain — here the two
-                                  # OpenAI entries' 400000*0.7 = 280k — or compaction can never
-                                  # shrink history below the trigger and re-runs (wasting a
-                                  # reflection call) every turn. Re-check this bound when swapping
-                                  # in a model with a smaller context window.
     summary_char_budget: 16000     # cap on the [Context from earlier...] block; oldest slice drops first when over
     tool_iteration_cap: 80    # hard cap on tool-call iterations per turn (runaway-loop guard)
     consecutive_error_cap: 3  # adapter ERRORs in a row before the chat_brain circuit-breaker trips and surfaces a final ERROR
@@ -135,7 +165,7 @@ roles:
   # a CLI is.
   claude_cli:
     mode: active
-    chain: chain_4
+    chain: chain_3
     notes: >-
       The claude CLI. Driven via PTY or --output-format stream-json. Rides
       your Claude Code subscription login — no API key needed, but the CLI must be
@@ -143,7 +173,7 @@ roles:
 
   codex_cli:
     mode: active
-    chain: chain_5
+    chain: chain_4
     notes: >-
       The codex CLI. `codex exec` for one-shot, PTY for multi-turn. Rides your
       Codex CLI subscription login — no API key needed, but the CLI must be installed
@@ -179,29 +209,32 @@ roles:
   # `cli.` seat.
   coder:
     mode: active
-    chain: chain_4
+    chain: chain_3
     notes: >-
       Delegation seat — writes code. Large reads, multi-file refactors.
       Backs `delegate_coder`.
 
   auditor:
     mode: active
-    chain: chain_5
+    chain: chain_4
     notes: >-
       Delegation seat — reviews, verifies, second opinions. Never edits.
       Backs `delegate_auditor`.
 
   agents_default:
     mode: active
-    chain: chain_2
+    chain: chain_1
     daily_budget_usd: 1.00
     notes: >-
       Default model for sub-agents that don't pin one in agents/INDEX.md. Cheapest
-      viable fit — agents that need more horsepower set their own.
+      viable fit — agents that need more horsepower set their own. Nothing on the
+      schedule rides this any more: a background row that named it had its model
+      and its spend move whenever an agent was re-pointed here, so those rows name
+      a chain and carry their own ceiling.
 
   channel_vision:
     mode: active
-    chain: chain_2
+    chain: chain_1
     daily_budget_usd: 1.00
     notes: >-
       Image understanding — a photograph the operator sent through a channel,
@@ -214,24 +247,17 @@ roles:
 
   subagents_default:
     mode: active
-    chain: chain_2
-    daily_budget_usd: 0.50
-    notes: "Default model for sub-sub-agents (delegates spawned by agents)."
-
-  watchman:
-    mode: active
     chain: chain_1
     daily_budget_usd: 0.50
     notes: >-
-      Hourly runtime report. Counts what went wrong in `runtime/logs/` and the
-      worker records, then writes one paragraph from those counted facts — a
-      figure it invents is dropped rather than published. A quiet window calls no
-      model at all, which is what keeps this cap ample.
+      Default model for sub-sub-agents (delegates spawned by agents). As with
+      `agents_default`, nothing on the schedule rides this: a seat is for the
+      work that fills it, and a background row that shared one moved with it.
 
   # ─── Delegation roles ───────────────────────────────────────
   image_generator:
     mode: active
-    chain: chain_6
+    chain: chain_5
     daily_budget_usd: 1.00
     notes: >-
       Both entries do text-to-image AND image-to-image, so the chain degrades on
@@ -239,17 +265,101 @@ roles:
       adherence and legible in-image text; Grok Imagine sits behind it at roughly a
       third the price. Primary rides GOOGLE_API_KEY, which the gemini cognition roles
       already require, so image generation needs no additional key on a default
-      install — but it is PAID either way: there is no free image lane in the catalog
-      since the NIM FLUX entries were retired. Set XAI_API_KEY to arm the fallback.
+      install. It is PAID either way: there is no free image lane in the catalog.
+      Set XAI_API_KEY to arm the fallback.
 
   audio_transcribe:
     mode: active
-    chain: chain_7
+    chain: chain_6
     notes: >-
       Audio-to-text. WS preprocessor calls local_whisper.transcribe directly
       (engine preloaded at boot). The `transcribe_audio` tool is also registered for
       ad-hoc re-transcription from chat_brain. Runs on CPU with no extra setup; see
       providers.yaml's whisper comment to opt into a CUDA GPU checkpoint.
+
+  # ─── Autonomy ───────────────────────────────────────────────
+  # Everything above is a SEAT: a slot some piece of work fills, and the
+  # question a seat answers is "which model does this kind of thinking". The
+  # blocks below are not seats. Each one is a thing the app runs on its own,
+  # declared in `scheduler/manifest/registry.py`, and the name here is that
+  # entry's name so the ledger keys its cap, its total and its preflight on
+  # one string.
+  #
+  # They are here because a ceiling has to be changeable by the person paying
+  # for it. Declared in the manifest, it lived in Python the installed app
+  # seals, so it could not be raised from the cockpit and could not be raised
+  # at all from a phone. Here it is a yaml edit, `POST /api/settings/cost`
+  # writes it, and the config watcher rebuilds the ledger without a restart.
+  #
+  # An entry that names DISPATCHED spends on whatever chain the work it runs
+  # chose, so it has no block here and the global cap is what bounds it.
+  watchman:
+    mode: active
+    chain: chain_1
+    daily_budget_usd: 1.0
+    notes: >-
+      Hourly runtime report. A quiet window calls no model at all, which is
+      what keeps this cap ample.
+
+  consolidate:
+    mode: active
+    chain: chain_1
+    daily_budget_usd: 1.0
+    notes: >-
+      The nightly row, and the ceiling covers every stage of it that calls a
+      model. Which chain each stage rides is in `schedule.yaml` under that
+      stage's own block; what any of them spends bills here.
+
+  scheduled_task:
+    mode: active
+    chain: chain_1
+    daily_budget_usd: 1.00
+    notes: >-
+      Work the operator or the assistant armed for later. The ceiling is the
+      largest here because what it runs is not known in advance. Every row
+      armed this way bills here, whatever the operator called it, so this one
+      number bounds all of them together.
+
+  playbook_extract:
+    mode: active
+    chain: chain_1
+    daily_budget_usd: 0.5
+    notes: >-
+      Fires when a task has been accepted as done, one model call per task
+      read, and none on a day nothing was finished.
+
+  skill_refinement:
+    mode: active
+    chain: chain_1
+    daily_budget_usd: 0.5
+    notes: >-
+      Fires on evidence rather than on a clock, so it is a few calls on the
+      days enough has happened and none on the rest.
+
+  skill_suggest:
+    mode: active
+    chain: chain_1
+    daily_budget_usd: 0.5
+    notes: >-
+      The other half of the learning loop, on the same shape: enough new
+      digests to read across, or nothing.
+
+  provider_watch:
+    mode: active
+    chain: chain_1
+    daily_budget_usd: 0.5
+    notes: >-
+      One search and one model call per provider, on the days you have it
+      armed. Off in the shipped schedule until a Tavily key is set.
+
+  panel_writer:
+    mode: active
+    chain: chain_1
+    daily_budget_usd: 1.0
+    notes: >-
+      One short line per room on the Autonomy panel. The cache is keyed on the
+      counted facts themselves, so a room whose numbers have not moved calls
+      no model.
 
 # ─── Voice subsystem ────────────────────────────────────────
 # Style/character is config-only via per-surface `synthesis_presets` on each
@@ -321,6 +431,12 @@ voice:
         # warm-up cap, not a per-sentence one.
         timeout_seconds: 60
         daily_budget_usd: 0.00
+        # After three failures in a row this lane is set aside, and this is
+        # how long for before it is tried again. A local model that fails
+        # usually fails because something on this machine is busy or the
+        # model file moved, so waiting a couple of minutes and retrying is
+        # the whole recovery.
+        lane_cooldown_seconds: 120
       api.google.erinome:
         # Streamed, so the timeout covers the whole utterance rather than
         # the wait for it to begin. Generous enough for a long reply on a
@@ -332,3 +448,7 @@ voice:
         # of talking in a day — well past ordinary use, and it stops a
         # runaway loop from spending the chat budget on saying things.
         daily_budget_usd: 1.00
+        # As above, and longer: a cloud provider having a bad few minutes is
+        # the common case here, and retrying it every two minutes spends the
+        # first sentence of a reply on a request that is going to fail.
+        lane_cooldown_seconds: 300

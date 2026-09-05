@@ -5,8 +5,7 @@ renders a role → primary → fallbacks → adapter table. Atomic write.
 
 Called from:
 - Mirror app boot (``mirror/server/app.py::_on_startup``) after config load.
-- The ``yaml_change_proposal`` apply path on any successful catalog edit
-  (MO-10-2).
+- The ``yaml_change_proposal`` apply path on any successful catalog edit.
 
 CLI entry: ``python -m tesseract.scripts.regenerate_roles_summary``.
 """

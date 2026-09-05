@@ -1,94 +1,98 @@
-// AU-7 S1 — DecisionLogPane.
+// What the kernel and the governor decided, most recent first.
 //
-// Recent kernel + governor decisions. Built from two on-hand signals:
-// the latest agenda status_history entries (each transition is a
-// decision the kernel made) plus the Governor's last_tick action
-// counts. Answers §15 Q6 (what failed and when?).
+// Built from two signals the panel already holds: the last transition on each
+// agenda item, and the governor's last tick. One band of state lines.
 //
-// S2 will swap this for a dedicated decision-log endpoint once the
-// kernel persists its per-tick records — for S1, this view is good
-// enough to surface activity.
+// It drew bordered cards with two chips in the head of each before, which is
+// the shape the panel replaced everywhere else.
 
-import { Block } from '../../components/common/Block';
 import React from 'react';
 import type { AgendaItem, GovernorTickPayload } from '../../lib/api';
+import { Band, StateStrip, type StateLine } from '../../components/common/StateStrip';
+import { clock } from '../../lib/time';
 
-interface DecisionLogPaneProps {
-  items: AgendaItem[];
-  lastTick: GovernorTickPayload | null;
-}
+const SHOWN = 10;
 
-function _fmtTimeAgo(iso: string): string {
-  const parsed = Date.parse(iso);
-  if (Number.isNaN(parsed)) return '—';
-  const seconds = Math.max(0, (Date.now() - parsed) / 1000);
-  if (seconds < 90) return `${Math.round(seconds)}s ago`;
-  if (seconds < 5400) return `${Math.round(seconds / 60)}m ago`;
-  if (seconds < 90000) return `${Math.round(seconds / 3600)}h ago`;
-  return `${Math.round(seconds / 86400)}d ago`;
-}
+// A transition into one of these did not go the way it was meant to. The rest
+// are the kernel doing what it said it would.
+const BADLY = new Set(['failed', 'cancelled', 'abandoned', 'blocked']);
 
-interface DecisionRow {
+interface Decision {
   key: string;
   at: string;
   by: string;
-  label: string;
+  became: string;
   detail: string;
 }
 
-function _rows(items: AgendaItem[], lastTick: GovernorTickPayload | null): DecisionRow[] {
-  const out: DecisionRow[] = [];
+function decisions(
+  items: AgendaItem[],
+  lastTick: GovernorTickPayload | null,
+): Decision[] {
+  const out: Decision[] = [];
   for (const item of items) {
     const last = item.status_history[item.status_history.length - 1];
     if (!last) continue;
     out.push({
-      key: `${item.id}-${last.at}`,
+      key: `${item.id}:${last.at}`,
       at: last.at,
       by: last.by,
-      label: `${last.from_status ?? '∅'} → ${last.to_status}`,
-      detail: `${item.goal}${last.reason ? ` — ${last.reason}` : ''}`,
+      became: last.to_status,
+      detail: last.reason || item.goal,
     });
   }
-  if (lastTick && (lastTick.pauses_added.length || lastTick.workers_cancelled.length || lastTick.items_blocked.length)) {
+  if (
+    lastTick &&
+    (lastTick.pauses_added.length ||
+      lastTick.workers_cancelled.length ||
+      lastTick.items_blocked.length)
+  ) {
     out.push({
-      key: `governor-${lastTick.at}`,
+      key: `governor:${lastTick.at}`,
       at: lastTick.at,
       by: 'governor',
-      label: 'tick',
+      became: 'stepped in',
       detail: [
-        lastTick.pauses_added.length ? `${lastTick.pauses_added.length} pause` : '',
-        lastTick.workers_cancelled.length ? `${lastTick.workers_cancelled.length} cancel` : '',
-        lastTick.items_blocked.length ? `${lastTick.items_blocked.length} block` : '',
+        lastTick.pauses_added.length ? `paused ${lastTick.pauses_added.length}` : '',
+        lastTick.workers_cancelled.length
+          ? `cancelled ${lastTick.workers_cancelled.length}`
+          : '',
+        lastTick.items_blocked.length ? `blocked ${lastTick.items_blocked.length}` : '',
       ]
         .filter(Boolean)
-        .join(' · '),
+        .join(', '),
     });
   }
-  return out.sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, 10);
+  return out.sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, SHOWN);
 }
 
-export function DecisionLogPane({ items, lastTick }: DecisionLogPaneProps): React.ReactElement {
-  const rows = _rows(items, lastTick);
+function toLine(row: Decision): StateLine {
+  return {
+    key: row.key,
+    state: BADLY.has(row.became) ? 'degraded' : 'idle',
+    label: row.became.replace(/_/g, ' '),
+    name: row.by,
+    said: row.detail,
+    when: clock(row.at),
+    value: row.became.replace(/_/g, ' '),
+  };
+}
 
+export function DecisionLogPane({
+  items,
+  lastTick,
+}: {
+  items: AgendaItem[];
+  lastTick: GovernorTickPayload | null;
+}): React.ReactElement {
+  const rows = decisions(items, lastTick);
+  if (rows.length === 0) {
+    return <p className="t-meta">Nothing has been decided yet.</p>;
+  }
   return (
-    <Block title="Recent decisions">
-
-      {rows.length === 0 ? (
-        <p className="t-meta">No decisions yet — kernel is idle.</p>
-      ) : (
-        <ul className="autonomy-list">
-          {rows.map((row) => (
-            <li key={row.key} className="autonomy-row autonomy-row--decision">
-              <div className="autonomy-row__head">
-                <span className="autonomy-chip autonomy-chip--source">{row.by}</span>
-                <span className="autonomy-chip autonomy-chip--decision">{row.label}</span>
-                <span className="t-meta autonomy-row__score">{_fmtTimeAgo(row.at)}</span>
-              </div>
-              <div className="autonomy-row__rationale t-meta">{row.detail}</div>
-            </li>
-          ))}
-        </ul>
-      )}
-    </Block>
+    <div className="autonomy-group">
+      <Band label="What it decided" count={rows.length} />
+      <StateStrip lines={rows.map(toLine)} />
+    </div>
   );
 }

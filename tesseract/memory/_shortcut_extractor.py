@@ -1,6 +1,6 @@
-"""Windows shortcut (.url / .lnk) URL extraction — AU-22.
+"""Windows shortcut (.url / .lnk) URL extraction.
 
-The AU-22 raw-watch path treats `.url` and `.lnk` files as one-hop pointers
+The raw-watch path treats `.url` and `.lnk` files as one-hop pointers
 to web content: the file itself carries no readable text, but it names a
 URL that `tavily_extract` can fetch. This module owns the parsing —
 `vault_indexer.extract_text` chains it.

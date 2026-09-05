@@ -43,7 +43,7 @@ class DelegateAuditorInput(BaseModel):
         description=(
             "Stall ceiling in seconds (10-1800, default 300): give up only "
             "after this long with NO activity from the CLI. An actively "
-            "working delegate keeps going — lane waits bound silence, not "
+            "working delegate keeps going. Lane waits bound silence, not "
             "total duration, because a wall-clock cap abandons healthy long "
             "tasks."
         ),
@@ -52,7 +52,7 @@ class DelegateAuditorInput(BaseModel):
         default=None,
         description=(
             "Borrow a specific CLI for this one call. Leave unset to use "
-            "whichever CLI holds the auditor seat in roles.yaml — that is "
+            "whichever CLI holds the auditor seat in roles.yaml. That is "
             "the normal path, and a cross-family review is the point, so "
             "prefer the seat default over matching the coder. Any provider "
             "with a `<name>_cli` role in roles.yaml is borrowable; an unknown "
@@ -76,7 +76,7 @@ class DelegateAuditorInput(BaseModel):
             "parallel. Use spawn_check (poll) or spawn_await (block) to "
             "retrieve the result later. Set false ONLY when the next step in "
             "the same turn must consume the result immediately and there's "
-            "nothing else to do meanwhile — the foreground path blocks the "
+            "nothing else to do meanwhile. The foreground path blocks the "
             "entire turn for the full delegate duration (up to `timeout` "
             "seconds). Foreground requests whose timeout exceeds "
             "runtime.yaml::max_foreground_delegate_timeout_s are "
@@ -103,13 +103,14 @@ class DelegateAuditorTool(Tool):
     use_when: ClassVar[str] = (
         "Use for code review, verifying your own reasoning, second opinions on design "
         "choices, or scope checks. Brief it with the root symptom, what you expected, and "
-        "what you ruled out — never your worry about the mess you made getting there."
+        "what you ruled out. Never your worry about the mess you made getting there."
     )
     not_when: ClassVar[str] = (
-        "Building code, not reviewing it — use `delegate_coder`. A "
-        "persistent controller session — use `delegate_agent_controller`. "
-        "A markdown sub-agent task — use `invoke_agent`."
+        "Building code, not reviewing it: use `delegate_coder`. A "
+        "persistent controller session: use `delegate_agent_controller`. "
+        "A markdown sub-agent task: use `invoke_agent`."
     )
+    depends_on: ClassVar[str] = "role:auditor"
 
     @property
     def name(self) -> str:

@@ -9,6 +9,7 @@ from aiohttp import web
 
 import tesseract
 from tesseract.mirror.server.config import project_voice_cost_view
+from tesseract.mirror.server.routes.settings import COMPACTION_BOUNDS
 from tesseract.mirror.server.envelope import make_envelope
 from tesseract.permissions.policy import DEFAULT_POSTURE
 
@@ -135,12 +136,30 @@ async def identity(request: web.Request) -> web.Response:
     live_chat_ratio = _live_chat_attr(request.app, "compact_threshold", chat_brain.get("compact_threshold"), float)
     live_chat_keep = _live_chat_attr(request.app, "keep_recent_turns", chat_brain.get("keep_recent_turns"), int)
     chat_window = int(chat_brain.get("context_window", 0))
+    compaction = config.models.get("compaction") or {}
     compact_thresholds = {
         "chat_brain": {
             "ratio": live_chat_ratio,
             "context_window": chat_window,
             "tokens": int(round(live_chat_ratio * chat_window)),
             "keep_recent_turns": live_chat_keep,
+            # What the panel needs to draw the same picture the runtime
+            # enforces, minus the measured floor. That one is per conversation
+            # and this route has no conversation: it answers a GET with no
+            # session and no chat, and reporting whichever open session came
+            # first drew one chat's shape under another's name. The floor
+            # rides the `session_stats` envelope instead, which is delivered
+            # to the session it belongs to and stamped with its chat.
+            "compact_ratio": compaction.get("compact_ratio"),
+            "headroom_multiplier": compaction.get("headroom_multiplier"),
+            "comfortable_multiplier": compaction.get("comfortable_multiplier"),
+            # What the route will accept, so the control does not keep its own
+            # copy of the bounds and drift from them.
+            **COMPACTION_BOUNDS,
+            # The value a fresh install starts at, read from the sealed copy
+            # beside the code rather than the operator's, which the Settings
+            # pane overwrites. In a dev checkout the two are one file.
+            "shipped_ratio": _shipped_compact_ratio(),
         },
     }
 
@@ -172,9 +191,13 @@ async def identity(request: web.Request) -> web.Response:
         "voice": {"tts": voice_tts, "stt": voice_stt},
     }
 
+    born_at, age_days = _birth_facts(request.app)
+
     return web.json_response({
         "name": config.entity_name,
         "operator_name": config.operator_name,
+        "born_at": born_at,
+        "age_days": age_days,
         "version": tesseract.__version__,
         "security_mode": config.permissions.mode,
         "model_role": "chat_brain",
@@ -187,6 +210,38 @@ async def identity(request: web.Request) -> web.Response:
         "compact_thresholds": compact_thresholds,
         "cost_tracking": cost_tracking,
     })
+
+
+def _birth_facts(app: web.Application) -> tuple[str | None, int | None]:
+    """When this instance started existing, and how many days ago that was.
+
+    Read from `identity.yaml` at request time rather than from `ServerConfig`,
+    which holds the three keys the running server needs live. This one never
+    changes after the first boot stamps it.
+
+    The day count is computed with the prompt's own helper, not in the
+    frontend: this is the same figure the assistant is given in its temporal
+    block, and two implementations of "days between" disagree at every
+    timezone boundary. A missing or unreadable value returns `None` twice, and
+    the tab simply does not draw the line.
+    """
+    from tesseract.brain.prompt import _now_local
+    from tesseract.brain.prompt_time import _compute_age_days
+    from tesseract.mirror.server.routes.settings import identity_yaml_path
+
+    import yaml
+
+    try:
+        raw = yaml.safe_load(
+            identity_yaml_path(app).read_text(encoding="utf-8")
+        ) or {}
+        born_at = str(raw.get("born_at") or "").strip()
+        if not born_at:
+            return None, None
+        return born_at, _compute_age_days(born_at, now=_now_local())
+    except (OSError, yaml.YAMLError, ValueError) as exc:
+        log.warning("identity: could not read born_at (%s)", exc)
+        return None, None
 
 
 def _live_chat_attr(app: web.Application, attr: str, fallback: float | None, cast: type) -> int | float:
@@ -205,6 +260,40 @@ def _live_chat_attr(app: web.Application, attr: str, fallback: float | None, cas
             except (TypeError, ValueError):
                 continue
     return cast(fallback) if fallback is not None else cast(0)
+
+
+def _shipped_compact_ratio() -> float | None:
+    """The trigger a fresh install starts at, or None when there is no such
+    thing here.
+
+    Read from the factory copy beside the code, not the operator's, because
+    the Settings pane writes `compaction.compact_ratio` and a mark drawn from
+    the value it just overwrote sits under the handle and marks nothing.
+
+    A dev checkout has ONE config tree, so the two copies are the same file
+    and there is no separate shipped value to point at. None, and the bar
+    draws no mark, rather than a mark that follows whatever the operator last
+    set. `factory_reset` refuses for the same reason and says so.
+
+    Not cached: a save through this pane rewrites the file this reads.
+    """
+    import yaml
+
+    from tesseract.paths import TESSERACT_DIR, config_dir
+
+    factory = TESSERACT_DIR / "config" / "roles.yaml"
+    live = config_dir() / "roles.yaml"
+    if not factory.is_file():
+        return None
+    if live.is_file() and factory.resolve() == live.resolve():
+        return None
+
+    try:
+        doc = yaml.safe_load(factory.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        log.warning("identity: could not read the shipped compaction default")
+        return None
+    return ((doc or {}).get("compaction") or {}).get("compact_ratio")
 
 
 # ── Identity write ──────────────────────────────────────────────────
@@ -265,10 +354,11 @@ def _clean_gender(raw: object) -> str:
 async def set_identity(request: web.Request) -> web.Response:
     """POST /api/identity — rename the agent, the operator, or the wake phrase.
 
-    `mirror.yaml` stays in `file_write`'s `_LOCKED_CONFIG_FILES`, so a tool
-    cannot reach these keys; this operator-attended route is the sanctioned
-    writer. Every field is optional and only the ones present are written —
-    the Identity tab saves one control at a time.
+    `identity.yaml` sits in `file_write`'s `_LOCKED_CONFIG_FILES` and is denied
+    in `permissions.yaml`, so a tool cannot reach these keys; this
+    operator-attended route is the sanctioned writer. Every field is optional
+    and only the ones present are written — the Identity tab saves one control
+    at a time.
 
     Workspace documents the operator or the assistant has EDITED are never
     rewritten by a rename: that prose is theirs, and editing it under them
@@ -319,33 +409,30 @@ async def apply_identity_updates(
     """Persist already-validated identity keys, reload, broadcast.
 
     Shared with the Voice settings panel's wake-word toggle so there is one
-    writer for `mirror.yaml::identity` rather than two that drift.
+    writer for `identity.yaml` rather than two that drift.
     """
     from tesseract.lib.yaml_io import round_trip_yaml
     from tesseract.mirror.server.config_watcher import refresh_identity
-    from tesseract.mirror.server.routes.settings import mirror_yaml_path
+    from tesseract.mirror.server.routes.settings import identity_yaml_path
 
     def _apply(doc: object) -> None:
-        identity = doc.get("identity")  # type: ignore[union-attr]
-        if identity is None:
-            raise KeyError("identity")
-        identity.update(updates)
+        doc.update(updates)  # type: ignore[union-attr]
         if wake:
             # Write into the existing block rather than creating one: the
             # threshold beside it is a required key, and a half-block here
             # is refused by `load_identity` at the next read.
-            block = identity.get("wake_word")
+            block = doc.get("wake_word")  # type: ignore[union-attr]
             if block is None:
-                raise KeyError("identity.wake_word")
+                raise KeyError("wake_word")
             block.update(wake)
 
-    path = mirror_yaml_path(app)
+    path = identity_yaml_path(app)
     try:
         round_trip_yaml(path, _apply)
     except KeyError as exc:
-        return web.json_response({"error": f"mirror.yaml missing key: {exc}"}, status=500)
+        return web.json_response({"error": f"identity.yaml missing key: {exc}"}, status=500)
     except (OSError, ValueError) as exc:
-        return web.json_response({"error": f"failed to write mirror.yaml: {exc}"}, status=500)
+        return web.json_response({"error": f"failed to write identity.yaml: {exc}"}, status=500)
 
     try:
         applied = refresh_identity(app, path)
@@ -415,7 +502,13 @@ async def tools(request: web.Request) -> web.Response:
     defaults = policy.tools_defaults
     out: list[dict] = []
     for tool in registry.tools.values():
-        raw_default = defaults.get(tool.name, DEFAULT_POSTURE)
+        # What this tool would be with the mode taken out of it, from the one
+        # place that knows the order. This was the chain written out here by
+        # hand, and it omitted `permissions.yaml::custom` — so a tool the
+        # assistant wrote and the operator had set to AUTO was reported as
+        # ASK, and the panel's badge said it would be ASK without the mode
+        # when it would not.
+        raw_default = policy.posture_without_mode(tool.name)
         out.append({
             "name": tool.name,
             "description": tool.description,
@@ -423,5 +516,10 @@ async def tools(request: web.Request) -> web.Response:
             "default_posture": raw_default,
             "mode_override": policy.has_mode_override(tool.name),
             "path_sensitive": policy.has_path_overrides(tool.name),
+            # `shipped` or `custom`. One registry and one tag: every panel
+            # that lists tools filters on this rather than reading a second
+            # roster.
+            "origin": getattr(tool, "origin", "shipped"),
+            "tier": getattr(tool, "tier", "extended"),
         })
     return web.json_response({"tools": out, "mode": policy.mode})

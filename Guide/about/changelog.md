@@ -14,6 +14,69 @@ Every release is installable from the same link —
 — which always points at the current version. If TESSERACT is already
 installed, you do not need it: the app offers you the update itself.
 
+## 1.1.2
+
+The assistant gets accounts of its own, a long conversation stops falling over,
+and the panel that shows you what it is doing was rebuilt.
+
+- **The assistant can have its own sign ins.** Settings, Credentials. You add
+  an account, say who it belongs to and which addresses it may be sent to, and
+  the assistant can use it without ever being shown the value. Each value is
+  encrypted with your Windows sign in before it touches the disk, so the file
+  opens on your account on this machine and nowhere else. An account can hold
+  several boxes, because many services want an id beside a secret, and the
+  assistant can ask you for one it does not have.
+- **A value that got out is caught on the way back.** Every tool result in the
+  app passes one point on its way into the conversation, and a stored value
+  found there is replaced before it becomes part of the record. Four further
+  places are checked: the conversation saved to disk, the request sent to the
+  model, anything saved to memory, and the log files. The request to the model
+  is the strict one. If your accounts cannot be read, nothing is sent.
+- **A sign in carried inside a web address is blanked too.** A repository
+  cloned with an access token records that token in its own address, and the
+  assistant is told which project you have open at the start of every turn. It
+  was going out with it. This one needs no account saved anywhere: the shape
+  gives it away.
+- **A long conversation no longer goes blank.** Past the size the assistant can
+  send in one go, it used to keep the last three messages and throw the rest
+  away silently, then be unable to recall work it had just finished. It now
+  summarises the older part, keeps going, and tells you. What it drops first is
+  tool output it can fetch again, never what you said.
+- **Long answers stop being cut off part way.** The limit on a single reply was
+  set to a fraction of what the model actually allows.
+- **What a conversation costs is now counted properly.** Every kind of token
+  the providers report is captured, each is priced from a rate a person
+  checked, and summarising a conversation is billed rather than being free.
+  Three of the six model prices had been wrong.
+- **A conversation on your phone survives a restart.** It is saved the way one
+  in the app is and comes back with its history. Work that finished while the
+  app was down is handed over on your next message rather than sitting unread.
+- **The Autonomy panel was rebuilt.** Every room opens with a sentence about
+  what is in it, the trail at the top says where you are, and a new Atlas room
+  draws the map of how everything is wired, including what it does not cover
+  yet. A list of what needs you no longer quietly forgets an item.
+- **The memory map opens on a question rather than on the whole library.** Pick
+  where to start, narrow by kind of record or when it arrived, and connected
+  records are drawn near each other. Labels no longer pile on top of one
+  another.
+- **The assistant can write down a procedure that worked.** A playbook says
+  what problem it answers and when to use it, keeps its earlier revisions, and
+  records how each one did. A correction you give lands on the playbook it was
+  following.
+- **Cards you put away keep running.** Minimising one used to take it off the
+  page, so it stopped updating and reported itself gone.
+- **If the app crashes over and over and gives up restarting, it now says so.**
+- **Notifications say what they are and why in plain words.** Four kinds that
+  nothing ever sent were removed, and what remains reaches every channel it
+  names at once.
+
+Security fixes in this release: a crafted date could reach another chat's
+transcript or a log elsewhere on the machine when looking up a past day; a
+command line tool the app starts could inherit the application folder as its
+working directory, where an edit would be erased by the next update; and the
+workshop falling back to the top of your home folder, which sits directly above
+your memories, your vault and your settings.
+
 ## 1.1.1
 
 The install stops being a black box, and the source is public.

@@ -536,7 +536,7 @@ class _SessionHandlersMixin:
     async def _on_activity_snapshot(
         self, conn: _ClientConn, msg: ActivitySnapshotMessage
     ) -> None:
-        """AS-1 gap-a — reply to the requesting client with the full
+        """Reply to the requesting client with the full
         Activity-registry snapshot so a (re)connecting subscriber reconciles
         mid-flight lanes/sessions at once. Point-to-point, not broadcast: only
         the asking client needs it, and ``activity_event`` pushes already keep

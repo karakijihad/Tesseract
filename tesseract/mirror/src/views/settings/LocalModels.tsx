@@ -1,5 +1,5 @@
 import { Note } from '../../components/common/Note';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import {
   ApiError,
@@ -17,8 +17,15 @@ import {
   type ModelLane,
   type OllamaStatusResponse,
   type WhisperStatusResponse,
+  fetchCatalog,
+  postModelRef,
 } from '../../lib/api';
 import { Button } from '../../components/common/Button';
+import { Select } from '../../components/common/Select';
+import { DataTable } from '../../components/common/DataTable';
+import { Hint } from '../../components/ui/Hint';
+import { useCachedFetch } from '../../lib/useCachedFetch';
+import type { CatalogEntry, CatalogResponse } from '../../lib/types';
 
 // Status-chip cadence only — chat/voice never touch these endpoints. 30s
 // keeps the ollama /api/tags probe (and its TIME_WAIT sockets) off the hot
@@ -77,20 +84,20 @@ function ModelFilesRow({
   // there is nothing to offer.
   if (!files || files.files_present !== false) return null;
   return (
-    <div className="cost-row cost-row--actions">
-      <span className="t-meta">
-        {files.download_error
-          ? files.download_error
-          : `${label} files are not downloaded — this lane stays silent until they are (${size}).`}
-      </span>
+    <Hint
+      label={
+        files.download_error ||
+        `${label} files are not on this machine. The lane stays silent until they are (${size}).`
+      }
+    >
       <Button
         onClick={() => onDownload(lane)}
         disabled={files.downloading}
         tone="primary"
       >
-        {files.downloading ? 'Downloading…' : 'Download'}
+        {files.downloading ? 'Downloading…' : `Download ${size}`}
       </Button>
-    </div>
+    </Hint>
   );
 }
 
@@ -110,14 +117,19 @@ function DriftRow({
   const record = report?.dependencies?.[dependency];
   if (!record || record.state !== 'stale') return null;
   return (
-    <div className="cost-row">
-      <span className="t-meta">
-        {record.reason ||
-          'this is not the version this build expects — it will be replaced on the next launch'}
-      </span>
-    </div>
+    <Note tone="warn">
+      {record.reason ||
+        'What is installed is not the version this build expects. It will be replaced on the next launch.'}
+    </Note>
   );
 }
+
+const LOCAL_COLUMNS = [
+  { label: "model", width: "160px" },
+  { label: "status", width: "minmax(0, 1fr)" },
+  { label: "selection", width: "240px" },
+  { label: "actions", width: "200px" },
+];
 
 export function LocalModelsSection() {
   const [status, setStatus] = useState<OllamaStatusResponse | null>(
@@ -134,8 +146,50 @@ export function LocalModelsSection() {
   const [whisperBusy, setWhisperBusy] = useState(false);
   const [kokoroBusy, setKokoroBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [swapping, setSwapping] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
+  // The same cache key Model roles uses, so opening both costs one fetch.
+  // The picker writes through `postModelRef`, which is that panel's writer
+  // too: this surface shows a different question about the same setting, and
+  // a second endpoint for it would be a second answer.
+  const { data: catalog, set: setCatalog } = useCachedFetch<CatalogResponse>(
+    'settings.catalog',
+    fetchCatalog,
+  );
+
+  const optionsByTarget = useMemo(() => {
+    const out = new Map<string, { value: string; label: string }[]>();
+    for (const meta of catalog?.targets ?? []) {
+      const allowed = meta.allowed_kinds;
+      out.set(
+        meta.target,
+        (catalog?.entries ?? [])
+          .filter((e: CatalogEntry) => allowed.length === 0 || allowed.includes(e.kind))
+          .map((e: CatalogEntry) => ({
+            value: e.ref,
+            label: `${e.model} · ${e.tier}.${e.provider}`,
+          })),
+      );
+    }
+    return out;
+  }, [catalog]);
+
+  const swapRef = async (target: string, ref: string) => {
+    if (!catalog || catalog.current[target] === ref) return;
+    setSwapping(target);
+    setError(null);
+    try {
+      await postModelRef({ target, ref });
+      setCatalog({ ...catalog, current: { ...catalog.current, [target]: ref } });
+      void refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `${target} model change failed`);
+    } finally {
+      setSwapping(null);
+    }
+  };
+
+  const refresh = useCallback(async (recheck = false) => {
     // Fetch in parallel — each call hits a separate /api/system/{name}
     // endpoint, and Ollama's tag fetch alone can take ~1s. Running
     // them sequentially stretches the cycle to ~4s; parallel keeps
@@ -146,8 +200,11 @@ export function LocalModelsSection() {
       fetchOllamaStatus(),
       fetchWhisperStatus(),
       fetchKokoroStatus(),
-      // Reads the artifact the launch pass wrote — no probing, no network.
-      fetchDependencies(),
+      // Reads the artifact the launch pass wrote: no probing, no network. The
+      // Refresh button passes `true`, which runs a real pass. Without that the
+      // panel kept reporting a conflict the operator had already fixed, until
+      // the next relaunch, because nothing else ever rewrites the artifact.
+      fetchDependencies(recheck),
     ]);
     if (s.status === 'fulfilled') SNAPSHOT.status = s.value;
     if (w.status === 'fulfilled') SNAPSHOT.whisper = w.value;
@@ -301,11 +358,11 @@ export function LocalModelsSection() {
   // Absent binary is its own state, not a kind of "stopped": a start toggle
   // cannot fix it, and semantic search stays off until something installs it.
   const stateLabel = status.installing
-    ? 'installing — downloading Ollama and the embedding model…'
+    ? 'installing: downloading Ollama and the embedding model…'
     : status.install_error
       ? `install failed: ${status.install_error}`
       : !status.binary_present
-    ? 'not installed — semantic search is off (keyword search still works)'
+    ? 'not installed, so search falls back to keywords'
     : status.running
       ? !status.embedding_model
         ? 'running'
@@ -324,153 +381,234 @@ export function LocalModelsSection() {
   const ownedHint = !status.binary_present
     ? 'Install downloads Ollama and pulls the embedding model'
     : status.owned_by_mirror
-      ? 'started by Mirror — stop will terminate it'
+      ? 'started by Mirror, so Stop will end it'
       : status.running
-        ? 'started outside Mirror — stop refused (manual stop required)'
+        ? 'started outside Mirror, so Stop is refused and you have to end it yourself'
         : 'will spawn `ollama serve` on start';
+
+  // One row per thing that can be installed, in the order an operator meets
+  // them: the daemon, what it serves, then the two speech lanes. Each row
+  // answers the same three questions, which is what makes them a table
+  // rather than four stacked panels with shapes of their own.
+  const picker = (target: string, ariaLabel: string) => {
+    const options = optionsByTarget.get(target) ?? [];
+    const current = catalog?.current[target] ?? '';
+    if (options.length === 0) return <span className="t-meta">not selectable</span>;
+    return (
+      <Select
+        value={current}
+        disabled={swapping === target}
+        onChange={(v) => void swapRef(target, v)}
+        ariaLabel={ariaLabel}
+        options={[
+          ...(current && !options.some((o) => o.value === current)
+            ? [{ value: current, label: current + ' (not in the catalog)' }]
+            : []),
+          ...(!current ? [{ value: '', label: 'not configured' }] : []),
+          ...options,
+        ]}
+      />
+    );
+  };
 
   return (
     <section className="settings-section">
-      <div className="t-meta" style={{ marginBottom: '0.5rem' }}>
-        {status.embedding_model
-          ? `Embedding model ${status.embedding_model} runs on Ollama at ${status.base_url}. Required for memory dedupe + retrieval. Toggle to start or stop.`
-          : `Ollama runs at ${status.base_url}. Toggle to start or stop.`}
-      </div>
-      <div className="cost-row">
-        <label className="cost-row__label">Status</label>
-        <span className={status.running ? 't-meta' : 't-meta'}>
-          {stateLabel}
-        </span>
-        <span className="cost-row__spend t-meta">{ownedHint}</span>
-      </div>
-      <div className="cost-row">
-        <label className="cost-row__label">Available models</label>
-        <span className="t-meta">
-          {status.tags_error
-            ? 'unknown — the daemon did not answer'
-            : status.tags.length === 0
-              ? '—'
-              : status.tags.join(', ')}
-        </span>
-      </div>
-      <div className="cost-row cost-row--actions">
-        {status.binary_present ? (
-          <Button
-            onClick={() => void onOllamaAction(status.running ? 'stop' : 'start')}
-            disabled={busy}
-            tone="primary"
-          >
-            {busy ? '…' : status.running ? 'Stop' : 'Start'}
-          </Button>
-        ) : (
-          // The recovery path for a first run whose silent install was blocked
-          // or declined. The per-launch retry runs `--no-install` on purpose,
-          // so without this button the only way back was a typed command.
-          <Button
-            onClick={() => void onOllamaAction('install')}
-            disabled={busy || status.installing}
-            tone="primary"
-          >
-            {status.installing ? 'Installing…' : 'Install Ollama'}
-          </Button>
-        )}
-        {status.running && !status.embedding_present && (
-          <Button
-            onClick={() => void onOllamaAction('install')}
-            disabled={busy || status.installing}
-            tone="primary"
-          >
-            {status.installing ? 'Pulling…' : 'Pull embedding model'}
-          </Button>
-        )}
-        <Button
-          onClick={() => {
-            void refresh();
-          }}
-          disabled={busy}
-          tone="primary"
-        >
-          Refresh
-        </Button>
-      </div>
+      <Note>
+        What runs on this machine rather than over the network. Ollama serves
+        the embedding model at {status.base_url}; the two speech lanes load
+        into this process the first time something needs them.
+      </Note>
       {error && <Note tone="bad">{error}</Note>}
-      <div className="cost-row" style={{ marginTop: '0.75rem' }}>
-        <label className="cost-row__label">Whisper STT</label>
-        <span className="t-meta">
-          {whisper?.configured
-            ? `${whisper.model} · ${whisperDevice(whisper)}`
-            : 'not configured'}
-        </span>
-        <span className="cost-row__spend t-meta">
-          {whisper?.disabled
-            ? `disabled: ${whisper.disabled_reason}`
-            : whisper?.loaded
-              ? 'loaded in Mirror process'
-              : 'lazy-loads on first voice transcription'}
-        </span>
-      </div>
-      <div className="cost-row cost-row--actions">
-        <Button
-          onClick={onUnloadWhisper}
-          disabled={whisperBusy || (!whisper?.loaded && !whisper?.disabled)}
-          tone="primary"
-        >
-          {whisperBusy ? '…' : whisper?.disabled ? 'Reset Whisper' : 'Unload Whisper'}
-        </Button>
-      </div>
-      <ModelFilesRow
-        files={whisper}
-        lane="whisper"
-        label="Speech recognition model"
-        size="~1.6 GB"
-        onDownload={onDownload}
+
+      <DataTable
+        label="What runs on this machine"
+        columns={LOCAL_COLUMNS}
+        rows={[
+          {
+            key: "ollama",
+            cells: [
+              <span className="local-table__name">Ollama</span>,
+              // How many models are downloaded is part of what state the
+              // daemon is in, so it reads here. It sat in the selection column
+              // saying "4 pulled", which is not a selection and is not
+              // something you can pick.
+              <span className="local-table__status t-meta">
+                {stateLabel}
+                {status.binary_present && (
+                  <Hint
+                    label={
+                      status.tags_error
+                        ? 'The daemon did not answer: ' + status.tags_error
+                        : status.tags.length === 0
+                          ? 'Nothing is downloaded yet'
+                          : status.tags.join(', ')
+                    }
+                  >
+                    <span className="t-meta">
+                      {' · '}
+                      {status.tags_error
+                        ? 'model list unavailable'
+                        : `${status.tags.length} downloaded`}
+                    </span>
+                  </Hint>
+                )}
+              </span>,
+              // A daemon is not a model, so there is nothing here to choose.
+              <span className="local-table__pick t-meta">{'—'}</span>,
+              <span className="local-table__actions">
+                <Hint label={ownedHint}>
+                  {status.binary_present ? (
+                    <Button
+                      onClick={() =>
+                        void onOllamaAction(status.running ? 'stop' : 'start')
+                      }
+                      disabled={busy}
+                      tone="primary"
+                    >
+                      {busy ? 'working' : status.running ? 'Stop' : 'Start'}
+                    </Button>
+                  ) : (
+                    // The recovery path for a first run whose silent install was
+                    // blocked or declined. The per-launch retry runs
+                    // `--no-install` on purpose, so without this the only way back
+                    // was a typed command.
+                    <Button
+                      onClick={() => void onOllamaAction('install')}
+                      disabled={busy || status.installing}
+                      tone="primary"
+                    >
+                      {status.installing ? 'Installing' : 'Install'}
+                    </Button>
+                  )}
+                </Hint>
+                <Hint label="Re-reads the state of everything above, and checks the installed packages again rather than trusting what was found at launch.">
+                  <Button
+                    onClick={() => void refresh(true)}
+                    disabled={busy}
+                    tone="primary"
+                  >
+                    Refresh
+                  </Button>
+                </Hint>
+              </span>,
+            ],
+          },
+          {
+            key: "embedding",
+            cells: [
+              <span className="local-table__name">Embedding</span>,
+              <span className="local-table__status t-meta">
+                {!status.binary_present
+                  ? 'Ollama is not installed'
+                  : !status.running
+                    ? 'Ollama is not running'
+                    : status.tags_error
+                      ? 'could not check'
+                      : status.embedding_present
+                        ? 'loaded'
+                        : 'not pulled'}
+              </span>,
+              <span className="local-table__pick">
+                {picker('embeddings', 'embedding model')}
+              </span>,
+              <span className="local-table__actions">
+                {status.running && !status.embedding_present && (
+                  <Button
+                    onClick={() => void onOllamaAction('install')}
+                    disabled={busy || status.installing}
+                    tone="primary"
+                  >
+                    {status.installing ? 'Pulling' : 'Pull'}
+                  </Button>
+                )}
+              </span>,
+            ],
+          },
+          {
+            key: "stt",
+            cells: [
+              <span className="local-table__name">Speech to text</span>,
+              <span className="local-table__status t-meta">
+                {whisper?.disabled
+                  ? 'off: ' + whisper.disabled_reason
+                  : !whisper?.configured
+                    ? 'not configured'
+                    : whisper.loaded
+                      ? 'loaded on ' + whisperDevice(whisper)
+                      : 'loads on first use, on ' + whisperDevice(whisper)}
+              </span>,
+              <span className="local-table__pick">
+                {picker('voice_stt', 'speech to text model')}
+              </span>,
+              <span className="local-table__actions">
+                <Button
+                  onClick={onUnloadWhisper}
+                  disabled={whisperBusy || (!whisper?.loaded && !whisper?.disabled)}
+                  tone="primary"
+                >
+                  {whisperBusy ? 'working' : whisper?.disabled ? 'Reset' : 'Unload'}
+                </Button>
+                <ModelFilesRow
+                  files={whisper}
+                  lane="whisper"
+                  label="The speech recognition model"
+                  size="1.6 GB"
+                  onDownload={onDownload}
+                />
+              </span>,
+            ],
+          },
+          {
+            key: "tts",
+            cells: [
+              <span className="local-table__name">Text to speech</span>,
+              <span className="local-table__status t-meta">
+                {kokoro?.disabled
+                  ? 'off: ' + kokoro.disabled_reason
+                  : !kokoro?.configured
+                    ? 'not configured'
+                    : kokoro.loaded
+                      ? 'loaded on ' + (kokoro.cached[0]?.provider ?? 'an unnamed provider')
+                      : 'loads on first use'}
+              </span>,
+              <span className="local-table__pick">
+                {picker('voice_tts', 'text to speech model')}
+              </span>,
+              <span className="local-table__actions">
+                <Button
+                  onClick={() =>
+                    void onKokoroAction(
+                      kokoro?.disabled || !kokoro?.loaded ? 'warm' : 'unload',
+                    )
+                  }
+                  disabled={kokoroBusy || !kokoro?.configured}
+                  tone="primary"
+                >
+                  {kokoroBusy
+                    ? 'working'
+                    : kokoro?.disabled
+                      ? 'Reset'
+                      : kokoro?.loaded
+                        ? 'Unload'
+                        : 'Load'}
+                </Button>
+                <ModelFilesRow
+                  files={kokoro}
+                  lane="kokoro"
+                  label="The Kokoro voice"
+                  size="340 MB"
+                  onDownload={onDownload}
+                />
+              </span>,
+            ],
+          },
+        ]}
       />
+
       <DriftRow report={deps} dependency="whisper" />
-      <div className="cost-row" style={{ marginTop: '0.75rem' }}>
-        <label className="cost-row__label">Kokoro TTS</label>
-        <span className="t-meta">
-          {kokoro?.configured
-            ? `${kokoro.model_path.split(/[\\/]/).pop() || kokoro.model_path} · ${kokoro.sample_rate ?? '?'} Hz · ${kokoro.device}`
-            : 'not configured'}
-        </span>
-        <span className="cost-row__spend t-meta">
-          {kokoro?.disabled
-            ? `disabled: ${kokoro.disabled_reason}`
-            : kokoro?.loaded
-              ? `loaded · ${kokoro.cached[0]?.provider ?? '?'} · mix: ${
-                  Object.entries(kokoro.mix)
-                    .map(([v, w]) => `${v}:${w}`)
-                    .join(' + ') || '—'
-                }`
-              : 'lazy-loads on first synthesis'}
-        </span>
-      </div>
-      <div className="cost-row cost-row--actions">
-        <Button
-          onClick={() =>
-            void onKokoroAction(kokoro?.disabled || !kokoro?.loaded ? 'warm' : 'unload')
-          }
-          disabled={kokoroBusy || !kokoro?.configured}
-          tone="primary"
-        >
-          {kokoroBusy
-            ? '…'
-            : kokoro?.disabled
-              ? 'Reset Kokoro'
-              : kokoro?.loaded
-                ? 'Unload Kokoro'
-                : 'Load Kokoro'}
-        </Button>
-      </div>
-      <ModelFilesRow
-        files={kokoro}
-        lane="kokoro"
-        label="Kokoro voice"
-        size="~340 MB"
-        onDownload={onDownload}
-      />
       <DriftRow report={deps} dependency="kokoro" />
       <DriftRow report={deps} dependency="reranker" />
+      <DriftRow report={deps} dependency="package-conflicts" />
     </section>
   );
 }

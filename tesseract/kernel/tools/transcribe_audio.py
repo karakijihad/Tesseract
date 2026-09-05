@@ -53,14 +53,15 @@ class TranscribeAudioTool(Tool):
     group: ClassVar[str] = "looking-for-yourself"
     summary: ClassVar[str] = "Hear an audio attachment the operator uploaded earlier in this session."
     use_when: ClassVar[str] = (
-        "You need the words in an older audio attachment — the operator asks "
+        "You need the words in an older audio attachment: the operator asks "
         "what was said in a file already discussed."
     )
     not_when: ClassVar[str] = (
         "audio on the operator's most recent message, which is transcribed "
-        "before you ever see it — calling this for that attachment does the "
+        "before you ever see it, so calling this for that attachment does the "
         "same work twice."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(self, stt_engine: "STTEngine | None" = None) -> None:
         self._stt_engine = stt_engine

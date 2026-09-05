@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+import re
 from pathlib import Path
 from typing import Any
 
 from aiohttp import web
 
+from tesseract.brain import compaction_control
 from tesseract.brain.boot import rebuild_adapters
 from tesseract.config import factory_reset
 from tesseract.config.loader import ROLE_MODES, ROLE_MODE_INACTIVE
@@ -15,13 +18,25 @@ from tesseract.mirror.server.routes._localhost import is_localhost_request
 from tesseract.mirror.server.config import VOICE_RATE_FIELDS, project_voice_cost_view
 from tesseract.mirror.server.ws import emit_stats
 from tesseract.permissions import bash_security
+from tesseract.permissions.policy import DEFAULT_POSTURE
 
 log = logging.getLogger(__name__)
 
-_MIN_RATIO = 0.10
-_MAX_RATIO = 0.95
-_MIN_KEEP_RECENT = 2
-_MAX_KEEP_RECENT = 200
+# The bounds are the control module's. A channel that could set something this
+# pane refuses would be a second policy, and a refusal is where a policy is
+# easiest to fork without noticing.
+_MIN_RATIO = compaction_control.RATIO_MIN
+_MAX_RATIO = compaction_control.RATIO_MAX
+_MIN_KEEP_RECENT = compaction_control.KEEP_RECENT_MIN
+_MAX_KEEP_RECENT = compaction_control.KEEP_RECENT_MAX
+#: What this route will accept, named once so `/api/identity` can send it to
+#: the control rather than the control keeping a second copy of the numbers.
+COMPACTION_BOUNDS = {
+    "ratio_min": _MIN_RATIO,
+    "ratio_max": _MAX_RATIO,
+    "turns_min": _MIN_KEEP_RECENT,
+    "turns_max": _MAX_KEEP_RECENT,
+}
 # Loop-limit guards. The lower bounds are deliberate: at least 1 tool iteration
 # (otherwise no tool can ever run) and at least 1 consecutive adapter error
 # before the breaker trips. Upper bounds prevent runaway loops without being so
@@ -30,7 +45,6 @@ _MIN_TOOL_ITER = 1
 _MAX_TOOL_ITER = 200
 _MIN_CONSEC_ERR = 1
 _MAX_CONSEC_ERR = 20
-_VALID_COST_ROLES = frozenset({"chat_brain", "claude_cli", "codex_cli", "observer_agent"})
 
 # Config files the "Raw config" section may expose. Anything not here is
 # off-limits (e.g. `.env`, workspace/ system prompts, logs/). Adding a new
@@ -73,16 +87,33 @@ def _permissions_yaml_path(app: web.Application) -> Path:
 
 
 async def set_tool_permission(request: web.Request) -> web.Response:
-    """Update a single tool's default posture in `permissions.yaml.tools`.
+    """Update a single tool's posture, in whichever layer currently decides it.
 
-    The hard security layer (`bash_security.py`) is unaffected — its checks
-    fire before any posture lookup and no setting reaches them. No count is
-    restated here: the last one drifted by two, and `bash_security.rules()`
-    is the only thing entitled to say how many there are.
-    mode overrides in `permissions.yaml.modes.<mode>.overrides` still apply
-    on top of this default; path overrides still win. This endpoint only
-    tunes the baseline `tools.<name>` posture.
+    **The layer is not always `tools:`.** The resolver reads the active mode
+    before that block, so a mode with an opinion outranks anything written
+    there — under a mode with a `baseline` that is every tool at once, and
+    writing `tools:` would leave the whole panel looking broken. So the write
+    goes where the decision is made: `tools.<name>` under a mode that states
+    nothing, `modes.<mode>.overrides.<name>` under one that does. Choosing the
+    baseline's own posture REMOVES the entry rather than restating it, so the
+    override map only ever holds the exceptions and cannot grow back into the
+    per-tool list the baseline replaced.
+
+    Path overrides still win over both, and the hard security layer
+    (`bash_security.py`) is unaffected — its checks fire before any posture
+    lookup and no setting reaches them. No count is restated here: the last
+    one drifted by two, and `bash_security.rules()` is the only thing
+    entitled to say how many there are.
     """
+    # From this machine only, like every other writer in this module. It was
+    # the one that did not ask, and it is the one that edits the permission
+    # policy: on a bind widened past loopback, anything that could reach the
+    # port could set any tool to AUTO, permanently and with no prompt. The
+    # shipped bind is `127.0.0.1`, so this closes a door that is not currently
+    # open rather than one that is.
+    if not is_localhost_request(request):
+        return web.json_response({"error": "localhost only"}, status=401)
+
     try:
         body = await request.json()
     except Exception:
@@ -103,9 +134,73 @@ async def set_tool_permission(request: web.Request) -> web.Response:
     if registry is not None and name not in registry.tools:
         return web.json_response({"error": f"unknown tool '{name}'"}, status=400)
 
+    # A tool the assistant wrote goes in `permissions.yaml::custom`, its own
+    # block beside `tools:`. It used to go to a file next to the tools instead,
+    # justified by `permissions.yaml` being copied verbatim into the production
+    # tree — which stopped being true when `config/_shipping/permissions.yaml`
+    # became the overlay that ships. The block ships empty, so a name that
+    # exists on one machine still reaches nobody else.
+    #
+    # What the move buys is the gate: this file is DENY to `file_write` and the
+    # old one was only ASK, so the record sits behind the stronger of the two.
+    # It binds tool CALLS and not a custom tool's own code, which runs in this
+    # process and can write any file it likes; the checkpoint there is the ASK
+    # an operator answers to admit the tool file at all.
+    tool = None if registry is None else registry.tools.get(name)
+    if getattr(tool, "origin", "shipped") == "custom":
+        policy = request.app["config"].permissions
+
+        def _apply_custom(d: Any) -> None:
+            d.setdefault("custom", {})[name] = posture
+
+        yaml_path = _permissions_yaml_path(request.app)
+        try:
+            await asyncio.to_thread(_round_trip_yaml, yaml_path, _apply_custom)
+        except (OSError, ValueError, KeyError) as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+        policy.custom_defaults[name] = posture
+        # Still held out of the mode baseline, which the block alone cannot do:
+        # `custom:` decides a posture, and the baseline is read after it only
+        # for tools nothing named. A custom tool with no line yet has no entry
+        # to be found, so the exemption is what keeps it on the ASK floor.
+        exempt = getattr(policy, "exempt_from_baseline", None)
+        if exempt is not None:
+            exempt([name])
+        return web.json_response({"name": name, "posture": posture})
+
+    policy = request.app["config"].permissions
+    mode = policy.mode
+    baseline = policy.mode_baseline()
+
+    # Which layer DECIDES, not merely whether a baseline exists. `tools:` is
+    # read after the mode's own `overrides` map, so a tool the mode names is
+    # decided by the mode whether or not that mode also carries a baseline —
+    # and a write to `tools:` for such a tool changes nothing.
+    to_the_mode = baseline is not None or policy.has_mode_override(name)
+    # What this tool would resolve to if the mode said nothing about it: the
+    # baseline where the mode has one, and otherwise the answer underneath —
+    # `tools:`, then the tool's own class default. Choosing THAT is how a row
+    # comes back out of the overrides map.
+    #
+    # It was `posture == baseline` alone, which under a mode with no baseline
+    # compares against None and is never true, so a tool named in
+    # `modes.max.overrides` could be changed and never un-named: the fix for a
+    # dead toggle had a one-way door beside it.
+    without_the_mode = (
+        baseline if baseline is not None else policy.posture_without_mode(name)
+    )
+
     def _apply(d: Any) -> None:
-        tools = d.setdefault("tools", {})
-        tools[name] = posture
+        if not to_the_mode:
+            d.setdefault("tools", {})[name] = posture
+            return
+        overrides = d.setdefault("modes", {}).setdefault(mode, {}).setdefault(
+            "overrides", {}
+        )
+        if posture == without_the_mode:
+            overrides.pop(name, None)
+        else:
+            overrides[name] = posture
 
     yaml_path = _permissions_yaml_path(request.app)
     try:
@@ -115,7 +210,16 @@ async def set_tool_permission(request: web.Request) -> web.Response:
             {"error": f"permissions.yaml missing key: {exc}"}, status=500
         )
 
-    request.app["config"].permissions.tools_defaults[name] = posture
+    # The same branch as `_apply`, because the file and the live policy have to
+    # come out of this saying one thing.
+    if not to_the_mode:
+        policy.tools_defaults[name] = posture
+    else:
+        overrides = policy.modes.setdefault(mode, {}).setdefault("overrides", {})
+        if posture == without_the_mode:
+            overrides.pop(name, None)
+        else:
+            overrides[name] = posture
 
     return web.json_response({"name": name, "posture": posture})
 
@@ -124,13 +228,14 @@ async def set_tool_permission(request: web.Request) -> web.Response:
 #: rather than taken from the request so a caller cannot ask for a scope no
 #: screen renders — `factory_reset.SCOPES` also carries `capabilities`, which
 #: has its own route because a switch reset records consent as well.
-_RESETTABLE = ("session", "loop_limits", "cost", "tools")
+_RESETTABLE = ("session", "compaction", "loop_limits", "cost", "tools")
 
 
 async def reset_defaults(request: web.Request) -> web.Response:
     """POST /api/settings/reset-defaults — one pane back to shipped values.
 
-    Body: `{"scope": "session"|"loop_limits"|"cost"|"tools"}`. Returns
+    Body: `{"scope": "session"|"compaction"|"loop_limits"|"cost"|"tools"}`.
+    Returns
     `{changed, missing}` as `file::key.path` strings; the pane re-fetches its
     own state rather than this route learning to render four different shapes.
 
@@ -152,9 +257,14 @@ async def reset_defaults(request: web.Request) -> web.Response:
         )
     try:
         changed, missing = await asyncio.to_thread(factory_reset.restore, scope)
-        return web.json_response(
-            {"changed": [str(c) for c in changed], "missing": missing}
-        )
+        return web.json_response({
+            "changed": [str(c) for c in changed],
+            "missing": missing,
+            # Whether there was anything to restore FROM. A dev checkout has
+            # one config tree, and reporting an empty change list there as
+            # "already at the defaults" claims a comparison nobody made.
+            "has_defaults": factory_reset.has_factory_copy(scope),
+        })
     except (OSError, ValueError) as exc:
         # ValueError covers yaml.YAMLError. Refused rather than half-applied:
         # `restore` writes nothing when any file in the scope fails to parse.
@@ -169,6 +279,49 @@ def _providers_yaml_path(app: web.Application) -> Path:
 
 def _roles_yaml_path(app: web.Application) -> Path:
     return app["tesseract_dir"] / "config" / "roles.yaml"
+
+
+def _live_roles(app: web.Application) -> Any:
+    """Every role `roles.yaml` declares, read fresh, keyed by name.
+
+    Both routes that validate a role name do it against the file rather than
+    against a list in this module, so a role added there works without a code
+    change. Shared because they had the same four lines and the same
+    exception-to-500, and two copies of a validation rule drift.
+
+    A mapping rather than a name set, because the caps come off the same read:
+    the alternative was loading the config twice to answer two questions about
+    one file.
+
+    Raises whatever the loader raises; the caller turns that into a 500 naming
+    the failure, since a config that will not load is not a bad request.
+    """
+    from tesseract.config.loader import load_config as _load_config
+
+    return _load_config(
+        providers_path=_providers_yaml_path(app),
+        roles_path=_roles_yaml_path(app),
+    ).roles
+
+
+def _caps_of(roles: Any) -> dict[str, float]:
+    """What each role's ceiling is ON DISK right now.
+
+    The in-memory `cost_tracking.per_role` is a snapshot taken when the config
+    was last synced, and a ceiling changed since, by a hand edit or by another
+    surface, is not in it. Writing that snapshot back would revert the newer
+    value, which is how a partial update to one role silently moved another.
+    """
+    caps: dict[str, float] = {}
+    for name, cfg in roles.items():
+        cap = cfg.overrides.get("daily_budget_usd")
+        if cap is None:
+            continue
+        try:
+            caps[name] = float(cap)
+        except (TypeError, ValueError):
+            continue
+    return caps
 
 
 # `_round_trip_yaml` is a thin alias to keep the existing call sites in this
@@ -189,37 +342,24 @@ async def set_compact_threshold(request: web.Request) -> web.Response:
             status=400,
         )
 
+    # The control module validates. Two implementations of one bound is how a
+    # channel comes to accept what this pane refuses, and the bounds were
+    # already shared while the checking was not.
     ratio: float | None = None
     if "ratio" in body:
         try:
-            ratio = float(body["ratio"])
-        except (TypeError, ValueError):
-            return web.json_response({"error": "ratio must be a number"}, status=400)
-        if not (_MIN_RATIO <= ratio <= _MAX_RATIO):
-            return web.json_response(
-                {"error": f"ratio must be between {_MIN_RATIO} and {_MAX_RATIO}"},
-                status=400,
-            )
+            ratio = compaction_control.validate_ratio(body["ratio"])
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
 
     keep_recent: int | None = None
     if "keep_recent_turns" in body:
-        raw = body["keep_recent_turns"]
         try:
-            keep_recent = int(raw)
-        except (TypeError, ValueError):
-            return web.json_response(
-                {"error": "keep_recent_turns must be an integer"}, status=400
+            keep_recent = compaction_control.validate_keep_recent(
+                body["keep_recent_turns"]
             )
-        if not (_MIN_KEEP_RECENT <= keep_recent <= _MAX_KEEP_RECENT):
-            return web.json_response(
-                {
-                    "error": (
-                        f"keep_recent_turns must be between "
-                        f"{_MIN_KEEP_RECENT} and {_MAX_KEEP_RECENT}"
-                    )
-                },
-                status=400,
-            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
 
     if ratio is None and keep_recent is None:
         return web.json_response(
@@ -229,25 +369,34 @@ async def set_compact_threshold(request: web.Request) -> web.Response:
 
     yaml_path = _roles_yaml_path(request.app)
     try:
-        doc = _round_trip_yaml(
-            yaml_path, lambda d: _apply_compaction_updates(d, ratio, keep_recent)
+        doc = compaction_control.apply_compaction(
+            request.app, yaml_path, ratio=ratio, keep_recent=keep_recent
         )
     except KeyError as exc:
         return web.json_response({"error": f"roles.yaml missing key: {exc}"}, status=500)
 
-    _sync_in_memory_compaction(request.app, ratio, keep_recent)
-    _update_live_chat_sessions(request.app, ratio, keep_recent)
-
     chat_brain_role = (doc.get("roles") or {}).get("chat_brain") or {}
-    compact_source = chat_brain_role
+    # The trigger is top-level. A role may still name its own and it wins
+    # there, so read the override first and fall through to the setting.
+    compact_source = dict(chat_brain_role)
+    if "compact_threshold" not in compact_source:
+        compaction_block = doc.get("compaction") or {}
+        if "compact_ratio" in compaction_block:
+            compact_source["compact_threshold"] = compaction_block["compact_ratio"]
     try:
-        context_source = _resolve_primary_model_fields(request.app, chat_brain_role)
-    except KeyError as exc:
+        context_source = _resolve_primary_model_fields(request.app)
+    except Exception as exc:
+        # Named for what failed. The old message said `providers.yaml missing
+        # key` and then quoted a `roles.yaml` path, which sent a reader to the
+        # wrong file for a key that had not gone missing so much as moved.
         return web.json_response(
-            {"error": f"providers.yaml missing key: {exc}"}, status=500,
+            {"error": f"could not resolve chat_brain's model: {exc}"}, status=500,
         )
+    # Zero for a role that is switched off. The edit is already on disk and
+    # already applied to every live session by this point, so refusing to
+    # describe it would lose the answer rather than protect anything.
+    context_window = int(context_source.get("context_window") or 0)
     try:
-        context_window = int(context_source["context_window"])
         effective_ratio = (
             ratio if ratio is not None else float(compact_source["compact_threshold"])
         )
@@ -271,75 +420,33 @@ async def set_compact_threshold(request: web.Request) -> web.Response:
     })
 
 
-def _apply_compaction_updates(
-    doc: Any, ratio: float | None, keep_recent: int | None
-) -> None:
-    """Write compact knobs to `roles.chat_brain` so the role applies them to
-    whichever catalog model the primary/fallback chain currently resolves to.
+def _resolve_primary_model_fields(app: web.Application, role: str = "chat_brain") -> dict:
+    """Return the catalog model `fields` dict for the role's resolved primary.
+
+    Used by routes that need decoding params (context_window,
+    max_output_tokens) when the role config no longer inlines them.
+
+    Asked of the loader's RESOLVED role, not of the raw document. A role may
+    name a `chain:` instead of spelling out `primary:` and `fallbacks:`, and
+    `roles.yaml` ships `chat_brain` that way — so the raw dict has no `primary`
+    key at all, and reading one there raised on every call. The loader resolves
+    either shape to the same `RoleConfig`, which is why `_models_for_role` and
+    `_primary_summary_for_role` beside this one have always gone through it.
+
+    Empty dict for an inactive role, which the loader keeps as an unresolved
+    stub: the caller reports a zero context window rather than refusing an edit
+    it has already written to disk.
     """
-    roles = doc.get("roles")
-    if not roles or "chat_brain" not in roles:
-        raise KeyError("roles.chat_brain")
-    chat_brain = roles["chat_brain"]
-    if ratio is not None:
-        chat_brain["compact_threshold"] = ratio
-    if keep_recent is not None:
-        chat_brain["keep_recent_turns"] = keep_recent
-
-
-def _sync_in_memory_compaction(
-    app: web.Application, ratio: float | None, keep_recent: int | None
-) -> None:
-    roles = app["config"].models.get("roles") or {}
-    chat_brain = roles.get("chat_brain") or {}
-    if not chat_brain:
-        return
-    if ratio is not None:
-        chat_brain["compact_threshold"] = ratio
-    if keep_recent is not None:
-        chat_brain["keep_recent_turns"] = keep_recent
-    # Legacy synthesized shape also carries `resolution[0]` for compat —
-    # keep it in lockstep so reads from either path see the same value.
-    resolution = chat_brain.get("resolution") or []
-    if resolution:
-        primary = resolution[0]
-        if ratio is not None:
-            primary["compact_threshold"] = ratio
-        if keep_recent is not None:
-            primary["keep_recent_turns"] = keep_recent
-
-
-def _resolve_primary_model_fields(app: web.Application, chat_brain_role: dict) -> dict:
-    """Return the catalog model `fields` dict for the role's `primary` ref.
-
-    Used by routes that need decoding params (context_window, max_output_tokens)
-    when the role config no longer inlines them. Looks up via the loader so the
-    canonical resolution path is used.
-    """
-    primary_ref = chat_brain_role.get("primary")
-    if not primary_ref:
-        raise KeyError("roles.chat_brain.primary")
     from tesseract.config.loader import load_config
 
     bundle = load_config(
         providers_path=_providers_yaml_path(app),
         roles_path=_roles_yaml_path(app),
     )
-    return dict(bundle.resolve(str(primary_ref)).model.fields)
-
-
-def _update_live_chat_sessions(
-    app: web.Application, ratio: float | None, keep_recent: int | None
-) -> None:
-    sessions = app.get("server_sessions") or {}
-    for sess in sessions.values():
-        cs = getattr(sess, "chat_session", None)
-        if cs is None:
-            continue
-        if ratio is not None:
-            cs.compact_threshold = ratio
-        if keep_recent is not None:
-            cs.keep_recent_turns = keep_recent
+    primary = bundle.role(role).primary
+    if primary is None:
+        return {}
+    return dict(primary.model.fields)
 
 
 async def _emit_stats_for_all_sessions(app: web.Application) -> None:
@@ -491,7 +598,7 @@ def _sync_in_memory_session_caps(
         chat_brain["tool_iteration_cap"] = tool_cap
     if err_cap is not None:
         chat_brain["consecutive_error_cap"] = err_cap
-    # Mirror `_sync_in_memory_compaction`: keep the legacy synthesized
+    # Mirror `compaction_control._sync_in_memory`: keep the legacy synthesized
     # `resolution[0]` shape in lockstep so any reader walking the
     # legacy path sees the same value as the top-level dict key.
     resolution = chat_brain.get("resolution") or []
@@ -524,7 +631,17 @@ async def set_cost(request: web.Request) -> web.Response:
     Voice provider rates / caps are still updated via the voice-cost POST
     but contribute to the same umbrella when this route returns the
     full IdentityCostTracking shape.
+
+    **Same machine only.** Writing a ceiling decides what the runtime may
+    spend, which is the blast radius `_localhost.py` describes: worse than a
+    read, and not covered by CORS, which lets a request with no `Origin`
+    through because that is what a native client sends. The bind was the only
+    gate until 2026-08-26, when the role allowlist here widened from four
+    names to every block `roles.yaml` declares, and a bind changed to a network
+    interface would have exposed all of them.
     """
+    if not is_localhost_request(request):
+        return web.json_response({"error": "localhost only"}, status=401)
     try:
         body = await request.json()
     except Exception:
@@ -555,10 +672,28 @@ async def set_cost(request: web.Request) -> web.Response:
     per_role_in = body.get("per_role")
     if per_role_in is not None and not isinstance(per_role_in, dict):
         return web.json_response({"error": "per_role must be an object"}, status=400)
+    # The baseline is what is ON DISK, not the in-memory snapshot. Those two
+    # differ the moment anything else changes a ceiling, and this route used to
+    # write its whole merged map back, so a partial update to one role reverted
+    # every other role to whatever the snapshot held. The entry card makes
+    # partial updates the common case: it sends one key.
+    #
+    # `submitted` is what actually gets written, so the round trip touches only
+    # the keys the caller named and leaves the rest of the file alone.
+    submitted: dict[str, float] = {}
     new_per_role = dict(current_per_role)
     if isinstance(per_role_in, dict):
+        # Against the live file, the way the role route already does it. A
+        # frozen list of four names stood here, so seven of the eleven blocks in
+        # `roles.yaml` could not be changed from any surface at all, and the
+        # ceiling on a thing the app runs on its own was among them. A name
+        # added to the file works now without a code change.
+        try:
+            known = _live_roles(request.app)
+        except Exception as exc:  # noqa: BLE001 — surface to UI
+            return web.json_response({"error": f"config load failed: {exc}"}, status=500)
         for role_name, cap_raw in per_role_in.items():
-            if role_name not in _VALID_COST_ROLES:
+            if role_name not in known:
                 return web.json_response(
                     {"error": f"unknown role '{role_name}'"}, status=400
                 )
@@ -568,24 +703,53 @@ async def set_cost(request: web.Request) -> web.Response:
                 return web.json_response(
                     {"error": f"per_role.{role_name} must be a number"}, status=400
                 )
-            if cap < 0:
+            # Finite, and positive. `float()` accepts `"nan"` and `"inf"`, and
+            # neither is caught by a comparison: `nan <= 0` and `inf <= 0` are
+            # both False, so a cap of NaN would persist and make every
+            # comparison against it indeterminate, including the derived global
+            # ceiling that sums them.
+            #
+            # Positive, not merely non-negative. A cap of zero does not mean
+            # uncapped: `budget_state` blocks once spend reaches the cap, and
+            # zero spend already reaches zero, so it refuses the role before
+            # its first call of the day. `roles.yaml` documents the trap above
+            # the cli seats, and the manifest used to raise on it for the
+            # entries that have moved into that file. Every door says it here.
+            if not math.isfinite(cap) or cap <= 0:
                 return web.json_response(
-                    {"error": f"per_role.{role_name} must be >= 0"}, status=400
+                    {
+                        "error": (
+                            f"per_role.{role_name} has to be more than 0. A "
+                            "ceiling of nothing stops it on its next call "
+                            "rather than leaving it uncapped, so turn it off "
+                            "instead if that is what you want"
+                        )
+                    },
+                    status=400,
                 )
-            new_per_role[role_name] = cap
+            submitted[role_name] = cap
 
     try:
         _round_trip_yaml(
             _providers_yaml_path(request.app),
             lambda d: _apply_cost_update_providers(d, new_pct),
         )
-        _round_trip_yaml(
-            _roles_yaml_path(request.app),
-            lambda d: _apply_cost_update_roles(d, new_per_role),
-        )
+        if submitted:
+            _round_trip_yaml(
+                _roles_yaml_path(request.app),
+                lambda d: _apply_cost_update_roles(d, submitted),
+            )
     except KeyError as exc:
         return web.json_response({"error": f"config missing key: {exc}"}, status=500)
 
+    # Re-read rather than assume. What the file now holds is the answer, and
+    # composing one here from the snapshot plus what was sent is the second
+    # reading that caused the problem above.
+    try:
+        new_per_role = _caps_of(_live_roles(request.app))
+    except Exception:  # noqa: BLE001 — the write already landed
+        log.exception("cost route: could not re-read roles.yaml after the write")
+        new_per_role = {**current_per_role, **submitted}
     _sync_in_memory_cost(request.app, new_pct, new_per_role)
 
     ledger = request.app.get("cost_ledger")
@@ -628,7 +792,13 @@ async def set_voice_cost(request: web.Request) -> web.Response:
     cap simply raises the umbrella by the same amount. After write,
     `ledger.reload()` re-parses `cost_tracking.voice` so live sessions
     see the new rates without restart.
+
+    **Same machine only**, for the reason `set_cost` gives. These are the two
+    doors onto one thing, what the runtime may spend in a day, and a gate on
+    one of them is a gate somebody walks around.
     """
+    if not is_localhost_request(request):
+        return web.json_response({"error": "localhost only"}, status=401)
     try:
         body = await request.json()
     except Exception:
@@ -1071,19 +1241,15 @@ async def set_role_models(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "role must be a non-empty string"}, status=400
         )
-    # Validate against the live bundle so any role added to roles.yaml
-    # works without a code change.
+    # Validate against the live file so any role added to roles.yaml works
+    # without a code change.
     try:
-        from tesseract.config.loader import load_config as _load_config
-        _live_bundle = _load_config(
-            providers_path=_providers_yaml_path(request.app),
-            roles_path=_roles_yaml_path(request.app),
-        )
+        known = _live_roles(request.app)
     except Exception as exc:  # noqa: BLE001 — surface to UI
         return web.json_response({"error": f"config load failed: {exc}"}, status=500)
-    if role not in _live_bundle.roles:
+    if role not in known:
         return web.json_response(
-            {"error": f"role must be one of {sorted(_live_bundle.roles.keys())}"},
+            {"error": f"role must be one of {sorted(known)}"},
             status=400,
         )
 
@@ -1374,13 +1540,12 @@ def _sync_in_memory_role_models(
 async def set_voice(request: web.Request) -> web.Response:
     """POST /api/settings/voice — write the operator's voice settings.
 
-    Body: `wake_word_enabled`, written to `mirror.yaml::identity.wake_word`
-    where it sits beside the name its phrase is built from.
+    Body: `wake_word_enabled`, written to `identity.yaml::wake_word` where it
+    sits beside the name its phrase is built from.
 
-    The write itself belongs to the identity route (AS-4) — this panel is
+    The write itself belongs to the identity route — this panel is
     one of two surfaces onto the same key, and two writers would mean two
-    reload paths to keep in step. AS-5 moves the control to the Identity
-    tab; this stays until it does, so the toggle is never homeless.
+    reload paths to keep in step.
 
     There is no timbre knob — a local voice IS its model file, named per
     provider in providers.yaml. `default_rate` was removed rather than
@@ -1519,7 +1684,7 @@ async def get_voice(request: web.Request) -> web.Response:
     of this payload entirely, because it is confirmed per voice rather than
     configured, and `GET /api/voice/wake` is the one place that reports it.
 
-    Wake-word values are read from **mirror.yaml, not `app["config"]`**.
+    Wake-word values are read from **identity.yaml, not `app["config"]`**.
     The panel saves and immediately re-reads, while the live config only
     catches up when the watcher's debounce fires ~250ms later — reading
     the in-memory copy would hand the operator back the value they just
@@ -1528,8 +1693,8 @@ async def get_voice(request: web.Request) -> web.Response:
 
     try:
         raw = yaml.safe_load(_roles_yaml_path(request.app).read_text(encoding="utf-8")) or {}
-        mirror_raw = yaml.safe_load(
-            mirror_yaml_path(request.app).read_text(encoding="utf-8")
+        identity = yaml.safe_load(
+            identity_yaml_path(request.app).read_text(encoding="utf-8")
         ) or {}
     except (OSError, yaml.YAMLError) as exc:
         return web.json_response({"error": f"failed to read config: {exc}"}, status=500)
@@ -1545,7 +1710,7 @@ async def get_voice(request: web.Request) -> web.Response:
     # map, so an override naming only `intent` leaves `answer` on the
     # adapter's built-in defaults rather than on the catalog's.
     #
-    # This panel used to lay the override over the catalog surface by surface,
+    # Laying the override over the catalog surface by surface
     # which showed a character the engine was not using in exactly that case.
     # It reports what the runtime reads now, and the writer below always emits
     # the complete map so the two cannot drift apart again.
@@ -1595,7 +1760,8 @@ async def get_voice(request: web.Request) -> web.Response:
                 "overridden": bool(override),
             })
 
-    identity = (mirror_raw.get("identity") or {}) if isinstance(mirror_raw, dict) else {}
+    if not isinstance(identity, dict):
+        identity = {}
     wake = identity.get("wake_word") or {}
     return web.json_response({
         "style_presets": style_presets,
@@ -1620,11 +1786,9 @@ async def set_voice_preset(request: web.Request) -> web.Response:
     contract refuses. What this adds is a second way for the OPERATOR to make
     an edit they could already make by hand in `roles.yaml`.
 
-    Gated on `is_localhost_request`, and this docstring used to claim it was
-    gated "like the rest of this module" — which was false. Nothing else in
-    `settings.py` carries the check, so the sentence advertised a guard that
-    did not exist, which is worse than having no guard: it is the reason
-    nobody would go looking. The bind is 127.0.0.1 by default and that is the
+    Gated on `is_localhost_request`, and on nothing else in this module: no
+    other route here carries the check, so do not read this one as evidence
+    that they do. The bind is 127.0.0.1 by default and that is the
     whole threat model, but `mirror.yaml::server.host` is a setting, and CORS
     deliberately passes an `Origin`-less request because that is what a native
     client sends. A writer of config belongs behind the same check
@@ -1779,7 +1943,7 @@ async def set_voice_preset(request: web.Request) -> web.Response:
     return await get_voice(request)
 
 
-# ── Phase 18 Task C — System section (capability detection) ─────────
+# ── System section (capability detection) ───────────────────────────
 
 
 async def get_system(request: web.Request) -> web.Response:
@@ -1788,11 +1952,11 @@ async def get_system(request: web.Request) -> web.Response:
     Reads `runtime/capability-state.json`, which the reconcile pass writes on
     every launch. With `?refresh=1` it runs a fresh pass first.
 
-    It used to keep its own cache at `runtime/logs/capability-snapshot.json`,
-    which was wrong twice over: that tree is the janitor's, pruned by age — so
-    a cache of machine state silently expired — and it made two writers of one
-    kind of fact. The reconcile pass is the single writer now; this route is a
-    reader of the artifact, and the response shape is unchanged because the
+    A cache of its own at `runtime/logs/capability-snapshot.json` is wrong
+    twice over: that tree is the janitor's, pruned by age, so a cache of
+    machine state expires silently, and it makes two writers of one kind of
+    fact. The reconcile pass is the single writer; this route is a reader of
+    the artifact, and the response shape is fixed because the
     System tab is compiled into the installed `.exe` and does not reach an
     install through update.
     """
@@ -1810,7 +1974,7 @@ async def get_system(request: web.Request) -> web.Response:
     return web.json_response(legacy_system_payload(state.hardware))
 
 
-# ── Phase 18 Task C — Session-resume policy ─────────────────────────
+# ── Session-resume policy ───────────────────────────────────────────
 
 
 _VALID_RESUME_POLICIES = frozenset({"today_only", "today_plus_yesterday", "n_days", "always"})
@@ -1818,6 +1982,10 @@ _VALID_RESUME_POLICIES = frozenset({"today_only", "today_plus_yesterday", "n_day
 
 def mirror_yaml_path(app: web.Application) -> Path:
     return app["tesseract_dir"] / "config" / "mirror.yaml"
+
+
+def identity_yaml_path(app: web.Application) -> Path:
+    return app["tesseract_dir"] / "config" / "identity.yaml"
 
 
 async def get_session_policy(request: web.Request) -> web.Response:
@@ -2140,8 +2308,8 @@ async def set_model_ref(request: web.Request) -> web.Response:
     Body: `{target, ref}`. Validates the ref against providers.yaml + the
     target's allowed `kind` set. Writes to roles.yaml then calls
     `rebuild_adapters` synchronously so live ChatSession adapters update on
-    the next turn — the config_watcher remains as a safety net for external
-    edits (CLI, git pull) but is no longer the primary propagation path.
+    the next turn. The config_watcher is a safety net for external edits
+    (CLI, git pull), not the primary propagation path.
     """
     from tesseract.config.loader import load_config, ConfigError
 

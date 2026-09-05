@@ -31,7 +31,7 @@ export function DailyBriefTab() {
     return (
       <div className="brief-tab brief-tab--empty">
         <div className="brief-tab-empty-msg t-meta">
-          {loading ? 'Loading briefs…' : 'No daily brief yet. The morning cron will land one at 08:00.'}
+          {loading ? 'Loading briefs…' : 'No daily brief yet. One is written overnight and delivered at the hour you set.'}
         </div>
       </div>
     );

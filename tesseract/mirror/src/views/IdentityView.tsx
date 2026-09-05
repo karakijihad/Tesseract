@@ -35,18 +35,27 @@ export function IdentityView() {
       label: 'Who it is',
       sections: [
         { key: 'identity', label: 'Identity', Body: IdentityCard },
-        { key: 'documents', label: 'Documents', Body: DocsEditor },
+        {
+          key: 'documents',
+          label: 'Documents',
+          Body: DocsEditor,
+          // What used to be a Note above the editor. It costs the document
+          // three lines of the height it is there to show, and the head is
+          // where a section says what it is.
+          meta: 'Read every turn, and proposed against. Saving here commits directly; the hash check still applies.',
+        },
       ],
     },
   ];
 
   return (
     <RailView
+      view="identity"
       groups={groups}
       label="Identity sections"
       meta={`Last reflected: ${formatRelative(lastReflectedAt)} · ${blocks.length} soul sections`}
       actions={
-        <Hint label="Run /reflect — re-read SOUL.md and update memory synthesis" position="bottom" maxWidth={260}>
+        <Hint label="Run /reflect: read SOUL.md again and update what memory makes of it" position="bottom" maxWidth={260}>
           <Button onClick={() => sendCommand('/reflect')} ariaLabel="run /reflect">
             refresh
           </Button>

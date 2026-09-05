@@ -1,29 +1,25 @@
-# The assistant permission policy — central config for tool-call permissions.
+# Tool permission policy.
 #
 # Three postures per tool:
-#   auto — runs immediately, no prompt (read-only, self-state, memory writes)
-#   ask  — operator sees [approval needed] y/N prompt (writes, outbound, subprocess)
-#   deny — non-negotiable block
+#   auto - runs immediately, no prompt (read-only, self-state, memory writes)
+#   ask  - you see an approval prompt (writes, outbound calls, subprocess)
+#   deny - blocked outright
 #
-# Three security modes (edit `security_mode` below to switch):
-#   max       — writes, outbound calls, and subprocess execution all ASK.
-#               Shipped default: you should see and approve what the assistant does
-#               until you've learned how it behaves.
-#   standard  — a balanced posture for day-to-day use once you trust the
-#               setup; tune `modes.standard.overrides` to relax the tools
-#               you're comfortable auto-allowing.
-#   headless  — no operator present: auto-allows file writes, bash, agent
-#               creation/promotion, and schedule mutation (see
-#               `modes.headless.overrides` below). Only switch to this once
-#               you understand exactly what it hands over — it is meant for
-#               unattended/scheduled operation, not first use.
+# Two security modes:
+#   max   - the default, and what the `tools:` block below describes. Writes,
+#           outbound calls and commands all ask, so you see and approve what
+#           the assistant does until you know how it behaves.
+#   free  - the assistant acts without asking. `modes.free` lists the few
+#           tools that still ask and gives every other tool auto, so a tool
+#           added by a later update is covered without you editing anything.
+#           For unattended runs, not for first use.
 #
-# Hardcoded DENY rules in permissions/bash_security.py ALWAYS fire regardless
-# of mode. This file controls AUTO vs ASK only — the security layer is
-# non-negotiable.
+# A separate security layer in `permissions/bash_security.py` always fires
+# regardless of mode, and no mode can relax it. This file controls auto versus
+# ask only. A tool set to `deny` stays denied in both modes.
 security_mode: max
 
-# Default posture per tool (standard mode baseline).
+# Default posture per tool. This is what `max` is.
 tools:
   # Read-only — runs without asking
   memory_search: auto
@@ -34,6 +30,7 @@ tools:
   vault_search: auto
   vault_lint: auto              # reads vault + appends LINT-REPORT.md (report surface, non-destructive)
   conscience_status: auto       # read-only pull of the latest drift report
+  breaker_status: auto          # read-only: what the runtime has stopped trying, and what that cost
 
   # Self-state — the assistant manages its own interior
   set_mood: auto
@@ -75,39 +72,44 @@ tools:
   # Writes + outbound + subprocess
   #
   # Tools that are operator-visible (PTY panes, delegate spawns), cost-capped
-  # (brief_render via loop_cost_caps, image_generate — paid per-image on both chain entries), or
+  # (image_generate — paid per-image on both chain entries), or
   # protected by another layer (`file_write` by path_overrides) are AUTO
   # so the assistant can run without per-call ASKs during autonomous operation.
   #
-  # `bash` itself is ASK by default (below) — bash_security.py's 25 checks
+  # `bash` itself is ASK by default (below) — bash_security.py's 26 checks
   # gate destructive commands but say nothing about ordinary write verbs.
   # A carve-out grants AUTO for a config-defined read-only allowlist
   # (`bash_readonly_allowlist` — pytest, git status/log/diff/show,
-  # boot-smoke probe) in every mode; headless keeps its pre-existing
-  # blanket `bash: auto` override for full no-operator autonomy.
+  # boot-smoke probe) in every mode; `free` relaxes the rest of `bash`
+  # through its baseline, for full no-operator autonomy.
   #
   # Kept ASK: `file_write` (path_overrides handle the DENY surfaces but
   # an unmatched path still warrants a prompt), kernel-lockdown adjacent
-  # tools (`agent_create` / `agent_promote`, always operator-approved),
+  # tools (`agent_create` / `agent_promote`, which ask here and follow the
+  # mode like every other tool),
   # schedule mutation, destructive session verbs.
   file_write: ask
   web_search: auto
   tavily_search: auto           # read-only web research — relaxed for autonomous research
   tavily_extract: auto          # read-only URL → markdown extraction
-  agent_create: ask            # kernel-lockdown hard rule — operator-attended
-  agent_promote: ask           # moves an agent .md from draft to active — operator-visible like agent_create
+  agent_create: ask            # the file decides; auto under free
+  agent_promote: ask           # moves an agent .md from draft to active; the file decides
   invoke_agent: auto           # spawns an in-process sub-agent — cheap, operator-visible
-  bash: ask                    # read-only self-verification AUTOs via bash_readonly_allowlist below; headless mode override keeps blanket auto. 19 absolute-DENY + 5 forced-ASK checks in bash_security.py still gate destructive commands regardless.
-  delegate_coder: auto         # subscription CLI — operator-visible PTY pane; a subscription, not per-call
-  delegate_auditor: auto       # subscription CLI — operator-visible PTY pane
+  bash: ask                    # read-only self-verification AUTOs via bash_readonly_allowlist below; `free` relaxes the rest. 20 absolute-DENY + 6 forced-ASK checks in bash_security.py still gate destructive commands regardless.
+  delegate_coder: ask          # spawns a coding agent on your machine, with its own permissions
+  delegate_auditor: ask        # the same, for review work
   vault_ingest: auto           # writes vault/raw/ and vault/wiki/ — operator-visible vault surface
   schedule_create: ask         # mutates schedule.yaml at runtime — operator-visible
   schedule_list: auto          # read-only enumeration of registered jobs
   schedule_update: ask         # toggles enabled/cadence/model_role; operator-visible
   schedule_run: ask            # fires a job off-schedule; operator-visible
   schedule_remove: ask         # removes a registered job — operator-visible
+  breaker_reset: ask           # starts a refused capability trying again now instead of at the end of its wait
   ask_clarification: auto      # agent posts a question to the workspace inbox
-  brief_render: auto           # fires Tavily searches + writes today's brief; cost capped by loop_cost_caps
+  brief_render: auto           # writes one file into the operator's own store and calls
+                               # a chain capped by the `roles.yaml` block named for its
+                               # manifest entry; operator-initiated
+                               # at both call sites. Class floor is ASK.
   brief_read: auto             # read-only return of today's brief body for the voice "read brief" lane
   memory_get: auto             # read-only path-scoped read of memory-store/ markdown files
   file_read: auto
@@ -115,9 +117,8 @@ tools:
   grep: auto
   log_triage: auto
   system_diagnose: auto
-  image_generate: auto         # paid per-image (~$0.067 gemini primary, $0.02 grok fallback), daily-budget-capped
+  image_generate: ask          # each image costs money. There is a daily cap, and this is where you approve the spend
 
-# Mode-specific overrides. Only keys listed here override the `tools` default.
   session_list: auto            # Mirror trio lister (interactive sessions)
   memory_promote: auto
   workspace_post: auto
@@ -137,7 +138,7 @@ tools:
   channel_notify: auto
   chat_initiate: auto
   agent_ask: auto
-  delegate_codex_exec: auto
+  delegate_second_opinion: auto
   delegate_agent_controller: auto
   start_controller_session: auto
   session_close: auto
@@ -164,12 +165,18 @@ tools:
   project_link: ask
   project_open: ask
   project_new: ask
+  git: ask                     # commit/checkout/push on a repo outside the seal. `push` needs confirm_push=true in the tool itself, so it holds in `free` too.
   surface_close: auto
   surface_create: auto
   surface_focus: auto
   surface_highlight: auto
   surface_list: auto
   surface_update: auto
+  # AUTO for the same reason the rest of the surface verbs are: it acts on
+  # a card the operator is looking at, so the result is visible the instant
+  # it happens and undone by touching the card itself. It cannot reach
+  # outside the canvas.
+  surface_control: auto
   browser_navigate: auto
   browser_snapshot: auto
   browser_click: auto
@@ -177,6 +184,17 @@ tools:
   browser_screenshot: auto
   browser_network_requests: auto
   browser_close: auto
+  # The acting verbs split on one question: does the call put data INTO the
+  # page. Typing does, and typing is how a password or a card number gets
+  # there, so `browser_key` and `browser_select` ASK for the same reason
+  # `browser_fill_form` does. Moving a viewport, hovering, waiting and
+  # operating a media element cannot commit anything, so they are AUTO.
+  browser_key: ask
+  browser_select: ask
+  browser_media: auto
+  browser_scroll: auto
+  browser_hover: auto
+  browser_wait_for: auto
   # ASK, unlike every browser verb above it. Those photograph a web page the
   # assistant navigated to; this photographs the OPERATOR'S OWN SCREEN and
   # sends it to a vision model that may not be local. That is an outbound
@@ -185,6 +203,7 @@ tools:
   screen_look: ask
   tool_search: auto
   orb_visibility: auto
+  cockpit_show: auto
   work_send: auto
   file_copy: ask
   file_move: ask
@@ -192,42 +211,56 @@ tools:
   skill_create: ask
   skill_promote: ask
   skill_refine: ask
+  playbook_search: auto      # reads the playbooks already named in the prompt and returns the rest of one; nothing leaves the machine
+  atlas_query: auto           # read-only walk over the derived graph; opens atlas.json and returns text
+  autonomy_read: auto        # read-only view of the panel's own state; asking what it says costs no more than opening it
+  context_read: auto         # the shape of the conversation it is already running in; no message content leaves it
+  health_leave: auto         # marks one Health line as seen. The row stays, under Operating, saying so; it comes back if the fault worsens, and one call undoes it
+  workspace_decide: ask       # the gate's prompt is where you approve. A mode baseline reaches this like every ask
+  task_propose: ask           # the gate is you accepting the task
+  task_work: auto             # takes up a task you already accepted and ties the turn to it; nothing new is decided
+  task_close: ask             # the gate is you reading the evidence before a task closes. A project's own checks decide first: a task on a project with verify steps is done only when they pass
+  workspace_pending: auto     # reading what is waiting on you decides nothing
+  credential_list: auto      # names, usernames and purposes of the assistant's own accounts; no tool returns a value
+  credential_request: auto   # writes a row asking the operator for an account. The row in Settings IS the gate, like propose_change
+  credential_setup: ask      # the agent knows how a service authenticates; the HOSTS it proposes are the one thing an injected instruction must not widen quietly
+  context_set: ask         # rewrites roles.yaml and changes how every open conversation folds
+  session_continue: ask     # folds this conversation, or leaves it behind and starts fresh. The gate is you
+                           # deciding a piece of work is over. Under free the assistant decides that itself,
+                           # which is the mode's whole point, and auto-compact is still the backstop either way
+  api_request: ask         # sends one of the assistant's own accounts to a service. The hosts were approved
+                           # once at setup; this is the outbound call itself, which principle 3 gates
+  command_run: ask         # hands every field of one of its own accounts to code it wrote and runs it.
+                           # The runtime checks no address for this one, so the approval IS the check
+  pipeline_run_stage: ask   # one step of the nightly upkeep, fired by hand. It writes to the memory store,
+                            # the indexes or the map, and a step can spend a provider call
+  retention_set_window: ask  # how long one of this machine's own logs is kept. Shortening a window is what
+                             # deletes the record an investigation would have read
+# Tools you or the assistant wrote on your own machine, and what each may do.
+#
+# Empty here because these names exist only where the tools do. Settings ->
+# Tools fills it in as you decide. A tool with no line ASKS, and no security
+# mode relaxes one: a tool that wrote itself does not get to say it needs no
+# permission.
+custom: {}
+
 modes:
+  # `max` is the `tools:` block above, unchanged.
   max:
     overrides: {}
-  standard:
-    overrides: {}
-  headless:
+
+  # `free` is stated by exception: `baseline` is what every tool gets, and
+  # `overrides` lists the ones that keep asking anyway. Nothing has to be
+  # relisted here when a tool is added.
+  #
+  # The baseline does not reach `path_overrides` below, the checks in
+  # `permissions/bash_security.py`, or any tool set to `deny`.
+  free:
+    baseline: auto
     overrides:
-      # Full-autonomy posture: the assistant runs without per-call ASK gates on
-      # operations that are operator-visible (PTY panes show up in the
-      # Terminal tab; delegate panes are visible).
-      # path_overrides still DENY writes to kernel/brain/mirror source
-      # trees, and bash_security.py's 19 absolute-DENY + 5 forced-ASK
-      # checks still gate destructive shell commands regardless of mode.
-      file_write: auto
-      web_search: auto
-      tavily_search: auto
-      tavily_extract: auto
-      bash: auto
-      os_launch: auto
-      invoke_agent: auto
-      delegate_coder: auto
-      delegate_auditor: auto
-      image_generate: auto
-      screen_look: auto             # operator decision — unattended runs may look
-
-      agent_create: auto            # kernel-lockdown hard rule — operator-attended
-      agent_promote: auto           # moves an agent .md from draft to active — operator-visible like agent_create
-      schedule_create: auto         # mutates schedule.yaml at runtime — operator-visible
-      schedule_update: auto         # toggles enabled/cadence/model_role; operator-visible
-      schedule_run: auto            # fires a job off-schedule; operator-visible
-      schedule_remove: auto         # removes a registered job — operator-visible
-
-      # Every write-ASK tool gets the same full-autonomy override, including
-      # the ones hard-denied by default in any context with no operator
-      # present to answer a prompt.
-      browser_fill_form: auto
+      task_propose: ask
+      task_close: ask
+      context_set: ask
 
 # Path-scoped overrides — evaluated before mode overrides. Matched by prefix
 # (forward-slash normalized) against the tool input's path field. First
@@ -247,25 +280,7 @@ path_overrides:
     # `_path_posture` takes the FIRST matching prefix, not the longest —
     # specific rules must precede the general ones they sit under.
 
-    # ─── DENY — operator-owned workspace files. The assistant routes via
-    # `propose_change`; the workspace inbox is the commit gate. ───
-    - path_prefix: workspace/SOUL.md
-      posture: deny
-      reason: "the assistant routes via propose_change; operator approves in workspace"
-    - path_prefix: workspace/USER.md
-      posture: deny
-      reason: "the assistant routes via propose_change; operator approves in workspace"
-    - path_prefix: workspace/OPERATING.md
-      posture: deny
-      reason: "the assistant routes via propose_change; operator approves in workspace"
-    - path_prefix: workspace/WORKSHOP.md
-      posture: deny
-      reason: "the assistant routes via propose_change; operator approves in workspace"
-    - path_prefix: workspace/DIARY.md
-      posture: deny
-      reason: "the assistant routes via propose_change; operator approves in workspace"
-
-    # ─── ASK — P6 Task 4/4b "workshop": the assistant drafts markdown skills
+    # ─── ASK — the workshop: the assistant drafts markdown skills
     # (SKILL.md + optional bundled scripts/) here; operator approves the
     # write before it lands. Must win over any broader workspace/ rule. ───
     - path_prefix: workspace/skills/
@@ -282,6 +297,17 @@ path_overrides:
     - path_prefix: workshop/
       posture: auto
       reason: "the assistant's working space — task drafts, notes, scratch work (gitignored)"
+
+    # ─── ASK — writing here is writing code the runtime will import and run
+    # in-process (`kernel/home_tools.py`). The workshop above is AUTO because
+    # a draft there is inert until someone runs it; a file here becomes a
+    # callable tool the moment it is searched for, so the write IS the
+    # approval to execute it. Stated rather than left to the unmatched-path
+    # default, because that default could be widened without anyone noticing
+    # this is what it was holding. ───
+    - path_prefix: tools/
+      posture: ask
+      reason: "a file here becomes a tool the runtime imports and runs; the write is the approval"
     - path_prefix: vault/raw/
       posture: auto
       reason: "vault ingestion lands raw files here (when vault_ingest wires up)"
@@ -337,18 +363,46 @@ path_overrides:
     - path_prefix: config/mcp.yaml
       posture: deny
       reason: "MCP verb postures — the sole authority since the source-side floors were removed; the assistant must not widen its own reach"
+    - path_prefix: config/identity.yaml
+      posture: deny
+      reason: "the assistant's name, gender and wake phrase — it must not rename itself or turn off the phrase it is woken with; Settings -> Identity is the writer"
     - path_prefix: config/
       posture: ask
-      reason: "providers/roles/schedule/identity — a delegate may edit, operator approves each write"
+      reason: "providers/roles/schedule — a delegate may edit, operator approves each write"
     # Anything not matched above falls through to the MODE override, then to
     # `tools.file_write`. That is ASK in the shipped `max` mode, but AUTO in
-    # `headless` — add the rule; do not rely on the fallthrough.
+    # `free` — add the rule; do not rely on the fallthrough.
+
+# ─────────────────────────────────────────────────────────────────────────
+# Your own documents, and the one door to them.
+#
+# These are the files the assistant is given at the start of every turn: its
+# voice, what it has learned about you, the rules it works by. There is one way
+# for it to change one, and that is to propose the change. The ordinary file
+# tools cannot reach them at all.
+#
+# `proposal` is what happens when it proposes one. On the shipped setting the
+# change waits in your workspace for you to approve it. If you switch the app
+# to unattended, the change is applied and the same card is filed already
+# decided, so you still see everything that happened.
+workspace_documents:
+  documents:
+    - SOUL.md
+    - USER.md
+    - OPERATING.md
+    - WORKSHOP.md
+    - DIARY.md
+    - CHANNEL.md
+  direct_write: deny
+  proposal:
+    max: ask
+    free: auto
 
 # ─────────────────────────────────────────────────────────────────────────
 # Read-only self-verification allowlist. `PermissionPolicy._bash_readonly_posture`
 # matches the `bash` tool's `command` input against these two lists BEFORE
 # mode/tools-default resolution, so a match resolves AUTO in every security
-# mode — including max/standard, where `bash` otherwise defaults to ASK (see
+# mode — including `max`, where `bash` otherwise defaults to ASK (see
 # tools.bash above). Matching rejects any command containing a byte in
 # {\n \r & | ; < > ` $ ( ) \} — a byte-set denylist (not substring) so
 # single `&`, `<`, bare `$`, and newline smuggling are caught alongside
@@ -373,8 +427,8 @@ path_overrides:
 #    pytest invocations (whole suite, no path suffix) are exact too since
 #    the prefix list's "/"-boundary form requires a path segment after it.
 #
-# This is additive, not a bypass: bash_security.py's 25 numbered checks
-# (19 absolute-DENY + 5 forced-ASK) still run first in decide.evaluate and
+# This is additive, not a bypass: bash_security.py's 26 numbered checks
+# (20 absolute-DENY + 6 forced-ASK) still run first in decide.evaluate and
 # are never reachable through this allowlist — e.g. `git show; rm -rf /`
 # still hits a forced-ASK check before policy is ever consulted.
 # ─────────────────────────────────────────────────────────────────────────
@@ -393,6 +447,36 @@ bash_readonly_exact_allowlist:
   - "curl -s http://127.0.0.1:8000/api/health"
 
 # ─────────────────────────────────────────────────────────────────────────
+# The `git` tool's read-only operations, matched by
+# `PermissionPolicy._git_readonly_posture` against the call's `operation`
+# field before mode/tools-default resolution. Same reads, same answer as the
+# bash allowlist above: without this the structured tool prompts where the
+# command string does not, and the model learns to reach for `bash` instead,
+# which is the drift one git tool exists to prevent.
+#
+# **Only for THIS project.** The parity holds because `bash` runs with
+# `cwd=workspace_root`, so `git log` through that door reads this repository
+# and no other. A call naming a `repo` elsewhere on disk prompts, because
+# auto-allowing it would be a wider grant than the one it is modelled on.
+#
+# Everything that writes — add, commit, checkout, init, remote, pull, push —
+# is absent here and keeps the tool's ASK default; `push` additionally
+# demands `confirm_push=true` inside the tool, in every mode. The verb is a
+# closed Literal, which bounds which verb runs and nothing about its
+# arguments: `_argv` refuses a `ref` that would turn `show` into a write.
+#
+# `path_overrides` cannot reach this tool either way. It matches on
+# `file_path`/`path`, and `GitInput` carries neither, so a git entry there
+# would never fire whatever the resolution order is.
+# ─────────────────────────────────────────────────────────────────────────
+git_readonly_operations:
+  - status
+  - log
+  - diff
+  - show
+  - branch
+
+# ─────────────────────────────────────────────────────────────────────────
 # Session-turn thresholds. `total_turn_timeout_s` is read by
 # `kernel/tools/session_tools.py::_load_session_thresholds` for CLI-backend
 # `session_open` turns. The coalescer + reattach knobs are read by
@@ -405,12 +489,3 @@ pty_thresholds:
   reattach_grace_s: 30                             # keep a detached PTY alive this long for a reconnecting client
   pause_buffer_cap_chars: 2000000                  # force-resume drain once a paused pane's queued output exceeds this
 
-# ─────────────────────────────────────────────────────────────────────────
-# Daily-brief cost caps. Hard ceiling applied per iteration by the
-# BriefRenderer (Tavily call count + per-call USD estimate). When the cap
-# fires mid-iteration the world section degrades to a "World partial —
-# cost cap reached" note instead of stopping the whole brief.
-# ─────────────────────────────────────────────────────────────────────────
-loop_cost_caps:
-  daily_brief_max_usd: 0.50              # per-iteration USD ceiling
-  daily_brief_max_tavily_calls: 10       # hard cap on Tavily calls per iteration

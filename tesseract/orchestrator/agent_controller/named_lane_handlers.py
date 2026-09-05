@@ -1,4 +1,4 @@
-"""Daemon-side ``lane_named_*`` IPC handlers (CV-1).
+"""Daemon-side ``lane_named_*`` IPC handlers.
 
 Extracted from ``daemon.py`` (lane-cleanup Batch 4) as a mixin. The named-lane
 layer (``NamedLaneManager``) resolves a human name (``coder``/``claude``,

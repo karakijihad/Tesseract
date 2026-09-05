@@ -50,11 +50,17 @@ _SECTION_MIN_CHARS = 80
 # The librarian refuses to promote these — they belong to a log stream, not
 # the memory layer, under the stream split.
 # Full memory-worthy surface is under `[user|feedback|project|reference|chat_digest]`.
+# Titles the runtime writes about its own activity. MEMORY.md is what the
+# assistant durably knows, so a record of a conversation having happened does
+# not belong in it — the conversation itself is in the session store, and
+# `recall_history` is how it is searched.
 _BOOKKEEPING_TITLE_PREFIXES = (
     "[reflect]",
     "[session_end]",
     "[auto_compact]",
     "[scheduler]",
+    "Conversation recap",
+    "Daily brief",
 )
 
 _ANCHOR_FRAGILE_CHARS = {"[", "]", "/", "#", "?", "\\"}

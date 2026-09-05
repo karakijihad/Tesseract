@@ -39,7 +39,7 @@ log = logging.getLogger(__name__)
 SCHEMA_VERSION = 1
 _VIEW_RE = re.compile(r"[a-zA-Z0-9_-]{1,64}")
 
-# Source-controlled baseline layouts (Y-3). When a view has no operator-saved
+# Source-controlled baseline layouts. When a view has no operator-saved
 # canvas-state file yet, the SurfaceStore seeds these descriptors so a first
 # visit looks familiar; the operator's edits then land in the per-view file.
 DEFAULTS_DIR = Path(__file__).resolve().parent / "defaults"
@@ -98,7 +98,7 @@ def write_view_blob(view: str, blob: dict[str, Any]) -> None:
 def read_default_layout(view: str) -> list[dict[str, Any]] | None:
     """Return the source-controlled baseline ``surfaces`` for a view, or None
     if no baseline ships. Used to seed a familiar first-visit layout before
-    the operator has saved any canvas-state of their own (Y-3)."""
+    the operator has saved any canvas-state of their own."""
     safe = safe_view(view)
     if safe is None:
         return None

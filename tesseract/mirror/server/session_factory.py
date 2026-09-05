@@ -160,7 +160,7 @@ def _build_chat_session(
     kind: SessionKind = "cockpit",
     channel_display_name: str | None = None,
 ) -> ChatSession:
-    # CR-3 — channel sessions get a session-specific ``prompt_builder``
+    # Channel sessions get a session-specific ``prompt_builder``
     # that re-assembles the system prompt with the channel overlay inlined
     # *inside* the manifest (before the per-turn "Right now" section). The
     # cockpit path keeps the global ``app["prompt_builder"]`` (no overlay).
@@ -219,16 +219,23 @@ def _build_chat_session(
         status_emit=status_emit,
         options=app["adapter_options"],
         compact_threshold=chat_cfg.compact_threshold,
+        prompt_char_budget=chat_cfg.prompt_char_budget,
         keep_recent_turns=chat_cfg.keep_recent_turns,
         cost_ledger=app.get("cost_ledger"),
         overage_ask_fn=overage_ask_fn,
         session_kind=kind,
         channel_display_name=channel_display_name,
+        # The funnel door, named as `orchestrator/funnel.py::NODES` names it,
+        # so a turn record joins to the map the floor plan already draws. This
+        # function is the seam the cockpit and every channel are built
+        # through, and it is the only place a session is given one — a
+        # ChatSession built anywhere else records no turns.
+        turn_entry="channel" if kind == "channel" else "cockpit",
         spawn_stall_seconds=app.get("spawn_stall_seconds"),
         spawn_max_concurrent=app.get("max_concurrent_spawns_per_session"),
     )
     chat_session = build_chat_session(wiring)
-    # AR-7b item 12 — the observer attaches where a conversation is BUILT, not
+    # The observer attaches where a conversation is BUILT, not
     # where a socket opens. This function is the seam both doors come through
     # (`create_server_session` / `new_chat_session` for the cockpit,
     # `TelegramBridge._build_headless_session` for a channel), so a channel

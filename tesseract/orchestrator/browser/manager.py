@@ -1,4 +1,4 @@
-"""P4-2 — BrowserManager: a headless Playwright Chromium with N isolated
+"""BrowserManager: a headless Playwright Chromium with N isolated
 contexts, each keyed by a short context_id and mirrored as an `image`
 surface card. Best-effort reflection; the Playwright launcher is injectable
 so tests run against a fake (no real browser, no chromium download)."""
@@ -110,12 +110,9 @@ class BrowserManager:
         await self._capture(cid)
         await self._refresh_surface(cid, url, create=False)
 
-    async def snapshot(self, cid: str) -> dict | None:
+    async def snapshot(self, cid: str) -> str:
         c = self._ctx(cid)
-        acc = getattr(c.page, "accessibility", None)
-        if acc is not None and hasattr(acc, "snapshot"):
-            return await acc.snapshot()
-        return await c.page.accessibility_snapshot()
+        return await c.page.aria_snapshot()
 
     async def click(self, cid: str, selector: str) -> None:
         c = self._ctx(cid)
@@ -132,6 +129,94 @@ class BrowserManager:
                 await c.page.locator(sel).fill(val)
             else:
                 await c.page.fill(sel, val)
+
+
+    # The JS below is fixed text in this module. The caller supplies an action
+    # name and a number, never source, which is what keeps a media verb from
+    # being an eval verb wearing a smaller schema.
+    _MEDIA_JS = """
+    ([selector, action, value]) => {
+      const el = selector
+        ? document.querySelector(selector)
+        : (document.querySelector('video') || document.querySelector('audio'));
+      if (!el) return null;
+      if (action === 'play') el.play();
+      else if (action === 'pause') el.pause();
+      else if (action === 'mute') el.muted = true;
+      else if (action === 'unmute') el.muted = false;
+      else if (action === 'volume') el.volume = Math.min(1, Math.max(0, value));
+      else if (action === 'seek') el.currentTime = Math.max(0, value);
+      return {
+        tag: el.tagName.toLowerCase(),
+        paused: el.paused,
+        muted: el.muted,
+        volume: el.volume,
+        position: el.currentTime,
+        duration: Number.isFinite(el.duration) ? el.duration : null,
+      };
+    }
+    """
+
+    async def press_key(self, cid: str, key: str, selector: str | None = None) -> None:
+        """Send a key to the page, optionally focusing an element first.
+        Playwright's own key names: `k`, `Enter`, `ArrowUp`, `Control+f`."""
+        c = self._ctx(cid)
+        if selector:
+            if hasattr(c.page, "locator"):
+                await c.page.locator(selector).press(key)
+            else:
+                await c.page.press(selector, key)
+            return
+        await c.page.keyboard.press(key)
+
+    async def media(
+        self, cid: str, action: str, value: float | None = None,
+        selector: str | None = None,
+    ) -> dict | None:
+        """Operate the page's media element and return what it now reads.
+        None means the page has no such element, which the caller reports
+        rather than retrying blind."""
+        c = self._ctx(cid)
+        return await c.page.evaluate(self._MEDIA_JS, [selector, action, value])
+
+    async def scroll(
+        self, cid: str, *, selector: str | None = None,
+        dx: float = 0, dy: float = 0,
+    ) -> None:
+        """Scroll to an element when `selector` is given, else by an offset."""
+        c = self._ctx(cid)
+        if selector:
+            if hasattr(c.page, "locator"):
+                await c.page.locator(selector).scroll_into_view_if_needed()
+            else:
+                await c.page.scroll_into_view_if_needed(selector)
+            return
+        await c.page.mouse.wheel(dx, dy)
+
+    async def hover(self, cid: str, selector: str) -> None:
+        c = self._ctx(cid)
+        if hasattr(c.page, "locator"):
+            await c.page.locator(selector).hover()
+        else:
+            await c.page.hover(selector)
+
+    async def select_option(self, cid: str, selector: str, values: list[str]) -> list[str]:
+        c = self._ctx(cid)
+        if hasattr(c.page, "locator"):
+            return list(await c.page.locator(selector).select_option(values))
+        return list(await c.page.select_option(selector, values))
+
+    async def wait_for(
+        self, cid: str, *, selector: str | None = None,
+        state: str = "visible", timeout_ms: int = 10_000,
+    ) -> None:
+        """Wait for an element to reach a state, or for the page to go idle
+        when no selector is named."""
+        c = self._ctx(cid)
+        if selector:
+            await c.page.wait_for_selector(selector, state=state, timeout=timeout_ms)
+            return
+        await c.page.wait_for_load_state("networkidle", timeout=timeout_ms)
 
     async def _capture(self, cid: str) -> Path:
         """Write the next screenshot for the context. Shared by open/navigate

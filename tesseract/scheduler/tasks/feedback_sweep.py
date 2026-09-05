@@ -65,7 +65,7 @@ class FeedbackSweepJob(BaseJob):
     uses_llm = True
     # A chain, not a role: the role this named existed only to hold its budget
     # line, and the line moved onto the `consolidate` manifest entry.
-    default_model_chain = "chain_2"
+    default_model_chain = "chain_1"
 
     async def run(self, ctx: JobContext) -> JobResult:
         t0 = time.monotonic()

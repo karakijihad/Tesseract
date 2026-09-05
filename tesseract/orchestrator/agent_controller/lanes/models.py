@@ -95,9 +95,9 @@ class Lane(BaseModel):
     authoritative description of the lane; the manager reconstructs
     in-memory state from this on `attach` after a brain restart.
 
-    ``extra="ignore"`` — Session B may add fields (mode-specific config,
-    e.g. PTY size); a Session-A reader must continue to load older AND
-    newer records without raising."""
+    ``extra="ignore"`` — a later release may add fields (mode-specific
+    config, e.g. PTY size); a reader must continue to load older AND newer
+    records without raising."""
 
     model_config = ConfigDict(extra="ignore")
 

@@ -233,11 +233,10 @@ class WorkerRecord(BaseModel):
         set ``status``. Caller must follow with ``write_record`` for the
         change to land on disk.
 
-        Phase 7 (2026-05-22): when ``new_status`` is terminal, stamp
-        ``duration_seconds`` from ``created_at`` so the operator sees how
-        long the worker actually lived. Previously the field stayed at
-        0.0 even for workers that ran for minutes — the autonomy
-        dashboard couldn't show "this worker took 5 min before failing".
+        When ``new_status`` is terminal, stamp ``duration_seconds`` from
+        ``created_at`` so the operator sees how long the worker lived. Left at
+        0.0 the autonomy dashboard cannot show "this worker took 5 min before
+        failing".
         """
         if new_status == self.status:
             return
@@ -283,10 +282,8 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 
     The ``.tmp`` suffix is process+token unique (``<pid>.<6hex>.tmp``)
     so two concurrent writers targeting the same ``record.json`` —
-    e.g. a status transition racing a heartbeat-driven update once
-    AU-5 wires live runners — don't interleave bytes over a shared
-    temp file. The reviewer flagged this race at AU-3 S1 review;
-    we fix it before the blast radius grows.
+    e.g. a status transition racing a heartbeat-driven update — don't
+    interleave bytes over a shared temp file.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(
@@ -309,7 +306,7 @@ def write_record(record: WorkerRecord) -> Path:
     to call repeatedly across status transitions — the record is the
     single source of truth, not the in-process object.
 
-    Phase 3 (2026-05-22): after the disk write, fires a WS broadcast via
+    After the disk write, fires a WS broadcast via
     ``workers/broadcast.py``. Event type is inferred from ``status_history``
     so callers don't need updating — a fresh record (one entry) emits
     ``worker_record_started``; subsequent writes emit
@@ -417,7 +414,7 @@ def archive_record(record: WorkerRecord) -> Path:
         return dst
     dst.parent.mkdir(parents=True, exist_ok=True)
     os.replace(str(src), str(dst))
-    # Phase 3 (2026-05-22): notify the operator the moment a worker leaves
+    # Notify the operator the moment a worker leaves
     # the active queue. Mirrors the write_record broadcast pattern.
     from tesseract.orchestrator.workers.broadcast import fire_worker_broadcast
 

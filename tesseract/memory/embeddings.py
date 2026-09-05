@@ -16,6 +16,7 @@ import json
 import logging
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import faiss
@@ -78,7 +79,7 @@ class EmbeddingIndex:
         # live vector for unchanged text instead of re-embedding everything.
         self._text_hashes: dict[str, str] = {}
         self._index: faiss.IndexFlatIP = faiss.IndexFlatIP(self._dimensions)
-        # WP-1 blocker §B fix: serialize FAISS in-memory state + id_map
+        # Serialize FAISS in-memory state + id_map
         # mutations across concurrent async tasks (chat turn vs synthetic
         # workspace turn both calling memory_save). threading.Lock works for
         # both sync and async callers; held only across FAISS C-calls + small
@@ -92,7 +93,25 @@ class EmbeddingIndex:
         self._client: httpx.AsyncClient | None = None
         self._loaded_mtime_ns = 0
         self._next_reload_check = 0.0
+        # What the last real embed call found, so a panel can report whether
+        # vector search answers NOW instead of whether it was constructed.
+        # `None` means nothing has been asked yet, which is not the same as
+        # working and must not be drawn as either.
+        self._last_answered: bool | None = None
+        self._last_answer_at: datetime | None = None
         self._load()
+
+    def reachability(self) -> tuple[bool | None, datetime | None]:
+        """Whether the embedding endpoint answered the last time it was asked.
+
+        Read by the Memory room. Deliberately records only what a real call
+        already discovered: a panel that polls must never start its own probe.
+        """
+        return self._last_answered, self._last_answer_at
+
+    def _record_answer(self, answered: bool) -> None:
+        self._last_answered = answered
+        self._last_answer_at = datetime.now(timezone.utc)
 
     def _http_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -194,9 +213,44 @@ class EmbeddingIndex:
                 json={"model": self._model, "prompt": text, "keep_alive": -1},
             )
             resp.raise_for_status()
+            self._record_answer(True)
             return resp.json()["embedding"]
-        except Exception:
-            logger.warning("Embedding failed (%s may be down)", self._provider)
+        except httpx.TimeoutException as exc:
+            # Named apart from the rest because it is the one that lies about
+            # itself: a burst of memory writes can queue behind a model load
+            # and time out while the service is perfectly healthy. This log
+            # said "ollama may be down" 190 times in one evening against an
+            # Ollama that answered a hand probe in under a second.
+            logger.warning(
+                "%s did not answer within %.0fs, so this text has no vector "
+                "and is findable by keyword only until it is embedded again "
+                "(%s)",
+                self._provider, self._timeout_seconds, type(exc).__name__,
+            )
+            self._record_answer(False)
+            return None
+        except httpx.HTTPStatusError as exc:
+            # It answered and refused. The status and the body say why, and a
+            # wrong model name is the common one.
+            body = " ".join((exc.response.text or "").split())[:200]
+            logger.warning(
+                "%s refused to embed with %r: HTTP %s %s. This text has no "
+                "vector and is findable by keyword only.",
+                self._provider, self._model, exc.response.status_code, body,
+            )
+            self._record_answer(False)
+            return None
+        except Exception as exc:
+            # Everything else, INCLUDING the connection failure this used to
+            # assume every time. What went wrong is reported rather than
+            # guessed: a log that names a cause it did not check sends whoever
+            # reads it to restart a service that was never the problem.
+            logger.warning(
+                "%s could not embed with %r (%s: %s). This text has no vector "
+                "and is findable by keyword only until it is embedded again.",
+                self._provider, self._model, type(exc).__name__, exc,
+            )
+            self._record_answer(False)
             return None
 
     async def add(self, memory_id: str, text: str) -> bool:

@@ -20,9 +20,12 @@ class TelegramNotifyJob(BaseJob):
                 detail="TELEGRAM_BOT_TOKEN missing",
                 duration_ms=(time.monotonic() - t0) * 1000.0,
             )
-        raw_chat_id = (
-            ctx.config.get("chat_id") or os.environ.get("TELEGRAM_DEFAULT_CHAT_ID") or ""
-        )
+        # A scheduled job says where it is going, in its own row in
+        # schedule.yaml. An environment fallback here would
+        # was the only reader of a key that appeared in Settings beside the bot
+        # token and the allowlist and looked like part of setting Telegram up.
+        # Nothing else ever read it, and no install ever set it.
+        raw_chat_id = ctx.config.get("chat_id") or ""
         try:
             chat_id = int(str(raw_chat_id).strip())
         except ValueError:

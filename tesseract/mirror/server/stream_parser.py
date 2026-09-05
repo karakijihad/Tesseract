@@ -1,7 +1,6 @@
 """Streaming assistant-text parser + sentence/paragraph splitters.
 
-Extracted from ``ws.py`` 2026-05-23 (codex audit m2 follow-up). These are
-the pure(-ish) state-machine helpers that consume the LLM's tagged stream
+The pure(-ish) state-machine helpers that consume the LLM's tagged stream
 contract (``<intent>``/``<spoken>``/``<answer>`` from ``prompt.py``) and
 split prose into TTS-eligible segments.
 
@@ -144,9 +143,9 @@ def _extract_channel_reply(raw: str) -> str:
     The channel overlay tells the assistant not to emit tags here, but the base
     prompt still teaches the contract and the assistant sometimes emits them
     anyway. Worse, a tool-iteration-cap hit can cut the stream after
-    ``<intent>...</intent>`` and before any ``<answer>`` opens — the
-    pre-fix code path returned the raw text in that case, leaking
-    literal ``<intent>`` tags to the phone. Order of preference now:
+    ``<intent>...</intent>`` and before any ``<answer>`` opens, and returning
+    the raw text there leaks literal ``<intent>`` tags to the phone. Order of
+    preference:
 
     1. Concatenated ``<answer>`` content (the contracted-on payload).
     2. Untagged text (``_untagged``) — operator wrote freely; respect it.

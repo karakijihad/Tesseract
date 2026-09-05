@@ -217,7 +217,7 @@ To report a vulnerability, open a private security advisory rather than a public
 
 ## License
 
-Copyright © 2026 Jihad Karaki.
+Copyright (C) 2026 TESSERACT. Developed and owned by [Jihad Karaki](https://github.com/karakijihad).
 
 TESSERACT is free software, licensed under the [GNU Affero General Public License v3.0](LICENSE). You may use, study, modify and share it. If you distribute a modified version — **including running one as a service others can reach over a network** — you must make your source available under the same license.
 

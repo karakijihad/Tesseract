@@ -10,11 +10,10 @@ flow (per ``_shared/worker-record-schema.md §Cancellation protocol``):
    canceller's outcome appended to ``error_message`` on failure),
    written atomically, and archived.
 
-AU-3 S1 ships the protocol + record-side state machine. The concrete
-cancellers (asyncio Task ref, chat-session ``cancel_turn``, ...) are
-injected at boot by AU-5's AutonomyKernel — the kernel holds the live
-references, so loose coupling here. Tests inject fakes via
-``register_canceller``.
+This module owns the protocol and the record-side state machine. The
+concrete cancellers (asyncio Task ref, chat-session ``cancel_turn``, ...)
+are injected at boot by the AutonomyKernel, which holds the live
+references. Tests inject fakes via ``register_canceller``.
 """
 
 from __future__ import annotations
@@ -38,7 +37,7 @@ log = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class CancelOutcome:
     """One cancellation result. ``cancelled=True`` means the underlying
-    process/task is no longer running (either gracefully terminated or
+    process/task has stopped (either gracefully terminated or
     force-killed). ``cancelled=False`` means the canceller could not
     confirm termination — the worker is left in ``cancelled`` status on
     disk anyway, but ``detail`` records the issue for the operator."""
@@ -69,7 +68,7 @@ _REGISTRY: dict[WorkerKind, CancellerFn] = {}
 
 
 def register_canceller(kind: WorkerKind, canceller: CancellerFn) -> None:
-    """AU-5 calls this once per kind at boot. Subsequent calls overwrite
+    """The kernel calls this once per kind at boot. Subsequent calls overwrite
     — tests register fakes per-test. The registry is module-level so
     the kernel and tools share one truth source."""
     _REGISTRY[kind] = canceller

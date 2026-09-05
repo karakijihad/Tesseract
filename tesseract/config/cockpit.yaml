@@ -31,10 +31,16 @@ kernel:
   # operator watches — the individual tool is what Pulse names — so the panel
   # shows the group and the count of what fired under it.
   #
-  # Every registered tool must match exactly one group.
-  # `generate_kernel_manifest.py --check` fails when one matches none or more
-  # than one, which is what stops a newly registered tool from quietly
-  # vanishing from the panel the way the hand-written list always let it.
+  # Every tool the app SHIPS must match exactly one group. `assign_groups` in
+  # `tesseract/cockpit/kernel_manifest.py` raises when one matches none or
+  # more than one, on every request the panel makes, and a test reads the
+  # names straight out of `kernel/tools/` so a tool that only registers with
+  # credentials is counted too. That is what stops a newly registered tool
+  # from quietly vanishing from the panel.
+  #
+  # A tool YOU wrote is not held to this. It cannot be, since this file is the
+  # app's and an install cannot edit it; custom tools are drawn in their own
+  # group instead of refusing the picture.
   #
   # `kind` picks the marker the rail draws: store is an index read from, seat
   # is a slot config fills, stage is a step the run passes through.
@@ -43,7 +49,7 @@ kernel:
       label: memory
       kind: store
       tone: info
-      match: ["memory_*", "recall_history"]
+      match: ["memory_*", "recall_history", "atlas_*", "playbook_*"]
     - id: vault
       label: vault
       kind: store
@@ -56,7 +62,8 @@ kernel:
     - id: web
       label: web
       kind: stage
-      match: ["web_search", "tavily_*", "context7_lookup", "browser_*"]
+      match: ["web_search", "tavily_*", "context7_lookup", "browser_*",
+              "public_image_download"]
     - id: agents
       label: agents
       kind: seat
@@ -67,12 +74,13 @@ kernel:
     - id: channels
       label: channels
       kind: stage
-      match: ["channel_*", "chat_initiate", "workspace_*"]
+      match: ["channel_*", "chat_initiate", "workspace_*", "gmail_*"]
     - id: surface
       label: surface
       kind: stage
       match: ["surface_*", "orb_visibility", "set_mood", "set_state",
-              "tasks_*", "ask_clarification", "image_generate"]
+              "tasks_*", "ask_clarification", "image_generate", "cockpit_show",
+              "transcribe_audio"]
     - id: schedule
       label: schedule
       kind: stage
@@ -82,10 +90,21 @@ kernel:
       kind: store
       tone: info
       match: ["soul_growth_propose", "propose_change", "conscience_status",
-              "diary_append", "log_triage", "brief_*", "agenda_comment"]
+              "diary_append", "log_triage", "brief_*", "agenda_comment",
+              "task_*", "context_read", "context_set"]
+    - id: accounts
+      label: accounts
+      kind: store
+      tone: warn
+      match: ["credential_*", "api_request", "command_run"]
+    - id: runtime
+      label: runtime
+      kind: stage
+      match: ["autonomy_read", "breaker_*", "health_leave",
+              "pipeline_run_stage", "retention_set_window"]
     - id: shell
       label: shell
       kind: stage
       tone: warn
       match: ["bash", "os_launch", "os_open_url", "system_diagnose",
-              "screen_look"]
+              "screen_look", "git"]

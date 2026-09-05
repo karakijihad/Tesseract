@@ -4,11 +4,11 @@ version: "0.1"
 model_role: agents_default
 description: >
   Scoped code-audit specialist. Takes a path / target / focus area, runs a deep
-  read-only audit via `delegate_codex_exec`, and emits a structured markdown
+  read-only audit via `delegate_second_opinion`, and emits a structured markdown
   audit file at `workshop/audits/<YYYY-MM-DD>/audit-<N>.md` using the
   Critical / Major / Minor / Informational severity grammar that SU-4's
   `codex_audit` verifier parses.
-underlying_tool: delegate_codex_exec
+underlying_tool: delegate_second_opinion
 default_posture: auto
 inputs:
   scope: string         # path or directory

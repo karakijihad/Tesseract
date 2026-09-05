@@ -1,4 +1,4 @@
-"""IPC client used by the ``agent`` terminal client + X-4 lane bridge.
+"""IPC client used by the ``agent`` terminal client + the lane bridge.
 
 Connects to a running :class:`ControllerDaemon` over loopback TCP,
 performs the token handshake, and exposes a high-level send / receive
@@ -59,15 +59,14 @@ class ControllerClient:
         self._closed = False
         self._inbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._reader_task: asyncio.Task | None = None
-        # Reply demultiplexer (2026-05-24 fix). A long-running `pushes()`
-        # consumer and a request/reply `_await_event` call BOTH used to
-        # pull from `_inbox`, so a reply (`session_list`, `attached`,
-        # `reload_complete`, …) could be grabbed by the push loop and
-        # silently dropped — that broke `/sessions`, `/new`, `/delete`,
-        # `/title`, `/reload` in the Textual TUI which runs `pushes()`
-        # permanently. Request/reply calls now register a Future here;
-        # the reader resolves the matching reply directly and only
-        # un-awaited events reach `_inbox`/`pushes()`.
+        # Reply demultiplexer. With a long-running `pushes()` consumer and a
+        # request/reply `_await_event` call both pulling from `_inbox`, a
+        # reply (`session_list`, `attached`, `reload_complete`, …) is grabbed
+        # by the push loop and silently dropped, which breaks `/sessions`,
+        # `/new`, `/delete`, `/title` and `/reload` in a TUI that runs
+        # `pushes()` permanently. Request/reply calls register a Future here;
+        # the reader resolves the matching reply directly and only un-awaited
+        # events reach `_inbox`/`pushes()`.
         self._reply_waiters: dict[str, list[asyncio.Future[dict[str, Any]]]] = {}
         # `lane_result` pushes are keyed by request_id, not event name.
         self._lane_request_waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
@@ -433,7 +432,7 @@ class ControllerClient:
     async def request_snapshot(
         self, *, caller_principal: str = "operator"
     ) -> None:
-        """AS-1 gap-a — ask the controller for a full Activity-registry
+        """Ask the controller for a full Activity-registry
         snapshot. Fire-and-forget: the daemon replies with an
         ``activity_snapshot`` push that arrives on :meth:`pushes` (it is not a
         request/reply `_await_event` — the long-lived subscriber consumes it in
@@ -515,7 +514,7 @@ class ControllerClient:
         """
         await self._send({"msg": "shutdown"})
 
-    # ── lane.* (X-4 Session C) ────────────────────────────────────────
+    # ── lane.* ────────────────────────────────────────
 
     async def _lane_call(
         self,
@@ -705,7 +704,7 @@ class ControllerClient:
         ids = payload.get("ids") or []
         return [str(x) for x in ids]
 
-    # ── named lanes (CV-1) ────────────────────────────────────────────
+    # ── named lanes ────────────────────────────────────────────
 
     async def lane_named_ensure(
         self,

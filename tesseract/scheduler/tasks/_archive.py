@@ -24,6 +24,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from tesseract.lib.clock import to_local
 from tesseract.paths import TESSERACT_HOME
 
 log = logging.getLogger(__name__)
@@ -46,15 +47,15 @@ def archive_run(
     job_name: str,
     body: str,
     when: datetime,
-    *,
-    channel: str = "",
-    chat_ref: str = "",
 ) -> Path | None:
     """Atomically write ``body`` to the per-day archive file. Returns the
     path on success, ``None`` on any failure (logged, never raised)."""
     try:
         root = Path(os.environ.get("TESSERACT_HOME") or TESSERACT_HOME).resolve()
-        iso_date = when.strftime("%Y-%m-%d")
+        # A per-day file is a calendar day, so it is named on the
+        # operator's clock. `generated_at` below stays the UTC instant:
+        # the day is what a person looks up, the instant is what orders.
+        iso_date = to_local(when).strftime("%Y-%m-%d")
         out_dir = root / "memory-store" / "scheduled" / _safe_segment(job_name)
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f"{iso_date}.md"
@@ -64,10 +65,9 @@ def archive_run(
             f"date: {iso_date}",
             f"generated_at: {when.isoformat()}",
         ]
-        if channel:
-            front.append(f"channel: {_yaml_str(channel)}")
-        if chat_ref:
-            front.append(f"chat_ref: {_yaml_str(chat_ref)}")
+        # No destination in here. The archive records what the run PRODUCED;
+        # where it went is the routing table's answer and can differ between
+        # the day this was written and the day it is read.
         front.append("---")
         content = "\n".join(front) + "\n\n" + (body or "").strip() + "\n"
         # Unique temp name so two same-day re-fires can't race on a shared

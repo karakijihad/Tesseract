@@ -1,6 +1,6 @@
 """lane_named_ensure — get-or-open a named lane in one ASK gate.
 
-X-5 Session A. Idempotent: reuses the bound lane when alive, opens a
+Idempotent: reuses the bound lane when alive, opens a
 fresh one (under the same name) when no binding exists or the bound
 lane is dead. ASK-gated by default — `ensure` may spawn a CLI
 subprocess on the open-new branch, which is operator-visible work.
@@ -36,13 +36,13 @@ class LaneNamedEnsureInput(BaseModel):
     kind: Literal["claude", "codex", "api"] = Field(
         description=(
             "Lane kind: 'claude' or 'codex'. Must match any existing "
-            "binding for this name — kind swap requires release first."
+            "binding for this name. Changing the kind means releasing it first."
         )
     )
     model: str = Field(
         description=(
             "Model id the lane should target. Use the config-resolved model "
-            "(lane_named_get, or the seat's roles.yaml primary) — "
+            "(lane_named_get, or the seat's roles.yaml primary). "
             "never invent one. Recorded on the binding + passed as --model "
             "when the CLI spawns."
         )
@@ -51,7 +51,7 @@ class LaneNamedEnsureInput(BaseModel):
         default=None,
         description=(
             "Working directory the CLI runs in. Omit to use the active "
-            "project's root — that is the normal case, and passing a path is "
+            "project's root. That is the normal case, and passing a path is "
             "how you deliberately send a lane somewhere else. Recorded on the "
             "binding so a brain-restart-driven attach knows where the lane "
             "lives."
@@ -65,7 +65,7 @@ class LaneNamedEnsureTool(Tool):
 
     group: ClassVar[str] = "long-running-collaborators"
     summary: ClassVar[str] = (
-        "Get-or-open a named, persistent lane in one call — reuses it if alive, opens fresh if not."
+        "Get or open a named, persistent lane. Reuses it if alive, opens one if not."
     )
     use_when: ClassVar[str] = (
         "Use for a standing collaborator you address by name across turns and sessions, not a throwaway."
@@ -74,6 +74,7 @@ class LaneNamedEnsureTool(Tool):
         "an unnamed one-off lane, which is `lane_open`; looking up an existing binding without "
         "opening, which is `lane_named_get`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

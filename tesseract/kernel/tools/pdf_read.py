@@ -9,7 +9,11 @@ from __future__ import annotations
 import asyncio
 from typing import ClassVar
 
-from tesseract.kernel.tools._path_anchor import ReadPathRefused, anchor_read_path
+from tesseract.kernel.tools._path_anchor import (
+    ReadPathRefused,
+    anchor_read_path,
+    not_found_message,
+)
 
 from pydantic import BaseModel, Field
 
@@ -35,10 +39,11 @@ class PdfReadTool(Tool):
     group: ClassVar[str] = "files-on-disk"
     summary: ClassVar[str] = "Extract text from a PDF by page range."
     use_when: ClassVar[str] = (
-        "The file is a PDF. Pass `pages` (e.g. '1-5') for a long document — a "
+        "The file is a PDF. Pass `pages` (e.g. '1-5') for a long document. A "
         "call is capped, so page ranges pull the rest."
     )
     not_when: ClassVar[str] = "Use `file_read` for any non-PDF text file."
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -62,7 +67,9 @@ class PdfReadTool(Tool):
             return ToolResult(output=str(exc), is_error=True)
 
         if not path.exists():
-            return ToolResult(output=f"PDF not found: {path}", is_error=True)
+            return ToolResult(
+                output=not_found_message("PDF", inp.file_path, path), is_error=True
+            )
         if not path.is_file():
             return ToolResult(output=f"Not a file: {path}", is_error=True)
 

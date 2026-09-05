@@ -1,8 +1,15 @@
 """recall_history — read-only retrieval over session + workshop chunks.
 
-CR-1 (2026-05-22). Hits carry ``session:`` / ``workshop:`` provenance
+Hits carry ``session:`` / ``workshop:`` provenance
 labels and source paths so the model can ``file_read`` for the full
-context. Trust-text reminds the caller that work-history hits are
+context.
+
+**One principal.** The index is install-wide and the search takes no owner or
+chat predicate, because an install has exactly one person in it. A channel
+allowlist is a trust boundary, not a permission tier: approving someone gives
+them the assistant, and the assistant remembers everything the operator has
+done. That is the reason ``run()`` ignores the ``chat_id`` its ``ToolContext``
+carries, and it is stated in ``SECURITY.md`` where a reader can act on it. Trust-text reminds the caller that work-history hits are
 non-authoritative — they are suggestions for recall, NOT promoted
 facts. Promotion to memory still goes through the librarian /
 reflection paths.
@@ -53,13 +60,17 @@ class RecallHistoryTool(Tool):
     group: ClassVar[str] = "remembering"
     summary: ClassVar[str] = "Search past session transcripts and workshop artifacts by free text."
     use_when: ClassVar[str] = (
-        "Use to recall what happened in a prior session or workshop file — "
-        "returns ranked hits with a source path to `file_read` for full context."
+        "Use to recall what was said or done in a prior session or workshop "
+        "file. Returns ranked hits with a path to `file_read` for the whole "
+        "thing."
     )
     not_when: ClassVar[str] = (
-        "use `memory_search` for promoted, authoritative facts. Hits here are "
-        "recall, not memory."
+        "for what the operator has settled on, use `memory_search`: a hit "
+        "here is what was said once, not what was decided, so never quote it "
+        "back as a decision. For research the library keeps, use "
+        "`vault_query`."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(self, index: WorkIndex) -> None:
         self._index = index

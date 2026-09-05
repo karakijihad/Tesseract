@@ -1,8 +1,8 @@
 """Chain endpoints — the shared failover orders every role now follows.
 
 A role names a chain; the chain is the only place a catalog ref lives. That
-makes two edits possible where there used to be one, and they are kept apart
-on purpose:
+makes two edits possible where a flat role would allow one, and they are
+kept apart on purpose:
 
 * **edit the chain** — moves every role following it, which is the whole
   reason the alias exists;

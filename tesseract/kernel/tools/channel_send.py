@@ -1,4 +1,4 @@
-"""Outbound channel media tools (Session 2 2026-05-16).
+"""Outbound channel media tools.
 
 Three sibling tools — ``channel_send_voice`` / ``channel_send_photo`` /
 ``channel_send_document`` — that the assistant calls when replying with audio,
@@ -64,7 +64,7 @@ class ChannelSendVoiceInput(BaseModel):
         default=None,
         description=(
             "Optional path to a pre-rendered OGG/Opus file. Use only "
-            "when the operator hands you a specific recording — TTS is "
+            "when the operator hands you a specific recording. Speech synthesis is "
             "preferred for natural conversation."
         ),
     )
@@ -90,9 +90,10 @@ class ChannelSendVoiceTool(Tool):
         "a pre-rendered audio file. Renders as a playable voice-note bubble."
     )
     not_when: ClassVar[str] = (
-        "the content is a recording someone should download and keep — use "
+        "the content is a recording someone should download and keep. Use "
         "`channel_send_document` for that."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -160,6 +161,24 @@ class ChannelSendVoiceTool(Tool):
         )
 
 
+def _named_source(source_path: str | None, source_url: str | None) -> str:
+    """What to call the thing that was sent, in a line a person will read.
+
+    A path is named as given. A URL is redacted, because this line goes into a
+    tool result: the assistant reads it back and the operator sees it, and a
+    URL can carry `user:password@` in its authority and a token in its query.
+    The failure path was redacted first and the success path was not, which
+    means an address that worked leaked what an address that failed did not.
+    """
+    if source_path:
+        return source_path
+    if not source_url:
+        return "bytes"
+    from tesseract import net_guard
+
+    return net_guard.redacted(source_url)
+
+
 # -- channel_send_photo -------------------------------------------------
 
 
@@ -171,7 +190,7 @@ class ChannelSendPhotoInput(BaseModel):
         description=(
             "Path to an image file on disk. Use for files in the vault "
             "(`vault/raw/...`), workspace, or downloads tree. Operator-"
-            "controlled paths only — the bridge does not sandbox arbitrary "
+            "controlled paths only, because the bridge does not sandbox arbitrary "
             "paths."
         ),
     )
@@ -205,9 +224,10 @@ class ChannelSendPhotoTool(Tool):
         "with an optional caption."
     )
     not_when: ClassVar[str] = (
-        "the operator needs the original file at full quality — `channel_send_document` "
+        "the operator needs the original file at full quality. `channel_send_document` "
         "preserves it but drops the inline preview."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -253,7 +273,7 @@ class ChannelSendPhotoTool(Tool):
             return ToolResult(output=f"channel_send_photo failed: {exc}", is_error=True)
 
         msg_id = result.get("message_id") if isinstance(result, dict) else None
-        source = inp.source_path or inp.source_url
+        source = _named_source(inp.source_path, inp.source_url)
         return ToolResult(
             output=f"sent photo to {inp.channel}:{inp.chat_ref} from {source} (message_id={msg_id})",
         )
@@ -267,7 +287,7 @@ class ChannelSendDocumentInput(BaseModel):
     chat_ref: str = Field(description="Channel-native chat identifier.")
     source_path: str = Field(
         description=(
-            "Path to the file. Operator-controlled paths only — the "
+            "Path to the file. Operator-controlled paths only, because the "
             "bridge does not sandbox arbitrary paths."
         ),
     )
@@ -294,14 +314,15 @@ class ChannelSendDocumentTool(Tool):
     summary: ClassVar[str] = "Send a file as a downloadable document on an external chat channel."
     use_when: ClassVar[str] = (
         "Reads `source_path` and forwards it, any MIME type, so the operator can save "
-        "it on the far side of a channel — a Mirror URL is broken there, so a file "
+        "it on the far side of a channel. A Mirror URL is broken there, so a file "
         "going to a channel must be sent this way, the opposite of `open`, which is "
         "for a file the operator already has inside the Mirror."
     )
     not_when: ClassVar[str] = (
         "the file is an image, video, animation, or audio clip that should render "
-        "inline instead — use the matching media verb (`channel_send_photo` and siblings)."
+        "inline instead: use the matching media verb (`channel_send_photo` and its siblings)."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -349,7 +370,7 @@ class ChannelSendDocumentTool(Tool):
         )
 
 
-# -- channel_send_video / animation / video_note (Session 3) ----------
+# -- channel_send_video / animation / video_note ----------
 
 
 def _make_media_tool(
@@ -357,7 +378,7 @@ def _make_media_tool(
     summary_text: str, use_when_text: str, not_when_text: str,
     allow_no_caption: bool = False,
 ):
-    """Factory for video / animation / video_note tools (Session 3 2026-05-16).
+    """Factory for video / animation / video_note tools.
 
     Each shares the same source-mux + dispatch shape; only the adapter
     method name and the kind label change. Factored to keep the file
@@ -390,6 +411,7 @@ def _make_media_tool(
         summary: ClassVar[str] = summary_text
         use_when: ClassVar[str] = use_when_text
         not_when: ClassVar[str] = not_when_text
+        depends_on: ClassVar[str] = ""
 
         @property
         def name(self) -> str:
@@ -441,7 +463,7 @@ def _make_media_tool(
             except Exception as exc:
                 return ToolResult(output=f"{name_} failed: {exc}", is_error=True)
             msg_id = result.get("message_id") if isinstance(result, dict) else None
-            source = inp.source_path or inp.source_url
+            source = _named_source(inp.source_path, inp.source_url)
             return ToolResult(
                 output=f"sent {kind_label} to {inp.channel}:{inp.chat_ref} from {source} (message_id={msg_id})",
             )
@@ -458,8 +480,8 @@ ChannelSendVideoTool = _make_media_tool(
         "inline when the format is streaming-friendly."
     ),
     not_when_text=(
-        "the clip is a short round bubble — use `channel_send_video_note`; or a "
-        "looping clip with no sound — use `channel_send_animation`."
+        "the clip is a short round bubble, which is `channel_send_video_note`, or a "
+        "looping clip with no sound, which is `channel_send_animation`."
     ),
 )
 
@@ -471,7 +493,7 @@ ChannelSendAnimationTool = _make_media_tool(
         "canonical looping animation format is preferred; raw GIFs are also accepted."
     ),
     not_when_text=(
-        "the clip has sound or is meant to play once through — use `channel_send_video` instead."
+        "the clip has sound or is meant to play once through. Use `channel_send_video` instead."
     ),
 )
 
@@ -483,8 +505,8 @@ ChannelSendVideoNoteTool = _make_media_tool(
         "No caption is sent alongside it."
     ),
     not_when_text=(
-        "a caption matters or the clip is not meant to render as the round bubble — "
-        "use `channel_send_video` instead."
+        "a caption matters or the clip is not meant to render as the round bubble. "
+        "Use `channel_send_video` instead."
     ),
     allow_no_caption=True,
 )
@@ -499,7 +521,7 @@ class ChannelSendStickerInput(BaseModel):
     sticker_file_id: Optional[str] = Field(
         default=None,
         description=(
-            "Telegram file_id for a sticker already on the CDN — fastest "
+            "Telegram file_id for a sticker the service already holds. Fastest "
             "path; re-use the same sticker many times. Find IDs via the "
             "@stickerbothelperbot or by forwarding a sticker to your bot."
         ),
@@ -527,9 +549,10 @@ class ChannelSendStickerTool(Tool):
         "a local file. Use for emotional punctuation that matches the conversational tone."
     )
     not_when: ClassVar[str] = (
-        "the reaction is to a specific message already sent — use `channel_react` instead "
+        "the reaction is to a specific message already sent. Use `channel_react` instead "
         "of sending a new sticker message."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -614,6 +637,7 @@ class ChannelSendLocationTool(Tool):
     not_when: ClassVar[str] = (
         "a text answer with an address or directions is clearer than a pin."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -680,9 +704,10 @@ class ChannelSendPollTool(Tool):
         "'which milestone do you want shipped first?')."
     )
     not_when: ClassVar[str] = (
-        "the question is open-ended or has only one sensible answer — `channel_notify` "
+        "the question is open-ended or has only one sensible answer. `channel_notify` "
         "carries a plain question just as well."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -754,9 +779,10 @@ class ChannelReactTool(Tool):
         "full reply. Pass `emoji=null` to clear a prior reaction."
     )
     not_when: ClassVar[str] = (
-        "the ack needs its own words or is not tied to one existing message — send a "
+        "the ack needs its own words or is not tied to one existing message. Send a "
         "sticker or a `channel_notify` instead."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

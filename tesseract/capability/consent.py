@@ -62,10 +62,9 @@ _DEFERRED_FILENAME = "setup-deferred.json"
 #: purpose: the venv is installed on every path, including that one, so it was
 #: never in question.
 #:
-#: The browser engine used to be named here too, and was not moved when it
-#: became an optional extra — it is a `service` now, and `system.py` records it
-#: as one. Leaving it a `runtime` left its shipped `enabled: true` reading as
-#: consent on an install where nobody was asked anything.
+#: The browser engine is a `service`, not a `runtime`, and `system.py`
+#: records it as one. As a `runtime` its shipped `enabled: true` would read
+#: as consent on an install where nobody was asked anything.
 _DEFERRABLE_KINDS = frozenset({"model", "service", "packages"})
 
 

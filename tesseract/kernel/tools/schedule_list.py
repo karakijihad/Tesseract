@@ -1,6 +1,6 @@
 """schedule_list tool — read-only enumeration of registered scheduler jobs.
 
-AU-19. Agent calls this to see what's already scheduled before proposing
+The agent calls this to see what's already scheduled before proposing
 a new job. Returns name, cadence, enabled, last_fired_at, circuit_broken,
 and the resolved model_role for LLM-using handlers. Pure read — no
 mutation, no ASK.
@@ -33,6 +33,7 @@ class ScheduleListTool(Tool):
         "Use before creating a job to avoid duplicates, or to check an existing job's runtime state."
     )
     not_when: ClassVar[str] = "pending alarms, which is `alarm_list`."
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

@@ -35,8 +35,17 @@ export function handleCommand(env: Envelope): void {
 
 export function handleCommandResult(env: Envelope): void {
   const data = env.data as unknown as CommandResultData;
-  if (data.ok) return;
   const toasts = useToastStore.getState();
+  // `severity` decides how it is said; `ok` only decides whether the orb
+  // reacts. An informational result used to be dropped on the floor when it
+  // was `ok` and shown as a red error with an orb flash when it was not, so
+  // `/compact` on a chat that still fits said nothing at all and `/reflect`
+  // skipping said it had failed.
+  if (data.severity === "info") {
+    if (data.reason) toasts.push(data.reason, "info");
+    return;
+  }
+  if (data.ok) return;
   if (data.severity === "warning") {
     // Operator-recoverable failure (e.g. typo). Toast only — DO NOT call
     // entity.setState('error') so the orb stays normal. Phase F2 obs #5.

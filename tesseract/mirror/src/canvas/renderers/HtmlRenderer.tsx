@@ -6,9 +6,11 @@
 // tool authors pick inconsistent keys, and a wrong key used to render an
 // empty (black) card.
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
 import { Note } from '../../components/common/Note';
+import { HTML_CONTROLS, pageBridge } from '../pageBridge';
+import { useBridgeCommands } from '../useBridgeCommands';
 import type { RendererProps } from './index';
 
 // An opaque origin throws `SecurityError` on `window.localStorage` /
@@ -65,13 +67,22 @@ const STORAGE_SHIM = `<script>
 // quirks mode, so prepending changes nothing).
 const DOCTYPE_RE = /^\s*<!doctype[^>]*>/i;
 
-function withStorageShim(html: string): string {
+// The bridge rides in beside the shim, for the same reason and by the same
+// splice: a card the assistant drew is a card the assistant can operate,
+// without the page having been written to expect it.
+//
+// `live` is only the RETURN leg. Every authored page answers `press`, `set`
+// and `read`; only a page that asked to be live volunteers what the operator
+// did in it, because volunteering wakes a turn and a chart with a link in it
+// should not cost a model call per click.
+function withInjectedScripts(html: string, live: boolean): string {
+  const injected = STORAGE_SHIM + pageBridge(live);
   const match = html.match(DOCTYPE_RE);
   if (match) {
     const end = match[0].length;
-    return html.slice(0, end) + STORAGE_SHIM + html.slice(end);
+    return html.slice(0, end) + injected + html.slice(end);
   }
-  return STORAGE_SHIM + html;
+  return injected + html;
 }
 
 // A frame nested inside this one inherits the opaque origin, so an embedded
@@ -100,6 +111,12 @@ export function HtmlRenderer({ descriptor, report }: RendererProps) {
   const props = descriptor.props ?? {};
   const html = String(props.html ?? props.text ?? props.content ?? props.body ?? '');
   const nested = nestedFrameSources(html);
+  const live = props.live === true;
+  const frameRef = useRef<HTMLIFrameElement>(null);
+
+  // Commands in, presses and edits out. Every authored page, because the
+  // listener is injected rather than written.
+  useBridgeCommands(descriptor.id, descriptor.view, frameRef);
 
   // The caption below tells the operator; this tells the model. Without it
   // the card is registered, drawn, and black, and `surface_list` calls that
@@ -111,16 +128,23 @@ export function HtmlRenderer({ descriptor, report }: RendererProps) {
     } else if (nested.length > 0) {
       report(
         'degraded',
-        `embeds ${nested.length} third-party page(s) — sandboxed into an opaque origin, so an embedded player paints black here. Use open target:"${nested[0]}" instead.`,
+        `embeds ${nested.length} third-party page(s), sandboxed into an opaque origin, so an embedded player paints black here. Use open target:"${nested[0]}" instead.`,
+        HTML_CONTROLS,
       );
+    } else {
+      // Claimed on the drawing path only: a card with no markup has no
+      // controls to press, and saying otherwise sends the model at a page
+      // that is not there.
+      report('mounted', '', HTML_CONTROLS);
     }
   }, [report, html, nested.length, nested[0]]);
 
   const frame = (
     <iframe
+      ref={frameRef}
       className="surface-html"
       title={descriptor.title ?? 'html'}
-      srcDoc={withStorageShim(html)}
+      srcDoc={withInjectedScripts(html, live)}
       sandbox="allow-scripts"
       referrerPolicy="no-referrer"
     />
@@ -134,7 +158,7 @@ export function HtmlRenderer({ descriptor, report }: RendererProps) {
         This surface embeds {nested.length === 1 ? 'a page' : `${nested.length} pages`} from another
         site. Authored markup is sandboxed into an opaque origin, so an embedded player renders as a
         black pane here. To show something that already exists, use{' '}
-        <code>open target:"{nested[0]}"</code> — the runtime picks the surface and grants a player
+        <code>open target:"{nested[0]}"</code>. The runtime picks the surface and grants a player
         what it needs.
       </Note>
       {frame}

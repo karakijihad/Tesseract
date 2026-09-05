@@ -1,11 +1,11 @@
 """Per-channel conversation store — append-only JSONL of inbound/outbound messages.
 
-Layout (MO-9-10 architecture decision):
+Layout:
 
     <TESSERACT_HOME>/logs/channels/<channel>/<chat_id>/conversations.jsonl
 
 Rows are :class:`ChannelMessage` dicts. The store is the canonical surface
-the Mirror Channels Conversations pane (MO-9-12) reads from — channels do
+the Mirror Channels Conversations pane reads from — channels do
 *not* write into ``workspace_events`` any more (the workspace tab is the
 operator's personal scratchpad, not a feed into external chats).
 
@@ -160,11 +160,28 @@ class ConversationStore:
         oldest-first (chronological). Empty list when the day has no
         file. Convenience surface for :class:`ChannelHistoryReadTool`.
         """
-        chat_dir = _chat_dir(channel, chat_id)
-        path = chat_dir / "conversations" / f"{date}.jsonl"
-        if not path.exists():
+        day_dir = _chat_dir(channel, chat_id) / "conversations"
+        path = day_dir / f"{date}.jsonl"
+        # `date` is a tool argument and the tool carrying it runs at `auto`
+        # posture, so nothing prompts before this. `channel` and `chat_id` are
+        # reduced to safe segments in `_chat_dir`; this was not, and a `date`
+        # of `../../<other chat>/conversations/<day>` walked out of this chat's
+        # directory. Far enough out, in fact, to leave the channels root and
+        # read `runtime/logs/audit/*.jsonl` — the suffix is forced, and the
+        # audit trail is a .jsonl file. The caller's own ownership check looks
+        # at `chat_ref` and never sees this argument.
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(day_dir.resolve())
+        except (OSError, ValueError):
+            log.warning(
+                "conversation store: refused a day file outside %s (date=%r)",
+                day_dir, date,
+            )
             return []
-        return _read_jsonl_rows(path)
+        if not resolved.exists():
+            return []
+        return _read_jsonl_rows(resolved)
 
     def list_days(self, channel: str, chat_id: str) -> list[str]:
         """Newest-first list of ``YYYY-MM-DD`` strings with archived data."""

@@ -1,4 +1,4 @@
-"""Phase 18 — filesystem watcher for `tesseract/config/*.yaml`.
+"""Filesystem watcher for `tesseract/config/*.yaml`.
 
 External edits (operator save in VS Code, `delegate_*` write, scheduler
 mutator) reflect live in the running Mirror without a restart. Each
@@ -35,10 +35,9 @@ log = logging.getLogger(__name__)
 DEBOUNCE_SECONDS = 0.25
 
 # Names we react to. Anything else under tesseract/config/ is ignored.
-# `providers.yaml` (catalog) + `roles.yaml` (wiring) replaced the pre-split
-# `models.yaml` on 2026-04-30. Both files share the `reload_models` reloader
-# in `default_reloaders()` since either change rebuilds adapters and reloads
-# cost-ledger pricing.
+# `providers.yaml` (catalog) and `roles.yaml` (wiring) share the
+# `reload_models` reloader in `default_reloaders()`, since either change
+# rebuilds adapters and reloads cost-ledger pricing.
 WATCHED_NAMES = frozenset({
     "providers.yaml",
     "roles.yaml",
@@ -46,8 +45,12 @@ WATCHED_NAMES = frozenset({
     "schedule.yaml",
     "vault.yaml",
     "mirror.yaml",
+    "identity.yaml",
+    "working_set.yaml",
     "channels.yaml",
+    "routing.yaml",
     "mcp_servers.yaml",
+    "runtime.yaml",
 })
 
 
@@ -235,11 +238,11 @@ async def reload_models(app: web.Application) -> None:
 async def _skipped(app: web.Application, file: str, subsystem: str) -> None:
     """Say that a save landed on disk and reached nothing live.
 
-    A reload whose subsystem never started used to `return` before either
-    toast, so the operator's save looked like it had worked. It had — the file
-    is written and the next process start reads it — but nothing in the
-    running app changed, and the two are not the same thing. Logged as well as
-    toasted, because the toast is behind a setting and this is not.
+    A reload whose subsystem never started must not return silently: the
+    operator's save then looks like it worked. It has — the file is written and
+    the next process start reads it — but nothing in the running app changed,
+    and the two are not the same thing. Logged as well as toasted, because the
+    toast is behind a setting and this is not.
     """
     log.warning(
         "config_watcher: %s saved, but %s is not running — the change applies "
@@ -250,7 +253,7 @@ async def _skipped(app: web.Application, file: str, subsystem: str) -> None:
 
 async def reload_mcp_servers(app: web.Application) -> None:
     """`mcp_servers.yaml` → diff the outbound MCP-client allowlist and
-    connect/disconnect servers in place (capability-growth Phase 2). Reports a
+    connect/disconnect servers in place. Reports a
     skip when the client manager never built (registry unavailable)."""
     manager = app.get("mcp_clients")
     if manager is None:
@@ -321,6 +324,11 @@ async def reload_schedule(app: web.Application) -> None:
         parts.append(f"-{len(result['removed'])} removed")
     if result.get("changed"):
         parts.append(f"~{len(result['changed'])} re-armed")
+    if result.get("refused"):
+        # A row the FIRE refuses tells the operator itself. One a reload
+        # refuses never fired, so this is the only place it can be said.
+        names = ", ".join(result["refused"])
+        parts.append(f"{names} turned off, the tool it runs needs your approval")
     if not parts:
         # Self-write path: scheduler.set_enabled / set_cadence persists
         # schedule.yaml, watchdog re-fires reload_schedule, the diff is
@@ -353,11 +361,9 @@ async def reload_channels(app: web.Application) -> None:
     policy, the channel document's generated regions) see the new values on the
     next turn.
 
-    It used to push a `RetentionPolicy` at every adapter as a second step. That
-    policy carried a 20-turn window and an inactivity reset, and both are gone:
-    a channel session compacts like the cockpit's
-    (`integrations/_channel_session.py`), which needs no per-channel knob and
-    so needs no reload.
+    There is nothing to push at an adapter: a channel session is bounded by
+    compaction (`mirror/server/after_turn.py`), which takes no
+    per-channel knob and so needs no reload.
     """
     try:
         from tesseract.integrations._channels_config import load_channels_config
@@ -373,28 +379,52 @@ async def reload_channels(app: web.Application) -> None:
         await _emit_failed(app, "channels.yaml", str(exc))
         return
     app["channels_config"] = typed
-    refreshed: list[str] = []
+    channels = typed.known_channels()
+    summary = f"channels.yaml reloaded ({', '.join(channels)})"
+    await _emit_reloaded(app, "channels.yaml", summary, {"channels": channels})
 
-    summary = (
-        f"channels.yaml reloaded ({', '.join(refreshed)})"
-        if refreshed
-        else "channels.yaml reloaded (no live adapters)"
+
+async def reload_routing(app: web.Application) -> None:
+    """`routing.yaml` — check the table and say what it now says.
+
+    Nothing is cached: every send reads the table, so an edit is already
+    live by the time this runs. What this adds is the answer. A table with a
+    kind spelled wrong is refused when it is read, and without this the
+    operator would learn that from a message that never arrived.
+    """
+    try:
+        from tesseract.orchestrator.autonomy.outbound_routing import (
+            load_outbound_routing,
+            routing_summary,
+        )
+    except Exception as exc:
+        log.exception("config_watcher: routing.yaml import failed")
+        await _emit_failed(app, "routing.yaml", str(exc))
+        return
+
+    try:
+        routing = load_outbound_routing()
+    except Exception as exc:
+        log.exception("config_watcher: routing.yaml reload failed")
+        await _emit_failed(app, "routing.yaml", str(exc))
+        return
+
+    lines = routing_summary(routing)
+    log.info("config_watcher: routing.yaml reloaded — %s", "; ".join(lines))
+    await _emit_reloaded(
+        app,
+        "routing.yaml",
+        "where each message goes has been updated",
+        {"routes": lines},
     )
-    await _emit_reloaded(app, "channels.yaml", summary, {"channels": refreshed})
 
 
 async def reload_mirror(app: web.Application) -> None:
     """`mirror.yaml` — bind/CORS still need a restart, but the
-    `ui.show_config_reload_toasts` flag IS hot-reloadable. Phase 18 audit
-    M4 — without this, an external edit to that key has no effect until
+    `ui.show_config_reload_toasts` flag IS hot-reloadable. Without this, an
+    external edit to that key has no effect until
     the operator opens Settings and saves the section, which contradicts
     the workstream's "external YAML edits reflect live" goal.
-
-    AS-2 — the `identity:` block joins it. The wake-word gate builds its
-    phrase from `identity.name` on every utterance, so a rename that only
-    landed at the next restart would leave the assistant answering to a name the
-    operator has already changed. Name, operator name and the wake-word
-    block are re-parsed together and swapped onto `app["config"]`.
     """
     detail: dict[str, Any] = {"requires_restart": True}
     summary_parts: list[str] = []
@@ -403,11 +433,6 @@ async def reload_mirror(app: web.Application) -> None:
         import yaml as _yaml
 
         raw = _yaml.safe_load(MIRROR_YAML.read_text(encoding="utf-8")) or {}
-        # Parse the identity block BEFORE touching app state. It is the
-        # only part of this file that can refuse a malformed edit, and
-        # "a broken edit changes nothing" is only true if nothing has
-        # been applied by the time it raises.
-        identity = _parse_identity(raw)
         ui = (raw.get("ui") or {}) if isinstance(raw, dict) else {}
         if "show_config_reload_toasts" in ui:
             new_flag = bool(ui.get("show_config_reload_toasts", True))
@@ -416,11 +441,7 @@ async def reload_mirror(app: web.Application) -> None:
             if new_flag != old_flag:
                 detail["show_config_reload_toasts"] = new_flag
                 summary_parts.append(f"toast toggle → {new_flag}")
-        _apply_identity(app, identity, detail, summary_parts)
     except Exception as exc:
-        # A success toast here would be the worst outcome: the operator's
-        # edit did NOT take, the gate is still running the old name, and
-        # the only signal said "reloaded".
         log.exception("config_watcher: mirror.yaml refresh failed")
         await _emit_failed(app, "mirror.yaml", str(exc))
         return
@@ -429,9 +450,118 @@ async def reload_mirror(app: web.Application) -> None:
     await _emit_reloaded(app, "mirror.yaml", " · ".join(summary_parts), detail)
 
 
+async def reload_identity(app: web.Application) -> None:
+    """`identity.yaml` — the whole file is hot. The wake-word gate builds its
+    phrase from `name` on every utterance, so a rename that only landed at the
+    next restart would leave the assistant answering to a name the operator has
+    already changed. Name, operator name and the wake-word block are re-parsed
+    together and swapped onto `app["config"]`.
+
+    The rest of the file — `born_at`, `documentation`, `time_of_day_buckets` —
+    is re-read from disk by the prompt builder on every turn and needs nothing
+    here.
+    """
+    detail: dict[str, Any] = {}
+    summary_parts: list[str] = []
+    try:
+        from tesseract.mirror.server.config import IDENTITY_YAML
+        import yaml as _yaml
+
+        raw = _yaml.safe_load(IDENTITY_YAML.read_text(encoding="utf-8")) or {}
+        # Parse BEFORE touching app state, so that "a broken edit changes
+        # nothing" is true rather than nearly true.
+        _apply_identity(app, _parse_identity(raw), detail, summary_parts)
+    except Exception as exc:
+        # A success toast here would be the worst outcome: the operator's
+        # edit did NOT take, the gate is still running the old name, and
+        # the only signal said "reloaded".
+        log.exception("config_watcher: identity.yaml refresh failed")
+        await _emit_failed(app, "identity.yaml", str(exc))
+        return
+
+    if not summary_parts:
+        summary_parts.append("identity unchanged")
+    await _emit_reloaded(app, "identity.yaml", " · ".join(summary_parts), detail)
+
+
+async def reload_working_set(app: web.Application) -> None:
+    """`working_set.yaml` — which tools carry a schema every turn.
+
+    Hot for the same reason the panel that writes it applies immediately: this
+    is a spending dial, and a dial whose effect waits for a restart is one the
+    operator turns twice because nothing happened the first time.
+
+    Re-marks the live registry. A tool REMOVED from the file goes back to
+    extended, which is why `_apply_tool_tiers` sets both directions rather than
+    only promoting.
+    """
+    from tesseract.brain.boot import _apply_tool_tiers, core_tool_names
+
+    registry = app.get("tool_registry")
+    if registry is None:
+        return
+    try:
+        before = len(core_tool_names())
+        names = core_tool_names(refresh=True)
+        _apply_tool_tiers(registry)
+    except Exception as exc:
+        # A bad edit leaves the previous set marked and says so. Falling back
+        # to "carry nothing" would be an invisible capability cut.
+        log.exception("config_watcher: working_set.yaml refresh failed")
+        await _emit_failed(app, "working_set.yaml", str(exc))
+        return
+
+    await _emit_reloaded(
+        app,
+        "working_set.yaml",
+        f"{len(names)} tools ride every turn (was {before})",
+        {"core_count": len(names)},
+    )
+
+
+async def reload_runtime(app: web.Application) -> None:
+    """`runtime.yaml` — the chat concurrency cap, live.
+
+    The cap is read into `app` once at boot and consulted per turn from there,
+    so an edit to the file alone changed nothing until a restart. The rail's
+    own PATCH route reaches in and updates `app` for exactly that reason, which
+    left a hand-edit behaving differently from the same number typed into the
+    gear. Only this one key is hot; every other value in the file is read at
+    boot and stays that way.
+    """
+    from tesseract.config.runtime_limits import (
+        CONCURRENCY_KEY,
+        load_max_concurrent_chat_turns_per_provider,
+    )
+    from tesseract.paths import config_dir
+
+    try:
+        value = load_max_concurrent_chat_turns_per_provider(config_dir() / "runtime.yaml")
+    except Exception as exc:
+        log.exception("config_watcher: runtime.yaml reload failed")
+        await _emit_failed(app, "runtime.yaml", str(exc))
+        return
+
+    before = app.get(CONCURRENCY_KEY)
+    if value == before:
+        return
+    app[CONCURRENCY_KEY] = value
+    # Same drop, and the same bound on it, as the gear's route: a turn already
+    # streaming holds its own semaphore and finishes under the old cap.
+    if app.get("chat_turn_semaphores") is not None:
+        app["chat_turn_semaphores"] = {}
+
+    await _emit_reloaded(
+        app,
+        "runtime.yaml",
+        f"{value} chats may stream at once (was {before})",
+        {"max_concurrent_chat_turns_per_provider": value},
+    )
+
+
 def _parse_identity(raw: Any) -> tuple[str, str, Any] | None:
-    """Validate the `identity:` block. Raises on a malformed one, which is
-    what keeps `reload_mirror` from applying half a file."""
+    """Validate the identity keys. Raises on a malformed file, which is what
+    keeps `reload_identity` from applying half of one."""
     from tesseract.mirror.server.config import load_identity
 
     if not isinstance(raw, dict):
@@ -440,7 +570,7 @@ def _parse_identity(raw: Any) -> tuple[str, str, Any] | None:
 
 
 def refresh_identity(app: web.Application, path: Path) -> dict[str, Any]:
-    """Re-read `path`'s identity block and swap it onto the live config now.
+    """Re-read `path`'s identity keys and swap them onto the live config now.
 
     The identity write endpoint calls this instead of leaving the job to the
     watcher: the debounce is ~250ms, and in that window the wake-word gate
@@ -632,6 +762,10 @@ def default_reloaders() -> dict[str, Callable[[web.Application], Awaitable[None]
         "schedule.yaml": reload_schedule,
         "vault.yaml": reload_vault,
         "mirror.yaml": reload_mirror,
+        "identity.yaml": reload_identity,
+        "working_set.yaml": reload_working_set,
         "channels.yaml": reload_channels,
+        "routing.yaml": reload_routing,
         "mcp_servers.yaml": reload_mcp_servers,
+        "runtime.yaml": reload_runtime,
     }

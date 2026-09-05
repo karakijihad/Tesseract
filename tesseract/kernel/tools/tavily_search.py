@@ -49,7 +49,7 @@ class TavilySearchTool(Tool):
     risk_class: ClassVar[str] = "propose"
 
     group: ClassVar[str] = "searching-the-web"
-    summary: ClassVar[str] = "Web search via Tavily — LLM-optimized snippets with an optional synthesized answer."
+    summary: ClassVar[str] = "Web search via Tavily. Snippets shaped for a model, plus an optional answer."
     use_when: ClassVar[str] = (
         "Use for research questions where you need to answer something from the web, "
         "not just survey what exists."
@@ -58,6 +58,7 @@ class TavilySearchTool(Tool):
         "Use `web_search` for breadth over niche/news queries. Use `tavily_extract` once you "
         "already have specific URLs and need their full readable content."
     )
+    depends_on: ClassVar[str] = "service:tavily"
 
     @property
     def name(self) -> str:
@@ -130,7 +131,7 @@ class TavilySearchTool(Tool):
 
 
 def _note_tavily_tripwire(drift_kind: str, evidence: dict) -> None:
-    """AU-14 14b production tripwire — best-effort JSONL row write."""
+    """Production tripwire — best-effort JSONL row write."""
     try:
         from tesseract.orchestrator.provider_health import note_production_tripwire
         note_production_tripwire("tavily_search", _PROVIDER.tripwire_source, drift_kind, evidence)

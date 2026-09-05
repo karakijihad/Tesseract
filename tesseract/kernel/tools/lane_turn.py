@@ -6,10 +6,10 @@ lane_id when no binding exists), then waits via `await_turn` on the
 `turn_id` its own send returned — through `maybe_await`, so it works
 against both the in-process LaneManager and the Mirror IPC proxy.
 
-Correlation is by turn id, not by position in the stream. Two overlapping
-lane_turn calls on one lane used to read the same pre-send cursor and both
-stop at the first `turn_ended`, so the second returned the first's reply
-while its own turn ran on unobserved."""
+Correlation is by turn id, not by position in the stream. By position, two
+overlapping lane_turn calls on one lane read the same pre-send cursor and
+both stop at the first `turn_ended`, so the second returns the first's
+reply while its own turn runs on unobserved."""
 
 from __future__ import annotations
 
@@ -95,7 +95,7 @@ class LaneTurnInput(BaseModel):
             "Dispatch and reconcile (default): send the message, return a "
             "spawn_handle immediately; the lane's reply reaches you as a "
             "completion note, or via spawn_check / spawn_await. Right for "
-            "fan-out and long jobs — you stay free to answer the operator "
+            "fan-out and long jobs, so you stay free to answer the operator "
             "and dispatch more work meanwhile. Pass false to await inline, "
             "and only when the very next step in THIS turn consumes the "
             "reply: that blocks the entire turn for the lane's duration, "
@@ -128,6 +128,7 @@ class LaneTurnTool(Tool):
         "firing a message without waiting, or fetching a lane's output later, which is "
         "`lane_send` plus `lane_read`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -176,10 +177,10 @@ class LaneTurnTool(Tool):
                             turn_ref,
                             dispatch="background",
                         ),
-                        # "Background" used to background the WATCHING, not the
-                        # work: cancelling the handle killed the poll loop while
-                        # the lane turn ran on, and nothing called
-                        # lane_interrupt. Cancel now reaches the CLI.
+                        # "Background" backgrounds the work, not the WATCHING:
+                        # without this, cancelling the handle kills the poll loop
+                        # while the lane turn runs on, and nothing calls
+                        # lane_interrupt. Cancel has to reach the CLI.
                         cancel_fn=_interrupt_lane(manager, lane_id, turn_ref),
                     )
                 except SpawnCapExceeded as exc:
@@ -341,8 +342,7 @@ class LaneTurnTool(Tool):
             turn_is_error = outcome.is_error
         except Exception as exc:  # noqa: BLE001
             # A mid-wait failure keeps whatever the wait had already gathered
-            # — a bare error here used to discard everything read so far
-            # (Deferred 2026-07-12).
+            # — a bare error here would discard everything read so far.
             accumulated = []
             turn_completed = False
             turn_is_error = False

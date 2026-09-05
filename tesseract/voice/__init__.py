@@ -11,14 +11,16 @@ via `voice_instruction`.
 Public symbols:
     STTEngine          — transcription chain
     TTSEngine          — synthesis chain
+    TTSLane            — one lane of the synthesis chain
     NoTTSLaneAvailable — chain exhausted; caller degrades to text
 """
 
 from tesseract.voice.stt import STTEngine
-from tesseract.voice.tts import NoTTSLaneAvailable, TTSEngine
+from tesseract.voice.tts import NoTTSLaneAvailable, TTSEngine, TTSLane
 
 __all__ = [
     "STTEngine",
     "TTSEngine",
+    "TTSLane",
     "NoTTSLaneAvailable",
 ]

@@ -1,6 +1,6 @@
 [project]
 name = "tesseract"
-version = "1.1.1"
+version = "1.1.2"
 description = "TESSERACT kernel — local-first AI entity runtime"
 # Declared here as well as in the repo-root LICENSE, because they are read by
 # different things: GitHub and humans read the file, while pip, SBOM tools and
@@ -104,6 +104,16 @@ dependencies = [
     # falls back to CPU cleanly without it. The lane behind Kokoro is the
     # cloud one, which needs no package at all.
     "kokoro-onnx>=0.5.0",
+
+    # The wake-word decoder, and the tokenizer that turns the phrase into
+    # units it can score. Core for the same reason Kokoro is, and it is the
+    # same defect a second time: neither was declared anywhere, so the model
+    # files downloaded, the panel offered to record a phrase, and the gate
+    # then fell open on every utterance because nothing could read them.
+    # Nothing pulls these in transitively — the models are fetched by
+    # `fetch_wake_models.py`, which says nothing about the packages.
+    "sherpa-onnx>=1.10",
+    "sentencepiece>=0.2.0",
 ]
 
 [project.optional-dependencies]

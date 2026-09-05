@@ -1,4 +1,4 @@
-"""Autonomy layer — AgendaStore + AutonomyKernel (AU-5) + (AU-6) Governor."""
+"""Autonomy layer — AgendaStore + AutonomyKernel + Governor."""
 
 from tesseract.orchestrator.autonomy.agenda_store import (
     AgendaStore,

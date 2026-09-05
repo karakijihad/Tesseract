@@ -1,16 +1,17 @@
 """RecoveryManager — orchestrates the boot-time scans.
 
-S1 shipped scans 1-4 (missions [removed — prune wave 1], workers stub,
-PTY leases [removed — prune wave 1], scheduler runs). S2 adds:
+Four scans run, in this order: workers, turns, schedule, agenda. Each is
+isolated so a broken one costs only its own counts.
 
-- scan 5 (agenda) — stub until AU-4 ships the AgendaStore. Surfaces
-  zero counts so the dashboard renders consistently.
+`turns` is the newest and the only one about a person rather than about the
+machine: a conversation the last process was mid answer in when it went down.
+It sits beside `workers`, the other scan that WRITES, ahead of the two that
+only read.
 
-The tool-proposal and upgrade-continuation scans (prior scans 6-7)
-were removed with the forge/upgrades self-modification stack (prune
-wave 1, Batch 2) — new tools are built via delegation and promoted by
-hand, so there is no provisional-tier / continuation state left to
-scan for on boot.
+The tool-proposal and upgrade-continuation scans were removed with the
+forge/upgrades self-modification stack — new tools are built via delegation and
+promoted by hand, so there is no provisional-tier or continuation state left to
+scan for on boot. The mission and PTY-lease scans went with prune wave 1.
 """
 
 from __future__ import annotations
@@ -21,7 +22,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from tesseract.bootid import current_boot_id, mint_boot_id
+from tesseract.bootid import boot_started_at, current_boot_id, mint_boot_id
+from tesseract.orchestrator.outcome import RunOutcome
 from tesseract.orchestrator.workers.record import WorkerStatus
 from tesseract.orchestrator.recovery.summary import (
     RecoverySummary,
@@ -33,7 +35,7 @@ from tesseract.workspace_events import EventStore, WorkspaceEvent
 
 log = logging.getLogger(__name__)
 
-# How far back to look at runs.jsonl for the schedule scan. AU-2 S2 will
+# How far back to look at runs.jsonl for the schedule scan. A later pass
 # replace this with downtime detection driven by the last clean-shutdown
 # intent timestamp; for S1, 24h is a reasonable proxy for "recent".
 _SCHEDULE_LOOKBACK = timedelta(hours=24)
@@ -118,8 +120,13 @@ class RecoveryManager:
             scans=empty_scan_counts(),
         )
 
+        # Filled by `_scan_turns`, drained after the scans: the scans are
+        # synchronous by contract and reaching a channel is not.
+        self._owed_a_word: list[tuple[str, str]] = []
+
         for name, scan in (
             ("workers", self._scan_workers),
+            ("turns", self._scan_turns),
             ("schedule", self._scan_schedule),
             ("agenda", self._scan_agenda),
         ):
@@ -128,6 +135,11 @@ class RecoveryManager:
             except Exception as exc:  # noqa: BLE001 — every scan stays soft
                 log.exception("recovery: scan %s failed", name)
                 summary.flag(kind="scan_error", id=name, reason=str(exc))
+
+        try:
+            await self._tell_whoever_was_left_waiting()
+        except Exception:  # noqa: BLE001 — a telling never fails a boot
+            log.exception("recovery: could not tell the chats left waiting")
 
         log.info(
             "recovery: complete in %.2fs (boot=%s) scans=%s attn=%d",
@@ -148,7 +160,7 @@ class RecoveryManager:
     # -- scan: workers ---------------------------------------------------
 
     def _scan_workers(self, summary: RecoverySummary) -> None:
-        """AU-3 S2 — walk every durable worker record under
+        """Walk every durable worker record under
         ``<TESSERACT_HOME>/workers/active/`` and classify.
 
         Recovery IS read-only at the directory-walk layer: the count-only
@@ -192,7 +204,7 @@ class RecoveryManager:
         """Drive the per-kind recovery handler synchronously inside the
         scan loop. ``recover_worker_sync`` handles the async-bridge
         details (nested-loop test harnesses thread-pool around the
-        async handler so AU-5 can keep awaiting real IO in resume)."""
+        async handler so a resume can await real IO)."""
         from tesseract.orchestrator.workers.recovery import recover_worker_sync
 
         result = recover_worker_sync(worker_id)
@@ -215,6 +227,162 @@ class RecoveryManager:
         else:
             summary.inc("workers", "preserved")
 
+    # -- scan: turns ------------------------------------------------------
+
+    def _scan_turns(self, summary: RecoverySummary) -> None:
+        """Close every conversation turn a previous process left open.
+
+        A worker has survived a restart since AU-3 because it writes its status
+        to disk before it starts work. A turn did not: its steps lived in an
+        asyncio task, so a backend that went down mid turn left nothing for
+        this scan to find, nobody was told, and the person waiting sent "?"
+        ninety seconds later into silence.
+
+        **Closed, not resumed, and that is a decision.** The phase allows
+        either. Resuming means re-asking a model at boot, on the operator's
+        money, for a question they have usually already re-asked, and the
+        worker handlers made the same call for the same reason
+        (``workers/recovery.py`` marks every kind interrupted). What the
+        incident actually needed was to be TOLD, and that is what this does:
+        every closed turn becomes an operator-attention item, which the
+        dashboard, the inbox and the rate-cap-exempt Telegram nudge all
+        already carry.
+
+        **A turn this process opened is left alone.** Recovery runs inside the
+        boot graph, which can have chat infrastructure coming up beside it, and
+        an open file from a turn that started two seconds ago is
+        indistinguishable on disk from one left by yesterday's crash. The boot
+        id carries this process's start second, so a turn that began after it
+        is live work and is preserved.
+
+        An unparseable boot id closes everything, which is the safe way round.
+        Closing a live turn's record costs a false alarm and nothing else: the
+        turn keeps running and rewrites the record itself when it ends.
+        Preserving one that is genuinely dead costs the silence this whole
+        phase exists to break.
+        """
+        from tesseract.orchestrator.turns import (
+            TurnManifestStore,
+            close_interrupted,
+            was_told,
+            what_it_reached,
+        )
+
+        summary.section("turns")
+        store = TurnManifestStore()
+        manifests = store.load_open()
+        readable = {m.run_id for m in manifests}
+        for path in store.open_paths():
+            if path.stem in readable:
+                continue
+            summary.inc("turns", "unreadable")
+            summary.flag(
+                kind="turn",
+                id=path.stem,
+                reason=(
+                    "This turn's record could not be read, so what it did is "
+                    "lost. The file is in runtime/turns/open/."
+                ),
+            )
+
+        started = boot_started_at(summary.boot_id)
+        for manifest in manifests:
+            if started is not None and manifest.started_at >= started:
+                summary.inc("turns", "preserved")
+                continue
+            reason = (
+                f"This turn stopped when the app restarted, and no reply was "
+                f"ever sent. When it stopped, {what_it_reached(manifest)}. "
+                f"Ask again if you still need it."
+            )
+            try:
+                close_interrupted(manifest, reason, store=store)
+            except OSError:
+                log.exception("recovery: could not close turn %s", manifest.run_id)
+                summary.flag(kind="turn", id=manifest.run_id, reason="close_failed")
+                continue
+            # The turn closes; the task it was working does not. It moves to
+            # `resume_queued` with its goal, its evidence and its history, and
+            # the conversation takes it up again. Written here, where the
+            # manifest is in hand, rather than in `_scan_agenda`, which reads
+            # workers and knows nothing about turns.
+            if manifest.task_id:
+                from tesseract.orchestrator.turns.tasks import note_turn_ended
+
+                kept = note_turn_ended(
+                    manifest, RunOutcome.TRUNCATED, reason, by="recovery"
+                )
+                if kept is not None:
+                    summary.flag(
+                        kind="agenda",
+                        id=kept.id,
+                        reason=(
+                            f"The task {kept.goal!r} was being worked when the app "
+                            f"restarted. It is kept, and picks up where the record "
+                            f"says it stopped, once a conversation takes it up."
+                        ),
+                    )
+            summary.inc("turns", "interrupted")
+            summary.flag(kind="turn", id=manifest.run_id, reason=reason)
+            # A person was waiting on this and nobody has reached them. The
+            # bridge tries first, at shutdown, and notes on the record whether
+            # it landed; this is the other half of that, for the case where it
+            # could not — a channel that was already unreachable, or a turn
+            # that died before the bridge was asked to stop. The summary is
+            # addressed to the operator; this is addressed to whoever asked.
+            door, _, channel = (manifest.entry or "").partition(":")
+            if door == "channel" and channel and not was_told(manifest):
+                self._owed_a_word.append((channel, manifest.run_id))
+
+    async def _tell_whoever_was_left_waiting(self) -> None:
+        """Say it to the chats the shutdown could not reach.
+
+        The bridge tries first and notes on the turn's own record whether it
+        landed, so this only ever speaks to somebody nobody has spoken to. That
+        note is what keeps one interruption to one message.
+
+        Which chat a session belongs to is the CHANNEL's answer, not this
+        module's: a session id is minted by the bridge out of its own name and
+        its own reference, and a recovery scan that parsed that format would be
+        the runtime learning one transport's shape. An adapter that cannot
+        answer is skipped and the operator's own summary still carries the
+        turn, which is where it went before this existed.
+        """
+        if not self._owed_a_word:
+            return
+        from tesseract.integrations import get_channel
+        from tesseract.orchestrator.turns import SHUTDOWN_NOTICE, turn_session_id
+
+        for channel, turn_id in self._owed_a_word:
+            adapter = get_channel(channel)
+            resolve = getattr(adapter, "chat_ref_for_session", None)
+            send = getattr(adapter, "send_text", None)
+            if adapter is None or resolve is None or send is None:
+                # Not a second flag. The turn is already in the operator's
+                # summary above with the reason it was cut short; a row saying
+                # the same turn twice is the noise a summary exists to avoid.
+                # This half is addressed to the person waiting, and when it
+                # cannot reach them the operator's own row is what remains.
+                log.info(
+                    "recovery: %s is not connected, so the chat waiting on %s "
+                    "was not told", channel, turn_id,
+                )
+                continue
+            try:
+                chat_ref = resolve(turn_session_id(turn_id))
+                if not chat_ref:
+                    continue
+                await send(chat_ref=chat_ref, text=SHUTDOWN_NOTICE)
+                log.info(
+                    "recovery: told %s chat about the turn the restart cut short",
+                    channel,
+                )
+            except Exception:  # noqa: BLE001 — one chat, never the boot
+                log.warning(
+                    "recovery: could not reach the %s chat waiting on %s",
+                    channel, turn_id, exc_info=True,
+                )
+
     # -- scan: scheduler runs ---------------------------------------------
 
     def _scan_schedule(self, summary: RecoverySummary) -> None:
@@ -226,8 +394,8 @@ class RecoveryManager:
         engine writes AFTER each run finishes. Crash-interrupted
         firings leave no row at all in runs.jsonl (engine doesn't
         write a "started" marker), so ``interrupted`` cannot be
-        derived from this log alone in S1. AU-2 S2 will add the
-        started-marker instrumentation and introduce a third bucket.
+        derived from this log alone until a started-marker is written,
+        which would give a third bucket.
         """
         log_path = self.schedule_log_dir / "runs.jsonl"
         if not log_path.exists():
@@ -267,7 +435,7 @@ class RecoveryManager:
     # -- scan: agenda -----------------------------------------------------
 
     def _scan_agenda(self, summary: RecoverySummary) -> None:
-        """AU-4 — walk ``<TESSERACT_HOME>/agenda/active/*.json`` and
+        """Walk ``<TESSERACT_HOME>/agenda/active/*.json`` and
         apply the recovery transition map per ``_shared/recovery-state-
         machine.md §5``:
 
@@ -280,9 +448,8 @@ class RecoveryManager:
         - terminal items preserved (no-op, but counted).
 
         Per the protocol, recovery never WRITES new attention to the
-        item file; it just transitions the status field. The kernel
-        (AU-5) inspects status + linked workers to decide next move.
-        Worker linkage is enumerated against the AU-3 worker records on
+        item file; it just transitions the status field. The kernel inspects status + linked workers to decide next move.
+        Worker linkage is enumerated against the worker records on
         disk via ``load_record`` — fresh data, not the agenda's cached
         linked_workers list (which could be stale).
         """

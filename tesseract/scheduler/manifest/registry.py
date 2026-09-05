@@ -39,7 +39,7 @@ ROWS: tuple[Entry, ...] = (
         why=(
             "Turns and terminal work would wait for the nightly pass, anything "
             "the machine lost before it would never be captured at all, and a "
-            "conversation held anywhere would leave nothing behind — so the next "
+            "conversation held anywhere would leave nothing behind, so the next "
             "one would start from nothing."
         ),
         kind=Kind.DETERMINISTIC,
@@ -49,25 +49,20 @@ ROWS: tuple[Entry, ...] = (
         name="consolidate",
         runs=Runs.ROW,
         summary=(
-            "Settles the day into the library — digest, distil, lint, scrub, "
-            "re-index, decay — and sweeps the agenda and the providers on the way."
+            "Settles the day into the library: digest, distil, lint, scrub, "
+            "re-index. It sweeps the agenda and the providers on the way."
         ),
         why=(
             "The library would grow by accretion: duplicates never merged, broken "
             "links never repaired, indexes drifting from the files they describe."
         ),
         kind=Kind.REMOTE_MODEL,
-        # `chain_2` is what the two feedback stages ride. `DISPATCHED` arrived
+        # `chain_1` is what the two feedback stages ride. `DISPATCHED` arrived
         # with `provider_probe`: it calls each active role's PRIMARY REF
         # directly rather than riding a chain, so no literal list could name
         # what it spends on without going stale the next time a role moves.
-        chains=("chain_2", DISPATCHED),
+        chains=("chain_1", DISPATCHED),
         owner=Owner.HOME,
-        # The ceiling the `feedback_consolidator` role used to hold. That role
-        # existed to give two of this row's stages a budget line and nothing
-        # else; the line belongs to the work, so it is here and the role is
-        # gone. The two stages that ride a pillar role still bill to it.
-        daily_budget_usd=0.50,
     ),
     Entry(
         name="watchman",
@@ -106,7 +101,7 @@ SERVICES: tuple[Entry, ...] = (
         name="scheduler_tick",
         runs=Runs.SERVICE,
         summary="Wakes once a minute and fires whichever rows are due.",
-        why="Nothing on a schedule would ever run — every row above depends on it.",
+        why="Nothing on a schedule would ever run. Every row above depends on it.",
         kind=Kind.DETERMINISTIC,
         owner=Owner.RUNTIME,
         site="tesseract/scheduler/engine.py:_tick_loop",
@@ -170,6 +165,46 @@ SERVICES: tuple[Entry, ...] = (
         owner=Owner.DELIVERY,
         site="tesseract/mirror/server/brief_delivery.py:delivery_loop",
         substrate="brief_delivery",
+    ),
+    Entry(
+        name="spawn_heartbeat",
+        runs=Runs.SERVICE,
+        summary=(
+            "Looks at the background work that is still running, and starts a "
+            "turn to say what has been going a long time with nothing back."
+        ),
+        why=(
+            "Everything else about a background task speaks when it finishes. "
+            "Work that simply keeps going would be noticed only when you "
+            "thought to ask, which is how an eighteen minute run went unchecked."
+        ),
+        # It starts an ordinary turn on the chat that owns the work, so what it
+        # spends is whatever that conversation was already spending.
+        kind=Kind.REMOTE_MODEL,
+        chains=(DISPATCHED,),
+        owner=Owner.DELIVERY,
+        site="tesseract/mirror/server/spawn_heartbeat.py:heartbeat_loop",
+        substrate="spawn_heartbeat",
+    ),
+    Entry(
+        name="workspace_reply_retry",
+        runs=Runs.SERVICE,
+        summary=(
+            "Looks for a question you asked in a thread that has no answer, "
+            "and asks the assistant again."
+        ),
+        why=(
+            "A comment got one attempt when you posted it. If that attempt "
+            "failed you were left with a question, no answer, and nothing "
+            "anywhere saying so."
+        ),
+        # It dispatches the same controller session the first attempt did, so
+        # a retry costs what the reply would have cost.
+        kind=Kind.REMOTE_MODEL,
+        chains=(DISPATCHED,),
+        owner=Owner.DELIVERY,
+        site="tesseract/mirror/server/workspace_reply_retry.py:retry_loop",
+        substrate="workspace_reply_retry",
     ),
     Entry(
         name="loop_lag_monitor",
@@ -304,6 +339,21 @@ SERVICES: tuple[Entry, ...] = (
         substrate="config_watcher",
     ),
     Entry(
+        name="workspace_watch",
+        runs=Runs.SERVICE,
+        summary="Pushes an inbox row to the open app the moment it is written or decided.",
+        why=(
+            "Half the things that write to the inbox never announced it and "
+            "nothing outside the backend could, so a row appeared only when you "
+            "pressed Refresh, and a decision taken on your phone left the "
+            "window in front of you showing a question already answered."
+        ),
+        kind=Kind.DETERMINISTIC,
+        owner=Owner.DELIVERY,
+        site="tesseract/mirror/server/workspace_watch.py:sync",
+        substrate="workspace_watch",
+    ),
+    Entry(
         name="activity_subscriber",
         runs=Runs.SERVICE,
         summary="Keeps one connection to the agent controller and mirrors its activity here.",
@@ -352,6 +402,8 @@ EXEMPT_LOOPS: dict[str, str] = {
         "follows one transcript for one reader",
     "tesseract/orchestrator/autonomy/kernel_worker_runner.py:_beat_until_done":
         "one worker's heartbeat, for as long as that worker runs",
+    "tesseract/scheduler/pipeline/lock.py:hold":
+        "a bounded wait for whatever is running the pipeline to finish",
     "tesseract/scripts/agent_cli.py:_shutdown_running_daemon":
         "one CLI command waiting for the daemon to exit",
 }
@@ -368,7 +420,41 @@ ON_DEMAND: tuple[Entry, ...] = (
             "module for it, which puts it out of reach from a conversation."
         ),
         kind=Kind.REMOTE_MODEL,
-        chains=("chain_2",),
+        chains=("chain_1",),
+        owner=Owner.DELIVERY,
+    ),
+    Entry(
+        name="provider_watch",
+        runs=Runs.ON_DEMAND,
+        summary=(
+            "Searches for what the model providers have changed lately and "
+            "writes you a digest of it."
+        ),
+        why=(
+            "A model retired, repriced or given a bigger context window is "
+            "found the day something stops behaving, rather than the day it "
+            "was announced."
+        ),
+        kind=Kind.REMOTE_MODEL,
+        chains=("chain_1",),
+        owner=Owner.HOME,
+    ),
+    Entry(
+        name="tool_call",
+        runs=Runs.ON_DEMAND,
+        summary="Runs one tool on the cadence you gave it, and sends you what it said.",
+        why=(
+            "Polling a mailbox or a feed meant writing a job that reimplemented "
+            "the tool that already does it, which is a second copy of the work "
+            "and a second copy of its permission story."
+        ),
+        # The job itself is a dispatch and costs nothing. What it costs is
+        # whatever tool the row names, and one of the tools it can name is
+        # `invoke_agent`, which starts a turn. Same reasoning as `pty_feed`:
+        # an operator reading this list has to see that this row CAN spend,
+        # and the row is the only place that says which tool it runs.
+        kind=Kind.REMOTE_MODEL,
+        chains=(DISPATCHED,),
         owner=Owner.DELIVERY,
     ),
 )
@@ -383,18 +469,55 @@ ON_DEMAND: tuple[Entry, ...] = (
 
 TRIGGERS: tuple[Entry, ...] = (
     Entry(
+        name="playbook_extract",
+        runs=Runs.TRIGGER,
+        summary=(
+            "Reads a task you accepted as done and writes the way it was done "
+            "down as a playbook for next time, or adds the task to a playbook "
+            "that already says how."
+        ),
+        why=(
+            "A problem solved once is solved again from scratch. Without this, "
+            "the record of how a task was done is read by nobody."
+        ),
+        kind=Kind.REMOTE_MODEL,
+        chains=("chain_1",),
+        owner=Owner.HOME,
+    ),
+    Entry(
         name="skill_refinement",
         runs=Runs.TRIGGER,
         summary=(
             "Reads how your skills have been performing and offers a rewrite of "
-            "one that keeps ending in errors or corrections."
+            "one that keeps ending in errors or corrections. A playbook revision "
+            "that did worse than the one before it is retired, and the earlier "
+            "one is kept to return to."
         ),
         why=(
             "A skill that quietly misleads the assistant goes on misleading it. "
-            "Without this, the usage log records that and nobody reads it."
+            "Without this, the usage log records that and nobody reads it, and a "
+            "revision that made a playbook worse stays the one it reaches for."
         ),
         kind=Kind.REMOTE_MODEL,
-        chains=("chain_2",),
+        chains=("chain_1",),
+        owner=Owner.HOME,
+    ),
+    Entry(
+        name="working_set_review",
+        runs=Runs.TRIGGER,
+        summary=(
+            "Reads which tools and playbooks you actually use and offers to "
+            "change what rides every turn: carry the ones it keeps looking up "
+            "first, stop carrying the ones nothing has touched."
+        ),
+        why=(
+            "What a turn carries is roughly half of what it costs before you "
+            "have typed anything, and the two gauges that could say whether "
+            "the list is right have never moved anything. It never edits the "
+            "list. It shows the change and the use it was computed from, and "
+            "you decide."
+        ),
+        kind=Kind.DETERMINISTIC,
         owner=Owner.HOME,
     ),
     Entry(
@@ -406,10 +529,10 @@ TRIGGERS: tuple[Entry, ...] = (
         ),
         why=(
             "The library only grows when somebody notices a repeated shape. It "
-            "never drafts a skill — it says what it saw, and you decide."
+            "never drafts a skill. It says what it saw, and you decide."
         ),
         kind=Kind.REMOTE_MODEL,
-        chains=("chain_2",),
+        chains=("chain_1",),
         owner=Owner.HOME,
     ),
     Entry(
@@ -431,7 +554,57 @@ TRIGGERS: tuple[Entry, ...] = (
         chains=(DISPATCHED,),
         owner=Owner.RUNTIME,
     ),
+    Entry(
+        name="panel_writer",
+        runs=Runs.TRIGGER,
+        summary=(
+            "Writes the one line each room on the Autonomy panel opens with, "
+            "from the numbers that room already counts."
+        ),
+        why=(
+            "A list of room names is a menu. A line each is the overview, and "
+            "without it you have to open a room to learn whether anything in "
+            "it needs you."
+        ),
+        fires="when you open the panel and a room's numbers have moved",
+        kind=Kind.REMOTE_MODEL,
+        chains=("chain_1",),
+        owner=Owner.DELIVERY,
+    ),
 )
+
+# ── Substrates that start nothing continuous. ──
+#
+# The service half of the manifest is held to a `site`, and four services wait
+# on IO where no clock-scan reaches them, so they are held to the `boot.yaml`
+# substrate that starts them instead. That check ran in one direction only: an
+# entry naming a substrate the boot graph dropped was caught, and a substrate
+# that quietly grew a loop was not. Which is the direction that matters, since
+# six loops came to run without appearing in any registry and that is the
+# defect this whole manifest exists to close.
+#
+# So every substrate is now accounted for: it carries an entry, or it is named
+# here with what it does instead. A one-shot preparation is not a service, and
+# saying so once is what makes the silence about the rest meaningful.
+NOT_A_SERVICE: dict[str, str] = {
+    "tls_trust_store": "loads the CA bundle once and returns",
+    "ollama": "probes the local model server at boot; the server is not ours",
+    "tool_registry": "builds the registry; what runs is a tool, on a turn",
+    "cost_ledger": "opens the ledger; what spends is the work that bills to it",
+    "recovery": "replays what the previous process left unfinished, then stops",
+    "activity_rebuild": "seeds the activity registry from disk before the subscriber connects",
+    "voice_runtime": "builds the lanes; a lane runs when something speaks",
+    "chat_infra": "builds the chat stores; the surfaces that use them are entries",
+    "command_registry": "registers the commands once",
+    "voice_dependent_tools": "registers the tools that need the voice runtime, once",
+    "outbound_notifier": "primes the shared sender; what it sends is the work that asked",
+    "serial_warmups": "drains the GIL-bound warm-up queue and exits, re-armed on a voice reload",
+    "operator_panes": "reopens the panes the previous process left, once",
+    "cli_auth": "reads the CLI credentials once",
+    "browser_provision": "fetches the browser binary when one is missing",
+    "wake_spotter": "preloads the wake decoder into a cache",
+}
+
 
 ENTRIES: tuple[Entry, ...] = ROWS + SERVICES + TRIGGERS + ON_DEMAND
 
@@ -462,6 +635,7 @@ def entries_of(runs: Runs) -> tuple[Entry, ...]:
 __all__ = [
     "BY_NAME",
     "ENTRIES",
+    "NOT_A_SERVICE",
     "EXEMPT_LOOPS",
     "ON_DEMAND",
     "ROWS",

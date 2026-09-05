@@ -1,8 +1,8 @@
 """surface_bind_session — attach a runtime session (lane / channel)
 to a surface for live updates. AUTO.
 
-Y-2 ships the binding mechanism; the rich live renderers that consume the
-binding land later (lane card in CV-1, channel card in P4-3)."""
+The runtime ships the binding mechanism; the rich live renderers that
+consume the binding land later."""
 
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ class SurfaceBindSessionTool(Tool):
         "`surface_update` for a one-off content change; this is for ongoing "
         "live streaming from a session."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

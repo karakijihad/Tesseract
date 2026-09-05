@@ -1,4 +1,4 @@
-"""Payload shape for ``yaml_change_proposal`` workspace events (MO-10-2).
+"""Payload shape for ``yaml_change_proposal`` workspace events.
 
 Carried inside ``WorkspaceEvent.payload`` so the apply path
 (``kernel.workspace_changes``) can read it back without parsing free

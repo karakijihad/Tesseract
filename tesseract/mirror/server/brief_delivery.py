@@ -147,7 +147,12 @@ async def deliver_now(app: Any, *, brief_date: date) -> dict[str, Any]:
     await _broadcast_workspace_event_for_brief(
         app,
         event_store=app.get("workspace_event_store") if hasattr(app, "get") else None,
-        event_id=getattr(event, "id", None),
+        # `event_id`, not `id`. `WorkspaceEvent` has no `id` field, so the
+        # getattr default returned None every time and the nightly send
+        # never fanned the card out: a toast arrived and an open Workspace
+        # did not refresh. The REST path read the right name and worked,
+        # which is why this only ever failed unattended.
+        event_id=getattr(event, "event_id", None),
     )
     return {"delivered": True, "date": brief_date.isoformat()}
 
@@ -264,7 +269,7 @@ async def _push_brief_to_telegram(app: Any, *, date: str | None = None) -> None:
         await _push_brief_via_telegram_api(app, date=date)
         return
     try:
-        result = await handle()
+        result = await handle(date)
         log.info("brief_delivery: brief_push result=%s", result)
         if _should_try_telegram_api_fallback(result):
             await _push_brief_via_telegram_api(app, date=date)
@@ -274,40 +279,36 @@ async def _push_brief_to_telegram(app: Any, *, date: str | None = None) -> None:
 
 
 def _build_brief_push_subscriber(app: Any) -> Any:
-    """Construct a ``TelegramBriefPushSubscriber`` on demand.
+    """Construct a ``BriefPushSubscriber`` on demand.
 
     The Mirror app normally wires ``brief_push_subscriber`` at bridge
     startup (``_wire_brief_push_subscriber``). In a scheduler-run app
     context that wiring may be absent, leaving ``_push_brief_to_telegram``
-    a no-op. Rebuild it here from the same dependencies the Mirror uses,
-    reading config/allowlist/tier at call time. Fail-soft: any missing
-    dependency returns None so the disk write stays canonical.
+    a no-op. Rebuild it here with the same renderer map the Mirror uses.
+    Fail-soft: a missing event store returns None so the disk write stays
+    canonical.
     """
     try:
-        from tesseract.integrations.telegram.brief_push import (
-            TelegramBriefPushSubscriber,
-        )
-        from tesseract.integrations.telegram.state import load_allowlist
+        from tesseract.integrations._brief_push import BriefPushSubscriber
     except Exception:
         log.exception("brief_delivery: brief_push import failed")
         return None
 
-    telegram_bridge = app.get("telegram_bridge")
     event_store = app.get("workspace_event_store")
-    if telegram_bridge is None or getattr(telegram_bridge, "_state", None) is None:
-        return None
     if event_store is None:
         return None
 
-    return TelegramBriefPushSubscriber(
-        bridge=telegram_bridge,
+    return BriefPushSubscriber(
         event_store=event_store,
-        config_loader=lambda: app.get("channels_config"),
-        allowlist_loader=lambda: load_allowlist(
-            telegram_bridge._state.allowlist_path
-        ),
-        user_tier_loader=lambda: dict(telegram_bridge._state.poll_state.user_tier),
     )
+
+
+#: Reasons that mean there was nothing to carry the brief, so the last-resort
+#: path is worth trying. `no_bridge` was the whole list when the subscriber
+#: held a bridge; since it resolves its channels through the registry, the
+#: same condition arrives as `no_adapter`. Dropping the old name would leave
+#: a scheduler run silently unable to fall back.
+_NOTHING_TO_SEND_WITH = frozenset({"no_bridge", "no_adapter", "no_send_text"})
 
 
 def _should_try_telegram_api_fallback(result: Any) -> bool:
@@ -321,7 +322,7 @@ def _should_try_telegram_api_fallback(result: Any) -> bool:
     errors = int(result.get("errors") or 0)
     if sent > 0 or skipped > 0:
         return False
-    return reason == "no_bridge" or errors > 0
+    return reason in _NOTHING_TO_SEND_WITH or errors > 0
 
 
 async def _push_brief_via_telegram_api(
@@ -331,84 +332,60 @@ async def _push_brief_via_telegram_api(
 ) -> dict[str, Any]:
     """Last-resort daily-brief push when the live bridge is unavailable.
 
-    This preserves the operator-facing delivery path for scheduler runs
-    where ``TELEGRAM_BOT_TOKEN`` and the allowlist exist but the Mirror
-    bridge/subscriber was not wired. It intentionally does not raise:
-    the markdown brief and workspace event remain the canonical result.
+    Preserves delivery for a scheduler run where the token and the allowlist
+    exist but the Mirror bridge was never wired. It goes out through the
+    channel's own no-bridge adapter, so the choosing, the routing and the
+    operator rule are the same ones the normal path uses and this is only a
+    different way of getting hold of the adapter. It intentionally does not
+    raise: the markdown brief and the workspace event remain the canonical
+    result.
     """
     if not hasattr(app, "get"):
         return {"sent": 0, "skipped": 0, "errors": 0, "reason": "no_app"}
-    if not _telegram_brief_push_enabled(app):
-        return {"sent": 0, "skipped": 0, "errors": 0, "reason": "disabled"}
-
-    try:
-        from tesseract.integrations.telegram.brief_push import (
-            format_exec_summary,
-            send_to_operators,
-        )
-        from tesseract.integrations.telegram.api import TelegramAPI
-        from tesseract.integrations.telegram.state import load_allowlist, load_state
-    except Exception:
-        log.exception("brief_delivery: TelegramAPI fallback import failed")
-        return {"sent": 0, "skipped": 0, "errors": 1, "reason": "import_failed"}
 
     payload = _latest_brief_payload(app, date=date)
     if payload is None:
         return {"sent": 0, "skipped": 0, "errors": 0, "reason": "no_payload"}
-    text = format_exec_summary(payload)
-    if not text:
+
+    from tesseract.integrations._brief_push import BRIEF_KIND, compose_brief
+    from tesseract.integrations._offline import notify_offline, offline_adapter
+    from tesseract.integrations._outbound import notify_operators
+    from tesseract.orchestrator.autonomy.outbound_routing import load_outbound_routing
+
+    message = compose_brief(payload)
+    if not (message.sections or message.bullets):
         return {"sent": 0, "skipped": 0, "errors": 0, "reason": "empty_text"}
 
-    import os
-
-    token = (os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
-    if not token:
-        return {"sent": 0, "skipped": 0, "errors": 0, "reason": "no_token"}
-
-    state_dir = _resolve_telegram_state_dir()
-    allowlist = load_allowlist(
-        state_dir / "allowlist.json",
-        env_seed=os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS"),
-    )
-    tiers = load_state(state_dir / "state.json").user_tier
     try:
-        api = TelegramAPI(token)
+        targets = load_outbound_routing().destinations(BRIEF_KIND)
     except Exception:
-        log.exception("brief_delivery: TelegramAPI fallback init failed")
-        return {"sent": 0, "skipped": 0, "errors": 1, "reason": "init_failed"}
-    try:
-        result = await send_to_operators(
-            text,
-            bridge=_TelegramAPISender(api),
-            allowlist=allowlist,
-            user_tier=dict(tiers),
-        )
-        log.info("brief_delivery: TelegramAPI fallback result=%s", result)
-        return result
-    except Exception:
-        log.exception("brief_delivery: TelegramAPI fallback failed")
-        return {"sent": 0, "skipped": 0, "errors": 1, "reason": "send_failed"}
-    finally:
+        log.exception("brief_delivery: could not read where the brief is routed")
+        return {"sent": 0, "skipped": 0, "errors": 1, "reason": "no_routing"}
+    if not targets:
+        return {"sent": 0, "skipped": 0, "errors": 0, "reason": "disabled"}
+
+    sent = skipped = errors = 0
+    for channel in targets:
+        adapter = offline_adapter(channel)
+        if adapter is None:
+            continue
         try:
-            await api.aclose()
+            result = await notify_operators(adapter, message)
+            sent += int(result.get("sent") or 0)
+            skipped += int(result.get("skipped") or 0)
+            errors += int(result.get("errors") or 0)
         except Exception:
-            log.exception("brief_delivery: TelegramAPI fallback close failed")
-
-
-def _telegram_brief_push_enabled(app: Any) -> bool:
-    cfg = app.get("channels_config") if hasattr(app, "get") else None
-    if cfg is None:
-        try:
-            from tesseract.integrations._channels_config import load_channels_config
-
-            cfg = load_channels_config()
-        except Exception:
-            log.exception("brief_delivery: channels config load failed")
-            return False
-    telegram_block = getattr(cfg, "telegram", None)
-    if telegram_block is None:
-        return False
-    return bool(getattr(telegram_block, "brief_push", False))
+            log.exception("brief_delivery: offline send to %s failed", channel)
+            errors += 1
+        finally:
+            close = getattr(adapter, "aclose", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception:  # noqa: BLE001
+                    log.exception("brief_delivery: closing %s failed", channel)
+    log.info("brief_delivery: offline push result sent=%s errors=%s", sent, errors)
+    return {"sent": sent, "skipped": skipped, "errors": errors}
 
 
 def _latest_brief_payload(
@@ -432,52 +409,6 @@ def _latest_brief_payload(
             continue
         return payload
     return None
-
-
-def _resolve_telegram_state_dir() -> Path:
-    import os
-
-    return (
-        Path(os.environ.get("TESSERACT_HOME") or TESSERACT_HOME).resolve()
-        / "telegram"
-    )
-
-
-class _TelegramAPISender:
-    def __init__(self, api: Any) -> None:
-        self._api = api
-
-    async def send_text(self, *, chat_ref: str, text: str) -> None:
-        from tesseract.integrations.telegram.api import TelegramAPIError
-        from tesseract.integrations.telegram.chunker import chunk_for_telegram
-
-        chat_id = int(chat_ref)
-        for chunk in chunk_for_telegram(text or ""):
-            try:
-                await self._api.send_message(
-                    chat_id=chat_id,
-                    text=chunk,
-                    parse_mode="HTML",
-                )
-            except TelegramAPIError:
-                log.warning(
-                    "brief_delivery: TelegramAPI HTML send failed "
-                    "for chat=%s; retrying plain",
-                    chat_ref,
-                )
-                await self._api.send_message(
-                    chat_id=chat_id,
-                    text=_strip_html_tags(chunk),
-                )
-
-
-def _strip_html_tags(text: str) -> str:
-    import re
-    from html import unescape
-
-    return unescape(re.sub(r"<[^>]+>", "", text))
-
-
 
 
 __all__ = [

@@ -19,8 +19,10 @@ import json
 import logging
 from typing import Any, AsyncGenerator
 
+from tesseract.kernel.adapters._estimate import tokens_from_chars
 from tesseract.kernel.adapters.base import (
     AdapterOptions,
+    CACHE_BOUNDARY,
     ChunkType,
     ErrorKind,
     ModelAdapter,
@@ -39,13 +41,29 @@ _BACKOFF_BASE = 1.0
 # model's mistake and is passed through for the tool to reject.
 _TRUNCATING_STOP_REASONS = frozenset({"max_tokens"})
 
+# The server-side tool search. Regex rather than BM25 because the registry's
+# names are the thing being matched — `browser_*`, `lane_*`, `vault_*` are
+# prefixes a pattern finds exactly, where a relevance score only ranks them.
+# A wire constant, like the `{"type": "function"}` envelope the OpenAI adapter
+# writes; the models a role reaches stay `roles.yaml`'s business.
+_TOOL_SEARCH_TYPE = "tool_search_tool_regex_20251119"
+_TOOL_SEARCH_NAME = "tool_search_tool_regex"
+
 
 class AnthropicAdapter(ModelAdapter):
     """Async streaming adapter against the Anthropic Messages API.
 
     Required constructor args mirror the other API adapters: every value comes
     from ``providers.yaml`` via the loader — no defaults baked in here.
+
+    **Declares `defers_tool_loading`.** This provider matches deferred tools
+    server-side and appends their schemas inside the same request, so a tool
+    outside the working set costs no round trip here. Nothing else in the
+    runtime learns that: the registry builds one payload either way and this
+    adapter translates it.
     """
+
+    defers_tool_loading = True
 
     def __init__(
         self,
@@ -76,7 +94,7 @@ class AnthropicAdapter(ModelAdapter):
         options: AdapterOptions | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         opts = options or AdapterOptions()
-        system, msg_list = _to_anthropic_messages(messages)
+        system, msg_list, boundary_at = _to_anthropic_messages(messages)
 
         kwargs: dict[str, Any] = {
             "model": opts.model,
@@ -90,21 +108,48 @@ class AnthropicAdapter(ModelAdapter):
             kwargs["temperature"] = opts.temperature
         if system:
             # System prompt as a single cache-controlled block — identical
-            # system text across requests hits the prompt cache.
+            # system text across requests hits the prompt cache. Tools render
+            # before system, so this one breakpoint caches both.
             kwargs["system"] = [{
                 "type": "text",
                 "text": system,
                 "cache_control": {"type": "ephemeral"},
             }]
+        # ...and a second one at the end of the settled conversation, which is
+        # what caches the CONVERSATION. Without it only tools and system are
+        # ever reused and the whole history is re-processed on every turn — at
+        # a median input of ~88k tokens, most of what a turn pays for. The API
+        # allows four breakpoints; we were using one, by omission rather than
+        # by choice.
+        #
+        # Where it goes is not this adapter's question to answer. It is told,
+        # by `CACHE_BOUNDARY`, because the answer depends on what is a turn
+        # and what is settled history, and a flat message list does not say.
+        # This used to read roles and guess, and the guess was right for this
+        # provider and unavailable to any other.
+        _mark(msg_list, boundary_at)
         if tools:
-            kwargs["tools"] = [
-                {
+            translated = []
+            for t in tools:
+                entry: dict[str, Any] = {
                     "name": t["name"],
                     "description": t.get("description", ""),
                     "input_schema": t.get("input_schema", {}),
                 }
-                for t in tools
-            ]
+                if t.get("defer_loading"):
+                    entry["defer_loading"] = True
+                translated.append(entry)
+            # The search tool rides along only when there is something to
+            # search for, and only when something is also loaded: a payload
+            # where every tool defers is refused outright, and the search tool
+            # itself must never be one of them.
+            deferred = sum(1 for t in translated if t.get("defer_loading"))
+            if deferred and deferred < len(translated):
+                translated.append({"type": _TOOL_SEARCH_TYPE, "name": _TOOL_SEARCH_NAME})
+            elif deferred:
+                for entry in translated:
+                    entry.pop("defer_loading", None)
+            kwargs["tools"] = translated
 
         last_error: Exception | None = None
         for attempt in range(self.max_retries):
@@ -269,12 +314,11 @@ class AnthropicAdapter(ModelAdapter):
 
     @staticmethod
     def count_tokens(messages: list[dict[str, Any]]) -> int:
-        """Best-effort token estimate via word count.
+        """Best-effort token estimate from characters.
 
-        The Messages API exposes ``client.messages.count_tokens()``, but it's
+        The Messages API exposes ``client.messages.count_tokens()``, but it is
         async and ChatSession calls ``count_tokens`` synchronously for compact
-        budget math. Fall back to a coarse char-based estimate (4 chars/token)
-        — chat_brain only needs an upper bound for compact decisions, and the
+        budget maths. The divisor lives in ``_estimate`` and is measured; the
         accurate count flows back through ``StreamChunk.raw["usage"]`` after
         the round-trip.
         """
@@ -288,7 +332,7 @@ class AnthropicAdapter(ModelAdapter):
                     if isinstance(block, dict):
                         total_chars += len(str(block.get("text", "")))
                         total_chars += len(str(block.get("input", "")))
-        return max(1, total_chars // 4)
+        return tokens_from_chars(total_chars)
 
     async def check_available(self) -> bool:
         """Smoke-test the credentials with a 1-token request.
@@ -313,10 +357,45 @@ class AnthropicAdapter(ModelAdapter):
             return False
 
 
+def _mark(msg_list: list[dict[str, Any]], at: int | None) -> None:
+    """Put the conversation's breakpoint at ``at`` or the nearest point above.
+
+    A breakpoint means the next request reuses everything up to and including
+    that point, and earlier breakpoints stay valid read points, so hits accrue
+    as the conversation grows rather than decaying with it.
+
+    Only a block list can carry one, and the boundary is regularly a plain
+    string: on the first call of a turn it is the operator's own message,
+    which arrives as text. So that one message is converted to a single text
+    block rather than skipped. Skipping it cost every plain turn its own
+    breakpoint — the mark landed on the turn before, and the next turn re-read
+    an exchange it could have read from cache. The shape is the one every
+    tool-carrying message already uses, and it is built here, at the end of
+    the translation, on a dict this function's caller made a moment ago.
+
+    Anything else with no block to mark is walked PAST, upward. That is always
+    safe: `at` is the LAST message whose bytes hold still, so everything above
+    it holds still too, and stopping short only shortens the cached prefix.
+    It never walks DOWN, which is what the role-reading version this replaced
+    had to do, and what it could only get right by knowing which trailing
+    roles the assembly happened to use.
+    """
+    if at is None:
+        return
+    for message in reversed(msg_list[: at + 1]):
+        content = message.get("content")
+        if isinstance(content, str) and content:
+            content = [{"type": "text", "text": content}]
+            message["content"] = content
+        if isinstance(content, list) and content and isinstance(content[-1], dict):
+            content[-1]["cache_control"] = {"type": "ephemeral"}
+            return
+
+
 def _to_anthropic_messages(
     messages: list[dict[str, Any]],
-) -> tuple[str, list[dict[str, Any]]]:
-    """Translate Chat-Completions-shaped history → (system, Anthropic messages).
+) -> tuple[str, list[dict[str, Any]], int | None]:
+    """Translate Chat-Completions-shaped history → (system, messages, boundary).
 
     ChatSession keeps history in the OpenAI shape everywhere (assistant
     `tool_calls` list, `role: "tool"` results). The Messages API rejects
@@ -331,10 +410,23 @@ def _to_anthropic_messages(
     user turn. Orphaned results (their `tool_use` dropped by history
     trimming) are stripped, mirroring the openai adapter's orphan guard.
     `_reasoning` marker messages are Responses-API-internal — skipped.
+
+    The third return value carries `CACHE_BOUNDARY` across the translation.
+    It cannot stay an index into the input, because the mapping is not one to
+    one in either direction: a source message emits one entry or none (an
+    empty assistant turn is dropped, and so is an orphaned tool result), and
+    consecutive tool results merge into an entry that already exists. So it is
+    read off `out` at the first message PAST the marked one, which is the
+    earliest moment the marked one is certainly finished. `None` when nothing
+    was marked, or when nothing was emitted.
     """
     system_parts: list[str] = []
     out: list[dict[str, Any]] = []
     tool_use_ids: set[str] = set()
+    boundary_src = next(
+        (i for i, m in enumerate(messages) if m.get(CACHE_BOUNDARY)), -1
+    )
+    boundary_at: int | None = None
 
     def _append_tool_result(block: dict[str, Any]) -> None:
         # Merge into a trailing user message that is already carrying
@@ -352,7 +444,15 @@ def _to_anthropic_messages(
         else:
             out.append({"role": "user", "content": [block]})
 
-    for m in messages:
+    for i, m in enumerate(messages):
+        # Read at the first message past the marked one, which is the earliest
+        # moment the marked one is certainly finished. `== boundary_src + 1`
+        # rather than a flag, because it can only be true once and so cannot
+        # fall out of step with what was appended. It cannot move to the end
+        # of the loop body either: three of the four branches below `continue`
+        # and would never reach it.
+        if i == boundary_src + 1:
+            boundary_at = len(out) - 1 if out else None
         if m.get("_reasoning"):
             continue
         role = m.get("role", "")
@@ -412,7 +512,11 @@ def _to_anthropic_messages(
                 if parts:
                     out.append({"role": "user", "content": parts})
 
-    return ("\n\n".join(system_parts), out)
+    # The marked message was the last in the list, so there was no iteration
+    # past it to read.
+    if boundary_src == len(messages) - 1:
+        boundary_at = len(out) - 1 if out else None
+    return ("\n\n".join(system_parts), out, boundary_at)
 
 
 def _convert_parts(content: list[Any]) -> list[dict[str, Any]]:

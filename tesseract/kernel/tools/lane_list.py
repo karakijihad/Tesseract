@@ -28,6 +28,7 @@ class LaneListTool(Tool):
         "named-lane bindings, which is `lane_named_list`; one lane's liveness/busy state, "
         "which is `lane_status`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

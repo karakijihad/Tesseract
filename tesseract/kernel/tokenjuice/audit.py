@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from tesseract.kernel.adapters._estimate import tokens_from_chars
 from tesseract.paths import log_dir
 
 
@@ -28,11 +29,10 @@ def write_audit(record: dict[str, Any]) -> None:
 
 
 def count_tokens(text: str) -> int:
-    """Heuristic token count — ~4 chars per token (OpenAI rule of thumb).
+    """Estimated token count, through the runtime's one measured divisor.
 
-    Used only for audit telemetry; not for budgeting. Real model token
-    counts come from each adapter's tokenizer.
+    Telemetry rather than budgeting, but it reads the same seam the budget
+    does: an audit that scores a compression against a different idea of a
+    token is scoring something nobody else can act on.
     """
-    if not text:
-        return 0
-    return max(1, len(text) // 4)
+    return tokens_from_chars(len(text))

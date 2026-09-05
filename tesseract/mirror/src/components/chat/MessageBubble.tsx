@@ -10,6 +10,8 @@ import { ENTITY_FALLBACK } from '../../hooks/useEntityName';
 import { useWebSocketStore } from '../../stores/websocket';
 import { Markdown } from '../common/Markdown';
 import { ChatPdfPreview } from './ChatPdfPreview';
+import { FoldMarker } from './FoldMarker';
+import { RuntimeNote } from './RuntimeNote';
 import { ModelBadge } from './ModelBadge';
 import { ToolCallPill } from './ToolCallPill';
 import { Hint } from '../ui/Hint';
@@ -302,7 +304,27 @@ function MessageBubbleImpl({ message, isLastAssistantComplete = false, previousU
 
 // Memoized: during streaming only the active message object changes reference,
 // so every other bubble skips re-render instead of re-running on each delta.
-export const MessageBubble = memo(MessageBubbleImpl);
+// Every transcript renders through this component, so the fold divider and
+// the runtime note arrive on whichever surface draws the messages without
+// that surface having to know they exist. Both branches sit outside
+// `MessageBubbleImpl` because none of that component's hooks apply to either,
+// and a hook skipped by an early return is a hook React counts differently on
+// the next render.
+export const MessageBubble = memo(function MessageBubble(props: Props) {
+  if (props.message.role === 'marker') {
+    return <FoldMarker timestamp={props.message.timestamp} />;
+  }
+  if (props.message.role === 'runtime') {
+    return (
+      <RuntimeNote
+        origin={props.message.runtimeOrigin}
+        content={props.message.content}
+        timestamp={props.message.timestamp}
+      />
+    );
+  }
+  return <MessageBubbleImpl {...props} />;
+});
 
 function ImageAttachmentExpand({ attachment }: { attachment: ChatAttachment }) {
   const [open, setOpen] = useState(false);

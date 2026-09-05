@@ -9,9 +9,35 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, ClassVar
 
 from tesseract.kernel.state import ToolCall
+
+#: Sidecar key naming the last message a provider may cache up to.
+#:
+#: Caching is a prefix match, so how much of a request can be reused is
+#: decided by where its first difference from the last request sits. That is
+#: a fact about message ORDER, and message order is assembled once, for every
+#: provider, in `ChatSession._assemble_for_turn`. It stamps this key on the
+#: last message whose bytes hold still between turns; everything after it is
+#: this turn's own state and is expected to be re-read.
+#:
+#: An adapter either declares that boundary in whatever form its provider
+#: takes, or ignores the key. Anthropic puts a `cache_control` breakpoint
+#: there, because its cache is only where you say it is. OpenAI's Responses
+#: API reads it too when the catalog entry asks for explicit caching: it
+#: places `prompt_cache_breakpoint` items and only then sends the explicit
+#: mode. OpenAI's Chat Completions path and Gemini match the longest prefix
+#: themselves and need nothing, which is what this said about OpenAI as a
+#: whole until one of its two wire paths learned to read the key.
+#:
+#: What no adapter does is decide WHERE the boundary is. It cannot see the
+#: turn — only a flat list — so it can only guess from message roles, and two
+#: adapters guessing separately is how the same conversation got two
+#: different cache behaviours.
+#:
+#: Ours, not the provider's: strip it before the request goes out.
+CACHE_BOUNDARY = "_cache_boundary"
 
 
 class ChunkType(str, Enum):
@@ -78,6 +104,12 @@ class AdapterOptions:
     reasoning_effort: str = ""  # OpenAI reasoning-effort field (model-agnostic)
     knowledge_cutoff: str = ""  # ISO date carried from roles.yaml — consumable by prompt builders
     use_responses_api: bool = False  # OpenAI only — prefer Responses API over Chat Completions
+    # Does this model take `prompt_cache_options` / `prompt_cache_breakpoint`?
+    # A catalog fact, not a family guess: gpt-5.6-luna accepts both and
+    # gpt-5.4-mini answers each with a 400, and both sit on the Responses
+    # path behind the same connection. Absence means the provider picks the
+    # breakpoint, which is what every non-OpenAI entry wants.
+    prompt_cache_explicit: bool = False
     # Whether to request a streamed response. A per-model property of the
     # catalog entry (`providers.yaml: stream: false`), not an adapter
     # constant — the catalog already owns every other per-model quirk
@@ -90,6 +122,26 @@ class AdapterOptions:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+def call_timeout(options: AdapterOptions) -> float:
+    """How long a caller may wait on this ref, per the catalog.
+
+    `role_chain._options_for_ref` carries `connection.timeout_seconds` here,
+    and `timeout_seconds` is required on every connection — so a caller that
+    wraps `generate()` in a wait has a number to use and nothing to invent.
+    Raises when the key is absent, which means the options were hand-built:
+    the alternative is a constant deciding, and two of those already reported
+    a 300 s CLI as drift for being slower than 30.
+    """
+    extra = options.extra or {}
+    if "timeout_seconds" not in extra:
+        raise KeyError(
+            f"AdapterOptions for {options.provider or '?'}/{options.model or '?'} "
+            "carries no timeout_seconds — build it with role_chain, or pass the "
+            "connection's own value"
+        )
+    return float(extra["timeout_seconds"])
+
+
 @dataclass(frozen=True)
 class UsageStats:
     input_tokens: int = 0
@@ -97,6 +149,24 @@ class UsageStats:
 
 
 class ModelAdapter(ABC):
+    #: Does this adapter want the WHOLE registry, with everything outside the
+    #: working set flagged `defer_loading`, instead of the filtered set?
+    #:
+    #: The working set exists because a demoted tool costs a round trip to
+    #: reach: the model calls `tool_search`, the turn ends, the answer comes
+    #: back, a new turn begins. One provider removes that price — it matches
+    #: deferred tools server-side and appends their schemas INSIDE the same
+    #: request, so the model never leaves the turn.
+    #:
+    #: Declared rather than inferred, and false by default, so an adapter that
+    #: says nothing keeps filtering exactly as before. The alternative is a
+    #: provider check at the call site, which is the shape this runtime spent
+    #: three phases removing.
+    #:
+    #: **Visibility only.** Deferring changes what is LOADED, never what is
+    #: permitted — `permissions.yaml` decides authority either way.
+    defers_tool_loading: ClassVar[bool] = False
+
     @abstractmethod
     async def stream(
         self,

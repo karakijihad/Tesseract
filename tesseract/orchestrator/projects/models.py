@@ -44,12 +44,45 @@ def mint_project_id(name: str, taken: set[str] | None = None) -> str:
     return f"{candidate}-{n}"
 
 
+class GitIdentity(BaseModel):
+    """Who the assistant is when it runs git, and what it pushes with.
+
+    ONE shape for both cases the operator can be in. ``credential_ref`` is
+    either :data:`AMBIENT` — this machine's own credential helper and GitHub
+    sign-in, which is what git did before any of this existed — or the id of a
+    row in the credential store. Nothing that consumes this record may branch
+    on which: the difference is one extra config argument at the call site, and
+    a second code path for "the operator's own GitHub" is the defect this plan
+    exists to prevent.
+
+    ``name`` and ``email`` are carried in both cases, so a connected identity
+    authors commits as itself whether or not it also brought a token.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    email: str = Field(min_length=1, max_length=320)
+    credential_ref: str = Field(default="ambient", min_length=1, max_length=64)
+
+
+#: ``credential_ref`` for an identity that pushes with whatever this machine
+#: already has. Named rather than spelled at each comparison, because the two
+#: places that read it are in different packages.
+AMBIENT = "ambient"
+
+
 class VcsInfo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     git: bool = False
     remote: str | None = None
     default_branch: str | None = None
+    #: Overrides the registry-wide identity for this project only. ``None``
+    #: means "whatever the registry says", which is what keeps the operator's
+    #: own repositories pushing as the operator while the assistant's own
+    #: workshop pushes as the assistant, with one mechanism.
+    identity: GitIdentity | None = None
 
 
 class VerifyCommands(BaseModel):
@@ -66,9 +99,27 @@ class VerifyCommands(BaseModel):
     test: str | None = None
     typecheck: str | None = None
     lint: str | None = None
+    # The URL the project is published at. The gate fetches it and expects a
+    # 2xx, which is what lets "it is live" be a check that ran rather than a
+    # sentence. Never a shell command: it is fetched, not executed.
+    live: str | None = None
+
+    @field_validator("live")
+    @classmethod
+    def _live_is_a_web_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if not cleaned.startswith(("http://", "https://")):
+            raise ValueError(
+                f"live must be an http(s) URL the gate can fetch, got {cleaned!r}"
+            )
+        return cleaned
 
     def is_empty(self) -> bool:
-        return not any((self.test, self.typecheck, self.lint))
+        return not any((self.test, self.typecheck, self.lint, self.live))
 
 
 class Project(BaseModel):
@@ -80,6 +131,10 @@ class Project(BaseModel):
     vcs: VcsInfo = Field(default_factory=VcsInfo)
     verify: VerifyCommands = Field(default_factory=VerifyCommands)
     conventions_file: str | None = None
+    # What a day's unattended work on this project may spend, in USD. None
+    # is "nothing declared", which is what every project says until its
+    # owner sets one; the morning row reads it, nothing else does.
+    budget_usd: float | None = Field(default=None, ge=0)
     created_at: str = Field(default_factory=utc_now_iso)
     last_active_at: str | None = None
 
@@ -111,9 +166,15 @@ class Registry(BaseModel):
 
     active_id: str | None = None
     projects: dict[str, Project] = Field(default_factory=dict)
+    #: The identity every project uses unless it names its own. ``None`` is a
+    #: machine nobody has connected, which behaves exactly as git did before
+    #: this field existed.
+    git_identity: GitIdentity | None = None
 
 
 __all__ = [
+    "AMBIENT",
+    "GitIdentity",
     "Project",
     "Registry",
     "VcsInfo",

@@ -46,6 +46,17 @@ class AtlasVerifyJob(BaseJob):
                 "live_nodes": report.live_nodes,
                 "rebuilt_nodes": report.rebuilt_nodes,
                 "stale_version": report.stale_version,
+                # Which HALF of the brain moved, not only that something did.
+                # A total says a node appeared; these say it appeared in the
+                # body rather than in what the assistant has learned, which is
+                # the difference between a run being logged and the library
+                # changing under the operator.
+                "live_regions": report.live_regions,
+                "rebuilt_regions": report.rebuilt_regions,
+                # Said, not left to be worked out by comparing the two above.
+                # A payload a reader has to diff for itself is a payload that
+                # gets read as "fine" by whoever does not.
+                "regions_agree": report.regions_agree,
             }
             duration = (time.monotonic() - t0) * 1000.0
             if report.stale_version:

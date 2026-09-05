@@ -310,7 +310,7 @@ class LaneManager:
                 payload={"lifecycle": "ready", "kind": kind, "mode": mode},
             ),
         )
-        # AS-1 — project the lane into the activity registry. Bare label (the
+        # Project the lane into the activity registry. Bare label (the
         # lane id); NamedLaneManager.ensure upserts the human name on top.
         register_lane(
             lane_id,
@@ -566,9 +566,9 @@ class LaneManager:
         - ``turn_id=None`` is the operator's steer — "stop whatever this lane
           is doing now" — and cancels the busy turn, whichever it is.
         - ``turn_id=<id>`` cancels THAT turn and nothing else. A handle-scoped
-          cancel must never reach a sibling: with A running and B queued,
-          cancelling B used to fire the lane's cancel event and kill A, while
-          B went on to run unobserved. A queued turn is marked instead, and
+          cancel must never reach a sibling: with A running and B queued, firing
+          the lane's cancel event for B would kill A while B ran on unobserved.
+          A queued turn is marked instead, and
           ends under its own id when it reaches the lock.
         """
         self._authorize(lane_id, caller)
@@ -597,7 +597,7 @@ class LaneManager:
             return False
         # Fire ONLY the current turn's cancel event. Each turn gets its own
         # event (_run_one_turn), so a turn already queued behind the lock is
-        # unaffected — no stale-event kill (audit M2 review). The interrupted
+        # unaffected — no stale-event kill. The interrupted
         # turn observes this immediately (cli_adapter races readline vs cancel)
         # and releases the lane lock; the follow-up send runs the correction.
         runtime.cancel_event.set()
@@ -612,7 +612,7 @@ class LaneManager:
         # turn; a subsequently-queued turn gets its own and can't be killed by
         # a stale set() from the turn it was queued behind.
         runtime.cancel_event = asyncio.Event()
-        update_lane_state(lane.lane_id, "busy")  # AS-1 — running pulse
+        update_lane_state(lane.lane_id, "busy")  # Running pulse
         runtime.current_turn_id = turn_id
         self._append(
             lane.lane_id,
@@ -686,7 +686,7 @@ class LaneManager:
             # run_turn (e.g. provisioning failure) otherwise leaves a stale
             # turn id in lane status while busy=False.
             runtime.current_turn_id = None
-            update_lane_state(lane.lane_id, "ready")  # AS-1 — back to idle
+            update_lane_state(lane.lane_id, "ready")  # Back to idle
         new_session_id = result.get("session_id") if isinstance(result, dict) else None
         if isinstance(new_session_id, str) and new_session_id:
             if lane.cli_session_id != new_session_id:
@@ -694,14 +694,29 @@ class LaneManager:
                 write_lane(lane)
         is_error = bool(result.get("is_error")) if isinstance(result, dict) else False
         usage = result.get("usage") if isinstance(result, dict) else {}
+        # WHY the turn failed, not merely THAT it did. The raising path below
+        # has always carried this; the ordinary failed-turn path did not, and
+        # `scope_to_turn` has read the key the whole time. A CLI that reports
+        # its own failure puts the reason in `result_text` — the codex
+        # accumulator returns its error text there — and without this the
+        # caller fell back to "the CLI reported a failed turn" while the
+        # provider's own sentence sat in the lane's event log. Measured
+        # 2026-09-02: a spent codex subscription reached the model as that
+        # sentence and nothing else, and the assistant went looking in the
+        # logs by hand for what the runtime already had.
+        payload: dict[str, Any] = {
+            "turn_id": turn_id,
+            "is_error": is_error,
+            "usage": usage if isinstance(usage, dict) else {},
+        }
+        if is_error:
+            reported = result.get("result_text") if isinstance(result, dict) else ""
+            if isinstance(reported, str) and reported.strip():
+                payload["error"] = reported.strip()
         end_event = LaneEvent(
             lane_id=lane.lane_id,
             kind="turn_ended",
-            payload={
-                "turn_id": turn_id,
-                "is_error": is_error,
-                "usage": usage if isinstance(usage, dict) else {},
-            },
+            payload=payload,
         )
         self._append(lane.lane_id, end_event)
         runtime.ended_turn_ids[turn_id] = True
@@ -860,7 +875,7 @@ class LaneManager:
                 payload={"reason": reason, "closed_at_utc": closed_at},
             ),
         )
-        update_lane_state(lane_id, "closed")  # AS-1 — terminal transition
+        update_lane_state(lane_id, "closed")  # Terminal transition
         # Archive after the closed event lands so the events.jsonl row
         # describing the close moves with the rest of the lane payload.
         dest = archive_lane(lane_id)
@@ -951,7 +966,68 @@ class LaneManager:
         runtime = self._runtimes.get(lane_id)
         if runtime is not None:
             runtime.last_activity_utc = event.at_utc
+            self._note_provider_drift(runtime.lane, event)
         self._append_transcript(lane_id, event)
+
+    def _note_provider_drift(self, lane: Lane, event: LaneEvent) -> None:
+        """Record a lane failure that is the PROVIDER's, not the task's.
+
+        A delegate hitting its subscription's usage limit is the earliest and
+        truest health signal there is, and until now nothing recorded it: the
+        only thing that noticed codex being out of quota was the nightly
+        probe, which found out by spending the quota. Every other tripwire
+        site is an adapter or a paid tool; the lane — where the CLIs actually
+        run — was the one caller missing.
+
+        Watched at the event funnel rather than at each error path, for the
+        same reason the watchman reads logs instead of asking subsystems to
+        report themselves. Narrow by construction: a turn fails for a hundred
+        reasons the model is fine for, and only the quota/auth shapes
+        `provider_drift_kind` names get a row. Best-effort — telemetry never
+        breaks a turn.
+        """
+        if event.kind != "error":
+            return
+        try:
+            from tesseract.kernel.tools.dependency import catalog_ref
+            from tesseract.orchestrator.provider_health import (
+                note_production_tripwire,
+                provider_drift_kind,
+            )
+
+            payload = event.payload
+            message = str(
+                payload.get("message") or payload.get("result") or ""
+            )
+            drift_kind = provider_drift_kind(message)
+            if drift_kind is None:
+                return
+            # An api lane carries the whole ref as its model; a CLI lane
+            # carries a bare model id and its kind IS the provider name.
+            #
+            # The CLI half was building the ref out of `lane.model`, which is
+            # the model's OWN id (`gpt-5.6-terra`) and not its catalog key
+            # (`gpt56_terra`). So a lane failure wrote to
+            # `cli.codex.gpt-5.6-terra` while the probe wrote to
+            # `cli.codex.gpt56_terra`: two files for one seat, and the seat
+            # looked healthy in the one anybody reads. Measured 2026-09-02.
+            ref = (
+                lane.model
+                if lane.kind == "api"
+                else catalog_ref("cli", lane.kind, lane.model)
+            )
+            note_production_tripwire(
+                "lane",
+                ref,
+                drift_kind,
+                {
+                    "lane_id": lane.lane_id,
+                    "kind": lane.kind,
+                    "message": message[:200],
+                },
+            )
+        except Exception:  # noqa: BLE001
+            log.debug("lane %s: tripwire write failed", lane.lane_id, exc_info=True)
 
     def _append_transcript(self, lane_id: str, event: LaneEvent) -> None:
         """Append a model-side prose line to `transcript.txt` for the
@@ -1183,7 +1259,7 @@ def _translate_adapter_event(
 def _default_adapter_factory(lane: Lane, runtime: LaneRuntime) -> LaneAdapter:
     """Build the production adapter for `lane`.
 
-    X-4 Session D introduced a `pty` transport alongside `headless`;
+    There is a `pty` transport alongside `headless`;
     the P4 PTY prune retired it — `headless` (subprocess +
     stream-JSON) is the only wired mode."""
     if lane.mode == "headless":
@@ -1230,7 +1306,7 @@ def _default_adapter_factory(lane: Lane, runtime: LaneRuntime) -> LaneAdapter:
 @dataclass
 class _HeadlessCliLaneAdapter:
     """Adapts `ClaudeStreamAdapter` / `CodexStreamAdapter` to the
-    `LaneAdapter` Protocol. Threads `lane.cli_session_id` so post-X-3
+    `LaneAdapter` Protocol. Threads `lane.cli_session_id` so later
     multi-turn semantics route to `--resume <id>` on every send."""
 
     base: Any  # ClaudeStreamAdapter | CodexStreamAdapter
@@ -1258,7 +1334,7 @@ class _HeadlessCliLaneAdapter:
                 lambda: mcp_provision.provision(
                     self.lane.kind,
                     load_mcp_config(),
-                    # Where the project-scope scheme used to write, so where a
+                    # Where the project-scope scheme writes, so where a
                     # stale entry can still shadow the user-scope one.
                     cleanup_dirs=[Path(self.lane.working_dir)],
                 )

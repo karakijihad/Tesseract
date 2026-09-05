@@ -12,7 +12,7 @@ fade. It **consolidates**: related fragments are merged into something sharper
 than either. It is consulted on every turn, automatically, without you asking.
 
 The design goal is a store that improves as it gets smaller. See
-[Memory](../anatomy/memory.md) for how retrieval actually runs.
+[Memory](/anatomy/memory/) for how retrieval actually runs.
 
 ## The vault — what it has read
 

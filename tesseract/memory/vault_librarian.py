@@ -108,10 +108,9 @@ def _fm_scalar(value: str) -> str:
 def _build_wiki_page(page: VaultWikiPage) -> str:
     """Render a VaultWikiPage dataclass into a markdown file.
 
-    Frontmatter shape per `_shared/wiki-page-frontmatter.md` (Phase 2):
-    title, type, slug, topic, source_path, date_added, entities, concepts,
-    related_slugs, open_questions, backlinks_from. `lint_flags` is absent
-    in Phase 2 — Phase 5 writes it.
+    Frontmatter shape: title, type, slug, topic, source_path, date_added,
+    entities, concepts, related_slugs, open_questions, backlinks_from.
+    `lint_flags` is written by the lint pass, not here.
     """
     fm_lines = [
         "---",
@@ -184,7 +183,6 @@ class VaultLibrarian:
         self._config = config
         self._breaker = CircuitBreaker(
             name="vault_librarian",
-            max_failures=3,
             log_dir=log_dir,
         )
         self._agents_dir = agents_dir
@@ -221,7 +219,7 @@ class VaultLibrarian:
         filesystem check-then-write, so concurrent compiles must not
         interleave between the check and the page write.
         """
-        if self._breaker.is_tripped:
+        if not self._breaker.allow(subject=f"wiki page for {raw_rel_path}"):
             logger.warning("VaultLibrarian circuit breaker tripped — skipping %s", raw_rel_path)
             return None
 
@@ -263,7 +261,7 @@ class VaultLibrarian:
         excerpt = text[:self._config.max_extract_chars]
 
         if not excerpt.strip():
-            # Empty-source fallback (Phase 2 contract): write a page with the
+            # Empty-source fallback: write a page with the
             # general topic + sentinel summary, skip the LLM call entirely.
             logger.info("VaultLibrarian: no extractable text from %s — writing empty-source page", raw_rel_path)
             metadata: dict = {"topic": _EMPTY_SOURCE_TOPIC, "summary": _EMPTY_SOURCE_SUMMARY}
@@ -286,6 +284,9 @@ class VaultLibrarian:
             if adapter is None:
                 logger.error("VaultLibrarian: no model adapter available")
                 return None
+            from tesseract.agents.invocations import record as _record_invocation
+
+            _record_invocation("vault-librarian", via="vault_librarian")
 
             try:
                 raw_response = await adapter.generate(prompt, options)
@@ -345,7 +346,7 @@ class VaultLibrarian:
         )
         self._manager.append_ingest_log(log_entry)
 
-        # Phase 3: compound cross-refs — append backlinks to any matching hub pages.
+        # Compound cross-refs — append backlinks to any matching hub pages.
         target_set: set[str] = set(page.related_slugs)
         for name in page.entities + page.concepts:
             hub = _slugify(name)
@@ -532,6 +533,9 @@ class VaultLibrarian:
         if adapter is None:
             return "\n\n".join(wiki_parts)
 
+        from tesseract.agents.invocations import record as _record_invocation
+
+        _record_invocation("vault-librarian", via="vault_librarian")
         prompt_template = self._get_agent().get_section("Query Prompt")
         if not prompt_template:
             # Fallback: just concatenate summaries

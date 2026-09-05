@@ -76,7 +76,7 @@ export function AddAlarmForm({ onClose }: Props) {
           className="schedule-add-input"
           value={message}
           onChange={setMessage}
-          placeholder="optional — what to surface when it fires"
+          placeholder="optional: what to show when it fires"
         />
       </div>
       {error && <div className="schedule-add-error">{error}</div>}

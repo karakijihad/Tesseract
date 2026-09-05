@@ -59,6 +59,61 @@ class StepExecutor(Protocol):
     ) -> ExecOutcome: ...
 
 
+class LiveFetch(Protocol):
+    """Fetches the project's published URL and reports the HTTP status.
+
+    Injected for the same reason the executor is. The default asks the
+    network; a test hands in a table.
+    """
+
+    async def __call__(self, url: str, *, timeout_s: float) -> int: ...
+
+
+async def _fetch_status(url: str, *, timeout_s: float) -> int:
+    import httpx
+
+    async with httpx.AsyncClient(timeout=timeout_s, follow_redirects=True) as client:
+        response = await client.get(url)
+        return response.status_code
+
+
+async def _run_live(
+    url: str | None, *, fetch: LiveFetch, config: VerifyConfig
+) -> StepResult:
+    """The one step that leaves the machine: is the published page answering.
+
+    A 2xx passes. Any other status fails with the status as the output. A
+    fetch that raises is blocked, never a pass: an unreachable host says
+    nothing about whether the page is up, and "could not check" is the
+    distinction the gate exists to keep.
+    """
+    if url is None or not url.strip():
+        return StepResult(
+            name="live",
+            command=None,
+            outcome=StepOutcome.NOT_CONFIGURED,
+            skipped_reason="not configured",
+        )
+    try:
+        status = await fetch(url, timeout_s=config.step_timeout_s)
+    except Exception as exc:  # noqa: BLE001 — could not check is blocked, not a pass
+        logger.warning("verify step live could not fetch %s: %s", url, exc)
+        return StepResult(
+            name="live",
+            command=url,
+            outcome=StepOutcome.BLOCKED,
+            skipped_reason=f"could not reach it: {exc}",
+        )
+    passed = 200 <= status < 300
+    return StepResult(
+        name="live",
+        command=url,
+        outcome=StepOutcome.PASSED if passed else StepOutcome.FAILED,
+        exit_code=0 if passed else 1,
+        stdout_tail=f"HTTP {status}",
+    )
+
+
 def _bound(text: str, config: VerifyConfig) -> str:
     """Head+tail elision, then a hard character ceiling.
 
@@ -143,28 +198,33 @@ async def run_gate(
     cwd: str,
     executor: StepExecutor,
     config: VerifyConfig | None = None,
+    fetch: LiveFetch = _fetch_status,
 ) -> GateResult:
-    """Run every configured verify command and fold the results into a verdict.
+    """Run every configured verify step and fold the results into a verdict.
 
     ``ok`` is True only when nothing failed and nothing was blocked. An
     all-unconfigured project therefore returns ``ok=True`` — check
     ``GateResult.vacuous`` before reading that as evidence of anything.
     """
     cfg = config or load_verify_config()
-    steps = [
-        await _run_step(
-            name,
-            getattr(commands, name),
-            cwd=cwd,
-            executor=executor,
-            config=cfg,
+    steps: list[StepResult] = []
+    for name in STEP_ORDER:
+        if name == "live":
+            steps.append(await _run_live(commands.live, fetch=fetch, config=cfg))
+            continue
+        steps.append(
+            await _run_step(
+                name,
+                getattr(commands, name),
+                cwd=cwd,
+                executor=executor,
+                config=cfg,
+            )
         )
-        for name in STEP_ORDER
-    ]
     ok = not any(
         s.outcome in (StepOutcome.FAILED, StepOutcome.BLOCKED) for s in steps
     )
     return GateResult(ok=ok, steps=steps)
 
 
-__all__ = ["ExecOutcome", "StepExecutor", "run_gate"]
+__all__ = ["ExecOutcome", "LiveFetch", "StepExecutor", "run_gate"]

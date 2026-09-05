@@ -8,8 +8,8 @@ dedup honors :meth:`EventStore.has_pending_yaml_proposal`.
 
 v1 honest scope: ``canonical_models`` in the KB is operator/agent-populated,
 so emits are quiet until the structured surface is filled. The emit path
-is wired and tested so MO-10-2's downstream apply path has something to
-feed on.
+is wired and tested so the downstream apply path has something to feed
+on.
 """
 
 from __future__ import annotations
@@ -61,17 +61,14 @@ def _catalog_models(providers_yaml: Path, provider_slug: str) -> dict[str, dict[
     api = doc.get("api") or {}
     if not isinstance(api, dict):
         return {}
-    # KB slug maps to lower-case provider key. NIM has slug "nvidia-nim"
-    # but YAML key "nim" — normalize.
-    yaml_key = {"nvidia-nim": "nim"}.get(provider_slug, provider_slug)
-    prov = api.get(yaml_key)
+    prov = api.get(provider_slug)
     if not isinstance(prov, dict):
         return {}
     if not isinstance(prov.get("models") or {}, dict):
         return {}
     from tesseract.config.loader import _expanded_models
 
-    return dict(_expanded_models("api", yaml_key, prov))
+    return dict(_expanded_models("api", provider_slug, prov))
 
 
 def _summary(kind_origin: KindOrigin, provider: str, model_id: str) -> str:
@@ -99,7 +96,6 @@ def emit_proposals_for_provider(
     if not kb:
         return []
 
-    yaml_key = {"nvidia-nim": "nim"}.get(provider_slug, provider_slug)
     target_path = "tesseract/config/providers.yaml"
     file_hash = _hash_file(providers_yaml)
     file_size = providers_yaml.stat().st_size
@@ -107,7 +103,7 @@ def emit_proposals_for_provider(
     emitted: list[str] = []
     for model_id, entry in kb.items():
         if model_id not in catalog:
-            yaml_path = f"api.{yaml_key}.models.{model_id}"
+            yaml_path = f"api.{provider_slug}.models.{model_id}"
             if event_store.has_pending_yaml_proposal(
                 target_path=target_path,
                 yaml_path=yaml_path,
@@ -143,7 +139,7 @@ def emit_proposals_for_provider(
             cat_val = current.get(field)
             if kb_val is None or kb_val == cat_val:
                 continue
-            yaml_path = f"api.{yaml_key}.models.{model_id}.{field}"
+            yaml_path = f"api.{provider_slug}.models.{model_id}.{field}"
             if event_store.has_pending_yaml_proposal(
                 target_path=target_path,
                 yaml_path=yaml_path,

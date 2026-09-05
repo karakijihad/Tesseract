@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from tesseract.paths import TESSERACT_HOME, runtime_dir
+from tesseract.lib import clock
 
 SESSION_ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-[0-9a-f]{8}$")
 
@@ -77,7 +78,9 @@ def transcript_path(session_id: str) -> Path:
 
 def mint_session_id(*, today: str | None = None) -> str:
     """`<YYYY-MM-DD>-<8 hex chars>` per the registry-schema contract."""
-    date_part = today or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # The date half of a session id is how a person finds the session
+    # again, so it is their date.
+    date_part = today or clock.today().isoformat()
     hex_part = secrets.token_hex(4)
     return f"{date_part}-{hex_part}"
 

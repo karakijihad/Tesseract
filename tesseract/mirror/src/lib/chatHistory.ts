@@ -136,6 +136,16 @@ function entryTimestamp(entry: RawHistoryEntry, approxTimestamp: number): number
  * `messageStats` so the model badge and token-cache pill render on resume
  * the same way they did live.
  */
+// The runtime's own mark, and nothing else. Reading the text the message
+// opens with instead would let anyone who types that line have what they said
+// replaced by a divider on the next reload, which is a way to make your own
+// words vanish from a conversation somebody else is reading. A summary written
+// before the mark existed renders as the message it is, once, until the next
+// fold folds it in. See `brain/chat.py::_is_running_summary_message`.
+function isFoldSummary(entry: RawHistoryEntry): boolean {
+  return entry._runtime === 'running_summary';
+}
+
 export function rehydrateHistory(
   raw: RawHistoryEntry[],
   approxTimestamp: number = Date.now(),
@@ -148,11 +158,33 @@ export function rehydrateHistory(
   for (const entry of raw) {
     if (entry.role === 'system') continue;
 
+    if (isFoldSummary(entry)) {
+      // A fold happened here. The summary itself is the model's context and
+      // not something to show as a message the operator sent, so the
+      // transcript draws the same divider a live fold draws instead. This is
+      // what makes the marker survive a reload, a chat switch, and a restore.
+      out.push({
+        id: randomId('fold'),
+        role: 'marker',
+        content: '',
+        timestamp: entryTimestamp(entry, approxTimestamp),
+        status: 'complete',
+      });
+      openTurnId = null;
+      continue;
+    }
+
     if (entry.role === 'user') {
       const { text, attachments } = contentToDisplay(entry.content);
+      // A turn the runtime started. It reads as a `user` message because
+      // that is the only role a provider lets a caller place mid-
+      // conversation, and drawing it as one put the operator's name on
+      // sentences they never typed. The mark is what tells them apart.
+      const runtimeOrigin = entry._runtime;
       out.push({
-        id: randomId('user'),
-        role: 'user',
+        id: randomId(runtimeOrigin ? 'runtime' : 'user'),
+        role: runtimeOrigin ? 'runtime' : 'user',
+        runtimeOrigin,
         content: text,
         attachments: attachments.length > 0 ? attachments : undefined,
         timestamp: entryTimestamp(entry, approxTimestamp),
@@ -247,15 +279,6 @@ export function rehydrateHistory(
   }
 
   return { messages: out, modelById, statsById };
-}
-
-/** Back-compat shim — existing call sites (Playwright e2e) only need the
- * messages array; meta sidecars stay empty when no `_meta` is present. */
-export function rawHistoryToMessages(
-  raw: RawHistoryEntry[],
-  approxTimestamp: number = Date.now(),
-): ChatMessage[] {
-  return rehydrateHistory(raw, approxTimestamp).messages;
 }
 
 function contentToDisplay(content: RawHistoryEntry['content']): {

@@ -1,4 +1,4 @@
-"""AU-7 S1 — read-only dashboard endpoints.
+"""Read-only dashboard endpoints.
 
 Three GETs that feed the Mirror Autonomy Dashboard's default view:
 
@@ -9,15 +9,15 @@ Three GETs that feed the Mirror Autonomy Dashboard's default view:
   detector tick (``GovernorTickResult.at`` + counts), and the live
   source-pause map. Reads via ``app["autonomy_governor"]`` /
   ``app["autonomy_pause_store"]``; falls back to ``running=False`` +
-  empty pauses if neither is wired yet (early boot or AU-6-disabled
-  test app).
+  empty pauses if neither is wired yet (early boot, or a test app with
+  no governor).
 - ``GET /api/recovery/latest`` — same payload the Settings Runtime
   pane reads off ``/api/runtime/status::last_recovery``, surfaced on
   its own path so the dashboard's RecoveryPane doesn't have to
   unpack the supervisor envelope.
 
-All three are anonymous-readable (matches the AU-4 ``GET /api/agenda``
-shape). Mutating actions land in S2.
+All three are anonymous-readable, matching the ``GET /api/agenda``
+shape.
 """
 
 from __future__ import annotations
@@ -187,8 +187,8 @@ async def get_governor_state(request: web.Request) -> web.Response:
     """GET /api/governor/state — running flag + config + last tick + pauses.
 
     The pauses block duplicates ``GET /api/agenda/sources/pauses`` on
-    purpose: AU-7's dashboard fetches the dashboard surface once and
-    renders everything from that single response (BlockedPane reads
+    purpose: the dashboard fetches this surface once and renders
+    everything from that single response (BlockedPane reads
     ``governor.pauses`` rather than firing a second request).
     """
     governor: Governor | None = request.app.get("autonomy_governor")

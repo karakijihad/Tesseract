@@ -10,8 +10,8 @@ autonomously anymore, so nothing needs to detect a turn's end.
 the same byte stream the operator sees, matching
 ``brain/observation_transcript.py``.
 
-Phase 5 Task 3 (2026-07-05) — ``scrub_secrets`` added alongside it. Both
-are pure PTY-byte-stream transforms with no state, so both live here
+``scrub_secrets`` sits alongside it. Both are pure PTY-byte-stream
+transforms with no state, so both live here
 rather than a new sibling module; `pty_manager.py::_forward_to_observer`
 calls ``scrub_secrets`` at the observer CAPTURE point (before the chunk
 ever leaves pty_manager), same import site as ``strip_ansi``.

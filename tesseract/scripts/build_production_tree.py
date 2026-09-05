@@ -29,7 +29,11 @@ from tesseract.scripts._production_manifest import (
     EXCLUDE_PATH_GLOBS,
     EXCLUDE_PATHS,
 )
-from tesseract.scripts.make_shipping_config import build_shipping_config
+from tesseract.scripts.make_shipping_config import SHIPPING_DIR_NAME as _SHIPPING
+from tesseract.scripts.make_shipping_config import (
+    build_shipping_config,
+    build_shipping_overlay,
+)
 from tesseract.scripts.make_shipping_workspace import build_shipping_workspace
 
 
@@ -39,6 +43,25 @@ def _force_remove(func, path, _exc) -> None:
     """
     os.chmod(path, stat.S_IWRITE)
     func(path)
+
+
+def _roster_names(index: Path) -> set[str]:
+    """The card names an `agents/INDEX.md` table declares.
+
+    The FILE differs from the one `shipped_card_names` reads — this is the
+    folded roster in a tree the build just wrote, which has no `_shipping/`
+    left in it — but the table is the same, so the parse comes from the module
+    that owns it. A copy lived here once, justified by a comment claiming that
+    module was not importable from a build script. The guard that calls this
+    imports `NON_LOAD_DIRNAMES` from exactly that module, which is what showed
+    the claim was wrong.
+    """
+    from tesseract.agents.loader import roster_names
+
+    try:
+        return roster_names(index.read_text(encoding="utf-8"))
+    except OSError:
+        return set()
 
 
 def tracked_files(src_root: Path) -> list[str]:
@@ -216,6 +239,60 @@ def build(src_root: Path, out_root: Path, files: Iterable[str] | None = None) ->
         )
     build_shipping_config(src_config, out_root / "tesseract" / "config")
 
+    # Agents: fold the shipped ROSTER over the dev one. Only the roster, not
+    # the cards — the cards ship from the raw tracked copy above, because
+    # tracking is already the authority on which are the app's and some of them
+    # live in subdirectories a flat template copy could not reach.
+    #
+    # What the fold is FOR: `agents/INDEX.md` is the list anything picking an
+    # agent reads, and in a dev checkout it names every card this tree holds,
+    # the operator's own included. Shipping that list verbatim would tell every
+    # install about an agent it does not have. `_shipping/INDEX.md` is the list
+    # the app claims, and `loader.shipped_card_names` reads the same file to
+    # answer who wrote a card when one directory holds both halves.
+    # Required only where there is a roster to get wrong. A source tree with no
+    # `agents/INDEX.md` ships no roster and has nothing to fold; the synthetic
+    # trees the build's own tests construct are exactly that, and demanding a
+    # declaration from them would make the guard fire everywhere except the one
+    # place it matters. Where a dev roster DOES exist, shipping it unfolded is
+    # the failure, so that case hard-fails.
+    src_agents = src_root / "tesseract" / "agents"
+    if (src_agents / "INDEX.md").is_file():
+        src_agents_roster = src_agents / _SHIPPING / "INDEX.md"
+        if not src_agents_roster.is_file():
+            raise RuntimeError(
+                f"build: missing required agents roster ({src_agents_roster}) — "
+                "refusing to ship the dev roster, which names cards no install has"
+            )
+        out_agents = out_root / "tesseract" / "agents"
+        build_shipping_overlay(src_agents, out_agents, "INDEX.md")
+        # And the guard the file-level overlay cannot make: a roster names
+        # CARDS, and a card ships only if it is tracked. A row for an untracked
+        # one would reach every install as an agent that is not there, which
+        # nothing downstream checks — `audit_release_tree` does not read the
+        # roster at all. Checked against the output, so it measures what was
+        # actually written rather than what was meant to be.
+        # Counted the way a scan counts. `NON_LOAD_DIRNAMES` is what the loader
+        # skips, so a card under `pending/` satisfying a roster row would be a
+        # row pointing at an agent nothing can load — the guard passing on the
+        # one shape it exists to catch.
+        from tesseract.agents.loader import NON_LOAD_DIRNAMES
+
+        shipped_cards = {
+            p.stem
+            for p in out_agents.rglob("*.md")
+            if p.stem != "INDEX"
+            and not NON_LOAD_DIRNAMES & set(p.relative_to(out_agents).parts[:-1])
+        }
+        declared = _roster_names(out_agents / "INDEX.md")
+        missing = sorted(declared - shipped_cards)
+        if missing:
+            raise RuntimeError(
+                f"build: the shipped agents roster names {len(missing)} card(s) "
+                f"that did not ship: {', '.join(missing)}. A card reaches a user "
+                "only if it is tracked; remove the row or track the card."
+            )
+
     # Workspace: seed a neutral starter tree from hand-authored templates —
     # the operator's live tesseract/workspace/ never ships (Task 11f).
     # REQUIRED — build_shipping_workspace itself raises RuntimeError when
@@ -240,18 +317,26 @@ def build(src_root: Path, out_root: Path, files: Iterable[str] | None = None) ->
         src_shipping = src_root / rel / "_shipping"
         out_dir = out_root / rel
         build_shipping_workspace(src_shipping, out_dir)
-        _write_state_dir_gitignore(out_dir)
+        # The workshop is the exception, deliberately. Its layout exists so the
+        # user CAN make it a repository, and an ignore file of `*` is exactly
+        # what stops them: `git add` drops every project silently. The
+        # accident it guards against elsewhere does not apply here either,
+        # because a local commit publishes nothing. Nothing leaves the machine
+        # until they configure a remote and push, which is a separate decision
+        # they make on purpose.
+        if rel != "tesseract/workshop":
+            _write_state_dir_gitignore(out_dir)
 
     _reset_entities(out_root)
     _blank_born_at(out_root)
 
-    # Voice model dirs: weights now land in `runtime/models/voice/`, outside
-    # the clone entirely, so this no longer guards the common case. It stays
-    # for the install that updates ACROSS that change — its clone still holds
-    # the old weights until `migrate_legacy_models` runs on the next launch,
-    # and without an ignore rule git reports them as uncommitted changes. The
+    # Voice model dirs: weights land in `runtime/models/voice/`, outside the
+    # clone entirely, so this does not guard the common case. It is here for
+    # the install that updates ACROSS that change: its clone still holds the
+    # old weights until `migrate_legacy_models` runs on the next launch, and
+    # without an ignore rule git reports them as uncommitted changes. The
     # update UI then shows a "local history diverged" row and nudges the user
-    # toward a force-update (observed live 2026-07-30).
+    # toward a force-update.
     # All three lanes, whisper included — it was omitted while the other two
     # were covered, and it is the LARGEST (~1.6 GB), so the one lane most
     # likely to make an updating install report divergence was the one lane

@@ -28,6 +28,7 @@ class LaneStatusTool(Tool):
         "enumerating lanes or bindings, which is `lane_list`/`lane_named_list`; resolving a "
         "name's binding, which is `lane_named_get`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

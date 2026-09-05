@@ -18,7 +18,7 @@ _SENT_RING_MAX = 1000
 # bounds memory at ~300 KB per direction even on a runaway chat.
 _ROLLING_TS_MAX = 10_000
 
-# Cap on the per-chat offline inbox (audit fix M1). A chat that floods
+# Cap on the per-chat offline inbox. A chat that floods
 # the bridge while offline shouldn't be able to grow state.json without
 # bound; oldest entries past the cap are dropped with a logged warning.
 _OFFLINE_INBOX_PER_CHAT_MAX = 200
@@ -90,7 +90,7 @@ class Allowlist:
 
 @dataclass
 class OfflineMessage:
-    """One inbound message saved while the bridge was in ``offline`` override (audit fix M1).
+    """One inbound message saved while the bridge was in ``offline`` override.
 
     Persisted to ``state.json::offline_inbox`` so a Mirror restart between
     flip-offline and flip-online does not lose the queued messages. The
@@ -156,7 +156,7 @@ class PollState:
     sent_comment_ids: list[str] = field(default_factory=list)
     telegram_event_ids: dict[str, int] = field(default_factory=dict)
     # Last inbound message timestamp (iso utc) per chat_id. Drives the
-    # MO-9-10 inactivity-reset check: when a new inbound arrives and the
+    # Inactivity-reset check: when a new inbound arrives and the
     # gap exceeds `channels.yaml::inactivity_reset_minutes`, the bridge
     # rebuilds its ChatSession so the chat history starts fresh. Keys
     # are stringified chat_ids (JSON object keys must be strings).
@@ -186,7 +186,7 @@ class PollState:
     user_tier: dict[str, str] = field(default_factory=dict)
     user_ttl: dict[str, str] = field(default_factory=dict)
     user_display: dict[str, str] = field(default_factory=dict)
-    # Per-chat offline inbox (audit fix M1). Inbound messages received
+    # Per-chat offline inbox. Inbound messages received
     # while ``status.override == "offline"`` land here instead of
     # silently triggering an archive-only "queued" reply. The bridge
     # drains the inbox into real turns when the override flips back to
@@ -200,7 +200,7 @@ class PollState:
     # clears, or cancels and falls through to normal processing.
     # Auto-expires after `CLEAR_PENDING_TTL_S` (300s).
     pending_clear: dict[str, str] = field(default_factory=dict)
-    # Session 3 (2026-05-16) — per-chat "reply with voice" toggle. Keys:
+    # Per-chat "reply with voice" toggle. Keys:
     # stringified chat_id. Value: bool. When True the bridge synthesises
     # the assistant's text reply via the local TTS engine and ships it as a voice
     # note instead of plain text. Operator-controlled via /voice_on
@@ -234,7 +234,7 @@ class PollState:
         _prune_24h(self.recent_outbound_ts)
         return len(self.recent_outbound_ts)
 
-    # -- offline inbox (audit fix M1) -------------------------------------
+    # -- offline inbox -------------------------------------
 
     def enqueue_offline(self, chat_key: str, msg: OfflineMessage) -> int:
         """Append ``msg`` to the chat's offline inbox; return resulting depth."""

@@ -52,6 +52,7 @@ from tesseract.mirror.server.mcp.verbs.schedule import (
     schedule_run,
     schedule_update,
 )
+from tesseract.mirror.server.mcp.verbs.atlas import atlas_query
 from tesseract.mirror.server.mcp.verbs.surface import (
     surface_close,
     surface_open,
@@ -81,6 +82,7 @@ CALL_VERBS: dict[str, CallHandler] = {
     "memory.search": memory_search,
     "vault.search": vault_search,
     "vault.query": vault_query,
+    "atlas.query": atlas_query,
     # P3 s1 — write (kernel-tool-backed, ASK floor)
     "memory.save": memory_save,
     "memory.update": memory_update,

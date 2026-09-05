@@ -415,7 +415,7 @@ async def _drive_session(
                     await task
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
-        # 2026-05-24 — default exit semantics tear the daemon down.
+        # Default exit semantics tear the daemon down.
         # `--keep` overrides this with the old detach-only behaviour.
         # Slash commands ``/detach`` and ``/shutdown`` further override
         # via ``keep_daemon_on_exit`` (True/False); ``None`` means

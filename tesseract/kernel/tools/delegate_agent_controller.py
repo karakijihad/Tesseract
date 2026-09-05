@@ -64,7 +64,7 @@ class DelegateAgentControllerInput(BaseModel):
         max_length=20000,
         description=(
             "Goal handed to a fresh agent controller session. The "
-            "controller's chat brain decides how to fulfill it — "
+            "controller's chat brain decides how to fulfil it. "
             "delegate to a seat, invoke an agent, etc."
         ),
     )
@@ -85,7 +85,7 @@ class DelegateAgentControllerInput(BaseModel):
     preferred_seat: str | None = Field(
         default=None,
         description=(
-            "Hard seat constraint for the spawned controller session — a "
+            "Hard seat constraint for the spawned controller session. A "
             "delegation seat name ('coder' or 'auditor'). When set, the "
             "other seats' delegate tools are removed from the session and a "
             "directive is added. Which provider fills the seat is roles.yaml. "
@@ -119,9 +119,10 @@ class DelegateAgentControllerTool(Tool):
         "hand-off."
     )
     not_when: ClassVar[str] = (
-        "A single seat call — use `delegate_coder` or `delegate_auditor`. "
-        "A markdown sub-agent task — use `invoke_agent`."
+        "A single seat call: use `delegate_coder` or `delegate_auditor`. "
+        "A markdown sub-agent task: use `invoke_agent`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

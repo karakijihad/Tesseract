@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable
 from tesseract.kernel.adapters.cli_utils import (
     claude_subscription_env,
     codex_subscription_env,
+    mark_reapable,
     resolve_codex_executable,
     scope_mcp_token,
 )
@@ -32,6 +33,20 @@ async def _drain_and_wait(proc: Any) -> None:
     await proc.wait()
 
 
+#: How long one stream-json line may be. asyncio's `StreamReader` defaults to
+#: 64 KiB and `readline` RAISES `LimitOverrunError` past it rather than
+#: returning what it has, so a single oversized event kills the whole turn.
+#: These are not log lines: one `item.completed` carries a file the CLI read or
+#: a diff it wrote, and both go past 64 KiB routinely. Measured 2026-09-03, two
+#: delegations died this way inside two minutes and the model was told
+#: "Separator is not found, and chunk exceed the limit".
+#:
+#: A ceiling rather than no ceiling, because the reader buffers a whole line
+#: before yielding it and a CLI streaming without newlines would otherwise
+#: grow it without bound.
+STREAM_LINE_LIMIT = 16 * 1024 * 1024
+
+
 async def _default_spawn(argv: list[str], cwd: str, env: dict[str, str] | None = None) -> Any:
     return await asyncio.create_subprocess_exec(
         *argv,
@@ -39,6 +54,7 @@ async def _default_spawn(argv: list[str], cwd: str, env: dict[str, str] | None =
         stderr=asyncio.subprocess.STDOUT,
         cwd=cwd,
         env=env,
+        limit=STREAM_LINE_LIMIT,
     )
 
 
@@ -52,13 +68,17 @@ async def _default_spawn(argv: list[str], cwd: str, env: dict[str, str] | None =
 # the shared subscription-env builders: those serve every CLI-backed role, a
 # scheduled job and a non-lane delegate, all of which are the runtime acting as
 # the operator — narrowing them would demote the assistant's own brain to a lane.
+# The mark the janitor reaps by is written by the subscription-env builders
+# already; re-stamping it here is what puts the LANE's name on the finding
+# rather than the bare command, so an orphan the sweep kills says which lane
+# left it behind.
 async def _claude_spawn(argv: list[str], cwd: str) -> Any:
-    env = scope_mcp_token(claude_subscription_env(), "lane-claude")
+    env = mark_reapable(scope_mcp_token(claude_subscription_env(), "lane-claude"), "lane-claude")
     return await _default_spawn(argv, cwd, env=env)
 
 
 async def _codex_spawn(argv: list[str], cwd: str) -> Any:
-    env = scope_mcp_token(codex_subscription_env(), "lane-codex")
+    env = mark_reapable(scope_mcp_token(codex_subscription_env(), "lane-codex"), "lane-codex")
     return await _default_spawn(argv, cwd, env=env)
 
 
@@ -130,7 +150,30 @@ async def _run_turn_loop(
                 proc.kill()
                 _mark_timeout()
                 break
-            line = readline_task.result()
+            try:
+                line = readline_task.result()
+            except (asyncio.LimitOverrunError, ValueError) as exc:
+                # One line past the ceiling. The buffer still holds it, so
+                # reading again would raise on the same bytes forever — this
+                # ends the turn, but it ends it with a sentence instead of the
+                # transport's own words. Before the ceiling was raised the
+                # model was handed "Separator is not found, and chunk exceed
+                # the limit", which names nothing it can do.
+                log.warning("lane CLI: one output line was too long to read (%s)", exc)
+                accumulator.done = True
+                accumulator.is_error = True
+                too_long = (
+                    "the CLI sent one line of output larger than "
+                    f"{STREAM_LINE_LIMIT // (1024 * 1024)}MB, which cannot be "
+                    "read. Its work up to that point is above. Ask it to write "
+                    "large output to a file instead of returning it."
+                )
+                if hasattr(accumulator, "_result_field"):
+                    accumulator._result_field = too_long
+                elif hasattr(accumulator, "_error_text"):
+                    accumulator._error_text = too_long
+                proc.kill()
+                break
             if not line:
                 break
             try:

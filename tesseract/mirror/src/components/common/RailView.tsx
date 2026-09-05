@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
 
+import { useUIStore, type View } from "../../stores/ui";
 import { ErrorBoundary } from "./ErrorBoundary";
 import {
   NavRail,
   type NavRailFilter,
   type NavRailGroup,
+  type NavRailMark,
 } from "./NavRail";
 import { ViewHeader } from "./ViewHeader";
 
@@ -30,6 +32,11 @@ export interface RailSection<K extends string = string> {
   /** This section's controls. Add and refresh act on what is in the pane, so
    *  they live with it rather than on the view. */
   actions?: ReactNode;
+  /** What is in this section, in one line, on the rail row itself. A rail of
+   *  names is a menu; a rail of sentences is the overview. */
+  said?: ReactNode;
+  /** How this section is doing, drawn on its row. */
+  mark?: NavRailMark;
 }
 
 export interface RailGroup<K extends string = string> {
@@ -46,6 +53,11 @@ export interface RailGroup<K extends string = string> {
 
 interface RailViewProps<K extends string> {
   groups: readonly RailGroup<K>[];
+  /** Which panel this rail belongs to. `cockpit_show` names a panel AND
+   *  a row, and a rail may only take a row addressed to its own panel:
+   *  section keys repeat across panels, so the first rail mounted with a
+   *  matching key used to consume a request meant for another view. */
+  view: View;
   /** Names the rail for assistive tech — "Settings sections". */
   label: string;
   /** State that is true of the whole view, whichever section is open. A
@@ -57,9 +69,24 @@ interface RailViewProps<K extends string> {
   foot?: ReactNode;
   /** Section open on first render. Defaults to the first. */
   initial?: K;
+  /** Which section is open, when the VIEW owns that. Pair it with
+   *  `onSectionChange`. A view needs this when one of its sections links to
+   *  another: opening a panel the reader is already inside does nothing, so
+   *  the rail has to move instead. Omit it and the rail owns its own
+   *  selection, which is what every other caller wants. */
+  active?: K;
   /** Lifts selection out when the view needs to know which section is open
    *  (the autonomy view snapshot reports it). */
   onSectionChange?: (key: K) => void;
+  /** Lets the rail fold to a strip of marks. */
+  collapsible?: boolean;
+  /** What frames the pane. `header` is the app's view head and is what every
+   *  view wants. `bare` hands the whole pane to the section, for a surface
+   *  that carries its own template — the Autonomy panel's rooms are one
+   *  shape, built once, and a view head above it would be a second head. It
+   *  is not licence to draw one: a section rendering `bare` still gets its
+   *  chrome from a component rather than writing one. */
+  chrome?: "header" | "bare";
 }
 
 /** Calls a `render` section INSIDE the boundary rather than beside it.
@@ -89,16 +116,21 @@ function Rendered({ fn }: { fn: () => ReactNode }) {
  */
 export function RailView<K extends string>({
   groups,
+  view,
   label,
   meta,
   actions,
   searchable = false,
   foot,
   initial,
+  active: controlled,
   onSectionChange,
+  collapsible = false,
+  chrome = "header",
 }: RailViewProps<K>) {
   const sections = groups.flatMap((g) => g.sections ?? []);
-  const [active, setActive] = useState<K>(initial ?? sections[0].key);
+  const [own, setOwn] = useState<K>(initial ?? sections[0].key);
+  const active = controlled ?? own;
   const section = sections.find((s) => s.key === active) ?? sections[0];
   const Body = section.Body;
 
@@ -115,16 +147,40 @@ export function RailView<K extends string>({
   }, []);
 
   const select = (key: K) => {
-    setActive(key);
+    if (controlled === undefined) setOwn(key);
     onSectionChange?.(key);
   };
 
+  // `cockpit_show` names a panel and a row; the panel is a store the app
+  // already had, the row is not, so it waits here until the rail that owns
+  // that key is mounted. Matched case-insensitively because the assistant is
+  // repeating what the operator said out loud, not reading a key off the
+  // wire. Consumed once, so it moves one rail once.
+  //
+  // The panel is checked first. Without it a row is taken by whichever rail
+  // has a key of that name, and several do.
+  const requested = useUIStore((s) => s.requestedSection);
+  const takeRequested = useUIStore((s) => s.takeRequestedSection);
+  useEffect(() => {
+    if (!requested || requested.view !== view) return;
+    const hit = sections.find(
+      (s) => s.key.toLowerCase() === requested.section.toLowerCase(),
+    );
+    if (!hit) return;
+    takeRequested();
+    select(hit.key);
+    // `select` closes over props that are stable for this rail's lifetime.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requested]);
+
   const railGroups: NavRailGroup<K>[] = groups.map((g) => ({
     label: g.label,
-    items: (g.sections ?? []).map(({ key, label: rowLabel, icon }) => ({
+    items: (g.sections ?? []).map(({ key, label: rowLabel, icon, said, mark }) => ({
       key,
       label: rowLabel,
       icon,
+      said,
+      mark,
     })),
     filters: g.filters,
     onToggleFilter: g.onToggleFilter,
@@ -140,14 +196,21 @@ export function RailView<K extends string>({
         label={label}
         searchable={searchable}
         foot={foot}
+        collapsible={collapsible}
       />
       <div className="rail-view__pane">
-        <ViewHeader
-          title={section.title ?? section.label}
-          meta={section.meta ?? meta}
-          actions={section.actions ?? actions}
-        />
-        <div className="rail-view__body">
+        {chrome === "header" && (
+          <ViewHeader
+            title={section.title ?? section.label}
+            meta={section.meta ?? meta}
+            actions={section.actions ?? actions}
+          />
+        )}
+        <div
+          className={`rail-view__body${
+            chrome === "bare" ? " rail-view__body--bare" : ""
+          }`}
+        >
           {/* Keyed on the open section so the boundary resets when the rail
               moves — a caught error belongs to the pane that threw it, and
               without the key the next section inherits its dead state. */}

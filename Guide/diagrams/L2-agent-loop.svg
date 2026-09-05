@@ -24,7 +24,7 @@
   <rect x="0" y="18" width="936" height="64" rx="4" fill="rgba(34,211,238,0.03)"/>
   <rect x="0" y="110" width="936" height="72" rx="4" fill="rgba(255,255,255,0.016)"/>
   <rect x="0" y="226" width="936" height="72" rx="4" fill="rgba(255,255,255,0.016)"/>
-  <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" letter-spacing="1.4" fill="rgba(234,234,248,0.38)">
+  <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" letter-spacing="1.4" fill="rgba(234,234,248,0.55)">
     <text x="8" y="12">ACROSS TURNS</text>
     <text x="8" y="102">ASSEMBLE</text>
     <text x="8" y="218">GENERATE</text>
@@ -83,7 +83,7 @@
     <text x="254" y="262">the result</text>
   </g>
   <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="10" fill="rgba(234,234,248,0.55)" text-anchor="middle">
-    <text x="426" y="278">119 registered</text>
+    <text x="426" y="278">147 registered</text>
     <text x="254" y="278">appended</text>
   </g>
   <g stroke="rgba(234,234,248,0.55)" stroke-width="1.1" marker-end="url(#t-arw)">

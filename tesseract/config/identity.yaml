@@ -1,24 +1,67 @@
-# the assistant's identity anchor facts. Loaded fresh on every prompt build — no
-# restart needed after an edit.
+# Who the assistant is, and who it is talking to.
+#
+# Re-read on every prompt build and every utterance, so an edit takes effect
+# without a restart. No tool can write this file. Settings -> Identity is the
+# sanctioned writer; hand-editing here works too.
 
-# Instance birth timestamp, ISO-8601 with a UTC offset (e.g.
-# "2026-01-01T00:00:00+00:00"). Used to compute a "day N" age line in the
-# prompt's temporal context. Left blank on a fresh install — the assistant runs fine
-# without it (the age line is simply omitted); set it once, whenever you
-# like, and it sticks.
+# What the assistant is called. Shown in the header, used in everything it says
+# about itself, and half of the wake phrase. First-run setup asks for this.
+name: Assistant
+
+# Your name, used in greetings and chat bubbles.
+operator_name: Operator
+
+# `male`, `female`, or `unspecified`. Pronouns are derived from it;
+# `unspecified` renders they/them.
+gender: unspecified
+
+# Wake-word gate for the mic modes that start a turn (`command`, `speak`).
+# `transcribe` and `terminal` are never gated. Off means every utterance
+# starts a turn.
+#
+# The phrase is `<prefix> <name>`. It is spotted in AUDIO by a recogniser
+# restricted to those exact words, before anything is transcribed, so ordinary
+# speech decodes to nothing.
+#
+# `enabled` is permission, not readiness: the gate arms only after you have
+# said the phrase in Settings -> Voice and watched it fire. Until then every
+# utterance still starts a turn.
+wake_word:
+  enabled: true
+  prefix: hey
+  min_threshold: 0.15   # floor for how confident a match must be; the guided
+                        # check in Settings -> Voice sets its own, and the
+                        # stricter of the two wins
+  boost: 1.0            # how strongly the recogniser favours your phrase.
+                        # 1.0 is neutral; higher catches a mumble, and more
+                        # false wakes with it
+  # The keyword model, fetched once and checked against this digest.
+  # Fetch: python -m tesseract.scripts.fetch_wake_models
+  # Licence: see NOTICE.md.
+  download:
+    max_download_mb: 32
+    download_mb: 18
+    base_url: https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models
+    files:
+      sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2: f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a
+
+voice:
+  # Spoken when you audition a voice in Settings -> Identity. `{name}` renders
+  # the name above. Which voice speaks it is `roles.yaml::voice.tts`.
+  test_sample: "Hello, this is {name}. This is how I sound."
+
+# When this install first ran, ISO-8601 with a UTC offset. Used for the "day N"
+# line in the assistant's sense of time. Filled in on first boot; the line is
+# simply omitted while it is blank.
 born_at: ""
 
-# Where this assistant is documented in public, for the case where it needs to
-# hand a person a link rather than explain from memory.
-#
-# NOT where it reads from. The same Guide ships inside the app (`Guide/`,
-# readable with `file_read`) and that copy is the one to read: it is replaced
-# wholesale by every update, so it describes the version actually running,
-# where the site describes whatever was last published. Read locally, share the
-# link.
+# Where this assistant is documented in public, for handing someone a link.
+# To READ the docs, use the copy inside the app (`Guide/`) — it is replaced by
+# every update, so it describes the version you are running.
 documentation:
   site: "https://tesseract.metaengineershub.com"
 
+# What the assistant means by morning, afternoon, evening and night.
 time_of_day_buckets:
   morning:   { start: "05:00", end: "12:00" }
   afternoon: { start: "12:00", end: "17:00" }

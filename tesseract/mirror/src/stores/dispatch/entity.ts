@@ -5,9 +5,11 @@ import type {
   EntityStateSetData,
 } from "../../lib/types";
 import { useConversationStore } from "../conversation";
+import { useKernelManifest } from "../../cockpit/kernel/flows";
 import { useEntityStore } from "../entity";
 import { useOrbVisibilityStore } from "../orbVisibility";
 import { useToastStore } from "../toasts";
+import { handleCockpitShow, type CockpitShowData } from "./cockpit";
 import { resetOrbDwellForServerWrite } from "./orb";
 import type { Signals } from "./signals";
 
@@ -22,8 +24,13 @@ export function handleEntity(env: Envelope, signals: Signals | null): void {
   }
   if (env.type === "config_reloaded") {
     const data = env.data as unknown as ConfigReloadedData;
-    const body = `${data.file} — ${data.summary}`;
+    const body = `${data.file}: ${data.summary}`;
     useToastStore.getState().push(body, data.ok ? "info" : "error");
+    // The Kernel rail is built from `roles.yaml` by the runtime, so a reload
+    // is exactly when its picture stops being true. Without this the rail
+    // showed the seats it was FIRST given, which is the build-time asset's
+    // defect arriving one layer up: the store loads once and holds.
+    if (data.ok) void useKernelManifest.getState().load();
     return;
   }
   if (env.type === "orb_visibility") {
@@ -33,6 +40,12 @@ export function handleEntity(env: Envelope, signals: Signals | null): void {
     if (typeof data?.visible === "boolean") {
       useOrbVisibilityStore.getState().setVisible(data.visible);
     }
+    return;
+  }
+  if (env.type === "cockpit_show") {
+    // agent-driven navigation, zoom and scroll (cockpit_show tool) - the
+    // same stores the nav rail and the appearance panel write.
+    handleCockpitShow(env.data as unknown as CockpitShowData);
     return;
   }
   if (env.type === "chat_assistant_initiated") {

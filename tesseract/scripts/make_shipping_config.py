@@ -1,25 +1,14 @@
-"""Emit the shipped config tree: `tesseract/config/*.yaml`, verbatim.
+"""Emit the shipped config tree.
 
-There used to be a second copy of every file under `config/_shipping/`,
-hand-authored, and the build shipped that instead. It existed because the dev
-tree held settings a stranger must not receive — `security_mode: headless`,
-this machine's `born_at`, the operator's own scheduled jobs and reading list.
+`tesseract/config/*.yaml` is what this machine runs. A file with the same name
+under `config/_shipping/` overrides it on the way out, and is what a user
+receives. Everything else ships verbatim.
 
-**Production is the truth now, and the dev tree carries it.** The values that
-differed are gone from here: the config in this repo is the config a user
-receives, so there is nothing left to template and no second copy to drift.
-Anything genuinely per-machine lives in the installed app's own config, which
-first-run setup writes and the operator owns from then on — never here.
+Keep the overlay sparse: only files that genuinely differ belong in it. Every
+copy is a second file to keep in step, and `test_shipping_config_templates`
+fails when an overlaid file stops matching its live counterpart key for key.
 
-What that trades away is worth naming. The old rule was that a file with no
-template failed the build rather than falling back to the live one, so nothing
-could leak by accident. With one tree that guard has nothing to compare, and
-what stops a private value shipping is `audit_release_tree.scan_all`, which
-runs over the built output and hard-fails on PII, secrets and work notes.
-**So the discipline moved rather than disappeared: a setting that must not
-reach a user's machine does not belong in this directory at all.**
-
-Never touches the source directory; this is a one-way, read-src/write-out step.
+Never touches the source directory; one-way, read-src/write-out.
 """
 
 from __future__ import annotations
@@ -27,14 +16,46 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+SHIPPING_DIR_NAME = "_shipping"
+
+
+def shipping_overrides(src_dir: Path, pattern: str = "*.yaml") -> dict[str, Path]:
+    """`{filename: overriding path}` for every file in `src_dir/_shipping`."""
+    overlay = src_dir / SHIPPING_DIR_NAME
+    if not overlay.is_dir():
+        return {}
+    return {p.name: p for p in overlay.glob(pattern)}
+
+
+def build_shipping_overlay(src_dir: Path, out_dir: Path, pattern: str) -> None:
+    """Copy `src_dir/<pattern>` into `out_dir`, preferring `_shipping/` copies.
+
+    One implementation, because "a file under `_shipping/` overrides its live
+    counterpart" is one idea and had briefly become two: the agents roster was
+    folded by an inline `shutil.copy2` that carried none of the guard below, so
+    only one of the two overlays refused to ship a file with nothing behind it.
+    """
+    if src_dir.resolve() == out_dir.resolve():
+        raise ValueError(
+            f"build_shipping_overlay: src_dir and out_dir must differ "
+            f"(both resolve to {src_dir.resolve()})"
+        )
+    overrides = shipping_overrides(src_dir, pattern)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for src_file in src_dir.glob(pattern):
+        shutil.copy2(overrides.get(src_file.name, src_file), out_dir / src_file.name)
+
+    unmatched = set(overrides) - {p.name for p in src_dir.glob(pattern)}
+    if unmatched:
+        raise RuntimeError(
+            f"{SHIPPING_DIR_NAME}/ has no live counterpart for: "
+            f"{', '.join(sorted(unmatched))}"
+        )
+
 
 def build_shipping_config(src_dir: Path, out_dir: Path) -> None:
-    """Copy every `src_dir/*.yaml` into `out_dir` byte-for-byte."""
-    if src_dir.resolve() == out_dir.resolve():
-        raise ValueError(f"build_shipping_config: src_dir and out_dir must differ (both resolve to {src_dir.resolve()})")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    for src_file in src_dir.glob("*.yaml"):
-        shutil.copy2(src_file, out_dir / src_file.name)
+    """Copy `src_dir/*.yaml` into `out_dir`, preferring `_shipping/` copies."""
+    build_shipping_overlay(src_dir, out_dir, "*.yaml")
 
 
 if __name__ == "__main__":

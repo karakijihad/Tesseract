@@ -12,6 +12,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
+from tesseract.kernel.workspace_changes import growth_section_names
 from tesseract.memory.embeddings import EmbeddingIndex
 from tesseract.memory.librarian.constants import (
     PENDING_GROWTH_FILE,
@@ -168,18 +169,28 @@ class DistillationMixin:
 
     @staticmethod
     def _read_soul_growth(soul_path: Path) -> list[str]:
-        """Return existing `- bullet` lines under SOUL.md `## Growth`.
+        """Every `- bullet` under any growth section of SOUL.md.
+
+        All of them, not one. This list is what stops the distiller
+        re-proposing what the file already says, so reading a single section
+        would let one observation land again under a different heading.
+
         Raises FileNotFoundError if the file is missing.
         """
         text = soul_path.read_text(encoding="utf-8")
-        match = re.search(r"^## Growth\s*\n(.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
-        if not match:
-            return []
         bullets: list[str] = []
-        for line in match.group(1).splitlines():
-            stripped = line.strip()
-            if stripped.startswith("- "):
-                bullets.append(stripped[2:].strip())
+        for section in growth_section_names():
+            match = re.search(
+                rf"^## {re.escape(section)}\s*\n(.*?)(?=^## |\Z)",
+                text,
+                re.MULTILINE | re.DOTALL,
+            )
+            if not match:
+                continue
+            for line in match.group(1).splitlines():
+                stripped = line.strip()
+                if stripped.startswith("- "):
+                    bullets.append(stripped[2:].strip())
         return bullets
 
     def _write_pending_growth(self, candidates: list[str], *, reason: str | None = None) -> None:

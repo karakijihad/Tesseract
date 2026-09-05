@@ -18,19 +18,33 @@ You are invoked by the `daily-brief` orchestrator. Your output is placed directl
 
 ```
 {
-  "since_hours": 24       # window size; default 24
+  "since_hours": 24,
+  "learnings": [
+    {
+      "title": "...",
+      "summary": "...",
+      "kind": "insight" | "project" | "feedback" | ...,
+      "tags": ["..."]
+    }
+  ]
 }
 ```
 
+`learnings` is the set the overnight pass PROMOTED in the window, read back
+from the memory store by id. It is already the distillation, not the raw
+stream: the cycle decided which of the day's memories earned a place, and you
+only restate what it chose.
+
 ## Sources
 
-Read-only access through your existing read tools:
+You have no tool access in this invocation. The renderer reads which memories
+the consolidator promoted and hands you the `learnings` above. **Do not call
+any read tool**, and in particular do not go looking for the store's own write
+stream: it is noisy by design, every turn adds to it, and it would drown the
+brief in conversational fragments. The payload is the only authorized source.
 
-- The dreaming consolidator's output (the "what I learned" notes produced by the overnight memory pass).
-
-DO NOT read raw memory-store writes. That stream is noisy by design — every turn writes — and would drown the brief in conversational fragments. The consolidator has already distilled the day's signal; you only restate it.
-
-If the consolidator has not produced output for this window (it has not yet run today, or it ran with nothing to consolidate), return an empty body.
+If the pass promoted nothing in the window, or ran somewhere that left no
+record of what it promoted, the renderer does not invoke you at all.
 
 ## Output structure
 

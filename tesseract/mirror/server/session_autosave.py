@@ -10,25 +10,31 @@ One timer, no bookkeeping: every ``mirror.yaml::session.autosave_interval_second
 the open session is written. There is no change detection, because deciding
 whether a session is worth writing costs more than writing it.
 
-The write is synchronous ON the event loop, deliberately. Measured on real
-files: 8.6 KB installed and 25 KB in dev, both ~1 ms; a synthetic 2 MB session
-is 40 ms, still inside the 50 ms the loop may block for, and compaction bounds history
-long before that. Handing it to a worker thread would buy nothing and cost the
-one guarantee that matters here — a synchronous write has no await inside it,
-so teardown cancelling this pump can never land mid-write and leave two writers
-on the same file.
+The write runs on a worker thread. It was on the event loop, on the measurement
+that one chat's file is ~1 ms; what that missed is that the cost is per OPEN
+chat, and at thirteen chats the tick measured 51.5 ms — past the 50 ms the loop
+may block for, and growing with every chat the operator leaves open.
+
+Two writers are what a worker thread costs, and both are answered. Against
+TEARDOWN: `to_thread` cannot be interrupted mid-write, and the pump waits for a
+write already in flight before it lets cancellation through. Against the
+handlers still on the loop — rename, archive, restore, delete, which call the
+same `persist_session_chats` — `chat_store._WRITE_LOCK`, which this batch holds
+whole. Without that second half the later `os.replace` simply wins, and a
+rename is silently overwritten by a save that predates it. The index is
+`threading.local` (`chat_index._batch`), so the worker opens its own sqlite
+connection rather than sharing the loop's.
 
 What it writes is what a reconnect reads: ``sessions/chats/<chat_id>.json``,
 one file per chat, which ``chat_restore`` rehydrates from. Recall indexing stays
 on the teardown path — re-indexing every interval would buy nothing a reconnect
 sees.
 
-There is no second file. This pump used to also write a whole-history snapshot
-under a name it minted from the clock, which is how one conversation became
-eleven files in a day: the name had minute resolution and a connection is one
-session, so every boot started a new one. A chat already has an id, so the write
-lands on the record it belongs to and updating it is the same act as creating
-it.
+There is no second file. A whole-history snapshot under a clock-minted name
+turns one conversation into eleven files in a day, because the name has
+minute resolution and a connection is one session. A chat already has an
+id, so the write lands on the record it belongs to and updating it is the
+same act as creating it.
 """
 
 from __future__ import annotations
@@ -103,7 +109,8 @@ def autosave_settings() -> tuple[bool, float]:
 def save_now(app: web.Application, session: ServerSession) -> int:
     """Write every chat with history to its own record. Returns chats written.
 
-    Synchronous on purpose — see the module docstring.
+    Blocking, and called from a worker thread by the pump — see the module
+    docstring.
 
     Chats with no history are skipped: a freshly-created empty chat rewritten
     every interval is pure churn, and on an idle session it would be the only
@@ -150,9 +157,13 @@ async def autosave_pump(app: web.Application, session: ServerSession) -> None:
             )
         if not enabled:
             continue
+        write = asyncio.ensure_future(asyncio.to_thread(save_now, app, session))
         try:
-            save_now(app, session)
+            await asyncio.shield(write)
         except asyncio.CancelledError:
+            # A thread cannot be interrupted, so let a write already running
+            # finish before teardown starts its own on the same files.
+            await asyncio.gather(write, return_exceptions=True)
             raise
         except Exception:
             log.exception("autosave failed for %s", session.session_id)

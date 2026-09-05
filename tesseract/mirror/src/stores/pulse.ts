@@ -220,7 +220,7 @@ function deriveLabel(env: Envelope): string {
           ? `${primary.provider ?? '?'}/${primary.model ?? '?'}`
           : 'primary';
         const reasonStr = typeof reason === 'string' && reason
-          ? ` — ${truncate(reason, 80)}`
+          ? `: ${truncate(reason, 80)}`
           : '';
         return `fallback: ${from} → ${m}${reasonStr}`;
       }

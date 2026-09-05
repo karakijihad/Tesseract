@@ -1,4 +1,4 @@
-"""Daemon-side ``lane.*`` IPC handlers (X-4 Session C).
+"""Daemon-side ``lane.*`` IPC handlers.
 
 Extracted from ``daemon.py`` (lane-cleanup Batch 4) as a mixin so the
 controller daemon stays a dispatch + lifecycle shell. ``ControllerDaemon``

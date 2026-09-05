@@ -275,7 +275,7 @@ _MIRROR_SESSION_SPECS: tuple[CommandSpec, ...] = (
         name="mode",
         summary="change security mode",
         handler=_h_mode,
-        arg_label="<max|standard|headless>",
+        arg_label="<max|free>",
     ),
     CommandSpec(
         name="alarm_set",

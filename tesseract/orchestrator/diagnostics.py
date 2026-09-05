@@ -137,7 +137,13 @@ def _check_acceleration() -> list[Check]:
             detail=(
                 f"this machine resolved to the {profile!r} profile"
                 if profile
-                else "never profiled — runtime/hardware-profile.json absent"
+                else (
+                    "never profiled, which is expected outside an installed "
+                    "app: profiling runs once during first-run provisioning "
+                    "and picks the speech model this machine should fetch. "
+                    "Nothing is broken by its absence here; the GPU package "
+                    "checks below answer for themselves"
+                )
             ),
             evidence={"profile": profile},
         )
@@ -304,18 +310,18 @@ def _check_breakers() -> list[Check]:
 
 
 def _check_providers() -> list[Check]:
-    """Last recorded probe per role, with its age stated.
+    """Last recorded probe per ref, with its age stated.
 
-    Age is the load-bearing part. A role whose last probe was green four days
-    ago is not a healthy role, and reporting the verdict without the age is
+    Age is the load-bearing part. A ref whose last probe was green four days
+    ago is not a healthy ref, and reporting the verdict without the age is
     how a stale record becomes a current claim.
     """
-    from tesseract.orchestrator.provider_health import iter_roles_with_history, tail_recent
+    from tesseract.orchestrator.provider_health import iter_refs_with_history, tail_recent
 
     now = datetime.now(timezone.utc)
     rows: list[dict[str, Any]] = []
-    for role in iter_roles_with_history():
-        recent = tail_recent(role, n=1)
+    for ref in iter_refs_with_history():
+        recent = tail_recent(ref, n=1)
         if not recent:
             continue
         row = recent[-1]
@@ -329,20 +335,20 @@ def _check_providers() -> list[Check]:
                 age_hours = round((now - probed).total_seconds() / 3600, 1)
             except ValueError:
                 age_hours = None
-        rows.append({"role": role, "ok": bool(row.get("ok")), "age_hours": age_hours})
+        rows.append({"ref": ref, "ok": bool(row.get("ok")), "age_hours": age_hours})
 
     if not rows:
         return [
             Check(
                 name="provider_health",
                 status="unknown",
-                detail="no probe history recorded yet for any role",
+                detail="no probe history recorded yet for any ref",
             )
         ]
 
     def _label(row: dict[str, Any]) -> str:
         age = row.get("age_hours")
-        return f"{row['role']} ({age}h ago)" if age is not None else f"{row['role']} (age unknown)"
+        return f"{row['ref']} ({age}h ago)" if age is not None else f"{row['ref']} (age unknown)"
 
     failing = [r for r in rows if not r["ok"]]
     ages = [r["age_hours"] for r in rows if r.get("age_hours") is not None]
@@ -353,14 +359,14 @@ def _check_providers() -> list[Check]:
             status="warn" if failing else "ok",
             detail=(
                 # The age belongs in the summary, not only in the evidence. A
-                # role that was green four days ago is not a healthy role, and
+                # ref that was green four days ago is not a healthy ref, and
                 # a verdict without its age reads as current.
-                f"{len(failing)} of {len(rows)} roles failing their last probe: "
+                f"{len(failing)} of {len(rows)} refs failing their last probe: "
                 + ", ".join(_label(r) for r in failing)
                 if failing
-                else f"all {len(rows)} probed roles green on their last probe{oldest}"
+                else f"all {len(rows)} probed refs green on their last probe{oldest}"
             ),
-            evidence={"roles": rows},
+            evidence={"refs": rows},
         )
     ]
 
@@ -443,6 +449,140 @@ def _check_disk() -> list[Check]:
     return checks
 
 
+def _check_audio() -> list[Check]:
+    """Can this machine hear and speak right now.
+
+    Not the same question as `check_dependencies.py`'s microphone count, which
+    is a PRE-FLIGHT capability field: how many input devices exist says
+    nothing about whether the engines behind them are on disk. Capture itself
+    happens in the browser, so the runtime's half of the audio path is the two
+    voice lanes and the wake gate, and those are exactly the parts that fail
+    quietly.
+
+    Cheap by construction — resolved config and a handful of `is_file` calls.
+    No model is loaded and no audio is synthesised.
+    """
+    from tesseract.config.loader import load_config
+    from tesseract.voice import wake_spotter
+
+    checks: list[Check] = []
+    try:
+        voice = load_config().voice
+    except Exception as exc:  # noqa: BLE001 — never-raise contract
+        checks.append(_unknown("voice", exc))
+        voice = None
+
+    for lane in ("stt", "tts"):
+        chain = getattr(voice, lane, None) if voice is not None else None
+        if chain is None:
+            continue
+        local = [p.ref for p in chain.chain() if p.ref.connection.tier == "local"]
+        if not local:
+            # Every entry in the lane is a hosted provider, whose reachability
+            # `provider_health` already answers. Nothing local to check.
+            checks.append(
+                Check(
+                    name=f"voice_{lane}",
+                    status="ok",
+                    detail=f"the {lane} lane runs on a hosted provider, not on this machine",
+                )
+            )
+            continue
+        answers = {r.ref: _voice_files_present(r) for r in local}
+        present = [ref for ref, ok in answers.items() if ok is True]
+        missing = [ref for ref, ok in answers.items() if ok is False]
+        # An entry whose catalog record names no file is neither present nor
+        # missing, and reporting it as either would be inventing an answer.
+        unknown = [ref for ref, ok in answers.items() if ok is None]
+        hosted = len(chain.chain()) - len(local)
+        detail = (
+            f"{len(present)} of {len(local)} local {lane} engine(s) have their "
+            "model files on disk"
+        )
+        if missing:
+            detail += f". Missing: {', '.join(missing)}"
+        if unknown:
+            detail += f". Cannot tell for: {', '.join(unknown)}"
+        checks.append(
+            Check(
+                name=f"voice_{lane}",
+                # `warn`, not `bad`, while a hosted entry is still in the
+                # chain: the lane degrades to that rather than going silent,
+                # which is a different thing to tell the operator.
+                # An entry nobody can answer for keeps the lane off `ok`,
+                # because the detail says so in the same breath and a status
+                # that disagrees with its own sentence is the header lie this
+                # phase exists to remove.
+                status=(
+                    "bad" if missing and not hosted
+                    else "warn" if missing
+                    else "unknown" if unknown
+                    else "ok"
+                ),
+                detail=detail,
+                evidence={
+                    "present": present, "missing": missing,
+                    "unknown": unknown, "hosted_fallbacks": hosted,
+                },
+            )
+        )
+
+    try:
+        reason = wake_spotter.unavailable_reason()
+    except Exception as exc:  # noqa: BLE001 — never-raise contract
+        checks.append(_unknown("wake_word", exc))
+        return checks
+    checks.append(
+        Check(
+            name="wake_word",
+            # A wake gate that cannot arm passes every utterance through
+            # rather than blocking, so this is a `warn`: what is lost is the
+            # filtering, not the listening.
+            status="ok" if reason is None else "warn",
+            detail=reason or "the wake decoder can be built on this machine",
+        )
+    )
+    return checks
+
+
+def _voice_files_present(ref: Any) -> bool | None:
+    """Whether one local voice ref's model files are on disk. `None` when the
+    catalog entry does not name a file, so the question cannot be answered.
+
+    Whisper keeps a snapshot directory per checkpoint, and
+    `whisper_model_source` returning the bare checkpoint name is the library's
+    own signal that no complete snapshot was fetched. Every other local engine
+    keeps NAMED files in the lane directory: the entry's `model` is the file
+    and `voices_file`, where an entry has one, is the second.
+
+    **The files are named, not counted.** This asked whether the lane
+    directory had anything in it, and both shipped lanes ship a `README.md`,
+    so deleting every model file left the check answering yes. That is the
+    same defect as the wake gate reporting three present files missing, in the
+    other direction and in the check written to catch it.
+    """
+    from tesseract.voice import model_files
+
+    provider = ref.connection.name
+    if provider == "whisper":
+        name = ref.model.model
+        return model_files.whisper_model_source(name) != name
+
+    directory = model_files.lane_dir(provider)
+    fields = getattr(ref.model, "fields", None) or {}
+    wanted = [
+        str(name)
+        for name in (ref.model.model, fields.get("voices_file"))
+        # A `model` that is a checkpoint name rather than a filename says
+        # nothing about the disk, and guessing from it is how a check starts
+        # answering a question it was not asked.
+        if name and "." in str(name)
+    ]
+    if not wanted:
+        return None
+    return all((directory / name).is_file() for name in wanted)
+
+
 async def collect_diagnosis() -> Diagnosis:
     """Run every check concurrently and assemble the report.
 
@@ -460,8 +600,12 @@ async def collect_diagnosis() -> Diagnosis:
         asyncio.to_thread(_check_providers),
         asyncio.to_thread(_check_scheduler),
         asyncio.to_thread(_check_disk),
+        asyncio.to_thread(_check_audio),
     ]
-    names = ["machine", "acceleration", "ollama", "breakers", "provider_health", "scheduler", "disk"]
+    names = [
+        "machine", "acceleration", "ollama", "breakers", "provider_health",
+        "scheduler", "disk", "audio",
+    ]
 
     settled = await asyncio.gather(*tasks, return_exceptions=True)
 

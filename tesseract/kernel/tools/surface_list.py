@@ -11,6 +11,12 @@ was REGISTERED; `render` is what a client said happened when it tried to draw
 it, which is the difference between a card that exists and a card the operator
 can see. `unreported` is a real answer, not a gap: nothing is holding that card
 on screen right now.
+
+The `control` column is the same kind of fact and answers the question a
+caller would otherwise have to guess at: what can I ask this card to do. It is
+what the card SAID about itself when it drew, not a rule about its type, and
+the difference matters for a framed page, where whether there is a way in
+depends on the page rather than on the card. `-` means it takes nothing.
 """
 
 from __future__ import annotations
@@ -24,6 +30,19 @@ from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
 from tesseract.orchestrator.surfaces.store import get_surface_store
 
 
+def _control_cell(report: dict[str, Any] | None) -> str:
+    """What this card said it can be asked. `surface_control` is the verb.
+
+    Three distinct answers and the model needs all three: a list of actions,
+    `-` for a card that drew and takes nothing, and `unknown` for a card that
+    has not reported, where the honest thing is to try rather than to assume.
+    """
+    if report is None or "controls" not in report:
+        return "unknown"
+    controls = report.get("controls") or []
+    return ",".join(controls) if controls else "-"
+
+
 class SurfaceListInput(BaseModel):
     view: str = Field(default="orb", description="Canvas view to list (e.g. 'orb').")
 
@@ -33,18 +52,19 @@ class SurfaceListTool(Tool):
     risk_class: ClassVar[str] = "autonomous"
     group: ClassVar[str] = "showing-the-operator"
     summary: ClassVar[str] = (
-        "List surfaces on a canvas view — id, type, title, mode, and whether each rendered."
+        "List surfaces on a canvas view: id, type, title, mode, and whether each one rendered."
     )
     use_when: ClassVar[str] = (
-        "Before spawning to avoid duplicates, to find a surface_id, or to check whether a card "
-        "actually drew — the render column is the one thing here that is not your own "
-        "instruction read back to you. Anything but mounted, tell the operator in the reason's "
-        "own words: a card that did not draw is not a card they have."
+        "Before spawning to avoid duplicates, to find a surface_id, to check whether a card "
+        "drew, or to see what it can be asked before asking it. Render and control are the "
+        "only columns that are not your own instruction read back. Anything but mounted, say "
+        "so in the reason's own words: a card that did not draw is not a card they have."
     )
     not_when: ClassVar[str] = (
-        "`screen_look` for what a card actually LOOKS like — this only "
+        "`screen_look` for what a card actually LOOKS like. This only "
         "confirms it was registered, not a look at the pixels."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -64,13 +84,14 @@ class SurfaceListTool(Tool):
         reports = {r["id"]: store.render_report(r["id"]) for r in rows}
         lines = [
             f"{r['id']} | {r['type']} | {r.get('title') or '-'} | "
-            f"{r.get('mode') or 'embedded'} | {_render_cell(reports[r['id']], now)}"
+            f"{r.get('mode') or 'embedded'} | {_render_cell(reports[r['id']], now)} | "
+            f"{_control_cell(reports[r['id']])}"
             for r in rows
         ]
         return ToolResult(
             output=(
                 f"{len(rows)} surface(s) on {inp.view!r} "
-                f"(id | type | title | mode | render):\n" + "\n".join(lines)
+                f"(id | type | title | mode | render | control):\n" + "\n".join(lines)
             ),
             metadata={
                 "count": len(rows),

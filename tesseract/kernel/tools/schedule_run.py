@@ -1,6 +1,6 @@
 """schedule_run tool — fire a registered job immediately, off-schedule.
 
-AU-19. ASK-gated. Wraps ``SchedulerEngine.run_now``. The job's ``enabled``
+ASK-gated. Wraps ``SchedulerEngine.run_now``. The job's ``enabled``
 flag is ignored — manual triggers work on disabled rows too, which is the
 whole point of "run now".
 """
@@ -32,6 +32,7 @@ class ScheduleRunTool(Tool):
         "changing the job's cadence or enabled state, which is `schedule_update`; a one-time "
         "reminder, which is `alarm_set`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -53,10 +54,18 @@ class ScheduleRunTool(Tool):
                 output="scheduler unavailable in this runtime (REPL or boot failure)",
                 is_error=True,
             )
+        from tesseract.scheduler.engine import AlreadyRunning
+
         try:
             result = await scheduler.run_now(inp.name, trigger="assistant")
         except KeyError:
             return ToolResult(output=f"job {inp.name!r} is not registered", is_error=True)
+        except AlreadyRunning:
+            # Not an error. The job is doing the thing that was asked for.
+            return ToolResult(
+                output=f"job '{inp.name}' is already running. Nothing was started",
+                metadata={"name": inp.name, "already_running": True},
+            )
         return ToolResult(
             output=(
                 f"job '{inp.name}' fired (ok={result.ok}, detail={result.detail!r}, "

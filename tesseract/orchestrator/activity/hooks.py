@@ -1,4 +1,4 @@
-"""AS-1 — best-effort substrate hooks into the Unified Activity Registry.
+"""Best-effort substrate hooks into the Unified Activity Registry.
 
 Substrates (lanes, controller sessions) call these one-liners to project
 their lifecycle into the registry. Every call is wrapped so a registry /
@@ -158,6 +158,52 @@ def fail_routine(run_id: str, *, detail: str) -> None:
         log.warning("activity: fail_routine %s failed", run_id, exc_info=True)
 
 
+def register_turn(turn_id: str, *, label: str, waiting_on: str = "") -> None:
+    """Upsert the operator's own turn as a running unit, and beat it.
+
+    Called once when the turn opens and again at every model and tool step,
+    which is what makes it a heartbeat: `register` is an upsert that stamps
+    `updated_at`, so the last step boundary is the last beat and no timer is
+    needed. A timer would be worse than nothing here, because the case this
+    phase is named after is a turn wedged INSIDE one slow call, and a timer
+    would go on saying `running` right through it.
+
+    `waiting_on` is what the turn is doing now, in the words a person can
+    read. It rides in `result`, which is the field a row shows beside a state,
+    rather than in a new one: a reader that knows what a stalled delegate says
+    it is waiting on already knows how to read this.
+    """
+    try:
+        get_activity_registry().register(
+            ActivityRecord(
+                activity_id=f"turn:{turn_id}",
+                kind="turn",
+                label=label,
+                state="running",
+                durability="ephemeral",
+                parent_turn_id=turn_id,
+                result=waiting_on or None,
+            )
+        )
+    except Exception:  # noqa: BLE001 — reflection is best-effort
+        log.warning("activity: register_turn %s failed", turn_id, exc_info=True)
+
+
+def remove_turn(turn_id: str) -> None:
+    """Drop a finished turn from the live registry (no-op on unknown id).
+
+    Removed rather than left `done`, unlike a routine: a routine ran while
+    nobody was looking and its outcome is news, while a turn's outcome is the
+    reply the operator is already reading. A finished turn lingering in
+    "working now" would be the panel saying work is in flight that the person
+    has already been answered about.
+    """
+    try:
+        get_activity_registry().remove(f"turn:{turn_id}")
+    except Exception:  # noqa: BLE001
+        log.warning("activity: remove_turn %s failed", turn_id, exc_info=True)
+
+
 def register_autonomy(item_id: str, *, label: str) -> None:
     """Upsert a running autonomy agenda-item (durability=ephemeral, live-only)."""
     try:
@@ -206,4 +252,6 @@ __all__ = [
     "register_autonomy",
     "remove_autonomy",
     "fail_autonomy",
+    "register_turn",
+    "remove_turn",
 ]

@@ -39,6 +39,43 @@ from tesseract.paths import CONFIG_DIR, config_dir
 PROVIDERS_YAML = CONFIG_DIR / "providers.yaml"
 ROLES_YAML = CONFIG_DIR / "roles.yaml"
 
+# How full a conversation may get before it folds, when nothing else says.
+# `roles.yaml::compaction.compact_ratio` is the setting; this is what a caller
+# reaching for a session without that file gets. One definition, because
+# `boot.py` and `chat.py` each used to keep a number here and they disagreed.
+DEFAULT_COMPACT_RATIO = 0.25
+
+# How many recent turns the verbatim tail keeps, when nothing else says. A
+# turn is one user message and everything the assistant did before the next
+# one, so five is five exchanges however many tool calls they carry. The
+# runtime keeps fewer when they do not fit; see `chat.py::_tail_ceiling_tokens`.
+DEFAULT_KEEP_RECENT_TURNS = 5
+
+# How far clear of the unfoldable floor the trigger must sit, when nothing
+# else says. `roles.yaml::compaction.headroom_multiplier` is the setting. This
+# number was written out three times, in `chat.py`, `boot.py` and the schema,
+# and the only reason they never disagreed is that nobody had reason to change
+# one of them yet.
+DEFAULT_HEADROOM_MULTIPLIER = 1.2
+
+# The hard ceiling on the assembled prompt, in characters, when nothing else
+# says. `roles.yaml::compaction.prompt_char_budget` is the setting.
+#
+# Characters and not tokens because one chain member rejects on characters:
+# Codex CLI errors at 1,048,576 with `input_too_large`, and this leaves about
+# 150 KB of headroom for adapter wrapping and output room. It is an EMERGENCY
+# guard and not what bounds a conversation: `compact_ratio` bounds it, and this
+# stops a single turn that outgrew the conversation between two folds from
+# failing every model in the chain.
+#
+# It used to generate a second fold trigger of its own, at
+# `compaction.trigger_share` of this number. That trigger was lower than the
+# ratio's on every real configuration, so it was what decided every fold and
+# the operator's dial decided nothing. Boot now refuses a ratio this budget
+# cannot carry instead, which is the same protection stated as a question the
+# operator can answer.
+DEFAULT_PROMPT_CHAR_BUDGET = 900_000
+
 _SHELL_VAR_RE = re.compile(r"^\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}$")
 _REF_RE = re.compile(r"^(api|cli|local)\.([a-z][a-z0-9_]*)\.([a-z][a-z0-9_]*)$")
 
@@ -147,6 +184,31 @@ class CliAuthCheck:
 
 
 @dataclass(frozen=True)
+class CliLiveCheck:
+    """``cli.<provider>.live_check`` block — the cheapest real call there is.
+
+    An auth check answers "installed, and signed in". Neither half touches
+    usage: an account with no credit left is installed and signed in and looks
+    perfectly healthy, and the first thing that knows otherwise is the work
+    that has already been dispatched. So once a night the subscription is
+    asked a question it has to answer, and its refusal becomes the record in
+    its own words.
+
+    `prompt` is appended to `command` as the final argument. Per PROVIDER, not
+    per ref: whether a subscription still answers is a property of the
+    account, and asking it once per ref would spend the thing being measured
+    several times for one answer.
+    """
+    command: tuple[str, ...]
+    prompt: str
+    # The word the reply must contain. A subscription that has stopped serving
+    # can still exit 0, so "did it exit cleanly" is not the question — "did it
+    # answer" is, and an answer is only checkable against something.
+    expect: str
+    timeout_seconds: float
+
+
+@dataclass(frozen=True)
 class ProviderConnection:
     """One ``providers.<tier>.<name>`` block — connection settings only.
 
@@ -166,11 +228,20 @@ class ProviderConnection:
     base_url: str | None = None
     api_key_env: str | None = None
     command: str | None = None          # cli tier
+    # The argv that hands this CLI one prompt and forbids it writing anything;
+    # the prompt is appended as the final argument. `None` on a cli provider
+    # means the catalog has not said how to do that, and a caller that needs
+    # it reports the missing key rather than guessing a command line.
+    read_only_command: tuple[str, ...] | None = None  # cli tier
     stream_json_capable: bool = False   # cli tier
     # Required on every `cli`-tier provider — `_build_connection` raises at
     # load if absent. `None` only for non-cli tiers (api/local don't probe
     # subscription auth). See `CliAuthCheck` above.
     auth_check: CliAuthCheck | None = None
+    # Same contract, one question further on: `auth_check` asks whether the
+    # subscription is signed in, `live_check` asks whether it still answers.
+    # See `CliLiveCheck` above.
+    live_check: CliLiveCheck | None = None
     # Whether this connection's API accepts OpenAI's `prompt_cache_key`
     # param. True only for genuine OpenAI; openai-COMPATIBLE providers
     # (NIM, etc.) 400 on it, so the adapter must omit it for them.
@@ -364,6 +435,66 @@ def _build_auth_check(tier: str, name: str, block: Mapping[str, Any]) -> CliAuth
     )
 
 
+def _build_live_check(tier: str, name: str, block: Mapping[str, Any]) -> CliLiveCheck:
+    """Parse the required ``cli.<name>.live_check`` block. Required for the
+    same reason ``auth_check`` is: a provider the runtime cannot actually ask
+    is a provider whose health it can only guess at."""
+    where = f"providers.yaml {tier}.{name}"
+    raw = block.get("live_check")
+    if raw is None:
+        raise ConfigError(
+            f"cli provider '{tier}.{name}' missing required 'live_check' block in providers.yaml"
+        )
+    if not isinstance(raw, Mapping):
+        raise ConfigError(f"'{where}.live_check' must be a mapping in providers.yaml")
+    where_live = f"{where}.live_check"
+    command = require_field(raw, "command", where_live)
+    if not isinstance(command, list) or not command:
+        raise ConfigError(f"'{where_live}.command' must be a non-empty list in providers.yaml")
+    return CliLiveCheck(
+        command=tuple(str(c) for c in command),
+        prompt=str(require_field(raw, "prompt", where_live)),
+        expect=str(require_field(raw, "expect", where_live)),
+        timeout_seconds=float(require_field(raw, "timeout_seconds", where_live)),
+    )
+
+
+def _check_one_executable(tier: str, name: str, block: Mapping[str, Any]) -> None:
+    """The connection and both probes must name the same binary.
+
+    An executable declared three times per provider is an executable that can
+    be changed in two of them. A health check exercising a different binary
+    from the one the adapter calls answers a question nobody asked, and does
+    it silently — which is the class of divergence the probe work exists to
+    remove, so it is refused at load rather than left to a reader to notice.
+    """
+    command = block.get("command")
+    if not command:
+        return
+    for key in ("auth_check", "live_check"):
+        probe = block.get(key)
+        if not isinstance(probe, Mapping):
+            continue
+        argv = probe.get("command")
+        if isinstance(argv, list) and argv and str(argv[0]) != str(command):
+            raise ConfigError(
+                f"providers.yaml {tier}.{name}.{key}.command starts with "
+                f"{argv[0]!r} but the provider's command is {command!r}; a probe "
+                f"must exercise the same binary the adapter calls"
+            )
+    # Same rule for the one-shot read-only argv, and for a stronger reason: a
+    # delegation spawns it for real, so a binary named only here would run
+    # without the adapter, the auth check or the health check ever having
+    # touched it.
+    read_only = block.get("read_only_command")
+    if isinstance(read_only, list) and read_only and str(read_only[0]) != str(command):
+        raise ConfigError(
+            f"providers.yaml {tier}.{name}.read_only_command starts with "
+            f"{read_only[0]!r} but the provider's command is {command!r}; a "
+            f"delegation must run the same binary the adapter calls"
+        )
+
+
 def _build_connection(
     tier: str,
     name: str,
@@ -371,6 +502,8 @@ def _build_connection(
     tier_enabled: bool,
 ) -> ProviderConnection:
     where = f"providers.yaml {tier}.{name}"
+    if tier == "cli":
+        _check_one_executable(tier, name, block)
     return ProviderConnection(
         tier=tier,
         name=name,
@@ -382,8 +515,10 @@ def _build_connection(
         base_url=resolve_env(block.get("base_url")) if block.get("base_url") else None,
         api_key_env=block.get("api_key_env"),
         command=block.get("command"),
+        read_only_command=_read_only_command(tier, name, block),
         stream_json_capable=bool(block.get("stream_json_capable", False)),
         auth_check=_build_auth_check(tier, name, block) if tier == "cli" else None,
+        live_check=_build_live_check(tier, name, block) if tier == "cli" else None,
         supports_prompt_cache_key=bool(block.get("supports_prompt_cache_key", False)),
         supports_stream_usage=bool(block.get("supports_stream_usage", True)),
         cache_routing_header=block.get("cache_routing_header"),
@@ -404,9 +539,32 @@ def _build_connection(
             "api_key_env", "command", "stream_json_capable", "models", "enabled",
             "transient_retries", "transient_backoff_ms",
             "cooldown_max_failures", "cooldown_seconds", "supports_prompt_cache_key",
-            "supports_stream_usage", "cache_routing_header", "auth_check",
+            "supports_stream_usage", "cache_routing_header", "auth_check", "live_check",
+            "read_only_command",
         )},
     )
+
+
+def _read_only_command(
+    tier: str, name: str, block: Mapping[str, Any]
+) -> tuple[str, ...] | None:
+    """The `read_only_command` argv, or `None` when the provider omits it.
+
+    Absent is a real answer and not an error: it says this provider has not
+    been given a way to answer one prompt without writing, so the tools that
+    need one report the missing key by name. Present but malformed IS an
+    error, because a half-written command line would spawn something nobody
+    intended.
+    """
+    raw = block.get("read_only_command")
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not raw:
+        raise ConfigError(
+            f"providers.yaml {tier}.{name}.read_only_command must be a "
+            f"non-empty list of command line arguments"
+        )
+    return tuple(str(part) for part in raw)
 
 
 def _expanded_models(
@@ -441,26 +599,86 @@ def _expanded_models(
     return out
 
 
-#: What a model entry may claim it is good for. Advisory: this is what the
-#: picker shows an operator choosing a model, never a gate. `kind` decides
-#: what a role will accept, and `capabilities` decides what the image and
-#: attachment routers will send — a hint that could refuse a wiring would be
-#: a third authority disagreeing with those two.
+#: What a model entry may claim it is good for. Advisory in what it MEANS:
+#: this is what the picker shows an operator choosing a model, never a gate.
+#: `kind` decides what a role will accept, and `capabilities` decides what the
+#: image and attachment routers will send — a hint that could refuse a wiring
+#: would be a third authority disagreeing with those two.
+#:
+#: An unknown tag is still refused at load, deliberately: a typo would render
+#: as a hint nothing matches and quietly narrow what the operator believes
+#: they can pick.
+#:
+#: This is the FALLBACK vocabulary, used when the catalog does not carry its
+#: own. `providers.yaml::capability_tags` overrides it, so a new capability is
+#: declared in the same file as the model that claims it, in one edit. It used
+#: to live only here, and adding a tag therefore meant editing code and config
+#: together: the running process kept the old set while the new file referenced
+#: the new tag, every seat resolving that model began to fail, and the reviewer
+#: sent to catch it could not start either (2026-08-21).
 GOOD_FOR_TAGS = frozenset({
     "brain", "tools", "vision", "audio", "video", "pdf",
     "image_generation", "tts", "stt", "embedding", "rerank",
 })
 
 
-def _build_model(tier: str, prov_name: str, model_id: str, block: Mapping[str, Any]) -> ProviderModel:
+def cli_commands(providers_raw: Mapping[str, Any]) -> frozenset[str]:
+    """Every binary the `cli` tier can spawn, enabled or not.
+
+    Disabled providers are included on purpose: a seat switched off at noon
+    can still have left an orphan at eleven, and the janitor derives its
+    fingerprints from this so no CLI binary is named in two config files.
+    """
+    tier_block = providers_raw.get("cli") or {}
+    return frozenset(
+        str(block["command"])
+        for name, block in tier_block.items()
+        if name not in _TIER_RESERVED_KEYS
+        and isinstance(block, dict)
+        and block.get("command")
+    )
+
+
+def capability_tags(providers_raw: Mapping[str, Any]) -> frozenset[str]:
+    """The `good_for` vocabulary this catalog declares, or the built-in one.
+
+    A list rather than a mapping because the tag IS the label; the picker
+    renders it directly.
+    """
+    declared = providers_raw.get("capability_tags")
+    if declared is None:
+        return GOOD_FOR_TAGS
+    if not isinstance(declared, (list, tuple)) or not all(
+        isinstance(t, str) for t in declared
+    ):
+        raise ConfigError(
+            "providers.yaml capability_tags must be a list of strings"
+        )
+    if not declared:
+        raise ConfigError(
+            "providers.yaml capability_tags is empty, so no model could "
+            "declare anything. Remove the key to fall back to the built-in "
+            f"set {sorted(GOOD_FOR_TAGS)}, or list the tags you want."
+        )
+    return frozenset(declared)
+
+
+def _build_model(
+    tier: str,
+    prov_name: str,
+    model_id: str,
+    block: Mapping[str, Any],
+    allowed_tags: frozenset[str] = GOOD_FOR_TAGS,
+) -> ProviderModel:
     where = f"providers.yaml {tier}.{prov_name}.models.{model_id}"
     model_name = str(require_field(block, "model", where))
     kind = str(block.get("kind", "chat"))
-    unknown = sorted(set(block.get("good_for") or ()) - GOOD_FOR_TAGS)
+    unknown = sorted(set(block.get("good_for") or ()) - allowed_tags)
     if unknown:
         raise ConfigError(
-            f"{where}.good_for has unknown tag(s) {unknown} — "
-            f"pick from {sorted(GOOD_FOR_TAGS)}"
+            f"{where}.good_for has unknown tag(s) {unknown}. Pick from "
+            f"{sorted(allowed_tags)}, or add the tag to "
+            "providers.yaml::capability_tags in the same edit."
         )
     fields = {k: v for k, v in block.items() if k not in ("model", "kind")}
     return ProviderModel(id=model_id, model=model_name, kind=kind, fields=fields)
@@ -493,7 +711,13 @@ def _resolve_ref(ref: str, providers_raw: Mapping[str, Any]) -> ResolvedRef:
     return ResolvedRef(
         ref=ref,
         connection=_build_connection(tier, prov_name, prov_block, _tier_enabled(tier_block)),
-        model=_build_model(tier, prov_name, model_id, models[model_id]),
+        model=_build_model(
+            tier,
+            prov_name,
+            model_id,
+            models[model_id],
+            capability_tags(providers_raw),
+        ),
     )
 
 
@@ -754,6 +978,34 @@ def _build_voice(block: Mapping[str, Any] | None, providers_raw: Mapping[str, An
 #: changed file misses the key on the next call, which is what
 #: `brain/boot.py::load_bundle`'s hot-reload contract relies on.
 _PARSE_CACHE: dict[tuple[Path, int, int], Any] = {}
+
+
+def model_role_names(bundle: ConfigBundle) -> frozenset[str]:
+    """Every name in ``roles.yaml`` that names a MODEL ROLE rather than an agent.
+
+    Derived from the file, never listed a second time. The hand-kept copy this
+    replaces went stale in both directions at once: it was missing five roles
+    the file had gained (`consolidate`, `panel_writer`, `scheduled_task`,
+    `skill_refinement`, `skill_suggest`) and still carried two it had lost
+    (`mission_planner`, `vision_agent`). A test existed to catch exactly that
+    and had been failing in the tree, which is what a second list always comes
+    to.
+
+    Three sources and they are the three shapes the file has: the `roles:`
+    block, every other top-level block that names a model of its own
+    (`embeddings`, `reranker`, `compaction`), and the sub-roles under `voice:`.
+    Read generically so a block added tomorrow is covered without an edit here.
+    """
+    names = set(bundle.roles)
+    for key, value in bundle.roles_raw.items():
+        if key in ("roles", "chains") or not isinstance(value, Mapping):
+            continue
+        if key == "voice":
+            # `voice` is not a role; `voice.stt` and `voice.tts` are.
+            names.update(str(sub) for sub in value)
+            continue
+        names.add(str(key))
+    return frozenset(names)
 
 
 def _parse_cached(path: Path) -> Any:

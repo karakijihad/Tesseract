@@ -26,15 +26,15 @@ PtyDispatcher = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 # Mirror plumbs a coroutine that wraps the WS `tool_status` envelope; REPL
 # wires a stderr printer; tests pass `None`.
 StatusEmit = Callable[[str], Awaitable[None]]
-# Phase 18 Task B — schedule_create / schedule_remove tools call the
+# The schedule_create / schedule_remove tools call the
 # live SchedulerEngine. Resolved per-call via a getter so the registry
 # can be built before the engine in `_on_startup`.
 SchedulerProvider = Callable[[], Any]
-# X-4 — `lane_*` tools call the live LaneManager (controller-owned).
+# `lane_*` tools call the live LaneManager (controller-owned).
 # Same per-call getter pattern; the lane manager outlives any brain
 # reload, so the provider just returns the singleton attribute.
 LaneManagerProvider = Callable[[], Any]
-# X-5 — `lane_named_*` tools call the live NamedLaneManager. Separate
+# `lane_named_*` tools call the live NamedLaneManager. Separate
 # provider from `lane_manager_provider` so the name→lane_id binding
 # layer can be wired independently (e.g. a test could exercise lane
 # tools without bringing up named-lane persistence). Resolved per-call
@@ -147,7 +147,35 @@ class ToolResult:
 class ToolContext:
     workspace_root: str = "."
     session_id: str = ""
+    # Which conversation this call is running in, when it is running in one.
+    # A session id is the connection; this is the chat, and it is what a thing
+    # the assistant leaves behind has to remember in order to reach the
+    # conversation that made it. A card drawn in one chat and pressed an hour
+    # later has to wake THAT chat, not whichever is in focus. Empty for the
+    # REPL, autonomy, sub-agents and the scheduler, all of which have no chat.
+    chat_id: str = ""
+    # The channel this call is running on, when it came through one. Set only
+    # by a bridge; empty on the cockpit, the REPL, autonomy, sub-agents and the
+    # scheduler. `chat_id` cannot answer this on its own: every chat is stamped
+    # with one, so a tool asking "am I confined to one conversation?" by
+    # testing `chat_id` for emptiness confines the operator's own window too.
+    channel: str = ""
+    # The channel's OWN id for this chat (a Telegram numeric chat id), which is
+    # not `chat_id`: that one is the runtime's durable conversation id, and it
+    # is what history reads and surface ownership key off. Anything stored by
+    # the bridge under the adapter's identity — inbound media under
+    # `uploads/channels/<channel>/<chat_id>/` — is reachable only by this one.
+    # Empty everywhere `channel` is empty.
+    channel_chat_id: str = ""
     current_call_id: str = ""
+    # The turn this call runs inside, and the way to tie that turn to a task.
+    # Both stamped per call by the owning `ChatSession` beside
+    # `current_call_id`; empty and `None` where no turn is recorded (the REPL,
+    # the scheduler, autonomy). `bind_task` is the turn recorder's own method,
+    # handed down rather than the recorder itself, because a tool needs to say
+    # one thing about the turn and nothing else.
+    turn_id: str = ""
+    bind_task: Optional[Callable[[str], None]] = field(default=None, repr=False)
     # The MCP client identity this call is being made on behalf of, when it
     # came in over the hub. Durable resource ownership hangs off this, not off
     # `session_id` — a session id changes every reconnect, so a lane owned by
@@ -166,8 +194,8 @@ class ToolContext:
     # reports to a person can tell the two events a `False` return covers
     # apart: the operator said no, and nobody answered. The ledger has kept
     # them separate since it was written (`result: deny` vs `result:
-    # timeout`); every surface downstream of the bool used to collapse them
-    # and tell the operator they had declined something they never saw.
+    # timeout`); a surface downstream of the bool that collapses them tells
+    # the operator they declined something they never saw.
     # One of the ledger's own values — "allow_once", "deny", "timeout",
     # "cancelled", "park_timeout". Empty means the asker made no claim, and
     # a caller must then name both possibilities rather than pick one.
@@ -198,15 +226,15 @@ class ToolContext:
     # rather than assume it's wired so test fixtures don't have to plumb it.
     status_emit: Optional[StatusEmit] = field(default=None, repr=False)
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
-    # Phase 3 (CLI parity) — per-session todo list, Claude Code's
+    # Per-session todo list, Claude Code's
     # TodoWrite analog. Mutated by `tasks_set` / `tasks_update`. The WS
     # layer reads the post-call state on TOOL_RESULT and emits a
     # `tasks_state` envelope so the chat-embedded TodosCard re-renders.
     # Each entry: {"id": str, "title": str, "status":
     # "pending"|"in_progress"|"completed"}. Ephemeral per session; not
-    # persisted yet (Phase 1 will fold into schema-2 day-files).
+    # persisted yet.
     todos: list[dict[str, Any]] = field(default_factory=list, repr=False)
-    # Phase 4 (CLI parity) — background-spawn registry hook. The
+    # Background-spawn registry hook. The
     # owning ChatSession populates this with its `SpawnRegistry`
     # instance so tools (delegate_coder with await=False, plus the
     # spawn_check / spawn_await / spawn_cancel control tools) can
@@ -245,6 +273,29 @@ class ToolContext:
     # owning session's `spawn_max_concurrent`; `agent_factory` reads it off the
     # copied child context. `None` = uncapped (REPL / tests).
     spawn_max_concurrent: int | None = None
+    # The owning ChatSession's own measurement of this conversation's shape:
+    # tokens, turns, the fold it is heading for, the cache split of the last
+    # turn. Wired by `ChatSession.__post_init__`, same cross-link pattern as
+    # `spawns` — a callable rather than the session itself, because a tool
+    # asking how full the context is has no business reaching the history.
+    # `None` where there is no conversation (the scheduler, autonomy, a
+    # sub-agent), and `context_read` says so rather than reporting zeros.
+    context_report: Optional[Callable[[], dict[str, Any]]] = field(
+        default=None, repr=False
+    )
+    # What the turn asks to happen to itself once it is over: "fold",
+    # "handoff" or "reflect". Wired by `ChatSession.__post_init__` beside
+    # `context_report`, and a callable for the same reason that one is — a tool
+    # deciding this conversation is finished has no business reaching its
+    # history. It only records the decision; `mirror/server/after_turn.py` acts
+    # on it at the turn boundary, because folding or wiping mid-turn would
+    # discard the assistant message carrying the pending `tool_use` block
+    # before its `tool_result` is appended. `None` where there is no
+    # conversation to continue (the scheduler, autonomy, a sub-agent), and
+    # `session_continue` says so rather than claiming it worked.
+    request_continuation: Optional[Callable[[str], None]] = field(
+        default=None, repr=False
+    )
 
 
 class Tool(ABC):
@@ -255,10 +306,10 @@ class Tool(ABC):
     # adding a new tool without declaring a baseline becomes a startup error.
     default_posture: ClassVar[str] = ""
 
-    # AU-3 — risk class for autonomy admission. Every concrete subclass
+    # Risk class for autonomy admission. Every concrete subclass
     # MUST declare one of "autonomous" | "propose" | "operator_gate" |
     # "absolute_deny" in the risk-class taxonomy.
-    # Boot raises if missing or invalid. The AgendaStore (AU-4) compares
+    # Boot raises if missing or invalid. The AgendaStore compares
     # the dispatched tool's class against the agenda item's class at
     # admission and rejects if the item is more permissive than the tool
     # allows.
@@ -280,9 +331,21 @@ class Tool(ABC):
     # VISIBILITY ONLY — an extended tool invoked by name still resolves
     # and runs; `permissions.yaml` postures and `decide.evaluate` are
     # untouched by this attribute. Boot marks the pinned core set in
-    # `brain/boot.py::_CORE_TOOL_NAMES`; every other tool defaults here
-    # to "extended".
+    # `working_set.yaml::core`, which the operator owns; every other tool
+    # defaults here to "extended".
     tier: ClassVar[str] = "extended"
+
+    # Where this tool came from. "shipped" is everything registered by name in
+    # `brain/boot.py`; "custom" is set on the INSTANCE by
+    # `kernel/home_tools.py` for a tool loaded out of the operator's own tree.
+    #
+    # One registry, one tag, and every surface filters on it rather than
+    # keeping a second list: the glossary excludes custom, the generated Guide
+    # and the kernel manifest describe shipped only, and Settings, the usage
+    # heatmap and the working set show all of them with the custom ones
+    # marked. A second roster would be a second thing to keep in step, which
+    # is the defect this whole initiative exists to remove.
+    origin: ClassVar[str] = "shipped"
 
     # ── The tool contract ────────────────────────────────────────────────
     # Four fields that answer, in order, the questions asked when choosing a
@@ -313,6 +376,51 @@ class Tool(ABC):
     # the disambiguating sentence existed, in a file the prompt never loaded,
     # while the schema carried the sentence that misled.
     not_when: ClassVar[str] = ""
+
+    # What this tool cannot work without, and therefore what its breaker is
+    # named after. `role:<roles.yaml key>`, `service:<providers.yaml services
+    # key>`, or "" for a tool with nothing behind it —
+    # `kernel/tools/dependency.py` owns the shapes and resolves them to a
+    # catalog ref.
+    #
+    # Declared here rather than inferred, and "" is a decision on the record
+    # exactly as `not_when`'s is. The empty string is what keeps `file_read`
+    # ungated: a tool with no dependency has no capability that can be down,
+    # so "File not found" is the model calling it wrong and must never count
+    # against anything. That is the whole caller-versus-dependency split, and
+    # it is structural rather than a table of error strings.
+    depends_on: ClassVar[str] = ""
+
+    # Input fields whose CONTENT must not reach a log. Declared here, on the
+    # class, for the same reason the four fields above are: a rule kept
+    # somewhere else is a rule the next tool does not inherit.
+    #
+    # Two long-lived plain-text logs record a tool call. `pc.jsonl` takes the
+    # input of every browser verb, and `approvals.jsonl` takes the input of
+    # every ASK-posture call whether the operator allows it or refuses it. A
+    # password typed into a page reaches both, and a redaction wired into one
+    # of them is a redaction that reads as done and is not.
+    redacted_input_fields: ClassVar[tuple[str, ...]] = ()
+
+    @classmethod
+    def redact_input(cls, payload: dict[str, Any] | None) -> dict[str, Any]:
+        """`payload` with the declared fields replaced by their shape.
+
+        What a log is for survives: which tool, which element, how much. What
+        it must not keep is the characters. Three shapes cover what tool
+        inputs are: a string, a list of strings, and a list of objects with a
+        `value` (which is how a form's fields arrive).
+        """
+        if not payload:
+            return {}
+        if not cls.redacted_input_fields:
+            return dict(payload)
+        safe = dict(payload)
+        for field_name in cls.redacted_input_fields:
+            if field_name not in safe:
+                continue
+            safe[field_name] = _redacted_shape(safe[field_name])
+        return safe
 
     @property
     @abstractmethod
@@ -355,6 +463,39 @@ class Tool(ABC):
         }
 
 
+#: The risk classes a concrete tool may declare. Lives here, beside the
+#: `risk_class` ClassVar it constrains, because two callers now check it:
+#: `brain/boot.py::_wire_tool_defaults` raises on a shipped tool that fails,
+#: and `kernel/home_tools.py` skips a home tool that does. A second copy of
+#: this set is a second answer to what the autonomy gate admits.
+VALID_RISK_CLASSES = frozenset(
+    {"autonomous", "propose", "operator_gate", "absolute_deny"}
+)
+
+
+def _redacted_shape(value: Any) -> Any:
+    """Say how much there was, never what it was."""
+    if isinstance(value, str):
+        return f"<{len(value)} character(s)>"
+    if isinstance(value, list):
+        if value and all(isinstance(v, dict) and "value" in v for v in value):
+            return [
+                {**v, "value": f"<{len(str(v.get('value') or ''))} character(s)>"}
+                for v in value
+            ]
+        return [f"<{len(value)} item(s)>"]
+    if value is None:
+        return None
+    return "<redacted>"
+
+
+#: What one glossary line may cost. The glossary carries every tool and rides
+#: every turn, so this is a budget rather than a style rule. It lived only in a
+#: test, and that is the one contract rule that actually drifted: two summaries
+#: went over and stayed over for weeks while boot went on succeeding.
+SUMMARY_MAX_CHARS = 90
+
+
 def check_tool_contract(tool: Tool) -> None:
     """Every tool declares what it is, when to use it, and what outranks it.
 
@@ -382,8 +523,26 @@ def check_tool_contract(tool: Tool) -> None:
         for field in ("group", "summary", "use_when")
         if not str(getattr(cls, field, "") or "").strip()
     ]
-    if not isinstance(getattr(cls, "not_when", None), str):
-        missing.append("not_when")
+    # Declared, not merely inherited. `Tool.not_when` defaults to `""`, which
+    # is a legitimate value, so a type check alone passes a tool that never
+    # thought about the field at all — the one field of the four whose absence
+    # the guard could not see.
+    #
+    # The walk STOPS at `Tool`, and that is the whole check: `Tool` declares
+    # the field itself, so a walk that included it would find one on every
+    # subclass ever written and answer yes unconditionally.
+    # Declared, not merely inherited — same walk, same reason, for both of the
+    # fields whose empty string is legitimate.
+    for field in ("not_when", "depends_on"):
+        declared = False
+        for klass in cls.__mro__:
+            if klass is Tool:
+                break
+            if field in klass.__dict__:
+                declared = True
+                break
+        if not declared or not isinstance(getattr(cls, field, None), str):
+            missing.append(field)
     if missing:
         raise RuntimeError(
             f"tool '{tool.name}' (class {cls.__name__}) is missing "
@@ -397,3 +556,27 @@ def check_tool_contract(tool: Tool) -> None:
             f"{sorted(GROUPS)}, or add the group to "
             f"tesseract/kernel/tools/taxonomy.py."
         )
+    if len(cls.summary) > SUMMARY_MAX_CHARS:
+        raise RuntimeError(
+            f"tool '{tool.name}' (class {cls.__name__}) has a {len(cls.summary)}"
+            f"-character summary; the glossary budget is {SUMMARY_MAX_CHARS}. "
+            "Shorten it — the glossary carries one line per tool and every "
+            "turn pays for the whole list."
+        )
+    # A declaration the runtime cannot resolve is a typo, and a typo here is a
+    # tool that silently has no breaker. Raised beside the group check for the
+    # same reason that one is. A config that will not load at all is NOT this
+    # check's business — boot's own config layer raises for that, and failing
+    # here would report a missing providers.yaml as a broken tool.
+    from tesseract.config.loader import ConfigError
+    from tesseract.kernel.tools.dependency import DependencyError, resolve
+
+    try:
+        resolve(cls.depends_on)
+    except DependencyError as exc:
+        raise RuntimeError(
+            f"tool '{tool.name}' (class {cls.__name__}) declares "
+            f"depends_on={cls.depends_on!r}, which does not resolve: {exc}"
+        ) from exc
+    except ConfigError:
+        pass

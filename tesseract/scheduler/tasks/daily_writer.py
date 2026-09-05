@@ -16,6 +16,7 @@ import logging
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
+from tesseract.lib.clock import to_local
 from tesseract.paths import TESSERACT_HOME
 from tesseract.memory.log_notes import (
     _resolve_log_dir,
@@ -32,7 +33,11 @@ log = logging.getLogger(__name__)
 class DailyWriterJob(BaseJob):
     async def run(self, ctx: JobContext) -> JobResult:
         try:
-            target_date = (ctx.fired_at - timedelta(days=1)).date()
+            # The day before the one the operator was living in when this
+            # fired, not the day before a UTC instant. The two disagree for
+            # the last hours of every evening east of Greenwich, and the
+            # rollup would then be filed under a date its rows are not in.
+            target_date = to_local(ctx.fired_at).date() - timedelta(days=1)
             # Off the loop: runs.jsonl accumulates one row per job run for
             # the life of the install and is read whole every night.
             rows = await asyncio.to_thread(
@@ -48,7 +53,7 @@ class DailyWriterJob(BaseJob):
                 header=header,
                 body=body,
                 log_dir=log_dir,
-                date=datetime.combine(target_date, time(0, 0), tzinfo=timezone.utc),
+                date=datetime.combine(target_date, time(0, 0)).astimezone(),
                 idempotency_probe=f"Daily rollup {target_date.isoformat()}",
             )
             total_runs = sum(a["runs"] for a in aggregates.values())
@@ -116,7 +121,10 @@ def _load_rows_for(target: date, log_dir=None) -> list[dict]:
             except (json.JSONDecodeError, KeyError, ValueError):
                 log.warning("daily_writer: skipping malformed runs.jsonl line %d", line_no)
                 continue
-            if fired_at.date() != target:
+            # `target` is a local calendar day, so the row's stamp has to be
+            # read on the same clock. Comparing a UTC date against it drops
+            # the evening rows into the following day.
+            if to_local(fired_at).date() != target:
                 continue
             rows.append(entry)
     return rows

@@ -77,7 +77,7 @@ class StartControllerSessionInput(BaseModel):
     preferred_seat: str | None = Field(
         default=None,
         description=(
-            "Hard seat constraint for the spawned controller session — a "
+            "Hard seat constraint for the spawned controller session. A "
             "delegation seat name ('coder' or 'auditor'). When set, the "
             "other seats' delegate tools are removed from the session and a "
             "directive is added. Which provider fills the seat is roles.yaml. "
@@ -101,6 +101,7 @@ class StartControllerSessionTool(Tool):
         "a lane or interactive session you keep driving yourself turn by turn, which is "
         "`lane_turn`/`session_send`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

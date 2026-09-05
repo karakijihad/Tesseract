@@ -19,7 +19,10 @@ from typing import Callable, Iterator
 
 
 
+from tesseract.lib.clock import to_local
 from tesseract.lib.jsonl_rolls import rewrite, row_time
+from tesseract.orchestrator.outcome import RunOutcome, outcome_from_ok
+from tesseract.lib.log_envelope import BAD, INFO, WARN, envelope
 from tesseract.paths import TESSERACT_HOME, log_dir
 
 from tesseract.scheduler.types import JobContext, JobResult
@@ -58,7 +61,7 @@ def default_log_dir() -> Path:
 
 
 
-    This used to be a module-level `Path("tesseract/logs/schedule")`: a
+    A module-level `Path("tesseract/logs/schedule")` would be wrong: a
 
     RELATIVE path, so the run log landed wherever the process happened to be
 
@@ -98,6 +101,36 @@ def default_log_dir() -> Path:
 
 
 
+def _severity_of(result: JobResult) -> str:
+    """How bad this run was, decided here rather than by whoever reads it.
+
+    `RunOutcome` is a closed vocabulary and this is the only place that knows
+    what each value means for a person: a refusal and a failure are both
+    something to look at, a degraded run is worth knowing, and finding no work
+    to do is the row working correctly.
+    """
+    outcome = result.outcome.value if result.outcome else ""
+    if outcome in {"failed", "refused"} or not result.ok:
+        return BAD
+    if outcome in {"degraded", "truncated"}:
+        return WARN
+    return INFO
+
+
+def _summary_of(result: JobResult) -> str:
+    """One line this runtime composed, never the free text riding beside it.
+
+    `outcome_reason` and `detail` are documented as free plain language and
+    one of them is built as `f"unhandled exception: {exc!r}"`, so neither is
+    safe to treat as a sentence the runtime chose. They stay in the row's own
+    fields where a reader can quote them deliberately.
+    """
+    outcome = (
+        result.outcome.value if result.outcome else ("ok" if result.ok else "failed")
+    )
+    return f"the {result.job_name} row ran and ended {outcome}"
+
+
 def append_run_log(
 
     ctx: JobContext,
@@ -130,7 +163,32 @@ def append_run_log(
 
     # `datetime.fromisoformat` preserves tzinfo.
 
+    # THE ENVELOPE FIRST, and the row's own fields laid over it. It used to
+    # be spread LAST, so its `detail` overwrote `result.detail` three lines
+    # below a comment promising the envelope went "beside the row's own
+    # fields rather than instead of them". Every reader wanting the run's own
+    # words got `{"run_id": ..., "trigger_source": ...}`:
+    # `orchestrator/diagnostics.py` put it in front of `system_diagnose`, and
+    # `watchman/rows.py` falls back to it when a row carries no
+    # `outcome_reason`. `log_envelope.py::Record` already ignores a `detail`
+    # that is not a dict, so the envelope side of the collision costs nothing.
+    #
+    # `outcome` is the other key both sides write, and both now write the
+    # same expression, so which one wins stops being a fact about the order
+    # two dicts were spread in.
     entry = {
+
+        **envelope(
+            stream="schedule",
+            severity=_severity_of(result),
+            subject=result.job_name,
+            summary=_summary_of(result),
+            outcome=result.outcome.value if result.outcome else "",
+            # No `detail`: both halves it carried, `run_id` and
+            # `trigger_source`, are top-level fields of the row already, so it
+            # was a second copy AND the thing overwriting the first.
+            ts=(completed_at or datetime.now(timezone.utc)).astimezone(timezone.utc),
+        ),
 
         "job_name": result.job_name,
 
@@ -148,7 +206,7 @@ def append_run_log(
 
         # nothing to do" and "refused to start" from both success and failure.
 
-        "outcome": result.outcome.value if result.outcome else None,
+        "outcome": result.outcome.value if result.outcome else "",
 
         "outcome_reason": result.outcome_reason,
 
@@ -289,6 +347,38 @@ def load_last_runs(log_dir: Path | None = None) -> dict[str, datetime]:
 
 
 
+def outcome_of_row(row: dict) -> RunOutcome:
+    """How one logged run went. Rows written before the vocabulary existed
+    carry `ok` and no outcome, and `outcome_from_ok` is what widens those."""
+    stated = row.get("outcome")
+    if isinstance(stated, str) and stated.strip():
+        try:
+            return RunOutcome(stated.strip())
+        except ValueError:
+            log.warning("scheduler: run log row names outcome %r, which is not one", stated)
+    return outcome_from_ok(bool(row.get("ok")))
+
+
+def last_run_rows(log_dir: Path | None = None) -> dict[str, dict]:
+    """The newest whole row per job. `load_last_runs` answers WHEN each job
+    last fired; a caller that has to say how it went needs the row itself, and
+    re-deriving what a row is somewhere else is what this module exists to
+    stop."""
+    newest: dict[str, dict] = {}
+    seen: dict[str, datetime] = {}
+    for entry in iter_runs(runs_path(log_dir)):
+        try:
+            name = entry["job_name"]
+            fired_at = datetime.fromisoformat(entry["fired_at"]).astimezone(timezone.utc)
+        except (KeyError, TypeError, ValueError):
+            continue
+        previous = seen.get(name)
+        if previous is None or fired_at > previous:
+            seen[name] = fired_at
+            newest[name] = entry
+    return newest
+
+
 def prune_older_than(
     cutoff: datetime,
     *,
@@ -331,7 +421,7 @@ def prune_older_than(
             if stamped is None or stamped >= cutoff:
                 keep.append(line)
                 continue
-            day = stamped.astimezone().date()
+            day = to_local(stamped).date()
             if day not in checked:
                 # Once per DATE, not once per row. `summarised` reads a whole
                 # session log to answer, and a day holds a few hundred runs —

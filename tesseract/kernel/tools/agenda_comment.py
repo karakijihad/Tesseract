@@ -43,14 +43,15 @@ class AgendaCommentTool(Tool):
     group: ClassVar[str] = "asking-without-blocking"
     summary: ClassVar[str] = "Reply inside an operator comment thread on an agenda item."
     use_when: ClassVar[str] = (
-        "Use when directed to answer a comment thread on an agenda item — it "
+        "Use when directed to answer a comment thread on an agenda item. It "
         "renders in the item's thread, not the chat panel."
     )
     not_when: ClassVar[str] = (
         "a comment on a Workspace event, use `workspace_reply`; the comment asks "
-        "for a change to a workspace file — reply here, then file that change "
+        "for a change to a workspace file. Reply here, then file that change "
         "with `propose_change`."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(self, store: AgendaStore) -> None:
         """Writes the reply comment to disk (durable). Broadcasting is the

@@ -1,336 +1,165 @@
-"""Per-chat persistence for mirror-multi-chat (P1).
+"""Chat persistence — the one owner of the conversation record.
 
-Each chat in a ``ServerSession`` persists to
-``<TESSERACT_HOME>/sessions/chats/<chat_id>.json``, independent of the legacy
-per-session file (``sessions/<name>.json``). Files are canonical; the live
-``ServerSession.chats`` registry is the in-memory source of truth for a
-connected cockpit, flushed here on autosave and chat mutations (wired in a
-later increment).
-
-Format (schema 1)::
-
-    {
-      "schema": 1, "chat_id", "session_id", "title",
-      "created_at", "started_at", "ended_at",
-      "archived", "turn_count", "model", "history": [...]
-    }
-
-chat_id is a uuid4 hex (32 lowercase hex chars) — validated on every path so a
-crafted id can't escape the chats dir.
+Every surface on the funnel reaches its history through this module: the
+cockpit, a channel, the scheduled jobs, the retention sweep. The file layout
+and the raw read/write are `chat_record.py`; the derived header index is
+`chat_index.py`; the message-content helpers are `chat_content.py`. What lives
+here is the API those consumers call and the rules a save has to keep — that a
+turn count is derived rather than trusted, that a mutation writes through to
+the index, and that a delete reaches everything the record fed.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 import threading
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass, field, replace
+from collections.abc import Iterator
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
-from tesseract.brain.session_store import (
+from tesseract.brain.chat import _starts_a_turn
+from tesseract.mirror.server import chat_index, chat_record
+from tesseract.mirror.server.chat_content import (
     extract_message_text,
     index_conversation_file,
+    last_message_timestamp,
     sanitize_history_for_persistence,
 )
-from tesseract.lib.yaml_io import atomic_write_text
-from tesseract.paths import home_dir
+from tesseract.mirror.server.chat_index import index_batch, rebuild_metadata_index
+from tesseract.mirror.server.chat_record import (
+    SCHEMA_VERSION,
+    ChatRecord,
+    chat_path,
+    chats_dir,
+    default_chat_title,
+    is_valid_chat_id,
+    iter_history_files,
+    now_iso,
+    write_record,
+)
+
+__all__ = [
+    "SCHEMA_VERSION",
+    "ChatRecord",
+    "archive_stale_open_chats",
+    "chats_dir",
+    "delete_chat",
+    "extract_message_text",
+    "first_operator_text",
+    "index_batch",
+    "index_chat",
+    "index_conversation_file",
+    "index_session_chats",
+    "iter_history_files",
+    "last_message_timestamp",
+    "list_chats",
+    "list_records",
+    "load_chat",
+    "metadata_index_path",
+    "persist_session_chats",
+    "rebuild_metadata_index",
+    "rename_chat",
+    "sanitize_history_for_persistence",
+    "save_chat",
+    "set_archived",
+]
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
-
-_CHAT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
-
-_T = TypeVar("_T")
-
-#: An index connection held open across a burst of writes — see ``_index_batch``.
-_batch = threading.local()
-
-
-def _is_valid_chat_id(chat_id: str) -> bool:
-    return bool(_CHAT_ID_RE.fullmatch(chat_id or ""))
-
-
-def chats_dir() -> Path:
-    """Return ``<TESSERACT_HOME>/sessions/chats``, resolving env at call time.
-
-    ``paths.home_dir()`` rather than a local copy of the env-or-default rule:
-    that module exists because deeper modules used to hand-roll it and never
-    honored the env var, and this file had three copies of its own.
-    """
-    return home_dir() / "sessions" / "chats"
-
-
-def _now_iso() -> str:
-    return datetime.now().astimezone().isoformat()
-
-
-@dataclass
-class ChatRecord:
-    chat_id: str
-    session_id: str
-    title: str
-    created_at: str
-    started_at: str
-    history: list[dict[str, Any]] = field(default_factory=list)
-    archived: bool = False
-    turn_count: int = 0
-    ended_at: str | None = None
-    model: str = ""
-    schema: int = SCHEMA_VERSION
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "schema": self.schema,
-            "chat_id": self.chat_id,
-            "session_id": self.session_id,
-            "title": self.title,
-            "created_at": self.created_at,
-            "started_at": self.started_at,
-            "ended_at": self.ended_at,
-            "archived": self.archived,
-            "turn_count": self.turn_count,
-            "model": self.model,
-            "history": self.history,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ChatRecord:
-        return cls(
-            schema=data.get("schema", SCHEMA_VERSION),
-            chat_id=data["chat_id"],
-            session_id=data.get("session_id", ""),
-            title=data.get("title", ""),
-            created_at=data.get("created_at", ""),
-            started_at=data.get("started_at", ""),
-            ended_at=data.get("ended_at"),
-            archived=bool(data.get("archived", False)),
-            turn_count=int(data.get("turn_count", 0)),
-            model=str(data.get("model") or ""),
-            history=data.get("history", []),
-        )
-
-
-def _chat_path(chat_id: str) -> Path:
-    return chats_dir() / f"{chat_id}.json"
+#: Serialises every write to a chat record, across threads.
+#:
+#: Autosave runs its persist on a worker thread while the event loop keeps
+#: serving; rename, archive and delete run on the loop. Both reach
+#: ``atomic_write_text``, which is atomic per file and says nothing about two
+#: writers, so without this a rename's read-modify-write and a periodic save of
+#: the same chat can interleave and the later ``os.replace`` silently wins.
+#: Re-entrant because the batch path takes it and then calls ``save_chat``,
+#: which takes it again.
+#:
+#: The loop can wait on it, which is the cost. One chat's file is about a
+#: millisecond, against the whole-tick block moving the write off the loop was
+#: for.
+_WRITE_LOCK = threading.RLock()
 
 
 def metadata_index_path() -> Path:
-    """``<TESSERACT_HOME>/chat_metadata.sqlite``, resolved at call time.
-
-    Resolved at call time like ``chats_dir``, so a test fixture setting
-    ``TESSERACT_HOME`` gets an isolated index rather than the operator's.
-    """
-    return home_dir() / "chat_metadata.sqlite"
-
-
-def _with_index(action: Callable[[Any], _T], default: _T) -> _T:
-    """Run one action against the derived index. Best-effort, always closed.
-
-    The index is derived and rebuildable, so a failure here must never cost a
-    write to the canonical record — every caller passes what it wants back
-    when the index is unreachable.
-
-    Inside an ``_index_batch`` the held connection is reused instead of opened.
-    """
-    held = getattr(_batch, "index", None)
-    if held is not None:
-        try:
-            return action(held)
-        except Exception:  # noqa: BLE001
-            logger.warning("chat_metadata: index action failed", exc_info=True)
-            return default
-    try:
-        from tesseract.memory.chat_metadata import ChatMetadataIndex
-
-        index = ChatMetadataIndex(metadata_index_path())
-    except Exception:  # noqa: BLE001
-        return default
-    try:
-        return action(index)
-    except Exception:  # noqa: BLE001
-        logger.warning("chat_metadata: index action failed", exc_info=True)
-        return default
-    finally:
-        try:
-            index.close()
-        except Exception:  # noqa: BLE001
-            pass
-
-
-@contextmanager
-def _index_batch():
-    """Hold one index connection open across a burst of writes.
-
-    Opening one costs ~8 ms — the WAL pragma and the schema check, not the
-    query — and ``persist_session_chats`` saves every chat in a session on a
-    timer, ON THE EVENT LOOP. Per-chat that is 8 ms times however many
-    conversations the operator has open, which crosses the 50 ms bar that
-    keeps health checks and inbound turns responsive; per burst it is 8 ms
-    once. Thread-local because a sqlite connection belongs to the thread that
-    opened it.
-
-    Re-entering reuses the connection already held rather than opening a second
-    one — a nested batch replacing it would leak the outer connection and end
-    its transaction early.
-    """
-    if getattr(_batch, "index", None) is not None:
-        yield
-        return
-    try:
-        from tesseract.memory.chat_metadata import ChatMetadataIndex
-
-        _batch.index = ChatMetadataIndex(metadata_index_path())
-    except Exception:  # noqa: BLE001
-        _batch.index = None
-    index = getattr(_batch, "index", None)
-    if index is None:
-        try:
-            yield
-        finally:
-            _batch.index = None
-        return
-    try:
-        with index.deferred():
-            yield
-    finally:
-        _batch.index = None
-        try:
-            index.close()
-        except Exception:  # noqa: BLE001
-            pass
-
-
-def _meta_row(record: ChatRecord, path: Path) -> Any:
-    from tesseract.memory.chat_metadata import ChatMetaRow
-
-    return ChatMetaRow(
-        chat_id=record.chat_id,
-        title=record.title,
-        created_at=record.created_at,
-        started_at=record.started_at,
-        ended_at=record.ended_at,
-        turn_count=record.turn_count,
-        model=record.model,
-        archived=record.archived,
-        file_path=str(path),
-    )
-
-
-def _rows_from_disk() -> tuple[list[Any], int]:
-    """Every record the walker can parse, and how many files it could not.
-
-    The second number is what keeps the day view's completeness check honest.
-    A file that will not parse is not a row anybody could have written, so
-    counting it as a missing row would condemn the index for a record that
-    does not exist.
-    """
-    rows: list[Any] = []
-    unreadable = 0
-    for path in iter_history_files():
-        record = load_chat(path.stem)
-        if record is None:
-            unreadable += 1
-            continue
-        rows.append(_meta_row(record, path))
-    return rows, unreadable
-
-
-def rebuild_metadata_index() -> int:
-    """Rebuild the derived index from the records on disk. Returns the count.
-
-    The walk is this module's, not the index's — one owner of the directory,
-    rather than one reader per consumer.
-    """
-    rows, _ = _rows_from_disk()
-    return _with_index(lambda index: index.replace_all(rows), 0)
+    """Where the derived index lives. Delegated so there is one definition."""
+    return chat_index.metadata_index_path()
 
 
 def save_chat(record: ChatRecord) -> Path:
     """Persist a chat to ``chats/<chat_id>.json``.
 
-    Sanitizes attachment bytes out of history (raw files live under
-    ``uploads/``), stamps ``ended_at``, and derives ``turn_count`` from the
-    history so it can't drift from the saved messages. Raises ``ValueError``
-    on a malformed chat_id.
+    Sanitizes history (attachment bytes and reasoning items never reach disk),
+    and derives BOTH ``turn_count`` and ``ended_at`` from the history so
+    neither can drift from the saved messages. Raises ``ValueError`` on a
+    malformed chat_id.
+
+    A turn is counted the way the runtime counts one, by asking the runtime.
+    Counting every ``role == "user"`` entry here meant a compacted chat's saved
+    metadata reported one turn more than the session thought it had, because
+    the summary a fold writes wears that role and opens nothing; a mid-turn
+    injection lands inside a turn already open and is the same story.
+
+    ``ended_at`` means when the conversation last CHANGED, so it is read off
+    the last message rather than off the clock. Stamping ``now`` on every
+    write made it mean "when this file was last written", which is not the
+    same thing and is not what any reader wants: ``persist_session_chats``
+    writes every chat a session holds whenever any ONE of them is saved, so a
+    single autosave tick gave a dozen untouched conversations the same
+    millisecond and every one of them looked like it had just happened.
+    Measured on the operator's own library: nine records shared one stamp to
+    the millisecond while their real last use was days apart.
+
+    Deriving it makes the write idempotent — saving an unchanged history
+    twice yields the same stamp — and costs nothing, because the value is
+    already in the history being written. A conversation with no stamped
+    message keeps whatever the caller carried, falling back to the clock so
+    the field is never empty.
     """
-    if not _is_valid_chat_id(record.chat_id):
-        raise ValueError(f"invalid chat_id: {record.chat_id!r}")
-    directory = chats_dir()
-    directory.mkdir(parents=True, exist_ok=True)
     # Non-destructive: work on a copy so a caller that keeps using `record`
     # after the save doesn't find its history stripped / turn_count rewritten.
     record = replace(record)
     record.history = sanitize_history_for_persistence(record.history)
-    record.turn_count = sum(1 for m in record.history if m.get("role") == "user")
-    record.ended_at = _now_iso()
-    path = _chat_path(record.chat_id)
-    # Atomic, not `write_text`: autosave rewrites this file on a timer, so a
-    # kill or power cut during a write is the exact event it exists to survive
-    # — and a truncated file is worse than a stale one, because `load_chat`
-    # discards malformed JSON and the chat is then simply gone. Temp-then-
-    # replace keeps the previous good copy until the new one is complete.
-    atomic_write_text(path, json.dumps(record.to_dict(), indent=2))
-    # Write-through to the derived index, so the day view stays current between
-    # rebuilds. Every mutation the runtime makes to a record — autosave, rename,
-    # archive, restore — lands here, which is why none of them needs its own hook.
-    _with_index(lambda index: index.upsert(_meta_row(record, path)), None)
+    record.turn_count = sum(1 for m in record.history if _starts_a_turn(m))
+    with _WRITE_LOCK:
+        record.ended_at = (
+            last_message_timestamp(record.history) or record.ended_at or now_iso()
+        )
+        path = write_record(record)
+        # Write-through to the derived index, so it stays current between
+        # rebuilds. Every mutation the runtime makes to a record — autosave,
+        # rename, archive, restore — lands here, which is why none of them
+        # needs its own hook.
+        #
+        # Except a channel record. A reader on the index's fast path never
+        # reaches `_walk`, so indexing one would route it straight past the
+        # exclusion `_walk` enforces and into the operator's chat library. The
+        # index is a picture of that library; a channel record is the bridge's
+        # own restore state and is not in it.
+        if record.surface != "channel":
+            chat_index.upsert(record, path)
     return path
 
 
-def load_chat(chat_id: str) -> ChatRecord | None:
-    """Load a chat, or None if missing / unreadable / invalid id."""
-    if not _is_valid_chat_id(chat_id):
-        return None
-    path = _chat_path(chat_id)
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        record = ChatRecord.from_dict(data)
-    except Exception as exc:  # noqa: BLE001 — corrupt file shouldn't crash a list
-        logger.warning("chat load failed (%s): %s", path, exc)
-        return None
-    record.history = sanitize_history_for_persistence(record.history)
-    return record
+def load_chat(chat_id: str, *, include_channels: bool = False) -> ChatRecord | None:
+    """Load a chat, or None if missing / unreadable / invalid id.
 
-
-def list_chats(
-    *, include_archived: bool = False, archived_only: bool = False
-) -> list[dict[str, Any]]:
-    """Return sidebar metadata rows (no history), newest-created first.
-
-    Three answers, because the drawer asks three questions: open chats
-    (default), open AND archived (``include_archived``), and the archive
-    section's archived-only (``archived_only``, which wins). ``include_archived``
-    is a widener rather than a filter, which is why the third one had to exist —
-    the archive list would otherwise render every open chat as archived.
+    ``include_channels`` mirrors ``_walk``'s, and for the same reason. Keeping
+    channel records out of the LISTINGS was not enough on its own: a durable
+    channel id is derived deterministically from the channel and the chat
+    (`_channel_session.durable_chat_id`), so anything holding a chat id can
+    compute one rather than having to be shown it. The bridge asks for its own
+    record by name; every other reader gets None.
     """
-    rows: list[dict[str, Any]] = []
-    for path in iter_history_files():
-        record = load_chat(path.stem)
-        if record is None:
-            continue
-        if not _wanted(record.archived, include_archived, archived_only):
-            continue
-        rows.append({
-            "chat_id": record.chat_id,
-            "title": record.title,
-            "created_at": record.created_at,
-            "started_at": record.started_at,
-            "ended_at": record.ended_at,
-            "turn_count": record.turn_count,
-            "model": record.model,
-            "archived": record.archived,
-            "message_count": len(record.history),
-        })
-    rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
-    return rows
+    record = chat_record.read_record(chat_id)
+    if record is None:
+        return None
+    if not include_channels and record.surface == "channel":
+        return None
+    return record
 
 
 def _wanted(archived: bool, include_archived: bool, archived_only: bool) -> bool:
@@ -347,20 +176,109 @@ def _wanted(archived: bool, include_archived: bool, archived_only: bool) -> bool
     return include_archived or not archived
 
 
-def iter_history_files() -> Iterator[Path]:
-    """Yield every chat record file, in stem order.
+#: How much of the first message a rail row can use. The row ellipsizes at
+#: whatever width it has, so this is only a bound on what travels.
+SNIPPET_CHARS = 120
 
-    The stem is a uuid4, so that order carries no chronology — a caller that
-    wants newest-first sorts the records it loads, it does not read the name.
 
-    For consumers that want the files rather than parsed records — the
-    work-index backfill is the one — so the directory keeps a single owner
-    instead of growing a walk per caller.
+def first_operator_text(record: ChatRecord) -> str:
+    """The first thing the operator typed into this chat, bounded.
+
+    What a row shows when the title is still the stamp the chat was born
+    with. Messages the runtime wrote itself are skipped, so no sentence the
+    operator never typed can become a conversation's name: a folded-context
+    block, a wake nudge, a heartbeat report, a card press or the reflection
+    prompt. Each carries the mark `ChatSession` stamps on its own messages
+    (`brain/chat.py::_RUNTIME_KEY`), and none is matched on its text, which
+    ships in a public repo and could therefore be typed by anyone.
     """
-    directory = chats_dir()
-    if not directory.exists():
-        return
-    yield from sorted(directory.glob("*.json"))
+    for msg in record.history:
+        if msg.get("role") != "user":
+            continue
+        if msg.get("_runtime"):
+            continue
+        text = " ".join(extract_message_text(msg.get("content")).split())
+        if text:
+            return text[:SNIPPET_CHARS]
+    return ""
+
+
+def list_chats(
+    *, include_archived: bool = False, archived_only: bool = False
+) -> list[dict[str, Any]]:
+    """Return sidebar metadata rows (no history), newest-created first.
+
+    ``snippet`` is present only when the title is still the birth stamp, so a
+    reader needs no second rule to know which of the two to show: an operator
+    rename outranks it by the snippet not being sent at all.
+
+    ``last_active_at`` is when the conversation was last used, which is what
+    the rail files a row under: a chat picked up again today belongs under
+    today, not under the month it was started in. The rows still come back
+    newest-CREATED first, because ``chat_restore`` takes the head of this list
+    to decide which conversations a connection hydrates.
+    """
+    rows: list[dict[str, Any]] = []
+    for record in _walk(include_archived=include_archived, archived_only=archived_only):
+        born = default_chat_title(record.created_at or "")
+        rows.append({
+            "chat_id": record.chat_id,
+            "title": record.title,
+            "snippet": first_operator_text(record) if record.title == born else "",
+            "created_at": record.created_at,
+            "started_at": record.started_at,
+            "ended_at": record.ended_at,
+            "last_active_at": _last_active_stamp(record),
+            "turn_count": record.turn_count,
+            "model": record.model,
+            "archived": record.archived,
+            "message_count": len(record.history),
+        })
+    rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+    return rows
+
+
+def _walk(
+    *,
+    include_archived: bool,
+    archived_only: bool,
+    touched_since: float | None = None,
+    include_channels: bool = False,
+) -> Iterator[ChatRecord]:
+    """Every record the filters want, parsed once. The only walk of the tree.
+
+    ``include_channels`` defaults to FALSE, and that default is load-bearing.
+    A channel record exists so a bridge can restore its own conversation after
+    a restart; it is addressed by its durable id and read by nothing else.
+    Left visible to this walk it reaches two places it must not:
+
+    - the cockpit's restore-on-connect (`chat_restore._restore_persisted_chats`
+      takes the newest rows and opens them), which would load someone else's
+      Telegram thread into the operator's window and then index it into the
+      install-wide recall index when that connection closes. `recall_history`
+      searches that index with no owner filter, so a second approved Telegram
+      user could then ask for, and receive, excerpts of the first one's
+      conversation.
+    - the capture funnel, which already recaps a channel from the channel's own
+      conversation store. Counting the record too would recap it twice.
+
+    A caller that genuinely wants channel records asks for them by name.
+    """
+    for path in iter_history_files():
+        if touched_since is not None:
+            try:
+                if path.stat().st_mtime < touched_since:
+                    continue
+            except OSError:
+                continue
+        record = chat_record.read_record(path.stem)
+        if record is None:
+            continue
+        if not include_channels and record.surface == "channel":
+            continue
+        if not _wanted(record.archived, include_archived, archived_only):
+            continue
+        yield record
 
 
 def _activity_key(record: ChatRecord) -> str:
@@ -373,14 +291,23 @@ def list_records(
     archived_only: bool = False,
     limit: int | None = None,
     touched_since: float | None = None,
+    include_channels: bool = False,
 ) -> list[ChatRecord]:
     """Return whole records, most recently ACTIVE first.
 
     Sorted by ``ended_at``, falling back to ``started_at`` then ``created_at``.
+    ``save_chat`` derives ``ended_at`` from the last message, so this really is
+    when the conversation last changed; while it was stamped from the clock,
+    one autosave tick made every chat a session held look equally recent and
+    this order was close to meaningless.
     Activity rather than creation because the readers this serves — the chat
-    digest, the feedback sweep — ask what happened lately. ``list_by_day``
-    groups by ``created_at``. The two are different questions and neither
+    digest, the feedback sweep — ask what happened lately. ``list_chats``
+    sorts by ``created_at``. The two are different questions and neither
     answers the other.
+
+    ``include_channels`` is off by default and the reason is in ``_walk``. A
+    channel record is the bridge's own restore state, addressed by durable id;
+    a reader that genuinely wants one says so.
 
     ``touched_since`` is a unix mtime cutoff applied to the file BEFORE it is
     parsed. Nothing prunes the chats directory, and the capture funnel reads
@@ -389,225 +316,71 @@ def list_records(
     owned the app rather than with what they said today. A file older than the
     cutoff cannot carry a turn that pass would act on, so it is never opened.
     """
-    records: list[ChatRecord] = []
-    for path in iter_history_files():
-        if touched_since is not None:
-            try:
-                if path.stat().st_mtime < touched_since:
-                    continue
-            except OSError:
-                continue
-        record = load_chat(path.stem)
-        if record is None:
-            continue
-        if not _wanted(record.archived, include_archived, archived_only):
-            continue
-        records.append(record)
+    records = list(_walk(
+        include_archived=include_archived,
+        archived_only=archived_only,
+        include_channels=include_channels,
+        touched_since=touched_since,
+    ))
     records.sort(key=_activity_key, reverse=True)
     return records[:limit] if limit is not None else records
 
 
-def list_by_day(
-    *, include_archived: bool = False, archived_only: bool = False
-) -> list[dict[str, Any]]:
-    """Group chats by the day they were CREATED, newest day first.
-
-    The shape ``session_store.list_sessions_by_day`` returned, with two
-    deliberate differences. A run is keyed by ``chat_id`` rather than a
-    filename stem, because that is the identity now; and it carries ``title``,
-    because a uuid is not a label and the stem used to be one.
-
-    There is no ``custom`` bucket. That existed only because an operator could
-    name a file anything, leaving the day to be parsed back out of the name and
-    sometimes failing. ``created_at`` is stamped once at creation and answers
-    every time.
-
-    Read from the derived index when it has rows, from the records on disk when
-    it does not. The drawer opens this on every render and the disk read parses
-    every transcript in full to use six header fields — a cost that grows with
-    how long the operator has owned the app rather than with what is shown. The
-    fallback is what makes the index safe to be derived: a fresh install, a
-    deleted sqlite or a test fixture that never wrote one still lists.
-    """
-    headers = _index_headers(
-        include_archived=include_archived, archived_only=archived_only
-    )
-    if headers is None:
-        headers = [
-            _header(record)
-            for record in list_records(
-                include_archived=include_archived, archived_only=archived_only
-            )
-        ]
-    return _group_by_day(headers)
-
-
-def _index_headers(
-    *, include_archived: bool, archived_only: bool
-) -> list[dict[str, Any]] | None:
-    """The day view's rows from the index, or ``None`` to read the records.
-
-    ``None`` when the index is unreachable, empty, or short of the records on
-    disk. That last check is what makes the fast path safe to trust: nothing
-    rebuilds this index on a schedule, so a row that never arrived — a burst
-    left uncommitted by a kill, a file dropped in by hand — would hide a
-    conversation from the drawer indefinitely, and a fallback on an EMPTY
-    result cannot see a listing that is merely short. Counting the files is a
-    directory listing; the parse is what the index exists to avoid.
-
-    A shortfall is REPAIRED rather than merely detected. The first version fell
-    back forever, and a single unparseable file — which no rebuild can turn
-    into a row — left the drawer parsing every transcript on every open, with
-    a warning line and no way back. So a mismatch rebuilds once and asks the
-    rebuild what it could actually see: when the index then holds every record
-    that exists, the remaining difference is unreadable files, and the index is
-    as complete as anything can make it.
-    """
-    def _read(index: Any) -> tuple[set[str], list[dict[str, Any]]]:
-        return index.chat_ids(), index.list_headers(
-            include_archived=include_archived, archived_only=archived_only
-        )
-
-    def _headers(index: Any) -> list[dict[str, Any]]:
-        return index.list_headers(
-            include_archived=include_archived, archived_only=archived_only
-        )
-
-    indexed, headers = _with_index(_read, (set(), []))
-    if not indexed:
-        return None
-    on_disk = {path.stem for path in iter_history_files()}
-
-    ghosts = indexed - on_disk
-    if ghosts:
-        _with_index(lambda index: [index.delete(cid) for cid in ghosts], None)
-
-    missing = on_disk - indexed
-    if not ghosts and not missing:
-        return headers
-
-    # Repair only what is missing, never the whole corpus — the whole point of
-    # the index is not to parse the corpus. A stem that STILL will not parse is
-    # not a record anybody could have written a row for, so it stays absent and
-    # this settles: the next call re-attempts one failed json parse rather than
-    # re-reading every transcript.
-    repaired = 0
-    for stem in missing:
-        record = load_chat(stem)
-        if record is None:
-            continue
-        path = _chat_path(stem)
-        _with_index(lambda index: index.upsert(_meta_row(record, path)), None)
-        repaired += 1
-    if repaired < len(missing):
-        logger.warning(
-            "chat_metadata: %d chat record(s) could not be read and are absent "
-            "from the drawer", len(missing) - repaired,
-        )
-    if not repaired and not ghosts:
-        return headers
-    return _with_index(_headers, None)
-
-
-def _header(record: ChatRecord) -> dict[str, Any]:
-    """The fields the day view needs, off a parsed record.
-
-    Same keys the index returns, so the grouping below cannot tell the two
-    sources apart — the retiring index re-implemented the whole day view
-    instead, with a comment in each copy promising it matched the other.
-    """
-    return {
-        "chat_id": record.chat_id,
-        "title": record.title,
-        "created_at": record.created_at or record.started_at or "",
-        "started_at": record.started_at,
-        "ended_at": record.ended_at,
-        "turn_count": record.turn_count,
-        "model": record.model,
-    }
-
-
-def _group_by_day(headers: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    by_day: dict[str, list[dict[str, Any]]] = {}
-    for header in headers:
-        day = (header.get("created_at") or header.get("started_at") or "")[:10]
-        if len(day) != 10:
-            # Not droppable in silence: a record the drawer cannot place is a
-            # conversation the operator cannot reach.
-            logger.warning(
-                "chat %s has no usable date; omitted from days", header.get("chat_id")
-            )
-            continue
-        by_day.setdefault(day, []).append({
-            "chat_id": header["chat_id"],
-            "title": header["title"],
-            "started_at": header["started_at"],
-            "ended_at": header["ended_at"],
-            "turn_count": header["turn_count"],
-            "model": header["model"],
-        })
-    days: list[dict[str, Any]] = []
-    for day_key, runs in by_day.items():
-        runs.sort(key=lambda r: r.get("started_at") or "", reverse=True)
-        days.append({
-            "date": day_key,
-            "runs": runs,
-            "run_count": len(runs),
-            "total_turns": sum(r.get("turn_count", 0) for r in runs),
-        })
-    days.sort(key=lambda d: d["date"], reverse=True)
-    return days
-
-
-def preview_chat(chat_id: str, max_turns: int = 6) -> dict[str, Any] | None:
-    """First N user/assistant turns, text only. ``None`` if the chat is gone.
-
-    What the drawer shows on hover, so it carries no tool calls and no
-    reasoning blobs — and no `chat_id` beyond the one it was asked for, since
-    the caller already has it.
-    """
-    record = load_chat(chat_id)
-    if record is None:
-        return None
-    turns: list[dict[str, Any]] = []
-    for msg in record.history:
-        if len(turns) >= max_turns:
-            break
-        if msg.get("role") not in ("user", "assistant") or msg.get("_reasoning"):
-            continue
-        text = extract_message_text(msg.get("content"))
-        if not text:
-            continue
-        turns.append({"role": msg.get("role"), "text": text[:600]})
-    return {
-        "chat_id": record.chat_id,
-        "title": record.title,
-        "started_at": record.started_at,
-        "ended_at": record.ended_at,
-        "turn_count": record.turn_count,
-        "model": record.model,
-        "turns": turns,
-    }
-
-
 def set_archived(chat_id: str, archived: bool = True) -> bool:
-    """Flip a chat's archived flag on disk. Returns False if it doesn't exist."""
-    record = load_chat(chat_id)
-    if record is None:
-        return False
-    record.archived = archived
-    save_chat(record)
+    """Flip a chat's archived flag on disk. Returns False if it doesn't exist.
+
+        Reads and writes under one lock: the flag is derived from what is on disk,
+        and a save landing in between would be written from a record that predates
+        this one."""
+    with _WRITE_LOCK:
+        record = load_chat(chat_id)
+        if record is None:
+            return False
+        record.archived = archived
+        save_chat(record)
     return True
 
 
 def rename_chat(chat_id: str, title: str) -> bool:
-    """Set a chat's operator title. Returns False if it doesn't exist."""
-    record = load_chat(chat_id)
-    if record is None:
-        return False
-    record.title = title
-    save_chat(record)
+    """Set a chat's operator title. Returns False if it doesn't exist.
+
+        Read and write under one lock, for the reason ``set_archived`` gives: a
+        concurrent save would otherwise carry the title this call replaced."""
+    with _WRITE_LOCK:
+        record = load_chat(chat_id)
+        if record is None:
+            return False
+        record.title = title
+        save_chat(record)
     return True
+
+
+def _is_disposable(meta: Any, chat: Any, chat_id: str) -> bool:
+    """True for a chat that holds nothing worth a file.
+
+    A session seeds a blank chat on every connection, and a connection the
+    operator never typed into leaves that blank behind on teardown. Three
+    conditions together mean there is nothing to keep: no messages, no
+    operator rename (the title is still the birth timestamp), and not
+    archived. Any one of them failing is state a restart must not lose, so
+    the record is written: an archived blank remembers that it was shelved,
+    and a named blank remembers what the operator meant to use it for.
+
+    And a chat that already has a record is never disposable, whatever shape
+    it is in now. The question this answers is "is there anything to write?",
+    never "is there anything to keep": a cleared chat looks exactly like a
+    blank one, so without this the write was skipped and the transcript the
+    operator asked to be gone stayed on disk. Skipping a write only ever
+    avoids making a file; once one exists, skipping preserves its contents.
+    """
+    if getattr(chat, "history", None):
+        return False
+    if getattr(meta, "archived", False):
+        return False
+    born = default_chat_title(getattr(meta, "created_at", "") or "")
+    if not (born and getattr(meta, "title", "") == born):
+        return False
+    return not (is_valid_chat_id(chat_id) and chat_path(chat_id).exists())
 
 
 def persist_session_chats(session: Any, *, skip_empty: bool = False, model: str = "") -> int:
@@ -620,8 +393,11 @@ def persist_session_chats(session: Any, *, skip_empty: bool = False, model: str 
     the others on session close.
 
     ``skip_empty`` omits chats with no history, for the periodic writer: an
-    empty chat rewritten every interval is churn. Teardown leaves it False so
-    archive state still reaches disk for a chat that was never typed in.
+    empty chat rewritten every interval is churn. Teardown leaves it False,
+    because archive state belongs on disk for a chat that was never typed in.
+    A blank that is neither archived nor renamed carries no such state and is
+    dropped either way, by ``_is_disposable`` — a session seeds one on every
+    connection, so persisting them left a dead file per connection.
 
     ``model`` is the adapter's model for this session, which lives on the
     writers' ``opts`` rather than on the session. Passing it stamps the ACTIVE
@@ -640,12 +416,17 @@ def persist_session_chats(session: Any, *, skip_empty: bool = False, model: str 
     active_meta = session.chat_meta.get(getattr(session, "active_chat_id", ""))
     if model and active_meta is not None:
         active_meta.model = model
-    with _index_batch():
+    # Held across the whole batch, not per chat: this runs on autosave's worker
+    # thread, and a rename landing between two chats of one tick would be read
+    # back by a later `load_chat` in the same pass.
+    with _WRITE_LOCK, index_batch():
         for chat_id, cs in dict(session.chats).items():
             meta = session.chat_meta.get(chat_id)
             if meta is None:
                 continue
             if skip_empty and not getattr(cs, "history", None):
+                continue
+            if _is_disposable(meta, cs, chat_id):
                 continue
             try:
                 save_chat(ChatRecord(
@@ -656,6 +437,10 @@ def persist_session_chats(session: Any, *, skip_empty: bool = False, model: str 
                     started_at=meta.started_at,
                     archived=meta.archived,
                     model=getattr(meta, "model", "") or "",
+                    # The door this conversation came through. `ServerSession.
+                    # kind` already carries it, so a channel chat lands in the
+                    # same store as a cockpit one and stays tellable apart.
+                    surface=getattr(session, "kind", "") or "cockpit",
                     history=list(getattr(cs, "history", []) or []),
                 ))
                 saved += 1
@@ -664,75 +449,73 @@ def persist_session_chats(session: Any, *, skip_empty: bool = False, model: str 
     return saved
 
 
+def index_chat(chat_id: str) -> bool:
+    """Re-index one chat's record so recall says what the record says.
+
+    ``index_conversation_file`` deletes every chunk for the path before adding
+    from the file, so this is how a record that LOST content loses its chunks
+    too — an emptied record leaves none behind. The record on disk is what
+    decides, never the live chat: a cleared conversation has no history to
+    index and is exactly the case that has to reach the indexer.
+    """
+    if not is_valid_chat_id(chat_id):
+        return False
+    path = chat_path(chat_id)
+    if not path.exists():
+        return False
+    try:
+        index_conversation_file(path)
+    except Exception:  # noqa: BLE001 — never block a caller on one chat's indexer
+        logger.exception("index_chat: failed for chat %s", chat_id)
+        return False
+    return True
+
+
 def index_session_chats(session: Any) -> int:
-    """Index every persisted chat into the CR-1 work index for recall.
+    """Index every persisted chat into the work index for recall.
 
     Each chat is indexed by its own ``sessions/chats/<chat_id>.json`` file, so
     ``recall_history`` surfaces background chats too — not just whichever chat
-    was active at close (the legacy single-file save only captured that one).
-    Best-effort and duck-typed (reads ``session.chats``); a single chat's
-    failure is logged and skipped. Returns the count indexed.
+    was active at close. Best-effort and duck-typed (reads ``session.chats``);
+    a single chat's failure is logged and skipped. Returns the count indexed.
 
-    Call AFTER ``persist_session_chats`` so the files exist on disk. Chats with
-    no history are skipped (an empty file yields no recall chunks).
+    Call AFTER ``persist_session_chats`` so the files exist on disk.
     """
-    indexed = 0
-    for chat_id, cs in dict(session.chats).items():
-        if not _is_valid_chat_id(chat_id):
-            continue
-        if not getattr(cs, "history", None):
-            continue
-        path = _chat_path(chat_id)
-        if not path.exists():
-            continue
-        try:
-            index_conversation_file(path)
-            indexed += 1
-        except Exception:  # noqa: BLE001 — never block close on one chat's indexer
-            logger.exception("index_session_chats: failed for chat %s", chat_id)
-    return indexed
+    return sum(1 for chat_id in dict(session.chats) if index_chat(chat_id))
 
 
-def _last_message_timestamp(history: list[dict[str, Any]]) -> str | None:
-    """Timestamp of the most recent message actually appended to this chat.
+def _last_active_stamp(record: ChatRecord) -> str:
+    """ISO stamp of when this chat was last actually used, or "".
 
-    Walks ``history`` in reverse for the first entry carrying a ``timestamp``
-    field (stamped per-message in ``brain/chat.py``, survives persistence —
-    ``sanitize_history_for_persistence`` only strips attachment bytes).
-    Older/loaded entries without one are skipped. Returns None if nothing
-    in the history is stamped (e.g. an empty chat, or history predating the
-    per-message timestamp field).
+    The last message's own timestamp first, then the record-level
+    ``ended_at``/``started_at``/``created_at``. ``save_chat`` now derives
+    ``ended_at`` from that same last message, so the first two rungs agree
+    for any conversation that has one; the order is kept because the message
+    is the source and the field is the copy, and a record written by an older
+    build carries a copy that was stamped from the clock.
+
+    Two readers: the retention sweep, which wants the calendar date, and the
+    conversations rail, which files a row under the day it was last used
+    rather than the day it was born. One rule so the two cannot disagree.
     """
-    for msg in reversed(history):
-        ts = msg.get("timestamp")
-        if isinstance(ts, str) and ts:
-            return ts
-    return None
+    return (
+        last_message_timestamp(record.history)
+        or record.ended_at
+        or record.started_at
+        or record.created_at
+        or ""
+    )
 
 
 def _last_activity_date(record: ChatRecord) -> str | None:
     """Local calendar date (``YYYY-MM-DD``) this chat was last actually used.
 
-    Prefers the last message's own timestamp over the record-level
-    ``ended_at``/``started_at``/``created_at``: ``persist_session_chats``
-    re-stamps ``ended_at`` for EVERY open chat in a session on any single
-    chat's persist (create/rename/archive/autosave), not just the chat that
-    changed — so ``ended_at`` alone can make a chat the operator hasn't
-    touched in days look "active today" the moment a sibling chat is saved.
-    A message timestamp is scoped to the chat it lives in and can't be
-    laundered that way. Falls back to the record-level fields only for a
-    chat with no stamped messages (e.g. a freshly-created empty chat).
     Message timestamps may be UTC while record fields are local-zone;
     ``.astimezone()`` normalizes either to the machine's local calendar date.
     Returns None when nothing parses — callers treat that as "don't know,
     leave it alone" rather than guessing.
     """
-    stamp = (
-        _last_message_timestamp(record.history)
-        or record.ended_at
-        or record.started_at
-        or record.created_at
-    )
+    stamp = _last_active_stamp(record)
     if not stamp:
         return None
     try:
@@ -741,46 +524,37 @@ def _last_activity_date(record: ChatRecord) -> str | None:
         return None
 
 
-def archive_stale_open_chats(
-    today: str | None = None, *, keep_days: int = 0
-) -> int:
+def archive_stale_open_chats(today: str | None = None, *, keep_days: int) -> int:
     """Auto-archive open chats whose last activity predates the window.
 
-    Two callers, one rule. The day rollover leaves ``keep_days`` at 0, so the
-    cutoff is today and anything last touched on an earlier day is archived:
-    operator request (2026-07-05), a fresh Mirror connection on a new local
-    calendar day should seed a blank chat rather than resume yesterday's
-    thread, while cost/turns (already day-scoped elsewhere) reset in step.
-    The retention sweep passes the window from ``retention.yaml``, where
-    ``keep_days`` has always meant days since activity — a chat active inside
-    it stays open.
+    One caller: the retention sweep, passing the window from
+    ``retention.yaml::sessions``, where ``keep_days`` has always meant days
+    since activity. A chat active inside it stays open.
 
-    Called by ``chat_restore.py`` before it rebuilds the tab strip from disk —
-    archiving (not deleting) means the stale chat stays fully reachable via
-    ``GET /api/chats?include_archived=1`` and the ``chat.restore`` WS command,
-    same as any operator-archived chat. A record with no parseable timestamp is
-    left open (fail-safe, not fail-archive), and so is one stamped in the
-    FUTURE: a clock that ran ahead is not a reason to shelve a conversation.
-    Returns the count archived.
+    **``keep_days`` has no default any more, and that is the point.** It used
+    to default to 0, and the day-rollover restore called it with nothing, so a
+    conversation untouched since yesterday was shelved on the next connect and
+    had to be restored by hand. IS-18 removed that call on the operator's
+    instruction; requiring the argument is what stops it coming back by
+    accident, because 0 means "archive everything not touched today" and no
+    caller should be able to ask for that without typing it.
+
+    Archiving is not deleting: the chat stays reachable through
+    ``GET /api/chats?include_archived=1`` and ``chat.restore``. A record with
+    no parseable timestamp is left open (fail-safe, not fail-archive), and so
+    is one stamped in the FUTURE: a clock that ran ahead is not a reason to
+    shelve a conversation. Returns the count archived.
 
     Known limitation: this reads/writes the global on-disk chat library with
-    no cross-connection lock. Two WS connections spanning the same midnight
-    rollover (e.g. one tab left open overnight, a second opened the next
-    morning) could interleave — the second tab's archive here racing the
-    first tab's still-live in-memory ``chat_meta`` for the same chat. Rare
-    (needs two concurrent connections straddling local midnight) and left
-    unhandled; a session/tab that hits it can always re-fetch via
-    ``GET /api/chats``.
+    no cross-connection lock. Two concurrent sweeps could interleave. Rare,
+    left unhandled; anything that hits it can re-fetch via ``GET /api/chats``.
     """
     anchor = date.fromisoformat(
         today or datetime.now().astimezone().date().isoformat()
     )
     cutoff = (anchor - timedelta(days=max(keep_days, 0))).isoformat()
     archived = 0
-    for row in list_chats():
-        record = load_chat(row["chat_id"])
-        if record is None:
-            continue
+    for record in _walk(include_archived=False, archived_only=False):
         last_active = _last_activity_date(record)
         if last_active is not None and last_active < cutoff:
             if set_archived(record.chat_id, True):
@@ -809,9 +583,9 @@ def delete_chat(chat_id: str) -> tuple[bool, str]:
       What was learned outlives the transcript that taught it; what changes is
       that the record stops implying there is a transcript to go back to.
     """
-    if not _is_valid_chat_id(chat_id):
+    if not is_valid_chat_id(chat_id):
         return False, "invalid_id"
-    path = _chat_path(chat_id)
+    path = chat_path(chat_id)
     if not path.exists():
         return False, "not_found"
     try:
@@ -825,7 +599,7 @@ def delete_chat(chat_id: str) -> tuple[bool, str]:
     from tesseract.brain import completion_store
 
     completion_store.discard(chat_id)
-    _with_index(lambda index: index.delete(chat_id), None)
+    chat_index.forget(chat_id)
     _forget_work_chunks(path)
     _mark_recap_source_deleted(chat_id)
     return True, ""
@@ -838,6 +612,8 @@ def _forget_work_chunks(path: Path) -> None:
     gone — that is the backstop for a delete that bypassed this function, not
     the reason recall is honest within the second.
     """
+    from tesseract.paths import home_dir
+
     try:
         from tesseract.memory.work_index import WorkIndex
 

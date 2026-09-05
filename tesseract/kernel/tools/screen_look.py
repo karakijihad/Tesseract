@@ -31,10 +31,10 @@ several pictures it was looking at.
 ASK posture is not incidental. A capture is a picture of the operator's screen
 going to a model that may not be local, which is an outbound action under the
 project's own rule that every outbound call prompts. `permissions.yaml` is the
-authority — one posture, one prompt, and it relaxes under `headless`. This tool
-used to raise a second approval of its own for the wider capture; that is what
-turned "the window was not found" into a refusal the operator's spoken yes
-could not clear, because they had answered a different question.
+authority — one posture, one prompt, and it relaxes under `headless`. A second
+approval of its own for the wider capture is what turns "the window was not
+found" into a refusal the operator's spoken yes cannot clear, because they
+answered a different question.
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ log = logging.getLogger(__name__)
 class ScreenLookInput(BaseModel):
     question: str = Field(
         description=(
-            "What you want to know about the screen — 'is the video card "
+            "What you want to know about the screen, such as 'is the video card "
             "playing or black?', 'what does the error say?', 'which panel is "
             "in front?'. Ask something specific; a vague question gets a vague "
             "answer and costs the same."
@@ -78,16 +78,17 @@ class ScreenLookTool(Tool):
     group: ClassVar[str] = "looking-for-yourself"
     summary: ClassVar[str] = "Look at the operator's own screen and answer one question about it."
     use_when: ClassVar[str] = (
-        "The question is about what something LOOKS like — a card that rendered "
+        "The question is about what something LOOKS like: a card that rendered "
         "blank, text cut off, a control that isn't there, an error the operator "
         "can see and you cannot. No other tool can: the rest report structure, "
         "not pixels. Ask one specific thing; you get words back, not the image."
     )
     not_when: ClassVar[str] = (
         "The page is one you opened headlessly. That is `browser_screenshot`. "
-        "This photographs the operator's real display — it prompts them every "
+        "This photographs the operator's real display, and it prompts them every "
         "time, and it sees whatever else they have open on it."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

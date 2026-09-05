@@ -16,8 +16,17 @@ the job, not a planned graph. Per fire:
      pure-LLM task.
   2. Run the operator's ``prompt`` (plus any fetched sources) through the
      role's adapter chain.
-  3. Deliver the result straight to the configured channel chat via
-     ``send_text`` — Telegram today, not the Mirror workspace.
+  3. Hand the result to the one notify path as ``scheduled_task_result``.
+     Where it goes is the row's own ``delivery`` if it states one and
+     ``routing.yaml`` otherwise, and WHO hears it is the channel's operator
+     roster. **This job names no channel and no chat, deliberately.** A
+     destination in a handler's own config block is a destination compiled
+     into the sender: it cannot be re-pointed without editing the row, a
+     second channel cannot be added to it at all, and a chat id in a data
+     file addresses one conversation that may no longer exist.
+
+A row routed nowhere on purpose is not a failed run. A row that was routed
+somewhere and reached nobody is.
 
 Delivery is fail-soft: raw sources are sent if the model is unavailable
 but search succeeded; a pure-LLM task with no model returns ``ok=False``
@@ -34,8 +43,8 @@ import logging
 import time
 from typing import Any
 
+from tesseract import http_client
 from tesseract.kernel.adapters.base import AdapterOptions
-from tesseract.kernel.tools.brief_render import _make_tavily_fetcher
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.scheduler.role_chain import build_chain_for_job
 from tesseract.scheduler.tasks._archive import archive_run
@@ -50,25 +59,36 @@ _DEFAULT_LLM_TIMEOUT_S = 120.0  # floor; per-job override via config `llm_timeou
 
 class ScheduledTaskJob(BaseJob):
     uses_llm = True
-    default_model_role = "agents_default"
+    # A CHAIN, not a role. `agents_default` and `subagents_default` are seats
+    # that also serve `invoke_agent`, so sharing one meant this job's model and
+    # its spend moved whenever an agent was re-pointed. Naming the chain
+    # directly severs that: what it spends bills to the entry, whose ceiling is
+    # on its manifest entry.
+    default_model_chain = "chain_1"
+    # This handler is the one instantiated under many different operator-chosen
+    # row names, so the row name is not an entry the ledger can key a ceiling
+    # on. Every armed row bills here instead, which is where `roles.yaml`
+    # declares the ceiling for work whose size is not known in advance.
+    billing_entry = "scheduled_task"
 
     async def run(self, ctx: JobContext) -> JobResult:
         t0 = time.monotonic()
         try:
             cfg = dict(ctx.config or {})
             prompt = str(cfg.get("prompt") or "").strip()
-            chat_ref = cfg.get("chat_ref")
             if not prompt:
                 return _result(ctx, t0, ok=False, detail="missing config: prompt")
-            if not chat_ref:
-                return _result(ctx, t0, ok=False, detail="missing config: chat_ref")
-            channel = str(cfg.get("channel") or "telegram")
-            chat_ref = str(chat_ref)
-            title = str(cfg.get("title") or "").strip()
+            # What the operator called this row, and it heads the message.
+            # With twenty rows armed, which one spoke is the first thing a
+            # reader needs; the row's own name is the honest fallback.
+            title = str(cfg.get("title") or "").strip() or ctx.job_name
 
             hits = await _maybe_search(cfg)
             chain = build_chain_for_job(
-                ctx, default_role=self.default_model_role, log_label="scheduled_task",
+                ctx,
+                default_role=None,
+                default_chain=self.default_model_chain,
+                log_label="scheduled_task",
             )
             timeout_s = float(cfg.get("llm_timeout_s") or _DEFAULT_LLM_TIMEOUT_S)
             body = await _compose(chain, prompt, hits, timeout_s)
@@ -78,34 +98,107 @@ class ScheduledTaskJob(BaseJob):
                     detail="no model available and no search grounding — nothing to deliver",
                     payload={"hits": len(hits)},
                 )
-            if title:
-                body = f"{title}\n\n{body}"
-
-            # Archive before delivery so the run is retrievable even if the
+            # Archive before delivery so the run is retrievable even if every
             # channel is down (memory-store/scheduled/<job_name>/<date>.md).
-            archived = archive_run(
-                ctx.job_name, body, ctx.fired_at, channel=channel, chat_ref=chat_ref,
-            )
+            archived = archive_run(ctx.job_name, body, ctx.fired_at)
             archived_str = str(archived) if archived else None
-            sent = await _deliver(channel, chat_ref, body)
-            if not sent:
+
+            result = await _deliver(ctx, title, body)
+            reached = [
+                name for name, why in getattr(result, "by_channel", ()) if why == "sent"
+            ]
+            payload = {
+                "hits": len(hits),
+                "archived": archived_str,
+                "sent": getattr(result, "sent", 0),
+                "channels": reached,
+            }
+            # A row the operator routed nowhere did exactly what they asked.
+            # Only a row that was routed somewhere and reached nobody has
+            # failed, and the reason it gives is the notifier's own.
+            if result is None:
                 return _result(
                     ctx, t0, ok=False,
-                    detail=f"channel {channel!r} unavailable — result not delivered "
-                    f"(archived={archived_str})",
-                    payload={"hits": len(hits), "archived": archived_str},
+                    detail=f"nothing to deliver with (archived={archived_str})",
+                    payload=payload,
                 )
+            if result.sent == 0 and result.reason != "no_destination":
+                return _result(
+                    ctx, t0, ok=False,
+                    detail=f"reached nobody: {result.reason or 'unknown'} "
+                    f"(archived={archived_str})",
+                    payload=payload,
+                )
+            where = ", ".join(reached) or "nowhere, by your routing"
             return JobResult(
                 job_name=ctx.job_name,
                 run_id=ctx.run_id,
                 ok=True,
-                detail=f"ran task, delivered to {channel}:{chat_ref} (grounding hits={len(hits)})",
-                payload={"hits": len(hits), "channel": channel, "archived": archived_str},
+                detail=f"ran task, delivered to {where} (grounding hits={len(hits)})",
+                payload=payload,
                 duration_ms=(time.monotonic() - t0) * 1000.0,
             )
         except Exception as exc:  # noqa: BLE001 — handler contract forbids raising
             log.exception("scheduled_task crashed")
             return _result(ctx, t0, ok=False, detail=f"unhandled: {exc!r}")
+
+
+def _make_tavily_fetcher():
+    """Return a Tavily fetcher that hits the API directly.
+
+    ``TavilySearchTool`` collapses results into prose for the chat surface;
+    a scheduled task needs the per-hit ``url`` to dedupe across queries, so
+    this calls the same endpoint with the same auth and returns the
+    structured ``results`` list. Any failure (missing key, timeout, non-200)
+    yields ``[]`` and the caller continues to the next query.
+    """
+    import os
+
+    import httpx
+
+    endpoint = "https://api.tavily.com/search"
+    timeout_s = 15.0
+
+    async def _fetch(query: str, options: dict) -> list[dict]:
+        api_key = os.environ.get("TAVILY_API_KEY")
+        if not api_key:
+            log.info("scheduled_task: TAVILY_API_KEY not set; skipping query %r", query)
+            return []
+        payload: dict[str, object] = {
+            "query": query,
+            "max_results": int(options.get("max_results", 5)),
+            "search_depth": "basic",
+            # The caller always names one; this default is only a floor.
+            "topic": options.get("topic", "general"),
+            "include_answer": False,
+        }
+        include = list(options.get("include_domains") or [])
+        if include:
+            payload["include_domains"] = include
+        exclude = list(options.get("exclude_domains") or [])
+        if exclude:
+            payload["exclude_domains"] = exclude
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            async with http_client.async_client(timeout=timeout_s) as client:
+                r = await client.post(endpoint, headers=headers, json=payload)
+        except httpx.HTTPError as exc:
+            log.info("scheduled_task: tavily query %r failed (%s)", query, exc)
+            return []
+        if r.status_code != 200:
+            log.info("scheduled_task: tavily %s for query %r", r.status_code, query)
+            return []
+        try:
+            data = r.json()
+        except ValueError:
+            return []
+        results = data.get("results") or []
+        return [hit for hit in results if isinstance(hit, dict)]
+
+    return _fetch
 
 
 async def _maybe_search(cfg: dict[str, Any]) -> list[dict[str, Any]]:
@@ -115,7 +208,7 @@ async def _maybe_search(cfg: dict[str, Any]) -> list[dict[str, Any]]:
         return []
     cap = int(cfg.get("max_tavily_calls") or _DEFAULT_MAX_TAVILY_CALLS)
     queries = queries[:cap]
-    fetch = _make_tavily_fetcher(None)  # no ToolContext in cron — same as brief_render
+    fetch = _make_tavily_fetcher()
     options = {
         "max_results": int(cfg.get("max_results_per_query") or _DEFAULT_MAX_RESULTS),
         "exclude_domains": list(cfg.get("exclude_domains") or []),
@@ -180,25 +273,28 @@ def _raw_fallback(hits: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-async def _deliver(channel: str, chat_ref: str, body: str) -> bool:
-    from tesseract.integrations import get_channel
+async def _deliver(ctx: JobContext, title: str, body: str) -> Any:
+    """Hand the result to the one notify path, and let it decide where.
 
-    adapter = get_channel(channel)
-    if adapter is None:
-        log.warning("scheduled_task: channel %r not registered", channel)
-        return False
-    if not hasattr(adapter, "send_text"):
-        log.warning(
-            "scheduled_task: channel %r adapter %s has no send_text",
-            channel, type(adapter).__name__,
-        )
-        return False
+    Returns the ``NotifyResult``, or ``None`` when there is no notifier to
+    hand it to at all: a boot with no channels, or a send that raised. That
+    is not the same as being routed nowhere, and the caller tells them apart
+    because one is the operator's decision and the other is a fault.
+    """
+    app = ctx.app
+    notifier = app.get("outbound_notifier") if hasattr(app, "get") else None
+    if notifier is None:
+        log.warning("scheduled_task: no notifier, %s reached nobody", ctx.job_name)
+        return None
     try:
-        await adapter.send_text(chat_ref=chat_ref, text=body)
+        return await notifier.notify(
+            "scheduled_task_result",
+            {"title": title, "body": body},
+            destinations=ctx.delivery,
+        )
     except Exception as exc:  # noqa: BLE001
-        log.warning("scheduled_task: send_text failed (%s)", exc)
-        return False
-    return True
+        log.warning("scheduled_task: delivery failed (%s)", exc)
+        return None
 
 
 def _result(

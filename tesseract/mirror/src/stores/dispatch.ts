@@ -4,12 +4,14 @@ import { getController } from "../lib/entity/registry";
 import { useActivityStore } from "./activity";
 import { useAutonomyStore } from "./autonomy";
 import { usePulseStore } from "./pulse";
+import { useStaleStore } from "./stale";
 import { useSurfacesStore } from "./surfaces";
 import { handleBackground } from "./dispatch/background";
 import { handleChat } from "./dispatch/chat";
 import { handleCli } from "./dispatch/cli";
 import { handleCommand, handleCommandResult } from "./dispatch/command";
 import { handleCost } from "./dispatch/cost";
+import { handleSurfaceCommand } from "../canvas/commands";
 import { handleEntity } from "./dispatch/entity";
 import { handleExecution } from "./dispatch/execution";
 import { handleLoop } from "./dispatch/loop";
@@ -31,6 +33,41 @@ interface DispatchOpts {
 // without re-rendering 50× a second.
 let _pulseStreamBuffer: { env: Envelope; deltaText: string } | null = null;
 let _pulseRafHandle: number | null = null;
+
+// Autonomy's Overview room lists every running unit off the same registry
+// these envelopes come from, so anything that changes one is what tells the
+// room to read them again.
+//
+// Its own clock is a minute, which was right while the band held only
+// background work and is wrong now that it holds a conversation turn. A turn
+// is the shortest lived thing in the runtime and the only one somebody is
+// actively waiting on: it opens and closes well inside one poll, so the person
+// watching the panel sees nothing at all. Measured on the live machine
+// 2026-09-02, where the payload carried a running turn and the panel said
+// "Nothing is running" four seconds later.
+//
+// Coalesced to one read a second. The liveness contract's 4 Hz is a CEILING on
+// visual updates, not a target, and this route is not free: the event-loop-lag
+// sampler catches it doing its own file reads inside the request
+// (`list_active_records`, `_config_roots`, under `cors_middleware`). A turn
+// beats at every step boundary and a fast tool loop crosses several a second,
+// so the window is what bounds this to one request per second while a turn
+// runs and to nothing at all while none does. A person waiting on an answer
+// cannot tell 4 Hz from 1 Hz; the loop can.
+const _OVERVIEW_COALESCE_MS = 1_000;
+let _overviewRereadHandle: ReturnType<typeof setTimeout> | null = null;
+
+function rereadOverviewSoon(): void {
+  // Only once the room has read it. A re-read of nothing is a request from
+  // every session that never opened the panel, which is the guard the Managed
+  // room's re-read already makes for the same reason.
+  if (useAutonomyStore.getState().overview.lastFetched === null) return;
+  if (_overviewRereadHandle !== null) return;
+  _overviewRereadHandle = setTimeout(() => {
+    _overviewRereadHandle = null;
+    void useAutonomyStore.getState().fetchOverview();
+  }, _OVERVIEW_COALESCE_MS);
+}
 
 function _bufferPulseStreamText(env: Envelope): void {
   const delta = String((env.data as { delta?: unknown })?.delta ?? "");
@@ -177,18 +214,37 @@ export function handleEnvelope(env: Envelope, opts: DispatchOpts = {}): void {
       // Y-2 — Surface Protocol events (surface_created / _updated / _moved /
       // _closed / …) re-keyed from the `surface` background-bus channel.
       // session_id carries the view name.
-      useSurfacesStore.getState().applyEnvelope(env);
+      //
+      // `surface_command` is the one kind that is not a change to the map: it
+      // has to reach the renderer instance that owns the card and can act on
+      // its element, so it goes to the command store rather than the reducer.
+      if (env.type === "surface_command") {
+        // `session_id` carries the view on this channel.
+        handleSurfaceCommand(env.data, env.session_id ?? "orb");
+      } else {
+        useSurfacesStore.getState().applyEnvelope(env);
+      }
       break;
     case "activity":
       // AS-2 — Unified Activity Registry deltas (registered/updated/removed)
       // re-keyed from the `activity` background-bus channel. session_id carries
       // the activity_id.
       useActivityStore.getState().applyEnvelope(env);
+      rereadOverviewSoon();
       break;
     case "chat":
       // mirror-multi-chat P3 — chat lifecycle (create/switch/archive) drives
       // the tab strip's conversation slices.
       handleChat(env);
+      break;
+    case "panel":
+      // AC-6 — the backend wrote something a panel is showing and named the
+      // cache key for it (orchestrator/panel_refresh.py). Every
+      // `useCachedFetch` holding that key refetches; nothing here knows which
+      // panel that is, which is why one envelope covers all of them.
+      if (typeof env.data?.key === "string") {
+        useStaleStore.getState().markStale(env.data.key);
+      }
       break;
     default:
       console.debug("[dispatch] unhandled category:", env.category, env.type);

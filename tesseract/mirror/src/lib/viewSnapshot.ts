@@ -18,11 +18,10 @@ import { usePulseStore } from '../stores/pulse';
 import { useSettingsStore } from '../stores/settings';
 import { useAutonomyStore } from '../stores/autonomy';
 import { useTerminalStore } from '../stores/terminal';
-import { useAgentsStore } from '../stores/agents';
-import { useScheduleStore } from '../stores/schedule';
-import { useConscienceStore } from '../stores/conscience';
+import { driftCounts, useConscienceStore } from '../stores/conscience';
 import { useChannelsStore } from '../stores/channels';
 import { useWorkspaceStore } from '../stores/workspace';
+import { useGraphStore } from '../stores/graph';
 import { useSoulStore } from '../stores/soul';
 import { useSessionStore } from '../stores/session';
 import { useWebSocketStore } from '../stores/websocket';
@@ -87,6 +86,11 @@ function _autonomyState(): Record<string, unknown> {
     workers_count: s.workers.data.length,
     governor_running: s.governor.data?.running ?? false,
     pause_count: s.governor.data?.pauses?.length ?? 0,
+    // What the Schedule and Agents tabs used to contribute. They retired into
+    // Managed system and the counts came with them: the assistant still has
+    // to be able to answer what is on the screen in front of the operator.
+    job_count: s.managed.data?.schedules.length ?? 0,
+    agent_count: s.managed.data?.agents.length ?? 0,
   };
 }
 
@@ -104,23 +108,13 @@ function _chatState(): Record<string, unknown> {
   return { chat_id: lastChatId ?? null };
 }
 
-function _scheduleState(): Record<string, unknown> {
-  const s = useScheduleStore.getState();
-  return { job_count: s.jobs.length };
-}
-
-function _agentsState(): Record<string, unknown> {
-  const s = useAgentsStore.getState();
-  return { agent_count: s.agents.length };
-}
-
 function _conscienceState(): Record<string, unknown> {
   const s = useConscienceStore.getState();
-  const summary = s.report?.summary;
+  const counts = driftCounts(s.report);
   return {
-    bad: summary?.bad ?? 0,
-    warn: summary?.warn ?? 0,
-    ok: summary?.ok ?? 0,
+    bad: counts.bad,
+    warn: counts.warn,
+    ok: counts.ok,
   };
 }
 
@@ -134,6 +128,20 @@ function _workspaceState(): Record<string, unknown> {
   return {
     pending_count: s.events.filter((e) => e.status === 'pending').length,
     event_count: s.events.length,
+  };
+}
+
+/** What the operator is looking at on the map: how much of the library is
+ *  drawn, which compartment they are holding it on, and which record is open.
+ *  The id and the compartment key, never a title: a node's title is a
+ *  record's own text and this rides every turn. */
+function _graphState(): Record<string, unknown> {
+  const s = useGraphStore.getState();
+  return {
+    drawn: s.data?.drawn.nodes ?? 0,
+    of: s.data?.drawn.of ?? 0,
+    held_on: s.region,
+    open_record: s.selected,
   };
 }
 
@@ -201,11 +209,10 @@ const _STATE_BUILDERS: Record<View, () => Record<string, unknown>> = {
   terminal: _terminalState,
   pulse: _pulseState,
   identity: _identityState,
-  schedule: _scheduleState,
-  agents: _agentsState,
   conscience: _conscienceState,
   channels: _channelsState,
   workspace: _workspaceState,
+  graph: _graphState,
   settings: _settingsState,
 };
 

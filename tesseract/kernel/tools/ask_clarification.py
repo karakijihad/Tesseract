@@ -1,6 +1,6 @@
 """ask_clarification — agent asks the operator a question via the workspace.
 
-AU-19. Posts a ``clarification`` workspace event so the agent can solicit
+Posts a ``clarification`` workspace event so the agent can solicit
 operator input asynchronously without blocking the current turn. The
 operator answers in the event's comment thread; the existing comment-
 delivery substrate (``_start_workspace_turn`` / undelivered-comment drain)
@@ -8,8 +8,8 @@ surfaces the reply back to the agent on its next turn.
 
 Linkage:
 - ``expires_at`` is informational — operator can mark the event
-  resolved/rejected/deleted at any time, or let it sit. A sweeper that
-  auto-closes stale rows is intentionally out of scope for AU-19.
+  resolved/rejected/deleted at any time, or let it sit. Nothing sweeps
+  stale rows closed.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ _URGENCY_PRIORITY = {
 class AskClarificationInput(BaseModel):
     question: str = Field(
         description=(
-            "The question to ask the operator (≤1200 chars). Be specific — "
+            "The question to ask the operator (≤1200 chars). Be specific. "
             "'Should I use Tavily or Brave for this search?' beats 'what do you think?'"
         ),
     )
@@ -83,6 +83,7 @@ class AskClarificationTool(Tool):
         "the operator is present right now, just ask in the reply you are "
         "already writing; a reply on an existing thread, use `workspace_reply`."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(
         self,

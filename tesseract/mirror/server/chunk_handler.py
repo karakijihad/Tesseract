@@ -256,7 +256,7 @@ async def _handle_chunk(app: web.Application, session: ServerSession, chunk: Str
         # Synthetic workspace turns: the assistant replies via the workspace_reply
         # tool; any free-form text is dropped from the chat surface so
         # the synthetic turn stays invisible to the chat conversation.
-        # WP-2: per-task ContextVar so concurrent chat + synthetic turns
+        # Per-task ContextVar so concurrent chat + synthetic turns
         # are gated independently.
         if get_workspace_origin() is None:
             for kind, text in _split_text_for_surfaces(session, turn_state, chunk.text):

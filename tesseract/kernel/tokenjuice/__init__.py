@@ -1,4 +1,4 @@
-"""TokenJuice — tool-output compression layer (AU-15).
+"""TokenJuice — tool-output compression layer.
 
 Single chokepoint between Tool.run() and the adapter input. Classifies the
 tool result by (tool_name, tool_args), applies a chain of pure reducers,

@@ -8,8 +8,8 @@ binary isn't on PATH or isn't signed in. It never gates the UI (no
 `ready`-for-the-whole-app flag) and never returns a secret VALUE, only key
 NAMES and presence booleans.
 
-`status` is one of three states, not a bool — collapsing to true/false lost
-information (review fix-pass, Important-2): a keyless local provider
+`status` is one of three states, not a bool — collapsing to true/false
+loses information: a keyless local provider
 (ollama/whisper/kokoro) that is merely `enabled: true` in providers.yaml is
 NOT the same claim as "verified working" (no binary, no model files, no
 reachable server checked here — that live diagnostic already exists per-
@@ -200,7 +200,7 @@ async def capabilities_set_provider_enabled(request: web.Request) -> web.Respons
         )
 
     # One read of the just-written catalog for the whole request. Both helpers
-    # need it and both used to open the file themselves.
+    # need it, and either opening the file for itself is the duplicate.
     catalog = _catalog()
     _record_consent_for(provider, enabled, tier=tier, doc=catalog)
     # Carried on this response only. The report GET is a description of what

@@ -19,7 +19,7 @@ from tesseract.memory import dedupe
 from tesseract.memory.embeddings import EmbeddingIndex
 from tesseract.memory.index import MemoryIndex
 from tesseract.memory.store import MemoryStore
-from tesseract.memory.types import MemoryFrontmatter, MemoryType
+from tesseract.memory.types import MemoryFrontmatter, MemoryType, lead_paragraph
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +42,21 @@ class MemorySaveInput(BaseModel):
             "recalled memory, so 'do X before Y' must come before 'on <date> we "
             "learned…'. For feedback/lessons write the imperative first. "
             "Refer to yourself in the first person ('I should…'), never by "
-            "name and never in the third person — a memory written with your "
+            "name and never in the third person. A memory written with your "
             "name in it stops being true the moment that name changes."
         )
+    )
+    summary: str = Field(
+        default="",
+        description=(
+            "The one-line hook for this memory, written for scanning. It is "
+            "what the index and the directives block show, so write it "
+            "deliberately: the ACTION first, dense, no preamble. 'Close every "
+            "surface you open; check for leftover cards before reporting "
+            "done.' Not a restatement of the title, and not the first line of "
+            "the content. Leave empty only if the content's opening paragraph "
+            "already reads that way, and it will be used instead."
+        ),
     )
     importance: int = Field(default=5, ge=1, le=10, description="Importance 1-10")
     tags: list[str] = Field(default_factory=list, description="Tags for retrieval")
@@ -69,13 +81,16 @@ class MemorySaveTool(Tool):
     group: ClassVar[str] = "remembering"
     summary: ClassVar[str] = "Write a new durable memory to the persistent store."
     use_when: ClassVar[str] = (
-        "Use to capture a fact, decision, or preference worth remembering across "
-        "sessions — one memory per fact, tagged for later retrieval."
+        "Use to capture a fact, decision, or preference that will still be "
+        "true next session rather than only now. One memory per fact, and TAG "
+        "it: a tag is how it is found later, and it is also how the map joins "
+        "it to everything else filed under the same subject."
     )
     not_when: ClassVar[str] = (
         "use `memory_update` when revising something already saved; use "
         "`diary_append` for self-reflection about the assistant itself."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(
         self,
@@ -134,7 +149,7 @@ class MemorySaveTool(Tool):
                     f"Memory blocked: type_mismatch. Title '{inp.title}' reads as a turn echo; "
                     "user-type memory is for durable operator facts, not request recaps. "
                     "If this is a genuine preference/identity fact, rewrite the title. "
-                    "Otherwise skip the save — zero saves is fine."
+                    "Otherwise skip the save; zero saves is fine."
                 ),
                 is_error=True,
             )
@@ -162,7 +177,7 @@ class MemorySaveTool(Tool):
                     expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
             except ValueError:
                 return ToolResult(
-                    output=f"Invalid expiry_at: {inp.expiry_at!r} — must be ISO8601 (e.g. '2026-05-29T00:00:00Z').",
+                    output=f"Invalid expiry_at: {inp.expiry_at!r}; must be ISO8601 (e.g. '2026-05-29T00:00:00Z').",
                     is_error=True,
                 )
 
@@ -171,7 +186,7 @@ class MemorySaveTool(Tool):
             id=MemoryFrontmatter.generate_id(),
             type=mem_type,
             title=inp.title,
-            summary=inp.content[:100] if len(inp.content) > 100 else inp.content,
+            summary=(inp.summary.strip() or lead_paragraph(inp.content)),
             created_at=now,
             updated_at=now,
             importance=inp.importance,
@@ -266,6 +281,22 @@ class MemorySaveTool(Tool):
                     pass
                 link_note = "  (related-link generation errored — see writes.jsonl)"
 
+        # A correction saved mid-conversation is a correction that just
+        # happened. It lands on the playbook revision read in this session and
+        # on the step the reading turn reached, rather than waiting for the
+        # session-close reflection to notice a feedback memory exists.
+        if mem_type.value == "feedback" and context.session_id:
+            try:
+                import asyncio
+
+                from tesseract.brain.skill_usage import attribute_session_corrections
+
+                # Off the loop: it reads the usage log whole and a day of
+                # turn records, inside a turn.
+                await asyncio.to_thread(attribute_session_corrections, context.session_id)
+            except Exception:  # noqa: BLE001 — telemetry must never break the save
+                logger.warning("memory_save: skill-correction attribution failed", exc_info=True)
+
         slug_note = f" slug={fm.slug}" if fm.slug else ""
         saved_file = self._store.find_file(fm.id)
         saved_path = str(saved_file) if saved_file else ""
@@ -293,7 +324,7 @@ class MemorySaveTool(Tool):
             return None
         if ".." in cleaned.split("/"):
             return ToolResult(
-                output=f"Invalid subdir: {raw!r} — relative segments like '..' are not allowed.",
+                output=f"Invalid subdir: {raw!r}; relative segments like '..' are not allowed.",
                 is_error=True,
             )
         type_prefix = mem_type.value + "/"
@@ -317,7 +348,7 @@ class MemorySaveTool(Tool):
             return ToolResult(
                 output=(
                     f"Memory deduped: near-duplicate of {existing_id} ({existing_fm.title}); "
-                    "refresh rejected by WHAT_NOT_TO_SAVE policy — updated_at not persisted."
+                    "refresh rejected by WHAT_NOT_TO_SAVE policy; updated_at not persisted."
                 ),
                 is_error=True,
                 metadata={

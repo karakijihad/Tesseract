@@ -55,8 +55,18 @@ _REJECTED_DIRNAME = "rejected"
 #: roster, and a roster that included the quarantine would let a document name
 #: a rejected agent and still pass, which is the one thing that check exists to
 #: catch.
+#: The roster the app SHIPS, as opposed to the one this tree happens to hold.
+#: A build folds it over `INDEX.md`, and `shipped_card_names` reads it to answer
+#: who wrote a card when the directory cannot.
+_SHIPPING_DIRNAME = "_shipping"
+
+#: `{path: ((mtime_ns, size), names)}` for `shipped_card_names`. See its body
+#: for why it is held at all and why it is keyed on the file rather than kept.
+_SHIPPED_CACHE: dict[Path, tuple[tuple[int, int], frozenset[str]]] = {}
+
 NON_LOAD_DIRNAMES: frozenset[str] = frozenset({
-    _PENDING_DIRNAME, _PROVISIONAL_DIRNAME, _REJECTED_DIRNAME, "__pycache__",
+    _PENDING_DIRNAME, _PROVISIONAL_DIRNAME, _REJECTED_DIRNAME, _SHIPPING_DIRNAME,
+    "__pycache__",
 })
 
 AgentOrigin = Literal["system", "user"]
@@ -105,14 +115,100 @@ def _roots(agents_dir: Path | None) -> tuple[Path, ...]:
     return default_roots() if agents_dir is None else (agents_dir,)
 
 
-def _origin_of(directory: Path) -> AgentOrigin:
-    """Which half a root belongs to.
+def roster_names(text: str) -> set[str]:
+    """The card names an `INDEX.md` roster table declares.
 
-    A dev checkout's single root resolves to both, and it answers `"system"`:
-    the cards there are the shipped ones, and calling them the operator's
-    would let the fork-on-edit path below write a file onto its own source.
+    Takes the TEXT rather than a path, which is what lets the build reuse it:
+    `build_production_tree` reads the folded roster out of a tree it has just
+    written, a different file from the `_shipping/INDEX.md` this module reads,
+    but the same seven lines of table. It had its own copy of them, justified
+    by a comment saying this module was not importable from there — while the
+    same function imported `NON_LOAD_DIRNAMES` from it twenty lines further
+    down.
     """
-    return "system" if _same_dir(directory, paths.system_agents_dir()) else "user"
+    names: set[str] = set()
+    for line in text.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) < 3 or cells[0] in ("name", "") or set(cells[0]) <= set("- "):
+            continue
+        names.add(cells[0])
+    return names
+
+
+def shipped_card_names(agents_dir: Path | None = None) -> frozenset[str]:
+    """The cards the app claims as its own, read off `_shipping/INDEX.md`.
+
+    **Ownership is a location right up until there is only one location.** An
+    install has two agent roots and the directory a card sits in answers who
+    wrote it. A dev checkout has one, and inference stops working there: a card
+    written here lands beside the ones that shipped and is indistinguishable
+    from them, which is how a card the assistant had just authored came to be
+    marked `built-in` in the Autonomy panel.
+
+    So the app declares its own roster instead of the tree being asked to imply
+    it. `_shipping/INDEX.md` is that declaration, it is the file a build folds
+    over `INDEX.md`, and a card absent from it is not the app's wherever it
+    happens to sit.
+
+    Empty when there is no declaration, which leaves every caller on the
+    location answer it had before. Never raises: a roster that cannot be read
+    must not stop an agent loading.
+    """
+    root = agents_dir or paths.system_agents_dir()
+    path = root / _SHIPPING_DIRNAME / "INDEX.md"
+    # Held on the file's own mtime and size, because `_origin_of` asks once per
+    # CARD and the callers that matter iterate every card: the roster, the
+    # contract sweep and the Managed system room each turned one question into
+    # eighteen reads of the same file. Keyed rather than cached outright so an
+    # edit in a dev checkout is picked up without a restart, which is the one
+    # place this file changes at all.
+    try:
+        stat = path.stat()
+        stamp = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        _SHIPPED_CACHE.pop(path, None)
+        return frozenset()
+    cached = _SHIPPED_CACHE.get(path)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return frozenset()
+    result = frozenset(roster_names(text))
+    _SHIPPED_CACHE[path] = (stamp, result)
+    return result
+
+
+def _origin_of(directory: Path, name: str | None = None) -> AgentOrigin:
+    """Which half a card belongs to.
+
+    A card outside the app's own root is the operator's, and nothing else needs
+    asking. Inside it, the DECLARATION decides: `_shipping/INDEX.md` says which
+    cards the app claims, and one it does not name was written into that root
+    rather than shipped in it.
+
+    The declaration outranks the location rather than filling in for it only
+    where the location is ambiguous. Those give the same answer in an install,
+    where the app's root holds exactly the declared cards, and they differ in a
+    dev checkout, where the one root holds both halves — which is where reading
+    the location alone marked a card the assistant had just written as
+    `built-in`, beside the ones that really shipped.
+
+    Falls back to `system` with no `name` to ask about or no declaration to
+    read, which is what it always said, and which keeps the fork-on-edit path
+    from writing a file onto its own source.
+    """
+    if not _same_dir(directory, paths.system_agents_dir()):
+        return "user"
+    if name is None:
+        return "system"
+    shipped = shipped_card_names(directory)
+    if not shipped:
+        return "system"
+    return "system" if name in shipped else "user"
 
 
 @dataclass(frozen=True)
@@ -220,13 +316,22 @@ def locate_agent(
     the write side: nothing the app ships is ever awaiting the operator's
     promotion, and reading a shipped `pending/` would let an update slip an
     unpromoted card past the gate that exists to stop exactly that.
+
+    **Which is also why a pending card's origin is `user` outright**, rather
+    than `_origin_of` the root it was found under. That sentence above is the
+    whole argument: a card awaiting promotion cannot be the app's, whatever
+    directory it sits in. `_origin_of` answers a question about a ROOT, and in
+    a dev checkout the one root is the shipped one — so a card the assistant
+    had just written came back `system` and the Autonomy panel marked it
+    `built-in`, beside the seventeen cards that really did ship. In an install
+    the two agree already, because `roots[0]` is the user root there.
     """
     roots = _roots(agents_dir)
     for directory in roots:
         path = _find_agent_path(directory, name)
         if path is None:
             continue
-        origin = _origin_of(directory)
+        origin = _origin_of(directory, name)
         extends = _declared_extends(path) if origin == "user" else None
         return AgentLocation(
             name=name,
@@ -240,9 +345,7 @@ def locate_agent(
     if include_pending and not _is_unsafe_agent_name(name):
         pending_path = roots[0] / _PENDING_DIRNAME / f"{name}.md"
         if pending_path.exists():
-            return AgentLocation(
-                name=name, path=pending_path, origin=_origin_of(roots[0]),
-            )
+            return AgentLocation(name=name, path=pending_path, origin="user")
     return None
 
 
@@ -302,9 +405,8 @@ def load_agent(
     Searches the user root then the shipped root (`default_roots()`), each at
     the top level and in one level of named subdirectories (e.g. ``audits/``).
     An explicit `agents_dir` restricts the search to that directory. When
-    `include_pending=True`, also searches the user root's `pending/` (the W7-A
-    quarantine, audit M6 follow-up, 2026-04-29). Raises FileNotFoundError if
-    nothing matches.
+    `include_pending=True`, also searches the user root's `pending/`
+    quarantine. Raises FileNotFoundError if nothing matches.
 
     A user card declaring `extends: <slug>` is merged over the shipped card of
     that slug: the shipped sections and fields are the base, the shadow's
@@ -434,9 +536,9 @@ def list_agents_by_origin(
 ) -> dict[AgentOrigin, list[str]]:
     """The same listing, split by which root the winning card came from.
 
-    The Agents tab shows the operator's own cards and Autonomy shows the
-    system catalog; both read this rather than filtering a merged list on a
-    naming convention. A shadowed system slug appears under `"user"` only —
+    Managed system draws the operator's own cards and the shipped catalog as
+    two halves of one list; it reads this rather than filtering a merged list
+    on a naming convention. A shadowed system slug appears under `"user"` only —
     the shipped card is not live, so listing it as system would advertise a
     card nothing will run.
     """
@@ -446,7 +548,11 @@ def list_agents_by_origin(
     for directory in roots:
         names: list[str] = []
         _active_in(directory, seen, names)
-        by_origin[_origin_of(directory)].extend(names)
+        # Per NAME, not per root. In a dev checkout one directory holds both
+        # halves, so asking once and filing every card under the answer put the
+        # operator's own cards in the app's list.
+        for card in names:
+            by_origin[_origin_of(directory, card)].append(card)
     return by_origin
 
 

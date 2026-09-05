@@ -1,4 +1,4 @@
-"""The nineteen groups a tool can belong to.
+"""The twenty-two groups a tool can belong to.
 
 Groups are named for **the question being asked**, not for the subsystem the
 tool lives in: the group is chosen before the tool is, so the heading does the
@@ -31,13 +31,16 @@ GROUPS: dict[str, str] = {
     "tracking-spawned-work": "Tracking what you spawned",
     "running-commands": "Running commands",
     "reaching-the-operator": "Reaching the operator elsewhere",
+    "owed-work": "Work you owe",
     "asking-without-blocking": "Asking without blocking",
     "being-present": "Being present in the Mirror",
     "time": "Time",
     "projects": "Projects",
+    "your-own-accounts": "Your own accounts",
     "extending-yourself": "Extending yourself",
     "checking-your-state": "Checking your own state",
     "finding-a-tool": "Finding a tool",
+    "finding-a-playbook": "Finding a playbook",
 }
 
 

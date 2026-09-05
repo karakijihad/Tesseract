@@ -1,4 +1,4 @@
-"""X-5 Session A — persistent named lanes (tmux Agent Teams pattern).
+"""Persistent named lanes (tmux Agent Teams pattern).
 
 A `NamedLane` is a stable label (`coder/claude`, `auditor/codex`) that
 resolves to a current `lane_id`. The binding is persisted at
@@ -8,7 +8,7 @@ disk and re-attaches the underlying lane via `LaneManager.attach`.
 
 Two-layer model:
 
-* `LaneManager` owns the lane's process + on-disk record (X-4 ground).
+* `LaneManager` owns the lane's process + on-disk record.
 * `NamedLaneManager` owns the *name → lane_id* binding (this module).
 
 Decoupling means a stale binding (lane was closed externally) doesn't
@@ -54,7 +54,7 @@ class InvalidNamedLaneNameError(NamedLaneError):
 class NamedLaneRecord(BaseModel):
     """The persisted `<name>.json` shape.
 
-    ``extra="ignore"`` upholds the X-4 substrate guarantee — newer
+    ``extra="ignore"`` upholds the substrate guarantee — newer
     Session-B writers may add fields (e.g. routing hints) without
     breaking a Session-A reader."""
 
@@ -83,11 +83,11 @@ def _authorize_open(name: str, *, read_only: bool, caller: str) -> None:
     the rule; silently downgrading to read-only would hand back a lane whose
     later writes fail for no stated reason.
 
-    There is no declared-name exemption. There used to be — a fixed seating in
-    cockpit.yaml — and it was the hole: a client could open a *declared*
-    write-capable lane and inherit full access, because ownership is per client
-    KIND rather than per lane. Removing the seating removed the exemption with
-    it, so the rule is now simply that a writeable named lane is the operator's.
+    There is no declared-name exemption, and a fixed seating in cockpit.yaml
+    is what one would be: a client could open a *declared* write-capable lane
+    and inherit full access, because ownership is per client KIND rather than
+    per lane. The rule is simply that a writeable named lane is the
+    operator's.
 
     Runs on the open path only, past the reuse branch, so a client driving a
     lane it already owns is untouched (`_authorize_binding` owns that check).
@@ -314,7 +314,7 @@ class NamedLaneManager:
                         update={"last_bound_at_utc": utc_now_iso()}
                     )
                     write_named_lane(bumped)
-                    # AS-1 — upsert the activity record under the human name so
+                    # Upsert the activity record under the human name so
                     # a reused binding is reflected even when no open() ran
                     # this process (e.g. after a controller restart).
                     register_lane(
@@ -380,7 +380,7 @@ class NamedLaneManager:
                 working_dir=resolved_dir,
             )
             write_named_lane(record)
-            # AS-1 — upsert with the human name over the bare label that
+            # Upsert with the human name over the bare label that
             # LaneManager.open just registered for this fresh lane.
             register_lane(
                 record.lane_id,
@@ -436,8 +436,8 @@ class NamedLaneManager:
     def _posture_matches(self, lane_id: str, read_only: bool) -> bool:
         """Whether the live lane's persisted write posture equals what config
         now says. A mismatch sends `ensure` down the replace path — the same
-        repair a dead lane gets, for the same reason: the binding no longer
-        describes the lane it points at.
+        repair a dead lane gets, for the same reason: the binding does not
+        describe the lane it points at.
 
         An unreadable record reports a mismatch, so the doubt costs a
         respawn rather than a lane that might be writeable."""

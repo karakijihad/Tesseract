@@ -1,7 +1,6 @@
 """Per-session voice input handling.
 
-Extracted from ``ws.py`` 2026-05-23 (codex audit m2 follow-up). Owns the
-PCM accumulator and the ``voice_mode_set`` / ``voice_commit`` /
+Owns the PCM accumulator and the ``voice_mode_set`` / ``voice_commit`` /
 ``voice_cancel`` envelope handlers. Routes successful chat-mode
 transcripts back through ``_start_turn`` in ``turn_intake.py`` via a
 lazy import to avoid a hard circular dependency.
@@ -37,7 +36,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Phase 16 S2 — per-session PCM cap. 5min of 16 kHz mono 16-bit ≈ 9.6MB.
+# Per-session PCM cap. 5min of 16 kHz mono 16-bit ≈ 9.6MB.
 # Frames beyond this trim from the head so the buffer can't grow unbounded
 # while keeping the most recent speech intact.
 VOICE_PCM_BUFFER_CAP_BYTES = 9_600_000
@@ -145,7 +144,7 @@ async def _handle_voice_commit(
       review/edit/send. The session's ``terminal`` mode resolves here
       too — same server contract, different frontend destination.
 
-    AS-2 — in ``chat`` mode the transcript passes the wake-word gate
+    In ``chat`` mode the transcript passes the wake-word gate
     before it becomes a turn. A refusal emits ``voice_discarded``
     *instead of* ``voice_final``, because a final in a dispatching mode
     is what puts the operator's words on screen as a chat bubble; a
@@ -209,6 +208,11 @@ async def _handle_voice_commit(
     # pick up and report as its own.
     commit_at = time.monotonic()
 
+    # Read here so every `return` below compares against the same number. A
+    # cancel that lands while this function is awaiting moves the session's
+    # copy; ours does not.
+    epoch = session.voice_epoch
+
     engine = app.get("stt_engine")
     if engine is None:
         log.warning("voice_commit: stt_engine unavailable — emitting empty final")
@@ -257,6 +261,15 @@ async def _handle_voice_commit(
             await _emit_voice_state(session, session.voice_loop.finish())
             return
 
+    if session.voice_epoch != epoch:
+        # Cancelled while the state emit and the wake gate were awaiting.
+        # Placed here rather than higher up because everything above this
+        # point runs without yielding, so a check there could never see a
+        # cancel land: it would read the same number it had just written.
+        log.info("voice_commit: cancelled before transcription")
+        await _emit_voice_state(session, session.voice_loop.finish())
+        return
+
     text = ""
     try:
         async for chunk_text, _is_final in engine.transcribe_stream(audio):
@@ -283,6 +296,19 @@ async def _handle_voice_commit(
         return
 
     text = (text or "").strip()
+
+    # The operator cancelled while this was transcribing, which is what
+    # muting mid-sentence does. Nothing is sent and nothing is dispatched:
+    # a transcript that arrives after the microphone was switched off is the
+    # one thing the switch was pressed to prevent.
+    if session.voice_epoch != epoch:
+        log.info(
+            "voice_commit: cancelled during transcription, %d chars dropped",
+            len(text),
+        )
+        await _emit_voice_state(session, session.voice_loop.finish())
+        return
+
     notice = ""
     if hasattr(engine, "consume_fallback_notice"):
         try:
@@ -326,7 +352,7 @@ async def _handle_voice_cancel(
     session: "ServerSession",
     data: dict | None = None,
 ) -> None:
-    """Operator-side cancel. Two flavors based on ``reason``:
+    """Operator-side cancel. Three flavours, on ``reason``:
 
     - ``reason='barge_in'``: speech-start barge-in. Cancels TTS
       playback only (frontend already cancelled local audio;
@@ -335,17 +361,26 @@ async def _handle_voice_cancel(
       new transcript arrives via ``voice_commit`` and queues onto
       ``chat_queues[active_chat_id]`` like a typed follow-up.
 
-    - default (no reason / operator stop): full teardown — drop PCM
-      buffer and return to idle. The HUD Stop button uses
-      ``cancel_stream`` (not this) when it wants to abort the chat
-      turn.
+    - ``reason='mute'``: the operator switched the microphone off. Drops
+      whatever they were saying, and **leaves the assistant talking**.
+      Turning your own microphone off is not a request for silence from the
+      other side, and treating it as one made muting mid-reply cut the reply.
 
-    The frontend already cancelled local audio playback in both cases;
-    we just make sure the server side is consistent.
+    - default (no reason): full teardown. Drop the utterance, silence TTS,
+      return to idle.
+
+    The frontend already cancelled local audio playback where it applies; we
+    just make sure the server side is consistent.
     """
     del app  # reserved for future hooks; keeps signature stable
     reason = (data or {}).get("reason") if isinstance(data, dict) else None
     is_barge_in = reason == "barge_in"
+
+    if reason == "mute":
+        # Everything the input half owns, and nothing the output half does.
+        _drop_pending_utterance(session)
+        await _emit_voice_state(session, session.voice_loop.cancel())
+        return
 
     # TTS state is per-turn — sweep every running turn's
     # state (plus the legacy session fields) since barge-in / stop must
@@ -370,10 +405,22 @@ async def _handle_voice_cancel(
         await _emit_voice_state(session, session.voice_loop.barge_in())
         return
 
+    _drop_pending_utterance(session)
+    await _emit_voice_state(session, session.voice_loop.cancel())
+
+
+def _drop_pending_utterance(session: "ServerSession") -> None:
+    """Forget whatever the operator was saying, wherever it had got to.
+
+    The epoch is the half that reaches a commit already in flight: by the time
+    a cancel arrives the handler usually holds its own reference to the audio
+    and is inside STT, so clearing the buffer alone clears something nothing
+    is reading, and the transcript lands anyway.
+    """
+    session.voice_epoch += 1
     session.voice_pcm_buffer = None
     reset_wake_stream(session)
     # A cancelled voice turn never reaches its first audio chunk, so an
     # unclaimed commit timestamp would survive and be reported against whatever
     # turn came next — including a typed one.
     session.voice_commit_at = None
-    await _emit_voice_state(session, session.voice_loop.cancel())

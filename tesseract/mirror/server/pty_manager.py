@@ -51,7 +51,7 @@ log = logging.getLogger(__name__)
 OutputConsumer = Callable[[str], None]
 
 READ_CHUNK_CHARS = 4096
-# CR-3 (2026-05-22) — WebSocket coalescing for high-throughput PTY output.
+# WebSocket coalescing for high-throughput PTY output.
 # `winpty.read` returns whatever is available, often tiny chunks (ANSI
 # escapes during CLI streaming). Without coalescing, each chunk → one
 # `ws.send_json` → one TCP frame → one xterm.js render frame. The
@@ -59,7 +59,7 @@ READ_CHUNK_CHARS = 4096
 #   - the pane's config `coalesce_flush_chars` have accumulated, OR
 #   - the config `coalesce_flush_ms` window has elapsed since the first
 #     pending byte (sustained-output backstop), OR
-#   - Phase 5 (2026-07-05, terminal daily-driver) — the asyncio queue is
+#   - the asyncio queue is
 #     empty right after a chunk is processed and the pending payload is
 #     still small. This is the interactive-echo case (a lone keystroke's
 #     output): flushing immediately instead of waiting for the window
@@ -81,7 +81,7 @@ DEFAULT_ROWS = 24
 # never blocks on it.
 OBSERVER_PUSH_CAP_PER_PANE = 16
 
-# Phase 2 (terminal-control 2026-05-16): per-pane output ring buffer. Cap
+# Per-pane output ring buffer. Cap
 # total chars across all chunks; oldest evicted when full. 64 KB is enough
 # for ~800 lines of 80-col text — comfortably covers any terminal's
 # visible scrollback. Configurable later via permissions.yaml::pty.
@@ -103,12 +103,12 @@ class PTYEntry:
     # Per-pane observer-push tasks. Capped at OBSERVER_PUSH_CAP_PER_PANE so
     # one chatty pane cannot starve the asyncio loop. See `_forward_to_observer`.
     observer_tasks: set[asyncio.Task[None]] = field(default_factory=set)
-    # Per-pane output consumers (MO-6).  ``_reader_loop`` invokes each one
+    # Per-pane output consumers.  ``_reader_loop`` invokes each one
     # synchronously after the WebSocket forward + observer push; consumers
     # may not raise (errors are logged and swallowed) and must be
     # non-blocking.
     output_consumers: list[OutputConsumer] = field(default_factory=list)
-    # Phase 2 (terminal-control 2026-05-16): unconditional output ring
+    # Unconditional output ring
     # buffer giving `read_buffer_for_pane` a scrollback to read and
     # `wait_idle_for_pane` a monotonic clock to compute quiescence
     # against. Updated in _reader_loop after every successful read; bounded by
@@ -229,11 +229,11 @@ class PTYManager:
 
     async def cleanup_for_ws(self, ws: web.WebSocketResponse) -> None:
         if self._app is not None and self._app.get("primary_ws") is ws:
-            # MO-9-4: agent-spawned panes use ``primary_ws`` as their
+            # Agent-spawned panes use ``primary_ws`` as their
             # render target. When that WS disconnects, drop the ref so
             # the next operator-side message can repopulate it.
             self._app["primary_ws"] = None
-        # F6 (terminal daily-driver 2026-07-05) — a dropped WS no longer
+        # A dropped WS does not
         # kills the pane outright (that turned every page reload into a
         # dead shell). Mark it detached and start a grace timer; a
         # reconnecting client that claims the pane within the grace
@@ -269,7 +269,7 @@ class PTYManager:
             return_exceptions=True,
         )
 
-    # ── output-consumer registry (MO-6 transcript readback) ──────────
+    # ── output-consumer registry (transcript readback) ───────────────
 
     def register_output_consumer(self, pane_id: str, consumer: OutputConsumer) -> bool:
         """Register a sync callback that receives every PTY read for ``pane_id``.
@@ -311,7 +311,7 @@ class PTYManager:
         boot-time `reattach_operator_panes` both spawn a viewer pane
         through this method.
 
-        MO-9-4: ``op == "open"`` spawns a brand new pane bound to the
+        ``op == "open"`` spawns a brand new pane bound to the
         most recently active operator WS (``app["primary_ws"]``). The
         renderer envelope is the same ``terminal_started`` shape the
         operator-side ``terminal_start`` emits, so the existing Mirror
@@ -321,7 +321,7 @@ class PTYManager:
             return await self._open_for_agent(payload)
         return {"ok": False, "error": f"unknown_op:{op}"}
 
-    # ── output ring buffer + idle/read/list (Phase 2/3/5) ────────────
+    # ── output ring buffer + idle/read/list ───────────────────────────
 
     def _append_to_buffer(self, entry: PTYEntry, chunk: str) -> None:
         """Feed a raw chunk into the per-pane ring buffer + bump clocks.
@@ -506,9 +506,9 @@ class PTYManager:
         bearer token; a shell the operator opened themselves does not. That is
         what separates "launched inside TESSERACT" from any other terminal.
 
-        `cwd` is no longer where the config is written — it is where a stale
-        project-scope `.mcp.json` from the previous scheme may still sit,
-        shadowing what we just provisioned.
+        `cwd` is not where the config is written — it is where a stale
+        project-scope `.mcp.json` may still sit, shadowing what we just
+        provisioned.
 
         Terminal panes are general-purpose shells (cmd/bash/powershell
         too), not committed to running an MCP-aware CLI at open time — a
@@ -621,7 +621,7 @@ class PTYManager:
             )
             self._ptys[pane_id] = entry
 
-        # Phase 6 — auto-grant observer consent on agent-spawned panes too.
+        # Auto-grant observer consent on agent-spawned panes too.
         self._maybe_auto_grant_consent(pane_id)
         # A hand-launched claude/codex in this pane should wake up already
         # connected to the hub.
@@ -688,7 +688,7 @@ class PTYManager:
             )
             self._ptys[pane_id] = entry
 
-        # Phase 6 — observer always-on. Per operator (2026-05-16): "remove
+        # Observer always-on. Per operator: "remove
         # the observer asking if he can see the terminal." When the
         # global observer is armed, every new pane is auto-consented so
         # The assistant sees terminal activity without an extra confirmation.
@@ -812,7 +812,7 @@ class PTYManager:
             "observer_enabled": entry.observer_enabled,
         })
         if replay.get("ok") and replay.get("text"):
-            # `replay: True` — live-gate fix pass (2026-07-05). The
+            # `replay: True`. The
             # replayed bytes can contain terminal query sequences the
             # shell/ConPTY emitted live (device-attributes ESC[c, DSR
             # ESC[6n) that xterm.js auto-answers via onData when it
@@ -844,7 +844,7 @@ class PTYManager:
     # ── observer consent integration ──────────────────────────────────
 
     def _maybe_auto_grant_consent(self, pane_id: str) -> None:
-        """Phase 6 helper — grant observer consent for ``pane_id`` if the
+        """Grant observer consent for ``pane_id`` if the
         global observer is armed. Called on every pane spawn (operator-
         side ``_start`` + agent-side ``_open_for_agent``).
 
@@ -940,7 +940,7 @@ class PTYManager:
                     "pty: observer-push cap %d hit for pane %s — dropping oldest",
                     OBSERVER_PUSH_CAP_PER_PANE, pane_id,
                 )
-        # Phase 5 Task 3 — scrub common secret shapes before the chunk
+        # Scrub common secret shapes before the chunk
         # leaves pty_manager. This is the CAPTURE point: the observer
         # (and its transcript, and anything a future suggestion quotes)
         # only ever sees the scrubbed text.
@@ -983,7 +983,7 @@ class PTYManager:
     # ── reader loop ───────────────────────────────────────────────────
 
     async def _reader_loop(self, entry: PTYEntry) -> None:
-        # CR-3 — read on a dedicated thread that pushes chunks into an
+        # Read on a dedicated thread that pushes chunks into an
         # asyncio.Queue. The async side drains the queue with a
         # `wait_for` timeout so we can flush coalesced output without
         # cancelling an in-flight `winpty.read` (which is uncancellable
@@ -1123,7 +1123,7 @@ class PTYManager:
                 if not isinstance(chunk, str) or not chunk:
                     continue
 
-                # Phase 2 — feed the per-pane ring buffer + quiescence
+                # Feed the per-pane ring buffer + quiescence
                 # clock. Done before any WS work so a slow operator
                 # browser can't starve the assistant's reads of recent output.
                 self._append_to_buffer(entry, chunk)
@@ -1133,7 +1133,7 @@ class PTYManager:
                 # their true granularity.
                 if entry.observer_enabled:
                     self._forward_to_observer(entry.pane_id, chunk)
-                # MO-6 output consumers.
+                # Output consumers.
                 # Iterate over a snapshot so a consumer that unregisters
                 # itself (e.g. on close) doesn't mutate the list mid-loop.
                 for consumer in list(entry.output_consumers):

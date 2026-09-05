@@ -12,6 +12,15 @@ Detection needs no model — it is pure arithmetic over the usage log — so the
 card always fires for a genuinely underperforming skill. The LLM proposal is
 best-effort enrichment on top.
 
+**A playbook revision that measures worse than the one before it is
+retired.** Loads, the outcome of the turn each load was read in, corrections
+and retries are counted per revision (`brain/playbook_reuse.py`), and a live
+revision with more trouble per load than its predecessor over the window,
+both with at least ``min_loads``, has its status set to ``retired``: it is not
+offered again. The predecessor stays under ``<name>/history/<version>/`` and a
+card says so. Returning to it is a person's act, on the card; nothing here
+swaps one procedure for another unattended.
+
 **Fired on volume, not on a clock.** Its row declares
 ``when: skill_usage_volume`` — it runs once enough new skill uses have been
 logged to judge one, which is the question a cadence cannot answer: a weekly
@@ -31,8 +40,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from tesseract.brain.playbook_contract import version_number
+from tesseract.brain.playbook_reuse import Reuse, measure, worse_than
 from tesseract.brain.skill_usage import read_usage
-from tesseract.brain.skills import SKILL_FILENAME, list_skills_names
+from tesseract.brain.skills import (
+    SKILL_FILENAME,
+    SkillEntry,
+    list_history,
+    list_skills_names,
+    load_skills,
+    set_skill_status,
+)
 from tesseract.orchestrator.outcome import RunOutcome
 from tesseract.paths import TESSERACT_HOME, home_logs_root
 from tesseract.scheduler.base_job import BaseJob
@@ -58,7 +76,12 @@ _PROMPT = (
 
 class SkillRefinementJob(BaseJob):
     uses_llm = True
-    default_model_role = "subagents_default"
+    # A CHAIN, not a role. `agents_default` and `subagents_default` are seats
+    # that also serve `invoke_agent`, so sharing one meant this job's model and
+    # its spend moved whenever an agent was re-pointed. Naming the chain
+    # directly severs that: what it spends bills to the entry, whose ceiling is
+    # on its manifest entry.
+    default_model_chain = "chain_1"
 
     async def run(self, ctx: JobContext) -> JobResult:
         t0 = time.monotonic()
@@ -97,16 +120,26 @@ class SkillRefinementJob(BaseJob):
                 filed += 1
                 flag_only += 0 if proposed else 1
 
+            retired = await asyncio.to_thread(
+                _retire_worse_revisions, skills_dir, window_days, min_loads, ctx.fired_at
+            )
+            for name, live, before in retired:
+                await self._file_retirement(ctx, store, skills_dir, name, live, before)
+
             return JobResult(
                 job_name=ctx.job_name,
                 run_id=ctx.run_id,
                 ok=True,
-                detail=f"candidates={len(candidates)} filed={filed}",
-                outcome=_outcome(candidates, filed, flag_only),
+                detail=f"candidates={len(candidates)} filed={filed} retired={len(retired)}",
+                outcome=_outcome(candidates, filed, flag_only, len(retired)),
                 outcome_reason=_reason(candidates, filed, flag_only, ratio_threshold),
                 payload={
                     "candidates": [c["skill"] for c in candidates],
                     "filed": filed,
+                    "retired": [
+                        {"name": name, "live": live.as_json(), "predecessor": before.as_json()}
+                        for name, live, before in retired
+                    ],
                     "window_days": window_days,
                 },
                 duration_ms=(time.monotonic() - t0) * 1000.0,
@@ -141,7 +174,7 @@ class SkillRefinementJob(BaseJob):
         proposed = await self._propose_revision(ctx, current)
         ratio_pct = round(cand["neg"] / cand["total"] * 100)
         summary = (
-            f"{name} — {cand['neg']}/{cand['total']} loads ({ratio_pct}%) ended "
+            f"{name}: {cand['neg']}/{cand['total']} loads ({ratio_pct}%) ended "
             "in error/correction. "
             + ("A revised SKILL.md is proposed below." if proposed
                else "Review and refine it manually.")
@@ -166,6 +199,48 @@ class SkillRefinementJob(BaseJob):
         await _broadcast(ctx, event)
         return bool(proposed)
 
+    async def _file_retirement(
+        self,
+        ctx: JobContext,
+        store: Any,
+        skills_dir: Path,
+        name: str,
+        live: Reuse,
+        before: Reuse,
+    ) -> None:
+        """One card per retirement: what was retired, against what, and where
+        the predecessor is. Flag-only by construction, so the approve route
+        has nothing to apply; the numbers are the point."""
+        from tesseract.workspace_events import WorkspaceEvent
+
+        summary = (
+            f"{name} v{live.version} was retired: {live.failed} failed turns and "
+            f"{live.corrections} corrections over {live.loads} loads, against "
+            f"{before.failed} and {before.corrections} over {before.loads} for "
+            f"v{before.version}. Version {before.version} is kept under "
+            f"history/{before.version}/ to return to."
+        )
+        event = WorkspaceEvent.new(
+            kind="skill_refinement",
+            source="agent",
+            title=f"Playbook revision retired: {name} v{live.version}",
+            summary=summary,
+            payload={
+                "name": name,
+                "retired_version": live.version,
+                "predecessor_version": before.version,
+                "reuse": {"live": live.as_json(), "predecessor": before.as_json()},
+                "current_markdown": _read_skill_md(skills_dir, name),
+                "proposed_markdown": "",
+            },
+        )
+        try:
+            store.append_event(event)
+        except Exception:
+            log.exception("skill_refinement: append retirement card failed for %s", name)
+            return
+        await _broadcast(ctx, event)
+
     async def _propose_revision(self, ctx: JobContext, current: str) -> str:
         """Best-effort LLM proposal of a revised SKILL.md. Empty on any miss
         (no role, timeout, NO_CHANGE) — the card then stays flag-only."""
@@ -174,7 +249,8 @@ class SkillRefinementJob(BaseJob):
         try:
             chain = build_chain_for_job(
                 ctx,
-                default_role=SkillRefinementJob.default_model_role,
+                default_role=None,
+                default_chain=SkillRefinementJob.default_model_chain,
                 log_label="skill_refinement",
             )
         except Exception:
@@ -199,7 +275,9 @@ class SkillRefinementJob(BaseJob):
 # ─── Helpers ─────────────────────────────────────────────
 
 
-def _outcome(candidates: list[dict[str, Any]], filed: int, flag_only: int) -> RunOutcome:
+def _outcome(
+    candidates: list[dict[str, Any]], filed: int, flag_only: int, retired: int = 0,
+) -> RunOutcome:
     """Which of the closed states this run was.
 
     Nothing crossing the threshold is the healthy common case and says so.
@@ -208,6 +286,8 @@ def _outcome(candidates: list[dict[str, Any]], filed: int, flag_only: int) -> Ru
     act on by hand is less than that — arriving quietly as a success is how a
     dead model role goes unnoticed for a month.
     """
+    if retired and not flag_only:
+        return RunOutcome.SUCCEEDED
     if not candidates or filed == 0:
         return RunOutcome.SKIPPED_NO_WORK
     return RunOutcome.DEGRADED if flag_only else RunOutcome.SUCCEEDED
@@ -271,6 +351,50 @@ def _rank_candidates(
     ]
     cands.sort(key=lambda c: (-c["ratio"], -c["neg"], c["skill"]))
     return cands
+
+
+def _retire_worse_revisions(
+    skills_dir: Path, window_days: int, min_loads: int, now: datetime,
+) -> list[tuple[str, Reuse, Reuse]]:
+    """Retire every active playbook revision that measured worse than its
+    predecessor over the window. Returns what was retired, with both records,
+    for the cards."""
+    retired: list[tuple[str, Reuse, Reuse]] = []
+    for entry in load_skills(skills_dir):
+        if not entry.is_playbook or entry.status != "active":
+            continue
+        folder = skills_dir / entry.dirname
+        live_number = version_number(entry.version)
+        if live_number is None:
+            continue
+        # The revision this one replaced: the highest kept version below it.
+        kept = [
+            k for k in list_history(folder)
+            if (version_number(k.version) or 0) < live_number
+        ]
+        if not kept:
+            continue
+        predecessor: SkillEntry = kept[-1]
+        by_version = measure(entry.name, window_days=window_days, now=now)
+        live = by_version.get(entry.version)
+        before = by_version.get(predecessor.version)
+        if live is None or before is None:
+            continue
+        if live.loads < min_loads or before.loads < min_loads:
+            continue
+        if worse_than(live, before) is not True:
+            continue
+        err = set_skill_status(folder, "retired")
+        if err is not None:
+            log.error("skill_refinement: could not retire %s v%s: %s", entry.name, entry.version, err)
+            continue
+        log.warning(
+            "skill_refinement: retired %s v%s (trouble %.2f over %d loads) against v%s (%.2f over %d)",
+            entry.name, live.version, live.trouble, live.loads,
+            before.version, before.trouble, before.loads,
+        )
+        retired.append((entry.name, live, before))
+    return retired
 
 
 def _resolve_skills_dir(ctx: JobContext) -> Path:

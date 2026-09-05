@@ -1,6 +1,6 @@
 """brief_read — return today's daily brief as plain text.
 
-Operator-facing surface for the voice route in MO-9-9:
+Operator-facing surface for the voice route:
 ``read brief`` (voice) → STT → chat_brain → ``brief_read`` tool →
 plain-text body → chat_brain reads it back through the normal TTS
 streaming pipeline.
@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
 from tesseract.paths import TESSERACT_HOME
+from tesseract.lib import clock
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +47,13 @@ class BriefReadTool(Tool):
     summary: ClassVar[str] = "Return an already-rendered daily brief as plain text."
     use_when: ClassVar[str] = (
         "Use when the operator asks to hear, read, or summarise the daily "
-        "brief — the returned text is voice-friendly and read back verbatim."
+        "brief. The returned text is voice-friendly and read back word for word."
     )
     not_when: ClassVar[str] = (
         "if no brief exists yet for the date, use `brief_render` to produce "
-        "one first — this tool only reads what already exists."
+        "one first. This tool only reads what already exists."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(self, *, briefs_dir: Path | None = None) -> None:
         # Default resolved at call time via ``_resolve_briefs_dir`` so
@@ -113,7 +115,9 @@ class BriefReadTool(Tool):
 def _parse_target_date(raw: str) -> date | None:
     stripped = raw.strip()
     if not stripped:
-        return datetime.now(timezone.utc).date()
+        # The operator's today, not Greenwich's: asking for "the brief"
+        # late in the evening must not fetch tomorrow's empty one.
+        return clock.today()
     try:
         return date.fromisoformat(stripped)
     except ValueError:

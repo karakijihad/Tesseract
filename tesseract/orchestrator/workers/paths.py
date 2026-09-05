@@ -39,11 +39,11 @@ def worker_dir(worker_id: str) -> Path:
 
 def worktrees_dir() -> Path:
     """``<TESSERACT_HOME>/worktrees/`` — live per-worker git worktrees
-    for code-editing workers (AU-12)."""
+    for code-editing workers."""
     return _home() / "worktrees"
 
 
 def worktrees_archive_dir() -> Path:
     """``<TESSERACT_HOME>/worktrees-archive/`` — finalized worktrees
-    awaiting operator review or retention prune (AU-12)."""
+    awaiting operator review or retention prune."""
     return _home() / "worktrees-archive"

@@ -35,8 +35,8 @@ def resolve_lane_manager(context: ToolContext) -> "LaneManager | None":
     are logged but not re-raised so the calling tool can return a clean
     error `ToolResult` rather than an unhandled traceback. Mirror does
     not host a `LaneManager` (only the controller daemon does), so any
-    `lane_*` invocation from Mirror's brain currently returns the
-    'lane manager not wired' error — Session C lands the IPC bridge."""
+    `lane_*` invocation from Mirror's brain returns the
+    'lane manager not wired' error until the IPC bridge is up."""
     provider = getattr(context, "lane_manager_provider", None)
     if provider is None:
         return None
@@ -48,7 +48,7 @@ def resolve_lane_manager(context: ToolContext) -> "LaneManager | None":
 
 
 def resolve_named_lane_manager(context: ToolContext) -> "NamedLaneManager | None":
-    """X-5 — sibling of `resolve_lane_manager` for the name→lane_id
+    """sibling of `resolve_lane_manager` for the name→lane_id
     binding layer. Same degrade-gracefully contract."""
     provider = getattr(context, "named_lane_manager_provider", None)
     if provider is None:

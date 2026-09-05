@@ -37,12 +37,13 @@ class TasksUpdateTool(Tool):
     summary: ClassVar[str] = "Flips one task's status or renames it, by id, without touching the rest."
     use_when: ClassVar[str] = (
         "Use as work advances: mark a step in_progress when you start it, completed when done. "
-        "Exactly one step is in_progress at a time — the strip shows the operator where you are, "
+        "Exactly one step is in_progress at a time. The strip shows the operator where you are, "
         "and two at once says nowhere. Requires `tasks_set` to have established the checklist first."
     )
     not_when: ClassVar[str] = (
         "replacing the whole checklist, which is `tasks_set`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

@@ -1,4 +1,4 @@
-"""Y-2 — Surface Protocol REST surface.
+"""Surface Protocol REST surface.
 
 - ``GET  /api/surfaces/{view}`` — list the view's surface descriptors
   (hydrated from the canvas-state file on first touch). The frontend store
@@ -139,13 +139,58 @@ async def post_render_report(request: web.Request) -> web.Response:
     detail = body.get("detail", "")
     if not isinstance(status, str) or not isinstance(detail, str):
         return web.json_response({"error": "invalid_schema"}, status=400)
+    raw_controls = body.get("controls")
+    controls: list[str] | None = None
+    if raw_controls is not None:
+        if not isinstance(raw_controls, list) or not all(
+            isinstance(c, str) for c in raw_controls
+        ):
+            return web.json_response({"error": "invalid_controls"}, status=400)
+        controls = raw_controls
     try:
-        report = get_surface_store().record_render(surface_id, status=status, detail=detail)
+        report = get_surface_store().record_render(
+            surface_id, status=status, detail=detail, controls=controls
+        )
     except ValueError as exc:
         return web.json_response({"error": "invalid_status", "detail": str(exc)}, status=400)
     if report is None:
         return web.json_response({"error": "unknown_surface"}, status=404)
     return web.json_response({"render": report})
+
+
+async def post_command_result(request: web.Request) -> web.Response:
+    """A card answering the command it was given.
+
+    The other half of `surface_command`. Matched by id rather than by surface,
+    because a card can be asked twice before it answers once and the waiting
+    tool has to get its own answer back.
+    """
+    if safe_view(request.match_info["view"]) is None:
+        return web.json_response({"error": "invalid_view"}, status=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"error": "invalid_schema"}, status=400)
+
+    command_id = body.get("command_id")
+    if not isinstance(command_id, str) or not command_id:
+        return web.json_response({"error": "invalid_command_id"}, status=400)
+    state = body.get("state") if isinstance(body.get("state"), dict) else {}
+    error = body.get("error")
+    result = {
+        "ok": bool(body.get("ok")),
+        "state": state,
+        "error": str(error) if isinstance(error, str) else "",
+    }
+
+    from tesseract.orchestrator.surfaces.commands import get_command_broker
+
+    # False means nobody was waiting: the tool timed out, or this id was never
+    # issued. Not an error for the caller — the card did its part.
+    matched = get_command_broker().resolve(command_id, result)
+    return web.json_response({"matched": matched})
 
 
 def register(app: web.Application) -> None:
@@ -154,3 +199,4 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/surfaces/{view}/event", post_surface_event)
     app.router.add_post("/api/surfaces/{view}/{surface_id}/update", update_surface)
     app.router.add_post("/api/surfaces/{view}/{surface_id}/render", post_render_report)
+    app.router.add_post("/api/surfaces/{view}/command-result", post_command_result)

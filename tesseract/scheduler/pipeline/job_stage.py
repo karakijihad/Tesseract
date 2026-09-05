@@ -43,7 +43,7 @@ _BUDGET_HEADROOM = 0.8
 def default_report(result: JobResult) -> StageReport:
     """The reading for a job that has not declared its own.
 
-    `JobResult` already carries an outcome (AR-1) — derived from `ok` for the
+    `JobResult` already carries an outcome — derived from `ok` for the
     call sites that have not declared one — so this is a translation, not a
     second opinion.
     """
@@ -58,9 +58,11 @@ def job_stage(
     *,
     name: str,
     job: type[BaseJob],
+    summary: str,
     reads: tuple[str, ...] = (),
     writes: tuple[str, ...] = (),
     after: tuple[str, ...] = (),
+    needs_app: tuple[str, ...] = (),
     cadence: StageCadence = StageCadence.DAILY,
     kind: StageKind = StageKind.DETERMINISTIC,
     budget_seconds: float = 300.0,
@@ -116,10 +118,12 @@ def job_stage(
 
     return Stage(
         name=name,
+        summary=summary,
         body=body,
         reads=reads,
         writes=writes,
         after=after,
+        needs_app=needs_app,
         cadence=cadence,
         kind=kind,
         budget_seconds=budget_seconds,
@@ -266,7 +270,8 @@ def _job_context(
         model_role=str(role) if role else None,
         # A stage may name a chain instead, for work that was never a pillar.
         # What it spends bills to the row, not to the stage: the row is the
-        # manifest entry, and the entry is where a ceiling can be declared.
+        # manifest entry, and a ceiling under that name in `roles.yaml` is what
+        # the ledger checks the spend against.
         model_chain=str(chain) if chain else None,
         billing_key=ctx.entry or name,
         cost_ledger=(app.get("cost_ledger") if hasattr(app, "get") else None),
@@ -302,7 +307,7 @@ def payload_counts(
 
     A run that changed nothing AND refused nothing is `skipped_no_work`: it
     ran, there was no work, and that is healthy. Saying `succeeded` would be
-    the same lie one level down that AR-1 removed one level up.
+    the same lie one level down.
     """
 
     def read(result: JobResult) -> StageReport:

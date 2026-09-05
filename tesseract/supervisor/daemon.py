@@ -6,14 +6,14 @@ asyncio buys nothing. Heartbeat polls happen on a separate thread
 (stdlib only — no event-loop dependency so the supervisor stays
 independent of the backend's runtime).
 
-AU-1 Session 1 ships:
+What this ships:
 - spawn + signal + heartbeat
 - ``operator_quit`` routing (exit zero, no respawn)
 - ``crash`` routing (respawn with exponential backoff)
 - ``restart_upgrade`` routing (respawn with ``TESSERACT_RESUME_CONTINUATION``)
 
-Crash-storm circuit breaker + ``--force`` clear + UI shutdown route
-land in Session 2.
+The crash-storm circuit breaker, the ``--force`` clear and the UI
+shutdown route are not here.
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from tesseract.lib.log_envelope import WARN, envelope
 from tesseract.supervisor.breaker import CrashStormBreaker
 from tesseract.supervisor.console_capture import (
     ConsoleWriter,
@@ -159,6 +160,20 @@ _GRACEFUL_STOP_GRACE_S = 30.0
 # the process exits — the file may still be flushing.
 _INTENT_FLUSH_GRACE_S = 2.0
 
+# What a graceful stop costs at worst, and it lives here because this module
+# owns the numbers it is made of. Two escalation windows run strictly in
+# sequence — the backend inside `_wait_for_exit`, then the controller daemon
+# inside `_stop_all_daemons` — and each is a grace window, then a tree kill,
+# then a final wait. The 40s is everything else that is bounded around them:
+# the watcher's poll (1s), the heartbeat thread join (6s), the intent flush
+# (2s), the controller watchdog join (3s), the stop-watcher join (2s), Vite
+# (7s) and the port release (12s), with headroom.
+#
+# `scripts/shutdown.py` waits on this, which is the point of putting it here:
+# raising a grace window raises what the operator CLI will wait for, instead
+# of turning a slow stop into a reported failure.
+CLEAN_STOP_CEILING_S = 2 * (_GRACEFUL_STOP_GRACE_S + _TREE_KILL_TIMEOUT_S + 5.0) + 40.0
+
 
 @dataclass
 class HeartbeatProbe:
@@ -201,17 +216,19 @@ class BackendProcess:
     # Ctrl-C at the backend, so the backend writes ``intent=operator_quit``
     # in either case. Without this flag the main loop would honor that
     # intent and exit zero — defeating the whole point of the supervisor.
-    # When set, ``_classify`` routes the exit as ``crash`` regardless of
-    # intent so the respawn + backoff path runs.
+    # When set, ``_classify`` routes the exit as ``crash`` so the respawn
+    # path runs, whatever the intent file says — with one exception it
+    # names: ``restart_upgrade``, which the backend cannot write in answer
+    # to our signal, so a drain that outlived the heartbeat window is
+    # still the restart that was asked for.
     heartbeat_killed: bool = False
     # Set by ``_terminate_backend`` the moment it delivers the stop
     # signal. Makes termination idempotent: at quit, BOTH the stop-watcher
     # thread (``request_stop``) and the main loop (``_wait_for_exit``)
-    # used to call ``_terminate_backend``, delivering a second
-    # CTRL_BREAK ~1s into the backend's graceful shutdown — which raised
-    # a KeyboardInterrupt mid-cleanup and hard-killed it
-    # (STATUS_CONTROL_C_EXIT, observed live 2026-07-30). The second
-    # caller now only waits.
+    # reach ``_terminate_backend``. Both delivering would send a second
+    # CTRL_BREAK ~1s into the backend's graceful shutdown, raising a
+    # KeyboardInterrupt mid-cleanup and hard-killing it
+    # (STATUS_CONTROL_C_EXIT). The second caller only waits.
     stop_signalled: bool = False
 
 
@@ -244,8 +261,8 @@ class Supervisor:
     # Set to a small int in tests so test 2 (crash auto-restarts) doesn't
     # loop forever if the test subprocess keeps crashing.
     max_respawns: int = 100
-    # TC-4 + cockpit X-2 (2026-06-02): controller-daemon sibling defaults
-    # ON. Operator opt-out: set ``SUPERVISOR_DISABLE_CONTROLLER=1`` (honored at the
+    # The controller-daemon sibling defaults ON. Operator opt-out: set
+    # ``SUPERVISOR_DISABLE_CONTROLLER=1`` (honored at the
     # ``__main__`` boot site so the constructor stays a pure dataclass).
     controller_daemon_enabled: bool = True
     controller_daemon_cmd: list[str] | None = None
@@ -276,6 +293,26 @@ class Supervisor:
     _stop_watcher: StopRequestWatcher | None = field(default=None, init=False)
 
     # -- public surface ----------------------------------------------------
+
+    def _announce_crash_storm(self, reason: str) -> None:
+        """Tell whoever is routed for it that nothing will restart on its own.
+
+        This is the one message the runtime cannot send the usual way: the
+        thing that would normally send it is the thing that has gone. So it
+        goes out from here, through the channel's own no-bridge adapter, over
+        the same routing table and the same operator rule every other kind
+        uses. Best effort and bounded: a supervisor that cannot reach anybody
+        still has to exit.
+        """
+        try:
+            from tesseract.integrations._offline import notify_offline_blocking
+
+            result = notify_offline_blocking(
+                "crash_storm_latched", {"reason": reason},
+            )
+            log.error("supervisor: crash storm announced result=%s", result)
+        except Exception:  # noqa: BLE001
+            log.exception("supervisor: could not announce the crash storm")
 
     def run(self) -> int:
         """Main loop. Returns the supervisor exit code.
@@ -340,6 +377,10 @@ class Supervisor:
                 try:
                     if self._breaker.record_crash(exit_code=-1):
                         log.error("supervisor: crash storm latched on spawn failure — exiting 2")
+                        self._announce_crash_storm(
+                            "it could not start the app at all, several times "
+                            "in a row"
+                        )
                         self._stop_all_daemons()
                         return 2
                 except Exception:  # noqa: BLE001
@@ -347,6 +388,10 @@ class Supervisor:
                 self._sleep_backoff(self._crash_count)
                 if respawns >= self.max_respawns:
                     log.warning("supervisor: max_respawns reached, exiting")
+                    self._announce_crash_storm(
+                        "it started the app as many times as it is allowed to "
+                        "and will not try again"
+                    )
                     self._stop_all_daemons()
                     return 1
                 continue
@@ -414,21 +459,25 @@ class Supervisor:
                         log.exception("supervisor: teardown_all_controller_sessions raised — continuing shutdown")
                     self._stop_all_daemons()
                     return 0
+                # Inline the backend's last console lines so one file
+                # (supervisor.log) carries the whole story — the tail is what
+                # a remote "it just says exited code=1" report can never
+                # reconstruct otherwise. A forced kill earns this whatever
+                # the decision was: a requested restart whose drain hung is
+                # not billed as a crash any more, and it is exactly the case
+                # whose evidence is hardest to come by afterwards.
+                if decision == "crash" or backend.heartbeat_killed:
+                    writer = self._console_writers.get("backend")
+                    if writer is not None and writer.tail:
+                        log.error(
+                            "supervisor: backend output before exit (last %d console lines):\n%s",
+                            len(writer.tail), writer.tail_text(),
+                        )
                 if decision == "restart_upgrade":
                     respawns += 1
                 else:  # crash
                     self._crash_count += 1
                     respawns += 1
-                    # Inline the backend's last console lines so one file
-                    # (supervisor.log) carries the whole crash story — the
-                    # tail is what a remote "it just says exited code=1"
-                    # report can never reconstruct otherwise.
-                    writer = self._console_writers.get("backend")
-                    if writer is not None and writer.tail:
-                        log.error(
-                            "supervisor: backend crash output (last %d console lines):\n%s",
-                            len(writer.tail), writer.tail_text(),
-                        )
                     # Record into the rolling crash window. Three crashes
                     # in CRASH_WINDOW_SECONDS → latch + exit 2; the operator
                     # has to clear the marker before the next supervisor
@@ -436,6 +485,11 @@ class Supervisor:
                     try:
                         if self._breaker.record_crash(exit_code=exit_code):
                             log.error("supervisor: crash storm latched — exiting 2")
+                            self._announce_crash_storm(
+                                f"the app stopped {self._crash_count} times in a "
+                                f"few minutes, the last one with exit code "
+                                f"{exit_code}"
+                            )
                             self._stop_all_daemons()
                             return 2
                     except Exception:  # noqa: BLE001
@@ -457,6 +511,10 @@ class Supervisor:
                 time.sleep(1.0)
             if respawns >= self.max_respawns:
                 log.warning("supervisor: max_respawns reached, exiting")
+                self._announce_crash_storm(
+                    "it started the app as many times as it is allowed to and "
+                    "will not try again"
+                )
                 # SU-3b chunk 12: tear down siblings on any exit path.
                 self._stop_all_daemons()
                 return 1
@@ -900,7 +958,20 @@ class Supervisor:
             probe.to_payload() if probe is not None else None,
         )
         payload = {
-            "ts": datetime.now(timezone.utc).isoformat(),
+            # The envelope, then this incident's own fields. `event` stays
+            # because the supervisor's vocabulary is its own and nothing else
+            # reads it; what the envelope adds is a severity a reader does not
+            # have to know that vocabulary to act on.
+            **envelope(
+                stream="supervisor",
+                severity=WARN,
+                subject="backend heartbeat",
+                summary=(
+                    f"the backend missed {backend.health_failures} heartbeats "
+                    f"and is still running"
+                ),
+                detail={"backend_pid": backend.proc.pid},
+            ),
             "event": "heartbeat_soft_failure",
             "backend_pid": backend.proc.pid,
             "health_url": self.health_url,
@@ -975,21 +1046,31 @@ class Supervisor:
         ``operator_quit`` is honored unconditionally — even a non-zero
         exit code combined with operator_quit is still operator intent.
 
-        ``heartbeat_killed=True`` overrides every intent label and forces
-        ``crash``. The backend can't tell our termination signal apart
-        from an operator Ctrl-C, so it will write ``operator_quit`` on
-        the way down regardless. Without this override the supervisor
-        would honor its own kill as an operator quit and exit zero —
-        instead of respawning, which is its entire purpose.
+        ``heartbeat_killed=True`` overrides every intent label EXCEPT
+        ``restart_upgrade``, and forces ``crash``. The backend can't tell
+        our termination signal apart from an operator Ctrl-C, so it will
+        write ``operator_quit`` on the way down regardless. Without that
+        override the supervisor would honor its own kill as an operator
+        quit and exit zero — instead of respawning, which is its entire
+        purpose.
+
+        ``restart_upgrade`` is the exception because it is the one label
+        the backend never writes in answer to our signal: the route
+        writes it before the drain starts and
+        ``lifecycle.on_aiohttp_shutdown`` preserves it. A drain that
+        outlives the heartbeat window is still a restart the operator
+        asked for, and reading it as a crash bills a clean intent for a
+        crash count and a storm backoff — measured three times in two
+        days, 300s of waiting each.
         """
+        if intent is not None and intent.intent == "restart_upgrade":
+            return "restart_upgrade"
         if heartbeat_killed:
             return "crash"
         if intent is None:
             return "crash"
         if intent.intent == "operator_quit":
             return "operator_quit"
-        if intent.intent == "restart_upgrade":
-            return "restart_upgrade"
         return "crash"
 
     # -- backoff -----------------------------------------------------------
@@ -1115,6 +1196,7 @@ def clear_pid_file(tesseract_home: Path) -> None:
 
 
 __all__ = [
+    "CLEAN_STOP_CEILING_S",
     "Supervisor",
     "BackendProcess",
     "SupervisorAlreadyRunning",

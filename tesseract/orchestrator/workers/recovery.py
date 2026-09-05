@@ -1,6 +1,6 @@
-"""Per-kind recovery handlers for the durable worker substrate (AU-3 S2).
+"""Per-kind recovery handlers for the durable worker substrate.
 
-Wired into ``RecoveryManager.scan_workers`` (AU-2 scan 2 expansion). On
+Wired into ``RecoveryManager.scan_workers``. On
 boot, the manager walks ``<TESSERACT_HOME>/workers/active/`` via the
 count-only summary, then for each non-terminal record asks the
 registered handler to classify and persist.
@@ -10,18 +10,17 @@ Per ``_shared/worker-record-schema.md §Recovery handler``:
 - ``agent_self``: never resumable (in-process asyncio state is lost).
   ``mark_interrupted`` always.
 - ``markdown_agent``: resumable if the agent's transcript is complete;
-  else ``interrupted``. AU-3 S2 ships the conservative variant — every
-  markdown agent is marked interrupted; AU-5 lands the transcript-
-  completeness probe.
+  else ``interrupted``. The shipped variant is conservative — every
+  markdown agent is marked interrupted.
 - ``claude_cli`` / ``codex_cli``: PTY pane is gone after backend
   restart by construction. ``mark_interrupted`` with the transcript
   path pointer preserved so the kernel can decide retry vs escalate.
 - ``terminal``: ``mark_interrupted`` always; operator decides.
 
 The handler API is intentionally narrow: ``can_recover``/``resume``/
-``mark_interrupted``. AU-5 may inject richer handlers (with live
-process references) at boot; the module-level registry follows the
-same pattern as ``cancel.py``.
+``mark_interrupted``. Richer handlers (with live process references)
+may be injected at boot; the module-level registry follows the same
+pattern as ``cancel.py``.
 """
 
 from __future__ import annotations
@@ -59,14 +58,14 @@ class WorkerRecovery(Protocol):
     async def mark_interrupted(self, record: WorkerRecord, reason: str) -> WorkerRecord: ...
 
 
-# Default handlers — all conservative, all ``can_recover -> False`` in
-# AU-3 S2. AU-5 will register richer handlers that actually attempt
-# resume where state permits.
+# Default handlers — all conservative, all ``can_recover -> False``.
+# A richer handler that attempts resume where state permits can be
+# registered over them.
 
 
 class _InterruptOnlyHandler:
-    """Default handler for every kind in S2. Resume support lands in
-    AU-5 once the AutonomyKernel knows how to rehydrate a worker."""
+    """Default handler for every kind. Resume support waits on the
+    AutonomyKernel knowing how to rehydrate a worker."""
 
     def __init__(self, kind: WorkerKind) -> None:
         self._kind = kind
@@ -106,7 +105,7 @@ _REGISTRY: dict[WorkerKind, WorkerRecovery] = {
 
 
 def register_recovery_handler(kind: WorkerKind, handler: WorkerRecovery) -> None:
-    """AU-5 calls this at boot to override the conservative default
+    """Called at boot to override the conservative default
     with a richer handler. Tests register fakes per-test."""
     _REGISTRY[kind] = handler
 
@@ -151,11 +150,10 @@ def classify_recovery_reason(record: WorkerRecord) -> str:
 
 def is_pid_alive(pid: int | None) -> bool:
     """Cross-platform liveness probe routed through
-    :func:`tesseract.supervisor.process_probe.pid_alive`. The earlier
-    POSIX-style ``os.kill(pid, 0)`` implementation misclassified live
-    Windows processes as dead (WinError 87) — AU-3 recovery now uses
-    the proper ``OpenProcess`` + ``GetExitCodeProcess`` probe on
-    Windows. Fail-safe: any unexpected error is treated as 'not
+    :func:`tesseract.supervisor.process_probe.pid_alive`. A POSIX-style
+    ``os.kill(pid, 0)`` misclassifies live Windows processes as dead
+    (WinError 87), so the probe uses ``OpenProcess`` +
+    ``GetExitCodeProcess`` there. Fail-safe: any unexpected error is 'not
     alive', so recovery transitions to ``interrupted`` rather than
     falsely-recovered."""
     from tesseract.supervisor.process_probe import pid_alive
@@ -167,8 +165,8 @@ async def recover_worker(worker_id: str) -> WorkerRecord | None:
     updated record or ``None`` if the record is missing/malformed.
 
     Convention: non-terminal records on boot are interrupted by
-    default in AU-3 S2 (no kind supports resume yet). The handler
-    interface keeps the door open for AU-5 to plug in resume.
+    default, since no kind supports resume. The handler interface
+    keeps the door open for one that does.
     """
     record = load_record(worker_id)
     if record is None:
@@ -188,9 +186,9 @@ async def recover_worker(worker_id: str) -> WorkerRecord | None:
 def recover_worker_sync(worker_id: str) -> WorkerRecord | None:
     """Synchronous entry point for RecoveryManager's scan loop.
 
-    The handler protocol is async per the schema contract (AU-5 may
-    register handlers that await real IO during resume). In S2 every
-    concrete handler is conservative — ``mark_interrupted`` does sync
+    The handler protocol is async per the schema contract, so a handler
+    may await real IO during resume. Every concrete handler shipped here
+    is conservative — ``mark_interrupted`` does sync
     IO only, no awaits — so the scan can run it via ``asyncio.run``
     cleanly without nested-loop hazards. If we're already inside a
     running loop, fall back to driving the coroutine on a dedicated

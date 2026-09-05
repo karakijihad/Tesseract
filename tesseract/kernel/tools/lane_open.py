@@ -1,6 +1,6 @@
 """lane_open — spawn a new persistent controller-owned lane.
 
-X-4 Session B. ASK-gated by default — opening a lane spawns a CLI
+ASK-gated by default — opening a lane spawns a CLI
 subprocess (claude / codex) which is operator-visible work. The
 `LaneManager` owns the process; this tool just records intent and
 returns the new `lane_id`."""
@@ -28,7 +28,7 @@ class LaneOpenInput(BaseModel):
     model: str = Field(
         description=(
             "Model id the lane should target. Use the config-resolved model "
-            "(the seat's roles.yaml primary) — never invent one. "
+            "(the seat's roles.yaml primary). Never invent one. "
             "Recorded in `lane.json` and passed as --model when the CLI spawns."
         )
     )
@@ -64,6 +64,7 @@ class LaneOpenTool(Tool):
         "a lane bound to a reusable name, which is `lane_named_ensure`; a one-shot worker, which "
         "is `delegate_coder`/`delegate_auditor`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

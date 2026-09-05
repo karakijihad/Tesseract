@@ -151,8 +151,17 @@ const PRIMITIVE_HOMES = {
 // Appearance, not placement. Where a control SITS belongs to the surface
 // around it (`.cost-row .checkbox__box { margin-right }` is correct); what it
 // LOOKS LIKE belongs to the component.
+//
+// SIZE is on this list, and the distinction is which class is being sized. A
+// surface sizing its OWN element is placement and never reaches here, which is
+// what all five textarea callers do (`.agent-card__editor { min-height }`).
+// Reaching across a file boundary to resize `.textarea` itself is a second
+// answer to how tall the app's multi-line field is, and it was invisible: the
+// `min-height: 96px` floor in the field's own sheet silently outranked the
+// `rows` prop the component accepts, so a lane card asking for two rows got
+// four and the Send button beside it stretched to match.
 const APPEARANCE_PROPERTY_RE =
-  /(^|[;{])\s*(background|background-[a-z]+|color|border|border-[a-z-]+|box-shadow|padding|padding-[a-z]+|font|font-[a-z]+|outline|outline-[a-z]+|text-transform|letter-spacing)\s*:/;
+  /(^|[;{])\s*(background|background-[a-z]+|color|border|border-[a-z-]+|box-shadow|padding|padding-[a-z]+|font|font-[a-z]+|outline|outline-[a-z]+|text-transform|letter-spacing|line-height|resize|height|min-height|max-height)\s*:/;
 
 /**
  * Walk dir and collect all files whose name matches extRe, excluding any
@@ -444,6 +453,31 @@ for (const f of files) {
 }
 
 /**
+ * UNBALANCED-CSS check. A stylesheet missing a closing brace is not a style
+ * bug: Tailwind refuses to generate at all, the dev server keeps serving the
+ * last output that compiled, and the browser then shows a build from before
+ * the edit. Nothing else here notices — this audit reads lines, `tsc` does not
+ * read CSS, and the component tests render markup rather than styles.
+ *
+ * Found by deleting a block of dead rules by line number and cutting the last
+ * one in half. Every screenshot taken afterwards was of the OLD stylesheet.
+ */
+for (const f of files.filter((p) => p.endsWith('.css'))) {
+  const body = readFileSync(f, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const open = (body.match(/\{/g) || []).length;
+  const close = (body.match(/\}/g) || []).length;
+  if (open !== close) {
+    allViolations.push({
+      file: f,
+      line: 1,
+      type: 'unbalanced-css',
+      value: `${open} { against ${close} }`,
+      text: 'the stylesheet does not parse',
+    });
+  }
+}
+
+/**
  * UNDEFINED-TOKEN check. A `var(--name)` naming a property tokens.css never
  * declares is not a soft failure — the declaration is invalid and dropped, so
  * the element renders with no background or no colour at all. 23 such names
@@ -454,7 +488,18 @@ for (const f of files) {
  * Properties written from JS at render time are the one legitimate case, so
  * they are named here rather than inferred.
  */
-const RUNTIME_SET_PROPERTIES = new Set(['--mic-level', '--wake-level', '--h']);
+// Set from TSX on the element itself, so no stylesheet declares them and no
+// stylesheet should: the value is per instance, not per brand. `DataTable`
+// takes its column template and height budget from its caller this way.
+const RUNTIME_SET_PROPERTIES = new Set([
+  '--mic-level',
+  '--wake-level',
+  '--h',
+  '--data-table-columns',
+  '--data-table-max-height',
+  '--heatmap-columns',
+  '--heatmap-fill',
+]);
 const VAR_REF_RE = /var\(\s*(--[A-Za-z0-9-]+)/g;
 const DECL_RE = /(?:^|[;{])\s*(--[A-Za-z0-9-]+)\s*:/gm;
 
@@ -633,6 +678,7 @@ const CONTROL_CLASSES = {
   'nav-tab': 'Tabs',
   'nav-chip': 'Chips',
   'nav-rail__row': 'NavRail',
+  crumb: 'Breadcrumb',
   // A shared component's own internals. Not the general language, but not
   // private either: one component owns the class and every surface gets it by
   // rendering that component.
@@ -673,6 +719,23 @@ const CONTROL_CLASSES = {
 const ROW_CLASSES = {
   row: 'Row',
   row__actions: 'RowActions',
+  // The floor plan's triage line. Its shape is its own — a severity word, a
+  // subject and two meta lines — and only some of them have anywhere to go,
+  // so it wears `Row` for the half that is shared.
+  exception: 'Row',
+  // A conversation in the chat rail. Its shape is a bare line carrying a
+  // state dot, a name and its own verbs, which is not the exception card's
+  // and not a tab's; `Row` owns the activation contract underneath it.
+  'chat-rail__row': 'Row',
+  // The Autonomy panel's one line, in every room that lists things: a state
+  // edge, a name, its own sentence, a number and a clock. Four rooms writing
+  // that four times is how a panel ends up with four row shapes.
+  'state-line': 'Row',
+  // One connection in the graph inspector: the record at the other end, where
+  // the connection came from, and the exact line that supports it. Three
+  // stacked lines and no state edge, which is neither the panel's row nor the
+  // chat rail's; `Row` owns the activation contract under it.
+  'graph-touch': 'Row',
 };
 
 const CLICKABLE_TAG_RE =
@@ -998,6 +1061,7 @@ if (allViolations.length === 0) {
     'private-button': 'render one of the shared controls instead — Button, IconButton, CloseButton, Chip, MenuItem, Disclosure, Segmented, Switch, Scrim, EdgeTab or ComposerButton. A private class beside a shared one is fine and is for PLACEMENT only. If this genuinely is a new KIND of control, add it to CONTROL_CLASSES in this script naming the component that owns it',
     'space-px': 'use --space-<n>, where n IS the px value (--space-6 is 6px). A negative is calc(var(--space-6) * -1). If the step does not exist, add it to tokens.css — the scale is a census of what the app uses',
     'stroke-px': 'use --stroke-1/2/3/4 for a border or outline WIDTH. border-radius and outline-offset are excluded and are not this check',
+    'unbalanced-css': 'a brace is missing, so Tailwind refuses to generate and the dev server goes on serving the last stylesheet that compiled — every change after this one is invisible in the browser',
     'tracking-px': 'letter-spacing in px does not scale with the operator text-size control — divide by the element\'s own font-size and write it in em',
   };
   for (const type of new Set(allViolations.map((v) => v.type))) {

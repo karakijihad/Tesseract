@@ -302,7 +302,7 @@ export function CostSection() {
           onDone={() => void useIdentityStore.getState().fetchIdentity()}
         />
         {!costTracking.enabled && (
-          <span className="t-meta">Cost tracking disabled in models.yaml.</span>
+          <span className="t-meta">Cost tracking is turned off in providers.yaml.</span>
         )}
       </div>
       {error && <Note tone="bad">{error}</Note>}

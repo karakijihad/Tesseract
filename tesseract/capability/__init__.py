@@ -1,10 +1,10 @@
 """What this machine has, what this version needs, and the gap between them.
 
 One artifact, written by one pass, read by the surfaces that report it. The
-package exists because the answer used to be computed eight separate times —
-by the three voice fetchers, the reranker fetcher, `ensure_ollama`,
-`provision_hardware`, `check_dependencies` and the updater — with no shared
-result and nowhere to report to.
+package exists because eight callers otherwise compute the answer
+separately — the three voice fetchers, the reranker fetcher,
+`ensure_ollama`, `provision_hardware`, `check_dependencies` and the
+updater — with no shared result and nowhere to report it.
 
 Nothing here downloads, installs or repairs. It decides what is true; acting
 on that is the caller's, and whether a caller may act without asking is

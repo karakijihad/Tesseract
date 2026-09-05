@@ -7,17 +7,20 @@ output as a `ToolResult` so the chat timeline still gets a normal
 
 Stdout is consumed in raw chunks (not lines) because CLIs like `claude -p`
 buffer their entire response and only flush at exit when stdout isn't a TTY.
-A real PTY belongs in Phase 9; for the Chat-side DelegateCard we just want
-bytes-as-they-arrive, no terminal semantics needed.
+A real PTY is not needed: the Chat-side DelegateCard wants
+bytes-as-they-arrive, with no terminal semantics.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
-from typing import Mapping, Sequence, TypedDict
+from typing import Any, Mapping, Sequence, TypedDict
 
 from tesseract.kernel.tools.base import CliSink, ToolResult
+
+log = logging.getLogger(__name__)
 
 
 class CliSinkStartPayload(TypedDict, total=False):
@@ -58,6 +61,34 @@ class CliSinkEndPayload(TypedDict, total=False):
     stderr: str
     tool: str
 
+
+async def emit_cli_event(
+    sink: CliSink | None,
+    call_id: str,
+    event: str,
+    payload: dict[str, Any],
+    *,
+    shielded: bool = False,
+) -> None:
+    """Push one event to the operator's view. Never load-bearing.
+
+    `shielded` is for the terminal event: it is emitted from a `finally`
+    whose usual trigger is a cancellation, and an unshielded await there
+    would be cancelled before the sink saw it — leaving the card open,
+    which is the bug the finally exists to close."""
+    if sink is None:
+        return
+    try:
+        call = sink(event, call_id, payload)
+        await (asyncio.shield(asyncio.ensure_future(call)) if shielded else call)
+    except Exception:  # noqa: BLE001 — the operator's view is never load-bearing
+        log.debug("cli sink %s failed", event, exc_info=True)
+    except asyncio.CancelledError:
+        # The shielded emit is already on its way; don't let the card's
+        # terminal event swallow the cancellation itself.
+        raise
+
+
 # SGR colour codes — stripped so streamed CLI output renders as plain
 # text in the TUI / transcript.
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -72,7 +103,7 @@ _READ_CHUNK_BYTES = 4096
 _MAX_BUFFER_CHARS = 200_000
 # On timeout, this much of the already-streamed transcript tail rides along in
 # the error ToolResult so the model can see what the subprocess was doing when
-# it was killed (delegate visibility fix-pass 2026-07-10).
+# it was killed.
 _TIMEOUT_TAIL_CHARS = 1_500
 # After the subprocess itself exits, keep draining stdout this long before
 # abandoning the pipe. A task that spawns a longer-lived grandchild (e.g. a
@@ -137,10 +168,32 @@ async def race_communicate(
             t.cancel()
         await asyncio.gather(*live, return_exceptions=True)
 
+    #: The one await between spawning the process and reaping it. A
+    #: cancellation delivered HERE used to leave the subprocess running with
+    #: nobody holding it: `claude` or `codex` went on working after the
+    #: operator pressed stop.
+    #:
+    #: Not the same thing as the cooperative branch below. `_cancel_turn` sets
+    #: the shared event AND cancels the task in the same breath, so the watcher
+    #: does not reliably observe the event first, and `delegate_second_opinion`
+    #: passes no event at all — for that tool this was never a race, only the
+    #: outcome. Killing here is the backstop; the branch below is still what
+    #: reports a clean cancellation when it wins.
     waiters = {wait_task} | ({watch_task} if watch_task is not None else set())
-    done, _ = await asyncio.wait(
-        waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
-    )
+    try:
+        done, _ = await asyncio.wait(
+            waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+        )
+    except asyncio.CancelledError:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        # `wait_task` is already `process.wait()`, so this reaps the zombie
+        # without starting a second wait for `_reap` to cancel a line later.
+        await asyncio.shield(wait_task)
+        await _reap(out_task, err_task, wait_task, watch_task)
+        raise
 
     if watch_task is not None and watch_task in done and wait_task not in done:
         # Cancel fired before the process exited — kill and drain everything.
@@ -191,17 +244,30 @@ async def run_subprocess_with_sink(
     cancel_event: asyncio.Event | None = None,
     output_parser=None,
 ) -> ToolResult:
-    # `output_parser` (delegate visibility fix-pass 2026-07-10): optional
+    # `output_parser`: optional
     # object with `feed(chunk) -> str`, `flush() -> str`, and
     # `final_output() -> str | None` (see ClaudeDelegateStreamParser). When
     # set, raw stdout is machine framing (NDJSON) — the parser converts each
     # chunk to readable transcript text for the sink/buffer, and
     # `final_output()` supplies the ToolResult text instead of the buffer.
-    async def _emit(kind: str, payload: dict) -> None:
-        if sink is not None:
-            await sink(kind, call_id, payload)
+    async def _emit(kind: str, payload: dict, *, shielded: bool = False) -> None:
+        # `emit_cli_event`, not a bare await. The operator's view is never
+        # load-bearing, and this one was: `cli_start` fires before the
+        # subprocess is spawned and `cli_end` after it has exited cleanly, so
+        # a sink that raised anything the socket wrapper does not catch would
+        # abort a delegate call before it began, or throw away a result the
+        # subprocess had already produced. The other two streaming paths were
+        # moved onto the shared helper and this call site was missed.
+        await emit_cli_event(sink, call_id, kind, payload, shielded=shielded)
 
-    await _emit("cli_start", {"tool": tool_name})
+    # The card opens, and from here every exit closes it. A cancellation
+    # landing on this emit used to leave a card open for a call that never
+    # spawned anything, because nothing above the spawn had a `finally`.
+    try:
+        await _emit("cli_start", {"tool": tool_name})
+    except asyncio.CancelledError:
+        await _emit("cli_end", {"exit_code": -1}, shielded=True)
+        raise
 
     try:
         process = await asyncio.create_subprocess_exec(
@@ -258,10 +324,34 @@ async def run_subprocess_with_sink(
             t.cancel()
         await asyncio.gather(*live, return_exceptions=True)
 
+    #: The one await between spawning the process and reaping it. A
+    #: cancellation delivered HERE used to leave the subprocess running with
+    #: nobody holding it: `claude` or `codex` went on working after the
+    #: operator pressed stop.
+    #:
+    #: Not the same thing as the cooperative branch below. `_cancel_turn` sets
+    #: the shared event AND cancels the task in the same breath, so the watcher
+    #: does not reliably observe the event first, and `delegate_second_opinion`
+    #: passes no event at all — for that tool this was never a race, only the
+    #: outcome. Killing here is the backstop; the branch below is still what
+    #: reports a clean cancellation when it wins.
     waiters = {wait_task} | ({watch_task} if watch_task is not None else set())
-    done, _ = await asyncio.wait(
-        waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
-    )
+    try:
+        done, _ = await asyncio.wait(
+            waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+        )
+    except asyncio.CancelledError:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        await asyncio.shield(wait_task)
+        await _reap(pump_task, wait_task, watch_task)
+        # Shielded, for the reason the helper documents: an unshielded await
+        # in a cancelling frame never reaches the sink, and the card would
+        # stream forever for a call that has stopped.
+        await _emit("cli_end", {"exit_code": -1}, shielded=True)
+        raise
 
     if watch_task is not None and watch_task in done and wait_task not in done:
         # Cancel fired before the process exited — kill and drain.
@@ -276,8 +366,8 @@ async def run_subprocess_with_sink(
     if wait_task not in done:
         # Timeout — process never exited. Kill, reap, report — WITH the tail
         # of whatever it already streamed, so the model can see the run was
-        # productive rather than assuming nothing happened (fix-pass
-        # 2026-07-10; the bare "timed out" string cost a full re-delegation).
+        # productive rather than assuming nothing happened. A bare
+        # "timed out" string costs a full re-delegation.
         try:
             process.kill()
         except ProcessLookupError:

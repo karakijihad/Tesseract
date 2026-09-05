@@ -134,7 +134,7 @@ export function KeysSection() {
       // typed in the boxes, or they have to find the key again.
       setDrafts({});
       setNote(
-        `Saved ${result.written.join(", ")} — restart for it to take effect.`,
+        `Saved ${result.written.join(", ")}. Restart for it to take effect.`,
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "could not save");
@@ -205,7 +205,7 @@ export function KeysSection() {
         delete next[name];
         return next;
       });
-      setNote(`Cleared ${name} — restart for it to take effect.`);
+      setNote(`Cleared ${name}. Restart for it to take effect.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "could not clear");
     } finally {
@@ -218,7 +218,7 @@ export function KeysSection() {
     setNote(null);
     try {
       await postRuntimeRestart("operator restarted after editing .env");
-      setNote("Restarting TESSERACT — this takes a few seconds.");
+      setNote("Restarting TESSERACT. This takes a few seconds.");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -265,7 +265,7 @@ export function KeysSection() {
         <>
           <Note>
             Every key is optional and none is stored anywhere but{" "}
-            <code>{report.env_path}</code>. Values are never shown here — a key
+            <code>{report.env_path}</code>. Values are never shown here. A key
             reads as set or not set, and typing over one replaces it.
           </Note>
           {section?.keys.map((key) => (
@@ -297,7 +297,7 @@ export function KeysSection() {
                   <Hint
                     label={
                       (drafts[key.name] ?? "").trim() !== ""
-                        ? "empty the box first — a typed value and a clear are different instructions"
+                        ? "empty the box first. A typed value and a clear are different instructions."
                         : undefined
                     }
                   >

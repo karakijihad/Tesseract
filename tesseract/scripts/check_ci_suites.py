@@ -1,9 +1,9 @@
 """Keep the CI test-suite manifest honest.
 
-The regression job used to name its directories inline in the workflow. A
-suite added afterwards was never run and nothing said so — the build stayed
-green while coverage narrowed. 24 of 184 suite directories were live when
-this was written.
+A regression job that names its directories inline in the workflow never
+runs a suite added afterwards, and nothing says so: the build stays green
+while coverage narrows. 24 of 184 suite directories were live when this
+was written.
 
 The manifest (`tests/ci-suites.txt`) fixes the silence rather than the
 coverage: every suite directory must appear under `[run]` or `[excluded]`,

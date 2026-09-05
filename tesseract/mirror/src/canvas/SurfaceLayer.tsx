@@ -25,19 +25,32 @@ import type {
   SurfaceDescriptor,
 } from "./protocol/types";
 import { getRenderer, RENDERERS } from "./renderers";
+import {
+  clampX,
+  clampY,
+  maxH,
+  maxW,
+  type LayerBounds,
+} from "./surfaceClamp";
 import { ErrorBoundary } from "../components/common/ErrorBoundary";
 import { Hint } from '../components/ui/Hint';
+import {
+  MaximizeIcon,
+  MinimizeIcon,
+  PinIcon,
+} from '../components/common/icons';
+import type { MaximizeRect } from '../cockpit/maximizeRect';
 
 interface SurfaceLayerProps {
   view: string;
+  // The rect a maximized card fills, worked out once for the whole stage so a
+  // full-screen card and a full-screen view panel are the same box. Null while
+  // the stage has not been measured, which leaves a card at its own geometry.
+  maximizeRect?: MaximizeRect | null;
 }
 
-interface LayerBounds {
-  w: number;
-  h: number;
-}
 
-export function SurfaceLayer({ view }: SurfaceLayerProps) {
+export function SurfaceLayer({ view, maximizeRect = null }: SurfaceLayerProps) {
   const hydrate = useSurfacesStore((s) => s.hydrate);
   const surfaces = useSurfacesStore((s) => s.byView[view]);
   const layerRef = useRef<HTMLDivElement>(null);
@@ -75,7 +88,13 @@ export function SurfaceLayer({ view }: SurfaceLayerProps) {
       data-testid={`surface-layer-${view}`}
     >
       {cards.map((d) => (
-        <SurfaceCard key={d.id} view={view} descriptor={d} bounds={bounds} />
+        <SurfaceCard
+          key={d.id}
+          view={view}
+          descriptor={d}
+          bounds={bounds}
+          maximizeRect={maximizeRect}
+        />
       ))}
     </div>
   );
@@ -85,12 +104,18 @@ interface SurfaceCardProps {
   view: string;
   descriptor: SurfaceDescriptor;
   bounds: LayerBounds;
+  maximizeRect: MaximizeRect | null;
 }
 
 const MIN_W = 160;
 const MIN_H = 120;
 
-function SurfaceCard({ view, descriptor, bounds }: SurfaceCardProps) {
+function SurfaceCard({
+  view,
+  descriptor,
+  bounds,
+  maximizeRect,
+}: SurfaceCardProps) {
   const sendMessage = useWebSocketStore((s) => s.sendMessage);
   // Renderer → tool. Only `clicked` routes anywhere today: it carries a
   // `target` the renderer resolved (a folder row joins its root and name), and
@@ -114,20 +139,29 @@ function SurfaceCard({ view, descriptor, bounds }: SurfaceCardProps) {
   const highlight = useSurfacesStore((s) => s.highlights[descriptor.id]);
   const raiseSurface = useSurfacesStore((s) => s.raiseSurface);
   const liveZ = useSurfacesStore((s) => s.liveZ[descriptor.id]);
+  const togglePin = useSurfacesStore((s) => s.togglePin);
   const toggleMinimize = useSurfacesStore((s) => s.toggleMinimize);
   const toggleMaximize = useSurfacesStore((s) => s.toggleMaximize);
-  const rawMinimized = useSurfacesStore(
-    (s) => s.minimized[descriptor.id] ?? false,
-  );
+  const isPinned = useSurfacesStore((s) => s.pinned[descriptor.id] ?? false);
+  // Stowed = in the dock. The card stays MOUNTED and is hidden with a class,
+  // the way a minimized glass panel is: dropping it from the tree stopped a
+  // lane's polling and fired its `unmounted` report, so putting work away
+  // quietly ended it.
+  const isStowed = useSurfacesStore((s) => s.minimized[descriptor.id] ?? false);
   const isMaximized = useSurfacesStore(
     (s) => s.maximized[descriptor.id] ?? false,
   );
 
-  const locked = descriptor.locked ?? false;
-  // Maximize wins over minimize while active (fills the overlay regardless).
-  const isMinimized = rawMinimized && !isMaximized;
-  // Drag + resize are inert while locked or maximized; the card still raises.
-  const geoLocked = locked || isMaximized;
+  // Held in place either way: the operator's pin, or the `locked` the backend
+  // set on the descriptor. Both read as a pressed pin, so the control says
+  // what the card is doing rather than who decided it — but only the
+  // operator's own pin is theirs to release. `locked` is server-owned with no
+  // client write path, so on a locked card the control is inert and says so,
+  // rather than offering an Unlock that flips a flag the lock outranks.
+  const heldByAgent = descriptor.locked ?? false;
+  const pinned = isPinned || heldByAgent;
+  // Drag + resize are inert while pinned or maximized; the card still raises.
+  const geoLocked = pinned || isMaximized;
   const Renderer = getRenderer(descriptor.type);
   const known = descriptor.type in RENDERERS;
 
@@ -136,11 +170,15 @@ function SurfaceCard({ view, descriptor, bounds }: SurfaceCardProps) {
   // only cares when the answer changes.
   const reportedRef = useRef<string | null>(null);
   const report = useCallback<ReportRender>(
-    (status, detail = "") => {
-      const key = `${status}:${detail}`;
+    (status, detail = "", controls) => {
+      // The dedupe key includes the verbs: a card that mounts and then learns
+      // it can be driven (a player API that boots late) is saying something
+      // new, and dropping it as a repeat would leave `surface_list` reporting
+      // unknown forever.
+      const key = `${status}:${detail}:${controls ? controls.join(",") : "?"}`;
       if (reportedRef.current === key) return;
       reportedRef.current = key;
-      void reportSurfaceRender(view, descriptor.id, status, detail);
+      void reportSurfaceRender(view, descriptor.id, status, detail, controls);
     },
     [view, descriptor.id],
   );
@@ -155,7 +193,7 @@ function SurfaceCard({ view, descriptor, bounds }: SurfaceCardProps) {
     if (!known) {
       report(
         "errored",
-        `no renderer for surface type '${descriptor.type}' — the card is showing a JSON dump of its own props`,
+        `no renderer for surface type '${descriptor.type}'. The card is showing a JSON dump of its own props.`,
       );
     } else if (reportedRef.current === null) {
       report("mounted");
@@ -187,7 +225,10 @@ function SurfaceCard({ view, descriptor, bounds }: SurfaceCardProps) {
     const by = descriptor.position.y;
     let last = { x: bx, y: by };
     const onMove = (ev: PointerEvent) => {
-      last = { x: bx + (ev.clientX - ox), y: by + (ev.clientY - oy) };
+      last = {
+        x: clampX(bx + (ev.clientX - ox), w, bounds),
+        y: clampY(by + (ev.clientY - oy), h, bounds),
+      };
       dragSurface(view, descriptor.id, last);
     };
     const onUp = () => {
@@ -224,14 +265,19 @@ function SurfaceCard({ view, descriptor, bounds }: SurfaceCardProps) {
         let ny = by;
         let nw = bw;
         let nh = bh;
-        if (dx === 1) nw = Math.max(MIN_W, bw + mx);
+        // A trailing edge may not grow past the layer; a leading edge may not
+        // drag the card's own origin out of it. Same bound either way, so the
+        // card stays whole and grabbable at every edge.
+        if (dx === 1)
+          nw = Math.max(MIN_W, Math.min(bw + mx, maxW(bx, bounds, MIN_W)));
         else if (dx === -1) {
-          nw = Math.max(MIN_W, bw - mx);
+          nw = Math.max(MIN_W, Math.min(bw - mx, right));
           nx = right - nw;
         }
-        if (dy === 1) nh = Math.max(MIN_H, bh + my);
+        if (dy === 1)
+          nh = Math.max(MIN_H, Math.min(bh + my, maxH(by, bounds, MIN_H)));
         else if (dy === -1) {
-          nh = Math.max(MIN_H, bh - my);
+          nh = Math.max(MIN_H, Math.min(bh - my, bottom));
           ny = bottom - nh;
         }
         lastPos = { x: nx, y: ny };
@@ -249,13 +295,23 @@ function SurfaceCard({ view, descriptor, bounds }: SurfaceCardProps) {
       window.addEventListener("pointerup", onUp);
     };
 
+  // A maximized card fills the stage's maximize rect, which is the same box a
+  // maximized view panel fills. Without one measured yet, it falls back to the
+  // whole overlay rather than to nothing.
   const geometry = isMaximized
-    ? { left: 0, top: 0, width: bounds.w || "100%", height: bounds.h || "100%" }
-    : { left: x, top: y, width: w, height: isMinimized ? "auto" : h };
+    ? maximizeRect
+      ? {
+          left: maximizeRect.x,
+          top: maximizeRect.y,
+          width: maximizeRect.w,
+          height: maximizeRect.h,
+        }
+      : { left: 0, top: 0, width: bounds.w || "100%", height: bounds.h || "100%" }
+    : { left: x, top: y, width: w, height: h };
 
   return (
     <div
-      className={`surface-card${lit ? " surface-card--highlight" : ""}${locked ? " surface-card--locked" : ""}${isMinimized ? " surface-card--minimized" : ""}${isMaximized ? " surface-card--maximized" : ""}`}
+      className={`surface-card${lit ? " surface-card--highlight" : ""}${isStowed ? " surface-card--stowed" : ""}${isMaximized ? " surface-card--maximized" : ""}`}
       data-surface-id={descriptor.id}
       data-surface-type={descriptor.type}
       onPointerDown={() => raiseSurface(descriptor.id)}
@@ -265,37 +321,58 @@ function SurfaceCard({ view, descriptor, bounds }: SurfaceCardProps) {
         <span className="surface-card__title">
           {descriptor.title ?? descriptor.type}
         </span>
-        {locked ? (
-          <span className="surface-card__lock t-meta" aria-label="locked">
-            🔒
-          </span>
-        ) : (
-          <div className="surface-card__actions">
-            <Hint label={isMaximized ? "Restore" : "Maximize"}>
-              <IconButton
-                ariaLabel={isMaximized ? "Restore surface" : "Maximize surface"}
-                onClick={() => toggleMaximize(view, descriptor.id)}
-                onPointerDown={(e) => e.stopPropagation()}
-              >
-                {isMaximized ? "❐" : "▢"}
-              </IconButton>
-            </Hint>
-            <Hint label={isMinimized ? "Restore" : "Minimize"}>
-              <IconButton
-                ariaLabel={isMinimized ? "Restore surface" : "Minimize surface"}
-                onClick={() => toggleMinimize(view, descriptor.id)}
-                onPointerDown={(e) => e.stopPropagation()}
-              >
-                {isMinimized ? "▲" : "▼"}
-              </IconButton>
-            </Hint>
-            <CloseButton
-              ariaLabel="Close surface"
-              onClick={() => close(view, descriptor.id)}
+        {/* The same four controls a view panel carries, in the same order. */}
+        <div className="surface-card__actions">
+          <Hint
+            label={
+              heldByAgent
+                ? "The assistant is holding this one in place"
+                : pinned
+                  ? "Unlock"
+                  : "Hold in place"
+            }
+          >
+            <IconButton
+              active={pinned}
+              disabled={heldByAgent}
+              ariaLabel={
+                heldByAgent
+                  ? "Held in place by the assistant"
+                  : pinned
+                    ? "Unlock surface"
+                    : "Pin surface in place"
+              }
+              onClick={() => togglePin(view, descriptor.id)}
               onPointerDown={(e) => e.stopPropagation()}
-            />
-          </div>
-        )}
+            >
+              <PinIcon filled={pinned} />
+            </IconButton>
+          </Hint>
+          <Hint label="Put away, into the dock">
+            <IconButton
+              ariaLabel="Minimize surface to the dock"
+              onClick={() => toggleMinimize(view, descriptor.id)}
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              <MinimizeIcon />
+            </IconButton>
+          </Hint>
+          <Hint label={isMaximized ? "Restore" : "Maximize"}>
+            <IconButton
+              active={isMaximized}
+              ariaLabel={isMaximized ? "Restore surface" : "Maximize surface"}
+              onClick={() => toggleMaximize(view, descriptor.id)}
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              <MaximizeIcon on={isMaximized} />
+            </IconButton>
+          </Hint>
+          <CloseButton
+            ariaLabel="Close surface"
+            onClick={() => close(view, descriptor.id)}
+            onPointerDown={(e) => e.stopPropagation()}
+          />
+        </div>
       </div>
       <div className="surface-card__body">
         <ErrorBoundary
@@ -309,7 +386,7 @@ function SurfaceCard({ view, descriptor, bounds }: SurfaceCardProps) {
           />
         </ErrorBoundary>
       </div>
-      {!geoLocked && !isMinimized && (
+      {!geoLocked && (
         <ResizeHandles
           inset
           onResizeStart={(dir) =>

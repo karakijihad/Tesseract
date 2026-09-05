@@ -116,7 +116,7 @@ def _detect_gpu() -> GpuInfo:
     except ImportError:
         pass
 
-    # Phase 18 audit M5 — `nvidia-smi` fallback when pynvml is absent.
+    # `nvidia-smi` fallback when pynvml is absent.
     # Common case on a Windows host with the NVIDIA driver installed
     # but the Python binding not in the env. Single CSV query, 2 s
     # timeout, no shell.

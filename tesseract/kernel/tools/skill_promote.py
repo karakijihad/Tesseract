@@ -1,11 +1,14 @@
 """skill_promote tool — move a quarantined skill into the active set.
 
-Phase 4 (capability-growth), mirror of `agent_promote` / W7-A. `skill_create`
-writes new skills under `workspace/skills/pending/<name>/` so they cannot be
-surfaced live even if the ASK gate is bypassed. `skill_promote` is the explicit
-operator action that moves a pending skill into the active `workspace/skills/`
-tree. Returns ASK so the executor consults the operator even if a posture
-override would otherwise auto-allow.
+Mirror of `agent_promote`. `skill_create` writes new skills under
+`workspace/skills/pending/<name>/` so they cannot be
+surfaced live even if the gate is bypassed. `skill_promote` is the explicit
+action that moves a pending skill into the active `workspace/skills/` tree.
+Its posture is `permissions.yaml`'s for the mode: `ask` under the shipped
+default, so the operator answers, and `auto` under `free`. `promotion_is_auto`
+below asks the same policy the same question on behalf of `skill_create` and
+the extractor, so a draft is promoted without a hand exactly where a call
+would be.
 
 Unlike agents there is no INDEX.md to append — the skills manifest is derived
 from the loader at prompt-build time, so promotion is a single atomic
@@ -34,6 +37,34 @@ from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, Too
 from tesseract.workspace_events import EventStore
 
 logger = logging.getLogger(__name__)
+
+
+def promotion_is_auto(registry: Any) -> bool:
+    """Whether `skill_promote` resolves to auto in the mode the install runs in.
+
+    The one question behind a draft being promoted without a hand: asked of
+    the same policy the `skill_promote` tool call itself would be judged by,
+    so a draft the runtime wrote is promoted exactly where the operator has
+    given the assistant that decision (`free`) and waits on the card exactly
+    where they kept it (`max`, the shipped default). A registry with no policy
+    attached, which is a test or a REPL, answers no: nothing is promoted on
+    the strength of a missing file.
+    """
+    from pydantic import BaseModel
+
+    from tesseract.kernel.tools.base import PermissionResult
+
+    policy = getattr(registry, "permission_policy", None)
+    if policy is None:
+        return False
+
+    class _NoInput(BaseModel):
+        pass
+
+    try:
+        return policy.get_posture("skill_promote", _NoInput()) is PermissionResult.PASSTHROUGH
+    except Exception:  # noqa: BLE001 — a policy that cannot answer is a no
+        return False
 
 
 def promote_pending_skill(
@@ -74,7 +105,7 @@ def promote_pending_skill(
     if entry.name != name:
         return None, (
             f"Pending skill folder {name!r} declares frontmatter name "
-            f"{entry.name!r} — they must match. Fix the draft before promoting."
+            f"{entry.name!r}; they must match. Fix the draft before promoting."
         )
 
     dst = skills_dir / name
@@ -142,6 +173,7 @@ class SkillPromoteTool(Tool):
         "to draft a new skill, use `skill_create`; to change the wording of an "
         "already-active skill, use `skill_refine`."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(self, skills_dir: Path, event_store: Optional[EventStore] = None) -> None:
         """``event_store`` lets a chat-side promotion settle any open
@@ -166,7 +198,12 @@ class SkillPromoteTool(Tool):
         return False
 
     def check_permissions(self, tool_input: BaseModel, context: ToolContext) -> PermissionResult:
-        return PermissionResult.ASK
+        # `permissions.yaml` decides, per mode: `ask` where the operator keeps
+        # the promotion, `auto` where they have given the assistant that
+        # decision. A hardcoded ASK here bypassed the file that is the
+        # authority on what asks, so an install set to run on its own still
+        # stopped at every promotion.
+        return PermissionResult.PASSTHROUGH
 
     async def run(self, tool_input: BaseModel, context: ToolContext) -> ToolResult:
         inp = (

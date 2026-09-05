@@ -79,6 +79,35 @@ def _mint_controller_id() -> str:
     return f"ctrl-{secrets.token_hex(6)}"
 
 
+def _with_seat_note(base: str, note: str) -> str:
+    """Add the seat constraint to the HEAD, not to the whole prompt.
+
+    `PromptParts` is a `str` subclass, so `base + note` is `str.__add__` and
+    hands back a plain `str` that has lost `head`, `late` and `sections` — the
+    degradation `PromptParts`' own docstring warns about. Each of the three
+    costs something different, and all three have to survive at once:
+
+    - `late` lost means the clock and the autonomy digest go back into the
+      cached head, stale for the whole conversation, for exactly the
+      long-running controller sessions that can least afford it.
+    - `sections` lost means `chat.py::_head_for_turn` holds nothing, so this
+      would be the one surface whose memory capsule re-reads the conversation
+      every time a background job writes. A per-surface difference in what
+      caching does, invented by an append.
+    - The note itself has to stay: it is a HARD RULE, and `_head_for_turn`
+      keeps it by re-joining only the span the sections account for and
+      carrying whatever follows.
+
+    Module level, and not a closure inside `_build_chat_session`, so a test
+    can call the thing that actually runs.
+    """
+    from tesseract.brain.prompt import PromptParts
+
+    if isinstance(base, PromptParts):
+        return PromptParts(base.head + note, base.late, base.sections)
+    return base + note
+
+
 def _registry_without(registry: "ToolRegistry", exclude: set[str]) -> "ToolRegistry":
     """Return a registry copy minus ``exclude`` names. Returns the input
     unchanged when ``exclude`` is empty or no name matches (no needless
@@ -559,15 +588,15 @@ class ControllerRuntime:
         # picks up the rebuilt adapter / tool registry / prompt without
         # importing stale history.
         self._chat_sessions: dict[str, Any] = {}
-        # X-3 — real providers; scheduler is built without .start() (Mirror
+        # Real providers; scheduler is built without .start() (Mirror
         # owns the tick loop).
         self.scheduler: Any | None = None
-        # X-4 Session A — controller-owned LaneManager. Long-lived; survives
+        # Controller-owned LaneManager. Long-lived; survives
         # brain restarts because lane state is file-canonical under
         # <TESSERACT_HOME>/controller/lanes/. Built once at boot; not
         # rebuilt on reload (lanes outlive the brain's adapter config).
         self.lane_manager: Any | None = None
-        # X-5 — name→lane_id binding layer over `lane_manager`. Rebuilt
+        # Name→lane_id binding layer over `lane_manager`. Rebuilt
         # whenever the lane manager is rebuilt so both holders stay in
         # lockstep (the binding wraps the underlying manager directly).
         self.named_lane_manager: Any | None = None
@@ -660,7 +689,7 @@ class ControllerRuntime:
             # Cleared, not left stale: a rebuild that failed means the config
             # this tuple was resolved from is gone, and handing it to
             # ``build_tool_registry`` would wire the registry to a chain the
-            # controller itself no longer uses.
+            # controller does not use.
             self.chat_runtime = None
             failed.append(f"adapter: {exc}")
         return reloaded, failed
@@ -688,6 +717,8 @@ class ControllerRuntime:
             # chain, so reusing the live one is also the correct answer.
             registry, *_ = build_tool_registry(
                 policy=policy, chat_runtime=self.chat_runtime,
+                # The live runtime, so the operator's own tools load.
+                include_home_tools=True,
             )
             self.tool_registry = registry
             self.policy = policy
@@ -698,7 +729,7 @@ class ControllerRuntime:
         return reloaded, failed
 
     def _rebuild_scheduler(self) -> tuple[list[str], list[str]]:
-        """X-3 — unstarted engine (Mirror owns the tick loop); provides
+        """unstarted engine (Mirror owns the tick loop); provides
         create/list/remove persistence."""
         reloaded: list[str] = []
         failed: list[str] = []
@@ -863,6 +894,8 @@ class ControllerRuntime:
             # SOUL.md edits land inside the active session. The
             # controller follows the same pattern; cached `system_prompt`
             # acts as the boot-time fallback when assembly fails.
+            from tesseract.brain.prompt import PromptParts
+
             try:
                 # `session_registry`, not the controller's own: the seat
                 # constraint physically removes the other seats' delegate
@@ -875,7 +908,7 @@ class ControllerRuntime:
                 base = self.system_prompt or ""
             if seat_tool:
                 others = sorted(set(SEAT_TOOLS.values()) - {seat_tool})
-                base += (
+                note = (
                     f"\n\n# Session seat constraint\n\n"
                     f"HARD RULE for this session: use `{seat_tool}` for ALL "
                     f"coding and auditing work. "
@@ -883,6 +916,7 @@ class ControllerRuntime:
                     + " is unavailable in this session — do not attempt to "
                     "call it."
                 )
+                base = _with_seat_note(base, note)
             return base
 
         # trio W3 — controller sessions are roots of their own process
@@ -900,9 +934,14 @@ class ControllerRuntime:
         # work in tests.
         compact_threshold = None
         keep_recent_turns = None
+        prompt_char_budget = None
         if cfg is not None:
             compact_threshold = getattr(cfg, "compact_threshold", None)
             keep_recent_turns = getattr(cfg, "keep_recent_turns", None)
+            # The character ceiling belongs to the model, and a controller
+            # session picks its own. Left unset it took the dataclass default,
+            # a number sized for nothing this session talks to.
+            prompt_char_budget = getattr(cfg, "prompt_char_budget", None)
 
         wiring = ChatSessionWiring(
             adapter=self.adapter,
@@ -936,6 +975,7 @@ class ControllerRuntime:
             options=self.adapter_options,
             compact_threshold=compact_threshold,
             keep_recent_turns=keep_recent_turns,
+            prompt_char_budget=prompt_char_budget,
         )
         return build_chat_session(wiring)
 
@@ -1225,11 +1265,11 @@ async def run_controller(*, host: str = "127.0.0.1", port: int = 0) -> int:
         dispatch_turn=runtime.make_dispatch_turn(),
         reload_callback=runtime.reload,
         on_session_deleted=runtime.drop_session,
-        # X-4 Session C — daemon exposes lane.* IPC for external brains
+        # Daemon exposes lane.* IPC for external brains
         # (Mirror, ad-hoc TUI clients). The runtime owns the manager so
         # in-process callers (this brain) and IPC callers see one instance.
         lane_manager=runtime.lane_manager,
-        # CV-1 — named-lane binding layer over the same manager, so Mirror's
+        # Named-lane binding layer over the same manager, so Mirror's
         # lane bridge can resolve + ensure named lanes via IPC.
         named_lane_manager=runtime.named_lane_manager,
     )
@@ -1302,9 +1342,9 @@ def main(argv: list[str] | None = None) -> int:
     # (already seeded on disk) or run directly per this module's own
     # `python -m tesseract.scripts.agent_controller` entry point. Same
     # seed-before-boot order as `mirror/server/__main__.py::main` and
-    # `supervisor/__main__.py::main`. Agent cards no longer need seeding —
-    # they are read from the app tree — but the copies an older install made
-    # still shadow them, so the unseed runs in the same slot.
+    # `supervisor/__main__.py::main`. Agent cards are read from the app tree
+    # and are not seeded, but a copy an older install made still shadows
+    # them, so the unseed runs in the same slot.
     ensure_config_seeded()
     ensure_workspace_seeded()
     unseed_copied_agents()

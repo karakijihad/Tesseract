@@ -1,4 +1,4 @@
-"""AU-16 S2 — entity-keyed topic tree.
+"""Entity-keyed topic tree.
 
 A topic file at ``<TESSERACT_HOME>/memory-store/trees/topic/<entity-slug>.md``
 is created lazily when an entity name (drawn from a leaf's
@@ -23,6 +23,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from tesseract.lib.atomic_replace import replace_with_retry
 from tesseract.memory.leaf_seals import Seal
 from tesseract.memory.leaves import _resolve_home
 
@@ -71,7 +72,7 @@ def list_active_topics() -> list[str]:
 
 
 def activate_topic(entity: str) -> Path:
-    """Create an empty topic file with the AU-16 frontmatter banner.
+    """Create an empty topic file with the frontmatter banner.
     Idempotent — returns the existing path if already active."""
     target = topic_tree_path(entity)
     if target.exists():
@@ -130,7 +131,7 @@ def append_seal(
 
     tmp = target.with_name(f"{target.stem}.{os.getpid()}.{secrets.token_hex(3)}.tmp")
     tmp.write_text(new_body, encoding="utf-8")
-    os.replace(tmp, target)
+    replace_with_retry(tmp, target)
     return True
 
 

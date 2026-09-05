@@ -45,9 +45,17 @@ export async function reportSurfaceRender(
   surfaceId: string,
   status: SurfaceRenderStatus,
   detail = '',
+  // What this card can be told to do, in `surface_control`'s verbs. Reported
+  // rather than derived from the card's type, because for a framed page it
+  // depends on the page: two `webview` cards can differ. Omitted means "I did
+  // not say", which `surface_list` shows as unknown; an empty array is the
+  // card saying it takes nothing.
+  controls?: readonly string[],
 ): Promise<void> {
   const url = `${BACKEND_BASE}/api/surfaces/${encodeURIComponent(view)}/${encodeURIComponent(surfaceId)}/render`;
-  const body = JSON.stringify({ status, detail });
+  const body = JSON.stringify(
+    controls === undefined ? { status, detail } : { status, detail, controls },
+  );
   if (status === 'unmounted' && typeof navigator?.sendBeacon === 'function') {
     try {
       navigator.sendBeacon(url, new Blob([body], { type: 'application/json' }));

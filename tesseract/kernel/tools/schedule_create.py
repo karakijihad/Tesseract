@@ -1,9 +1,9 @@
 """schedule_create tool — agent-authored runtime schedule jobs.
 
-Phase 18 Task B. ASK-gated by default (operator-visible config edit).
+ASK-gated by default (operator-visible config edit).
 Calls `SchedulerEngine.add_job_runtime` which persists to `schedule.yaml`
 and arms the new job in the live registry. The watcher's debounced
-reload (Task A) sees the same write but the diff is empty (registry
+reload sees the same write but the diff is empty (registry
 already updated) so no spurious toast fires.
 """
 
@@ -31,27 +31,61 @@ class ScheduleCreateInput(BaseModel):
     handler: str = Field(
         description=(
             "Dotted import path of a BaseJob subclass under "
-            "`tesseract.scheduler.tasks.*` (whitelist enforced). Unless the "
-            "operator named a specific one, this is "
-            "'tesseract.scheduler.tasks.scheduled_task.ScheduledTaskJob' — the "
-            "generic primitive that runs a described task on a cadence, so a "
-            "recurring task does not need a job module written for it."
+            "`tesseract.scheduler.tasks.*` (whitelist enforced). Two generic "
+            "ones cover almost everything, so a recurring task rarely needs a "
+            "job module written for it. To run a described task, use "
+            "'tesseract.scheduler.tasks.scheduled_task.ScheduledTaskJob'. To "
+            "run a tool on a cadence, whether it is one the app ships, one of "
+            "the operator's own, or `invoke_agent`, use "
+            "'tesseract.scheduler.tasks.tool_call.ToolCallJob'."
         )
     )
     summary: str = Field(
         description=(
-            "One line saying what this job is for, in the operator's words — it "
-            "is what they read in WHAT-RUNS.md and the Schedule tab. Required: a "
+            "One line saying what this job is for, in the operator's words. It "
+            "is what they read in WHAT-RUNS.md and in Managed system. Required: a "
             "row nobody can explain is a row nobody can decide to keep."
         )
     )
-    enabled: bool = Field(default=True, description="Disable to dry-run before arming.")
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Whether the job actually runs. It starts off, on purpose: making "
+            "a row is describing a plan and arming it is agreeing to it, and "
+            "those are two different decisions. The operator turns it on when "
+            "they are happy with it, or asks you to."
+        ),
+    )
     on_failure: str = Field(default="log", description="`log`, `alert`, or `disable`.")
     max_retries: int = Field(default=0, description="Per-fire retry count (0 = run once).")
     backoff_seconds: int = Field(default=0, description="Sleep between retries.")
     config: dict[str, Any] = Field(
         default_factory=dict,
-        description="Handler-specific config dict. Passed to JobContext.config at fire time.",
+        description=(
+            "Handler-specific config, passed to the job at fire time. For "
+            "ScheduledTaskJob: `prompt` is what to do each time and is "
+            "required, `title` is what to call the row in the message it "
+            "sends, and `queries` is a list of web searches to run first for "
+            "fresh grounding, omitted for a task that needs none. For "
+            "ToolCallJob: `tool` is the registered tool name and is required, "
+            "`args` is what to call it with, and `title` names the row. A "
+            "scheduled tool has to be one that already runs without asking, "
+            "because nobody is there to answer at 3am, so a tool set to ask "
+            "is refused here and the operator changes it in permissions.yaml "
+            "if they want it running on its own. Do not put "
+            "a channel or a chat id in here: where the result goes is the "
+            "`delivery` field, or the routing you already have."
+        ),
+    )
+    delivery: list[str] | None = Field(
+        default=None,
+        description=(
+            "Channels this row's messages go to, overriding `routing.yaml` for "
+            "this row only. Leave it unset unless the operator said where they "
+            "want it: unset means the message goes wherever that kind already "
+            "goes, which is what they will expect. An empty list means it goes "
+            "nowhere off this machine and stays on the screen."
+        ),
     )
 
 
@@ -67,6 +101,7 @@ class ScheduleCreateTool(Tool):
         "a single one-time reminder, which is `alarm_set`; changing an existing job is "
         "`schedule_update`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -101,11 +136,15 @@ class ScheduleCreateTool(Tool):
                     backoff_seconds=inp.backoff_seconds,
                 ),
                 config=dict(inp.config),
+                delivery=(
+                    None if inp.delivery is None else list(inp.delivery)
+                ),
             )
         except (ValueError, KeyError) as exc:
             return ToolResult(output=f"schedule_create failed: {exc}", is_error=True)
+        state = "on" if cfg.enabled else "off until you turn it on"
         return ToolResult(
-            output=f"job '{cfg.name}' armed (cadence={cfg.cadence}, enabled={cfg.enabled})",
+            output=f"job '{cfg.name}' created (cadence={cfg.cadence}, {state})",
             metadata={
                 "name": cfg.name,
                 "cadence": cfg.cadence,

@@ -2,9 +2,8 @@
 
 Claude Code parity: TodoWrite analog. Use when a turn requires more than
 ~3 distinct steps so the operator can follow progress without having to
-infer it from tool calls. Ephemeral per session — not persisted across
-sessions (yet — Phase 1 of the CLI-parity plan folds into schema-2
-day-files).
+infer it from tool calls. Ephemeral per session, not persisted across
+sessions.
 
 Each item: {id, title, status} where status ∈ {pending, in_progress,
 completed}. Calling `tasks_set` REPLACES the entire list. Use
@@ -56,13 +55,14 @@ class TasksSetTool(Tool):
     use_when: ClassVar[str] = (
         "Use when a turn needs more than a few distinct steps, so the operator can follow progress "
         "instead of inferring it from tool calls. Skip for single-tool or trivial answers. Give "
-        "each step a short stable id ('1', '2', 'verify') — `tasks_update` addresses them by id, "
+        "each step a short stable id ('1', '2', 'verify'), because `tasks_update` addresses them by id, "
         "so an id that changes between calls loses the step."
     )
     not_when: ClassVar[str] = (
-        "flipping one item's status, which is `tasks_update` — calling `tasks_set` again replaces "
+        "flipping one item's status, which is `tasks_update`. Calling `tasks_set` again replaces "
         "the whole list."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

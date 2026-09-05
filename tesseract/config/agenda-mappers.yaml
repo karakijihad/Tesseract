@@ -4,13 +4,10 @@
 # Each block below is one mapper. Set `enabled: false` to stop a source from
 # generating agenda items.
 #
-# One mapper besides the operator's own entry point, and that is the shape this
-# file is meant to have: a source that reports something that HAPPENED. The
-# self-reflection heartbeat, the strategist, the operator-view watcher, the
-# vault signal that never had a publisher, and the two research jobs that
-# proposed changes to a tree an update replaces wholesale were all deleted with
-# their producers. Between them they wrote most of the agenda items this machine
-# has ever held, and no outcome worth keeping.
+# A mapper belongs here only for a source that reports something that
+# HAPPENED. A source that merely wants attention writes agenda items nobody
+# acts on, which is why there is one mapper here besides the operator's own
+# entry point.
 #
 # A mapper added here needs a producer declared in
 # `orchestrator/autonomy/mappers/__init__.py::SOURCE_PRODUCERS`, and boot checks

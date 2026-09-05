@@ -1,7 +1,7 @@
 """Background-spawn registry for delegate_* / invoke_agent tools.
 
-Started as Phase 4 of the assistant reboot CLI-parity plan (2026-05-10). A
-delegated/agent task runs as an `asyncio.Task`; the operator/the assistant can
+A delegated/agent task runs as an `asyncio.Task`; the operator or the
+assistant can
 `spawn_check` for status, `spawn_await` to block on the result later, or
 `spawn_cancel` to terminate.
 
@@ -68,6 +68,25 @@ def _bounded_one_line(text: str | None, *, limit: int = 200) -> str | None:
     return first[:limit] or None
 
 
+async def _screened_spawn(
+    coro: Coroutine[Any, Any, ToolResult], kind: str
+) -> ToolResult:
+    """Await a spawn's own coroutine and screen what it produced.
+
+    Imported at call time so `spawns` does not import `brain.tools`, which
+    imports the tool registry and the permission engine — a module-level edge
+    from here to there would drag both into every importer of this file.
+
+    A failure to screen degrades exactly as it does at `execute_tool`: the
+    result is withheld and says why, rather than a background job taking the
+    runtime down with it.
+    """
+    result = await coro
+    from tesseract.brain.tools import _screen_result
+
+    return _screen_result(result, kind)
+
+
 def _spawn_result_summary(handle: "SpawnHandle") -> str | None:
     """One-line outcome summary for a finished spawn's ActivityRecord ``result``.
 
@@ -102,12 +121,13 @@ def _spawn_record(
         provider=_delegate_provider(handle.kind, handle.provider),
         goal=goal_snippet,
         result=result,
+        lane_id=handle.lane_id,
         started_at=handle.started_at,
     )
 
 
 def _activity_register_spawn(handle: "SpawnHandle") -> None:
-    """AS-1 — project a background spawn into the Unified Activity Registry
+    """Project a background spawn into the Unified Activity Registry
     so the Mirror reflects it as live work. Delegates are ``ephemeral`` —
     they die with the process and are never rebuilt from disk.
 
@@ -152,6 +172,42 @@ def _activity_update_spawn(handle: "SpawnHandle") -> None:
         )
 
 
+def handle_age_seconds(handle: "SpawnHandle", now: datetime) -> Optional[float]:
+    """How long this handle has been running, or ``None`` if it will not say.
+
+    A `started_at` that does not parse is not a spawn to reason about: the
+    watchdog and the heartbeat both skip it rather than guessing an age. Naive
+    timestamps are read as UTC, which is what `_now_iso` writes.
+    """
+    try:
+        started = datetime.fromisoformat(handle.started_at)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    return (now - started).total_seconds()
+
+
+def handle_quiet_seconds(handle: "SpawnHandle", now: datetime) -> Optional[float]:
+    """How long since this spawn last emitted anything, or ``None`` if it does
+    not report activity (no lane, or nothing has come out of it yet).
+
+    ``None`` is not "quiet forever": a caller that treated it as a long silence
+    would report every lane-less spawn as stalled. It means "this handle cannot
+    answer", and the answer belongs to whoever asked.
+    """
+    stamp = getattr(handle, "last_activity_at", None)
+    if not stamp:
+        return None
+    try:
+        seen = datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return None
+    if seen.tzinfo is None:
+        seen = seen.replace(tzinfo=timezone.utc)
+    return (now - seen).total_seconds()
+
+
 @dataclass
 class SpawnHandle:
     """Per-spawn record. The Task isolates the work; the result is
@@ -192,6 +248,25 @@ class SpawnHandle:
     # A delegate seat is named for the job, so the kind cannot be sniffed
     # for it — and a borrowed worker would be misreported if it were.
     provider: Optional[str] = None
+    # The ephemeral lane a delegation runs its turn on, learned once the lane
+    # is open (the spawn is registered first, so it starts out unset).
+    lane_id: Optional[str] = None
+    # Progress, as opposed to liveness. `status()` answers "has the task
+    # finished", which a stalled spawn and a working one answer identically;
+    # these two answer "is anything still coming out of it". Stamped by the
+    # substrate that has the events already in hand, so nothing reads a log to
+    # find out. `None` means this substrate does not report activity at all,
+    # which must stay distinguishable from "reported none yet" — a reader that
+    # collapsed the two would call a lane-less spawn silent.
+    last_activity_at: Optional[str] = None
+    activity_events: int = 0
+
+    def note_activity(self, count: int = 1) -> None:
+        """Record that `count` events came out of this spawn, just now."""
+        if count <= 0:
+            return
+        self.activity_events += count
+        self.last_activity_at = _now_iso()
 
     def is_running(self) -> bool:
         return not self.task.done()
@@ -269,7 +344,7 @@ def mark_input_required(handle: SpawnHandle, flag: bool) -> None:
 
 
 class SpawnReservation:
-    """A claimed-but-not-yet-registered spawn slot (trio W3 / audit M5).
+    """A claimed-but-not-yet-registered spawn slot.
 
     Callers that must launch work *before* they have the coroutine to register
     (e.g. ``start_controller_session`` awaits the dispatcher to learn the
@@ -399,7 +474,29 @@ class SpawnRegistry:
         # W4): the Mirror ask_fn detects background-spawn origin from
         # `asyncio.current_task().get_name()` to park unattended ASKs
         # instead of denying them. Rename only with that call site.
-        task = asyncio.create_task(coro, name=f"spawn:{handle_id}")
+        #
+        # The coroutine is screened for stored credentials HERE, and this is
+        # the seam that makes that possible: every background spawn in the
+        # runtime enters through this method — the two delegates, `invoke_agent`,
+        # `lane_turn`, the controller pair and `session_tools` — and what it
+        # returns is read in three places that never see `execute_tool`. Its
+        # `ToolResult` goes to the durable completion record
+        # (`completion_store.record`, from this method's own done-callback),
+        # to the operator-visible activity summary (`_spawn_result_summary`),
+        # and to `spawn_check` / `spawn_await`.
+        #
+        # `execute_tool` screens only the placeholder these tools return
+        # immediately ("spawned in background: handle=..."), because the real
+        # work has not run yet. Background is the DEFAULT for delegates, so
+        # before this the usual path put a delegate's raw CLI output straight
+        # into a cleartext file outside all four boundaries.
+        #
+        # Wrapped after admission, not before: the `SpawnCapExceeded` branch
+        # above closes `coro` itself, and closing a wrapper would leave the
+        # inner coroutine unawaited and warn at GC.
+        task = asyncio.create_task(
+            _screened_spawn(coro, kind), name=f"spawn:{handle_id}"
+        )
         started_at = _now_iso()
         handle = SpawnHandle(
             handle_id=handle_id,
@@ -476,6 +573,23 @@ class SpawnRegistry:
                 )
         return handle
 
+    def mark_lane(self, handle: SpawnHandle, lane_id: str) -> None:
+        """Bind a running spawn to the lane it opened, and re-publish its record.
+
+        A delegation IS a turn on an ephemeral lane, so the spawn and the lane
+        are one unit of work under two ids. The lane opens inside the spawned
+        coroutine, after the handle exists, so this is a second write rather
+        than a field on ``register``. Naming it lets the Mirror show one row
+        for the pair and point that row at the lane's event stream."""
+        handle.lane_id = lane_id
+        _activity_register_spawn(handle)
+
+    def note_activity(self, handle: SpawnHandle, count: int) -> None:
+        """Stamp progress on a running spawn. Duck-typed entry point for the
+        kernel, which holds a registry rather than a handle and must not
+        import this module."""
+        handle.note_activity(count)
+
     def get(self, handle_id: str) -> SpawnHandle | None:
         return self._handles.get(handle_id)
 
@@ -497,6 +611,22 @@ class SpawnRegistry:
                 out.append(h)
         return out
 
+    def list_running(self, *, exclude_parked: bool = True) -> list[SpawnHandle]:
+        """The handles this registry is still waiting on.
+
+        One definition of "still going", because there are two callers who
+        must not disagree about it: the per-turn halt watchdog below, and the
+        out-of-turn heartbeat (`mirror/server/spawn_heartbeat.py`). A handle
+        parked on an operator question is excluded by default: it is waiting
+        in the approvals pane by design, and calling it overdue invites a
+        cancel on work that is not stuck.
+        """
+        return [
+            h
+            for h in self._handles.values()
+            if h.is_running() and not (exclude_parked and h.input_required)
+        ]
+
     def sweep_stalled(
         self, max_age_seconds: float, *, now: Optional[datetime] = None
     ) -> list[SpawnHandle]:
@@ -511,20 +641,12 @@ class SpawnRegistry:
         """
         ref = now or datetime.now(timezone.utc)
         out: list[SpawnHandle] = []
-        for hid, h in self._handles.items():
-            if hid in self._stalled or not h.is_running():
+        for h in self.list_running():
+            if h.handle_id in self._stalled:
                 continue
-            if h.input_required:
-                # trio W4 — parked on an operator question, not wedged. A
-                # stall nudge here would invite spawn_cancel on work that is
-                # deliberately waiting in the approvals pane.
-                continue
-            try:
-                started = datetime.fromisoformat(h.started_at)
-            except ValueError:
-                continue
-            if (ref - started).total_seconds() >= max_age_seconds:
-                self._stalled.add(hid)
+            age = handle_age_seconds(h, ref)
+            if age is not None and age >= max_age_seconds:
+                self._stalled.add(h.handle_id)
                 out.append(h)
         return out
 

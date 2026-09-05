@@ -7,13 +7,11 @@ check returns (check_number, posture) on failure, None on pass. The
   - ``"blocked"`` — absolute DENY. Audit-evasion + kernel/host attacks
     that have no benign agent use; sandboxing doesn't change their risk.
     Cannot be relaxed by hooks, plugins, skills, or agents.
-  - ``"ask"`` — forced ASK posture. Tier-shifted 2026-05-08 per
-    so provisional-candidate KPI
-    runs and MO-9 ``crontab`` self-scheduling can run without blanket
-    denial. Check 10 joined later —
-    its pattern false-positives on quoted regex literals. Requires an
-    operator-attended approval channel; cannot auto-allow. Hits checks
-    8, 10, 15, 17, 18, 24.
+  - ``"ask"`` — forced ASK posture, for commands with real uses that
+    must not run unwatched: candidate-tool KPI runs, ``crontab``
+    self-scheduling, and check 10, whose pattern false-positives on
+    quoted regex literals. Requires an operator-attended approval
+    channel; cannot auto-allow. Hits checks 8, 10, 15, 17, 18, 24.
 
 Posture, not position, decides which result is returned: any ``blocked``
 beats any ``ask``, whatever order the two checkers sit in. Order within
@@ -119,9 +117,9 @@ def _check_07(cmd: str) -> tuple[int, str] | None:
 def _check_08(cmd: str) -> tuple[int, str] | None:
     """eval / source / . execution — ASK (operator approval required).
 
-    Tier-shifted 2026-05-08: ``eval``/``source``/``. script`` are
-    legitimate when MO-8 candidate tools or operator workflows need
-    them, but always operator-attended. The ``printf '\\xNN' | sh``
+    ``eval``/``source``/``. script`` are legitimate when candidate tools
+    or operator workflows need them, but always operator-attended. The
+    ``printf '\\xNN' | sh``
     decode-to-exec pattern below is still ``"blocked"`` — there is
     no benign use.
     """
@@ -218,9 +216,9 @@ def _check_14(cmd: str) -> tuple[int, str] | None:
 def _check_15(cmd: str) -> tuple[int, str] | None:
     """Curl/wget piped to shell execution — ASK (operator approval required).
 
-    Tier-shifted 2026-05-08: install scripts (``curl https://...| sh``)
-    are an MO-8 KPI-suite necessity for candidate tools that need
-    third-party dependencies. Operator-attended only — no auto-allow.
+    Install scripts (``curl https://...| sh``) are a necessity for
+    candidate tools that need third-party dependencies.
+    Operator-attended only — no auto-allow.
     A future URL-allowlist policy hook can upgrade specific domains to
     AUTO via ``permissions.yaml``; this gate stays ASK at the security
     layer.
@@ -260,8 +258,8 @@ def _check_17(cmd: str) -> tuple[int, str] | None:
 def _check_18(cmd: str) -> tuple[int, str] | None:
     """Crontab modification — ASK (operator approval required).
 
-    Tier-shifted 2026-05-08: MO-9 Autonomous Loop needs ``crontab`` for
-    persistent local cron registration. Operator-attended every time;
+    Persistent local cron registration needs ``crontab``.
+    Operator-attended every time;
     audit-ledger row records the change for later inspection.
     """
     if re.search(r"\bcrontab\b", cmd):
@@ -315,11 +313,10 @@ def _check_23(cmd: str) -> tuple[int, str] | None:
 def _check_24(cmd: str) -> tuple[int, str] | None:
     """Common destructive verbs — rm -rf, del /s, git push --force — ASK.
 
-    Tier-shifted 2026-05-08: legitimate cleanup commands hit this gate
-    constantly (``rm -rf .pytest-tmp``, workspace teardown). Operator
-    confirmation is the right floor — workspace/path-fit guards belong
-    in a higher-level policy layer (MO-8 KPI-runner sandbox path), not
-    here at the universal security check.
+    Legitimate cleanup commands hit this gate constantly (``rm -rf
+    .pytest-tmp``, workspace teardown). Operator confirmation is the
+    right floor — workspace/path-fit guards belong in a higher-level
+    policy layer, not here at the universal security check.
     """
     # rm with both -r (or --recursive) and -f (or --force), flags in any order.
     if re.search(r"\brm\s+(?=.*(?:-\w*r|--recursive))(?=.*(?:-\w*f|--force))", cmd):
@@ -411,7 +408,19 @@ def _check_25(cmd: str) -> tuple[int, str] | None:
 # `runtime/…`. Deliberately NOT matched when nested (`workshop/app/x`) —
 # that is the operator's own directory that happens to share a name, and the
 # seal is about the install's `app/`, not about the word.
-_SEALED_SEGMENT_RE = re.compile(r"""(?:^|[\s"'=(;|&])(?:\./)?(app|runtime)/""")
+#
+# The second alternative is the runtime's own records under the home tree:
+# the agenda, the usage and skill logs, the workspace events, the ledger and
+# the project registry. The runtime writes them in-process and learns from
+# them; a shell write into one is the assistant editing its own scorecard.
+# `_SEALED_DIRS` / `_SEALED_FILES` below are the list this spells out, and
+# `file_write._RECORD_LOCK_PREFIXES` is the same list for the file tools; a
+# test holds the three together.
+_SEALED_SEGMENT_RE = re.compile(
+    r"""(?:^|[\s"'=(;|&])(?:\./)?"""
+    r"""(?:(app|runtime|agenda|logs/usage|logs/skills|logs/workspace)/"""
+    r"""|(logs/cost-tracking\.jsonl|projects/registry\.json)\b)"""
+)
 
 # Write verbs for the seal check. Broader than `_REDIRECT_VERBS_WORD` because
 # the target here is a whole tree rather than four known files: creating,
@@ -520,25 +529,68 @@ def _clean_token(raw: str) -> str:
     return raw.strip().strip('"').strip("'").replace("\\", "/").strip()
 
 
+# The sealed roots, as path components. ONE list, read by all three matchers
+# the seal has: `_SEALED_SEGMENT_RE` (the relative spelling), the absolute
+# scan in `_check_26`, and the cd tracker below. The first two are the
+# install's own trees; the rest are the runtime's records under the home
+# tree, which it writes in-process and learns from, and which the assistant
+# may read and never edit. A directory root seals everything under it; a
+# file root seals itself. The invariants held together here: every root is
+# denied in all three spellings; reads stay open in all three; a `cd` into a
+# root, or into a parent of one, is tracked; a path that climbs out is not.
+_SEALED_DIRS: tuple[tuple[str, ...], ...] = (
+    ("app",),
+    ("runtime",),
+    ("agenda",),
+    ("logs", "usage"),
+    ("logs", "skills"),
+    ("logs", "workspace"),
+)
+_SEALED_FILES: tuple[tuple[str, ...], ...] = (
+    ("logs", "cost-tracking.jsonl"),
+    ("projects", "registry.json"),
+)
+_SEALED_FIRST_COMPONENTS: frozenset[str] = frozenset(
+    root[0] for root in (*_SEALED_DIRS, *_SEALED_FILES)
+)
+
+
+def _sealed_root_paths() -> list[tuple[str, tuple[str, ...]]]:
+    """Every sealed root as (absolute path, components), longest path first,
+    plus the home tree itself as the empty position so a `cd` into it is a
+    known place. Empty when no root resolves; the segment matcher still
+    stands then."""
+    try:
+        from tesseract.paths import app_dir, home_dir, runtime_dir
+    except Exception:  # noqa: BLE001 — an unresolvable root is not a seal
+        return []
+    home = home_dir()
+    out: list[tuple[str, tuple[str, ...]]] = [
+        (str(app_dir()), ("app",)),
+        (str(runtime_dir()), ("runtime",)),
+        (str(home), ()),
+    ]
+    for root in (*_SEALED_DIRS, *_SEALED_FILES):
+        if root in (("app",), ("runtime",)):
+            continue
+        out.append((str(home.joinpath(*root)), root))
+    return sorted(out, key=lambda pair: len(pair[0]), reverse=True)
+
+
 def _install_relative(abs_path: str) -> list[str] | None:
-    """`abs_path` as components under the install root, or None if outside it.
+    """`abs_path` as components under a known root, or None if outside all.
 
     Absolute paths carry no `app/` token for the segment matcher, so the seal
     has to be recognised by comparing against the real roots.
     """
-    try:
-        from tesseract.paths import app_dir, runtime_dir
-    except Exception:  # noqa: BLE001 — an unresolvable root is not a seal
-        return None
-
     probe = abs_path.rstrip("/").lower()
-    for root_dir, label in ((app_dir(), "app"), (runtime_dir(), "runtime")):
-        root = str(root_dir).replace("\\", "/").rstrip("/").lower()
+    for root_path, label in _sealed_root_paths():
+        root = root_path.replace("\\", "/").rstrip("/").lower()
         if probe == root:
-            return [label]
+            return list(label)
         if probe.startswith(root + "/"):
             rest = [p for p in probe[len(root) + 1:].split("/") if p and p != "."]
-            return [label, *rest]
+            return [*label, *rest]
     return None
 
 
@@ -576,15 +628,20 @@ def _resolve(target: str, position: list[str] | None) -> list[str] | None:
     parts = [p for p in t.split("/") if p and p != "."]
     if position is None:
         # An unknown cwd only becomes known when the path names a sealed tree
-        # outright — anything else could be anywhere.
-        if not parts or parts[0].lower() not in ("app", "runtime"):
+        # outright, or the parent of one — anything else could be anywhere.
+        if not parts or parts[0].lower() not in _SEALED_FIRST_COMPONENTS:
             return None
         return _walk([parts[0].lower()], parts[1:])
     return _walk(position, parts)
 
 
 def _is_sealed(position: list[str] | None) -> bool:
-    return bool(position) and position[0].lower() in ("app", "runtime")
+    if not position:
+        return False
+    lowered = tuple(p.lower() for p in position)
+    if any(lowered[: len(root)] == root for root in _SEALED_DIRS):
+        return True
+    return lowered in _SEALED_FILES
 
 
 # `sed -i` may carry an attached backup suffix (`sed -i.bak`), which a plain
@@ -714,7 +771,10 @@ def _check_26_after_cd(cmd: str, _depth: int = 0) -> tuple[int, str] | None:
             if _CD_RE.match(segment):
                 continue
 
-        if not _is_sealed(position):
+        # A known cwd is enough to judge a write by where it lands: the cwd
+        # itself need not be sealed, because a root can sit one step below
+        # it (`cd logs && echo > usage/tools.jsonl`).
+        if position is None:
             continue
         for target in _write_targets(segment):
             if _is_sealed(_resolve(target, position)):
@@ -782,17 +842,13 @@ def _check_26(cmd: str) -> tuple[int, str] | None:
         return "open(" in before and "'r'" not in before and '"r"' not in before
 
     for match in _SEALED_SEGMENT_RE.finditer(lower):
-        if _blocked_at(match.start(1)):
+        if _blocked_at(match.start(match.lastindex or 1)):
             return 26, "blocked"
 
     # Resolved absolute paths: the tree names carry no meaning on their own
-    # once a path is absolute, so compare against the real roots.
-    try:
-        from tesseract.paths import app_dir, runtime_dir
-
-        roots = (str(app_dir()), str(runtime_dir()))
-    except Exception:  # noqa: BLE001 — the segment matcher above still stands
-        roots = ()
+    # once a path is absolute, so compare against the real roots. The home
+    # tree itself is a known place, not a sealed one, and is skipped.
+    roots = [path for path, label in _sealed_root_paths() if label]
     for root in roots:
         for variant in (root.lower(), root.lower().replace("\\", "/")):
             idx = lower.find(variant)
@@ -860,7 +916,7 @@ RULES: dict[int, tuple[str, str]] = {
     23: ("blocked", "Malformed-token injection through variable names"),
     24: ("ask", "Recursive-destructive verbs — rm -rf, del /s, git push --force"),
     25: ("blocked", "Writes to permissions.yaml, roles.yaml, providers.yaml or mirror.yaml"),
-    26: ("blocked", "Writes into the sealed app/ or runtime/ trees, including after a cd into one"),
+    26: ("blocked", "Writes into the sealed app/ or runtime/ trees, or into the runtime's own records (agenda, usage and skill logs, workspace events, the ledger, the project registry), including after a cd into one"),
 }
 
 def declared_checks() -> set[int]:

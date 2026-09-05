@@ -1,4 +1,4 @@
-"""G-1 read-only self-verification allowlist (lean-agent-os Phase 1, Task 5).
+"""Read-only self-verification allowlist.
 
 Grants the `bash` tool an AUTO carve-out for a small, config-defined set of
 read-only invocations (pytest, read-only git, the boot-smoke health probe)

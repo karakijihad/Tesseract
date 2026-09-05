@@ -1,6 +1,6 @@
 """Channel-agnostic progress throttler + event types.
 
-CR-4 — the placeholder-edit progress narrative for channel turns.
+The placeholder-edit progress narrative for channel turns.
 ``_start_channel_turn`` fires a ``ProgressEvent`` on three triggers
 (elapsed-time pulses at 15/30/60/120s, ``tool_start``, ``tool_end``);
 each channel adapter passes its own ``on_progress`` callback that
@@ -191,6 +191,44 @@ class ProgressThrottler:
                     )
                 return
         await self._invoke_edit(fire_text)
+
+    async def claim(self) -> None:
+        """The caller is about to write to the chat itself; stand aside.
+
+        An ``<intent>`` is the assistant's own sentence, not scaffolding, so
+        the adapter puts it in the chat directly rather than through this
+        buffer. Two things still have to hold. A flush already scheduled would
+        land on the message the caller is about to retire, racing the caller's
+        own write on it; and a direct write is an edit against the same rate
+        limit this class exists to respect.
+
+        So: drop the buffered line (the caller's text supersedes scaffolding),
+        wait out whatever is left of the cooldown, and count the caller's
+        write as this window's edit.
+        """
+        async with self._lock:
+            if self._closed:
+                return
+            task = self._flush_task
+            self._flush_task = None
+            self._pending_text = None
+            since = (
+                _loop_time() - self._last_edit_at
+                if self._last_edit_at is not None
+                else None
+            )
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                log.exception("channel progress: flush task exit raised")
+        if since is not None and since < self._cooldown_s:
+            await asyncio.sleep(self._cooldown_s - since)
+        async with self._lock:
+            self._last_edit_at = _loop_time()
 
     async def stop(self) -> None:
         """Flush any buffered text, then stop accepting emits.

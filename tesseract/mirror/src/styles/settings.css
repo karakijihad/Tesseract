@@ -75,25 +75,6 @@
 /* The bash security floor, one row per check. Numbers are monospaced and
    fixed-width because they are what the audit log names — an operator reading
    "check 17" in a log comes here to find out what 17 is. */
-.deny-rules {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.deny-rules__row {
-  display: grid;
-  grid-template-columns: max-content max-content minmax(0, 1fr);
-  column-gap: var(--space-sm);
-  align-items: baseline;
-  padding: var(--space-3) var(--space-6);
-  border-radius: var(--radius-xs);
-}
-
-.deny-rules__row:nth-child(odd) {
-  background: var(--wash-xs);
-}
-
 .deny-rules__num {
   font-family: var(--font-mono);
 }
@@ -278,49 +259,6 @@
 
 /* ── Role table (model dropdown + enable/disable) ─────── */
 
-.role-table {
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-elevated);
-  border: var(--stroke-1) solid var(--panel-border);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-}
-
-.role-table__head,
-.role-table__row {
-  display: grid;
-  /* TARGET column auto-sizes to the widest role name in roles.yaml so a
-     new role with an unusual length doesn't need a CSS edit. The lower
-     bound of `min-content` keeps a future absurdly-long role from
-     pushing the model dropdown into nothing — combined with the
-     ellipsis rule on `.role-table__role`, the cell truncates with `…`
-     instead of stealing the row's space. The model column absorbs the
-     rest with minmax(0, 1fr) so it can shrink past its content. */
-  /* CHAIN sizes to its own content — the label is short and fixed in shape
-     ("chain_6 · no fallback"), so a fraction would clip it to make room for a
-     model name that has the 1fr column next door. */
-  grid-template-columns: minmax(min-content, max-content) max-content minmax(
-      0,
-      1fr
-    ) 120px 70px 90px;
-  gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-md);
-  align-items: center;
-}
-
-.role-table__head {
-  background: var(--bg-deep);
-  border-bottom: var(--stroke-1) solid var(--panel-border);
-}
-
-.role-table__row {
-  border-top: var(--stroke-1) solid var(--panel-divider);
-}
-
-.role-table__row:first-of-type {
-  border-top: none;
-}
 
 .role-table__role {
   font-family: var(--font-ui);
@@ -549,27 +487,6 @@
 
 /* ── Tool table ───────────────────────────────────────── */
 
-.tool-table {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  background: var(--panel-divider);
-  border: var(--stroke-1) solid var(--panel-border);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-  max-height: 480px;
-  overflow-y: auto;
-}
-
-.tool-table__head,
-.tool-table__row {
-  display: grid;
-  grid-template-columns: 200px 1fr 200px;
-  gap: var(--space-md);
-  align-items: center;
-  padding: var(--space-sm) var(--space-md);
-}
-
 .tool-table__posture {
   display: flex;
   align-items: center;
@@ -592,21 +509,6 @@
 }
 .tool-row__effective--deny {
   color: var(--bad);
-}
-
-.tool-table__head {
-  background: var(--bg-deep);
-  position: sticky;
-  top: 0;
-  z-index: 1;
-}
-
-.tool-table__row {
-  background: var(--bg-elevated);
-}
-
-.tool-table__row:hover {
-  background: var(--bg-hover);
 }
 
 .tool-table__name {
@@ -1130,4 +1032,407 @@
 .role-table__resolved {
   font-family: var(--font-ui);
   color: var(--text-primary);
+}
+
+/* ── Local models — the same table shape as Model roles ──────── */
+
+.local-table__name {
+  font-family: var(--font-ui);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.local-table__status {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.local-table__pick {
+  min-width: 0;
+}
+
+/* Left-aligned like every other column. Buttons pushed to the right edge
+   made a fourth ragged margin on a table whose whole point is that the four
+   answers line up. */
+.local-table__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+/* PLACEMENT ONLY. A capability row's first cell holds a switch beside a name,
+   and a child row (a provider under its tier, a service under its section) is
+   stepped in so the grouping survives a flat table. */
+.cap-cell__name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  min-width: 0;
+  font-family: var(--font-ui);
+  color: var(--text-primary);
+}
+
+.cap-cell__name--child {
+  padding-left: var(--space-md);
+}
+
+/* ── Compaction bar ───────────────────────────────────── */
+
+/* The setting, read left to right: hatched is spoken for, lit is yours, and
+   the dark remainder is window the conversation folds before it reaches. The
+   band widths are inline because they are measurements the runtime sends, not
+   styling. */
+
+.compact-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.compact-bar__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+
+.compact-bar__label {
+  font-family: var(--font-ui);
+  color: var(--text-primary);
+}
+
+.compact-bar__split {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-md);
+}
+
+/* Two figures, and the reader is comparing them, so they are set in the mono
+   face with tabular numerals: dragging the slider must not make the row jump
+   about while the digits change width. */
+.compact-bar__stat {
+  font-family: var(--font-mono);
+  font-size: var(--t-meta-size);
+  color: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.compact-bar__stat b {
+  font-size: var(--t-body-size);
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-right: var(--space-5);
+}
+
+.compact-bar__stat.is-yours b {
+  color: var(--accent);
+}
+
+/* A well rather than a strip: the track is cut into the panel, and the bands
+   sit inside it. */
+.compact-bar__track {
+  position: relative;
+  display: flex;
+  height: var(--space-28);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--bg-void);
+  box-shadow: inset 0 0 0 var(--stroke-1) var(--panel-border);
+}
+
+.compact-bar__seg {
+  height: 100%;
+  /* The track is a flex row, so without this a band with a min-width is
+     shrunk straight back past it by its neighbours. */
+  flex: none;
+  transition: width var(--motion-med) cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Four parts, four colours, because two shades of grey behind the same hatch
+   were a distinction nobody could make. The hatch still means "spoken for" and
+   only the reserved parts carry it; the colour says WHICH reserved part. */
+
+/* Blue: the app's own text, sent every turn whatever happens. */
+.compact-bar__seg--system {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--info-bold) 0 var(--space-5),
+    var(--info-soft) var(--space-5) var(--space-10)
+  );
+}
+
+/* Green: your recent turns, kept word for word. Held safe rather than spent. */
+.compact-bar__seg--kept {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--ok-bold) 0 var(--space-5),
+    var(--ok-soft) var(--space-5) var(--space-10)
+  );
+}
+
+/* Amber: reserved but recoverable. Keep fewer turns and it shrinks with them. */
+.compact-bar__seg--margin {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--warn-bold) 0 var(--space-5),
+    var(--warn-soft) var(--space-5) var(--space-10)
+  );
+}
+
+/* Lit, and brightening toward the handle so the eye ends where the value is. */
+.compact-bar__seg--yours {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--accent) var(--step-strong), transparent),
+    var(--accent)
+  );
+}
+
+/* Nothing measured yet: the whole track carries a faint hatch so it reads as
+   "not known" rather than as an empty bar with one flat fill. */
+.compact-bar__track.is-unmeasured {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--wash-sm) 0 var(--space-5),
+    var(--bg-void) var(--space-5) var(--space-10)
+  );
+}
+
+/* Where a fresh install sits. It overshoots the bands top and bottom, because
+   a measurement mark that stays inside the track reads as another band. */
+.compact-bar__mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: var(--stroke-2);
+  margin-left: calc(var(--stroke-2) * -1);
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--text-primary) 0 var(--space-4),
+    transparent var(--space-4) var(--space-8)
+  );
+  transition: left var(--motion-med) cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.compact-bar__verdict {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--t-caption-size);
+  color: var(--text-secondary);
+}
+
+.compact-bar__verdict.is-warn {
+  color: var(--warn);
+}
+
+.compact-bar__verdict.is-bad {
+  color: var(--bad);
+}
+
+/* A real legend: swatch, what the band is, what it costs, and one line saying
+   why it is there. The names alone were the confusing part — "kept by every
+   fold" and "margin" mean nothing until you know what they are held back
+   from. */
+.compact-bar__legend {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.compact-bar__key {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: baseline;
+  column-gap: var(--space-10);
+  row-gap: var(--space-2);
+  padding-bottom: var(--space-sm);
+  border-bottom: var(--stroke-1) solid var(--panel-border);
+}
+
+.compact-bar__key:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.compact-bar__key-name {
+  font-family: var(--font-ui);
+  font-size: var(--t-caption-size);
+  color: var(--text-primary);
+}
+
+.compact-bar__key-value {
+  font-family: var(--font-mono);
+  font-size: var(--t-caption-size);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+/* Under the name, across the swatch column and the name column, so the figure
+   on the right keeps its own line. */
+.compact-bar__key-why {
+  grid-column: 2 / -1;
+  font-family: var(--font-ui);
+  font-size: var(--t-meta-size);
+  color: var(--text-meta);
+}
+
+.compact-bar__swatch {
+  width: var(--space-10);
+  height: var(--space-10);
+  border-radius: var(--radius-xs);
+  align-self: center;
+  flex: none;
+}
+
+.compact-bar__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+
+.compact-bar__swatch--system {
+  background: var(--info);
+}
+
+.compact-bar__swatch--kept {
+  background: var(--ok);
+}
+
+.compact-bar__swatch--margin {
+  background: var(--warn);
+}
+
+.compact-bar__swatch--yours {
+  background: var(--accent);
+}
+
+.compact-bar__swatch--mark {
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--text-primary) 0 var(--space-2),
+    transparent var(--space-2) var(--space-4)
+  );
+}
+
+.compact-bar__turns {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.compact-bar__turns-input {
+  width: var(--space-48);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compact-bar__seg,
+  .compact-bar__mark {
+    transition: none;
+  }
+}
+
+/* Placement only. Both controls are the shared Button and Input; nothing here
+   paints one. */
+.git-row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.git-add {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+}
+
+.git-add__path {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Placement only. A service sits above its account and a state above its
+   mask, rather than both running together on one line and wrapping wherever
+   the column happens to end. The table owns the ground, the separators and
+   the padding; this only says which way these two cells stack. */
+.cred-cell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* Placement only. Every control in the credentials panel is a shared Button,
+   Input or Select; nothing here paints one. */
+.cred-row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.cred-add {
+  margin-top: var(--space-md);
+}
+
+.cred-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-sm) var(--space-md);
+  margin-top: var(--space-md);
+}
+
+.cred-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.cred-form__field--wide {
+  grid-column: 1 / -1;
+}
+
+.cred-form__actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-top: var(--space-xs);
+}
+
+/* Placement only, like the two above it. Every control in the git identity
+   form is the shared Button, Input or Select. */
+.git-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-sm) var(--space-md);
+  margin-top: var(--space-md);
+}
+
+.git-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.git-form__field--wide {
+  grid-column: 1 / -1;
+}
+
+.git-form__actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-top: var(--space-xs);
 }

@@ -32,6 +32,38 @@ defaults:
     document_chars: 6000
     image_caption_chars: 800
 
+  # A media send can be given a web address instead of a file, and whatever
+  # comes back is forwarded into the chat. The address is checked before it
+  # is fetched, because the URL does not have to come from you: it can come
+  # out of a page or a document the assistant was reading. These ranges are
+  # this machine and the network it sits on, so fetching from one of them
+  # would put whatever is listening there into a chat.
+  #
+  # `open` blocks a shorter list on purpose. It shows you a page on your own
+  # screen, so reaching localhost or your NAS is an ordinary thing to ask
+  # for; this one sends what it read somewhere else.
+  #
+  # Write a range once. An address that answers in its IPv6-mapped form
+  # (::ffff:172.16.0.1) is measured against these in both forms, so there is
+  # no twin to add and none to forget. The list used to carry four of them by
+  # hand and the fifth was missing.
+  outbound_fetch:
+    blocked_networks:
+      - 127.0.0.0/8      # this machine
+      - ::1/128
+      - 10.0.0.0/8       # private networks
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - fc00::/7         # IPv6 private
+      - 169.254.0.0/16   # link-local, incl. cloud metadata at 169.254.169.254
+      - fe80::/10
+      # "no particular address", which most stacks route to this machine, so
+      # it reaches loopback by another name.
+      - 0.0.0.0/8
+      - "::/128"
+    # Bytes past which the fetch gives up rather than reading on.
+    max_bytes: 26214400
+
   # Daily spend ceiling for tools billed per channel turn (e.g. vision).
   cost:
     daily_max_usd: 1.50
@@ -39,10 +71,12 @@ defaults:
       channel_vision: 0.50
 
   # How an ASK-gated action behaves when it originates from a channel turn.
-  # on_ask: workspace_nudge posts a notice and keeps the conversation open;
-  # on_ask: deny rejects the action outright.
+  # on_ask: ask_on_channel asks you in the chat it came from, with approve and
+  # reject buttons, and runs the tool in that same turn if you approve — the
+  # cockpit's gate through a different door. on_ask: deny refuses outright.
+  # (`workspace_nudge` is the old name for ask_on_channel and still parses.)
   gate_policy:
-    on_ask: workspace_nudge
+    on_ask: ask_on_channel
     # How long a gated call waits for you to approve or reject it before
     # refusing itself. Sending another message cancels the wait.
     decision_timeout_s: 1800
@@ -60,16 +94,16 @@ telegram:
   # neither has to keep its own list of which channel needs which key.
   api_key_env: TELEGRAM_BOT_TOKEN
 
-  # Push a daily-brief summary to this channel when one is ready.
-  brief_push: true
-
-  # Outbound notification rate limits, so autonomy doesn't flood the
-  # channel. Safety-critical categories (recovery, crash alerts, approval
+  # How often this channel will take each kind of message, so autonomy does
+  # not flood it. WHICH kinds come here at all, the daily brief included, is
+  # `routing.yaml`. Safety-critical ones (recovery, crash alerts, approval
   # requests) always get through regardless of these caps.
   outbound_rate:
     default_per_hour: 6
     per_category:
       runtime_report: 2               # the watchman checks hourly and only pings on a defect; two an hour is already a bad day
+      schedule_failed: 4              # a row retries, then stops itself after three failures in a row, so one bad row is bounded; four leaves room for a second row going wrong the same hour
+      voice_lane_down: 2              # a voice that keeps failing retries on a short cooldown, so it could report itself many times an hour
 
   # Notification categories the operator has muted via the dashboard.
   muted_categories: []

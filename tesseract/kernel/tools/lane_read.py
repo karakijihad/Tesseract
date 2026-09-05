@@ -1,6 +1,6 @@
 """lane_read — pull events from a lane since the last cursor.
 
-X-4 Session B. AUTO posture — read-only; cannot mutate lane state.
+AUTO posture — read-only; cannot mutate lane state.
 The cursor is an opaque string returned by the previous read; pass
 `null` / empty for the first read or a fresh `lane_attach`."""
 
@@ -41,7 +41,7 @@ class LaneReadTool(Tool):
     untrusted_source: ClassVar[bool] = True
 
     group: ClassVar[str] = "long-running-collaborators"
-    summary: ClassVar[str] = "Pull a lane's events since a cursor — read-only tail, sends nothing."
+    summary: ClassVar[str] = "Pull a lane's events since a cursor. Reads the tail and sends nothing."
     use_when: ClassVar[str] = (
         "Use to catch up on what a lane produced after a prior lane_send, or to keep polling a long turn."
     )
@@ -49,6 +49,7 @@ class LaneReadTool(Tool):
         "sending a new message, which is `lane_send`; sending and waiting for the reply in one "
         "call, which is `lane_turn`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

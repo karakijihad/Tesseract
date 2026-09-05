@@ -22,3 +22,16 @@ export function formatRelative(iso: string | null | undefined, fallback: string 
   const day = Math.floor(hr / 24);
   return `${day}d ago`;
 }
+
+
+/** A stamp as a person reads it on a dense row: the clock for today, the day
+ *  and month for anything older. Lives here rather than in whichever room
+ *  needed it first, which is where five surfaces had been importing it from. */
+export function clock(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return '';
+  const now = new Date();
+  if (at.toDateString() === now.toDateString()) return at.toTimeString().slice(0, 5);
+  return at.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+}

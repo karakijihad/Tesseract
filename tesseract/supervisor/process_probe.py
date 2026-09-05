@@ -21,7 +21,7 @@ This helper is the **single** liveness-check used by:
   Runtime panel badge in the Mirror.
 * ``supervisor/__main__.py::_pid_alive`` — stale-pid detection at
   supervisor boot.
-* ``orchestrator/workers/recovery.py::is_pid_alive`` — AU-3 worker
+* ``orchestrator/workers/recovery.py::is_pid_alive`` — worker
   recovery: tells "interrupted" apart from "still running" so the
   RecoveryManager doesn't re-spawn live workers.
 

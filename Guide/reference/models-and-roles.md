@@ -10,24 +10,31 @@ A **role** is a job the system needs done — hold a conversation, review code, 
 
 A role either names its own model or points at a shared **chain** — a list written once and used by several roles, so moving all of them is one edit rather than many.
 
-> These are the **shipped defaults**. Every value here lives in a config
-> file you own once TESSERACT is installed, so your copy may differ — and
-> should, once you tune it.
+> These are the **shipped defaults**. What you can change lives in a
+> config file you own once TESSERACT is installed, so your copy may
+> differ, and should, once you tune it.
 
 
 | Role | Ships pointing at | Falls back to | Via |
 | --- | --- | --- | --- |
-| `agents_default` | `api.google.gemini_36_flash` | `api.nim.gpt_oss_120b`, `api.openai.gpt56_luna` | `chain_2` |
-| `audio_transcribe` | `local.whisper.local_whisper` | — | `chain_7` |
-| `auditor` | `cli.codex.gpt56_terra` | — | `chain_5` |
-| `channel_vision` | `api.google.gemini_36_flash` | `api.nim.gpt_oss_120b`, `api.openai.gpt56_luna` | `chain_2` |
-| `chat_brain` | `api.openai.gpt56_luna` | `api.openai.gpt54_mini`, `api.xai.grok_43` | `chain_3` |
-| `claude_cli` | `cli.claude.opus_5` | — | `chain_4` |
-| `coder` | `cli.claude.opus_5` | — | `chain_4` |
-| `codex_cli` | `cli.codex.gpt56_terra` | — | `chain_5` |
-| `image_generator` | `api.google.gemini_31_flash_image` | `api.xai.grok_imagine_image` | `chain_6` |
-| `observer_agent` | `api.nim.gpt_oss_120b` | `api.google.gemini_36_flash`, `api.openai.gpt56_luna` | `chain_1` |
-| `subagents_default` | `api.google.gemini_36_flash` | `api.nim.gpt_oss_120b`, `api.openai.gpt56_luna` | `chain_2` |
-| `watchman` | `api.nim.gpt_oss_120b` | `api.google.gemini_36_flash`, `api.openai.gpt56_luna` | `chain_1` |
+| `agents_default` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
+| `audio_transcribe` | `local.whisper.local_whisper` | — | `chain_6` |
+| `auditor` | `cli.codex.gpt56_terra` | — | `chain_4` |
+| `channel_vision` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
+| `chat_brain` | `api.openai.gpt56_luna` | `api.openai.gpt54_mini`, `api.xai.grok_43` | `chain_2` |
+| `claude_cli` | `cli.claude.opus_5` | — | `chain_3` |
+| `coder` | `cli.claude.opus_5` | — | `chain_3` |
+| `codex_cli` | `cli.codex.gpt56_terra` | — | `chain_4` |
+| `consolidate` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
+| `image_generator` | `api.google.gemini_31_flash_image` | `api.xai.grok_imagine_image` | `chain_5` |
+| `observer_agent` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
+| `panel_writer` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
+| `playbook_extract` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
+| `provider_watch` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
+| `scheduled_task` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
+| `skill_refinement` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
+| `skill_suggest` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
+| `subagents_default` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
+| `watchman` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
 
 Refs read `<tier>.<provider>.<model>`. The tiers are `api` (billed per token), `cli` (covered by a subscription, free at the point of use) and `local` (runs on your machine).

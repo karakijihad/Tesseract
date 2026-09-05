@@ -1,8 +1,8 @@
 """``ChannelAdapter`` protocol — abstraction every external-channel bridge implements.
 
-Telegram is the first concrete adapter (MO-9-10); WhatsApp / Signal / Discord
+Telegram is the first concrete adapter; WhatsApp / Signal / Discord
 land later by implementing the same protocol. The Mirror Channels tab
-(MO-9-11 / 12) talks to this protocol, never to a concrete adapter directly.
+talks to this protocol, never to a concrete adapter directly.
 
 """
 
@@ -45,7 +45,7 @@ class ChannelMessage:
     """One row in ``logs/channels/<channel>/<chat_id>/conversations.jsonl``.
 
     ``extra`` carries channel-native metadata (Telegram message_id, etc.).
-    ``attachments`` holds the typed envelopes produced by the bridge (CR-2); old rows default to ``()``.
+    ``attachments`` holds the typed envelopes produced by the bridge; old rows default to ``()``.
     """
 
     ts: str
@@ -93,3 +93,11 @@ class ChannelAdapter(Protocol):
         limit: int = 100,
         before_iso: str | None = None,
     ) -> list[dict[str, Any]]: ...
+
+    # `send_text(*, chat_ref, text, disable_web_page_preview=False)` is the
+    # other half of an adapter and every one of them has it, but it is
+    # deliberately not declared here: this protocol is `runtime_checkable` and
+    # `register_channel` refuses anything that misses a member, so adding it
+    # would turn an incomplete adapter into a boot failure rather than a
+    # failure at the moment something is sent. `_outbound.notify_operators`
+    # asks for it when it needs it and reports a channel that cannot speak.

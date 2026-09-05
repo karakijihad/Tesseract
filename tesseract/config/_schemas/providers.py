@@ -20,8 +20,18 @@ class _Permissive(BaseModel):
 
 
 class Availability(BaseModel):
+    """The generic breaker's policy — `context/circuit_breaker.py` reads all
+    of it, not only the threshold. Kept `extra="forbid"` on purpose: this
+    schema exists to catch a renamed key, and it can only do that if it knows
+    every key there is."""
+
     model_config = ConfigDict(extra="forbid")
     max_consecutive_failures: int = 3
+    cooldown_seconds: float = 300
+    cooldown_seconds_until_fixed: float = 3600
+    cooldown_backoff: float = 2.0
+    cooldown_max_seconds: float = 3600
+    denial_ledger_size: int = 20
 
 
 class ChainPolicy(BaseModel):
@@ -29,7 +39,11 @@ class ChainPolicy(BaseModel):
     transient_retries: int = 2
     transient_backoff_ms: int = 250
     cooldown_max_failures: int = 1
-    cooldown_seconds: int = 60
+    # Two windows, because one number cannot be right for a dropped socket and
+    # a spent balance at the same time. `provider_failure._WINDOW_CLASS` says
+    # which kind takes which.
+    cooldown_seconds: float = 60
+    cooldown_seconds_until_fixed: float = 3600
 
 
 class CostTracking(BaseModel):
@@ -41,8 +55,8 @@ class CostTracking(BaseModel):
 
 class ProviderEntry(_Permissive):
     """A single provider connection block. ``models`` is the structured
-    surface that emits MO-10-2 proposals; everything else is connection-
-    level glue.
+    surface that emits proposals; everything else is connection-level
+    glue.
     """
 
     enabled: bool = True
@@ -73,3 +87,9 @@ class ProvidersConfig(BaseModel):
     api: dict[str, Any] = Field(default_factory=dict)
     cli: dict[str, Any] = Field(default_factory=dict)
     local: dict[str, Any] = Field(default_factory=dict)
+    # Paid HTTP services (brave, tavily) and the download-gated browser. Not a
+    # model tier: an entry is a key, a switch and what it unlocks, so the body
+    # stays permissive for the same reason the tier bodies do.
+    services: dict[str, Any] = Field(default_factory=dict)
+    # The vocabulary a model entry's `good_for` may draw on.
+    capability_tags: list[str] = Field(default_factory=list)

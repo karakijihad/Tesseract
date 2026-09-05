@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from tesseract.brain.cost.ledger import CostLedger, CostUsage
+from tesseract.brain.cost.ledger import CostLedger, CostUsage, ModelPrice
 from tesseract.kernel.adapters.base import (
     AdapterOptions,
     ChunkType,
@@ -46,6 +46,11 @@ class MeteredAdapter(ModelAdapter):
         self._inner = inner
         self._options = options
         self._ledger = ledger
+
+    @property
+    def defers_tool_loading(self) -> bool:  # type: ignore[override]
+        """A wrapper has no opinion; it answers for what it wraps."""
+        return bool(getattr(self._inner, "defers_tool_loading", False))
 
     @property
     def model(self) -> str:
@@ -108,7 +113,9 @@ class MeteredAdapter(ModelAdapter):
     def _is_free(self, model: str) -> bool:
         pricing = getattr(self._ledger, "pricing", None) or {}
         rates = pricing.get(model)
-        return rates is not None and rates[0] == 0.0 and rates[1] == 0.0
+        if rates is None:
+            return False
+        return ModelPrice.coerce(rates).is_free
 
     def _record(self, opts: AdapterOptions, usage: dict[str, Any] | None) -> None:
         if self._ledger is None or not isinstance(usage, dict) or not opts.model:
@@ -117,12 +124,8 @@ class MeteredAdapter(ModelAdapter):
             self._ledger.record(
                 opts.role or "chat_brain",
                 opts.model,
-                CostUsage(
-                    input_tokens=int(usage.get("input_tokens") or 0),
-                    output_tokens=int(usage.get("output_tokens") or 0),
-                    cached_tokens=int(usage.get("cached_tokens") or 0),
-                    cache_creation_tokens=int(usage.get("cache_creation_tokens") or 0),
-                ),
+                CostUsage.from_raw(usage),
+                tier=opts.tier or "",
             )
         except RuntimeError:
             # Unknown/unpriced model — ledger.record raises rather than silently

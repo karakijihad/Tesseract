@@ -12,9 +12,22 @@ from tesseract.memory.librarian.constants import (
     TOP_RETRIEVALS_COUNT,
     _TYPE_PRIORITY,
 )
-from tesseract.memory.librarian.utils import _atomic_write, _clip_words, _is_bookkeeping_entry
+from tesseract.memory.index import render_index_row, resolve_link_path
+from tesseract.memory.librarian.utils import _atomic_write, _is_bookkeeping_entry
 from tesseract.memory.store import MemoryStore
 from tesseract.memory.types import MemoryFrontmatter, MemoryType
+from tesseract.lib import clock
+
+
+#: Heading per memory type, in reading order. Named for what the reader is
+#: looking for rather than for the folder they live in.
+_TYPE_HEADINGS: dict[MemoryType, str] = {
+    MemoryType.FEEDBACK: "How to work with them",
+    MemoryType.USER: "About them",
+    MemoryType.PROJECT: "Projects and decisions",
+    MemoryType.REFERENCE: "Reference",
+    MemoryType.CONSCIENCE: "What the runtime noticed",
+}
 
 
 class SummaryMixin:
@@ -54,19 +67,11 @@ class SummaryMixin:
         return kept[:limit], filtered
 
     def _link_path(self, fm: MemoryFrontmatter) -> str:
-        """Resolve the actual on-disk path for `fm` and return it relative
-        to store_dir as a POSIX string.
+        """The librarian's name for `index.resolve_link_path`.
 
-        Operators curate sub-buckets (`reference/people/`, `project/sprints/`).
-        A naive `{type}/{id}.md` link breaks for every nested entry. Walk the
-        store via `find_file` so the link points at the real file regardless
-        of folder depth. Falls back to the canonical layout if the file is
-        missing — keeps MEMORY.md renderable on a half-deleted store.
+        Both writers of MEMORY.md need the same answer to where a row points.
         """
-        path = self._store.find_file(fm.id)
-        if path is None:
-            return f"{fm.type.value}/{fm.id}.md"
-        return path.relative_to(self._store.store_dir).as_posix()
+        return resolve_link_path(self._store.store_dir, fm)
 
     def _write_memory_index(
         self,
@@ -76,7 +81,8 @@ class SummaryMixin:
         counts: dict[str, int],
     ) -> None:
         path = self._store.store_dir / MEMORY_INDEX_FILE
-        now = datetime.now(timezone.utc).date().isoformat()
+        # A date a person reads off the index, so it is their date.
+        now = clock.today().isoformat()
 
         lines: list[str] = []
         lines.append("# TESSERACT Memory Index")
@@ -98,23 +104,32 @@ class SummaryMixin:
             lines.append(f"- `{name}/`: {n}")
         lines.append("")
 
-        lines.append(f"## Top {TOP_RETRIEVALS_COUNT} by importance")
+        # Grouped by kind, not ranked into one list: someone looking for what
+        # they taught the assistant looks under feedback rather than reading a
+        # ranking to find out which entries those are. Ranking still selects
+        # what gets in (`top`); it does not decide the shape of the page.
+        lines.append(f"## What I know ({len(top)} of {sum(counts.values())})")
         lines.append("")
         if not top:
             lines.append("*(empty — librarian ran before any memories exist)*")
-        else:
-            for fm in top:
-                lines.append(f"- [{fm.title}]({self._link_path(fm)}) — importance {fm.importance} · {_clip_words(fm.summary, 80)}")
-        lines.append("")
+        for mem_type in _TYPE_HEADINGS:
+            group = [fm for fm in top if fm.type is mem_type]
+            if not group:
+                continue
+            lines.append(f"### {_TYPE_HEADINGS[mem_type]}")
+            lines.append("")
+            for fm in group:
+                lines.append(render_index_row(self._store.store_dir, fm))
+            lines.append("")
 
-        lines.append(f"## Recent promotions (last {RECENT_WINDOW_DAYS} days)")
+        lines.append(f"## Newest (last {RECENT_WINDOW_DAYS} days)")
         lines.append("")
         if not recent:
             lines.append("*(empty — no memories created in the recent window)*")
         else:
             for fm in recent:
                 age_days = (datetime.now(timezone.utc) - fm.created_at).days
-                lines.append(f"- [{fm.title}]({self._link_path(fm)}) — {age_days}d ago · {_clip_words(fm.summary, 80)}")
+                lines.append(render_index_row(self._store.store_dir, fm, prefix=f"{age_days}d ago"))
         lines.append("")
 
         lines.append("## Anchors")

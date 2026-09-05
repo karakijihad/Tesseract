@@ -49,22 +49,6 @@ const ChatIcon = () => (
   </svg>
 );
 
-// Schedule tab — clock face. Stroke-only so it picks up currentColor.
-const ScheduleIcon = () => (
-  <svg
-    viewBox="0 0 20 20"
-    width="1em"
-    height="1em"
-    stroke="currentColor"
-    fill="none"
-    strokeWidth={1.5}
-    strokeLinecap="round"
-  >
-    <circle cx="10" cy="10" r="7" />
-    <path d="M10 6 V10 L13 12" />
-  </svg>
-);
-
 // Conscience tab — balance-scale glyph reads as "weighed / judged";
 // stroke-only so it picks up currentColor like the other tab icons.
 const ConscienceIcon = () => (
@@ -105,22 +89,6 @@ const IdentityIcon = () => (
       d="M10 1.5 V3.5 M10 16.5 V18.5 M1.5 10 H3.5 M16.5 10 H18.5"
       opacity="0.7"
     />
-  </svg>
-);
-
-const AgentsIcon = () => (
-  <svg
-    viewBox="0 0 20 20"
-    width="1em"
-    height="1em"
-    stroke="currentColor"
-    fill="none"
-    strokeWidth={1.4}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-  >
-    <circle cx="10" cy="7" r="3" />
-    <path d="M3.5 17 C3.5 13.5 6.5 11.5 10 11.5 C13.5 11.5 16.5 13.5 16.5 17" />
   </svg>
 );
 
@@ -196,8 +164,6 @@ const TABS: TabDef[] = [
   { id: "pulse", icon: <PulseIcon />, label: "Pulse" },
   { id: "chat", icon: <ChatIcon />, label: "Chat" },
   { id: "terminal", icon: "❯", label: "Terminal" },
-  { id: "schedule", icon: <ScheduleIcon />, label: "Schedule" },
-  { id: "agents", icon: <AgentsIcon />, label: "Agents" },
   { id: "channels", icon: <ChannelsIcon />, label: "Channels" },
   { id: "identity", icon: <IdentityIcon />, label: "Identity" },
   { id: "conscience", icon: <ConscienceIcon />, label: "Conscience" },

@@ -38,6 +38,7 @@ from tesseract.mirror.server.routes import providers as providers_route
 from tesseract.mirror.server.routes import alarms as alarms_route
 from tesseract.mirror.server.routes import schedule as schedule_route
 from tesseract.mirror.server.routes import settings as settings_route
+from tesseract.mirror.server.routes import settings_git as settings_git_route
 from tesseract.mirror.server.routes import system as system_route
 from tesseract.mirror.server.routes import uploads as uploads_route
 from tesseract.mirror.server.routes import voice as voice_route
@@ -54,6 +55,7 @@ from tesseract.mirror.server.log_forwarder import (
 from tesseract.mirror.server.pty_manager import PTYManager
 from tesseract.mirror.server.ws import websocket_handler
 from tesseract.mirror.server.controller_ws import controller_ws_handler
+from tesseract.orchestrator import loop_stalls
 from tesseract.paths import CONFIG_DIR, TESSERACT_HOME, home_logs_root
 
 log = logging.getLogger(__name__)
@@ -102,10 +104,13 @@ def create_app(config: ServerConfig) -> web.Application:
     # off this to resolve config under TESSERACT_HOME, not the source tree.
     app["tesseract_dir"] = TESSERACT_HOME
     app["repo_root"] = REPO_ROOT
-    app["sessions"] = {}  # {session_id: aiohttp.web.WebSocketResponse} — populated by Phase 2
-    app["event_logs"] = {}  # {session_id: EventLog} — populated by Phase 2
-    app["server_sessions"] = {}  # {session_id: ServerSession} — populated by Phase 2
+    app["sessions"] = {}  # {session_id: aiohttp.web.WebSocketResponse}
+    app["event_logs"] = {}  # {session_id: EventLog}
+    app["server_sessions"] = {}  # {session_id: ServerSession}
     app["tool_registry"] = None
+    #: Set once the build stage has run. Until then the key is absent, which is
+    #: how "still booting" is told from "tried and failed".
+    app["tool_registry_failed"] = False
     app["mood"] = None  # MoodState | None — populated by _on_startup; bridged to frontend via entity_signals
     app["observer"] = None
     app["observer_subscriber"] = None  # ObserverSubscriber | None — built alongside observer; every ChatSession attaches to it at build
@@ -147,14 +152,15 @@ def create_app(config: ServerConfig) -> web.Application:
     app["pty_manager"] = PTYManager(config.terminal)
     app["pty_manager"].bind_app(app)
     app["scheduler"] = None  # SchedulerEngine | None — populated by _on_startup (S0)
-    app["autonomy_kernel"] = None  # AutonomyKernel | None — populated by _on_startup (AU-5)
-    app["autonomy_governor"] = None  # Governor | None — populated by _on_startup (AU-6)
+    app["autonomy_kernel"] = None  # AutonomyKernel | None — populated by _on_startup
+    app["autonomy_governor"] = None  # Governor | None — populated by _on_startup
     app["autonomy_pause_store"] = None  # PauseStore | None — populated by routes/agenda::register
     app["alarm_registry"] = None  # AlarmRegistry | None — populated by _on_startup (S4)
     app["stt_engine"] = None  # STTEngine | None — populated when voice config is present
     app["tts_engine"] = None  # TTSEngine | None — populated when voice config is present
     app["vault_config"] = None  # VaultConfig | None — populated when watcher reloads
-    app["config_watcher"] = None  # ConfigWatcher | None — Phase 18 auto-config-reflection
+    app["config_watcher"] = None  # ConfigWatcher | None — auto-config-reflection
+    app["workspace_watcher"] = None  # WorkspaceWatcher | None — pushes inbox rows as they are written
     app["config_reload_toasts_enabled"] = _config_reload_toasts_enabled(config)
     app["_warmup_tasks"] = []  # list[asyncio.Task] — fire-and-forget model warm-ups; drained on shutdown
     # Created here, not lazily in the appender: `_build_voice_runtime` queues
@@ -165,17 +171,19 @@ def create_app(config: ServerConfig) -> web.Application:
     app["log_forwarder"] = None  # MirrorLogHandler | None — installed by _on_startup, removed on shutdown
     app["workspace_event_store"] = _build_workspace_event_store()
     app["conversation_store"] = _build_conversation_store()
-    app["channels_config"] = _load_channels_config()  # CR-1: typed channels.yaml; live-reloaded by config_watcher
+    app["channels_config"] = _load_channels_config()  # Typed channels.yaml; live-reloaded by config_watcher
     app["telegram_bridge"] = None  # TelegramBridge | None — started on boot if TELEGRAM_BOT_TOKEN is set
     app["command_registry"] = None  # CommandRegistry | None — built on startup once tool_registry is ready
-    app["activity_subscriber"] = None  # ActivitySubscriber | None — AS-1 controller→Mirror activity push; started in _init_background
+    app["activity_subscriber"] = None  # ActivitySubscriber | None — controller→Mirror activity push; started in _init_background
     app["controller_parked_asks"] = {}  # dict[approval_id, dict] — Option B (2026-07-13) view of the controller daemon's parked asks; mutated in place by the ActivitySubscriber
     app["mcp_server"] = None  # MCPServer | None — mcp-control-plane P2; populated in _on_startup
     app["mcp_approvals"] = None  # MCPApprovalRegistry | None — P3 ASK-over-MCP; populated in _on_startup
-    app["mcp_clients"] = None  # MCPClientManager | None — capability-growth Phase 2 OUTBOUND client; connected in _init_background STAGE 2
+    app["mcp_clients"] = None  # MCPClientManager | None — OUTBOUND client; connected in _init_background STAGE 2
 
     app["loop_lag_task"] = None
     app["brief_delivery_task"] = None  # Task | None — brief delivery service; started in _init_background
+    app["spawn_heartbeat_task"] = None  # Task | None — long-running-spawn heartbeat; started in _init_background
+    app["workspace_reply_retry_task"] = None  # Task | None — unanswered workspace comments; started in _init_background
 
     _register_routes(app)
     app.on_startup.append(_on_startup)
@@ -184,39 +192,100 @@ def create_app(config: ServerConfig) -> web.Application:
 
 
 def _register_routes(app: web.Application) -> None:
-    # AU-1 — supervisor visibility + operator clean-shutdown route.
+    # Supervisor visibility + operator clean-shutdown route.
     from tesseract.mirror.server.routes import runtime as runtime_route
     runtime_route.register(app)
-    # 2026-07-30 — frontend error intake (webview console is invisible in
+    # Frontend error intake (webview console is invisible in
     # the packaged app; UI crashes must land in a file on disk).
     from tesseract.mirror.server.routes import client_log as client_log_route
     client_log_route.register(app)
-    # AU-4 S2 — AgendaStore REST routes (list/get/create/patch/cancel/approve).
+    # AgendaStore REST routes (list/get/create/patch/cancel/approve).
     from tesseract.mirror.server.routes import agenda as agenda_route
     agenda_route.register(app)
-    # AU-7 S1 — Autonomy Dashboard read-only feeds.
+    # Autonomy Dashboard read-only feeds.
     from tesseract.mirror.server.routes import autonomy as autonomy_route
     autonomy_route.register(app)
-    # AU-10 — outbound notification settings (mute UI + rate inspection).
+    # The operations strip: the open pipeline run and the last closed one.
+    from tesseract.mirror.server.routes import pipeline as pipeline_route
+    pipeline_route.register(app)
+    # The wiring view: the declared shape of the machine, with state.
+    from tesseract.mirror.server.routes import autonomy_map as autonomy_map_route
+    autonomy_map_route.register(app)
+    # The Kernel rail, off the live registry and the operator's own config
+    # rather than a JSON file a build wrote.
+    from tesseract.mirror.server.routes import kernel as kernel_route
+    kernel_route.register(app)
+    # The Health room: every department, banded by what its state means.
+    from tesseract.mirror.server.routes import autonomy_health as autonomy_health_route
+    autonomy_health_route.register(app)
+    # Level 3 for every room: one entry's own card, from the manifest's prose.
+    from tesseract.mirror.server.routes import autonomy_entry as autonomy_entry_route
+    autonomy_entry_route.register(app)
+    # Managed system: the scheduled rows, the agents and the alarms, split by
+    # whether the app ships them or the operator wrote them.
+    from tesseract.mirror.server.routes import autonomy_managed as autonomy_managed_route
+    autonomy_managed_route.register(app)
+    # Memory: the library, what the last nightly pass changed in it, and
+    # whether a question asked now can be answered.
+    from tesseract.mirror.server.routes import autonomy_memory as autonomy_memory_route
+    autonomy_memory_route.register(app)
+    # Channels: what can reach the operator, what last did, and whether the
+    # door is open. One join, so the room is one read.
+    from tesseract.mirror.server.routes import autonomy_channels as autonomy_channels_route
+    autonomy_channels_route.register(app)
+    # Atlas: whether the map of how everything connects is current, what it
+    # could not make sense of, and what it does not reach at all.
+    from tesseract.mirror.server.routes import autonomy_atlas as autonomy_atlas_route
+    autonomy_atlas_route.register(app)
+    # The map itself, for the surface that draws it. A different question from
+    # the room above: that one says whether the map is current, this one is
+    # every node and link a canvas needs in one payload.
+    from tesseract.mirror.server.routes import autonomy_graph as autonomy_graph_route
+    autonomy_graph_route.register(app)
+    # What it throws away: every tree with a window, the ones kept on purpose,
+    # and the ones nothing has decided about yet.
+    from tesseract.mirror.server.routes import (
+        autonomy_retention as autonomy_retention_route,
+    )
+    autonomy_retention_route.register(app)
+    # Two weeks of the three numbers Health is asked about. A room that shows
+    # only the current value cannot answer whether it is getting worse.
+    from tesseract.mirror.server.routes import (
+        autonomy_history as autonomy_history_route,
+    )
+    autonomy_history_route.register(app)
+    # Overview: what wants you, what is working, and what ran while you were
+    # away. The room the panel opens on.
+    from tesseract.mirror.server.routes import autonomy_overview as autonomy_overview_route
+    autonomy_overview_route.register(app)
+    # The rail: one written line per room, from the numbers that room counts.
+    from tesseract.mirror.server.routes import autonomy_rooms as autonomy_rooms_route
+    autonomy_rooms_route.register(app)
+    # Outbound notification settings (mute UI + rate inspection).
     from tesseract.mirror.server.routes import notifications as notifications_route
     notifications_route.register(app)
-    # AU-21 — operator presence (viewSnapshot WS handler is wired in ws.py).
+    # Operator presence (viewSnapshot WS handler is wired in ws.py).
     from tesseract.mirror.server.routes import operator_view as operator_view_route
     operator_view_route.register(app)
-    # Y-1 — per-view canvas state persistence (GET/POST /api/canvas/<view>).
+    # Per-view canvas state persistence (GET/POST /api/canvas/<view>).
     from tesseract.mirror.server.routes import canvas_state as canvas_state_route
     canvas_state_route.register(app)
-    # Y-2 — Surface Protocol REST (list + operator emit_event).
+    # Surface Protocol REST (list + operator emit_event).
     from tesseract.mirror.server.routes import surfaces as surfaces_route
     surfaces_route.register(app)
-    # CV-1 — lane bridge (Mirror → controller daemon IPC) for canvas lane cards.
+    # A press inside a card reaches the chat that drew it. The store is
+    # orchestrator-level and holds a callback rather than an import; this is
+    # where the two are joined.
+    from tesseract.mirror.server import card_wake
+    card_wake.install(app)
+    # Lane bridge (Mirror → controller daemon IPC) for canvas lane cards.
     from tesseract.mirror.server.routes import lanes as lanes_route
     lanes_route.register(app)
-    # AS-1 — Unified Activity Registry REST (snapshot hydration; deltas stream
+    # Unified Activity Registry REST (snapshot hydration; deltas stream
     # over the `activity` WS channel in ws.py).
     from tesseract.mirror.server.routes import activity as activity_route
     activity_route.register(app)
-    # P4-2 — serve browser screenshots captured by BrowserManager.
+    # Serve browser screenshots captured by BrowserManager.
     from tesseract.mirror.server.routes import browser_assets as browser_assets_route
     browser_assets_route.register(app)
     # mcp-control-plane P4 — TESSERACT-as-MCP-server (Streamable-HTTP): the
@@ -249,6 +318,13 @@ def _register_routes(app: web.Application) -> None:
     # constraint — this is the route a fresh install opens to stop being one.
     from tesseract.mirror.server.routes import env_keys as env_keys_route
     env_keys_route.register(app)
+    # The assistant's OWN accounts, which are a different lifecycle from the
+    # app's keys above: the app's are provisioned at install and owned by the
+    # app, these are added over time by the operator and belong to the
+    # assistant's identity. Different store, different panel, same rule that
+    # no value ever leaves.
+    from tesseract.mirror.server.routes import credentials as credentials_route
+    credentials_route.register(app)
     app.router.add_get("/api/health", health)
     app.router.add_get("/api/controller/sessions", controller_sessions_handler)
     app.router.add_get(
@@ -261,10 +337,13 @@ def _register_routes(app: web.Application) -> None:
     # Path order matters for `days`: aiohttp matches top-down, so a literal
     # segment MUST be registered before the `{chat_id}` placeholder or the
     # placeholder swallows it.
+    # Before the `{chat_id}` routes below, which would otherwise capture
+    # "settings" as an id.
+    from tesseract.mirror.server.routes import chat_settings as chat_settings_route
+    app.router.add_get("/api/chats/settings", chat_settings_route.get_chat_settings)
+    app.router.add_patch("/api/chats/settings", chat_settings_route.patch_chat_settings)
     app.router.add_get("/api/chats", chats_route.list_chats_handler)
-    app.router.add_get("/api/chats/days", chats_route.list_chats_by_day_handler)
     app.router.add_get("/api/chats/{chat_id}", chats_route.get_chat_handler)
-    app.router.add_get("/api/chats/{chat_id}/preview", chats_route.preview_chat_handler)
     app.router.add_patch("/api/chats/{chat_id}", chats_route.rename_chat_handler)
     app.router.add_post("/api/chats/{chat_id}/archive", chats_route.archive_chat_handler)
     app.router.add_post("/api/chats/{chat_id}/restore", chats_route.restore_chat_handler)
@@ -275,6 +354,7 @@ def _register_routes(app: web.Application) -> None:
     app.router.add_get("/api/observer/status", observer_consent_route.status)
     app.router.add_get("/api/observer/stats", observer_stats_route.stats)
     app.router.add_get("/api/schedule", schedule_route.list_jobs)
+    app.router.add_get("/api/schedule/cadence", schedule_route.read_cadence)
     app.router.add_get("/api/schedule/handlers", schedule_route.list_handlers)
     app.router.add_get("/api/schedule/roles", schedule_route.list_roles)
     app.router.add_post("/api/schedule/create", schedule_route.create_job)
@@ -290,21 +370,18 @@ def _register_routes(app: web.Application) -> None:
     app.router.add_get("/api/agents/{name}/source", agents_route.get_agent_source_handler)
     app.router.add_post("/api/agents/{name}/source", agents_route.save_agent_source_handler)
     app.router.add_post("/api/agents/{name}/toggle", agents_route.toggle_agent_disabled_handler)
-    # MO-9-9 — Brief tab. `/api/brief/dates` MUST be registered before
+    # Brief tab. `/api/brief/dates` MUST be registered before
     # `/api/brief/{date}` or the placeholder would swallow the literal.
     app.router.add_get("/api/brief/dates", brief_route.get_brief_dates)
-    # MO-9-14 — `/api/brief/feedback` placed before `/{date}` for the
-    # same aiohttp top-down match reason.
-    app.router.add_post("/api/brief/feedback", brief_route.brief_feedback)
     app.router.add_get("/api/brief/{date}", brief_route.get_brief)
     app.router.add_post("/api/brief/refresh", brief_route.refresh_brief)
-    # MO-9-11 — Mirror Channels tab. Registry-backed; `/restart` and
+    # Mirror Channels tab. Registry-backed; `/restart` and
     # `/telegram/status` are ASK-gated via the operator's chat session.
-    # MO-9-12 — added /users (read), /users/{user_id}/conversation (read),
+    # Added /users (read), /users/{user_id}/conversation (read),
     # /approve, /revoke, /block (all ASK-gated; share posture_source
     # 'channel_mutation'). The literal `/telegram/status` path stays
     # registered BEFORE `/{name}/restart` so aiohttp's top-down match does
-    # not swallow it; the same rule applies to MO-9-12's /users and
+    # not swallow it; the same rule applies to the /users and
     # /users/{user_id}/conversation — they precede the verbed mutation
     # routes since they themselves carry no verb segment.
     app.router.add_get("/api/channels", channels_route.list_channels_handler)
@@ -330,7 +407,7 @@ def _register_routes(app: web.Application) -> None:
     app.router.add_post(
         "/api/channels/{name}/restart", channels_route.restart_channel_handler
     )
-    # Offline-inbox surface (audit fix M1) — read missed messages and
+    # Offline-inbox surface — read missed messages and
     # manually trigger a replay drain.
     app.router.add_get(
         "/api/channels/{name}/users/{user_id}/missed",
@@ -342,6 +419,11 @@ def _register_routes(app: web.Application) -> None:
     )
     app.router.add_get("/api/conscience/drift", conscience_route.drift)
     app.router.add_get("/api/conscience/tool-usage", conscience_route.tool_usage)
+    app.router.add_get("/api/conscience/payload", conscience_route.payload)
+    app.router.add_get("/api/conscience/tool-heatmap", conscience_route.tool_heatmap)
+    app.router.add_get("/api/conscience/playbook-usage", conscience_route.playbook_usage)
+    app.router.add_get("/api/conscience/working-set", conscience_route.working_set)
+    app.router.add_post("/api/conscience/working-set", conscience_route.set_working_set)
     app.router.add_get("/api/soul", system_route.soul)
     app.router.add_get("/api/breakers", system_route.breakers)
     app.router.add_get("/api/identity", system_route.identity)
@@ -363,6 +445,14 @@ def _register_routes(app: web.Application) -> None:
     app.router.add_get("/api/settings/system", settings_route.get_system)
     app.router.add_get("/api/settings/session-policy", settings_route.get_session_policy)
     app.router.add_post("/api/settings/session-policy", settings_route.set_session_policy)
+    app.router.add_get("/api/settings/git", settings_git_route.get_git)
+    app.router.add_post("/api/settings/git/active", settings_git_route.set_git_project_active)
+    app.router.add_post("/api/settings/git/remove", settings_git_route.remove_git_project)
+    app.router.add_post("/api/settings/git/register", settings_git_route.register_git_project)
+    app.router.add_post("/api/settings/git/identity", settings_git_route.connect_git_identity)
+    app.router.add_post(
+        "/api/settings/git/identity/remove", settings_git_route.disconnect_git_identity
+    )
     app.router.add_get("/api/settings/session-caps", settings_route.get_session_caps)
     app.router.add_post("/api/settings/session-caps", settings_route.set_session_caps)
     app.router.add_get("/api/tools", system_route.tools)
@@ -510,12 +600,26 @@ async def _monitor_loop_lag() -> None:
         now = loop.time()
         lag = now - expected
         if lag >= _LOOP_LAG_WARN_S:
-            log.warning("mirror: loop was doing: %s", _lag_window_report(lag))
+            doing = _lag_window_report(lag)
+            log.warning("mirror: loop was doing: %s", doing)
             log.warning(
                 "mirror: event loop lag %.3fs exceeds %.3fs heartbeat-risk threshold",
                 lag,
                 _LOOP_LAG_WARN_S,
             )
+            # Off the loop: this handler runs ON the thread it is describing,
+            # and a file write that stalls it would be its own next record.
+            try:
+                await asyncio.to_thread(
+                    loop_stalls.record, blocked_for_s=lag, doing=doing,
+                )
+            except Exception:  # noqa: BLE001 — a record must never take the app down
+                log.warning("mirror: could not record the stall", exc_info=True)
+            # Re-read the clock: the schedule is measured from here, and the
+            # write above is the one place this loop does work rather than
+            # sleep. Keeping the pre-write reading would charge the next tick
+            # for the time spent recording the last stall.
+            now = loop.time()
         expected = now + _LOOP_LAG_INTERVAL_S
 
 
@@ -557,11 +661,18 @@ async def _on_startup(app: web.Application) -> None:
         _monitor_loop_lag(), name="mirror-loop-lag-monitor",
     )
     _load_env()
-    # Y-1 — ensure the per-view canvas-state dir exists at boot so the
+    # Ensure the per-view canvas-state dir exists at boot so the
     # gitignored tree is visible before the first PUT lands.
     from tesseract.mirror.server.routes.canvas_state import canvas_state_dir
     canvas_state_dir().mkdir(parents=True, exist_ok=True)
     _regenerate_kb_roles_summary()
+    # Same reasoning as the boot graph below: a kind the runtime declares and
+    # nothing sends is a choice offered about a message that does not exist,
+    # and it is offered on a surface the operator trusts. It raises where it
+    # stops the start rather than in a background task that swallows it.
+    from tesseract.orchestrator.autonomy.broadcasts import check_producers
+
+    check_producers()
     await _prepare_mcp_server(app)
     # The boot graph is read and checked against the registry HERE, not inside
     # the background task. `_init_background` swallows its own exceptions so a
@@ -645,6 +756,11 @@ async def _prepare_tool_registry(app: web.Application) -> None:
         return
     registry, mood, bundle, alarm_registry = result
     app["tool_registry"] = registry
+    # `None` here means the build was TRIED and failed, which is a different
+    # thing from the `None` this key holds before this stage runs. Every
+    # surface that reads the registry saw one shape for both and told the
+    # operator to wait for a boot that had already finished.
+    app["tool_registry_failed"] = registry is None
     app["mood"] = mood
     app["memory_bundle"] = bundle
     app["alarm_registry"] = alarm_registry
@@ -760,6 +876,40 @@ async def _start_brief_delivery(app: web.Application) -> None:
     from tesseract.mirror.server.brief_delivery import delivery_loop
 
     app["brief_delivery_task"] = asyncio.create_task(delivery_loop(app))
+
+
+async def _start_spawn_heartbeat(app: web.Application) -> None:
+    """The half of the spawn path that is not completion-shaped. Everything
+    else speaks when a spawn finishes or when a turn is already running; this
+    is what says "still going, nothing back yet" while it is neither."""
+    from tesseract.mirror.server.spawn_heartbeat import heartbeat_loop
+
+    app["spawn_heartbeat_task"] = asyncio.create_task(heartbeat_loop(app))
+
+
+async def _start_workspace_reply_retry(app: web.Application) -> None:
+    """A comment gets one dispatch when it is posted. This is what happens
+    when that one fails: the operator asked something in a thread and would
+    otherwise wait for ever with nothing saying so."""
+    from tesseract.mirror.server.workspace_reply_retry import retry_loop
+
+    app["workspace_reply_retry_task"] = asyncio.create_task(retry_loop(app))
+
+
+async def _start_workspace_watch(app: web.Application) -> None:
+    """Watch `logs/workspace/events.jsonl` and push what changes.
+
+    Asking every writer to remember to broadcast leaves about half of them
+    not doing it, and a writer in another process cannot — so the inbox is
+    refreshed by hand."""
+    from tesseract.mirror.server.workspace_watch import WorkspaceWatcher
+
+    store = app.get("workspace_event_store")
+    if store is None:
+        return
+    watcher = WorkspaceWatcher(app, store)
+    await watcher.start()
+    app["workspace_watcher"] = watcher
 
 
 async def _prepare_activity_subscriber(app: web.Application) -> None:
@@ -920,11 +1070,36 @@ def build_substrate_registry(app: web.Application):
         requires=_needs_tool_registry(app),
     )
     reg.add(
+        "workspace_watch", lambda: _start_workspace_watch(app),
+        holds_gil=False,
+        degrade=(
+            "the inbox still holds every row and every fetch is current; it "
+            "just does not update until the operator refreshes or reopens it"
+        ),
+    )
+    reg.add(
         "brief_delivery", lambda: _start_brief_delivery(app),
         holds_gil=False,
         degrade=(
             "the brief is still written at the anchor and readable in the "
             "Brief tab; it just is not pushed at your hour"
+        ),
+    )
+    reg.add(
+        "spawn_heartbeat", lambda: _start_spawn_heartbeat(app),
+        holds_gil=False,
+        degrade=(
+            "a background spawn still says so the moment it finishes; nothing "
+            "says so while it is still running, so a long one is noticed only "
+            "when the operator asks"
+        ),
+    )
+    reg.add(
+        "workspace_reply_retry", lambda: _start_workspace_reply_retry(app),
+        holds_gil=False,
+        degrade=(
+            "an operator comment whose reply fails is never tried again, and "
+            "the thread looks the same as one nobody has answered yet"
         ),
     )
     reg.add(
@@ -1014,11 +1189,18 @@ async def _on_shutdown(app: web.Application) -> None:
     pulling on subsystems we're about to tear down, then drain background
     work, then kill child processes.
 
-    AU-1: write the shutdown intent FIRST. The supervisor reads this
+    Write the shutdown intent FIRST. The supervisor reads this
     file after backend exit to distinguish operator_quit from crash.
     Writing before the (long, error-prone) teardown means a teardown
     error doesn't blank the intent file and re-route as crash.
     """
+    # The other door into a stop, and the earliest point this one has. The
+    # stop-request watcher says it before raising the signal; a console
+    # Ctrl-C has no watcher, and this is where that path first knows. Either
+    # way it is set before the teardown below starts cancelling turns.
+    from tesseract.orchestrator.turns import note_going_down
+    note_going_down()
+
     from tesseract.mirror.server.lifecycle import on_aiohttp_shutdown
     on_aiohttp_shutdown(app)
     # If background init is still running, cancel it so the heavy chain
@@ -1044,6 +1226,20 @@ async def _on_shutdown(app: web.Application) -> None:
             await brief_task
         except (asyncio.CancelledError, Exception):
             pass
+    heartbeat_task = app.get("spawn_heartbeat_task")
+    if heartbeat_task is not None:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except (asyncio.CancelledError, Exception):
+            pass
+    reply_retry_task = app.get("workspace_reply_retry_task")
+    if reply_retry_task is not None:
+        reply_retry_task.cancel()
+        try:
+            await reply_retry_task
+        except (asyncio.CancelledError, Exception):
+            pass
     # mcp-control-plane P2 — signal open MCP SSE streams to close.
     mcp_server = app.get("mcp_server")
     if mcp_server is not None:
@@ -1051,7 +1247,7 @@ async def _on_shutdown(app: web.Application) -> None:
             await mcp_server.stop(app)
         except Exception:
             log.exception("mcp_server.stop on shutdown failed")
-    # capability-growth Phase 2 — close outbound MCP client sessions + child
+    # Close outbound MCP client sessions + child
     # processes (each closed in its own owning task; janitor-friendly).
     mcp_clients = app.get("mcp_clients")
     if mcp_clients is not None:
@@ -1059,7 +1255,7 @@ async def _on_shutdown(app: web.Application) -> None:
             await mcp_clients.shutdown()
         except Exception:
             log.exception("mcp_clients.shutdown on shutdown failed")
-    # AS-1 — tear down the always-on controller activity subscriber.
+    # Tear down the always-on controller activity subscriber.
     activity_subscriber = app.get("activity_subscriber")
     if activity_subscriber is not None:
         try:
@@ -1067,7 +1263,7 @@ async def _on_shutdown(app: web.Application) -> None:
         except Exception:
             log.exception("activity subscriber stop on shutdown failed")
     await _close_all_websockets(app)
-    # Phase 4 follow-up (2026-05-11): cancel any background spawns
+    # Cancel any background spawns
     # (delegate_coder/codex/invoke_agent fired with background=true)
     # before the process exits. cleanup_session schedules cancel_all
     # fire-and-forget per-session; awaiting here guarantees subprocess
@@ -1102,6 +1298,12 @@ async def _on_shutdown(app: web.Application) -> None:
             await watcher.stop()
         except Exception:
             log.exception("config_watcher.stop on shutdown failed")
+    workspace_watcher = app.get("workspace_watcher")
+    if workspace_watcher is not None:
+        try:
+            await workspace_watcher.stop()
+        except Exception:
+            log.exception("workspace_watch.stop on shutdown failed")
     governor = app.get("autonomy_governor")
     if governor is not None:
         try:
@@ -1116,7 +1318,7 @@ async def _on_shutdown(app: web.Application) -> None:
             await kernel.stop()
         except Exception:
             log.exception("autonomy_kernel.stop on shutdown failed")
-    # Phase 3 — release the process-global worker broadcast hook so a
+    # Release the process-global worker broadcast hook so a
     # subsequent app lifecycle (test runner, hot-reload) doesn't broadcast
     # through a closure that still references this dead `app`.
     try:
@@ -1360,7 +1562,7 @@ def _build_workspace_event_store():
 def _build_conversation_store():
     from tesseract.integrations._conversation_store import ConversationStore
 
-    # Shared per-channel JSONL writer (MO-9-10). Path resolution happens
+    # Shared per-channel JSONL writer. Path resolution happens
     # at call time inside the store, so TESSERACT_HOME env changes
     # reflect on the next append without rebuilding the singleton.
     return ConversationStore()
@@ -1405,6 +1607,8 @@ def _try_build_tool_registry(policy=None, app=None):
 
         registry, mood, bundle, alarm_registry = build_tool_registry(
             policy=policy, app=app, chat_runtime=chat_runtime,
+            # The live runtime, so the operator's own tools load.
+            include_home_tools=True,
         )
         log.info("tool_registry loaded: %d tools", len(registry.tools))
         return registry, mood, bundle, alarm_registry
@@ -1414,7 +1618,7 @@ def _try_build_tool_registry(policy=None, app=None):
 
 
 async def _connect_mcp_clients(app: web.Application, registry) -> None:
-    """capability-growth Phase 2 — connect curated outbound MCP servers and
+    """Connect curated outbound MCP servers and
     register their tools into the live registry. No-op when the registry never
     built (STAGE 1 failure) or when ``mcp_servers.yaml`` enables no servers.
     Never raises: the caller's ``gather(return_exceptions=True)`` logs, but a
@@ -1858,10 +2062,9 @@ def _schedule_warmup(app: web.Application, coro, *, name: str) -> None:
 async def _start_telegram_bridge(app: web.Application) -> None:
     """Start the Telegram bridge if the bot token is configured.
 
-    CR-1: also honors ``channels.yaml::telegram.enabled``. Toggling that
-    key to ``false`` and reloading still requires a Mirror restart to
-    *stop* an already-running bridge — live ``enabled`` cycling is
-    deferred to a later phase.
+    Also honors ``channels.yaml::telegram.enabled``. Toggling that key to
+    ``false`` and reloading still requires a Mirror restart to *stop* an
+    already-running bridge; live ``enabled`` cycling is not built.
     """
     channels_config = app.get("channels_config")
     if channels_config is not None:
@@ -1885,52 +2088,30 @@ async def _start_telegram_bridge(app: web.Application) -> None:
 
 
 def _wire_brief_push_subscriber(app: web.Application, bridge: Any) -> None:
-    """MO-10-3 — install the daily-brief Telegram push subscriber.
+    """Install the daily-brief push subscriber.
 
-    The subscriber reads ``channels.yaml::telegram.brief_push`` at call
-    time (live-reload-safe) and pushes the exec summary to operator-tier
-    chat_ids when ``broadcast_daily_brief_ready`` fires. Fail-soft on
-    construction — a missing dependency here cannot block bridge startup.
+    The subscriber reads ``routing.yaml::routes.daily_brief`` at call time
+    (live-reload-safe) and pushes the summary to the operators on every
+    channel named there when ``broadcast_daily_brief_ready`` fires. Fail-soft
+    on construction — a missing dependency here cannot block bridge startup.
+
+    This is the composition root: it is where the app says how the brief reads
+    on Telegram. The subscriber itself knows only that a channel has a
+    renderer, so a second channel is a second entry in this map.
     """
     try:
-        from tesseract.integrations.telegram.brief_push import TelegramBriefPushSubscriber
-        from tesseract.integrations.telegram.state import load_allowlist
+        from tesseract.integrations._brief_push import BriefPushSubscriber
     except Exception:
         log.exception("brief_push subscriber import failed; skipping")
         return
 
-    bridge_state = getattr(bridge, "_state", None)
-    if bridge_state is None:
-        log.info("brief_push: bridge state unavailable; subscriber not wired")
-        return
-
-    def _allowlist_loader():
-        try:
-            return load_allowlist(bridge_state.allowlist_path)
-        except Exception:
-            log.exception("brief_push: allowlist load failed")
-            return None
-
-    def _config_loader():
-        return app.get("channels_config")
-
-    def _user_tier_loader():
-        try:
-            return dict(bridge_state.poll_state.user_tier)
-        except Exception:
-            return {}
-
-    app["brief_push_subscriber"] = TelegramBriefPushSubscriber(
-        bridge=bridge,
+    app["brief_push_subscriber"] = BriefPushSubscriber(
         event_store=app.get("workspace_event_store"),
-        config_loader=_config_loader,
-        allowlist_loader=_allowlist_loader,
-        user_tier_loader=_user_tier_loader,
     )
 
 
 async def _run_recovery(app: web.Application) -> None:
-    """AU-2 broad reconciler — runs in STAGE 1.
+    """Broad reconciler — runs in STAGE 1.
 
     Broad, mostly-read scan over durable state — worker records,
     PTY leases, scheduler runs, agenda.
@@ -1965,7 +2146,7 @@ async def _run_recovery(app: web.Application) -> None:
     if summary is not None:
         await _send_recovery_nudge(app, summary)
 
-    # AU-4 S2 — seed the AgendaStore on first boot so the dashboard's
+    # Seed the AgendaStore on first boot so the dashboard's
     # empty state renders end-to-end. Idempotent via sentinel.
     try:
         from tesseract.orchestrator.autonomy import bootstrap_agenda
@@ -1980,31 +2161,40 @@ async def _send_recovery_nudge(app: web.Application, summary: Any) -> None:
 
     Fires only when there's something worth saying: any
     operator_attention items. A clean boot with no in-flight state
-    stays silent. Routes through the AU-10 :class:`OutboundNotifier`
-    so the mute toggle covers recovery too; ``recovery_summary`` is in
+    stays silent. Routes through :class:`OutboundNotifier` so the mute
+    toggle covers recovery too; ``recovery_summary`` is in
     :data:`EXEMPT_CATEGORIES` so the rate cap never blocks it.
     """
     if not summary.operator_attention:
         return
-    text = _format_recovery_telegram(summary)
     try:
         notifier = _get_outbound_notifier(app)
-        result = await notifier.notify("recovery_summary", {"text": text})
-        log.info("recovery: telegram nudge result=%s", result)
+        result = await notifier.notify("recovery_summary", _recovery_context(summary))
+        log.info("recovery: nudge result=%s", result)
     except Exception:
-        log.exception("recovery: telegram nudge failed (best-effort)")
+        log.exception("recovery: nudge failed (best-effort)")
 
 
-def _format_recovery_telegram(summary: Any) -> str:
-    """One-line Telegram body. Mirrors the summary.text formatter but
-    front-loads operator-attention count for phone visibility."""
-    line = (
-        f"<b>Recovery</b> · boot {summary.boot_id[-9:]}"
-    )
+def _recovery_context(summary: Any) -> dict[str, Any]:
+    """The counted facts of a boot, with no channel's markup on them.
+
+    This used to return Telegram-HTML from inside the Mirror server, so the
+    one kind whose body a caller composed was also the one kind a second
+    channel could not have read. The counts are handed over and the message
+    is composed like every other kind.
+    """
+    # The conversations are named separately from the attention count, because
+    # they are the one thing here the operator is on the other end of: a
+    # question they asked that never got answered. A bare "3 need operator"
+    # does not say that.
+    cut_short = (summary.scans.get("turns") or {}).get("interrupted", 0)
     attn = len(summary.operator_attention)
-    if attn:
-        line += f" · {attn} need{'s' if attn == 1 else ''} operator"
-    return line
+    return {
+        "text": "It restarted and picked up what was left open.",
+        "boot": summary.boot_id[-9:],
+        "unanswered": str(cut_short) if cut_short else "",
+        "attention": str(attn) if attn else "",
+    }
 
 
 async def _start_scheduler(app: web.Application) -> None:
@@ -2020,7 +2210,7 @@ async def _start_scheduler(app: web.Application) -> None:
 
 
 async def _start_autonomy_kernel(app: web.Application) -> None:
-    """AU-5 — long-lived AutonomyKernel + AU-6 Governor.
+    """Long-lived AutonomyKernel + Governor.
 
     Starts after RecoveryManager + bootstrap_agenda so the worker
     lanes are already configured. Fail-open: a missing config file or
@@ -2048,7 +2238,7 @@ async def _start_autonomy_kernel(app: web.Application) -> None:
         lanes_block = ((raw.get("mission") or {}).get("lanes") or {}).get("worker") or {}
         lane = WorkerLane.from_mission_lanes_block(lanes_block)
 
-        # AU-6 — share one PauseStore across kernel + governor + REST routes
+        # Share one PauseStore across kernel + governor + REST routes
         # so kernel's in-memory cache, the durable file, and the operator
         # unpause endpoint all agree. ``routes/agenda::register`` already
         # populated a default; replace it with the same instance the kernel
@@ -2057,7 +2247,7 @@ async def _start_autonomy_kernel(app: web.Application) -> None:
         app["autonomy_pause_store"] = pause_store
 
         agenda_raw = _yaml.safe_load(agenda_yaml.read_text(encoding="utf-8")) or {}
-        # AU-20 follow-up — wire the live tool registry into the
+        # Wire the live tool registry into the
         # autonomy runner so selected agenda items dispatch to real
         # delegate_coder / delegate_auditor / invoke_agent calls. Falls
         # back to the noop runner if the registry isn't ready yet
@@ -2096,10 +2286,22 @@ async def _start_autonomy_kernel(app: web.Application) -> None:
             worker_timeouts[kind] = clamped
 
         async def _on_worker_timeout(record):  # type: ignore[no-untyped-def]
-            """Telegram-ping the operator when an autonomy worker exhausts
-            its wallclock budget. The worker is BLOCKED (terminal) — the
-            agenda item is parked and the operator must re-queue it
-            manually after extending the budget. No auto-resume today."""
+            """Tell the operator when an autonomy worker runs out of time.
+
+            The work is parked, terminally: nothing retries it on its own and
+            it waits for a person.
+
+            **Written for the surface it actually lands on.** This is the one
+            autonomy notification that reaches a phone, and it used to say
+            "raise `agenda.yaml::worker_timeouts.<kind>` and re-add the item
+            via `POST /api/agenda`" — a config path, an HTTP verb and a REST
+            route, delivered to a device that can do none of them. A remedy
+            the reader cannot carry out is not a remedy, and naming files at
+            somebody who is away from their desk is the jargon rule broken in
+            the place it costs most. Answering it from a channel is AR-13 §4a's
+            to build; until it is, this says what stopped and what it was
+            doing, and does not pretend there is a button.
+            """
             notifier = _get_outbound_notifier(app)
             if notifier is None:
                 return
@@ -2108,11 +2310,11 @@ async def _start_autonomy_kernel(app: web.Application) -> None:
                     "agenda_id": record.agenda_item_id,
                     "goal": (record.prompt or "")[:200],
                     "rationale": (
-                        f"worker {record.id} hit its {record.duration_seconds:.0f}s "
-                        f"wallclock budget and stopped. Item is BLOCKED — to retry: "
-                        f"raise agenda.yaml::worker_timeouts.{record.kind.value} "
-                        f"and re-add the agenda item via POST /api/agenda, "
-                        f"or cancel."
+                        f"This ran for {record.duration_seconds:.0f} seconds "
+                        f"without finishing, so it stopped and is waiting for "
+                        f"you. Nothing will retry it on its own. It can be "
+                        f"given more time and started again, or dropped, from "
+                        f"the app."
                     ),
                 })
             except Exception:  # noqa: BLE001
@@ -2136,6 +2338,41 @@ async def _start_autonomy_kernel(app: web.Application) -> None:
         def _daily_usd_spent() -> float:
             return float(_cost_ledger.snapshot()["global"]["spent_usd"])
 
+        async def _on_item_parked(item):  # type: ignore[no-untyped-def]
+            """Tell the operator when autonomy parks work that needs them.
+
+            **Autonomy runs on its own and this is the exception** (operator,
+            2026-09-01: "all autonomy is auto, except for major stuff that
+            needs my opinion or needs me"). An item reaches here only when it
+            declared an approval gate and that gate is unfulfilled. Until now
+            it parked in silence: the panel was the only place it showed, so
+            work that said it needs a person waited for that person to come
+            and look, which is the cockpit-only control ruling 22 forbids.
+
+            Routed like every other kind, so where it lands is the operator's
+            answer in `routing.yaml` rather than a channel named here. The
+            message the composer builds already carries the three replies that
+            answer it, and `agenda_quick_reply.py` is what reads them back.
+            """
+            notifier = _get_outbound_notifier(app)
+            if notifier is None:
+                return
+            from tesseract.orchestrator.autonomy.kernel import unfulfilled_gates
+
+            try:
+                await notifier.notify("awaiting_operator", {
+                    "agenda_id": item.id,
+                    "goal": (item.goal or "")[:200],
+                    "gates": unfulfilled_gates(item),
+                    "rationale": (
+                        "This is waiting on you before it can run. Nothing "
+                        "else about it is blocked and nothing will start it "
+                        "on its own."
+                    ),
+                })
+            except Exception:  # noqa: BLE001
+                log.exception("autonomy: parked-item notify failed")
+
         kernel = build_kernel_from_configs(
             agenda_yaml=agenda_yaml,
             mappers_yaml=mappers_yaml,
@@ -2143,6 +2380,7 @@ async def _start_autonomy_kernel(app: web.Application) -> None:
             pause_store=pause_store,
             worker_runner=worker_runner,
             daily_usd_spent=_daily_usd_spent if _cost_ledger is not None else None,
+            parked_notifier=_on_item_parked,
         )
         await kernel.start()
         app["autonomy_kernel"] = kernel
@@ -2150,7 +2388,7 @@ async def _start_autonomy_kernel(app: web.Application) -> None:
         from tesseract.orchestrator.autonomy.publishers import set_active_bus
         set_active_bus(kernel.bus)
 
-        # Phase 2 — fan kernel-internal agenda mutations to WS. Each transition
+        # Fan kernel-internal agenda mutations to WS. Each transition
         # / add inside the kernel tick (selection, completion, repair) was
         # previously invisible to the operator until they refreshed manually.
         # Route handlers keep their own manual broadcast calls (different
@@ -2175,7 +2413,7 @@ async def _start_autonomy_kernel(app: web.Application) -> None:
 
         kernel._agenda.set_broadcast_hook(_agenda_broadcast_hook)
 
-        # Phase 3 — fan worker_record_* envelopes from every write_record /
+        # Fan worker_record_* envelopes from every write_record /
         # archive_record callsite (kernel, governor, cancel, recovery,
         # worker_dispatch, kernel_worker_runner). The hook is process-global
         # because workers/record.py uses module-level write functions.
@@ -2199,7 +2437,7 @@ async def _start_autonomy_kernel(app: web.Application) -> None:
 
         set_worker_broadcast_hook(_worker_broadcast_hook)
 
-        # Phase 4 — fan governor pause + tick envelopes to WS.
+        # Fan governor pause + tick envelopes to WS.
         from tesseract.orchestrator.autonomy.broadcast import (
             broadcast_governor_event,
         )
@@ -2239,7 +2477,7 @@ async def _start_autonomy_kernel(app: web.Application) -> None:
             kernel.config.top_k,
         )
 
-        # AU-6 — Governor runs alongside the kernel. Detectors operate on
+        # Governor runs alongside the kernel. Detectors operate on
         # disk state (AgendaStore + worker records) so the governor needs
         # no event bus subscription; cadence + on-demand are enough.
         governor = Governor(
@@ -2250,7 +2488,7 @@ async def _start_autonomy_kernel(app: web.Application) -> None:
             kernel_pause_hook=lambda src, reason: kernel._paused_sources.add(src),
         )
         await governor.start()
-        # Phase 4 — wire the tick hook now that Governor is constructed.
+        # Wire the tick hook now that Governor is constructed.
         governor.set_tick_broadcast_hook(_governor_tick_hook)
         app["autonomy_governor"] = governor
 
@@ -2261,11 +2499,12 @@ async def _start_autonomy_kernel(app: web.Application) -> None:
 def _get_outbound_notifier(app: web.Application):
     """Lazy-build the shared :class:`OutboundNotifier` on first access.
 
-    AU-10 — every autonomous Telegram path (governor pause, upgrade
-    restart, agenda transition, recovery summary, crash-storm latch)
-    routes through this notifier so rate caps + mute toggles stay in
-    one place. Exempt categories still bypass the cap inside
-    :meth:`OutboundNotifier.notify`.
+    Every autonomous outbound path (governor pause, upgrade restart, agenda
+    transition, recovery summary, crash-storm latch) routes through this
+    notifier so rate caps + mute toggles stay in one place. Which channels
+    each kind reaches is `routing.yaml`, and a channel name is resolved
+    through the registry, so nothing is handed a bridge here. Exempt
+    categories still bypass the cap inside :meth:`OutboundNotifier.notify`.
     """
     existing = app.get("outbound_notifier")
     if existing is not None:
@@ -2273,19 +2512,41 @@ def _get_outbound_notifier(app: web.Application):
     from tesseract.orchestrator.autonomy.outbound import OutboundNotifier
 
     notifier = OutboundNotifier(
-        bridge_getter=lambda: app.get("telegram_bridge"),
         channels_config_getter=lambda: app.get("channels_config"),
     )
     app["outbound_notifier"] = notifier
     return notifier
 
 
+def _make_voice_lane_down_notify(app: web.Application):
+    """Build the hook `TTSEngine` awaits when a speaking lane latches off.
+
+    Both lanes were down for a whole day and the way the operator found out
+    was the silence. The runtime knew: it logged the failure six times and had
+    nowhere to send it. The per-turn toast only reaches someone sitting in
+    front of the cockpit, and a lane that goes down while nobody is there is
+    exactly the case that needs a route off this machine.
+    """
+
+    async def notify(lane: str, reason: str) -> None:
+        notifier = _get_outbound_notifier(app)
+        try:
+            result = await notifier.notify(
+                "voice_lane_down", {"lane": lane, "reason": reason},
+            )
+            log.info("voice: lane-down notification for %s result=%s", lane, result)
+        except Exception:
+            log.exception("voice: lane-down notification failed (best-effort)")
+
+    return notify
+
+
 def _make_governor_notify(app: web.Application):
     """Build the outbound notify closure handed to the Governor.
 
     Routes through :class:`OutboundNotifier` so the dashboard's mute
-    toggle covers governor pauses; ``governor_pause`` is NOT exempt per
-    GOVERNANCE §9 + the AU-10 phase doc, so the per-hour cap applies.
+    toggle covers governor pauses; ``governor_pause`` is not exempt, so
+    the per-hour cap applies.
     """
 
     async def notify(pause) -> None:
@@ -2310,7 +2571,7 @@ def _make_governor_notify(app: web.Application):
 
 
 async def _start_config_watcher(app: web.Application) -> None:
-    """Phase 18 — observe `tesseract/config/*.yaml` and dispatch reloaders.
+    """Observe `tesseract/config/*.yaml` and dispatch reloaders.
 
     Initialises `app['vault_config']` so live consumers can read it
     without nesting `if app.get(...) is None`. Fail-open: a missing
@@ -2480,8 +2741,16 @@ def _register_voice_dependent_tools(app: web.Application) -> None:
         log.info("transcribe_audio: STTEngine not built (no voice block?), skipping")
         return
     try:
+        from tesseract.brain.boot import _apply_tool_tiers
         from tesseract.kernel.tools.transcribe_audio import TranscribeAudioTool
         registry.register(TranscribeAudioTool(stt_engine=stt_engine))
+        # Tiers are applied once while the registry is built, and this tool
+        # arrives after that, so it kept `Tool.tier`'s default of "extended"
+        # even for an operator who had put it in `working_set.yaml::core`. It
+        # is one of the three conditional names precisely because it registers
+        # late; re-running the pass is what makes the config mean something
+        # before the next reload happens to fix it.
+        _apply_tool_tiers(registry)
         log.info("transcribe_audio: registered against local STT engine")
     except Exception:
         log.exception("transcribe_audio: registration failed")
@@ -2515,13 +2784,14 @@ def _build_voice_runtime(app: web.Application) -> None:
         from tesseract.voice.providers.local_whisper import LocalWhisperConfig
         from tesseract.voice.providers.gemini_tts import GeminiPreset, GeminiTTSConfig
         from tesseract.voice.providers.kokoro_tts import KokoroPreset, KokoroTTSConfig
+        from tesseract.voice.tts import MAX_CONSECUTIVE_FAILURES, TTSLane
 
         cfg = load_voice_config()
 
         # Drop prior handles BEFORE reading the new config. An operator
         # who trims the `voice:` block must not keep the old engines
         # alive — otherwise the runtime keeps debiting providers that
-        # the new config already retired (Phase 18 audit M3 contract).
+        # the new config already retired.
         app["stt_engine"] = None
         app["tts_engine"] = None
 
@@ -2687,13 +2957,39 @@ def _build_voice_runtime(app: web.Application) -> None:
             # config — no defaults. A lane with no entry has no config
             # and no key, so the engine skips it by construction.
             tts_primary_provider = tts_chain[0]["provider"]
+            # Not `entry["lane_cooldown_seconds"]`. The key lives in a per-ref
+            # `settings:` block, so an operator who picks a different voice in
+            # Settings → Models arrives here with a ref that has no block at
+            # all, and raising would cost them the whole voice subsystem over a
+            # recovery knob. Loud, and back to the old behaviour for that lane.
+            lane_cooldowns: dict[str, float] = {}
+            for entry in (kokoro_entry, gemini_tts_entry):
+                if not entry:
+                    continue
+                if "lane_cooldown_seconds" not in entry:
+                    log.warning(
+                        "voice: TTS ref=%s has no `lane_cooldown_seconds` under "
+                        "its roles.yaml `settings:` block, so once it fails "
+                        "%d times in a row it stays off until you unload it or "
+                        "restart. Add the key to give it a retry.",
+                        entry.get("ref"), MAX_CONSECUTIVE_FAILURES,
+                    )
+                    continue
+                lane_cooldowns[entry["provider"]] = float(entry["lane_cooldown_seconds"])
+            lanes = {}
+            for adapter, entry, lane_config in (
+                ("kokoro", kokoro_entry, kokoro_config),
+                ("gemini", gemini_tts_entry, gemini_config),
+            ):
+                key = (entry or {}).get("provider", "")
+                if key:
+                    lanes[key] = TTSLane(adapter=adapter, config=lane_config)
             app["tts_engine"] = TTSEngine(
                 cost_ledger=ledger,
-                kokoro_config=kokoro_config,
-                gemini_config=gemini_config,
+                lanes=lanes,
                 provider_key=tts_primary_provider,
-                kokoro_provider_key=(kokoro_entry or {}).get("provider", ""),
-                gemini_provider_key=(gemini_tts_entry or {}).get("provider", ""),
+                lane_cooldown_seconds=lane_cooldowns,
+                lane_down_hook=_make_voice_lane_down_notify(app),
             )
             log.info("voice: TTSEngine ready (primary=%s)", tts_primary_provider)
             # Warm a lane at boot only when it is the role primary (or

@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from tesseract.brain.boot import MemoryBundle
@@ -46,6 +47,18 @@ REFLECTION_PROMPT = (
     "you decide. SOUL.md Growth is a distillate (3–5 bullets total), not a "
     "log. Most sessions: one diary entry, no growth bullet. Empty days are "
     "fine.\n\n"
+    "PASS 3 — what you were DOING. Not what the session taught you: what the "
+    "work was. Write it LAST, after any saves, as one fenced JSON block:\n\n"
+    "```json\n"
+    '{"objective": "", "phase": "", "completed": [], "remaining": [], '
+    '"next_action": "", "open_questions": [], "blocked_by": "", '
+    '"artifacts": []}\n'
+    "```\n\n"
+    "Leave a field empty when you do not know it. An empty field is recorded "
+    "as empty and that is useful; a guessed next action is not, because the "
+    "next context acts on it. `artifacts` holds paths and identifiers, never "
+    "file contents. If this conversation was not about a piece of work, return "
+    "the block with every field empty.\n\n"
     "One reflection pass, then stop."
 )
 
@@ -88,7 +101,7 @@ def _summarize_reflection_call(tc: Any) -> dict[str, Any] | None:
         "title": title[:120],
         "snippet": snippet[:_SNIPPET_CHARS],
         "status": "pending",
-        # Phase 4 4a — a `feedback`-typed memory_save is an operator
+        # A `feedback`-typed memory_save is an operator
         # correction. Carried so `_attribute_skill_corrections` can fire ONLY
         # when the save actually persisted (result `status == "saved"`), not
         # when it was deduped / policy-blocked / errored.
@@ -124,7 +137,13 @@ def _merge_result_metadata(call: dict[str, Any], chunk: Any) -> None:
             call["status"] = "completed"
 
 
-async def reflect_on_session(session: ChatSession, reason: str) -> list[dict[str, Any]]:
+async def reflect_on_session(
+    session: ChatSession,
+    reason: str,
+    *,
+    trigger: str = "",
+    outcome: str = "",
+) -> list[dict[str, Any]]:
     """Run one bounded reflection turn. Returns a list of summaries — one
     per reflection-related tool call observed (``memory_save`` /
     ``diary_append`` / ``soul_growth_propose``). Each entry has the
@@ -134,13 +153,22 @@ async def reflect_on_session(session: ChatSession, reason: str) -> list[dict[str
 
     Safe to cancel — ``KeyboardInterrupt`` / ``CancelledError`` propagate
     after logging.
+
+    ``trigger`` and ``outcome`` are the boundary's, and they are recorded on the
+    checkpoint this turn also writes. Keyword-only with empty defaults because
+    reflection is reachable from places that are NOT a boundary — the operator
+    typing `/reflect` is the live one — and a checkpoint from one of those
+    should say so rather than claim a trigger it never had.
     """
     if len(session.history) < MIN_HISTORY_FOR_REFLECTION:
         return []
     calls: list[dict[str, Any]] = []
     by_call_id: dict[str, dict[str, Any]] = {}
+    said: list[str] = []
     try:
-        return await _reflect(session, reason, calls, by_call_id)
+        result = await _reflect(session, reason, calls, by_call_id, said)
+        _write_checkpoint(session, said, trigger=trigger, outcome=outcome)
+        return result
     finally:
         # Reflection is a summarisation pass, not a turn the operator reads.
         # `send` drains the pending spawn-completion queue like any other turn,
@@ -161,10 +189,24 @@ async def _reflect(
     reason: str,
     calls: list[dict[str, Any]],
     by_call_id: dict[str, dict[str, Any]],
+    said: list[str] | None = None,
 ) -> list[dict[str, Any]]:
+    """The reflection turn, and the two things it now produces.
+
+    It read three chunk types and threw the model's prose away, which was right
+    while reflection only ever wrote through tools. The working state cannot be
+    written that way: it is one answer about the whole conversation rather than
+    a save, and a tool per field would be a tool call per field per boundary.
+    So the text is collected as well, and `_write_checkpoint` reads it.
+
+    `said` is optional, so a caller that only wants the saves is unchanged.
+    """
     try:
-        async for chunk in session.send(REFLECTION_PROMPT):
-            if chunk.type == ChunkType.TOOL_CALL_START:
+        async for chunk in session.send(REFLECTION_PROMPT, runtime_origin="reflection"):
+            if chunk.type == ChunkType.TEXT:
+                if said is not None and chunk.content:
+                    said.append(chunk.content)
+            elif chunk.type == ChunkType.TOOL_CALL_START:
                 summary = _summarize_reflection_call(chunk.tool_call)
                 if summary is not None:
                     calls.append(summary)
@@ -182,12 +224,70 @@ async def _reflect(
     except Exception:
         log.exception("reflection (%s) failed", reason)
         return calls
-    _attribute_skill_corrections(session, calls)
+    await _attribute_skill_corrections(session, calls)
     return calls
 
 
-def _attribute_skill_corrections(session: ChatSession, calls: list[dict[str, Any]]) -> None:
-    """Phase 4 4a — if this reflection DURABLY saved an operator correction (a
+#: The fenced block PASS 3 asks for. Non-greedy and anchored on the LAST match,
+#: because the reflection may quote the empty template back while explaining
+#: itself and the answer is the one it finished with.
+_STATE_BLOCK = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def _parse_state(said: list[str]) -> dict[str, Any] | None:
+    """Pull the working-state block out of what the reflection turn wrote.
+
+    Returns `None` when there is nothing parseable, which is a legitimate
+    outcome and not an error: a model that answered in prose has told us
+    nothing about the work, and a checkpoint recording that is more honest than
+    one assembled by reading the prose ourselves.
+
+    The LAST block wins. The prompt shows the model an empty template, and a
+    model that echoes the template before filling it in would otherwise have
+    its example read as its answer.
+    """
+    text = "".join(said)
+    if not text:
+        return None
+    matches = _STATE_BLOCK.findall(text)
+    for raw in reversed(matches):
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _write_checkpoint(
+    session: ChatSession, said: list[str], *, trigger: str = "", outcome: str = ""
+) -> None:
+    """Record what this conversation was doing. Never raises.
+
+    Reflection has already run and the boundary is about to fold or end the
+    conversation, so nothing here may turn a completed boundary into a failed
+    turn. The store is best-effort by the same reasoning and returns `None`
+    rather than raising; this catches the rest, including an import that fails.
+    """
+    try:
+        from tesseract.orchestrator import checkpoints
+
+        session_id = str(getattr(session.tool_context, "session_id", "") or "")
+        checkpoints.write(
+            checkpoints.build(
+                session_id=session_id,
+                trigger=trigger,
+                outcome=outcome,
+                state=_parse_state(said),
+            )
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("reflection: the checkpoint was not written", exc_info=True)
+
+
+async def _attribute_skill_corrections(session: ChatSession, calls: list[dict[str, Any]]) -> None:
+    """If this reflection DURABLY saved an operator correction (a
     `feedback` memory that actually persisted, result ``status == "saved"``),
     down-weight the skills consulted this session. A deduped / policy-blocked /
     errored feedback save is NOT a durable correction and must not fire.
@@ -199,30 +299,34 @@ def _attribute_skill_corrections(session: ChatSession, calls: list[dict[str, Any
     if not saved_correction:
         return
     try:
+        import asyncio
+
         from tesseract.brain.skill_usage import attribute_session_corrections
 
-        attribute_session_corrections(session.tool_context.session_id)
+        # Off the loop: it reads the usage log whole and a day of turn records.
+        await asyncio.to_thread(attribute_session_corrections, session.tool_context.session_id)
     except Exception:  # noqa: BLE001
         log.warning("reflection: skill-correction attribution failed", exc_info=True)
 
 
-async def compact_with_reflection(session: ChatSession, reason: str) -> tuple[int, int]:
-    """Unconditional: run reflection, then compact. Returns `(before, after)`
-    token counts. Callers use this for manual `/compact` and the
-    interactive resume-prompt path.
-    """
-    await reflect_on_session(session, reason)
-    return await session.compact()
-
-
-async def auto_compact_if_needed(session: ChatSession) -> tuple[int, int] | None:
-    """Per-turn hook: if the session crossed its compact threshold, run
-    reflection + compact. Returns `(before, after)` on compact, `None`
-    otherwise. Safe to call after every turn.
-    """
-    if not session.should_compact():
-        return None
-    return await compact_with_reflection(session, "pre-compact")
+# `compact_with_reflection` and `auto_compact_if_needed` were here, and the
+# boundary in `mirror/server/after_turn.py` is what replaced them.
+#
+# The first ran `reflect_on_session` in the FOREGROUND and then folded, so the
+# turn boundary blocked on a model call, while the other way of leaving a
+# conversation reflected in the BACKGROUND on a clone. One act, two costs, two
+# latencies. The second wrapped it in a threshold check.
+#
+# Both are gone because the boundary has to ask the threshold BEFORE it
+# reflects: reflection reads a snapshot, and a snapshot taken after the fold is
+# a snapshot of what the fold left. Once the boundary asks, a wrapper that asks
+# again and then folds is a second answer to a question already answered.
+#
+# So `session.should_compact()` is the rule, `session.compact()` is the act,
+# and `after_turn` is the only thing that puts them in order. Reflection has to
+# start there in any case: it writes a `reflection_proposal` into the workspace
+# event store, which lives on the Mirror app and cannot be reached from here
+# without inverting the layering.
 
 
 # ── Background reflect ──────────────────────────────────────────────
@@ -247,12 +351,52 @@ def is_reflect_running(session: ChatSession) -> bool:
     return task is not None and not task.done()
 
 
+def clone_for_reflection(session: ChatSession) -> ChatSession:
+    """A snapshot of `session` for a background reflection turn.
+
+    Named rather than inline so what it carries can be checked without driving
+    the whole task. It shares the live session's adapter, so every setting that
+    describes how a turn against THAT model behaves has to come with it: a
+    field left off here is a reflection turn running on the live model under
+    somebody else's numbers.
+    """
+    return ChatSession(
+        adapter=session.adapter,
+        system_prompt=session.system_prompt,
+        max_tool_iterations=session.max_tool_iterations,
+        max_consecutive_adapter_errors=session.max_consecutive_adapter_errors,
+        options=session.options,
+        # A snapshot: the live session keeps appending while this runs.
+        history=list(session.history),
+        registry=session.registry,
+        # copy.copy, NOT the live object (agent_factory.py idiom):
+        # ChatSession.__post_init__ assigns tool_context.spawns and
+        # tool_context.enabled_extended_tools — sharing by reference let the
+        # clone silently wipe the live session's spawn registry and
+        # extended-tool set every background reflect (audit 2026-07-12).
+        tool_context=copy.copy(session.tool_context),
+        compact_threshold=session.compact_threshold,
+        headroom_multiplier=session.headroom_multiplier,
+        keep_recent_turns=session.keep_recent_turns,
+        head_anchor_messages=session.head_anchor_messages,
+        summary_char_budget=session.summary_char_budget,
+        # Shares the live session's adapter, so it shares the model's ceiling.
+        prompt_char_budget=session.prompt_char_budget,
+        ask_fn=session.ask_fn,
+        policy=session.policy,
+        prompt_builder=session.prompt_builder,
+        cost_ledger=session.cost_ledger,
+    )
+
+
 def reflect_in_background(
     session: ChatSession,
     reason: str,
     *,
     on_complete: ReflectCompleteCb | None = None,
     on_error: ReflectErrorCb | None = None,
+    trigger: str = "",
+    outcome: str = "",
 ) -> "asyncio.Task[list[dict[str, Any]]] | None":
     """Spawn reflection on a snapshot of `session`. Returns the Task, or
     `None` if history is too short to reflect, or if a previous reflect
@@ -269,38 +413,16 @@ def reflect_in_background(
         log.info("reflect_in_background (%s): skip — prior reflect still running", reason)
         return None
 
-    snapshot = list(session.history)
-    clone = ChatSession(
-        adapter=session.adapter,
-        system_prompt=session.system_prompt,
-        max_tool_iterations=session.max_tool_iterations,
-        max_consecutive_adapter_errors=session.max_consecutive_adapter_errors,
-        options=session.options,
-        history=snapshot,
-        registry=session.registry,
-        # copy.copy, NOT the live object (agent_factory.py idiom):
-        # ChatSession.__post_init__ assigns tool_context.spawns and
-        # tool_context.enabled_extended_tools — sharing by reference let the
-        # clone silently wipe the live session's spawn registry and
-        # extended-tool set every background reflect (audit 2026-07-12).
-        tool_context=copy.copy(session.tool_context),
-        compact_threshold=session.compact_threshold,
-        keep_recent_turns=session.keep_recent_turns,
-        head_anchor_messages=session.head_anchor_messages,
-        active_window_tokens=session.active_window_tokens,
-        summary_char_budget=session.summary_char_budget,
-        ask_fn=session.ask_fn,
-        policy=session.policy,
-        prompt_builder=session.prompt_builder,
-        cost_ledger=session.cost_ledger,
-    )
+    clone = clone_for_reflection(session)
 
     sid = id(session)
 
     async def _run() -> list[dict[str, Any]]:
         saves: list[dict[str, Any]] = []
         try:
-            saves = await reflect_on_session(clone, reason)
+            saves = await reflect_on_session(
+                clone, reason, trigger=trigger, outcome=outcome
+            )
             if on_complete is not None:
                 try:
                     await on_complete(saves, reason)
@@ -344,83 +466,36 @@ async def rebuild_memory_index(bundle: MemoryBundle) -> int:
     return await bundle.embeddings.rebuild(pairs)
 
 
-def _iso_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def do_reset(session: ChatSession) -> str:
-    """Wipe history (system prompt preserved). Returns the new ``started_at``."""
-    session.reset()
-    return _iso_now()
-
-
-async def reset_with_reflection(
-    session: ChatSession,
-    reason: str = "reset",
-) -> dict[str, Any]:
-    """Reflect-then-wipe — Layer D of the feedback durability plan.
-
-    Runs `reflect_on_session` first when history is long enough to be worth
-    distilling, then `do_reset`. Short sessions (< MIN_HISTORY_FOR_REFLECTION)
-    skip reflection and just wipe — pre-Layer-D behaviour. Returns:
-
-        {"reflected": bool, "saves": list[dict[str, Any]], "started_at": str}
-
-    `saves` is the list of reflection-tool summaries (`memory_save` /
-    `diary_append` / `soul_growth_propose`) observed during reflection.
-    Empty list is fine — the model is told not to invent reasons to save.
-
-    The Mirror's `cmd_reset` already autosaves the transcript before
-    calling this — operators don't lose data either way; reflection
-    captures the *cross-session* signal (durable feedback memories,
-    diary entries, soul-growth proposals) that an autosave alone misses.
-    """
-    saves: list[dict[str, Any]] = []
-    reflected = False
-    if len(session.history) >= MIN_HISTORY_FOR_REFLECTION:
-        try:
-            saves = await reflect_on_session(session, reason)
-            reflected = True
-        except (asyncio.CancelledError, KeyboardInterrupt):
-            # The reset is the operator's intent — finish the wipe even if
-            # reflection was interrupted, otherwise the session sits in a
-            # half-state (history intact, no envelope sent). `reflect_on_session`
-            # already logged the interrupt before re-raising.
-            log.info("reset reflection cancelled; wiping anyway")
-    started_at = do_reset(session)
-    return {"reflected": reflected, "saves": saves, "started_at": started_at}
-
-
 def do_stats(session: ChatSession) -> dict[str, Any]:
     """Snapshot of turns, token estimate, compact threshold, context window.
 
-    CR-0 (2026-05-22): also surfaces the sliding-window knobs and the
+    Also surfaces the sliding-window knobs and the
     current running-summary length, so the Mirror status pane / the assistant
     `/stats` tool can show what shape the active window has.
     """
-    from tesseract.brain.compaction import RUNNING_SUMMARY_PREFIX
+    # The runtime's own mark, like everywhere else. This read the banner the
+    # message opens with, which is public text a participant can type, so
+    # `/stats` could be made to report somebody's ordinary message as the size
+    # of the running summary.
+    from tesseract.brain.chat import _is_running_summary_message
 
     ctx = session.options.context_window or 0
     threshold = int(ctx * session.compact_threshold) if ctx else 0
     summary_chars = 0
     for msg in session.history:
-        if msg.get("role") != "user":
-            continue
-        content = msg.get("content")
-        if isinstance(content, str) and content.startswith(RUNNING_SUMMARY_PREFIX):
-            summary_chars = len(content)
+        if _is_running_summary_message(msg):
+            content = msg.get("content")
+            summary_chars = len(content) if isinstance(content, str) else 0
             break
     return {
-        "turns": len(session.history) // 2,
+        "turns": session.turn_count(),
         "tokens": session.token_estimate(),
         "threshold": threshold,
         "compact_ratio": session.compact_threshold,
-        "context_window": ctx,
         "head_anchor_messages": session.head_anchor_messages,
-        "active_window_tokens": session.active_window_tokens,
-        "keep_recent_turns": session.keep_recent_turns,
         "summary_chars": summary_chars,
         "summary_char_budget": session.summary_char_budget,
+        **session.fold_measurements(session.system_prompt_tokens()),
     }
 
 

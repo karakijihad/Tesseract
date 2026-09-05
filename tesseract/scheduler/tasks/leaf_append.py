@@ -1,4 +1,4 @@
-"""AU-16 S1 — ``AppendBufferJob``.
+"""``AppendBufferJob``.
 
 Picks up every leaf in ``LeafState.ADMITTED`` and appends its id to the
 matching ``LeafBuffer``. Transitions the leaf to ``BUFFERED``.

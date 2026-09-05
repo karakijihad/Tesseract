@@ -1,24 +1,21 @@
 """The ``# Active project`` block for the assistant's system prompt.
 
-This module used to also own the operating rules: sixteen numbered markdown
-files under `brain/rules/`, a name-sorted loader, and a `__getattr__` shim
-that resolved the pre-CR-2 `_*_TEXT` constants off disk. All of it is gone.
-Nine of those rules restated something a tool's own `use_when`/`not_when`
-already said, and the payload carried both copies every turn; the seven that
-said something no code knew are now sections of `workspace/OPERATING.md`.
-A rule and a schema that disagree is not redundancy — it is the schema
-winning silently, which is the drift the instruction surface was rebuilt to
-end.
+The operating rules do not live here. Anything a tool's own
+`use_when`/`not_when` already says belongs on the tool, and anything no code
+knows is a section of `workspace/OPERATING.md` — a rule and a schema that
+disagree is not redundancy, it is the schema winning silently.
 
-What is left is the project block: config/disk-driven content injected into
-`assemble_system_prompt`, ~30 lines, where a dedicated module would be mostly
-boilerplate.
+So what this module holds is the project block: config/disk-driven content
+injected into `assemble_system_prompt`, ~30 lines, where a dedicated module
+would be mostly boilerplate.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+
+from tesseract.credentials.redaction import redact_url_credentials
 
 # Logger name pinned to "tesseract.brain.prompt" — see prompt_time.py's
 # module docstring for why this is hardcoded rather than `__name__`.
@@ -48,8 +45,23 @@ def _project_field(value: str) -> str:
     text into the system prompt. Strip newlines and control characters so a
     value cannot forge a heading or a new bullet, and cap the length so it
     cannot crowd out the identity sections around it.
+
+    The remote also carries a credential when the clone URL had one.
+    `redact_payload` does now cover it, structurally, at every boundary; this
+    call stays because the gate cannot do what it does here. It removes the
+    value at the point the block is COMPOSED, so the assembled prompt an
+    operator reads in the payload panel does not carry it either, and it does
+    so in an order the generic walk has no way to impose.
+
+    The three steps are ordered and each order is load-bearing. Flattening runs
+    FIRST: `\\x0b` is both a control character and a regex `\\s`, so a userinfo
+    carrying one breaks the run the redactor looks for, and stripping it
+    afterwards would hand the intact token back. Redaction runs SECOND, before
+    the cap: truncating first would leave a prefix of the token in the prompt
+    and call the field bounded.
     """
     flat = _CONTROL_CHARS.sub("", str(value)).replace("\r", " ").replace("\n", " ")
+    flat = redact_url_credentials(flat)
     flat = flat.replace("`", "'").strip()
     if len(flat) > _PROJECT_FIELD_CAP:
         flat = flat[:_PROJECT_FIELD_CAP] + "…(truncated)"

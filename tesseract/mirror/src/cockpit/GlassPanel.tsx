@@ -7,7 +7,12 @@
 
 import { CloseButton } from "../components/common/CloseButton";
 import { IconButton } from "../components/common/IconButton";
-import { ResetIcon } from "../components/common/icons";
+import {
+  MaximizeIcon,
+  MinimizeIcon,
+  PinIcon,
+  ResetIcon,
+} from "../components/common/icons";
 import {
   ResizeHandles,
   type ResizeDir,
@@ -29,76 +34,6 @@ const MIN_H = 240;
 // Floating rails resize down to their dock width, not the view-panel floor,
 // so an undocked rail doesn't snap 282→340 on first resize.
 const railMinW = (isRail: boolean): number => (isRail ? RAIL_W : MIN_W);
-
-// A thumbtack — filled when pinned (locked), outline when free.
-function PinIcon({ filled }: { filled: boolean }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="1em"
-      height="1em"
-      aria-hidden="true"
-      fill={filled ? "currentColor" : "none"}
-      stroke="currentColor"
-      strokeWidth={1.6}
-      strokeLinejoin="round"
-      strokeLinecap="round"
-    >
-      <path d="M9 4 H15 L14 9 L16.5 11.5 V13 H7.5 V11.5 L10 9 Z" />
-      <path d="M12 13 V20" />
-    </svg>
-  );
-}
-
-// A short underscore — collapse the panel off-stage (reachable from the HUD).
-function MinimizeIcon() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="1em"
-      height="1em"
-      aria-hidden="true"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.6}
-      strokeLinecap="round"
-    >
-      <path d="M6 18 H18" />
-    </svg>
-  );
-}
-
-// Single square = maximize; nested squares = restore.
-function MaximizeIcon({ on }: { on: boolean }) {
-  return on ? (
-    <svg
-      viewBox="0 0 24 24"
-      width="1em"
-      height="1em"
-      aria-hidden="true"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.6}
-      strokeLinejoin="round"
-    >
-      <rect x="4" y="8" width="12" height="12" rx="1.5" />
-      <path d="M8 8 V5.5 A1.5 1.5 0 0 1 9.5 4 H18.5 A1.5 1.5 0 0 1 20 5.5 V14.5 A1.5 1.5 0 0 1 18.5 16 H16" />
-    </svg>
-  ) : (
-    <svg
-      viewBox="0 0 24 24"
-      width="1em"
-      height="1em"
-      aria-hidden="true"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.6}
-      strokeLinejoin="round"
-    >
-      <rect x="4.5" y="4.5" width="15" height="15" rx="1.6" />
-    </svg>
-  );
-}
 
 interface GlassPanelProps {
   panel: PanelState;
@@ -243,14 +178,16 @@ function GlassPanelImpl({ panel, maximizeRect, bounds }: GlassPanelProps) {
         <span className="glass-panel__title">{label}</span>
         <div className="glass-panel__actions">
           {/* Pin = lock in place (no move/resize) — on every panel, rails too. */}
-          <IconButton
-            active={panel.pinned}
-            ariaLabel={panel.pinned ? `Unlock ${label}` : `Pin ${label} in place`}
-            onPointerDown={stop}
-            onClick={() => togglePin(panel.id)}
-          >
-            <PinIcon filled={panel.pinned} />
-          </IconButton>
+          <Hint label={panel.pinned ? "Unlock" : "Hold in place"}>
+            <IconButton
+              active={panel.pinned}
+              ariaLabel={panel.pinned ? `Unlock ${label}` : `Pin ${label} in place`}
+              onPointerDown={stop}
+              onClick={() => togglePin(panel.id)}
+            >
+              <PinIcon filled={panel.pinned} />
+            </IconButton>
+          </Hint>
           {isRail && (
             <Hint label={`Reset ${label} to its default position`}>
               <IconButton
@@ -263,23 +200,27 @@ function GlassPanelImpl({ panel, maximizeRect, bounds }: GlassPanelProps) {
             </Hint>
           )}
           {!isRail && (
-            <IconButton
-              ariaLabel={`Minimize ${label}`}
-              onPointerDown={stop}
-              onClick={() => toggleMinimize(panel.id)}
-            >
-              <MinimizeIcon />
-            </IconButton>
+            <Hint label="Put away, into the dock">
+              <IconButton
+                ariaLabel={`Minimize ${label}`}
+                onPointerDown={stop}
+                onClick={() => toggleMinimize(panel.id)}
+              >
+                <MinimizeIcon />
+              </IconButton>
+            </Hint>
           )}
           {!isRail && (
-            <IconButton
-              active={panel.maximized}
-              ariaLabel={panel.maximized ? `Restore ${label}` : `Maximize ${label}`}
-              onPointerDown={stop}
-              onClick={() => toggleMaximize(panel.id)}
-            >
-              <MaximizeIcon on={panel.maximized} />
-            </IconButton>
+            <Hint label={panel.maximized ? "Restore" : "Maximize"}>
+              <IconButton
+                active={panel.maximized}
+                ariaLabel={panel.maximized ? `Restore ${label}` : `Maximize ${label}`}
+                onPointerDown={stop}
+                onClick={() => toggleMaximize(panel.id)}
+              >
+                <MaximizeIcon on={panel.maximized} />
+              </IconButton>
+            </Hint>
           )}
           <CloseButton
             ariaLabel={`Close ${label}`}

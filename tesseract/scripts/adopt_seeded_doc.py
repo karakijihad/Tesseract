@@ -7,7 +7,7 @@ sharp edge — **editing an install's product document by hand permanently opts
 it out of updates.** The bytes stop matching, the file reads as authored prose,
 and no later correction is ever delivered to it again.
 
-That is not hypothetical. `workspace/TOOLS.md` on this machine was corrected by
+That is not hypothetical. A product document on this machine was corrected by
 hand while closing a phase, exactly as the phase instructed, and silently left
 the refresh path in the same motion.
 
@@ -126,7 +126,7 @@ def _print_listing(home: Path) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("paths", nargs="*", help="home-relative, e.g. workspace/TOOLS.md")
+    parser.add_argument("paths", nargs="*", help="home-relative, e.g. workspace/OPERATING.md")
     parser.add_argument("--list", action="store_true", help="show every seeded document's state")
     parser.add_argument(
         "--force",

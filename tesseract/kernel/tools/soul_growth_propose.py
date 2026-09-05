@@ -13,8 +13,8 @@ mental model: "the assistant is a colleague sending change requests; I review
 in the workspace."
 
 Bullet ergonomics preserved from the previous direct-write tool:
-- ≤240 chars (Growth is a distillate, not a log).
-- Appended to the `## Growth` section.
+- ≤240 chars (each section is a distillate, not a log).
+- Appended to the named growth section (`SOUL_GROWTH_SECTIONS`).
 - Surfaces to operator via the workspace inbox; the post-approve
   commit broadcasts `soul_updated` so the Soul tab refreshes.
 """
@@ -29,11 +29,15 @@ from pydantic import BaseModel, Field
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
 from tesseract.kernel.workspace_changes import (
     PROPOSABLE_PATHS,
+    SOUL_GROWTH_SECTIONS,
     ProposeError,
     compute_diff,
+    document_posture,
     hash_text,
     preview_change,
+    settle_proposal,
     validate_action,
+    validate_growth_section,
     validate_target,
     workspace_events_dir,
 )
@@ -45,14 +49,25 @@ _SOUL_REL = "tesseract/workspace/SOUL.md"
 _MAX_BULLET_CHARS = 240
 
 
+_SECTION_GUIDE = "; ".join(
+    f"{name} = {purpose}" for name, purpose in SOUL_GROWTH_SECTIONS.items()
+)
+
+
 class SoulGrowthProposeInput(BaseModel):
+    section: str = Field(
+        description=(
+            "Which part of yourself this belongs to. " + _SECTION_GUIDE + ". "
+            "Pick the one it actually is: a lesson about how you work is Craft "
+            "even when it arrived as a correction about tone."
+        ),
+    )
     bullet: str = Field(
         description=(
-            "One distilled observation about you-with-this-operator "
-            "(≤240 chars). Examples: 'Operator wants opinions stated, "
-            "not menus offered. Give the answer in one sentence.' / "
-            "'Dry humor lands well on tech topics; drop it in serious "
-            "debugging.' Should be a STABLE pattern, not a one-off."
+            "One distilled observation, written in the first person, ≤240 "
+            "chars. Examples: 'They want opinions stated, not menus offered. "
+            "Give the answer in one sentence.' / 'I check the log before I "
+            "defend an assumption.' A STABLE pattern, not a one-off."
         ),
     )
 
@@ -73,6 +88,7 @@ class SoulGrowthProposeTool(Tool):
         "use `diary_append` for a single session's observation; use "
         "`memory_save` for facts about the operator or project."
     )
+    depends_on: ClassVar[str] = ""
 
     """Queue a SOUL.md Growth bullet for operator approval (workspace inbox)."""
 
@@ -93,6 +109,11 @@ class SoulGrowthProposeTool(Tool):
             if isinstance(tool_input, SoulGrowthProposeInput)
             else SoulGrowthProposeInput(**tool_input.model_dump())
         )
+
+        try:
+            section = validate_growth_section((inp.section or "").strip())
+        except ProposeError as exc:
+            return ToolResult(output=str(exc), is_error=True)
 
         bullet = (inp.bullet or "").strip().lstrip("-•*").strip()
         if not bullet:
@@ -123,7 +144,7 @@ class SoulGrowthProposeTool(Tool):
                 current_text=before,
                 action=action,
                 content=bullet_line,
-                section="Growth",
+                section=section,
             )
         except ProposeError as exc:
             return ToolResult(output=str(exc), is_error=True)
@@ -135,14 +156,14 @@ class SoulGrowthProposeTool(Tool):
         event = WorkspaceEvent.new(
             kind="change_proposal",
             source="agent",
-            title=f"Soul growth bullet — {bullet[:80]}",
+            title=f"Soul · {section} — {bullet[:70]}",
             summary=bullet,
             payload={
                 "target_path": _SOUL_REL,
                 "label": label,
                 "action": action,
                 "content": bullet_line,
-                "section": "Growth",
+                "section": section,
                 "summary": bullet,
                 "expected_hash_before": expected_hash_before,
                 "bytes_before": len(before.encode("utf-8")),
@@ -151,6 +172,22 @@ class SoulGrowthProposeTool(Tool):
                 "kind_origin": "soul_growth",
             },
         )
+
+        # The same door `propose_change` goes through, and the same reader for
+        # the posture. Two callers deriving the same answer separately is how
+        # one file ends up auto for one tool and gated for the other.
+        posture = document_posture(context)
+        event, applied, error = settle_proposal(
+            event=event,
+            target_path=_SOUL_REL,
+            action=action,
+            content=bullet_line,
+            section=section,
+            expected_hash_before=expected_hash_before,
+            posture=posture,
+        )
+        if error is not None:
+            return ToolResult(output=f"soul_growth_propose: {error}", is_error=True)
 
         try:
             store = EventStore(workspace_events_dir())
@@ -162,15 +199,26 @@ class SoulGrowthProposeTool(Tool):
                 is_error=True,
             )
 
-        return ToolResult(
-            output=(
+        if applied is not None:
+            settled = (
+                f"No change: {applied.no_op_reason}."
+                if applied.no_op_reason
+                else f"Written into SOUL.md under {section} ({len(bullet)} chars)."
+            )
+            note = f"{settled} Filed in the workspace inbox as history."
+        else:
+            note = (
                 f"Soul growth bullet queued for approval ({len(bullet)} chars). "
-                f"Operator approves in workspace; SOUL.md updates on commit. "
-                f"event_id={event.event_id}"
-            ),
+                f"Operator approves in workspace; SOUL.md updates on commit."
+            )
+
+        return ToolResult(
+            output=f"{note} event_id={event.event_id}",
             metadata={
                 "event_id": event.event_id,
                 "target_path": _SOUL_REL,
                 "bullet": bullet,
+                "posture": posture,
+                "status": event.status,
             },
         )

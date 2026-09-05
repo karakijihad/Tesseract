@@ -27,7 +27,7 @@
   <rect x="342" y="18" width="124" height="46" rx="4" fill="url(#w-sys)" stroke="#22d3ee" stroke-width="1.2"/>
   <line x1="348" y1="18" x2="348" y2="64" stroke="#22d3ee" stroke-width="1.2"/>
   <text x="404" y="38" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#22d3ee" text-anchor="middle">remembers</text>
-  <text x="404" y="54" font-family="JetBrains Mono, ui-monospace, Consolas, monospace" font-size="9" fill="rgba(234,234,248,0.5)" text-anchor="middle">across sessions</text>
+  <text x="404" y="54" font-family="JetBrains Mono, ui-monospace, Consolas, monospace" font-size="9" fill="rgba(234,234,248,0.55)" text-anchor="middle">across sessions</text>
   <path d="M404 64 L404 88" fill="none" stroke="#22d3ee" stroke-width="1.2" marker-end="url(#w-c)" marker-start="url(#w-c)"/>
   <text x="418" y="80" font-family="JetBrains Mono, ui-monospace, Consolas, monospace" font-size="9" fill="rgba(34,211,238,0.75)">carried forward</text>
 
@@ -38,7 +38,7 @@
   <!-- the assistant -->
   <rect x="300" y="92" width="208" height="112" rx="5" fill="url(#w-sys)" stroke="rgba(234,234,248,0.4)" stroke-width="1.2"/>
   <text x="404" y="142" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="22" font-weight="600" fill="#f2f2f8" text-anchor="middle">Agent</text>
-  <text x="404" y="164" font-family="JetBrains Mono, ui-monospace, Consolas, monospace" font-size="10" fill="rgba(234,234,248,0.5)" text-anchor="middle">runs on your machine</text>
+  <text x="404" y="164" font-family="JetBrains Mono, ui-monospace, Consolas, monospace" font-size="10" fill="rgba(234,234,248,0.55)" text-anchor="middle">runs on your machine</text>
 
   <!-- the relationship: violet is reserved for it -->
   <path d="M140 130 L294 130" fill="none" stroke="#8f7dff" stroke-width="1.4" marker-end="url(#w-v)"/>
@@ -63,5 +63,5 @@
   </g>
 
   <text x="468" y="252" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="15" fill="rgba(234,234,248,0.72)" text-anchor="middle">It gets to know you. It stops and asks before it touches anything.</text>
-  <text x="468" y="274" font-family="JetBrains Mono, ui-monospace, Consolas, monospace" font-size="10" fill="rgba(234,234,248,0.34)" text-anchor="middle">the rest of this guide opens each of these up</text>
+  <text x="468" y="274" font-family="JetBrains Mono, ui-monospace, Consolas, monospace" font-size="10" fill="rgba(234,234,248,0.55)" text-anchor="middle">the rest of this guide opens each of these up</text>
 </svg>

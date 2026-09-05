@@ -12,7 +12,7 @@
       </defs>
 
       <rect x="0" y="84" width="936" height="104" rx="4" fill="rgba(255,255,255,0.016)"/>
-      <text x="8" y="76" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" letter-spacing="1.4" fill="rgba(234,234,248,0.38)">RETRIEVE</text>
+      <text x="8" y="76" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" letter-spacing="1.4" fill="rgba(234,234,248,0.55)">RETRIEVE</text>
 
       <g stroke="rgba(234,234,248,0.55)" stroke-width="1" fill="url(#m-node)">
         <rect x="16" y="112" width="104" height="46" rx="3"/>
@@ -59,5 +59,5 @@
       <path d="M220 112 L220 48 L860 48 L860 108" fill="none" stroke="#4ade80" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#m-arw-g)"/>
       <rect x="407.5" y="43.8" width="264.9" height="11.0" fill="#0b0b16"/><text x="540" y="52" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#4ade80" text-anchor="middle">an exact name match skips everything after it</text>
 
-      <text x="468" y="232" font-family="JetBrains Mono, ui-monospace, monospace" font-size="10" fill="rgba(234,234,248,0.38)" text-anchor="middle">injected once, for one turn — never appended to history</text>
+      <text x="468" y="232" font-family="JetBrains Mono, ui-monospace, monospace" font-size="10" fill="rgba(234,234,248,0.55)" text-anchor="middle">injected once, for one turn — never appended to history</text>
     </svg>

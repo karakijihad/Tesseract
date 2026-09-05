@@ -1,4 +1,4 @@
-"""Per-kind retry policy for the durable worker substrate (AU-3 S2).
+"""Per-kind retry policy for the durable worker substrate.
 
 Lives separately from ``tesseract/orchestrator/mission/retry.py``
 because the error models are different: the mission retry policy keys
@@ -30,12 +30,10 @@ to retry regardless of ``retry_count`` or ``retry_on_classes``.
 
 The decision writes the ``retry_count`` increment to the durable
 record (via the caller, not here — this module returns the decision
-only). AU-5's AutonomyKernel is the caller that owns that write:
-when a worker fails and ``decide()`` returns ``retry=True``, the
-kernel increments ``WorkerRecord.retry_count`` and persists via
-``write_record`` before requeueing. S2 ships the policy decision
-function; the record write lands with the rest of the dispatch
-machinery in AU-5.
+only). The AutonomyKernel owns that write: when a worker fails and
+``decide()`` returns ``retry=True``, the kernel increments
+``WorkerRecord.retry_count`` and persists via ``write_record`` before
+requeueing.
 """
 
 from __future__ import annotations

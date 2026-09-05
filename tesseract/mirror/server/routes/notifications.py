@@ -1,4 +1,4 @@
-"""Outbound notification settings — AU-10.
+"""Outbound notification settings.
 
 Three endpoints back the autonomy dashboard's notification panel:
 

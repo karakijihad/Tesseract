@@ -2,7 +2,7 @@
 
 `manifest/checks.py` proves the declared set is *correct* at boot: a shipped row
 nobody declares refuses to start. Nothing proved it was *running* afterwards.
-`runs.jsonl` carries every fire and its outcome and was read by the Schedule tab
+`runs.jsonl` carries every fire and its outcome and was read by the schedule view
 and the `schedule_list` tool, by nothing that reports — so a row that silently
 stopped firing, or failed every night, produced no finding and reached neither
 Telegram nor the brief.
@@ -26,19 +26,28 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from tesseract.orchestrator.outcome import (
-    HEALTHY_OUTCOMES,
-    RunOutcome,
-    outcome_from_ok,
-)
+from tesseract.orchestrator.outcome import HEALTHY_OUTCOMES, RunOutcome
 from tesseract.scheduler.cadence import next_fire, parse_interval
-from tesseract.scheduler.log import iter_runs, runs_path
+from tesseract.scheduler.log import iter_runs, outcome_of_row, runs_path
 
 log = logging.getLogger(__name__)
 
 # Bounds on the grace a row gets past its own next fire before it is late.
 GRACE_MIN_S = 15 * 60
 GRACE_MAX_S = 6 * 3600
+
+# A silence this many times the busiest row's own period means the scheduler
+# was not ticking. Three, because one missed fire is a slow run and two is a
+# machine that hiccuped, while three consecutive misses of the FASTEST row on
+# the machine is a runtime that was not there.
+STALL_PERIODS = 3
+# Below this, a gap is not evidence of anything: a schedule whose busiest row
+# is a minute apart would otherwise call three quiet minutes an outage.
+STALL_MIN_S = 30 * 60
+# How many fires may sit inside one outage before it stops being one. A
+# machine that wakes for a single job on the way past is still a machine that
+# was away; a scheduler that fired seven times across the window was there.
+MAX_STALL_STIRS = 1
 
 # Outcomes that earn an evidence report the operator can hand upstream. A
 # refusal is policy working (a breaker open, a pause) and a truncation resumes
@@ -74,6 +83,10 @@ class RowState:
     # `(outcome, reason)` for every run in the window that ended unhealthy.
     unhealthy: tuple[tuple[str, str], ...]
     runs_in_window: int
+    # Where this row's messages go, in the words the tracker prints. Empty
+    # when the row said nothing and the kind's own routing decides, which is
+    # what every row starts as.
+    reports_to: str = ""
 
     @property
     def defective(self) -> bool:
@@ -87,6 +100,22 @@ class RowReport:
     # False when nothing has ever run on this machine. Absent is not quiet:
     # a first boot has no run log and no row has failed to fire.
     log_present: bool
+    # `(from, to)` for every window in which nothing fired at all. Reported as
+    # one outage rather than as a defect per row, because it is one event.
+    stalls: tuple[tuple[datetime, datetime], ...] = ()
+
+
+def reports_to(delivery: list[str] | None) -> str:
+    """Where a row's messages go, for the tracker's own column.
+
+    Three answers, and the operator has to be able to tell the last two apart:
+    a row that said nothing follows the kind, a row that named nowhere is a
+    decision they made, and neither is the same as naming a channel.
+    """
+    if delivery is None:
+        return ""
+    names = [str(name).strip() for name in delivery if str(name).strip()]
+    return ", ".join(names) if names else "nowhere"
 
 
 def describe(cadence: str, when: str) -> str:
@@ -143,11 +172,8 @@ def _parse_ts(value: Any) -> datetime | None:
 
 
 def _outcome_of(row: dict[str, Any]) -> str:
-    """Rows written before the vocabulary existed carry `ok` and no outcome."""
-    stated = row.get("outcome")
-    if isinstance(stated, str) and stated.strip():
-        return stated.strip()
-    return outcome_from_ok(bool(row.get("ok"))).value
+    """How one logged run went, read by the module that owns the row."""
+    return outcome_of_row(row).value
 
 
 @dataclass
@@ -163,6 +189,12 @@ class _LogScan:
     # this file nightly, so it would move under the judgement.
     earliest: datetime | None = None
     scanned: int = 0
+    # `(when, row name)` for every fire in the log. This is the only record
+    # of whether the scheduler was TICKING, which is a different question from
+    # whether the process was up: it outlives a machine suspend, and a row
+    # cannot be late for minutes in which nothing at all fired. The name is
+    # what lets a gap be judged against the rows that span it.
+    fires: list[tuple[datetime, str]] = field(default_factory=list)
 
 
 def _scan_log(path: Path, start: datetime | None, end: datetime) -> _LogScan:
@@ -184,6 +216,7 @@ def _scan_log(path: Path, start: datetime | None, end: datetime) -> _LogScan:
             continue
         if earliest is None or fired < earliest:
             earliest = fired
+        scan.fires.append((fired, name))
         previous = last_run.get(name)
         if previous is None or fired > previous:
             last_run[name] = fired
@@ -230,6 +263,91 @@ def _declared_rows() -> dict[str, Any]:
     from tesseract.scheduler.manifest import Runs, entries_of
 
     return {e.name: e for e in (*entries_of(Runs.ROW), *entries_of(Runs.TRIGGER))}
+
+
+def _stalls(
+    fires: list[tuple[datetime, str]], *, periods: dict[str, float]
+) -> list[tuple[datetime, datetime]]:
+    """Windows in which the scheduler fired nothing at all.
+
+    A machine that sleeps takes its scheduler with it and leaves the process
+    alive, so `running_since` sees no restart and every row wakes up hours
+    past due. On 2026-08-20 that produced *"the watchman row is 11.0h past its
+    next fire"* while `capture`, which fires every five minutes, had exactly
+    the same eleven hour gap. A defect that appears in every row at the same
+    instant is the machine, not the rows.
+
+    **The threshold is per gap, from the rows that fired on BOTH sides of
+    it.** A global threshold taken from the fastest row on the schedule reads
+    the log wrong the moment that row is the one that dies: with `capture`
+    stopped, every hourly `watchman` gap exceeded it, each stall ended where
+    the next began, the merge rule joined them, and the runtime reported
+    itself asleep every hour while plainly running. A row that fired before
+    the gap and again after it is proof of what the scheduler does when it is
+    working, and a row that stopped is not spanning anything.
+
+    A gap no row spans is left alone: nothing can say whether that was an
+    outage or a runtime that quietly stopped, and the second is the one that
+    must never be silenced.
+    """
+    if not fires:
+        return []
+    ordered = sorted(fires)
+    when: dict[str, list[datetime]] = {}
+    for moment, name in ordered:
+        when.setdefault(name, []).append(moment)
+
+    # 1. Every silence long enough to be worth asking about.
+    candidates = [
+        (earlier, later)
+        for (earlier, _a), (later, _b) in zip(ordered, ordered[1:])
+        if (later - earlier).total_seconds() > STALL_MIN_S
+    ]
+
+    # 2. Joined, before anything is judged. A machine that wakes for one job
+    # and sleeps again produced two silences around a single fire: the
+    # 2026-08-20 outage read as 21:20 to 03:02 and 03:02 to 08:50, because
+    # `janitor_sweep` runs on uptime rather than a clock and fired alone on
+    # the way past. That is one outage with a stir in the middle of it.
+    #
+    # This has to happen BEFORE step 3, not after: neither half of a split
+    # outage is bracketed by the row that proves the machine was working,
+    # because that row is on the far side of the other half.
+    merged: list[tuple[datetime, datetime]] = []
+    for began, ended in candidates:
+        if merged and (began - merged[-1][1]).total_seconds() <= STALL_MIN_S:
+            merged[-1] = (merged[-1][0], ended)
+        else:
+            merged.append((began, ended))
+
+    # 3. Kept only where a row with a CLOCK was working on both sides of it.
+    # "Fired somewhere before and somewhere after" is too weak: a daily row
+    # brackets the whole log and so spans every silence inside it, which would
+    # let one push the bar past a real outage. Near both edges is the claim.
+    def spans(name: str, period: float, began: datetime, ended: datetime) -> bool:
+        reach = timedelta(seconds=max(period * STALL_PERIODS, STALL_MIN_S))
+        times = when.get(name, ())
+        return (
+            any(began - reach <= t <= began for t in times)
+            and any(ended <= t <= ended + reach for t in times)
+        )
+
+    # 4. And only where the scheduler was not demonstrably running THROUGH it.
+    # Merging in step 2 is what makes this necessary: with the densest row
+    # dead, every gap of a surviving hourly row clears the floor and each ends
+    # where the next begins, so they merge into one unbroken window and the
+    # runtime would report itself asleep every hour while plainly working.
+    # One stir inside a silence is a machine waking for a job. Several are a
+    # scheduler keeping time, and whatever is wrong then is a row, not the
+    # machine, which must be reported rather than explained away.
+    def stirs(began: datetime, ended: datetime) -> int:
+        return sum(1 for t, _n in ordered if began < t < ended)
+
+    return [
+        (began, ended) for began, ended in merged
+        if stirs(began, ended) <= MAX_STALL_STIRS
+        and any(spans(name, period, began, ended) for name, period in periods.items())
+    ]
 
 
 def _lateness(
@@ -295,6 +413,28 @@ def read_rows(
     since = running_since if running_since is not None else boot_time()
     declared = _declared_rows()
 
+    # Only rows with a CLOCK. A trigger row fires when something happens, so
+    # its silence measures nothing and its lone fire is not evidence the
+    # scheduler kept its own time.
+    periods = {
+        job.name: p for job in schedule.jobs
+        if job.enabled and job.cadence.strip()
+        and (p := _period_seconds(job.cadence, now)) is not None
+    }
+    stalls = _stalls(scan.fires, periods=periods) if present else []
+    # A row is judged from the end of the last stall, for the same reason it is
+    # judged from boot: nothing fired before it, and nothing that did not fire
+    # can be late.
+    if stalls:
+        since = max(since, stalls[-1][1]) if since is not None else stalls[-1][1]
+    # Lateness is judged from the newest stall whenever it happened; only the
+    # ones that ENDED in this window are reported, or every pass would re-tell
+    # the operator about every night the machine has ever been off.
+    reported_stalls = [
+        (began, ended) for began, ended in stalls
+        if window_start is None or ended > window_start
+    ]
+
     states: list[RowState] = []
     for job in schedule.jobs:
         entry = declared.get(job.name)
@@ -317,13 +457,16 @@ def read_rows(
             never_ran=last is None,
             unhealthy=tuple(scan.unhealthy.get(job.name, ())),
             runs_in_window=scan.in_window.get(job.name, 0),
+            reports_to=reports_to(job.delivery),
         ))
-    return RowReport(rows=tuple(states), scanned=scan.scanned, log_present=present)
+    return RowReport(rows=tuple(states), scanned=scan.scanned, log_present=present,
+                     stalls=tuple(reported_stalls))
 
 
 __all__ = [
     "DEFECT_OUTCOMES",
     "boot_time",
+    "reports_to",
     "GRACE_MAX_S",
     "GRACE_MIN_S",
     "RowReport",

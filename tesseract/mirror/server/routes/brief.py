@@ -1,23 +1,14 @@
-"""Brief tab REST routes — MO-9-9 (operator-facing daily-brief surface).
+"""Brief tab REST routes — the operator-facing daily-brief surface.
 
 Read-heavy: list/detail are pure file reads from
 ``<TESSERACT_HOME>/memory-store/daily/briefs/``. The single write action
 — ``POST /refresh`` — dispatches ``execute_tool("brief_render", ...)``;
 ``BriefRenderTool`` is ASK-gated at the policy layer so the operator is
 prompted in their chat session before the renderer fires.
-
-MO-9-14 adds ``POST /api/brief/feedback`` which mutates the operator's
-interest-affinity profile. Concurrent POSTs serialise on
-``_FEEDBACK_LOCK`` so a load→modify→save race cannot silently drop a
-signal — the phase-gate reviewer flagged the lost-update window as an
-exit-criterion gap and this lock is the fold.
-
-Authoritative contracts:
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 from datetime import datetime, timezone
@@ -29,20 +20,11 @@ from aiohttp import web
 from tesseract.brain.tools import execute_tool
 from tesseract.kernel.tools.base import ToolContext
 from tesseract.paths import TESSERACT_HOME
+from tesseract.lib import clock
 
 log = logging.getLogger(__name__)
 
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-# Module-level asyncio lock serialising `brief_feedback` writes. The
-# route loads the profile, applies a signal, then writes — without
-# this lock, two POSTs landing inside the same event-loop tick could
-# both read the pre-update profile and one save would silently win.
-# Single operator + UI-side per-card guard makes this paper-thin in
-# practice, but the phase doc §8 exit criterion explicitly requires
-# atomicity. asyncio.Lock is process-local; multi-process deployments
-# would need the cross-process EventStore-style file lock.
-_FEEDBACK_LOCK = asyncio.Lock()
 
 
 def _briefs_dir() -> Path:
@@ -67,7 +49,7 @@ def _strip_frontmatter(text: str) -> tuple[dict[str, str], str]:
     """Split a brief file into (frontmatter_dict, body).
 
     The renderer writes ``---\\n<yaml>---\\n\\n<body>``; we partition on
-    the ``---\\n\\n`` boundary (same as the MO-9-8 voice-safety test) so
+    the ``---\\n\\n`` boundary (same as the voice-safety test) so
     the body always starts at the title heading. Frontmatter is parsed
     line-by-line into a flat ``key: value`` dict — nested lists (``sources:``)
     are not surfaced to the frontend; the operator-facing UI only needs
@@ -147,10 +129,16 @@ async def get_brief(request: web.Request) -> web.Response:
 async def refresh_brief(request: web.Request) -> web.Response:
     """POST /api/brief/refresh — re-run today's brief via ``brief_render``.
 
-    Body: ``{"session_id": str, "date"?: str}``. ``brief_render`` is
-    ASK-gated by ``permissions.yaml::tools.brief_render``; the operator's
-    chat session ``ask_fn`` handles the prompt. ``overwrite=True`` matches
-    the ``/brief`` slash semantics from MO-9-8.
+    Body: ``{"session_id": str, "date"?: str}``. ``overwrite=True`` matches
+    the ``/brief`` slash semantics.
+
+    **This does not prompt.** ``permissions.yaml::tools.brief_render`` is
+    ``auto`` and the yaml is the authority, so the ``ask_fn`` threaded below
+    is never reached for this tool. It is still required, because a session
+    that cannot be asked is a session the tool cannot report back through,
+    and because the posture is the operator's to change without this route
+    needing an edit. An earlier version of this docstring said the call was
+    ASK-gated, which had not been true for some time.
 
     The ``daily_brief_ready`` WS broadcast is emitted by ``brief_render``'s
     side-effect path (see ``tesseract/orchestrator/brief/renderer.py``'s
@@ -229,7 +217,7 @@ async def refresh_brief(request: web.Request) -> web.Response:
     # picks up the new newsletter card.
     if not result.is_error:
         path = (result.metadata or {}).get("path")
-        date_str = target_date or datetime.now(timezone.utc).date().isoformat()
+        date_str = target_date or clock.today().isoformat()
         if isinstance(path, str):
             await broadcast_daily_brief_ready(
                 request.app,
@@ -314,99 +302,19 @@ async def broadcast_daily_brief_ready(
                 getattr(sess, "session_id", "?"),
             )
 
-    # MO-10-3 — fire the daily-brief Telegram push subscriber if wired.
+    # Fire the daily-brief Telegram push subscriber if wired.
     # Fail-soft: a busted push must not be reported as a failed broadcast.
     push = app.get("brief_push_subscriber")
     if push is not None:
         try:
-            await push.handle()
+            # The date the broadcast is FOR, not whichever brief is newest.
+            # An operator refreshing an older day makes that the newest event.
+            await push.handle(date)
         except Exception:
             log.exception("brief broadcast: brief_push subscriber failed")
 
 
-async def brief_feedback(request: web.Request) -> web.Response:
-    """POST /api/brief/feedback — apply a per-card signal to the interests profile.
-
-    Body: ``{"date": "YYYY-MM-DD", "pillar": str, "url": str, "signal":
-    one of "interested"|"not_for_me"|"dig_deeper"|"commented",
-    "topic"?: str}``.
-
-    ``topic`` is optional — the signal is recorded against ``topic``
-    when given, otherwise against the card's ``url`` (so the URL becomes
-    a topic-key and the operator's affinity for that specific source
-    accumulates). The implementation is intentionally simple — Pydantic
-    is overkill for a four-field POST and the route keeps validation
-    inline so a malformed body returns a precise 400.
-
-    Returns the updated affinity dict for the pillar so the UI can
-    micro-animate the card's "learning" state.
-    """
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON body"}, status=400)
-    if not isinstance(body, dict):
-        return web.json_response({"error": "body must be a JSON object"}, status=400)
-
-    date_raw = body.get("date")
-    if not isinstance(date_raw, str) or not _is_iso_date(date_raw):
-        return web.json_response(
-            {"error": "date must be ISO YYYY-MM-DD"}, status=400,
-        )
-    pillar = body.get("pillar")
-    if not isinstance(pillar, str) or not pillar.strip():
-        return web.json_response({"error": "pillar required"}, status=400)
-    pillar = pillar.strip()
-    signal_raw = body.get("signal")
-    if not isinstance(signal_raw, str):
-        return web.json_response({"error": "signal required"}, status=400)
-    try:
-        from tesseract.orchestrator.brief.interests import (
-            Signal,
-            load_profile,
-            record_signal,
-            save_profile,
-        )
-    except Exception:
-        log.exception("brief_feedback: interests module import failed")
-        return web.json_response({"error": "interests substrate unavailable"}, status=500)
-    try:
-        signal = Signal(signal_raw.strip().upper())
-    except ValueError:
-        valid = ", ".join(s.value.lower() for s in Signal)
-        return web.json_response(
-            {"error": f"signal must be one of: {valid}"}, status=400,
-        )
-
-    url = str(body.get("url") or "").strip()
-    topic = str(body.get("topic") or "").strip() or url
-    if not topic:
-        return web.json_response(
-            {"error": "either topic or url required to key the signal"},
-            status=400,
-        )
-
-    async with _FEEDBACK_LOCK:
-        profile = load_profile()
-        updated = record_signal(profile, pillar, topic, signal)
-        try:
-            save_profile(updated)
-        except Exception:
-            log.exception("brief_feedback: save_profile failed")
-            return web.json_response({"error": "failed to persist profile"}, status=500)
-        affinity = dict(updated.pillars.get(pillar) or {})
-
-    return web.json_response({
-        "date": date_raw,
-        "pillar": pillar,
-        "topic": topic,
-        "signal": signal.value,
-        "affinity": affinity,
-    })
-
-
 __all__ = [
-    "brief_feedback",
     "broadcast_daily_brief_ready",
     "get_brief",
     "get_brief_dates",

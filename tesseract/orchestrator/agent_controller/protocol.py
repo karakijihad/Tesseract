@@ -12,7 +12,7 @@ from the newline-delimited JSON of the 2026-05-24 TC-4 prototype to the
 length-prefixed framing primitive — see the ``Controller
 IPC migrated to length-prefixed framing``. Frames carry a 4-byte LE uint32
 length prefix (``<I``) so messages exceeding the asyncio StreamReader
-line-buffer limit (64 KiB) round-trip cleanly. The X-1 mission-worker
+line-buffer limit (64 KiB) round-trip cleanly. The mission-worker
 migration closed
 the last raw ``readline`` caller.
 """
@@ -153,7 +153,7 @@ class ShutdownMessage(BaseModel):
     msg: Literal["shutdown"] = "shutdown"
 
 
-# ── Lane control (X-4 Session C) ────────────────────────────────────────────
+# ── Lane control ────────────────────────────────────────────
 # Every `lane.*` request carries a `request_id`; the daemon emits a single
 # `LaneResultPush` whose `request_id` matches so the client can resolve the
 # awaiting future. The `result` payload is verb-specific (lane_id / events
@@ -256,7 +256,7 @@ class LaneListMessage(_LaneMessage):
     request_id: str
 
 
-# ── Named lanes (CV-1) ──────────────────────────────────────────────────────
+# ── Named lanes ──────────────────────────────────────────────────────
 # The NamedLaneManager (name→lane_id binding layer over LaneManager) lives
 # in-process in the daemon's ControllerRuntime. CV-1 exposes ensure/get/list
 # over IPC so Mirror can resolve + spawn named lanes (e.g. `coder/claude`,
@@ -308,7 +308,7 @@ class ReloadMessage(BaseModel):
 
 
 class ActivitySnapshotMessage(BaseModel):
-    """AS-1 gap-a — client requests a full Activity-registry snapshot.
+    """Client requests a full Activity-registry snapshot.
 
     Sent by the Mirror's ``ActivitySubscriber`` immediately after a (re)connect
     so a lane/session that was mid-flight before the socket existed is
@@ -528,7 +528,7 @@ class SessionRenamedPush(BaseModel):
 
 
 class ActivityEventPush(BaseModel):
-    """AS-1 — relays one Unified Activity Registry event from the controller
+    """Relays one Unified Activity Registry event from the controller
     daemon to every connected client. ``envelope`` is the verbatim activity
     envelope (``{kind, channel:"activity", session_id:<activity_id>, ts,
     data}``) the controller's bus produced; the Mirror's activity subscriber
@@ -542,7 +542,7 @@ class ActivityEventPush(BaseModel):
 
 
 class ActivitySnapshotPush(BaseModel):
-    """AS-1 gap-a — full Activity-registry snapshot, sent to the requesting
+    """Full Activity-registry snapshot, sent to the requesting
     client in reply to :class:`ActivitySnapshotMessage`. ``records`` is the list
     of ``ActivityRecordOut`` dicts from ``ActivityRegistry.snapshot()``; the
     subscriber upserts each into the Mirror-side registry. Unlike
@@ -615,7 +615,7 @@ that adds the handler."""
 
 
 class LaneResultPush(BaseModel):
-    """X-4 Session C — response to a `lane.*` request.
+    """Response to a `lane.*` request.
 
     The single polymorphic push avoids seven near-identical event types.
     `request_id` matches the originating message so the client can route

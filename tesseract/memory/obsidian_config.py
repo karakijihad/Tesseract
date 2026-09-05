@@ -1,4 +1,4 @@
-"""AU-16 — shipped ``.obsidian/graph.json`` for the canonical stores.
+"""Shipped ``.obsidian/graph.json`` for the canonical stores.
 
 Operator opens ``tesseract/memory-store/`` (and optionally
 ``tesseract/vault/``) directly as Obsidian vaults. The shipped color
@@ -7,15 +7,15 @@ groups apply on first open — no separate mirror directory.
 Unified palette (operator-approved 2026-05-19):
 
 - **Red hub** (``#e0524f``)
-  - ``#topic-summary`` — AU-16 entity-keyed aggregator trees
+  - ``#topic-summary`` — entity-keyed aggregator trees
   - ``#feedback``      — legacy operator rules (govern behavior)
 
 - **Yellow rollup** (``#e8a02c``)
-  - ``#source-summary``, ``#global-digest`` — AU-16 sealed rollups
+  - ``#source-summary``, ``#global-digest`` — sealed rollups
   - ``#user``, ``#project``, ``#daily-note`` — legacy durable knowledge
 
 - **Orange in-flight** (``#d97757``)
-  - ``#pending``, ``#buffered`` — AU-16 in-flight leaves
+  - ``#pending``, ``#buffered`` — in-flight leaves
   - ``#conscience``             — legacy runtime drift telemetry
 
 - **Default grey** — everything else (``#leaf``, ``#reference``, …)
@@ -74,7 +74,7 @@ GRAPH_JSON_DEFAULT: dict = {
 # carry: operator-curated entity hubs are typed (Concept/Person/...), compiled
 # Source pages carry the generated `source` tag, bookkeeping pages match by
 # filename. The memory-store tag groups above never fire on vault pages,
-# which used to leave the whole vault graph default-grey.
+# without which the whole vault graph renders default-grey.
 VAULT_COLOR_GROUPS: list[dict] = [
     # Hubs — red #e0524f
     {"query": '["type":Concept]', "color": {"a": 1, "rgb": 14701135}},

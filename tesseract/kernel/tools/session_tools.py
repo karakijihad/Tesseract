@@ -15,12 +15,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import dataclasses
 import logging
 from typing import Any, ClassVar, Optional
 
 from pydantic import BaseModel, Field
 
-from tesseract.brain.agent_factory import AgentBuildError, build_agent_session
+from tesseract.brain.agent_factory import (
+    AgentBuildError,
+    CarriesCompaction,
+    CompactionSettings,
+    build_agent_session,
+)
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
 from tesseract.orchestrator.agent_controller.interactive.agent_backend import (
     AgentSessionBackend,
@@ -261,7 +267,7 @@ class SessionListInput(BaseModel):
 # ─────────────────────────── tools ──────────────────────────────────────────
 
 
-class SessionOpenTool(Tool):
+class SessionOpenTool(CarriesCompaction, Tool):
     """Open an interactive multi-turn session against claude, codex, or an agent."""
 
     default_posture: ClassVar[str] = "auto"
@@ -277,6 +283,7 @@ class SessionOpenTool(Tool):
         "a standing named collaborator surviving restarts, which is `lane_named_ensure`; a "
         "one-shot worker, which is `delegate_coder`/`delegate_auditor`."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(
         self,
@@ -286,6 +293,7 @@ class SessionOpenTool(Tool):
         registry=None,
         max_tool_iterations: int = 10,
         max_consecutive_adapter_errors: int = 3,
+        compaction: CompactionSettings | None = None,
     ) -> None:
         self._agents_dir = agents_dir
         self._adapter = adapter
@@ -293,6 +301,9 @@ class SessionOpenTool(Tool):
         self._registry = registry  # ToolRegistry (parent), for agent sessions
         self._max_tool_iterations = max_tool_iterations
         self._max_consecutive_adapter_errors = max_consecutive_adapter_errors
+        # The parent's fold settings. `None` is the REPL/test path and
+        # falls back to the dataclass defaults inside the factory.
+        self._compaction = compaction
 
     @property
     def name(self) -> str:
@@ -384,6 +395,7 @@ class SessionOpenTool(Tool):
                     tool_context=context,
                     policy=context.policy if hasattr(context, "policy") else None,
                     ask_fn=ask_fn,
+                    compaction=self._compaction,
                 )
             except AgentBuildError as exc:
                 return ToolResult(output=f"session_open: AgentBuildError: {exc}", is_error=True)
@@ -443,6 +455,7 @@ class SessionSendTool(Tool):
         "the lane equivalent, which is `lane_send`/`lane_turn`; re-fetching a background turn's "
         "result later, which is `session_result`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -512,6 +525,7 @@ class SessionResultTool(Tool):
         "a foreground call's reply, already in that call's own return value; a lane's reply, "
         "which is `lane_read`/`lane_turn`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -556,6 +570,7 @@ class SessionCloseTool(Tool):
     summary: ClassVar[str] = "Close a session and free its resources. Idempotent on an already-closed handle."
     use_when: ClassVar[str] = "Use when a session's conversation is finished."
     not_when: ClassVar[str] = "terminating a lane's CLI process, which is `lane_close`."
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -614,6 +629,7 @@ class SessionListTool(Tool):
         "lanes, which is `lane_list`/`lane_named_list`; controller sessions, which is "
         "`controller_session_list`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

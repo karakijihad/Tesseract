@@ -25,10 +25,11 @@ import json
 import logging
 import os
 import time
-from datetime import timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+from tesseract.lib.clock import to_local
 from tesseract.brain.skills import load_skills
 from tesseract.orchestrator.outcome import RunOutcome
 from tesseract.paths import TESSERACT_HOME, home_logs_root
@@ -56,7 +57,12 @@ _PROMPT = (
 
 class SkillSuggestJob(BaseJob):
     uses_llm = True
-    default_model_role = "subagents_default"
+    # A CHAIN, not a role. `agents_default` and `subagents_default` are seats
+    # that also serve `invoke_agent`, so sharing one meant this job's model and
+    # its spend moved whenever an agent was re-pointed. Naming the chain
+    # directly severs that: what it spends bills to the entry, whose ceiling is
+    # on its manifest entry.
+    default_model_chain = "chain_1"
 
     async def run(self, ctx: JobContext) -> JobResult:
         t0 = time.monotonic()
@@ -79,7 +85,8 @@ class SkillSuggestJob(BaseJob):
 
             chain = build_chain_for_job(
                 ctx,
-                default_role=SkillSuggestJob.default_model_role,
+                default_role=None,
+                default_chain=SkillSuggestJob.default_model_chain,
                 log_label="skill_suggest",
             )
             if not chain:
@@ -243,7 +250,9 @@ def _recent_digests(ctx: JobContext, lookback_days: int) -> str:
     daily_dir = _resolve_daily_dir(ctx)
     if not daily_dir.exists():
         return ""
-    cutoff = (ctx.fired_at - timedelta(days=lookback_days)).date()
+    # The digest files are named for local days, so the cutoff has to be
+    # one too or an evening's digest falls outside its own lookback.
+    cutoff = to_local(ctx.fired_at).date() - timedelta(days=lookback_days)
     parts: list[str] = []
     total = 0
     try:

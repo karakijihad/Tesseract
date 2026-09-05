@@ -55,9 +55,19 @@ export const useIdentityStore = create<IdentityState>((set) => ({
   setSecurityMode: (mode) => set({ securityMode: mode }),
   setNames: (name, operatorName) => set({ name, operatorName }),
   setModel: (provider, model) => set({ provider, modelName: model }),
+  // Merged onto what is already there, not swapped for it. The
+  // compact-threshold route answers with the four fields it just wrote, while
+  // the entry also carries the model's own limits that only `/api/identity`
+  // sends. Replacing the entry wholesale dropped those the instant a control
+  // was saved. The measured floor is NOT here: it rides the `session_stats`
+  // envelope into the session store, because a GET with no session and no
+  // chat cannot say whose floor it is answering with.
   setCompactThreshold: (role, threshold) =>
     set((state) => ({
-      compactThresholds: { ...(state.compactThresholds ?? {}), [role]: threshold },
+      compactThresholds: {
+        ...(state.compactThresholds ?? {}),
+        [role]: { ...(state.compactThresholds?.[role] ?? {}), ...threshold },
+      },
     })),
   setCostTracking: (cost) => set({ costTracking: cost }),
   async fetchIdentity() {

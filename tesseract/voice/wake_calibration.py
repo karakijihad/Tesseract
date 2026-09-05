@@ -45,6 +45,10 @@ _FILENAME = "wake-calibration.json"
 #: interesting territory is the top of that band, and going below the floor
 #: buys nothing a real miss would not also survive.
 #:
+#: The rung that gets STORED is one step looser than the strictest that passed
+#: (`calibrate` backs off before it checks against ordinary speech), so the
+#: bottom rung is both a setting and the floor that back-off saturates at.
+#:
 #: **Four rungs, not six, and the reason is cost rather than taste.** Each rung
 #: is a fresh decoder — sherpa bakes the threshold in at construction — and
 #: that costs 9-12 s the first time in a process and ~3 s after. Six rungs is
@@ -152,7 +156,7 @@ def calibrate(
 
     tried: list[float] = []
     best_hits = 0
-    for threshold in THRESHOLD_LADDER:
+    for index, threshold in enumerate(THRESHOLD_LADDER):
         tried.append(threshold)
         spotter = make_spotter(threshold)
         hits = sum(1 for clip in usable if spotter.spot(clip))
@@ -160,15 +164,31 @@ def calibrate(
         if hits < len(usable):
             continue
 
-        # Strictest setting that hears every take. Nothing looser can make
-        # the ordinary speech quieter, so this is the one place to check it.
+        # One rung looser than the strictest that passed, and the reason is
+        # what a handful of takes can actually tell you. The takes are said
+        # deliberately, close to the microphone, in a quiet moment, because
+        # the operator is being recorded; the sentences afterwards are not.
+        # Storing the tightest rung that cleared five of those was measured
+        # doing exactly what that predicts: 0.45 passed every take and then
+        # refused eight live utterances in a row, two of them over a minute
+        # and a half long, with nothing on screen to say why.
+        #
+        # A rung of headroom is not a guess about the right number. It is the
+        # admission that "5 out of 5" and "at the edge" are the same
+        # observation, and only one of them survives a different room.
+        threshold = THRESHOLD_LADDER[min(index + 1, len(THRESHOLD_LADDER) - 1)]
+        spotter = make_spotter(threshold)
+
+        # Checked at the setting that gets STORED, never at the one that
+        # merely passed. Refusing ordinary speech is the promise this makes,
+        # and a looser rung is exactly where it could stop being true.
         false_hits = sum(1 for clip in speech if spotter.spot(clip))
         if false_hits:
             return None, CalibrationReport(
                 ok=False,
                 reason=(
-                    f"the phrase was heard in all {len(usable)} takes at "
-                    f"{threshold:.2f}, but ordinary speech fired "
+                    f"the phrase was heard in all {len(usable)} takes, but "
+                    f"at {threshold:.2f} ordinary speech fired "
                     f"{false_hits} time{'s' if false_hits > 1 else ''} at the "
                     "same setting. A name that sounds like something you say "
                     "anyway cannot be gated apart from it — try a more "
@@ -192,8 +212,10 @@ def calibrate(
             CalibrationReport(
                 ok=True,
                 reason=(
-                    f"heard in all {len(usable)} takes at {threshold:.2f}, and "
-                    f"not once in {len(speech)} recordings of ordinary speech"
+                    f"heard in all {len(usable)} takes, and not once in "
+                    f"{len(speech)} recordings of ordinary speech. Set to "
+                    f"{threshold:.2f}, a step more forgiving than the takes "
+                    f"needed, so it still hears you across a room"
                 ),
                 threshold=float(threshold),
                 phrase_hits=hits,

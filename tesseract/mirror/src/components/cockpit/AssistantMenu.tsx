@@ -82,7 +82,7 @@ export function AssistantMenu({ name }: { name: string }) {
 
   return (
     <>
-      <Hint label={`What ${name} shows — the orb, and its captions`} position="bottom">
+      <Hint label={`What ${name} shows: the orb, and its captions`} position="bottom">
         <button
           ref={btnRef}
           type="button"

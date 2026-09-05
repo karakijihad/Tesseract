@@ -249,7 +249,14 @@ export function DelegateTranscriptRenderer({ descriptor }: RendererProps) {
             </div>
           ) : (
             <div className="spawn-drawer-empty-inline t-meta">
-              {finished ? '(no output)' : 'waiting for first chunk…'}
+              {/* No stream at all is not a slow one: an in-process call that
+                  never opened a transcript has nothing on the way, and saying
+                  it is waiting promises a chunk that cannot arrive. */}
+              {!stream
+                ? 'This call did not record a transcript.'
+                : finished
+                  ? '(no output)'
+                  : 'waiting for first chunk…'}
             </div>
           )}
         </section>
@@ -271,10 +278,6 @@ export function DelegateTranscriptRenderer({ descriptor }: RendererProps) {
               </pre>
             </section>
           )}
-
-        {!stream && !toolCall && (
-          <div className="spawn-drawer-empty t-meta">Transcript not available for this call.</div>
-        )}
       </div>
     </div>
   );

@@ -32,7 +32,7 @@ export function DelegateCard({ call_id }: Props) {
       <div className="delegate-card-header">
         <span className="delegate-card-tool">{stream.tool}</span>
         {isBackground && (
-          <Hint label={`Dispatched in background — ${entityName} can keep working in parallel`}>
+          <Hint label={`Dispatched in the background, so ${entityName} can keep working alongside it`}>
             <span className="delegate-card-bg-badge">
               ↻ background
             </span>

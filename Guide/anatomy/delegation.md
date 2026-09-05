@@ -15,7 +15,7 @@ subscription today, a metered API tomorrow, with fallbacks behind it. Nothing
 above the seat changes when it is refilled.
 
 This is why the guide never names a model as though it were a component. See
-[Models and roles](../reference/models-and-roles.md) for what each role
+[Models and roles](/reference/models-and-roles/) for what each role
 currently ships pointing at.
 
 ## It does not block

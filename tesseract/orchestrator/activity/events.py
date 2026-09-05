@@ -1,4 +1,4 @@
-"""AS-1 — activity event channel: the ``activity`` namespace on the
+"""Activity event channel: the ``activity`` namespace on the
 background bus.
 
 Mirrors ``orchestrator/surfaces/events.py`` — one event substrate, filtered
@@ -7,7 +7,7 @@ frontend re-keys ``channel == "activity"`` envelopes into its activity store.
 
 Thread-safety: ``BackgroundEventBus.publish`` is loop-thread-only (see its
 docstring). Callers that mutate the registry from a worker thread MUST hop
-to the main loop first (``loop.call_soon_threadsafe``) — see AS-1 integration.
+to the main loop first (``loop.call_soon_threadsafe``).
 """
 
 from __future__ import annotations

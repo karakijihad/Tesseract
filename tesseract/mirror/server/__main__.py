@@ -31,7 +31,7 @@ from tesseract.scheduler.alarms import ensure_alarms_state_migrated
 def _install_windows_break_handler() -> None:
     """Bridge SIGBREAK to SIGINT on Windows.
 
-    AU-1: the supervisor delivers CTRL_BREAK_EVENT (not CTRL_C_EVENT)
+    The supervisor delivers CTRL_BREAK_EVENT (not CTRL_C_EVENT)
     to the backend so its own console isn't taken down with it. Windows
     surfaces CTRL_BREAK_EVENT as SIGBREAK — aiohttp only listens for
     SIGINT/SIGTERM and would otherwise hard-exit with
@@ -46,7 +46,7 @@ def _install_windows_break_handler() -> None:
 
     def _on_break(_signum, _frame):  # type: ignore[no-untyped-def]
         # Once-latch (2026-07-30): a second CTRL_BREAK landing after
-        # shutdown has begun used to raise a KeyboardInterrupt in the
+        # shutdown has begun would raise a KeyboardInterrupt in the
         # middle of aiohttp's cleanup chain, hard-killing the backend
         # (STATUS_CONTROL_C_EXIT) before teardown finished. The first
         # break starts the graceful shutdown; any repeat is ignored —
@@ -96,6 +96,18 @@ def _watch_stop_request() -> None:
         try:
             if path.exists():
                 log.info("mirror: stop_request seen — raising SIGINT")
+                # Before the signal, never after. A turn dying on the way down
+                # files its own account of why it stopped, and on 2026-08-31 it
+                # did so three milliseconds after this line: `failed`, reason
+                # "the turn ended without recording how", closed and therefore
+                # out of reach of the recovery that exists to tell the person.
+                # Saying it here is what lets that record stay open and honest.
+                try:
+                    from tesseract.orchestrator.turns import note_going_down
+
+                    note_going_down()
+                except Exception:  # noqa: BLE001 — never block a stop
+                    log.warning("mirror: could not note the shutdown", exc_info=True)
                 try:
                     path.unlink()
                 except OSError:

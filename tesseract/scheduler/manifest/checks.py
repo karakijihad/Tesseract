@@ -32,7 +32,7 @@ from tesseract.scheduler.manifest.entry import (
     ManifestError,
     Runs,
 )
-from tesseract.scheduler.manifest.registry import ENTRIES, entries_of
+from tesseract.scheduler.manifest.registry import ENTRIES, NOT_A_SERVICE, entries_of
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -69,6 +69,14 @@ def check_rows(schedule: dict[str, Any]) -> list[str]:
     what stops the manifest from saying "hourly" about work that waits for an
     event: the floor plan renders that word, and an entry is the only place it
     is written down.
+
+    **Not every trigger is a scheduler row.** `Entry.fires` exists for the one
+    fired by a surface being read rather than by a condition the engine
+    evaluates, and this check did not know that: it demanded a `schedule.yaml`
+    row for `panel_writer`, `verify_live` raised at `SchedulerEngine.start`,
+    and nothing scheduled ran on this machine until somebody read the boot log.
+    A trigger that says what fires it needs no row; one that says nothing still
+    does, because then the row IS the only answer.
     """
     shipped: dict[str, Runs] = {}
     for row in schedule.get("jobs") or []:
@@ -82,13 +90,22 @@ def check_rows(schedule: dict[str, Any]) -> list[str]:
         e.name: e.runs
         for e in (*entries_of(Runs.ROW), *entries_of(Runs.TRIGGER))
     }
+    # A trigger that names what fires it is not the scheduler's to run, so it
+    # owes no row. It stays in `declared`: shipping one anyway is a row the
+    # manifest DOES describe, and `Entry.fires` already says the condition wins
+    # when both exist.
+    self_firing = {
+        e.name
+        for e in entries_of(Runs.TRIGGER)
+        if e.fires.strip()
+    }
     problems = []
     for name in sorted(set(shipped) - set(declared)):
         problems.append(
             f"row {name!r} ships in schedule.yaml and is in no manifest entry — "
             "say what it does and what would be lost without it, or delete the row"
         )
-    for name in sorted(set(declared) - set(shipped)):
+    for name in sorted(set(declared) - set(shipped) - self_firing):
         problems.append(
             f"manifest declares {declared[name].value} {name!r} and schedule.yaml "
             "ships no such row"
@@ -169,7 +186,7 @@ def check_row_costs(
             if chain not in named_chains:
                 problems.append(
                     f"entry {entry.name!r} names chain(s) {list(entry.chains)} and its "
-                    f"role {role_name!r} rides {chain!r} — the floor plan would show "
+                    f"role {role_name!r} rides {chain!r} — the Autonomy panel would show "
                     "the wrong model paying for this"
                 )
     return problems
@@ -197,6 +214,27 @@ def check_substrates(boot_raw: dict[str, Any], entries: tuple[Entry, ...]) -> li
                 f"entry {entry.name!r} says substrate {entry.substrate!r} starts it, "
                 f"and boot.yaml carries no such substrate — known: {listed}"
             )
+
+    # The other direction, and the one that catches a loop nobody declared.
+    claimed = {e.substrate for e in entries if e.substrate}
+    for substrate in sorted(carried - claimed - set(NOT_A_SERVICE)):
+        problems.append(
+            f"boot.yaml carries {substrate!r} and nothing accounts for it. If it "
+            "runs while the app does, give it a manifest entry naming this "
+            "substrate. If it prepares something and returns, name it in "
+            "`registry.NOT_A_SERVICE` with what it does instead"
+        )
+    for substrate in sorted(set(NOT_A_SERVICE) - carried):
+        problems.append(
+            f"{substrate!r} is listed as starting nothing continuous and boot.yaml "
+            "no longer carries it — drop the line rather than leaving a claim "
+            "about a substrate that is gone"
+        )
+    for substrate in sorted(claimed & set(NOT_A_SERVICE)):
+        problems.append(
+            f"{substrate!r} is claimed by a manifest entry and also listed as "
+            "starting nothing continuous. One of the two is wrong"
+        )
     return problems
 
 

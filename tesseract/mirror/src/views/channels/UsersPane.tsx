@@ -51,7 +51,7 @@ export function UsersPane({ channel }: UsersPaneProps) {
 
   const _requireSession = (): string | null => {
     if (!sessionId) {
-      push('Channels: no operator session — open chat first', 'warning');
+      push('Channels: no session yet. Open chat first.', 'warning');
       return null;
     }
     return sessionId;

@@ -48,7 +48,6 @@ from tesseract.scheduler.tasks.dream_cycle import DreamCycleJob
 from tesseract.scheduler.tasks.feedback_consolidator import FeedbackConsolidatorJob
 from tesseract.scheduler.tasks.feedback_sweep import FeedbackSweepJob
 from tesseract.scheduler.tasks.index_rebuild import IndexRebuildJob
-from tesseract.scheduler.tasks.interests_decay import InterestsDecayJob
 from tesseract.scheduler.tasks.leaf_digest_daily import DigestDailyJob
 from tesseract.scheduler.tasks.leaf_topic_route import TopicRouteJob
 from tesseract.scheduler.tasks.librarian_heartbeat import LibrarianHeartbeatJob
@@ -128,7 +127,7 @@ def _memory_scrub_report(result: JobResult) -> StageReport:
     if not result.ok:
         return counted(
             RunOutcome.DEGRADED,
-            f"{result.detail} — repairable findings survived the pass",
+            f"{result.detail}. Repairable findings survived the pass",
             changed=fixed,
             refused=refused,
         )
@@ -188,8 +187,9 @@ def _agenda_reap_report(result: JobResult) -> StageReport:
     The job returns `ok=True` with `reaped=0, skipped=0` when `AgendaStore()`
     could not be constructed, which the default counting reads as
     `skipped_no_work` — "it ran, there was nothing to do, healthy". It is the
-    one shape AR-1 exists to stop: the sweep did not happen and nothing said
-    so, and the backlog it guards is the one that starved admission before.
+    one shape the outcome vocabulary exists to stop: the sweep did not happen
+    and nothing said so, and the backlog it guards is the one that starved
+    admission before.
     """
     if result.ok and result.detail == "agenda_store_unavailable":
         return counted(
@@ -242,6 +242,11 @@ def _brief_render_report(result: JobResult) -> StageReport:
     operator already ran `/brief` for that date and this stage deliberately did
     not overwrite what they read — a real outcome, and not the same as having
     written one.
+
+    There was a third answer, `degraded`, for a brief whose spend ceiling ran
+    out mid-render. Only the deleted world section could reach it: nothing the
+    brief writes now is billed per item, so the job stopped emitting the key
+    and the branch could never fire again.
     """
     payload = result.payload if isinstance(result.payload, dict) else {}
     if not result.ok:
@@ -250,13 +255,6 @@ def _brief_render_report(result: JobResult) -> StageReport:
         )
     if payload.get("skipped_existing"):
         return counted(RunOutcome.SKIPPED_NO_WORK, result.detail)
-    if payload.get("cost_cap_hit"):
-        # It wrote a brief, with sections the ceiling stopped it filling.
-        return counted(
-            RunOutcome.DEGRADED,
-            f"{result.detail} — the spend ceiling was reached",
-            changed=1,
-        )
     return counted(RunOutcome.SUCCEEDED, result.detail, changed=1)
 
 
@@ -275,7 +273,7 @@ def _index_rebuild_report(result: JobResult) -> StageReport:
     The job's own docstring calls the embedding-less path "the expected
     degraded mode" and then returns `ok=True` for it. It is exactly what
     `degraded` is for: output below the declared contract, and a searcher that
-    can no longer answer a semantic query should not read as a clean night.
+    cannot answer a semantic query should not read as a clean night.
     """
     payload = result.payload if isinstance(result.payload, dict) else {}
     if not result.ok or "fts_count" not in payload:
@@ -290,7 +288,8 @@ def _index_rebuild_report(result: JobResult) -> StageReport:
     if not payload.get("embedding_available"):
         return counted(
             RunOutcome.DEGRADED,
-            f"embeddings unreachable — BM25 rebuilt, vector index not ({result.detail})",
+            f"embeddings unreachable, so BM25 was rebuilt and the vector index was "
+            f"not ({result.detail})",
             changed=changed,
         )
     return counted(RunOutcome.SUCCEEDED, result.detail, changed=changed)
@@ -358,6 +357,7 @@ CONSOLIDATE_ROW = register_row(
             # --- independent deterministic maintenance -------------------
             job_stage(
                 name="daily_writer",
+                summary="Rolls the day's scheduled runs into the daily log layer.",
                 job=DailyWriterJob,
                 writes=("scheduler_rollup",),
                 budget_seconds=120,
@@ -369,6 +369,10 @@ CONSOLIDATE_ROW = register_row(
             ),
             job_stage(
                 name="conscience_heartbeat",
+                summary=(
+                    "Scrapes the day's failures, idle jobs and open breakers into a drift "
+                    "report."
+                ),
                 job=ConscienceHeartbeatJob,
                 writes=("drift_report",),
                 budget_seconds=120,
@@ -376,6 +380,9 @@ CONSOLIDATE_ROW = register_row(
             ),
             job_stage(
                 name="work_index_sweep",
+                summary=(
+                    "Drops index rows pointing at sessions and files that no longer exist."
+                ),
                 job=WorkIndexSweepJob,
                 writes=("pruned_work_index",),
                 budget_seconds=180,
@@ -386,18 +393,11 @@ CONSOLIDATE_ROW = register_row(
                 ),
             ),
             job_stage(
-                name="interests_decay",
-                job=InterestsDecayJob,
-                writes=("interest_profile",),
-                budget_seconds=60,
-                report=payload_counts(
-                    changed=("kept_topics",),
-                    refused=("pruned_topics",),
-                    quiet="no interest profile to decay yet",
-                ),
-            ),
-            job_stage(
                 name="agenda_reap",
+                summary=(
+                    "Abandons the items on the agenda that have sat unfinished past their "
+                    "horizon, so a backlog nobody can finish never crowds out new work."
+                ),
                 job=AgendaReaperJob,
                 writes=("agenda_abandonments",),
                 budget_seconds=60,
@@ -406,6 +406,9 @@ CONSOLIDATE_ROW = register_row(
             # --- the leaf tree aggregates, off what capture sealed --------
             job_stage(
                 name="leaf_topic_route",
+                summary=(
+                    "Files each seal's sections under the topics its entities earned."
+                ),
                 job=TopicRouteJob,
                 reads=("leaf_seals",),
                 writes=("topic_trees",),
@@ -421,6 +424,7 @@ CONSOLIDATE_ROW = register_row(
             ),
             job_stage(
                 name="leaf_digest_daily",
+                summary="Recomputes one digest across every seal written that day.",
                 job=DigestDailyJob,
                 reads=("leaf_seals",),
                 writes=("global_digest",),
@@ -432,6 +436,10 @@ CONSOLIDATE_ROW = register_row(
             # --- the vault ------------------------------------------------
             job_stage(
                 name="vault_raw_watch",
+                summary=(
+                    "Ingests what you dropped in the vault's raw folder; anything that "
+                    "fails a safety filter is held for you."
+                ),
                 job=VaultRawWatchJob,
                 writes=("vault_documents",),
                 budget_seconds=900,
@@ -444,6 +452,11 @@ CONSOLIDATE_ROW = register_row(
             ),
             job_stage(
                 name="vault_lint",
+                needs_app=("tool_registry",),
+                summary=(
+                    "Checks the vault wiki for orphans, stale pages, contradictions and "
+                    "missing hubs."
+                ),
                 job=VaultLintJob,
                 writes=("vault_findings",),
                 after=("vault_raw_watch",),
@@ -452,13 +465,18 @@ CONSOLIDATE_ROW = register_row(
             ),
             # --- the probe: the one model stage that is not distillation ---
             # No `after` and no edges. It reads roles.yaml and calls each
-            # active role's primary directly, so it consumes nothing this row
-            # produces and nothing here consumes it — declaring an edge to put
-            # it "first" would invent a dependency and a failure cascade with
-            # it. Its 05:30 row is gone; a probe the night before a working
-            # day is the same backstop it always was.
+            # ref directly, so it consumes nothing this row produces and
+            # nothing here consumes it — declaring an edge to put it "first"
+            # would invent a dependency and a failure cascade with it. Its
+            # 05:30 row is gone; a probe the night before a working day is the
+            # same backstop it always was.
             job_stage(
                 name="provider_probe",
+                summary=(
+                    "Sends one known-good call to every model you have configured, the "
+                    "backups included, so a dead key or a retired model is found here "
+                    "rather than in the middle of your next request."
+                ),
                 job=ProviderProbeJob,
                 writes=("provider_health",),
                 kind=StageKind.MODEL,
@@ -468,6 +486,9 @@ CONSOLIDATE_ROW = register_row(
             # --- the distillation, the only part that calls a model -------
             job_stage(
                 name="chat_digest",
+                summary=(
+                    "Reads yesterday's conversations and writes down what mattered."
+                ),
                 job=ChatDigestJob,
                 writes=("chat_digests",),
                 kind=StageKind.MODEL,
@@ -483,6 +504,11 @@ CONSOLIDATE_ROW = register_row(
             ),
             job_stage(
                 name="librarian_heartbeat",
+                needs_app=("memory_bundle",),
+                summary=(
+                    "Consolidates the raw daily layer into canonical memory and refreshes "
+                    "the index."
+                ),
                 job=LibrarianHeartbeatJob,
                 writes=("memory_records",),
                 after=("chat_digest",),
@@ -496,6 +522,10 @@ CONSOLIDATE_ROW = register_row(
             ),
             job_stage(
                 name="feedback_sweep",
+                summary=(
+                    "Looks for standing instructions you gave in passing and proposes them; "
+                    "it never writes one itself."
+                ),
                 job=FeedbackSweepJob,
                 writes=("feedback_proposals",),
                 kind=StageKind.MODEL,
@@ -509,6 +539,10 @@ CONSOLIDATE_ROW = register_row(
             ),
             job_stage(
                 name="feedback_consolidator",
+                summary=(
+                    "Reviews the whole active feedback set and proposes merges — also as "
+                    "proposals only."
+                ),
                 job=FeedbackConsolidatorJob,
                 writes=("feedback_consolidation",),
                 cadence=StageCadence.WEEKLY,
@@ -522,6 +556,8 @@ CONSOLIDATE_ROW = register_row(
             # --- settling the store, then checking it, then repairing it --
             job_stage(
                 name="dream_cycle",
+                needs_app=("memory_bundle",),
+                summary="Promotes what you keep recalling into longer-lived memory.",
                 job=DreamCycleJob,
                 writes=("memory_promotions",),
                 after=("librarian_heartbeat",),
@@ -533,6 +569,10 @@ CONSOLIDATE_ROW = register_row(
             ),
             job_stage(
                 name="memory_lint",
+                needs_app=("memory_bundle",),
+                summary=(
+                    "Scans the memory store for broken links, stale paths and empty stubs."
+                ),
                 job=MemoryLintJob,
                 writes=("memory_findings",),
                 after=("dream_cycle", "librarian_heartbeat"),
@@ -541,6 +581,11 @@ CONSOLIDATE_ROW = register_row(
             ),
             job_stage(
                 name="memory_scrub",
+                needs_app=("memory_bundle",),
+                summary=(
+                    "Repairs the findings it safely can, and leaves the ones needing your "
+                    "decision."
+                ),
                 job=MemoryScrubJob,
                 reads=("memory_findings",),
                 writes=("memory_repairs",),
@@ -550,6 +595,10 @@ CONSOLIDATE_ROW = register_row(
             # --- last, so the derived layers describe the settled store ----
             job_stage(
                 name="index_rebuild",
+                needs_app=("memory_bundle",),
+                summary=(
+                    "Rebuilds the keyword and vector indexes over the settled store."
+                ),
                 job=IndexRebuildJob,
                 writes=("search_indexes",),
                 after=("memory_scrub",),
@@ -563,6 +612,10 @@ CONSOLIDATE_ROW = register_row(
             ),
             job_stage(
                 name="atlas_build",
+                summary=(
+                    "Redraws the map of how everything you have saved connects — memories, "
+                    "wiki pages, sources and the names in them."
+                ),
                 job=AtlasBuildJob,
                 writes=("atlas",),
                 # `after`, not `reads`: the atlas is derived from the memory
@@ -572,13 +625,23 @@ CONSOLIDATE_ROW = register_row(
                 # the position of this block.
                 after=("memory_scrub", "index_rebuild"),
                 budget_seconds=600,
+                # The LIBRARY, and not `nodes`. The graph is never empty
+                # again — what the runtime is made of is drawn from its own
+                # registries and is there on a fresh install — so counting
+                # nodes would report a full library on a machine that has
+                # saved nothing. These are the four the job counts as the
+                # operator's own records, and it decides the same way.
                 report=payload_counts(
-                    changed=("nodes",),
+                    changed=("memories", "pages", "trees", "diary"),
                     quiet="the memory store and the vault are both empty",
                 ),
             ),
             job_stage(
                 name="atlas_verify",
+                summary=(
+                    "Weekly. Redraws the map a second time and checks it matches the one on "
+                    "disk, so the map can never quietly become the thing it describes."
+                ),
                 job=AtlasVerifyJob,
                 # A real data edge, and the only one besides memory_lint →
                 # memory_scrub: verifying the file the build did not write is
@@ -592,6 +655,11 @@ CONSOLIDATE_ROW = register_row(
             # --- last: age what the night has finished reading -------------
             job_stage(
                 name="retention",
+                summary=(
+                    "Ages everything the retention table names — old sessions to the "
+                    "archive, spent logs away, and the permission ledger's old rows to a "
+                    "dated file beside it."
+                ),
                 job=RetentionJob,
                 writes=("aged_trees",),
                 # `after`, not `reads`: nothing here consumes what retention
@@ -607,6 +675,10 @@ CONSOLIDATE_ROW = register_row(
             ),
             job_stage(
                 name="memory_relink",
+                summary=(
+                    "Looks up the memories the map says nothing connects to, and tries to "
+                    "find them relatives."
+                ),
                 job=MemoryRelinkJob,
                 # The atlas finds the orphans; this repairs them. The trigger
                 # is that data edge, not a clock — and it runs after the check
@@ -642,6 +714,11 @@ CONSOLIDATE_ROW = register_row(
             # have quietly aged that section by a day.
             job_stage(
                 name="brief_render",
+                summary=(
+                    "Writes tomorrow morning's brief, last, so it knows what the night "
+                    "actually did — delivery is a separate service that sends it at the "
+                    "hour you set."
+                ),
                 job=BriefRenderJob,
                 writes=("daily_brief",),
                 after=("retention", "memory_relink", "provider_probe"),

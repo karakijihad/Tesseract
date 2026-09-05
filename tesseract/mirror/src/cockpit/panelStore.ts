@@ -35,12 +35,11 @@ export const VIEW_PANEL_KINDS: readonly Exclude<View, "orb">[] = [
   "pulse",
   "chat",
   "terminal",
-  "schedule",
-  "agents",
   "channels",
   "identity",
   "conscience",
   "workspace",
+  "graph",
   "settings",
 ];
 
@@ -60,8 +59,17 @@ const RAIL_HOME: Record<RailKind, DockSide> = {
   lifeline: "right",
 };
 
+/** A kind this app can actually render.
+ *
+ * It used to be `kind !== "orb"`, which is not a check: the dispatcher casts
+ * whatever name arrives over the socket straight into `openPanel`, so a panel
+ * the registry no longer has passed here, set the view, and reached
+ * `VIEW_REGISTRY[kind]()` — calling undefined, thrown during render, with no
+ * boundary between GlassPanel and the root. `VIEW_PANEL_KINDS` is the list the
+ * saved-layout filter already trusted; this is the same list, asked one step
+ * earlier. */
 export function isPanelKind(kind: View): kind is Exclude<View, "orb"> {
-  return kind !== "orb";
+  return (VIEW_PANEL_KINDS as readonly string[]).includes(kind);
 }
 export function isRailKind(kind: string): kind is RailKind {
   return kind === "kernel" || kind === "lifeline";
@@ -192,8 +200,18 @@ export const usePanelStore = create<PanelStore>((set, get) => ({
   topZ: Z_BASE,
 
   openPanel: (kind) => {
-    if (!isPanelKind(kind)) {
+    // `orb` is not a panel: it is the bare orb home, reached by closing what
+    // is open. Anything else this app cannot render is a stale name from an
+    // older build, a saved layout or a command, and the answer to that is to
+    // do nothing. Routing both into `resetAll` traded a render crash for a
+    // quieter wrong answer: asking for a panel that no longer exists threw
+    // away the operator's whole arrangement.
+    if (kind === "orb") {
       get().resetAll();
+      return;
+    }
+    if (!isPanelKind(kind)) {
+      console.warn(`[panelStore] no panel called ${kind}; nothing opened`);
       return;
     }
     const existing = get().panels.find((p) => p.id === kind);

@@ -280,9 +280,37 @@ def resolve_storage_path(storage_path: str) -> Path | None:
     return candidate
 
 
+async def resolve_channel_image(
+    channel: str, chat_id: str, source_ref: str
+) -> Path | None:
+    """Locate a stored image in one chat's index by its adapter-native ref.
+
+    Only the named chat's index is consulted, and the path still goes through
+    :func:`resolve_storage_path`, so a crafted ``source_ref`` can neither
+    reach another chat nor escape the uploads root. The index read goes to a
+    thread: this runs on the turn's event loop, and a chat with a long media
+    history is a JSON file large enough to stall it.
+    """
+    if not channel or not chat_id or not source_ref:
+        return None
+    entries = await asyncio.get_running_loop().run_in_executor(
+        None, load_channel_index, channel, chat_id,
+    )
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("source_ref") != source_ref:
+            continue
+        mime = str(entry.get("mime_type") or "")
+        kind = str(entry.get("kind") or "")
+        if not mime.startswith("image/") and _KIND_DIR.get(kind) != "image":
+            continue
+        return resolve_storage_path(str(entry.get("storage_path") or ""))
+    return None
+
+
 __all__ = [
     "StoredChannelAttachment",
     "save_channel_attachment",
     "load_channel_index",
     "resolve_storage_path",
+    "resolve_channel_image",
 ]

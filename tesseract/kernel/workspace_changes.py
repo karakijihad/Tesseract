@@ -14,8 +14,8 @@ mutates between propose and approve the commit fails with
 `ConcurrentModificationError` and the operator re-reviews against the
 fresh diff.
 
-MO-10-2 extends this module with YAML-aware actions for catalog edits
-proposed by the knowledge-keeper. Three new actions
+This module also carries YAML-aware actions for catalog edits proposed
+by the knowledge-keeper. Three actions
 (``insert_under_path`` / ``update_field`` / ``append_to_list_at_path``)
 land via :func:`apply_yaml_change`, with a drift check, a YAML parse
 check, and a Pydantic schema validation gate before atomic write.
@@ -26,6 +26,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import io
+import logging
 import os
 import re
 import tempfile
@@ -39,6 +40,8 @@ from ruamel.yaml import YAML
 
 from tesseract.paths import TESSERACT_HOME, home_dir, home_logs_root, workspace_dir
 
+log = logging.getLogger(__name__)
+
 
 def workspace_events_dir() -> Path:
     """Resolve the workspace event store dir at call time. Honors a
@@ -50,6 +53,42 @@ def workspace_events_dir() -> Path:
 
 ProposalAction = Literal["append", "replace", "append_to_section"]
 
+#: The sections of SOUL.md that grow, and what each one is for.
+#:
+#: One section per KIND of growth, so a lesson about how the assistant works
+#: cannot displace something about who it is. A single shared list makes every
+#: new observation compete with unrelated ones, and the file rotates instead of
+#: accumulating.
+#:
+#: There is deliberately no per-section cap. A cap would have to evict
+#: something the assistant learned in order to fire, and every bullet already
+#: passes an operator approval before it lands: growth is gated by a person
+#: rather than by a number.
+#:
+#: `purpose` is not decoration. It is what the propose tool shows the model to
+#: decide where a bullet belongs. Ordered as they appear in the file.
+SOUL_GROWTH_SECTIONS: dict[str, str] = {
+    "Voice": "how I sound, and what lands with this person",
+    "Craft": "working habits I have hardened, and mistakes I do not repeat",
+    "What I care about": "taste and opinions I have actually formed, not inherited",
+    "What I can do now": "capability I gained, that I did not have before",
+    "Open questions": "what I am still unsure of, and want to find out",
+}
+
+
+#: The operator-owned documents, and how each may be changed.
+#:
+#: **Which files are on this list is decided in `permissions.yaml`**, under
+#: `workspace_documents.documents`, because that is where the postures
+#: protecting them are stated and a file on one list and not the other is a
+#: file that is either unprotected or uneditable. The names are not read from
+#: there at import — this module is imported early and a config read at import
+#: time is a boot-order fault waiting to happen — so the two are tied by
+#: `tests/workspace_doors_CC_12` instead, which fails on any difference in
+#: either direction.
+#:
+#: What lives HERE and not there is the half that is not a permission: the
+#: label a surface shows, and which actions the file accepts.
 PROPOSABLE_PATHS: dict[str, dict[str, object]] = {
     "tesseract/workspace/SOUL.md": {
         "label": "Soul",
@@ -69,6 +108,16 @@ PROPOSABLE_PATHS: dict[str, dict[str, object]] = {
     },
     "tesseract/workspace/DIARY.md": {
         "label": "Diary",
+        "allowed_actions": ("append", "replace", "append_to_section"),
+    },
+    # Inlined into the prompt on every channel turn, and for a long time the
+    # one workspace document no list named: not here, and not in the DENY
+    # rules, so a `file_write` could edit it under a running backend. It is a
+    # document like the others, and `scripts/generate_workspace.py` writing its
+    # generated regions is no more special than the same script writing
+    # OPERATING.md's.
+    "tesseract/workspace/CHANNEL.md": {
+        "label": "Channel",
         "allowed_actions": ("append", "replace", "append_to_section"),
     },
 }
@@ -98,7 +147,7 @@ _NEXT_HEADING_RE = re.compile(r"^## ", re.MULTILINE)
 # check against the same hash, and both write. The `expected_hash_before`
 # guard only settles a race where one write completes before the other
 # reads — which was every race until an operator could commit directly
-# (AS-5) alongside the approve path.
+# alongside the approve path.
 #
 # A `threading.Lock` rather than an `asyncio.Lock` because this function is
 # sync and is entered from worker threads, and it lives here rather than in
@@ -129,7 +178,12 @@ def _atomic_replace(path: Path, text: str) -> None:
     """
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        # `newline=""` disables Windows \n -> \r\n translation. Without it a
+        # one-paragraph edit through Identity -> Documents rewrote every line
+        # in the file, because the text arrives with LF and Python's text mode
+        # writes the platform's ending. The live workspace is LF and
+        # `_shipping/` is CRLF, and whichever a file has is the one it keeps.
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
             fh.write(text)
         os.replace(tmp, path)
     except Exception:
@@ -143,6 +197,24 @@ def _atomic_replace(path: Path, text: str) -> None:
 class ProposeError(ValueError):
     """Raised when a propose request is malformed (bad path, action, or
     section). Surfaced to the assistant as a tool error so it can adjust."""
+
+
+def growth_section_names() -> tuple[str, ...]:
+    return tuple(SOUL_GROWTH_SECTIONS)
+
+
+def validate_growth_section(section: str) -> str:
+    """Return `section` if it is a declared growth section, else raise.
+
+    A free-text section would create a new heading on approval, and the file
+    would grow headings nobody reads instead of bullets somebody does.
+    """
+    if section not in SOUL_GROWTH_SECTIONS:
+        raise ProposeError(
+            f"unknown soul section {section!r} — pick one of: "
+            + ", ".join(growth_section_names())
+        )
+    return section
 
 
 class ConcurrentModificationError(RuntimeError):
@@ -251,6 +323,165 @@ def preview_change(
     raise ProposeError(f"unknown action: {action}")
 
 
+def document_posture(context: Any) -> str:
+    """What a proposed change to an operator-owned document does right now.
+
+    One reader, called by every tool that proposes one. Both propose tools
+    needed the same answer about the same file and deriving it twice is how a
+    document ends up auto for one caller and gated for the other.
+
+    It asks the LIVE policy rather than re-reading `permissions.yaml`, because
+    `/mode` changes the mode in memory and leaves the file alone: a call-time
+    file read would answer with the mode the operator switched away from.
+
+    No policy wired means no operator is reachable either, and the half that
+    waits for one is the safe half.
+    """
+    policy = getattr(context, "policy", None)
+    if policy is None:
+        return "ask"
+    try:
+        return policy.workspace_document_posture()
+    except AttributeError:
+        # A stub policy with no such method: unit fixtures, and nothing else.
+        # `ValueError` is deliberately NOT caught. It means the block does not
+        # name the running mode, which the loader refuses at boot and `reload`
+        # refuses before it mutates anything, so a policy that can raise it
+        # cannot be built here. Swallowing it would turn a condition that
+        # cannot happen into an approval card nobody could explain.
+        return "ask"
+
+
+def settle_proposal(
+    *,
+    event: Any,
+    target_path: str,
+    action: ProposalAction,
+    content: str,
+    section: str | None,
+    expected_hash_before: str,
+    posture: str,
+) -> tuple[Any, "ChangeApplied | None", str | None]:
+    """File a proposal, and apply it first when the posture says to.
+
+    The one door. Returns `(event, applied, error)`.
+
+    - **ask** — the event is filed pending and nothing is written. The
+      operator settles it in the workspace inbox, which is the surface every
+      approval on this runtime already uses.
+    - **auto** — the change is applied and the SAME event is filed already
+      decided. That is the half worth being careful about: flipping to
+      unattended must cost speed and not visibility, so the card still
+      carries the full diff, both hashes and the drift token. An operator
+      reading the inbox afterwards sees exactly what an approved change would
+      have shown them, marked `applied` rather than `approved`.
+    - **deny** — refused, and the caller says so.
+
+    The write goes through `apply_change`, so the auto path takes the same
+    per-target lock, the same drift check and the same head-revision bump the
+    approve path takes. There is no second write here, which is the whole
+    reason this function exists rather than a branch in each tool.
+    """
+    posture = (posture or "ask").strip().lower()
+    if posture == "deny":
+        return event, None, (
+            f"changes to {target_path} are refused by the current security "
+            f"mode; nothing was written and nothing was filed"
+        )
+    if posture != "auto":
+        # Already `pending`; returned unchanged so the caller has one shape to
+        # append whichever branch ran.
+        return event, None, None
+
+    try:
+        applied = apply_change(
+            repo_root=workspace_dir(),
+            target_path=target_path,
+            action=action,
+            content=content,
+            section=section,
+            expected_hash_before=expected_hash_before,
+        )
+    except ConcurrentModificationError as exc:
+        return event, None, (
+            f"{target_path} changed while this was being prepared, so nothing "
+            f"was written. Read it again and propose against the new text: {exc}"
+        )
+    except ProposeError as exc:
+        return event, None, str(exc)
+    except OSError as exc:
+        return event, None, f"could not write {target_path}: {exc}"
+
+    _journal_applied(target_path=target_path, action=action, applied=applied)
+    return (
+        event.with_status("applied", reason="applied without asking: the mode says so"),
+        applied,
+        None,
+    )
+
+
+#: How each action reads once it has happened. The journal is prose an operator
+#: reads, not a field they decode.
+_PAST: dict[str, str] = {
+    "append": "added to",
+    "replace": "rewritten",
+    "append_to_section": "added to",
+}
+
+
+def _journal_applied(
+    *, target_path: str, action: ProposalAction, applied: ChangeApplied
+) -> None:
+    """One line in the operator journal for a change made without being asked.
+
+    The workspace event already carries the diff and both hashes, and the inbox
+    already renders it. What the inbox cannot answer is the operator's actual
+    question: *"in any case, we can track all changes from autonomy?"* The
+    Autonomy panel's Journal room is where every decision taken without them is
+    read, and it is reachable from a phone through `autonomy_read`, so the
+    answer belongs there rather than in a second room over the same events.
+
+    `approval` because that is what this is. The mode approved it in their
+    place, and a row saying anything else would describe the mechanism instead
+    of what happened.
+
+    **A no-op is not journalled.** `apply_change` returns without writing when
+    the proposed content is already in the target, and a line saying a file was
+    rewritten when its bytes never moved is the same defect in the journal that
+    `no_op_reason` exists to prevent in the toast.
+
+    Best-effort by the journal's own contract: it logs and swallows a write
+    error. A file that has already been changed must never be reported as
+    refused because the note about it could not be filed.
+    """
+    if applied.no_op_reason:
+        return
+
+    try:
+        from tesseract.orchestrator.autonomy import journal as operator_journal
+
+        operator_journal.append(
+            "approval",
+            {
+                "summary": (
+                    f"{target_path} was {_PAST.get(action, 'changed')} without asking"
+                ),
+                "by": "mode",
+                "target_path": target_path,
+                "action": action,
+                "hash_before": applied.hash_before,
+                "hash_after": applied.hash_after,
+            },
+        )
+    except Exception:
+        # The write already happened. Letting anything from here reach the
+        # caller would report a file that WAS changed as refused, and the
+        # operator would be told to propose again against text that has
+        # already moved. The journal swallows its own OSError; this catches
+        # everything else, including an import that fails.
+        log.exception("workspace change applied but not journalled: %s", target_path)
+
+
 def apply_change(
     *,
     repo_root: Path,
@@ -270,8 +501,15 @@ def apply_change(
     full_path = validate_target(repo_root, target_path)
     action = validate_action(target_path, action)
 
+    # Imported before the lock: the first call in a process pays for loading
+    # `tesseract.brain.prompt`, and paying for it while holding a write lock
+    # would block a concurrent writer on an import that has nothing to do with
+    # the file. Lazily here rather than at module scope because this is kernel
+    # code and reaching into brain at import time would invert the dependency.
+    from tesseract.brain.prompt import bump_head_revision
+
     with _lock_for(full_path):
-        return _apply_change_locked(
+        applied = _apply_change_locked(
             full_path=full_path,
             target_path=target_path,
             action=action,
@@ -279,6 +517,29 @@ def apply_change(
             section=section,
             expected_hash_before=expected_hash_before,
         )
+        # A conversation holds its head for its whole life, so an approved
+        # edit to SOUL.md, USER.md or OPERATING.md would otherwise not be read
+        # again until the next chat. This is the one funnel every approved
+        # document write passes through, and the only place that KNOWS the
+        # operator acted: further down, an approved edit and a background job
+        # rewriting the same file are the same bytes.
+        #
+        # Inside the lock, with the write. Outside it there is a window where
+        # the new bytes are readable but the revision retiring the old head has
+        # not been published, so a turn assembling in that window snapshots
+        # fresh content under a stale revision and re-reads once more than it
+        # needed to. Never a swallowed edit, but free to close.
+        #
+        # Fired for every target, not only the three the head inlines. A list
+        # here would be a second roster to keep in step with `prompt.SECTIONS`,
+        # and the cost of being wrong in this direction is one re-read.
+        #
+        # Not fired for a no-op: `apply_change` short-circuits when the content
+        # is already present, and retiring every conversation's head over bytes
+        # that did not move is the exact waste this mechanism exists to stop.
+        if applied.no_op_reason is None:
+            bump_head_revision()
+    return applied
 
 
 def _apply_change_locked(
@@ -290,14 +551,22 @@ def _apply_change_locked(
     section: str | None,
     expected_hash_before: str | None,
 ) -> ChangeApplied:
+    # Three properties have to hold together here, and the order below is
+    # what holds all of them at once:
+    #
+    #   1. No write ever lands on content the operator did not review, so the
+    #      drift check precedes every call to `_atomic_replace`.
+    #   2. A change that writes nothing is a success, not a conflict. A
+    #      proposal whose text is already in the file has nothing for the
+    #      drift check to protect, so it must not be refused because some
+    #      other edit moved the hash. Running the drift check first made
+    #      duplicate proposals permanently unapprovable: they 409'd on every
+    #      Approve and the event stayed pending forever.
+    #   3. An invalid proposal says so. `preview_change` now runs before the
+    #      drift check, so a proposal that is both invalid AND drifted reports
+    #      the invalidity, which is the one the operator has to fix first.
     before = full_path.read_text(encoding="utf-8")
     actual_hash = hash_text(before)
-    if expected_hash_before and expected_hash_before != actual_hash:
-        raise ConcurrentModificationError(
-            expected=expected_hash_before,
-            actual=actual_hash,
-            target=target_path,
-        )
 
     after = preview_change(
         current_text=before,
@@ -305,6 +574,13 @@ def _apply_change_locked(
         content=content,
         section=section,
     )
+    if after != before and expected_hash_before and expected_hash_before != actual_hash:
+        raise ConcurrentModificationError(
+            expected=expected_hash_before,
+            actual=actual_hash,
+            target=target_path,
+        )
+
     if after == before:
         # Idempotent commit. For `append_to_section` the only way to land
         # here is the bullet-dedup branch in `_append_to_named_section` —
@@ -362,9 +638,9 @@ def _section_contains_bullet(body: str, content: str) -> bool:
     return False
 
 
-# ─── YAML change-proposal apply path (MO-10-2) ───────────────────────────
+# ─── YAML change-proposal apply path ───────────────────────────
 #
-# Separate from the markdown propose/apply path above. The MO-10-2 inbox
+# Separate from the markdown propose/apply path above. The inbox
 # renderer dispatches yaml_change_proposal events to :func:`apply_yaml_change`
 # which carries its own action vocabulary + pre-write checks (drift / parse /
 # schema). Approve-vs-apply lifecycle: the operator approves a proposal, the
@@ -532,9 +808,8 @@ def apply_yaml_change(
     under ``tesseract/config/`` and always resolves under ``home_dir() /
     "config"`` (the same directory Task 4's kernel lockdown guards), so an
     app update that replaces the code tree never touches a pending or
-    already-applied catalog edit. Distributable-app Phase 1, Task 5
-    exit-gate finding: this used to resolve against ``repo_root`` (the code
-    tree), landing writes outside the directory the runtime actually reads.
+    already-applied catalog edit. Resolving against ``repo_root`` (the code
+    tree) would land writes outside the directory the runtime actually reads.
     """
     norm_target = (target_path or "").strip().replace("\\", "/")
     if not norm_target:

@@ -81,6 +81,7 @@ export function ChannelsTab() {
 
   return (
     <RailView
+      view="channels"
       groups={groups}
       label="Registered channels"
       initial={selectedName ?? undefined}

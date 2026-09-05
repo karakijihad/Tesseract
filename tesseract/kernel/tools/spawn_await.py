@@ -1,7 +1,7 @@
 """spawn_await — block on a background spawn's result.
 
-Phase 4 of the assistant reboot CLI-parity plan. The "I'm done with other
-work, give me the result" call. Returns whatever the foreground tool
+The "I'm done with other work, give me the result" call. Returns
+whatever the foreground tool
 would have returned, or an error string on cancellation / timeout.
 """
 
@@ -55,10 +55,11 @@ class SpawnAwaitTool(Tool):
         "deliver whole and told you to fetch it here."
     )
     not_when: ClassVar[str] = (
-        "Routine retrieval — a finished spawn's output is delivered to you "
+        "Routine retrieval. A finished spawn's output is delivered to you "
         "automatically on your next turn without polling; don't call this or "
         "`spawn_check` to wait for it."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

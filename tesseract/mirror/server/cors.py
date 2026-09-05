@@ -61,7 +61,7 @@ def build_cors_middleware(allowed_origins: Iterable[str]) -> web.middleware:
         origin = request.headers.get("Origin", "")
         if request.method in _STATE_CHANGING and not origin_is_allowed(origin, allowed):
             # Refuse before the handler runs. Decorating the response after the
-            # fact — all this middleware used to do — leaves the write already
+            # fact, which is all a middleware can do here, leaves the write already
             # committed; CORS headers only tell a browser what it may read.
             raise web.HTTPForbidden(text="origin not allowed")
         if request.method == "OPTIONS":

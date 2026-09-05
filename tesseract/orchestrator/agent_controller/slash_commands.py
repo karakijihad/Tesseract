@@ -179,7 +179,7 @@ async def _cmd_shutdown(tui: "_TuiSession", _args: str) -> None:
     tui.detach_requested = True
 
 
-# Order matters — used to render ``/help``. Description column wraps to
+# Order matters: this is the order ``/help`` renders. Description wraps to
 # one line in the renderer.
 _COMMANDS: list[tuple[str, SlashHandler, str]] = [
     ("help", _cmd_help, "Show this help"),

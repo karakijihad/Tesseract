@@ -31,7 +31,7 @@ export function ObserverSuggestions() {
   if (suggestions.length === 0) {
     return (
       <div className="t-caption right-section-empty">
-        No suggestions yet — {entityName} will see them as the observer runs.
+        No suggestions yet. {entityName} sees them as the observer runs.
       </div>
     );
   }
@@ -52,13 +52,15 @@ export function ObserverSuggestions() {
                 open={expanded}
               >
                 <span className={`${kindClass(entry.kind)} t-meta`}>{entry.kind}</span>
-                <span className="suggestion-target t-caption">{formatTarget(entry.target)}</span>
+                <span className="suggestion-body">
+                  <span className="suggestion-target t-caption">{formatTarget(entry.target)}</span>
+                  <span className="suggestion-reason t-caption">{entry.reason}</span>
+                </span>
                 <Hint label={`confidence ${entry.confidence.toFixed(2)}`}>
                   <span className={`${confidenceClass(entry.confidence)} t-meta`}>
                     {entry.confidence.toFixed(2)}
                   </span>
                 </Hint>
-                <span className="suggestion-reason t-caption">{entry.reason}</span>
               </Disclosure>
               <Hint label={`Dismiss this suggestion (${entityName} already saw it once on its turn after firing)`}>
                 <CloseButton

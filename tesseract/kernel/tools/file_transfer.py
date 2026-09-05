@@ -138,6 +138,7 @@ class FileCopyTool(_FileTransferTool):
         "an existing dest_path unless overwrite=true."
     )
     not_when: ClassVar[str] = "Use `file_move` when the source should not remain at its old path."
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -157,6 +158,7 @@ class FileMoveTool(_FileTransferTool):
         "overwrite an existing dest_path unless overwrite=true."
     )
     not_when: ClassVar[str] = "Use `file_copy` when the source should still exist at its old path afterward."
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

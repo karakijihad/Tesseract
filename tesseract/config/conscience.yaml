@@ -8,9 +8,13 @@ drift:
   window_hours: 24              # look back this many hours
 
   signals:
-    circuit_breaker_open_count:
-      warn: 1                   # any open breaker warns
-      bad: 3
+    circuit_breakers_not_recovering:
+      # Counts breakers that are open AND have no probe coming, so a breaker
+      # working through a cooldown is not counted at all. One of these is a
+      # capability that stays off until someone acts, and there is no gentler
+      # band below that: warn and bad are deliberately the same line.
+      warn: 1
+      bad: 1
 
     scheduler_failure_rate:
       warn: 0.10                # fraction of runs in window that failed

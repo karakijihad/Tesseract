@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { Hint } from '../../ui/Hint';
+import { WakeToast } from '../WakeToast';
 import { HudMenu } from '../../common/HudMenu';
 import { MenuItem } from '../../common/MenuItem';
 import { useEntityStore } from '../../../stores/entity';
@@ -57,13 +58,13 @@ export function modeHint(mode: VoiceMode, name: string): string {
   const who = name || 'the assistant';
   switch (mode) {
     case 'transcribe':
-      return `Draft — ${who} answers nothing and says nothing. What you dictate lands in the chat input for you to edit and send yourself.`;
+      return `Draft. ${who} answers nothing and says nothing. What you dictate lands in the chat input for you to edit and send yourself.`;
     case 'command':
-      return `Text — ${who} answers on screen and never out loud. Type or speak; the answer is the same either way.`;
+      return `Text. ${who} answers on screen and never out loud. Type or speak; the answer is the same either way.`;
     case 'speak':
-      return `Voice — ${who} answers out loud. The mic is optional: type with it muted and you still hear the reply.`;
+      return `Voice. ${who} answers out loud. The mic is optional: type with it muted and you still hear the reply.`;
     case 'terminal':
-      return `Terminal — nothing reaches ${who} at all. What you dictate is typed straight into the focused terminal pane.`;
+      return `Terminal. Nothing reaches ${who} at all. What you dictate is typed straight into the focused terminal pane.`;
   }
 }
 
@@ -80,9 +81,9 @@ export const ALL_MODES: readonly VoiceMode[] = [
  *  length for the CURRENT mode; this is what lets an operator choose a mode
  *  they are not already in without visiting it first. */
 export const MODE_WHAT: Record<VoiceMode, string> = {
-  transcribe: 'No answer — dictation fills the input',
+  transcribe: 'No answer, dictation fills the input',
   command: 'Answers on screen',
-  speak: 'Answers out loud — mic optional',
+  speak: 'Answers out loud, mic optional',
   terminal: 'Types into the terminal pane',
 };
 
@@ -107,6 +108,8 @@ export function nextMode(mode: VoiceMode): VoiceMode {
 }
 
 export function HudMicButton() {
+  // What the wake bubble measures itself against.
+  const micRef = useRef<HTMLButtonElement>(null);
   const state = useVoiceStore((s) => s.state);
   const micActive = useVoiceStore((s) => s.micActive);
   const audioLevel = useVoiceStore((s) => s.audioLevel);
@@ -217,6 +220,14 @@ export function HudMicButton() {
     await stream.toggle();
   };
 
+  // There is no stop button here, and that is the operator's decision: the
+  // mic button already is one. Turning the mic off mid-sentence sends
+  // `voice_cancel` on the way out (`SttStream.stop`), so the words you just
+  // said are dropped by the same press that mutes you. A second control for
+  // the same act was one more thing on the bar and one more thing to explain.
+  // Barge-in is untouched, and stopping a reply from a keyboard is the chat
+  // composer's stop.
+
   // Drive the mic-button glow off audioLevel via a CSS custom property.
   // Idle / disabled paths return zero so no transient flicker.
   const micLevel = isHot ? Math.min(1, audioLevel * 4) : 0;
@@ -272,13 +283,14 @@ export function HudMicButton() {
       <Hint
         label={
           isOn
-            ? `Mic ON — ${STAGE_LABEL[state] ?? state} — click to mute`
-            : 'Mic OFF — click to capture'
+            ? `Mic on, ${STAGE_LABEL[state] ?? state}. Click to mute.`
+            : 'Mic off. Click to capture.'
         }
         position="top"
         maxWidth={240}
       >
         <button
+          ref={micRef}
           type="button"
           className={`hud-mic${isOn ? ' is-on' : ' is-off'}${
             isOn && state === 'speaking_in' ? ' is-speaking' : ''
@@ -291,6 +303,10 @@ export function HudMicButton() {
           <MicGlyph on={isOn} />
         </button>
       </Hint>
+      {/* The wake gate's verdict, over the mic it is about. It portals out of
+          the HUD bar, which clips its own overflow, so it takes the mic's
+          element rather than sitting beside it in the DOM. */}
+      <WakeToast anchorRef={micRef} />
     </div>
   );
 }

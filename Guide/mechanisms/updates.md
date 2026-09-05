@@ -25,7 +25,11 @@ When a file *is* replaced:
 1. Your copy is saved to a `config-backup` folder inside your TESSERACT home
    directory, beside `config`.
 2. The new version becomes your file.
-3. The app tells you once, the next time you open it.
+3. The app tells you the next time you open it, twice over: a message when it
+   connects, and a note in the Workspace that names the files, says where your
+   old copies went, and stays there until you dismiss it. Putting settings
+   back takes longer than a message stays on screen, so the note is the one
+   that matters.
 
 The backup folder holds **only the most recent previous copy**. The next update
 that changes those files overwrites what is in it. If there is something in
@@ -33,7 +37,7 @@ there you want to keep permanently, move it somewhere else.
 
 ## What is kept
 
-Four things are not settings, and they survive:
+Five things are not settings, and they survive:
 
 | Kept | What it is |
 | --- | --- |
@@ -41,10 +45,12 @@ Four things are not settings, and they survive:
 | Your name | what it calls you |
 | Its gender | how it refers to itself |
 | Its birth date | what the age it reports counts from |
+| The word you wake it with | the first half of the wake phrase |
 
-An update has no opinion about any of these — the shipped file carries a
-placeholder for each — so replacing them would rename your assistant and reset
-its age to day one. They are read before the file is written and put back after.
+An update has no opinion about any of these. Setup asked you for each one and
+the shipped file carries a placeholder, so replacing them would rename your
+assistant, reset its age to day one, and leave you saying a wake phrase nothing
+responds to. They are read before the file is written and put back after.
 
 ## What you may need to set again
 
@@ -58,9 +64,14 @@ Settings. After an update that says it replaced your configuration, check:
 - **Permissions** — anything you moved from ASK to AUTO. These reset toward
   asking more often rather than less, which is the safe direction to be wrong in.
 - **Schedule** — how often background jobs run, if you changed it.
+- **Which tools it sees** — if you trimmed the working set to make turns
+  cheaper, that trim is replaced by the release's list. Conscience shows you
+  the list and lets you set it again.
 
 All of it is a few clicks in Settings, and the backup folder has your previous
 values if you would rather copy them across by hand. The files are plain YAML.
+The Workspace note stays up while you work through the list, so dismiss it once
+you are done rather than when you first read it.
 
 One thing repairs itself: the speech model chosen for your machine is worked
 out again on the next launch, so a laptop that was given a smaller model keeps

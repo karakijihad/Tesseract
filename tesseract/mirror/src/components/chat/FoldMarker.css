@@ -1,0 +1,25 @@
+/* The line the transcript draws where a fold happened. */
+
+.fold-marker {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  padding: var(--space-4) 0;
+}
+
+/* The rules either side of the label. A fold is a quiet event, so this is the
+   faintest border the brand file carries rather than a bordered card. */
+.fold-marker::before,
+.fold-marker::after {
+  content: '';
+  flex: 1;
+  height: var(--stroke-1);
+  background: var(--border-subtle);
+}
+
+.fold-marker__label {
+  flex: none;
+  max-width: 60%;
+  text-align: center;
+  color: var(--text-meta);
+}

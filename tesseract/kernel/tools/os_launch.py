@@ -38,7 +38,7 @@ class OsLaunchInput(BaseModel):
         default=None,
         description=(
             "A configured application identity from open_verb.yaml::apps. "
-            "Mutually exclusive with `path` — an application is an executable, "
+            "Mutually exclusive with `path`, because an application is an executable, "
             "and the file path refuses those absolutely."
         ),
     )
@@ -56,8 +56,9 @@ class OsLaunchTool(Tool):
         "configured app. Not for direct use."
     )
     not_when: ClassVar[str] = (
-        "Model callers use `open` — it resolves the target and dispatches here itself."
+        "Model callers use `open`, which resolves the target and dispatches here itself."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

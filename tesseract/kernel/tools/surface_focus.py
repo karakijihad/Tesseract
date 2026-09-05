@@ -26,6 +26,7 @@ class SurfaceFocusTool(Tool):
         "`surface_highlight` for pulse/glow emphasis without changing z-order; "
         "`surface_update` changes what the card shows, not its position."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

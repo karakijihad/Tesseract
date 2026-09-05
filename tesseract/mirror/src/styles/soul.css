@@ -189,18 +189,25 @@
   flex: 1;
   min-width: 0;
 }
-/* Layout only — kind, target and confidence on one line, the reason under
-   them across the full width. */
+/* PLACEMENT ONLY. This used to declare `display: grid` beside
+   `.disclosure--row`, which declares `display: flex` — same specificity, and
+   `ui.css` is imported after `soul.css`, so the grid never applied. Every
+   `grid-row`/`grid-column` below was inert, the four spans laid out on one
+   unwrappable line, and the row grew wider than the panel. That is where the
+   horizontal scrollbar came from. The layout is the component's flex row
+   now, with the two stacked lines in a child of their own. */
 .suggestion-summary {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  grid-auto-rows: auto;
-  gap: var(--space-2) var(--space-xs);
-  align-items: baseline;
+  align-items: flex-start;
+}
+/* The middle column: target on top, reason under it, both free to shrink. */
+.suggestion-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
 .suggestion-badge {
-  grid-row: 1;
-  grid-column: 1;
   display: inline-flex;
   align-items: center;
   padding: var(--space-1) var(--space-6);
@@ -223,22 +230,20 @@
   background: var(--ok-soft);
 }
 .suggestion-target {
-  grid-row: 1;
-  grid-column: 2;
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Free to wrap over as many lines as it needs, and a single unbroken token
+   breaks rather than pushing the panel wide. */
 .suggestion-reason {
-  grid-row: 2;
-  grid-column: 1 / span 3;
   font-style: italic;
   color: var(--info);
+  overflow-wrap: anywhere;
 }
 .suggestion-conf {
-  grid-row: 1;
-  grid-column: 3;
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   padding: var(--space-1) var(--space-6);
@@ -265,7 +270,11 @@
   color: var(--bad);
   background: var(--bad-dim);
 }
+/* Wraps rather than scrolls: a `pre` at its natural width is the other way
+   this panel grows a horizontal bar. */
 .suggestion-json {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   margin: var(--space-4) 0 0 0;
   padding: var(--space-xs);
   background: var(--bg-elevated);

@@ -1,4 +1,4 @@
-"""GET /api/browser-assets/{cid}/{seq} — serve P4-2 browser screenshots
+"""GET /api/browser-assets/{cid}/{seq} — serve browser screenshots
 written by BrowserManager under <TESSERACT_HOME>/browser/{cid}/{seq}.
 Segment-validated; mirrors routes/downloads.py's safe-segment guard."""
 

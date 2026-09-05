@@ -20,10 +20,24 @@
 # Missing keys raise loudly. No `get(..., "default")` patterns in adapter code.
 #
 # Required on every chat model entry: `temperature`, `max_output_tokens`,
-# `context_window`. Every consumer that builds `AdapterOptions` requires
-# them by name rather than substituting a literal — a scheduler job once ran
-# at temperature 0.7 against an entry that said 1.0, and the model rejected
-# the request outright.
+# `context_window`, `max_prompt_chars`. Every consumer that builds
+# `AdapterOptions` requires them by name rather than substituting a literal.
+#
+# `max_prompt_chars` is the hard ceiling on ONE assembled prompt for this
+# model, in characters, and it is one of exactly two things:
+#
+#   derived  — the model's real limit is tokens, so this is
+#              `context_window x 3.316` (the runtime's measured characters per
+#              token, `kernel/adapters/_estimate.py`). Written out rather than
+#              computed at read time so the catalog states the fact instead of
+#              implying it; a test holds it to its own window.
+#   measured — the model rejects on characters. `codex` is the only one here:
+#              1,048,576, against a 1,050,000-token window that would otherwise
+#              be worth 3,481,800 characters.
+#
+# That gap is the whole reason this is per model. A chain's ceiling is the
+# SMALLEST of its members, because a fold has to produce something sendable to
+# whichever member answers.
 #
 # Optional per-model quirks, absent meaning off: `use_responses_api`,
 # `reasoning_effort`, and `stream`. Set `stream: false` for an endpoint that
@@ -33,8 +47,29 @@
 # ─── Circuit-breaker threshold ──────────────────────────────
 # Consulted by `tesseract/context/circuit_breaker.py::_default_max_failures`.
 # Observer + scheduler breakers read the same value.
+#
+# These five are read once per process, so a change to them takes effect at
+# the next restart rather than when the file is saved.
+#
+# A breaker that opens refuses for `cooldown_seconds`, then lets one call
+# through: it succeeds and the breaker closes, or it fails and the wait is
+# multiplied by `cooldown_backoff`, up to `cooldown_max_seconds`. Set the
+# cooldown to 0 and an open breaker stays open until something resets it.
+#
+# While a breaker is open it keeps the names of the things it turned away, up
+# to `denial_ledger_size` of them, so what the outage cost can be answered.
+# Set it to 0 and nothing is recorded.
 availability:
   max_consecutive_failures: 3
+  cooldown_seconds: 300
+  # The same split the chain makes, for every other breaker. A spent balance
+  # or a refused login does not change until a person changes it, so asking
+  # again in five minutes spends a call to be told the same thing. Which kinds
+  # fall on this side is `orchestrator/provider_failure.py::_WINDOW_CLASS`.
+  cooldown_seconds_until_fixed: 3600
+  cooldown_backoff: 2.0
+  cooldown_max_seconds: 3600
+  denial_ledger_size: 20
 
 # ─── Fallback chain policy ──────────────────────────────────
 # Consumed by `tesseract/brain/adapter_chain.py::FallbackAdapter`.
@@ -50,7 +85,7 @@ availability:
 # Per-provider SDK retries (`max_retries` on each connection block)
 # operate at the HTTP layer and run BEFORE these chain-level retries.
 # Compaction (`tesseract/brain/compaction.py`) bypasses this chain
-# entirely and uses only the primary; see plan 1-setsate.
+# entirely and uses only the primary.
 #
 # Per-provider override: any provider block below may set its own
 # `transient_retries` / `transient_backoff_ms` / `cooldown_max_failures` /
@@ -58,21 +93,36 @@ availability:
 # shape differs — e.g. set `transient_retries: 0` on a provider whose
 # outages typically last minutes (so the chain falls over instantly),
 # or raise `cooldown_seconds` for a provider whose outages are unusually
-# long.
+# long. That override is the SELF-CLEARING window only: how long an outage
+# lasts is a property of the provider, and how long a spent balance lasts is
+# not.
 #
 # Cooldown breaker (per chain entry):
 # When an entry advances `cooldown_max_failures` times in a row (HARD
-# error or transient retries exhausted), the chain skips it for
-# `cooldown_seconds` and walks to the next entry instead. After the
-# cooldown elapses the entry is tried again on the next turn; success
-# closes the breaker, failure restarts the cooldown. If every entry is
-# in cooldown the chain emits a clear "all entries cooling down" error
-# (the assistant retries on the next turn). Disable by setting either knob ≤ 0.
+# error or transient retries exhausted), the chain skips it and walks to the
+# next entry instead. After the wait elapses the entry is tried again on the
+# next turn; success closes the breaker, failure restarts the wait. If every
+# entry is in cooldown the chain emits a clear "all entries cooling down"
+# error (the assistant retries on the next turn). Disable by setting either
+# `cooldown_max_failures` or the relevant window ≤ 0.
+#
+# How long the entry is skipped depends on WHAT failed, because one number
+# cannot be right for both. A dropped socket may have cleared by the time you
+# ask again; an account with no credits in it has not, and will not until a
+# person adds some.
+#
+# Which failures fall on which side is decided in
+# `orchestrator/provider_failure.py::_WINDOW_CLASS`, one row per kind, and it
+# refuses to run with a kind nobody placed. A refused credential, a spent
+# balance and a model the provider has not got need a person;
+# everything else, including a request we sent wrong, is asked again on the
+# short window, because the next turn sends a different request.
 chain:
   transient_retries: 2          # retries per chain entry on transient errors
   transient_backoff_ms: 250     # initial; doubles each retry
   cooldown_max_failures: 1      # advance this many times in a row → open the breaker
-  cooldown_seconds: 60          # skip the entry for this long before trying again
+  cooldown_seconds: 60          # a failure that may have cleared on its own
+  cooldown_seconds_until_fixed: 3600   # one that will not, until a person acts
 
 # ─── Cost tracking (global knobs) ───────────────────────────
 # Per-role caps live in `roles.yaml` under `roles.<role>.daily_budget_usd`.
@@ -136,16 +186,40 @@ services:
     # every machine, which is the only kind of number that may be shown to
     # someone else's install. This one cannot be: `playwright` is pinned as
     # `>=1.40`, so the Chromium revision is chosen at install time, and there
-    # is no URL here to measure against. The 700 that used to sit here was a
-    # disk footprint from one machine's install, quoted under a heading that
-    # says "to download" — a different quantity, from a different Chromium,
-    # presented as the same fact.
+    # is no URL here to measure against.
     #
     # The form and the re-enable notice both render a row with no figure
     # rather than a guess. Restoring one means pinning the package first.
     unlocks: >-
       browser_navigate, browser_snapshot, browser_click, browser_fill_form,
       browser_screenshot, browser_network_requests, browser_close
+
+# ─── What a model may claim it is good for ──────────────────
+# The vocabulary every `good_for:` below is checked against. A tag that is not
+# here is refused at load, because a typo would render as a hint nothing
+# matches and quietly narrow what you believe you can pick.
+#
+# It lives here, beside the models, so adding a capability is one edit to one
+# file: add the tag, then use it. It used to live in `config/loader.py`, and
+# adding a tag therefore meant changing code and config at once. A running
+# TESSERACT kept the old list while the new file already used the new tag, so
+# every role pointing at that model stopped resolving until a restart.
+#
+# `good_for` is what the model picker shows a person. It never decides
+# anything: `kind` decides what a role accepts, and `capabilities` decides
+# what the image and attachment routers send.
+capability_tags:
+  - brain
+  - tools
+  - vision
+  - audio
+  - video
+  - pdf
+  - image_generation
+  - tts
+  - stt
+  - embedding
+  - rerank
 
 # ─── API tier ───────────────────────────────────────────────
 # Pay-per-token providers. Each needs the `.env` key named by its
@@ -165,18 +239,25 @@ api:
     timeout_seconds: 60
     max_retries: 3
     adapter: openai     # tesseract/kernel/adapters/openai.py
-    supports_prompt_cache_key: true   # genuine OpenAI; NIM/compat providers reuse this adapter but 400 on the param
+    supports_prompt_cache_key: true   # genuine OpenAI; compat providers reuse this adapter but 400 on the param
     models:
       gpt54_mini:
         model: gpt-5.4-mini
-        context_window: 400000
+        context_window: 1000000
+        max_prompt_chars: 3316000  # derived: 1,000,000 tokens x 3.316 chars/token
         max_output_tokens: 8192
         reasoning_effort: high
         temperature: 1.0  # GPT-5 family only accepts default
         knowledge_cutoff: "2024-05-31"
         use_responses_api: true   # GPT-5 family — Responses API path (prompt cache + reasoning reuse)
+        # Rates checked 2026-09-04 against the OpenAI pricing page.
         cost_per_mtok_in: 0.75
         cost_per_mtok_out: 4.50
+        cost_per_mtok_cached_in: 0.075       # checked for THIS model, not inferred
+                                             # from its family: 5.4 and 5.4-mini differ
+        cost_per_mtok_cache_write: 0.9375    # 1.25x base
+        cache_write_from: uncached_input     # OpenAI counts no writes; see ModelPrice
+        cache_write_min_prompt_tokens: 1024  # below this a prompt is not cacheable
         # audio_input/output flagged false: Realtime API path is not wired
         # in the OpenAI adapter; we route audio through whisper STT + TTS roles.
         capabilities:
@@ -193,13 +274,29 @@ api:
           - pdf
       gpt56_luna:
         model: gpt-5.6-luna
-        context_window: 400000
-        max_output_tokens: 8192
+        # This model takes explicit cache breakpoints, and needs them: left
+        # to place its own, it marks the end of the last user message,
+        # which is the per-turn state block, and the conversation behind it
+        # is re-read at full price on every turn. gpt-5.4-mini above 400s on
+        # the same two fields, so this is per model rather than per family.
+        prompt_cache_explicit: true
+        context_window: 1050000
+        max_prompt_chars: 3481800  # derived: 1,050,000 tokens x 3.316 chars/token
+        max_output_tokens: 128000
         reasoning_effort: high
         temperature: 1.0
         use_responses_api: true
+        # Rates checked 2026-09-04 against the OpenAI pricing page and the
+        # operator's own invoice. The cached rate was absent here and the
+        # ledger fell back to a hardcoded 10%, which happened to be right and
+        # was never checked; the write rate was missing outright, and with
+        # implicit caching that is most of a turn's fresh input.
         cost_per_mtok_in: 0.2
         cost_per_mtok_out: 1.2
+        cost_per_mtok_cached_in: 0.02        # cache read, 10% of base
+        cost_per_mtok_cache_write: 0.25      # 1.25x base
+        cache_write_from: uncached_input
+        cache_write_min_prompt_tokens: 1024
         capabilities:
           vision_input: true
           audio_input: false
@@ -222,12 +319,24 @@ api:
       gemini_36_flash:
         model: gemini-3.6-flash
         context_window: 1048576
+        max_prompt_chars: 3477078  # derived: 1,048,576 tokens x 3.316 chars/token
         max_output_tokens: 8192
         temperature: 0.7
         use_responses_api: false  # Gemini — no Responses API
-        cost_per_mtok_in: 1.50
-        cost_per_mtok_out: 7.50
-        cost_per_mtok_cached_in: 0.15    # cache reads are 10% of base input
+        # Rates checked 2026-09-04 against ai.google.dev/gemini-api/docs/pricing.
+        # These were the JANUARY 2027 rates, sitting in a live file and billing
+        # every observer turn at twice what it cost. `price_expires` is when
+        # they become correct; a test fails once that date passes.
+        price_checked: "2026-09-04"
+        price_expires: "2027-01-01"
+        cost_per_mtok_in: 0.75
+        cost_per_mtok_out: 3.75
+        cost_per_mtok_cached_in: 0.075
+        cost_per_mtok_cache_write: 0.04167
+        cache_write_from: reported       # Gemini counts written tokens
+        # NOT PRICED: cached content also bills 0.50 per Mtok-hour of storage,
+        # which is a duration and has no token class to hang off. Named here
+        # rather than folded into a rate that would then be wrong.
         # No `knowledge_cutoff`: Google does not publish one for this model
         # and the field is optional. An invented date is worse than an absent
         # one — prompt builders read it and would state it as fact.
@@ -259,7 +368,7 @@ api:
       #
       # The thought step carries a very large `signature` blob that is NOT an
       # image — the extractor keys on `content[].type == "image"` for exactly
-      # that reason. Both ops verified live 2026-08-10.
+      # that reason.
         good_for:
           - brain
           - tools
@@ -332,7 +441,7 @@ api:
   anthropic:
     # Enabled but not wired: no role names an anthropic ref by default.
     # A fresh install talks through `api.openai.*` (chat_brain) and
-    # `api.nim.*` (background roles) — see roles.yaml. Add
+    # `api.google.*` (background roles) — see roles.yaml. Add
     # ANTHROPIC_API_KEY and repoint a role to use these entries.
     enabled: true
     api_key_env: ANTHROPIC_API_KEY
@@ -343,10 +452,17 @@ api:
       opus_5:
         model: claude-opus-5
         context_window: 1000000
+        max_prompt_chars: 3316000  # derived: 1,000,000 tokens x 3.316 chars/token
         max_output_tokens: 16384
         # No temperature/top_p/top_k — see the cli.claude entry below.
-        cost_per_mtok_in: 15.00
-        cost_per_mtok_out: 75.00
+        # Rates checked 2026-09-04. Were 15.00/75.00, which is the Opus 4.x
+        # tier: three times what this model costs.
+        price_checked: "2026-09-04"
+        cost_per_mtok_in: 5.00
+        cost_per_mtok_out: 25.00
+        cost_per_mtok_cached_in: 0.50        # cache read, 10% of base
+        cost_per_mtok_cache_write: 6.25      # 1.25x base, 5 minute TTL
+        cache_write_from: reported
         # Anthropic accepts text + images + native PDF on every Claude 4.x
         # family member. No native audio/video; route those through whisper STT.
         capabilities:
@@ -363,11 +479,17 @@ api:
           - pdf
       sonnet_5:
         model: claude-sonnet-5
-        context_window: 200000
+        context_window: 1000000
+        max_prompt_chars: 3316000  # derived: 1,000,000 tokens x 3.316 chars/token
         max_output_tokens: 16384
         temperature: 0.7
-        cost_per_mtok_in: 3.00
-        cost_per_mtok_out: 15.00
+        # Rates checked 2026-09-04. Were 3.00/15.00, the Sonnet 4.6 tier.
+        price_checked: "2026-09-04"
+        cost_per_mtok_in: 2.00
+        cost_per_mtok_out: 10.00
+        cost_per_mtok_cached_in: 0.20
+        cost_per_mtok_cache_write: 2.50
+        cache_write_from: reported
         capabilities:
           vision_input: true
           audio_input: false
@@ -395,6 +517,7 @@ api:
       grok_43:
         model: grok-4.3
         context_window: 1000000
+        max_prompt_chars: 3316000  # derived: 1,000,000 tokens x 3.316 chars/token
         max_output_tokens: 8192
         temperature: 0.7
         # Empty string suppresses the reasoning_effort param entirely — the
@@ -412,6 +535,11 @@ api:
         # doesn't fall back to a default estimate. The openai adapter
         # already captures cached_tokens.
         cost_per_mtok_cached_in: 0.20
+        price_checked: "2026-09-04"      # base and cached confirmed at docs.x.ai
+        # NOT PRICED: xAI publishes no cache-write rate, so `cache_write_from`
+        # is left unset and no write premium is charged. An absent rate here is
+        # a claim that the provider charges nothing for it, and that claim is
+        # the one thing to re-check if an xAI invoice ever exceeds this ledger.
         # Multimodal INPUT per the 4.3 model card: text + image (jpg/png,
         # base64, 256-1792 tok/image) + video. Output is text-only — image
         # generation lives on the grok-imagine entries below.
@@ -441,35 +569,8 @@ api:
         capabilities:
           text_to_image: true
           image_to_image: true
-  # NVIDIA build tier — OpenAI-compatible, free with no payment method.
-  # Every background role defaults here so unattended work stays off the
-  # paid chat key.
         good_for:
           - image_generation
-  nim:
-    enabled: true
-    base_url: "${NVIDIA_NIM_BASE_URL:-https://integrate.api.nvidia.com/v1}"
-    api_key_env: BUILD_NVIDIA_KEY
-    timeout_seconds: 120
-    max_retries: 2
-    adapter: openai
-    models:
-      gpt_oss_120b:
-        model: openai/gpt-oss-120b
-        context_window: 128000
-        max_output_tokens: 8192
-        reasoning_effort: high  # REQUIRED by NIM — it 400s when the key is absent.
-        temperature: 0.7
-        top_p: 0.95
-        cost_per_mtok_in: 0.00
-        cost_per_mtok_out: 0.00
-        capabilities:
-          vision_input: false
-          audio_input: false
-          video_input: false
-          pdf_input: false
-          image_output: false
-          audio_output: false
 
 # ─── CLI tier (subscription — free at use-time) ─────────────
 # Rides your existing Claude Code / Codex CLI login — no API key, no
@@ -478,9 +579,6 @@ api:
 # tool returns "<provider> CLI disabled in providers.yaml" instead of
 # spawning the subprocess. Requires the corresponding CLI to be installed
 # and logged in on this machine.
-        good_for:
-          - brain
-          - tools
 cli:
   enabled: true
   claude:
@@ -490,6 +588,12 @@ cli:
     max_retries: 1
     stream_json_capable: true
     adapter: cli
+    # How this CLI is handed ONE prompt and asked to answer without writing
+    # anything. The prompt is appended as the final argument. This is what a
+    # one-shot second opinion runs, and it is stated here rather than built in
+    # Python so that pointing a delegation seat at a different CLI changes
+    # which command line is actually spawned.
+    read_only_command: [claude, -p]
     # Subscription auth probe — required on every cli provider, no
     # assumed-authenticated default. Raw probe output is discarded, never
     # logged or stored (it can carry account email/org details).
@@ -497,15 +601,27 @@ cli:
       command: [claude, auth, status]
       success_pattern: '"loggedIn"\s*:\s*true'
       login_hint: claude auth login
-      # Measured 11.5s on a healthy loop, so a 10s budget reports a logged-in
-      # CLI as "auth probe timed out". The probe is a scheduled warm-up, not on
-      # the boot critical path, so the headroom costs nothing.
+      # Generous on purpose: a tight budget reports a logged-in CLI as "auth
+      # probe timed out". The probe is a scheduled warm-up, not on the boot
+      # critical path, so the headroom costs nothing.
       timeout_seconds: 30
+    # The cheapest question the subscription has to actually answer. Run once
+    # a night by the provider probe, never at boot: an account with no credit
+    # left passes the auth check above and looks perfectly healthy.
+    live_check:
+      command: [claude, -p]
+      prompt: "Reply with the single word: ok. Do not read any files."
+      # What the reply has to contain. A spent subscription can still exit 0,
+      # so the check reads the answer rather than the exit code.
+      expect: ok
+      # Generous: a healthy account still takes tens of seconds to answer.
+      timeout_seconds: 120
     models:
       opus_5:
         model: claude-opus-5
         reasoning_effort: high
         context_window: 1000000
+        max_prompt_chars: 3316000  # derived: 1,000,000 tokens x 3.316 chars/token
         max_output_ratio: 0.35
         # No temperature/top_p/top_k: this generation removed the sampling
         # parameters and rejects them with a 400. Harmless while the CLI
@@ -535,18 +651,31 @@ cli:
     max_retries: 1
     stream_json_capable: true
     adapter: cli
+    # See the same key on `claude` above. The sandbox flag is part of the
+    # command line rather than an assumption about what this CLI does by
+    # default, because "read only" is the whole reason this runs without
+    # asking the operator first.
+    read_only_command: [codex, exec, --sandbox, read-only, --skip-git-repo-check]
     auth_check:
       command: [codex, login, status]
       success_pattern: 'Logged in'
       login_hint: codex login
       timeout_seconds: 10
+    live_check:
+      command: [codex, exec, --sandbox, read-only, --skip-git-repo-check]
+      prompt: "Reply with the single word: ok. Do not read any files."
+      expect: ok
+      # Generous: a healthy account still takes tens of seconds to answer.
+      timeout_seconds: 120
     models:
       gpt56_terra:
         model: gpt-5.6-terra
         reasoning_effort: high
-        context_window: 200000
-        max_output_ratio: 0.5
-        max_output_tokens: 100000
+        context_window: 1050000
+        max_prompt_chars: 1048576   # measured: `codex exec` errors input_too_large above this.
+        # Far under this window's 3,481,800 characters, which is
+        # why one global ceiling could never be right for both kinds.
+        max_output_tokens: 128000
         temperature: 0.7
         cost_per_mtok_in: 0
         cost_per_mtok_out: 0
@@ -606,9 +735,7 @@ local:
     installer_signer: "O=Ollama"
     # The vendor installer plus the embedding model it pulls, measured:
     # 1,565 MB for `OllamaSetup.exe` and 274 MB for `nomic-embed-text`. The
-    # setup form quoted 710 MB for this until it was measured, which is the
-    # reason the figure lives beside the thing it describes now instead of in
-    # a page that cannot read config.
+    # figure lives beside the thing it describes so no page has to restate it.
     download_mb: 1839
     models:
       nomic_embed:
@@ -759,11 +886,9 @@ local:
       max_download_mb: 512
       # What the transfer actually costs, in the decimal megabytes the setup
       # form quotes. Distinct from `max_download_mb` beside it, which is a
-      # REFUSAL CAP and always the larger number — quoting that to an operator
-      # would say a 354 MB download is 512 MB. Measured from the pinned URLs
-      # below rather than estimated, and it is the same bytes on every machine,
-      # which is the only kind of figure that may be shown to someone else's
-      # install.
+      # REFUSAL CAP and always the larger number. Measured from the pinned URLs
+      # below, so it is the same bytes on every machine, which is the only kind
+      # of figure that may be shown to someone else's install.
       download_mb: 354
       base_url: https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0
       files:

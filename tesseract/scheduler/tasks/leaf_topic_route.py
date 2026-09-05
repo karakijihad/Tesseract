@@ -1,4 +1,4 @@
-"""AU-16 S2 — ``TopicRouteJob``.
+"""``TopicRouteJob``.
 
 Scans every seal artefact, counts entity occurrences across the leaves
 each seal sealed, and:
@@ -31,6 +31,7 @@ from tesseract.memory.trees.topic_tree import (
     append_seal,
     is_topic_active,
 )
+from tesseract.orchestrator.outcome import RunOutcome
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.scheduler.types import JobContext, JobResult
 
@@ -55,7 +56,7 @@ def _resolve_leaf_entities(
 
 def _run_topic_route(
     threshold: int, store: LeafStore,
-) -> tuple[int, Counter, list[str], int, int]:
+) -> tuple[int, Counter, list[str], int, int, list[str]]:
     """Every seal ever written is read on every tick — same
     cost-grows-with-corpus shape as ``leaf_digest_daily``.
 
@@ -90,6 +91,7 @@ def _run_topic_route(
         # tell whether a re-run actually wrote anything.
         sections_written = 0
         sections_skipped = 0
+        failed: list[str] = []
         for seal, leaf_entities in per_seal_entities:
             seal_entities = {e for ents in leaf_entities.values() for e in ents}
             for entity in seal_entities:
@@ -106,8 +108,16 @@ def _run_topic_route(
                         seal.seal_id,
                         entity,
                     )
+                    failed.append(f"{seal.seal_id} → {entity}")
 
-        return len(seals), entity_counter, activated, sections_written, sections_skipped
+        return (
+            len(seals),
+            entity_counter,
+            activated,
+            sections_written,
+            sections_skipped,
+            failed,
+        )
 
 
 class TopicRouteJob(BaseJob):
@@ -128,18 +138,37 @@ class TopicRouteJob(BaseJob):
         store_root = ctx.config.get("store_root")
         store = LeafStore(root=Path(store_root) if store_root else None)
 
-        seals_scanned, entity_counter, activated, sections_written, sections_skipped = (
-            await asyncio.to_thread(_run_topic_route, threshold, store)
-        )
+        (
+            seals_scanned,
+            entity_counter,
+            activated,
+            sections_written,
+            sections_skipped,
+            failed,
+        ) = await asyncio.to_thread(_run_topic_route, threshold, store)
+
+        # A section that could not be written is lost until the next pass
+        # rewrites it, and the backend log is not where the operator looks.
+        # The run row carries it instead.
+        reason = ""
+        if failed:
+            reason = (
+                f"{len(failed)} seal section(s) could not be written to their "
+                f"topic file: {', '.join(failed[:5])}"
+                + (" and others" if len(failed) > 5 else "")
+            )
 
         return JobResult(
             job_name=ctx.job_name,
             run_id=ctx.run_id,
             ok=True,
+            outcome=RunOutcome.DEGRADED if failed else RunOutcome.SUCCEEDED,
+            outcome_reason=reason,
             detail=(
                 f"seals_scanned={seals_scanned} entities={len(entity_counter)} "
                 f"activated={len(activated)} sections_written={sections_written} "
-                f"sections_skipped={sections_skipped}"
+                f"sections_skipped={sections_skipped} "
+                f"sections_failed={len(failed)}"
             ),
             payload={
                 "seals_scanned": seals_scanned,
@@ -147,6 +176,7 @@ class TopicRouteJob(BaseJob):
                 "activated": activated,
                 "sections_written": sections_written,
                 "sections_skipped": sections_skipped,
+                "sections_failed": failed,
             },
             duration_ms=(time.monotonic() - t0) * 1000.0,
         )

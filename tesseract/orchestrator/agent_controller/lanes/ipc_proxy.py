@@ -58,9 +58,9 @@ class _IpcBase:
     async def _session(self) -> AsyncIterator[Any]:
         """One connection, held for the duration of the block.
 
-        Every call in this module used to open and close its own — fine for
-        a single request, ruinous for a poll loop: at `poll_s: 0.5` one
-        active lane is ~2 handshakes/sec, a relay ~4, before lenses. The
+        A socket per call is fine for a single request and ruinous for a poll
+        loop: at `poll_s: 0.5` one active lane is ~2 handshakes/sec, a relay ~4,
+        before lenses. The
         `finally` is what makes a cancelled waiter give its socket back
         (`asyncio.CancelledError` is a BaseException in 3.12, so a bare
         `except Exception` would leak it)."""

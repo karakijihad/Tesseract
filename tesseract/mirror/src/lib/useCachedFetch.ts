@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useWebSocketStore } from "../stores/websocket";
+import { useStaleStore } from "../stores/stale";
 import { useFetchRetryTick } from "./useFetchRetry";
 
 /** Last good value per key, outliving the component that fetched it.
@@ -12,6 +13,16 @@ import { useFetchRetryTick } from "./useFetchRetry";
  * the two seconds you were elsewhere; the spinner was the only new information.
  */
 const CACHE = new Map<string, unknown>();
+
+/** Which fetch for a key is the current one.
+ *
+ * The cache is written unconditionally, deliberately (see the effect below).
+ * That leaves one hole: a fetch started BEFORE a refresh can resolve after
+ * it, and its older answer then overwrites the newer one in the cache, so the
+ * next remount paints what the refresh had just replaced. Counting the fetches
+ * per key closes it without giving up the unconditional write, because a
+ * superseded fetch can be recognised rather than merely cancelled. */
+const GENERATION = new Map<string, number>();
 
 interface CachedFetch<T> {
   /** The cached value on a revisit, so the section paints immediately. */
@@ -41,9 +52,17 @@ export function useCachedFetch<T>(
   // pre-restart "Failed to fetch" with fresh data (2026-07-30).
   const wsGeneration = useWebSocketStore((s) => s.generation);
   const retryTick = useFetchRetryTick(error !== null);
+  // Bumped when the backend says this key is out of date. A section that is
+  // not mounted misses nothing: it refetches on its next mount anyway.
+  const staleTick = useStaleStore((s) => s.ticks[key] ?? 0);
 
   const set = useCallback(
     (value: T) => {
+      // Retires whatever is in flight. A caller reaches for this after its own
+      // mutation came back with fresh state, which is newer than anything a
+      // fetch started before it can return; without the bump that older fetch
+      // still counts as current and overwrites what was just saved.
+      GENERATION.set(key, (GENERATION.get(key) ?? 0) + 1);
       CACHE.set(key, value);
       setData(value);
     },
@@ -52,14 +71,20 @@ export function useCachedFetch<T>(
 
   useEffect(() => {
     let cancelled = false;
+    const generation = (GENERATION.get(key) ?? 0) + 1;
+    GENERATION.set(key, generation);
     setError(null);
     fetcher()
       .then((value) => {
-        // Cache FIRST, unconditionally. Guarding this behind `cancelled` meant
-        // a section switched away from before its fetch landed never cached at
-        // all — and StrictMode double-mounts, so in dev the first mount always
-        // cancelled and the cache was never populated by anything. Only the
-        // setState needs the guard; a response is worth keeping whoever asked.
+        // Cache unconditionally, but only if nothing newer has been asked for.
+        // Guarding this behind `cancelled` meant a section switched away from
+        // before its fetch landed never cached at all — and StrictMode
+        // double-mounts, so in dev the first mount always cancelled and the
+        // cache was never populated by anything. A response is worth keeping
+        // whoever asked for it; it is not worth keeping once a later request
+        // for the same key exists, because that one knows something this one
+        // does not.
+        if (GENERATION.get(key) !== generation) return;
         CACHE.set(key, value);
         if (cancelled) return;
         setData(value);
@@ -74,7 +99,7 @@ export function useCachedFetch<T>(
     // `fetcher` is re-created per render by every caller; keying the effect on
     // it would refetch forever. The key is what identifies the request.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, wsGeneration, retryTick, nonce]);
+  }, [key, wsGeneration, retryTick, staleTick, nonce]);
 
   return {
     data,

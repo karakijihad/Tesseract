@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -263,12 +265,49 @@ class OllamaSupervisor:
 
 
 def _terminate_proc(proc: subprocess.Popen, timeout_s: float = 5.0) -> None:
-    proc.terminate()
+    """Stop `ollama serve` AND the model runners it spawned.
+
+    `Popen.terminate()` reaches the daemon alone. Ollama runs one
+    `ollama.exe runner` child per loaded model and those children hold the
+    weights, so terminating the parent leaves gigabytes resident under a
+    daemon that no longer exists — measured on Windows: the runner outlived
+    `serve` and had to be reaped by hand. Both spawn sites already put the
+    child in its own group (`CREATE_NEW_PROCESS_GROUP` / `start_new_session`)
+    precisely so a stop can address the group instead.
+
+    Graceful first: Ollama unloads its runners and exits 0 on a group-wide
+    break. The forced fallback must also be tree-wide, since `Popen.kill()`
+    is `TerminateProcess` on Windows and orphans the runners exactly as
+    `terminate()` did.
+    """
+    _signal_group(proc)
     try:
         proc.wait(timeout=timeout_s)
+        return
     except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=timeout_s)
+        pass
+    _kill_tree(proc)
+    proc.wait(timeout=timeout_s)
+
+
+def _signal_group(proc: subprocess.Popen) -> None:
+    if sys.platform == "win32":
+        os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
+        return
+    # `start_new_session=True` makes the child its own session and group
+    # leader, so its pid is the group id.
+    os.killpg(proc.pid, signal.SIGTERM)
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    if sys.platform == "win32":
+        subprocess.run(  # noqa: S603, S607
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            capture_output=True,
+            check=False,
+        )
+        return
+    os.killpg(proc.pid, signal.SIGKILL)
 
 
 def _model_present(tags: list[str], model: str) -> bool:

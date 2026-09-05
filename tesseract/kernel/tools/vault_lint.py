@@ -41,12 +41,13 @@ class VaultLintTool(Tool):
     group: ClassVar[str] = "research-library"
     summary: ClassVar[str] = "Runs lint passes over the compiled vault wiki and flags issues found."
     use_when: ClassVar[str] = (
-        "Use to check wiki health after ingesting or compiling sources — writes lint_flags "
+        "Use to check wiki health after ingesting or compiling sources. Writes lint_flags "
         "for the operator to resolve. Pass dry_run=true to inspect without writing."
     )
     not_when: ClassVar[str] = (
-        "reading vault content — that is `vault_query` or `vault_search`."
+        "reading vault content. That is `vault_query` or `vault_search`."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(
         self,

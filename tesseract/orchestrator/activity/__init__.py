@@ -1,10 +1,9 @@
-"""AS-1 — Unified Activity Registry.
+"""Unified Activity Registry.
 
-The single backend index of everything the assistant is running (delegates, lanes,
-controller sessions; AS-3 adds routines). A derived
-projection over the substrates' canonical on-disk state, published on the
-``activity`` bus channel for the Mirror to reflect. See
-the cockpit's activity arc.
+The single backend index of everything the assistant is running:
+delegates, lanes, controller sessions. A derived projection over the
+substrates' canonical on-disk state, published on the ``activity`` bus
+channel for the Mirror to reflect.
 """
 
 from tesseract.orchestrator.activity.events import (

@@ -31,13 +31,19 @@ class VaultSearchTool(Tool):
     group: ClassVar[str] = "research-library"
     summary: ClassVar[str] = "Hybrid BM25 + vector search over raw vault source chunks."
     use_when: ClassVar[str] = (
-        "Use to find the exact passage where something was said — returns matching chunks "
-        "with source paths, from PDFs, articles, data files, and web snapshots."
+        "Use to find the exact passage where something was said, and to quote "
+        "it. Returns matching chunks with the file each came from, across "
+        "PDFs, articles, data files and web snapshots. Also the way to reach "
+        "a document ingested since the wiki was last compiled, which "
+        "`vault_query` cannot see."
     )
     not_when: ClassVar[str] = (
-        "Use `vault_query` when you want a synthesized answer from the compiled wiki instead "
-        "of raw chunks."
+        "start with `vault_query` when the question is \"what do we have on "
+        "X\": raw chunks are the wrong shape for a question that wants an "
+        "answer. Use `memory_search` for what the operator decided rather "
+        "than what a document says."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(
         self,

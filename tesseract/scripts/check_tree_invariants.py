@@ -7,7 +7,7 @@ Rules:
   3. No runtime-state folder names (memory-store, logs, sessions, vault,
      transcripts, reviewtmp, tmp_*) outside tesseract/
 
-Run: python scripts/check_tree_invariants.py
+Run: python tesseract/scripts/check_tree_invariants.py
 Exit 0 = clean. Exit 1 = violations found.
 """
 from __future__ import annotations
@@ -15,7 +15,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+# scripts/ -> tesseract/ -> the repo. This read `parent.parent` while the
+# script lived at `scripts/`, and the root climbed with the file when it moved
+# under `tesseract/` — so the checker took `tesseract/` for the repo and
+# reported the runtime's own modules and state as violations, while a real
+# stray at the actual root was outside everything it looked at.
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Files allowed at repo root (everything else that matches *.py or *.yaml fails)
 ROOT_ALLOWLIST = {
@@ -24,6 +29,7 @@ ROOT_ALLOWLIST = {
     "poetry.lock",
     "pytest.ini",
     "setup.cfg",
+    ".pre-commit-config.yaml",
     "CLAUDE.md",
     "README.md",
     "LICENSE",

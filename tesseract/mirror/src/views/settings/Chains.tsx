@@ -17,7 +17,7 @@ import { useCachedFetch } from "../../lib/useCachedFetch";
 function followers(chain: Chain): string {
   if (chain.used_by.length === 0) return "followed by nothing";
   if (chain.used_by.length === 1) return `followed by ${chain.used_by[0]}`;
-  return `followed by ${chain.used_by.length} roles — ${chain.used_by.join(", ")}`;
+  return `followed by ${chain.used_by.length} roles: ${chain.used_by.join(", ")}`;
 }
 
 function entryLabel(entry: CatalogEntry): string {
@@ -115,9 +115,9 @@ export function ChainsSection() {
       <Note>
         A chain is a failover order: the first entry serves, and each one below
         it is tried when the one above fails. Roles follow a chain rather than
-        naming models of their own — so editing a chain here moves every role
+        naming models of their own, so editing a chain here moves every role
         listed under it. To move one role alone, give it a different chain in
-        Model roles. Each entry says whether it could be built right now &mdash;
+        Model roles. Each entry says whether it could be built right now:
         one that cannot is skipped at failover rather than raised, so a chain
         can be healthy with an entry off.
       </Note>
@@ -176,7 +176,7 @@ export function ChainsSection() {
                     {!entry.resolved && (
                       <span className="chain-entry__broken t-meta">
                         {" "}
-                        — not in the catalog
+                        not in the catalog
                       </span>
                     )}
                   </span>

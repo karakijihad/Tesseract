@@ -29,14 +29,20 @@ interface SurfacesState {
   // the backend). Drawn from the shared zStack so surface cards interleave
   // with SC-2 view panels on a single last-focused-wins counter.
   liveZ: Record<string, number>;
-  // Client-side minimized set (NOT persisted, NOT sent to the backend).
-  // Collapsed cards stay mounted so their lane streams keep running.
+  // Client-side pinned set (NOT persisted, NOT sent to the backend). A pinned
+  // card is held in place: no drag, no resize. Same control a view panel has,
+  // and the backend's own `locked` flag reads as pinned too.
+  pinned: Record<string, boolean>;
+  // Client-side minimized set (NOT persisted, NOT sent to the backend). A
+  // minimized card leaves the canvas entirely and is reachable from the dock
+  // above the HUD. Mounted too, for the same reason.
   minimized: Record<string, boolean>;
   // Client-side maximized set (NOT persisted, NOT sent to the backend). A
   // maximized card fills the surface-layer overlay; restore returns it to the
   // stored descriptor geometry (which maximize never mutates).
   maximized: Record<string, boolean>;
   raiseSurface: (id: string) => void;
+  togglePin: (view: string, id: string) => void;
   toggleMinimize: (view: string, id: string) => void;
   toggleMaximize: (view: string, id: string) => void;
   hydrate: (view: string) => Promise<void>;
@@ -61,6 +67,7 @@ export const useSurfacesStore = create<SurfacesState>((set, get) => ({
   byView: {},
   highlights: {},
   liveZ: {},
+  pinned: {},
   minimized: {},
   maximized: {},
   raiseSurface: (id) => {
@@ -69,14 +76,19 @@ export const useSurfacesStore = create<SurfacesState>((set, get) => ({
     set((s) => ({ liveZ: { ...s.liveZ, [id]: z } }));
   },
 
-  // Collapse the card off-stage (kept mounted so the lane stream survives).
-  // Restoring raises to the front, matching the panelStore.toggleMinimize idiom.
+  // Hold the card where it is. Geometry is untouched, so unpinning gives the
+  // drag and the resize handles back exactly as they were.
+  togglePin: (_view, id) => {
+    set((s) => ({ pinned: { ...s.pinned, [id]: !(s.pinned[id] ?? false) } }));
+  },
+
+  // Send the card to the dock (kept mounted so the lane stream survives).
+  // Restoring raises it to the front.
   toggleMinimize: (_view, id) => {
     set((s) => {
       const wasMinimized = s.minimized[id] ?? false;
       const next = { ...s.minimized, [id]: !wasMinimized };
       if (wasMinimized) {
-        // Restore — raise to front.
         const z = nextZ();
         recordSurfaceZ(z);
         return { minimized: next, liveZ: { ...s.liveZ, [id]: z } };
@@ -85,7 +97,7 @@ export const useSurfacesStore = create<SurfacesState>((set, get) => ({
     });
   },
 
-  // Fill the overlay (geometry computed at render from measured bounds);
+  // Fill the stage, on the same rect a maximized view panel fills;
   // maximizing raises to front. Restore just flips the flag — descriptor
   // geometry is untouched, so the card returns to its stored position/size.
   toggleMaximize: (_view, id) => {

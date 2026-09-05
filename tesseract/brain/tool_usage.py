@@ -164,6 +164,64 @@ def rollup(
     )
 
 
+def by_day(
+    days: int,
+    roster: Iterable[str] = (),
+    *,
+    now: datetime | None = None,
+    path: Path | None = None,
+) -> dict[str, object]:
+    """The same ledger as a tool-by-day grid: `{dates, tools: [{tool, counts}]}`.
+
+    A second SHAPE over the same rows, not a second source. `rollup` answers
+    "how much, over this window", which cannot show that a tool was used hard
+    for three days and then never again — the shape that says a habit changed.
+
+    `dates` is every day in the window including the empty ones, oldest first,
+    so a gap renders as a gap rather than closing up. `counts` is positionally
+    aligned to it. Raw calls here rather than distinct sessions: a cell is one
+    tool on one day, which is already the narrow slice that `rollup`'s
+    session-ranking exists to protect against, and a day someone leaned on one
+    tool is the thing worth seeing.
+
+    Tools are ordered by total calls so the busy rows are at the top; a tool
+    with nothing in the window is present with a row of zeroes, for the same
+    reason `rollup` keeps them.
+    """
+    target = path or usage_path()
+    today = (now or datetime.now(timezone.utc)).date()
+    dates = [
+        (today - timedelta(days=offset)).isoformat()
+        for offset in range(days - 1, -1, -1)
+    ]
+    index = {date: i for i, date in enumerate(dates)}
+
+    counts: dict[str, list[int]] = {}
+    if target.exists():
+        for line in target.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+                tool = row["tool"]
+            except Exception:
+                continue
+            stamped = _row_time(row)
+            if stamped is None:
+                continue
+            slot = index.get(stamped.date().isoformat())
+            if slot is None:
+                continue
+            counts.setdefault(tool, [0] * len(dates))[slot] += 1
+
+    for name in roster:
+        counts.setdefault(name, [0] * len(dates))
+
+    ordered = sorted(counts.items(), key=lambda kv: (-sum(kv[1]), kv[0]))
+    return {
+        "dates": dates,
+        "tools": [{"tool": name, "counts": row} for name, row in ordered],
+    }
+
+
 def prune_older_than(cutoff: datetime, path: Path | None = None) -> int:
     """Drop rows older than `cutoff`. Returns how many went.
 

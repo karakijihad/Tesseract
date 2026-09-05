@@ -36,9 +36,9 @@ AdapterChain = list[tuple[ModelAdapter, AdapterOptions]]
 def _options_for_ref(ref: ResolvedRef, role_name: str) -> AdapterOptions:
     """Build `AdapterOptions` from a resolved catalog entry.
 
-    Every per-model field the catalog owns is passed through. This builder
-    used to send only provider/model/role/tier/context_window, so the
-    `AdapterOptions` dataclass defaults silently supplied the rest: every
+    Every per-model field the catalog owns is passed through. Sending only
+    provider/model/role/tier/context_window lets the `AdapterOptions`
+    dataclass defaults silently supply the rest: every
     background job ran at temperature 0.7 against a catalog that said 1.0,
     capped output at 4096 whatever the entry declared, dropped
     `reasoning_effort`, and — because `use_responses_api` never arrived —
@@ -75,7 +75,16 @@ def _options_for_ref(ref: ResolvedRef, role_name: str) -> AdapterOptions:
         max_output_tokens=resolve_output_cap(fields, context_window, where),
         reasoning_effort=str(fields.get("reasoning_effort", "")),
         use_responses_api=bool(fields.get("use_responses_api", False)),
+        prompt_cache_explicit=bool(fields.get("prompt_cache_explicit", False)),
         stream=bool(fields.get("stream", True)),
+        # The connection's own cap, carried so a caller that wraps the call in
+        # a wait can use the number the catalog gave instead of one of its
+        # own. `_probes/chat_role.py` was already reading this key and never
+        # once receiving it, so its 30 s fallback fired every time and cut a
+        # CLI that declares 300 s at 30 — reported as drift that had not
+        # happened. `timeout_seconds` is required on every connection, so
+        # there is nothing to fall back to.
+        extra={"timeout_seconds": ref.connection.timeout_seconds},
     )
 
 
@@ -143,7 +152,7 @@ def build_chain_for_role(
             # assertions. Cheap here, unrecoverable there.
             failures.append("role resolved to no provider")
             continue
-        # Asked, not attempted. This used to call `build_adapter` and treat a
+        # Asked, not attempted. Calling `build_adapter` here and treating a
         # raised exception as "skip the ref" — which meant constructing a real
         # SDK client for every entry just to learn that the entry was usable,
         # 2.2-3.7 s per job fire on the loop for two fallbacks that almost
@@ -234,6 +243,41 @@ def build_chain_for_chain(
     return meter_chain(chain, cost_ledger)
 
 
+def build_entry_for_ref(
+    ref_name: str,
+    *,
+    billing_key: str,
+    log_label: str = "scheduler",
+    cost_ledger: CostLedger | None = None,
+) -> AdapterChain:
+    """The one catalog ref, built alone, billed to `billing_key`.
+
+    The two builders above answer "what does this seat ride". This answers
+    "does THIS entry answer", which is the only question a health check asks.
+    Asking it through a role builds the role's chain and hands back its first
+    usable entry, so a fallback checked that way reports the primary's health
+    under the fallback's name.
+
+    Raises `ConfigError` with the reason when the ref cannot be built, rather
+    than returning an empty list the way the chain builders do. A chain with
+    one dead entry still runs the job on another; a single ref that will not
+    build has nothing behind it, and the caller here is a probe whose whole
+    output is the reason.
+    """
+    if not billing_key.strip():
+        raise ValueError("build_entry_for_ref needs a billing key")
+    try:
+        bundle = load_bundle()
+    except Exception as exc:
+        raise ConfigError(f"the catalog would not load ({exc!r})") from exc
+    ref = bundle.resolve(ref_name)
+    reason = adapter_unavailable_reason(ref)
+    if reason is not None:
+        log.info("%s: cannot build %s — %s", log_label, ref.ref, reason)
+        raise ConfigError(reason)
+    return meter_chain([(LazyAdapter(ref), _options_for_ref(ref, billing_key))], cost_ledger)
+
+
 def build_chain_for_job(
     ctx: JobContext,
     *,
@@ -275,5 +319,6 @@ __all__: Sequence[str] = (
     "build_chain_for_chain",
     "build_chain_for_job",
     "build_chain_for_role",
+    "build_entry_for_ref",
     "resolve_role_name",
 )

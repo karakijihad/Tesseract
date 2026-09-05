@@ -15,10 +15,10 @@ from typing import Any
 
 from aiohttp import web
 
-from tesseract.brain.session_ops import auto_compact_if_needed
+from tesseract.brain import context_report
 from tesseract.kernel.adapters.base import ChunkType
-from tesseract.memory.log_notes import append_log_entry
-from tesseract.paths import TESSERACT_HOME, log_dir
+from tesseract.paths import TESSERACT_HOME
+from tesseract.mirror.server.after_turn import after_turn
 from tesseract.mirror.server.chunk_handler import _handle_chunk
 from tesseract.mirror.server.envelope import make_envelope
 from tesseract.mirror.server.session import ServerSession, send_envelope
@@ -45,6 +45,7 @@ async def _run_turn(
     chat_session: Any = None,
     chat_id: str | None = None,
     outcome: dict[str, Any] | None = None,
+    runtime_origin: str | None = None,
 ) -> None:
     # Lazy: `_emit_entity_signals` and `_preprocess_audio_attachments` still
     # live in ws.py. A module-level import here would cycle with ws.py's
@@ -52,11 +53,11 @@ async def _run_turn(
     # chunk_handler.py (SDD Task 1.3) and is imported at module level above —
     # chunk_handler doesn't depend on ws.py or turn_runner.py, so no cycle.
     from tesseract.mirror.server import ws as _ws
-    # WP-2: synthetic workspace turns pass a forked ChatSession so they
+    # Synthetic workspace turns pass a forked ChatSession so they
     # don't mutate the canonical chat history. Chat turns leave
     # `chat_session=None` and the canonical session is used.
     is_synthetic = chat_session is not None
-    # mirror-multi-chat P2 inc.C — resolve which chat this turn drives. A chat
+    # Resolve which chat this turn drives. A chat
     # turn runs against that chat's ChatSession and tags its envelopes with the
     # id; a NON-active (conductor/background) chat streams text to its slice
     # but stays silent (D8 — TTS suppressed). Synthetic workspace turns keep
@@ -71,7 +72,7 @@ async def _run_turn(
     session.turn_count += 1
     session.last_turn_at = datetime.now(timezone.utc)
     turn = session.turn_count
-    # WP-2: workspace_origin moved from session attribute (single-slot) to
+    # workspace_origin is not a session attribute (single-slot) but
     # explicit parameter + task-local ContextVar so concurrent chat +
     # synthetic turns don't overwrite each other. Backward-compatible
     # fallback for callers still relying on the legacy session attr.
@@ -195,6 +196,15 @@ async def _run_turn(
             transient=workspace_origin is not None,
             workspace_origin=workspace_origin,
             view_snapshot=view_snapshot,
+            runtime_origin=runtime_origin,
+            # The same hook the turn boundary uses below, so a turn that
+            # outgrows the ceiling on its own folds and continues instead of
+            # being held under it by the emergency guard. Not for synthetic
+            # turns: their forked session is dropped when the turn ends.
+            fold_when_needed=(
+                None if workspace_origin is not None
+                else lambda: _maybe_auto_compact(app, session, cs)
+            ),
         ):
             await _handle_chunk(app, session, chunk)
             if chunk.type in (ChunkType.STOP, ChunkType.ERROR):
@@ -240,6 +250,18 @@ async def _run_turn(
             outcome["ok"] = ended_clean
             outcome["cancelled"] = turn_cancelled
             outcome["committed"] = turn_committed
+            # Whether the runtime declined to BEGIN this turn, as opposed to
+            # running it and failing: a spending cap answers here. Guarded on
+            # `stream_ok` because the session's field is only written by
+            # `ChatSession.send`, so without that guard a turn that blew up
+            # before the stream started would report the PREVIOUS turn's
+            # refusal and a real failure would go uncounted.
+            from tesseract.orchestrator.outcome import RunOutcome
+
+            outcome["refused"] = bool(
+                stream_ok
+                and getattr(cs, "last_turn_outcome", None) is RunOutcome.REFUSED
+            )
         loop_end_payload: dict[str, Any] = {"turn": turn, "tokens_used": 0}
         if workspace_origin:
             loop_end_payload["workspace_origin"] = dict(workspace_origin)
@@ -268,7 +290,7 @@ async def _run_turn(
             and session.turn_states_by_chat.get(turn_state_key) is turn_state
         ):
             session.turn_states_by_chat.pop(turn_state_key, None)
-        # WP-2: workspace_origin now lives on the ContextVar (set at turn
+        # workspace_origin lives on the ContextVar (set at turn
         # start, reset below). The session attribute is the legacy fallback;
         # clear it for any code path that may still read it pre-migration.
         if hasattr(session, "workspace_origin"):
@@ -320,7 +342,7 @@ async def _run_turn(
             except Exception:
                 log.exception("workspace thread_pending(cleared) broadcast failed")
         session.workspace_reply_succeeded = False
-    # WP-2: post-finally work is scoped to chat turns. Synthetic turns
+    # Post-finally work is scoped to chat turns. Synthetic turns
     # use an ephemeral forked ChatSession that gets dropped on completion,
     # so compaction is pointless; emit_stats/turn_task/drain all belong
     # to the canonical chat lane. The synthetic spawn site cleans up its
@@ -329,7 +351,11 @@ async def _run_turn(
         return
     if ended_clean:
         await _maybe_auto_compact(app, session, cs)
-    await emit_stats(app, session, cs)
+    # `cid`, not the contextvar. `session_stats` is not a turn-scoped type,
+    # so an unstamped envelope reaches the reader as the ACTIVE chat's
+    # numbers (`stores/dispatch/session.ts`), and a background turn's floor
+    # then draws itself under the name of whatever is on screen.
+    await emit_stats(app, session, cs, cid)
     # Free THIS chat's task slot (active or background) so a background
     # conductor turn's completion releases its own slot, not the active one.
     if cid is not None:
@@ -347,7 +373,7 @@ async def _run_turn(
     # silently stranded the queue once it became FIFO instead of
     # single-slot, so the gate is now `not turn_cancelled`.)
     # Voice does NOT queue here: spoken follow-ups interrupt at
-    # speech-start, never tail this path. inc.C: only the ACTIVE chat
+    # speech-start, never tail this path. Only the ACTIVE chat
     # drains its FIFO queue — it's the sole chat the operator queues into;
     # background conductor turns never populate the queue.
     if not turn_cancelled:
@@ -361,11 +387,11 @@ async def _run_turn(
         if cid == session.active_chat_id:
             await turn_intake.drain_next(app, session, cid)
         elif cid is not None:
-            # Review fix-pass Finding 1: a Q3-steer inject can strand on a
-            # BACKGROUND chat too (a steer landed on it, lost the race
-            # against ITS turn ending) — `drain_next`'s fallback only ever
-            # reaches the focused chat, so this turn's own end must rescue
-            # its own chat_id regardless of focus.
+            # A steer inject can strand on a BACKGROUND chat too (a steer
+            # landed on it, lost the race against ITS turn ending) and
+            # `drain_next`'s fallback only ever reaches the focused chat,
+            # so this turn's own end must rescue its own chat_id
+            # regardless of focus.
             await turn_intake.drain_stranded_background(app, session, cid)
 
 
@@ -413,27 +439,34 @@ async def _run_chat_turn(
     *,
     chat_id: str | None = None,
     outcome: dict[str, Any] | None = None,
+    runtime_origin: str | None = None,
 ) -> None:
     """Run a chat (non-synthetic) turn.
 
-    mirror-multi-chat P2 inc.C2 — the stream lock is now ACTIVE-TURN-ONLY.
-    inc.C2 migrated the stream-parser carry state to the per-turn ``TurnState``
-    and made the suppressed-turn TTS flush a no-op, so a background (non-active)
-    chat can stream text in parallel without clobbering anything — it takes no
-    lock. Only the active chat takes ``turn_stream_lock``: that keeps voice
-    single (D8 — the active chat owns TTS; a second active-chat send waits for
-    the first to finish, so audio never overlaps). `_run_turn`'s end-of-turn
-    drain re-spawns AFTER the slot is freed and only *spawns* (never awaits) the
-    follow-up, so a queued message can't deadlock behind the turn that drained
-    it. Synthetic workspace turns do NOT use this wrapper (they call `_run_turn`
-    directly and keep their existing WP-2 concurrency)."""
+    The stream lock is ACTIVE-TURN-ONLY. The stream-parser carry state lives
+    on the per-turn ``TurnState`` and the suppressed-turn TTS flush is a
+    no-op, so a background (non-active) chat can stream text in parallel
+    without clobbering anything and takes no lock. Only the active chat takes
+    ``turn_stream_lock``: that keeps voice single, because the active chat
+    owns TTS and a second active-chat send waits for the first to finish, so
+    audio never overlaps. `_run_turn`'s end-of-turn drain re-spawns AFTER the
+    slot is freed and only *spawns* (never awaits) the follow-up, so a queued
+    message can't deadlock behind the turn that drained it. Synthetic
+    workspace turns do NOT use this wrapper: they call `_run_turn` directly
+    and keep their own concurrency."""
     is_background = chat_id is not None and chat_id != session.active_chat_id
     async with _chat_turn_provider_slot(app, session, chat_id):
         if is_background:
-            await _run_turn(app, session, text, attachments, chat_id=chat_id, outcome=outcome)
+            await _run_turn(
+                app, session, text, attachments,
+                chat_id=chat_id, outcome=outcome, runtime_origin=runtime_origin,
+            )
         else:
             async with session.turn_stream_lock:
-                await _run_turn(app, session, text, attachments, chat_id=chat_id, outcome=outcome)
+                await _run_turn(
+                    app, session, text, attachments,
+                    chat_id=chat_id, outcome=outcome, runtime_origin=runtime_origin,
+                )
 
 
 async def send_and_await_turn(
@@ -488,76 +521,134 @@ async def run_turns_concurrently(
     return await asyncio.gather(*coros, return_exceptions=True)
 
 
+def _chat_id_of(session: ServerSession, cs: Any) -> str | None:
+    """Which chat this ChatSession is, by identity rather than by assumption."""
+    for candidate_id, candidate in (getattr(session, "chats", None) or {}).items():
+        if candidate is cs:
+            return candidate_id
+    return getattr(session, "active_chat_id", "") or None
+
+
 async def _maybe_auto_compact(
     app: web.Application, session: ServerSession, cs: Any = None
 ) -> None:
-    # inc.C — compact the chat that actually ran. A background conductor turn
-    # runs against a non-active ChatSession; default to the active chat for
-    # legacy callers that don't pass one.
+    """The cockpit's delivery, bound to the shared after-turn hook.
+
+    Compact the chat that actually ran. A background conductor turn runs
+    against a non-active ChatSession; default to the active chat for legacy
+    callers that do not pass one.
+
+    The two envelopes are all this surface adds. Whether to compact, the
+    tally, and the `[auto_compact]` log entry are the runtime's, and they live
+    in `after_turn` so a channel gets the same ones.
+    """
     target = cs if cs is not None else session.chat_session
-    try:
-        result = await auto_compact_if_needed(target)
-    except Exception:
-        log.exception("auto-compact failed for %s", session.session_id)
-        return
-    if result is None:
-        return
-    before, after = result
-    await send_envelope(session, make_envelope(
-        "compaction_done", "loop", session.session_id,
-        {"before_tokens": before, "after_tokens": after},
-    ))
-    session.compact_count += 1
-    try:
-        now = datetime.now(timezone.utc)
-        ratio_pct = round((1 - after / before) * 100, 1) if before else 0.0
-        append_log_entry(
-            header=f"## [auto_compact] Compaction {now.strftime('%Y-%m-%dT%H:%M:%SZ')}",
-            body=(
-                f"Auto-compact fired (session={session.session_id[:8]}, turn={session.turn_count}).\n"
-                f"Tokens before: {before}  |  Tokens after: {after}  |  Ratio: {ratio_pct}%"
-            ),
-            log_dir=log_dir("sessions"),
-            date=now,
+    # `session_compact` is not a turn-scoped type, so nothing infers the stamp.
+    # The transcript draws a divider off this envelope, and that divider is a
+    # permanent entry, so the stamp has to name the chat that FOLDED. One
+    # source: the thing that folds. A `chat_id` argument beside it would be a
+    # second answer to the same question, free to disagree with the first.
+    stamp = _chat_id_of(session, target)
+
+    async def report(before: int, after: int) -> None:
+        # One envelope, because one is read. `compaction_done` carried the same
+        # two numbers on the `loop` scope and no handler anywhere matched it —
+        # it reached `dispatch/loop.ts`'s default branch and drew a second,
+        # unlabelled pulse row beside the line `session_compact` already drew.
+        await send_envelope(session, make_envelope(
+            "session_compact", "session", session.session_id,
+            {
+                "tokens_before": before,
+                "tokens_after": after,
+                "trigger": "auto",
+                "tail_turns": getattr(target, "_last_fold_tail_turns", 0),
+            },
+            chat_id=stamp,
+        ))
+
+    async def ending(reflect) -> bool:
+        # The cockpit's answer to a turn that has finished with a conversation:
+        # archive it into the drawer and open a new one. `/reset` reaches the
+        # same function, so neither the operator nor the assistant is looking at
+        # a second implementation of starting fresh. `stamp` is the chat that
+        # actually ran, which a background turn's is not the one on screen, and
+        # `reflect` fires inside once the transcript is safely written.
+        from tesseract.mirror.server.commands import start_fresh_chat
+
+        return await start_fresh_chat(
+            app, session, chat_id=stamp, on_persisted=reflect
         )
-    except Exception:
-        log.exception("logs/sessions [auto_compact] append failed for %s", session.session_id)
-    await send_envelope(session, make_envelope(
-        "session_compact", "session", session.session_id,
-        {"tokens_before": before, "tokens_after": after, "trigger": "auto"},
-    ))
+
+    await after_turn(target, app=app, session=session, report=report, ending=ending)
 
 
 async def emit_stats(
-    app: web.Application, session: ServerSession, cs: Any = None
+    app: web.Application,
+    session: ServerSession,
+    cs: Any = None,
+    chat_id: str | None = None,
 ) -> None:
-    if app["adapter_options"] is None:
+    """Send this conversation's measured shape.
+
+    `chat_id` is passed explicitly by the callers that run outside a turn, on
+    connect and on a chat switch, where the turn contextvar holds nothing. The
+    stamp is what lets the reader tell whose numbers these are, and leaving it
+    to be inferred made a switch deliver the chat you just left.
+    """
+    # `.get`, not a subscript. Stats are telemetry, and this now runs on
+    # connect and on a chat switch as well as after a turn — seams that exist
+    # before the adapter is wired, and on which a KeyError would take down the
+    # connection rather than skip a number.
+    if app.get("adapter_options") is None:
         return
-    # inc.C — stats for the chat that ran (a background turn targets its own
+    # Stats for the chat that ran (a background turn targets its own
     # chat); default to the active chat for the slash-command call site.
     if cs is None:
         cs = session.chat_session
+    # One measurement, shared with `context_read`. A panel that measures its
+    # own copy draws a different fold from the one the runtime enforces, and
+    # the assistant answering the same question from a second source is that
+    # defect with a longer reach.
     try:
-        tokens = cs.token_estimate()
+        report = context_report.gather(cs)
     except Exception:
-        log.exception("token_estimate failed for %s", session.session_id)
+        # Telemetry. A conversation that cannot be counted skips its envelope
+        # rather than sending zeros the HUD would draw as an empty bar.
+        log.exception("context report failed for %s", session.session_id)
         return
-    system_tokens = 0
-    if cs.system_prompt:
-        try:
-            system_tokens = cs.adapter.count_tokens(
-                [{"role": "system", "content": cs.system_prompt}]
-            )
-        except Exception:
-            log.exception("system token count failed for %s", session.session_id)
-    context_window = cs.options.context_window
+    if "compact_threshold_tokens" not in report:
+        # `gather` guards each measurement on its own, so a report can come
+        # back without the ceiling the bar is drawn against. Same call as
+        # above: skip the envelope rather than send a zero the HUD would draw
+        # as a conversation with all its room left.
+        log.warning(
+            "context report for %s carries no ceiling; stats skipped",
+            session.session_id,
+        )
+        return
     await send_envelope(session, make_envelope(
         "session_stats", "session", session.session_id,
         {
-            "tokens": tokens,
-            "system_tokens": system_tokens,
-            "turns": len(cs.history) // 2,
-            "compact_threshold_tokens": int(context_window * cs.compact_threshold),
-            "compact_threshold_ratio": cs.compact_threshold,
+            "tokens": report["tokens"],
+            "system_tokens": report["system_tokens"],
+            "turns": report["turns"],
+            "compact_threshold_tokens": report["compact_threshold_tokens"],
+            "compact_threshold_ratio": report["compact_threshold_ratio"],
+            **{
+                key: report[key]
+                for key in (
+                    "context_window", "head_anchor_tokens", "tail_tokens",
+                    "tail_turns", "keep_recent_turns", "unfoldable_tokens",
+                    "fold_trigger_tokens",
+                    # What the trigger is actually compared against. Without it
+                    # the HUD divided the WHOLE payload by a foldable-only
+                    # ceiling and drew the bar over-full, while `context_read`
+                    # answered the same question correctly for the same
+                    # conversation at the same moment.
+                    "foldable_tokens",
+                )
+                if key in report
+            },
         },
+        chat_id=chat_id,
     ))

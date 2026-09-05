@@ -1,8 +1,8 @@
 """janitor.yaml accessor. Config is authoritative — missing or malformed
 keys raise (KeyError / ValidationError), no silent defaults.
 
-`archive_retention_days` and `log_prune` used to live here; both are rows in
-`config/retention.yaml` now. `extra="forbid"` means an install still carrying
+`archive_retention_days` and `log_prune` are rows in
+`config/retention.yaml`, not here. `extra="forbid"` means an install carrying
 them fails to load rather than reading them and doing nothing — which is what
 a silently-ignored retention window would be.
 """

@@ -31,6 +31,7 @@ class AlarmCancelTool(Tool):
         "postponing an alarm's next fire, which is `alarm_snooze`; removing a scheduler job, "
         "which is `schedule_remove`."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(self, alarm_registry: AlarmRegistry) -> None:
         self._registry = alarm_registry

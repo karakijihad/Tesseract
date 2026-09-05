@@ -155,7 +155,7 @@ export function VoiceSection() {
       <WakeWordSection />
 
       <Note>
-        Timbre is not a setting — a local voice is its model file, named per
+        Timbre is not a setting. A local voice is its model file, named per
         provider in <code>providers.yaml</code>. Character is the per-surface{" "}
         <code>synthesis_presets</code> below: <code>intent</code> is the short
         acknowledgement, <code>answer</code> is the spoken reply. Saving one

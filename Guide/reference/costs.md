@@ -8,9 +8,9 @@ description: "What the assistant is allowed to spend in a day, per role and per 
 
 What the assistant is allowed to spend in a day, per role and per background job. At the warning mark you get a notification and work continues. At the cap the turn stops and asks whether to carry on — approving unlocks that scope for the rest of the day, and the extra shows in red. With nobody there to approve, it simply stops.
 
-> These are the **shipped defaults**. Every value here lives in a config
-> file you own once TESSERACT is installed, so your copy may differ — and
-> should, once you tune it.
+> These are the **shipped defaults**. What you can change lives in a
+> config file you own once TESSERACT is installed, so your copy may
+> differ, and should, once you tune it.
 
 
 | Role | Daily cap |
@@ -21,15 +21,21 @@ What the assistant is allowed to spend in a day, per role and per background job
 | `image_generator` | $1.00 |
 | `observer_agent` | $1.00 |
 | `subagents_default` | $0.50 |
-| `watchman` | $0.50 |
 
 ## Some jobs are capped by the job
 
-A role is a seat a model sits in — the assistant you talk to, the delegation seats, the defaults. Background work that is none of those carries its own ceiling instead of having a role invented to hold one, so what it spends is attributed to the work itself. Each of these is one of the things on the [What runs on its own](/reference/what-runs/) page.
+A role is a seat a model sits in: the assistant you talk to, the delegation seats, the defaults. Background work is none of those, so what it spends is attributed to the work itself rather than to a seat it shares. Each of these is one of the things on the [What runs on its own](/reference/what-runs/) page, and each is yours to change. The ceilings sit together under one heading in `tesseract/config/roles.yaml`, and Settings, Costs edits them without opening the file.
 
 | Job | Daily cap |
 | --- | --- |
-| `consolidate` | $0.50 |
+| `consolidate` | $1.00 |
+| `panel_writer` | $1.00 |
+| `playbook_extract` | $0.50 |
+| `provider_watch` | $0.50 |
+| `scheduled_task` | $1.00 |
+| `skill_refinement` | $0.50 |
+| `skill_suggest` | $0.50 |
+| `watchman` | $1.00 |
 
 ## Speaking and listening are capped too
 
@@ -44,6 +50,6 @@ Voice is billed by the character spoken or the hour heard rather than by the tok
 
 ## The global cap is derived, not configured
 
-There is no separate global budget line to drift out of step. The ceiling is the **sum of every inner cap** — the $8.00 of role caps, the $0.50 of job caps and the $2.00 of voice caps, so **$10.50** — computed in `brain/cost/ledger.py::CostLedger.cap_usd`. Add a role, a job or a lane with a cap and the global ceiling rises by exactly that much.
+There is no separate global budget line to drift out of step. The ceiling is the **sum of every inner cap** — the $7.50 of role caps, the $6.00 of job caps and the $2.00 of voice caps, so **$15.50** — computed in `brain/cost/ledger.py::CostLedger.cap_usd`. Add a role, a job or a lane with a cap and the global ceiling rises by exactly that much.
 
 There is no single line for what the assistant spends on its own behalf, and that is deliberate: it spends against whichever role or job does the work, so the number you look at is the one that names what it was for.

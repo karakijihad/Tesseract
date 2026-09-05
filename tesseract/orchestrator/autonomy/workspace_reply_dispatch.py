@@ -44,6 +44,30 @@ from tesseract.workspace_events.events import EventStore, WorkspaceComment, Work
 log = logging.getLogger(__name__)
 
 _DEFAULT_IDLE_TIMEOUT_SECONDS = 180.0
+# How often the retry sweep looks, and how long a queued comment waits before
+# it counts as stalled. The wait must clear `idle_timeout_seconds`, or the
+# sweep would dispatch a second reply while the first attempt is still running
+# and the operator would get two answers to one question.
+_DEFAULT_RETRY_INTERVAL_SECONDS = 120.0
+_DEFAULT_RETRY_AFTER_SECONDS = 300.0
+# A thread whose reply keeps failing is a thread the operator should be told
+# about, not one to dispatch against forever.
+_DEFAULT_MAX_ATTEMPTS = 3
+
+
+def _positive_float(block: dict[str, Any], key: str, fallback: float) -> float:
+    raw = block.get(key, fallback)
+    try:
+        value = float(raw)
+        if value <= 0:
+            raise ValueError("must be positive")
+    except (TypeError, ValueError) as exc:
+        log.warning(
+            "workspace workspace_reply: invalid %s %r (%s); using %.0f",
+            key, raw, exc, fallback,
+        )
+        return fallback
+    return value
 
 
 @dataclass(frozen=True)
@@ -53,6 +77,9 @@ class WorkspaceReplyConfig:
 
     enabled: bool = True
     idle_timeout_seconds: float = _DEFAULT_IDLE_TIMEOUT_SECONDS
+    retry_interval_seconds: float = _DEFAULT_RETRY_INTERVAL_SECONDS
+    retry_after_seconds: float = _DEFAULT_RETRY_AFTER_SECONDS
+    max_attempts: int = _DEFAULT_MAX_ATTEMPTS
 
     @classmethod
     def from_yaml_block(cls, block: dict[str, Any] | None) -> "WorkspaceReplyConfig":
@@ -65,19 +92,30 @@ class WorkspaceReplyConfig:
                 enabled,
             )
             enabled = True
-        raw_timeout = block.get("idle_timeout_seconds", _DEFAULT_IDLE_TIMEOUT_SECONDS)
+        raw_attempts = block.get("max_attempts", _DEFAULT_MAX_ATTEMPTS)
         try:
-            idle_timeout = float(raw_timeout)
-            if idle_timeout <= 0:
-                raise ValueError("must be positive")
+            max_attempts = int(raw_attempts)
+            if max_attempts < 1:
+                raise ValueError("must be at least 1")
         except (TypeError, ValueError) as exc:
             log.warning(
-                "workspace workspace_reply: invalid idle_timeout_seconds %r (%s); "
-                "using %.0f",
-                raw_timeout, exc, _DEFAULT_IDLE_TIMEOUT_SECONDS,
+                "workspace workspace_reply: invalid max_attempts %r (%s); using %d",
+                raw_attempts, exc, _DEFAULT_MAX_ATTEMPTS,
             )
-            idle_timeout = _DEFAULT_IDLE_TIMEOUT_SECONDS
-        return cls(enabled=enabled, idle_timeout_seconds=idle_timeout)
+            max_attempts = _DEFAULT_MAX_ATTEMPTS
+        return cls(
+            enabled=enabled,
+            idle_timeout_seconds=_positive_float(
+                block, "idle_timeout_seconds", _DEFAULT_IDLE_TIMEOUT_SECONDS
+            ),
+            retry_interval_seconds=_positive_float(
+                block, "retry_interval_seconds", _DEFAULT_RETRY_INTERVAL_SECONDS
+            ),
+            retry_after_seconds=_positive_float(
+                block, "retry_after_seconds", _DEFAULT_RETRY_AFTER_SECONDS
+            ),
+            max_attempts=max_attempts,
+        )
 
 
 def load_workspace_reply_config() -> WorkspaceReplyConfig:
@@ -231,12 +269,14 @@ async def dispatch_workspace_reply(
         log.exception("workspace reply: unexpected dispatch error for %s", event_id)
         return None
 
-    if result.timed_out:
-        log.warning("workspace reply: controller timed out for %s", event_id)
-        return None
-    if result.error:
-        log.warning("workspace reply: controller error for %s: %s", event_id, result.error)
-        return None
+    # The outcome is read AFTER the store, not before it, because the two
+    # answer different questions. `wait_for_completion` waits for the session
+    # to go idle, and a controller that answered in nine seconds and then sat
+    # there still reports `timed_out` at the full `idle_timeout_seconds`.
+    # Measured 2026-08-25: every successful reply on this path logged a
+    # timeout, and the early return meant no reply was ever broadcast and no
+    # comment was ever marked delivered. The controller writing a comment is
+    # the success condition; how the wait ended is context for the log.
 
     # Find the comment(s) the controller just wrote for this event.
     # New agent comments are those NOT in the pre-dispatch snapshot.
@@ -255,12 +295,28 @@ async def dispatch_workspace_reply(
     ]
 
     if not new_agent:
-        log.info(
-            "workspace reply: controller did not write a comment for %s "
-            "(no new agent comments after dispatch)",
-            event_id,
-        )
+        if result.timed_out:
+            log.warning(
+                "workspace reply: controller timed out for %s and wrote no "
+                "reply; the retry sweep will try again", event_id,
+            )
+        elif result.error:
+            log.warning(
+                "workspace reply: controller error for %s: %s", event_id, result.error
+            )
+        else:
+            log.info(
+                "workspace reply: controller did not write a comment for %s "
+                "(no new agent comments after dispatch)",
+                event_id,
+            )
         return None
+
+    if result.timed_out:
+        log.info(
+            "workspace reply: %s was answered, and the wait for the controller "
+            "to go idle timed out afterwards", event_id,
+        )
 
     last: WorkspaceComment | None = None
     for c in new_agent:
@@ -269,6 +325,20 @@ async def dispatch_workspace_reply(
             last = c
         except Exception:
             log.exception("workspace reply: broadcast failed for comment %s", c.comment_id)
+
+    # The reply landed, so the operator's item has reached the agent and been
+    # answered. Nothing marked it before: `mark_comment_delivered`'s only
+    # caller was the synthetic-turn path, which has no producer, so every
+    # operator comment stayed undelivered for ever and the queue that names
+    # them had no consumer. The retry sweep is that consumer, and it can only
+    # tell a stalled item from an answered one if this runs.
+    try:
+        if kind == "post":
+            store.mark_event_delivered(event_id)
+        else:
+            store.mark_comment_delivered(comment_id)
+    except Exception:
+        log.exception("workspace reply: marking %s delivered failed", comment_id)
 
     return last
 

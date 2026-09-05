@@ -30,7 +30,6 @@ comment is the detailed documentation; this page is the map.
 | `schedule.yaml` | The persistent job registry — cron and alarm entries, written back in place when a job is toggled from the UI. |
 | `agenda.yaml` | How self-directed proposals are scored and capped. Deterministic; no model involved. |
 | `agenda-mappers.yaml` | How each autonomy signal turns into a proposal, and which sources are switched on. |
-| `autonomy-watchlist.yaml` | Sources watched for ecosystem awareness. Empty until you add your own. |
 | `conscience.yaml` | Thresholds for the rule-based drift checks. |
 | `memory.yaml` | Memory subsystem knobs — recall, decay, consolidation. |
 | `vault.yaml` | Vault knobs — ingest limits, lint thresholds, query breadth. |

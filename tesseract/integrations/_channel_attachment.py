@@ -1,4 +1,4 @@
-"""Visibility-first envelope for channel inputs (CR-1).
+"""Visibility-first envelope for channel inputs.
 
 Every channel adapter — Telegram today, WhatsApp/Signal/email/webhook
 tomorrow — forwards every recognized input kind to the model, even when
@@ -90,9 +90,8 @@ class ChannelAttachment:
 
     All optional fields use ``None`` to mean "unknown / not applicable"
     so the renderer can elide them without ambiguity. The ``ref`` field
-    is an opaque adapter handle (e.g. Telegram ``file_id``) used by
-    CR-2's handlers to re-fetch the bytes; CR-1 carries it forward but
-    no decoder consumes it yet.
+    is an opaque adapter handle (e.g. Telegram ``file_id``) the
+    decoders use to re-fetch the bytes.
     """
 
     kind: ChannelAttachmentKind

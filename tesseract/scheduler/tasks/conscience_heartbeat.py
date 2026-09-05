@@ -8,7 +8,7 @@ Emits one JSONL line per run to
 home/logs/conscience/drift-YYYY-MM-DD.jsonl. The Mirror
 `/api/conscience/drift` route reads the latest file for display.
 
-Two envelopes, and the quiet one is why the tab used to look dead:
+Two envelopes, and the quiet one is what keeps the tab from looking dead:
 
 - `conscience_drift` fires only when the worst-status band CHANGES
   (`ok` ↔ `warn` ↔ `bad`) and carries a toast — escalation stings,
@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from tesseract.lib.clock import to_local
 from tesseract.paths import TESSERACT_HOME, log_dir
 from tesseract.conscience.config import load_drift_config
 from tesseract.conscience.drift import evaluate_drift
@@ -39,7 +40,7 @@ from tesseract.conscience.memory_writer import (
     count_recent_drifts,
     write_drift_entry,
 )
-from tesseract.conscience.reader import load_latest_report
+from tesseract.conscience.reader import load_latest_report, report_counts
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.scheduler.types import JobContext, JobResult
 
@@ -110,12 +111,11 @@ class ConscienceHeartbeatJob(BaseJob):
                     }
                 delivered = await _broadcast_transition(ctx.app, transition)
                 mood_nudged = _nudge_mood(ctx.app, transition)
-                # This used to publish the transition as a `self_reflection`
-                # agenda candidate, because an agenda item was the only way it
-                # had of reaching the operator. It is a stage of the nightly
-                # pass now, and the watchman reads `logs/conscience/` and puts
-                # any non-ok signal in the report — so the finding still
-                # arrives, without a queue entry standing in for a sentence.
+                # The transition is NOT published as a `self_reflection` agenda
+                # candidate. This is a stage of the nightly pass, and the watchman
+                # reads `logs/conscience/` and puts any non-ok signal in the report,
+                # so the finding arrives without a queue entry standing in for a
+                # sentence.
 
             # Every successful write pushes, transition or not. Without this an
             # open tab only ever refreshes on a band change — which a healthy
@@ -201,10 +201,18 @@ def _count_enabled_jobs(app: Any) -> int | None:
 
 def _write_report(target_dir: Path, when: datetime, record: dict) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
-    stamp = when.astimezone(timezone.utc).date().isoformat()
+    stamp = to_local(when).date().isoformat()
     target = target_dir / f"drift-{stamp}.jsonl"
     with target.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+
+def _counts(report: dict) -> dict[str, int]:
+    """The tallies, whatever shape wrote them. One reader, in
+    `conscience/reader.py`, because the third copy of this was missing and
+    took the system prompt down with it."""
+    return report_counts(report)
 
 
 def _worst_status(summary: dict[str, int]) -> Status:
@@ -224,8 +232,11 @@ def _detect_transition(previous: dict | None, current: dict) -> dict | None:
     """
     if previous is None:
         return None
-    prev_summary = previous.get("summary") or {}
-    curr_summary = current.get("summary") or {}
+    # `counts` on a report written since the runtime gave every record one
+    # shape, `summary` on one written before it. Both are on disk and neither
+    # is rewritten, so both are read.
+    prev_summary = _counts(previous)
+    curr_summary = _counts(current)
     prev_status = _worst_status(prev_summary)
     curr_status = _worst_status(curr_summary)
     if prev_status == curr_status:

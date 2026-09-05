@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from tesseract.lib.clock import to_local
 from tesseract.agents.loader import load_agent
 from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
 from tesseract.kernel.tools.base import ToolContext
@@ -35,7 +36,7 @@ from tesseract.kernel.tools.tavily_search import TavilySearchInput, TavilySearch
 from tesseract.paths import TESSERACT_HOME
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.brain.cost.metered_adapter import meter_chain
-from tesseract.scheduler.role_chain import build_chain_for_role, resolve_role_name
+from tesseract.scheduler.role_chain import build_chain_for_job
 from tesseract.scheduler.types import JobContext, JobResult
 
 log = logging.getLogger(__name__)
@@ -74,13 +75,6 @@ _DEFAULT_PROVIDERS: list[dict[str, Any]] = [
         ],
     },
     {
-        "name": "NVIDIA NIM",
-        "queries": [
-            "NVIDIA NIM new model deployment",
-            "NIM endpoint pricing changes",
-        ],
-    },
-    {
         "name": "ElevenLabs",
         "queries": [
             "ElevenLabs new voice model release",
@@ -99,7 +93,16 @@ _DEFAULT_PROVIDERS: list[dict[str, Any]] = [
 
 class ProviderWatchJob(BaseJob):
     uses_llm = True
-    default_model_role = "agents_default"
+    # A CHAIN, not a role. `agents_default` and `subagents_default` are seats
+    # that also serve `invoke_agent`, so sharing one meant this job's model and
+    # its spend moved whenever an agent was re-pointed. Naming the chain
+    # directly severs that: what it spends bills to the entry, whose ceiling is
+    # on its manifest entry.
+    default_model_chain = "chain_1"
+    # Offered in the Add job form, so it is armed under whatever the
+    # operator called the row. The row name is not something a ceiling
+    # can be written for; the entry is.
+    billing_entry = "provider_watch"
 
     async def run(self, ctx: JobContext) -> JobResult:
         t0 = time.monotonic()
@@ -120,7 +123,7 @@ class ProviderWatchJob(BaseJob):
                     duration_ms=(time.monotonic() - t0) * 1000.0,
                 )
 
-            target_date = ctx.fired_at.astimezone(timezone.utc).date()
+            target_date = to_local(ctx.fired_at).date()
             max_results = int(
                 ctx.config.get("max_results_per_provider", DEFAULT_MAX_RESULTS_PER_PROVIDER)
             )
@@ -169,7 +172,7 @@ class ProviderWatchJob(BaseJob):
                     job_name=ctx.job_name,
                     run_id=ctx.run_id,
                     ok=False,
-                    detail="chain exhausted — no digest produced",
+                    detail="chain exhausted, no digest produced",
                     payload={"target_date": target_date.isoformat(), "wrote": False},
                     duration_ms=(time.monotonic() - t0) * 1000.0,
                 )
@@ -266,6 +269,15 @@ def _load_agent_role_section() -> str:
             "and deprecations from the brief below. One bullet per item, "
             "URL at the end. Skip providers with no new info. No preamble."
         )
+    # The card became a call, which is the only question the roster's
+    # never-invoked column asks. Recorded here rather than at `load_agent`,
+    # because the routes that merely list a card load it too and a page render
+    # is not a run. The baked baseline above returns before this, so a missing
+    # card is correctly not counted as one that ran.
+    from tesseract.agents.invocations import record as _record_invocation
+
+    _record_invocation("provider-watcher", via="provider_watch")
+
     role = agent.get_section("Role")
     structure = agent.get_section("Output structure")
     rules = agent.get_section("Rules")
@@ -378,8 +390,6 @@ _PROVIDER_KB_SLUG = {
     "anthropic": "anthropic",
     "openai": "openai",
     "google": "google",
-    "nvidia nim": "nvidia-nim",
-    "nvidia": "nvidia-nim",
     "elevenlabs": "elevenlabs",
     "meta": "meta",
 }
@@ -393,15 +403,15 @@ async def _write_provider_kb(
     max_results: int,
     tavily_call_cap: int,
 ) -> dict[str, Any]:
-    """MO-10-1 §2b extension. After the digest lands, write one
+    """After the digest lands, write one
     ``vault/knowledge-base/providers/<provider>.md`` per tracked provider
     through the content-merge protocol so operator hand-edits survive.
 
-    The structured ``canonical_models`` frontmatter starts empty in v1 —
-    Tavily search snippets aren't reliably parseable into model entries
-    without an LLM round-trip, and v1 prefers an honest empty list over
-    half-baked structured output. Operators (or a future agent step) can
-    populate it; MO-10-2's emit path treats empty as "no proposal".
+    The structured ``canonical_models`` frontmatter starts empty: Tavily
+    search snippets aren't reliably parseable into model entries without an
+    LLM round-trip, and an honest empty list beats half-baked structured
+    output. Operators (or a future agent step) can populate it; the emit
+    path treats empty as "no proposal".
 
     Returns a summary dict for the JobResult payload.
     """
@@ -545,22 +555,11 @@ def _kb_render_body(name: str, target_date, rows: list[tuple[str, str]]) -> str:
 
 
 def _resolve_adapter_chain(ctx: JobContext) -> list[tuple[ModelAdapter, AdapterOptions]]:
-    role_name = resolve_role_name(ctx, ProviderWatchJob.default_model_role)
-    app = ctx.app
-    override_set = bool((ctx.model_role or "").strip())
-    if override_set and role_name is not None:
-        return build_chain_for_role(role_name, log_label="provider_watch")
-    if app is not None and hasattr(app, "get"):
-        live = app.get("adapter_chain") or []
-        if live:
-            return [(a, o or AdapterOptions()) for a, o in live if a is not None]
-    if role_name is not None:
-        built = build_chain_for_role(role_name, log_label="provider_watch")
-        if built:
-            return built
-    if app is None or not hasattr(app, "get"):
-        return []
-    adapter = app.get("adapter")
-    if adapter is None:
-        return []
-    return [(adapter, app.get("adapter_options") or AdapterOptions())]
+    """The chain this row rides, billed to the row. See `brief_render`'s twin:
+    both preferred the app's live chain, which is chat_brain's."""
+    return build_chain_for_job(
+        ctx,
+        default_role=None,
+        default_chain=ProviderWatchJob.default_model_chain,
+        log_label="provider_watch",
+    )

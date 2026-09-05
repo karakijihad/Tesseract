@@ -223,3 +223,145 @@
   display: block;
   margin-bottom: var(--space-8);
 }
+
+/* The wake gate's verdict, as a bubble over the mic it is about.
+ *
+ * It sat in the stage's top-left corner, which is nowhere near where anyone
+ * looks while deciding whether to keep talking. It rides the mic now, with a
+ * tail pointing at it, so the answer and the control it is about are one
+ * thing on screen.
+ *
+ * Pointer-transparent throughout: it reports, it is not a control. */
+.wake-toast {
+  /* Fixed, and placed by the component: the HUD bar clips its own overflow,
+     so a bubble laid out inside it was sliced at the bar's top edge and only
+     its tail showed. `top` / `left` are measured off the mic. */
+  position: fixed;
+  /* Same layer as `.hud-menu`, the other thing that portals out of this
+     bar. There is no z token; the menu uses a literal and so does this. */
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  max-width: 320px;
+  white-space: nowrap;
+  padding: var(--space-7) var(--space-14);
+  border: var(--stroke-1) solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: var(--glass-deep);
+  box-shadow:
+    0 var(--space-10) var(--space-28) calc(-1 * var(--space-8)) var(--scrim-lg),
+    inset 0 var(--stroke-1) 0 var(--wash-sm);
+  backdrop-filter: blur(20px) saturate(1.3);
+  -webkit-backdrop-filter: blur(20px) saturate(1.3);
+  font-size: var(--t-caption-size);
+  pointer-events: none;
+  transform: translateX(-50%);
+  animation: wake-toast-in var(--motion-med) cubic-bezier(0.2, 0.9, 0.3, 1.3);
+}
+
+/* The tail. A rotated square tucked under the pill's lower edge, carrying the
+   same skin, with the half that would show through the pill clipped off. It
+   is what makes the bubble read as belonging to the mic rather than floating
+   above it. */
+.wake-toast::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  width: var(--space-10);
+  height: var(--space-10);
+  margin: calc(-1 * var(--space-6)) 0 0 calc(-1 * var(--space-5));
+  border-right: var(--stroke-1) solid var(--border-subtle);
+  border-bottom: var(--stroke-1) solid var(--border-subtle);
+  border-bottom-right-radius: var(--radius-xs);
+  background: var(--glass-deep);
+  transform: rotate(45deg);
+}
+
+/* Rises from the mic and settles, rather than appearing. Both halves carry the
+   centring translate: a keyframe that sets `transform` REPLACES the rule's, so
+   animating scale alone would drop the bubble's own `translateX(-50%)` for the
+   length of the animation and slide it sideways. */
+@keyframes wake-toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(var(--space-6)) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
+/* The two verdicts. The tint is on the glow and the edge rather than the fill,
+   so the bubble stays a piece of the app's glass and the colour is what the
+   eye picks up first. */
+.wake-toast.is-woken {
+  border-color: var(--ok-edge);
+  box-shadow:
+    0 var(--space-10) var(--space-28) calc(-1 * var(--space-8)) var(--scrim-lg),
+    0 0 var(--space-20) calc(-1 * var(--space-6)) var(--ok-soft),
+    inset 0 var(--stroke-1) 0 var(--wash-sm);
+}
+
+.wake-toast.is-woken::after { border-color: var(--ok-edge); }
+
+.wake-toast.is-not-heard {
+  border-color: var(--warn-edge);
+  box-shadow:
+    0 var(--space-10) var(--space-28) calc(-1 * var(--space-8)) var(--scrim-lg),
+    0 0 var(--space-20) calc(-1 * var(--space-6)) var(--warn-soft),
+    inset 0 var(--stroke-1) 0 var(--wash-sm);
+}
+
+.wake-toast.is-not-heard::after { border-color: var(--warn-edge); }
+
+/* A live dot, and it is only live on the half that is still happening. While
+   the gate is hearing you the utterance is still open and the bubble is
+   saying "keep going"; a refusal is finished, and a pulsing dot on it would
+   claim something is still running. */
+.wake-toast__dot {
+  width: var(--space-6);
+  height: var(--space-6);
+  border-radius: var(--radius-pill);
+  flex: 0 0 auto;
+}
+
+.wake-toast.is-woken .wake-toast__dot {
+  background: var(--ok);
+  animation: wake-dot-breathe var(--motion-breathe) ease-in-out infinite;
+}
+
+.wake-toast.is-not-heard .wake-toast__dot { background: var(--warn); }
+
+@keyframes wake-dot-breathe {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.45; transform: scale(0.8); }
+}
+
+.wake-toast__mark {
+  font-family: var(--font-ui);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.wake-toast.is-woken .wake-toast__mark { color: var(--ok); }
+.wake-toast.is-not-heard .wake-toast__mark { color: var(--warn); }
+
+/* What the operator was looking at when the gate refused it, or what to say
+   next when the browser gave us no words. One line: the bubble says the
+   verdict, this only identifies which utterance it is talking about. */
+.wake-toast__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+/* Motion is decoration here, and the verdict is not. */
+@media (prefers-reduced-motion: reduce) {
+  .wake-toast { animation: none; }
+  .wake-toast.is-woken .wake-toast__dot { animation: none; }
+}

@@ -41,6 +41,69 @@
   background: #0b0b16;
 }
 
+/* Click one to see it larger. The script wraps each diagram in a real button,
+   which is transparent: the drawing keeps its own frame above, and the button
+   contributes only the cursor and the focus ring. With the script blocked no
+   button is ever created and the diagram renders exactly as it always did. */
+.diagram-zoom-trigger {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: zoom-in;
+}
+
+.diagram-zoom-trigger:focus-visible {
+  outline: 2px solid var(--sl-color-accent-high);
+  outline-offset: 3px;
+}
+
+.diagram-zoom {
+  width: min(96vw, 1600px);
+  max-width: none;
+  max-height: 94vh;
+  padding: 0;
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 8px;
+  background: #0b0b16;
+  overflow: visible;
+}
+
+.diagram-zoom::backdrop {
+  background: rgba(7, 7, 13, 0.82);
+}
+
+.diagram-zoom img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 94vh;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+.diagram-zoom__close {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 4px;
+  background: var(--sl-color-bg);
+  color: var(--sl-color-white);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.diagram-zoom__close:hover,
+.diagram-zoom__close:focus-visible {
+  border-color: var(--sl-color-accent);
+}
+
 /* Tables in the generated reference run long; keep them scrollable in place. */
 .sl-markdown-content table {
   display: block;

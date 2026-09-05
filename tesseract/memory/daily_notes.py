@@ -24,7 +24,7 @@ _DAILY_PAD = (
 
 
 def _daily_frontmatter(date_str: str) -> str:
-    """AU-16 frontmatter for a fresh daily-note file. Written exactly
+    """Frontmatter for a fresh daily-note file. Written exactly
     once at file creation; subsequent ``append_section`` calls leave it
     alone. Obsidian's graph view picks up the ``daily-note`` color group
     via the leading tag.
@@ -70,7 +70,7 @@ def append_section(
     """Append a markdown section to `<daily_dir>/YYYY-MM-DD.md`.
 
     Returns True on write, False when `idempotency_probe` matches existing
-    content. On the first write of the day, prepends the AU-16 daily-note
+    content. On the first write of the day, prepends the daily-note
     frontmatter so the file color-groups correctly when opened in
     Obsidian. Never raises on ordinary filesystem misses — the caller
     path (WS hook / cron job) wraps this in its own guard.

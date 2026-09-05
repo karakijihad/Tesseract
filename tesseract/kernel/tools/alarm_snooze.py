@@ -31,6 +31,7 @@ class AlarmSnoozeTool(Tool):
         "Use after the operator says snooze it or not now. A recurring alarm's cycle is kept."
     )
     not_when: ClassVar[str] = "deleting the alarm entirely, which is `alarm_cancel`."
+    depends_on: ClassVar[str] = ""
 
     def __init__(self, alarm_registry: AlarmRegistry) -> None:
         self._registry = alarm_registry

@@ -7,9 +7,10 @@ import { AppearanceSection } from "./Appearance";
 import { CapabilitiesSection } from "./Capabilities";
 import { SessionControlSection } from "./SessionControl";
 import { CostSection } from "./Cost";
+import { CredentialsSection } from "./Credentials";
+import { GitSection } from "./Git";
 import { KeysSection } from "./Keys";
 import { LocalModelsSection } from "./LocalModels";
-import { LoopLimitsSection } from "./LoopLimits";
 import { ChainsSection } from "./Chains";
 import { ModelRolesSection } from "./ModelRoles";
 import { RawConfigSection } from "./RawConfig";
@@ -84,13 +85,6 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M5.6 4.6 8 2.2l2.4 2.4M5.6 11.4 8 13.8l2.4-2.4" />
     </Glyph>
   ),
-  limits: (
-    <Glyph>
-      <path d="M3.4 6.4A5 5 0 0 1 13 8" />
-      <path d="M12.6 9.6A5 5 0 0 1 3 8" />
-      <path d="M13 4.8V8h-3.2M3 11.2V8h3.2" />
-    </Glyph>
-  ),
   cost: (
     <Glyph>
       <path d="M2.2 13.2h11.6" />
@@ -101,6 +95,21 @@ const ICONS: Record<string, ReactNode> = {
     <Glyph>
       <circle cx="8" cy="8" r="6" />
       <path d="M8 4.7V8l2.3 1.4" />
+    </Glyph>
+  ),
+  credentials: (
+    <Glyph>
+      <rect x="2" y="4.2" width="12" height="8.6" rx="1.3" />
+      <path d="M2 7h12" />
+      <path d="M4.6 10.2h2.6" />
+    </Glyph>
+  ),
+  git: (
+    <Glyph>
+      <circle cx="4.5" cy="3.5" r="1.6" />
+      <circle cx="4.5" cy="12.5" r="1.6" />
+      <circle cx="11.5" cy="7" r="1.6" />
+      <path d="M4.5 5.1v5.8M10 8.2a5 5 0 0 1-5.5 2.7" />
     </Glyph>
   ),
   tools: (
@@ -183,36 +192,17 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
       {
         key: "chains",
         label: "Chains",
-        title: "Chains — the failover orders roles follow",
+        title: "Chains: the fallback orders roles follow",
         icon: ICONS.roles,
         Body: ChainsSection,
       },
       {
         key: "local-models",
         label: "Local models",
-        title: "Local models — Ollama",
         icon: ICONS.local,
         Body: LocalModelsSection,
       },
       { key: "keys", label: "Keys", icon: ICONS.keys, Body: KeysSection },
-    ],
-  },
-  {
-    label: "Runtime",
-    sections: [
-      {
-        key: "session-control",
-        label: "Session control",
-        title: "Session control — autosave, resume, compaction",
-        icon: ICONS.compact,
-        Body: SessionControlSection,
-      },
-      {
-        key: "loop-limits",
-        label: "Loop limits",
-        icon: ICONS.limits,
-        Body: LoopLimitsSection,
-      },
       {
         key: "cost",
         label: "Cost",
@@ -220,7 +210,19 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
         icon: ICONS.cost,
         Body: CostSection,
       },
+    ],
+  },
+  {
+    label: "Runtime",
+    sections: [
+      {
+        key: "session-control",
+        label: "Chat",
+        icon: ICONS.compact,
+        Body: SessionControlSection,
+      },
       { key: "tools", label: "Tools", icon: ICONS.tools, Body: ToolsSection },
+      { key: "git", label: "Git", icon: ICONS.git, Body: GitSection },
     ],
   },
   {
@@ -231,6 +233,13 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
         label: "System",
         icon: ICONS.system,
         Body: SystemSection,
+      },
+      {
+        key: "credentials",
+        label: "Credentials",
+        title: "Credentials: the assistant's own accounts",
+        icon: ICONS.credentials,
+        Body: CredentialsSection,
       },
       {
         key: "raw-config",

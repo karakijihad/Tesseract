@@ -39,15 +39,41 @@ _RUNTIME_LOCK_PREFIXES: tuple[str, ...] = (
 # entry alone would not have held — those apply to `file_write` only, so
 # `file_copy`/`file_move` could have overwritten it at their own ASK posture.
 # The lock has to live here, where all three write paths share it.
+#
+# `identity.yaml` joined it when the identity block left `mirror.yaml`: the
+# name, the gender and the wake phrase were unreachable while they lived in a
+# locked file, and relocating a decision must not quietly change it. The
+# operator writes them through Settings -> Identity or by hand.
 _LOCKED_CONFIG_FILES: frozenset[str] = frozenset({
     "config/permissions.yaml",
     "config/mirror.yaml",
     "config/mcp.yaml",
+    "config/identity.yaml",
 })
 
 _LOCKED_CONFIG_NAMES: frozenset[str] = frozenset(
     p.rsplit("/", 1)[-1] for p in _LOCKED_CONFIG_FILES
 )
+
+# The records the runtime learns from, and the assistant's own hands may not
+# touch, whatever `permissions.yaml` says. Every one is written in-process by
+# the runtime (the ledger, the usage logs, the agenda store, the event store,
+# the project registry), never through a tool, so nothing legitimate is lost.
+# What is lost is the one move a self-improving agent has been measured
+# making: scoring well by editing the record that scores it. `runtime/` is
+# here by name because, relative to the home tree, it is a decoy path a write
+# would create rather than the sibling tree the write boundary already seals.
+_RECORD_LOCK_PREFIXES: tuple[str, ...] = (
+    "runtime",
+    "agenda",
+    "logs/usage",
+    "logs/skills",
+    "logs/workspace",
+)
+_RECORD_LOCK_FILES: frozenset[str] = frozenset({
+    "logs/cost-tracking.jsonl",
+    "projects/registry.json",
+})
 
 
 def _resolve_for_check(path: str, state_root: Path) -> Path:
@@ -106,6 +132,11 @@ def _check_runtime_lockdown(resolved: Path) -> str | None:
         for prefix in _RUNTIME_LOCK_PREFIXES:
             if rel_posix == prefix or rel_posix.startswith(prefix + "/"):
                 return f"runtime-tree path locked: {rel_posix}"
+        if rel_posix in _RECORD_LOCK_FILES:
+            return f"record locked: {rel_posix}"
+        for prefix in _RECORD_LOCK_PREFIXES:
+            if rel_posix == prefix or rel_posix.startswith(prefix + "/"):
+                return f"record locked: {rel_posix}"
     return _locked_config_home_hit(resolved)
 
 
@@ -129,6 +160,7 @@ class FileWriteTool(Tool):
         "Use `file_copy` or `file_move` to relocate an existing file instead of "
         "reading and rewriting it."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -160,12 +192,19 @@ class FileWriteTool(Tool):
 
         reason = _check_runtime_lockdown(resolved)
         if reason is not None:
-            msg = (
-                f"{reason} — the assistant cannot grant itself permissions or "
-                "reconfigure the Mirror server. The operator edits these two "
-                "files by hand or in Settings; every other file under config/ "
-                "is writable at ASK."
-            )
+            if reason.startswith("record locked"):
+                msg = (
+                    f"{reason}. The runtime writes this record itself and reads "
+                    "it to decide what it learned and what it spent, so nothing "
+                    "the assistant does may edit it. Read it with file_read."
+                )
+            else:
+                msg = (
+                    f"{reason} — the assistant cannot grant itself permissions or "
+                    "reconfigure the Mirror server. The operator edits these two "
+                    "files by hand or in Settings; every other file under config/ "
+                    "is writable at ASK."
+                )
             try:
                 from tesseract.workspace_events.runtime_lock import emit_runtime_lock_deny
 
@@ -179,10 +218,10 @@ class FileWriteTool(Tool):
             return ToolResult(output=msg, is_error=True, denied_hard=True, deny_reason=msg)
 
         # Write to the path the permission layers actually evaluated. The
-        # `tesseract/`-prefixing normalizer and the state-dir redirect that
-        # used to sit here both existed to reconcile a code-tree anchor with
-        # home-anchored state; with one root for policy, validation and the
-        # write itself, there is nothing left to reconcile.
+        # `tesseract/`-prefixing normalizer and the state-dir redirect exist
+        # to reconcile a code-tree anchor with home-anchored state; with one
+        # root for policy, validation and the write itself, there is nothing
+        # left to reconcile.
         path = resolved
 
         try:
@@ -213,7 +252,7 @@ def _maybe_index_workshop_write(path: Path, state_root: Path) -> None:
 
     Synchronous: one MD/TXT file is microseconds of FTS5 inserts —
     not worth executor scheduling overhead. Matches the parallel
-    `session_store.index_conversation_file` hook. Silent on any failure:
+    `chat_content.index_conversation_file` hook. Silent on any failure:
     the write already succeeded; indexing is a downstream convenience
     and must never surface as a tool error.
     """
@@ -236,7 +275,8 @@ def _maybe_index_workshop_write(path: Path, state_root: Path) -> None:
         # `monkeypatch.setenv`; production uses the resolved constant
         # (`tesseract.paths.TESSERACT_HOME` already defaults to
         # `tesseract/` when the env var is unset). Same pattern as
-        # `index_conversation_file` in `session_store.py`.
+        # `index_conversation_file` in
+        # `mirror/server/chat_content.py`.
         home = Path(os.environ.get("TESSERACT_HOME") or _DEFAULT_HOME)
         db_path = home / "work_index.sqlite"
         idx = WorkIndex(db_path)

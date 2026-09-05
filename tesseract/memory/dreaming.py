@@ -18,7 +18,7 @@ from tesseract.memory.index import MemoryIndex
 from tesseract.memory.store import MemoryStore, extract_wikilinks
 from tesseract.memory.types import MemoryFrontmatter
 
-# Frontmatter marker formerly written by the mission engine's reflector
+# Frontmatter marker left by an older reflector
 # (mission engine deleted — prune wave 1). Historical records only: any
 # memory files already on disk with this source_type still promote
 # correctly; nothing produces new ones.
@@ -156,11 +156,10 @@ class DreamingEngine:
     def collect_reflection_promotions(self) -> list[MemoryFrontmatter]:
         """Return reflection-derived memory frontmatters not yet in MEMORY.md.
 
-        Historical records only (mission engine deleted — prune wave 1):
-        the now-removed ``mission_apply_reflection`` tool used to write
-        memories with ``source_type="mission_reflection"`` that bypassed
-        the recall-count / unique-queries gates. Any such memories already
-        on disk still promote correctly; nothing produces new ones.
+        Historical records only. Nothing writes
+        ``source_type="mission_reflection"`` any more, and the memories that
+        carry it bypassed the recall-count / unique-queries gates. The ones
+        already on disk still promote correctly.
         """
         indexed_ids = set(self._index.load_ids())
         out: list[MemoryFrontmatter] = []
@@ -320,7 +319,7 @@ class DreamingEngine:
     ) -> str:
         """Execute a dream task prompt via the given adapter.
 
-        Phase 4 — the scheduler resolves adapter + options via
+        The scheduler resolves adapter + options via
         ``router.resolve_for_task("dream")`` and passes them here.
         """
         from tesseract.kernel.adapters.base import ChunkType

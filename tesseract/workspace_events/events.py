@@ -4,15 +4,15 @@ Append-only JSONL under ``tesseract/logs/workspace/``:
 
 - ``events.jsonl``    — one row per event (proposal, approval-request, nudge,
                         autonomous post). Status mutates in-place via
-                        rewrite (the file is small enough — Phase 2 may
-                        switch to a status-overlay JSONL if it grows).
+                        rewrite (the file is small enough; a
+                        status-overlay JSONL would suit a bigger one).
 - ``comments.jsonl``  — one row per operator comment OR the assistant reply.
 - ``seen.json``       — ``{"inbox": iso_ts, "stream": iso_ts}`` last-seen
                         markers; persisted so badge counts survive backend
                         restart, not just browser reload.
 
-The store is intentionally tiny. Phase 1's Inbox is the only consumer;
-Phase 2's Stream reads the same events.jsonl with a kind-filter.
+The store is intentionally tiny. The Inbox is its only consumer; a
+Stream view would read the same events.jsonl with a kind-filter.
 
 Concurrency: append + rewrite paths take both a per-instance
 ``threading.Lock`` (intra-process) AND a cross-process advisory file
@@ -50,17 +50,48 @@ EventKind = Literal[
     "nudge",                     # generic operator-attention request
     "agent_post",                 # the assistant chose to post (workspace_post)
     "operator_post",             # operator-initiated thread (scratchpad, button, voice, hotkey)
-    "daily_brief",               # MO-9-14 — newsletter card with per-pillar world section; reactions feed interests profile
-    "yaml_change_proposal",      # MO-10-2 — knowledge-keeper proposes a catalog edit; apply path mutates the YAML on approve
-    "kb_merge_conflict",         # MO-10-1 — refresher + operator edited the same paragraph; KB file untouched, operator resolves
-    "recovery_summary",          # AU-2 — RecoveryManager emits one per boot with per-scan counts + operator_attention list
-    "vault_raw_ingest_batch",    # AU-22 — VaultRawWatchJob bundles ASK-routed files; approve runs vault_ingest per file
-    "clarification",             # AU-19 — agent asks the operator a question via async workspace thread; operator answers in comments
-    "strategist_summary",        # AU-23 — weekly initiative curator one-shot summary of all emitted Initiative items
+    "daily_brief",               # Newsletter card: prose notes and the vault list, each section reading a store this machine owns
+    "yaml_change_proposal",      # Knowledge-keeper proposes a catalog edit; apply path mutates the YAML on approve
+    "kb_merge_conflict",         # Refresher + operator edited the same paragraph; KB file untouched, operator resolves
+    "recovery_summary",          # RecoveryManager emits one per boot with per-scan counts + operator_attention list
+    "vault_raw_ingest_batch",    # VaultRawWatchJob bundles ASK-routed files; approve runs vault_ingest per file
+    "clarification",             # Agent asks the operator a question via async workspace thread; operator answers in comments
+    "strategist_summary",        # Weekly initiative curator one-shot summary of all emitted Initiative items
     "runtime_lock_deny",         # SU-1/SU-5 — file_write or bash attempted to mutate a locked runtime path or config yaml; operator-visible audit surface
-    "skill_approval",            # Phase 4 (capability-growth) — skill_create drafted a skill into quarantine; approve promotes, reject archives (mirror agent_approval)
-    "skill_refinement",          # Phase 4 (capability-growth) — refinement job flags an underperforming skill + proposes a revised body; approve applies the diff to the live SKILL.md
+    "skill_approval",            # skill_create drafted a skill into quarantine; approve promotes, reject archives (mirror agent_approval)
+    "skill_refinement",          # refinement job flags an underperforming skill + proposes a revised body; approve applies the diff to the live SKILL.md
 ]
+
+
+#: The kinds that carry a decision the operator has to make: every one of them
+#: is something `routes/workspace.py::apply_decision` accepts an approve or a
+#: reject for. Declared here beside `EventKind` rather than in whichever
+#: surface asked first, because two answers to "what is waiting on you" is how
+#: one surface starts under-reporting: `/queue` counted `agent_post`, the one
+#: inbox kind that asks for nothing, and every pending soul edit went missing
+#: from the only view a phone had.
+DECIDABLE_KINDS: tuple[str, ...] = (
+    "agent_approval",
+    "skill_approval",
+    "skill_refinement",
+    "working_set_proposal",
+    "change_proposal",
+    "soul_proposal",
+    "feedback_proposal",
+    "yaml_change_proposal",
+    "vault_raw_ingest_batch",
+    "kb_merge_conflict",
+    "clarification",
+    "nudge",
+)
+
+#: What an event's status says once it has been decided. Anything else is still
+#: open, which is the safe way round: a kind that grows a new terminal status
+#: over-reports by one until this list learns it, where the opposite silently
+#: hides work.
+SETTLED: frozenset[str] = frozenset(
+    {"approved", "rejected", "applied", "resolved", "deleted", "closed"}
+)
 
 EventStatus = Literal["pending", "approved", "rejected", "resolved", "applied", "deleted"]
 EventSource = Literal[
@@ -68,17 +99,16 @@ EventSource = Literal[
     "feedback_sweep",
     "orchestrator",
     "operator",
-    "daily_brief",               # MO-9-14 — BriefRenderer write fan-out
-    "knowledge_keeper",          # MO-10-1/2 — KB refresher + yaml_change_proposal emitter
-    "recovery",                  # AU-2 — boot-time RecoveryManager
+    "daily_brief",               # BriefRenderer write fan-out
+    "knowledge_keeper",          # KB refresher + yaml_change_proposal emitter
+    "recovery",                  # Boot-time RecoveryManager
     # Anything the assistant itself emits: workspace posts, clarification
-    # questions, self-direction proposals, skill and soul drafts. This used
-    # to be two members — one named after the persona, one for AU-19's
-    # agent-authored items — but nothing ever discriminated between them,
-    # and both mean the same actor.
+    # questions, self-direction proposals, skill and soul drafts. One
+    # member, not two: a persona-named one and an agent-authored one mean
+    # the same actor and nothing ever discriminated between them.
     "agent",
-    "strategist",                # AU-23 — autonomy strategist (initiative curator)
-    "security",                  # SU-1/SU-5 — runtime_lock_deny emissions from file_write + bash_security
+    "strategist",                # Autonomy strategist (initiative curator)
+    "security",                  # runtime_lock_deny emissions from file_write + bash_security
 ]
 OperatorPostSource = Literal["button", "scratchpad", "voice", "hotkey", "telegram"]
 Author = Literal["operator", "agent"]
@@ -216,8 +246,8 @@ class WorkspaceComment:
 class EventStore:
     """Append-only event/comment store under ``logs_dir / 'workspace'``.
 
-    Reads scan the file each call. The volume is tiny (Inbox is curated;
-    Phase 1 will see <100 events/week) and re-scan is simpler than an
+    Reads scan the file each call. The volume is tiny (the Inbox is
+    curated, well under 100 events a week) and re-scan is simpler than an
     in-memory index that has to stay coherent with mutations.
     """
 
@@ -324,11 +354,11 @@ class EventStore:
             result = [ev for ev in result if ev.kind in kinds]
         if status is not None:
             result = [ev for ev in result if ev.status == status]
-        # Newest first, and only that. Priority used to be the primary key,
-        # which buried a note written minutes ago under a day of `p=8`
-        # recovery_summary boots — the inbox stopped reading like an inbox.
-        # Priority is still carried on the event and the panel badges it;
-        # what it no longer does is decide where a row sits.
+        # Newest first, and only that. Priority as the primary key buries a
+        # note written minutes ago under a day of `p=8` recovery_summary
+        # boots, and the inbox stops reading like an inbox. Priority is
+        # carried on the event and the panel badges it; it does not decide
+        # where a row sits.
         result.sort(key=lambda e: e.ts, reverse=True)
         return result[:limit]
 
@@ -343,6 +373,19 @@ class EventStore:
         thread = [c for c in rows if c.event_id == event_id]
         thread.sort(key=lambda c: c.ts)
         return thread
+
+    def list_all_comments(self, *, limit: int = 400) -> list[WorkspaceComment]:
+        """Every comment, newest first, whoever wrote it.
+
+        `list_comments` answers about one thread, which cannot serve a reader
+        asking what was said across the whole stream in a window. The daily
+        brief needs that, and reaching `_read_comments` from another module
+        would put a second reader of this file outside the class that owns
+        its format.
+        """
+        rows = self._read_comments()
+        rows.sort(key=lambda c: c.ts, reverse=True)
+        return rows[:limit]
 
     def get_comment(self, comment_id: str) -> WorkspaceComment | None:
         """Return the comment with `comment_id`, or None.
@@ -543,7 +586,7 @@ class EventStore:
         yaml_path: str,
         kind_origin: str,
     ) -> bool:
-        """MO-10-2 §2f — emit-time dedup helper.
+        """Emit-time dedup helper.
 
         Returns True when the inbox already carries a pending
         ``yaml_change_proposal`` matching the given target_path /

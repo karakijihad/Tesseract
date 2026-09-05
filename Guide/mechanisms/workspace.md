@@ -41,4 +41,4 @@ learned about you are sent to whichever model answers your turn, because
 that is how the assistant knows any of it. If a role points at a hosted
 model, that provider sees them. Point the role at a local model and it does
 not. Which model answers is yours to choose — see
-[Models and roles](../reference/models-and-roles.md).
+[Models and roles](/reference/models-and-roles/).

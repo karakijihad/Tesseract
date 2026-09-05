@@ -117,6 +117,14 @@ EXCLUDE_PATH_GLOBS = (
     "tesseract/memory-store/*.md",
     "tesseract/vault/*.md",
     "tesseract/workshop/*.md",
+    # The agents overlay. Unlike the four above, the cards themselves DO ship
+    # from the raw copy — tracking is what says which are the app's, and they
+    # live in subdirectories the flat template pattern cannot reach. Only the
+    # ROSTER is folded: `tesseract/agents/_shipping/INDEX.md` becomes the
+    # shipped `INDEX.md` in `build_production_tree.build`, so the list a user's
+    # app reads names the cards it actually has, and a card written in a dev
+    # checkout is absent from it rather than advertised to every install.
+    "tesseract/agents/_shipping/*",
 )
 
 # Nothing. The shipped tree is `app/` — sealed, replaced wholesale by every

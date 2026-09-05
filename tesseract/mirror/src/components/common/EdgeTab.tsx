@@ -9,6 +9,9 @@ interface EdgeTabProps {
   side: EdgeTabSide;
   /** Required — the tab is a glyph, so this is the only name it has. */
   ariaLabel: string;
+  /** Cling to the nearest positioned ancestor's edge instead of the window's,
+   *  for a rail that lives inside a panel rather than filling the screen. */
+  inset?: boolean;
 }
 
 /** A hidden surface's way back, clinging to the edge it went behind.
@@ -18,11 +21,11 @@ interface EdgeTabProps {
  * as its own comment says. One idea, one control: it reappears from its own
  * edge rather than from a button parked somewhere else.
  */
-export function EdgeTab({ children, onClick, side, ariaLabel }: EdgeTabProps) {
+export function EdgeTab({ children, onClick, side, ariaLabel, inset = false }: EdgeTabProps) {
   return (
     <button
       type="button"
-      className={`edge-tab edge-tab--${side}`}
+      className={`edge-tab edge-tab--${side}${inset ? " edge-tab--inset" : ""}`}
       onClick={onClick}
       aria-label={ariaLabel}
     >

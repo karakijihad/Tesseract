@@ -1,16 +1,18 @@
-// AU-2 — minimal Recovery pane.
+// The last recovery pass, and what it reconciled.
 //
-// Renders the last RecoveryManager pass: boot id, per-scan counts,
-// operator_attention list. Pulls data
-// from `runtimeStatus.last_recovery` so the caller is just a polled
-// snapshot — no separate fetch from this component.
+// What the runtime found half-finished when it came back up: conversations cut
+// mid answer, scheduled runs that never reported, agenda items left in flight.
+// One band of state lines, like every room on this panel, and the things that
+// want the operator are their own band above the counts.
 //
-// AU-7 (the full Autonomy Dashboard) embeds this pane in its parent
-// shell. For S2 it's surfaced inside the Settings Runtime section so
-// the operator can see recovery state today without waiting for AU-7.
+// Rendered in two places, which is why it takes its summary as a prop rather
+// than fetching: the Autonomy panel's Recent outcomes room, and the Settings
+// Runtime section.
 
-import { Block } from '../../components/common/Block';
 import React from 'react';
+import { Band, StateStrip, type StateLine } from '../../components/common/StateStrip';
+import { Note } from '../../components/common/Note';
+import { formatRelative } from '../../lib/time';
 
 export interface RecoveryScans {
   [scan: string]: { [bucket: string]: number };
@@ -35,87 +37,88 @@ export interface RecoveryPaneProps {
   recoveryState: 'recovering' | 'ready';
 }
 
+// What each scan looked at, in the operator's words rather than the scanner's
+// own name. A scan with no words is shown under its own name rather than
+// hidden, so a new one appears here without anybody editing this.
+const SCAN_LABEL: Record<string, string> = {
+  turns: 'conversations',
+  schedule: 'scheduled runs',
+  workers: 'workers',
+  agenda: 'agenda items',
+};
 
-function bucketCells(scans: RecoveryScans, scan: string): { label: string; count: number }[] {
-  const block = scans[scan] || {};
-  return Object.entries(block).map(([label, count]) => ({ label, count }));
+/** What one scan found, as a sentence. Empty when it found nothing, so a scan
+ *  with nothing to report is not drawn at all. */
+function found(buckets: { [bucket: string]: number }): string {
+  return Object.entries(buckets)
+    .filter(([, count]) => count > 0)
+    .map(([bucket, count]) => `${count} ${bucket.replace(/_/g, ' ')}`)
+    .join(', ');
 }
 
-
-function nonEmpty(scans: RecoveryScans, scan: string): boolean {
-  return bucketCells(scans, scan).some((c) => c.count > 0);
-}
-
-
-function fmtTimeAgo(iso: string | null): string {
-  if (!iso) return '—';
-  const parsed = Date.parse(iso);
-  if (Number.isNaN(parsed)) return '—';
-  const seconds = Math.max(0, (Date.now() - parsed) / 1000);
-  if (seconds < 90) return `${Math.round(seconds)}s ago`;
-  if (seconds < 5400) return `${Math.round(seconds / 60)}m ago`;
-  if (seconds < 90000) return `${Math.round(seconds / 3600)}h ago`;
-  return `${Math.round(seconds / 86400)}d ago`;
-}
-
-
-export function RecoveryPane({ summary, recoveryState }: RecoveryPaneProps): React.ReactElement {
+export function RecoveryPane({
+  summary,
+  recoveryState,
+}: RecoveryPaneProps): React.ReactElement {
   if (recoveryState === 'recovering') {
     return (
-      <Block title="Recovery in progress" tone="warn">
-        <p className="t-meta">RecoveryManager is reconciling boot-time state. Heartbeat suspended; /api/health returns 503 until ready.</p>
-      </Block>
+      <Note tone="warn">
+        The runtime is still reconciling what it found at boot. Its heartbeat is
+        suspended until that finishes, so anything asking whether it is healthy
+        is told no.
+      </Note>
     );
   }
   if (!summary || !summary.boot_id) {
     return (
-      <Block title="Recovery">
-        <p className="t-meta">No recovery pass recorded in this backend lifetime yet.</p>
-      </Block>
+      <p className="t-meta">
+        This backend has not recovered anything since it started.
+      </p>
     );
   }
 
   const attn = summary.operator_attention;
-  const hasSchedule = nonEmpty(summary.scans, 'schedule');
+  const scans: StateLine[] = Object.entries(summary.scans)
+    .map(([scan, buckets]) => ({ scan, said: found(buckets) }))
+    .filter((s) => s.said)
+    .map(({ scan, said }) => ({
+      key: `scan:${scan}`,
+      // Reconciling is the runtime working, not a fault. What wants the
+      // operator is in the band above, and it says so itself.
+      state: 'idle' as const,
+      label: 'reconciled',
+      name: SCAN_LABEL[scan] ?? scan.replace(/_/g, ' '),
+      said,
+    }));
 
   return (
-    <Block title="Last recovery" meta={<>boot {summary.boot_id.slice(-9)} · {fmtTimeAgo(summary.started_at)}</>} tone={attn.length ? "warn" : "default"}>
-
-      {hasSchedule && (
-        <dl className="recovery-scans">
-          <dt>Schedule (24h)</dt>
-          <dd>
-            {bucketCells(summary.scans, 'schedule')
-              .filter((c) => c.count > 0)
-              .map((c) => `${c.count} ${c.label}`)
-              .join(' · ')}
-          </dd>
-        </dl>
-      )}
-
+    <>
       {attn.length > 0 && (
-        <div className="recovery-attention">
-          <div className="recovery-attention__title">
-            Operator attention ({attn.length})
-          </div>
-          <ul className="recovery-attention__list">
-            {attn.slice(0, 6).map((a, i) => (
-              <li key={`${a.kind}-${a.id}-${i}`}>
-                <span className="recovery-attention__kind">{a.kind}</span>
-                <code>{a.id}</code>
-                <span className="t-meta">{a.reason}</span>
-              </li>
-            ))}
-            {attn.length > 6 && (
-              <li className="t-meta">…{attn.length - 6} more (see recovery_summary event in workspace)</li>
-            )}
-          </ul>
+        <div className="autonomy-group">
+          <Band label="Left half-finished for you" count={attn.length} />
+          <StateStrip
+            lines={attn.map((a, i) => ({
+              key: `${a.kind}:${a.id}:${i}`,
+              state: 'pending' as const,
+              label: 'waiting on you',
+              name: a.kind.replace(/_/g, ' '),
+              said: a.reason,
+              value: a.id,
+            }))}
+          />
         </div>
       )}
 
-      {!attn.length && (
-        <p className="t-meta">Clean boot — no in-flight state required operator attention.</p>
-      )}
-    </Block>
+      <div className="autonomy-group">
+        <Band label="What the last boot reconciled" count={scans.length} />
+        {scans.length === 0 ? (
+          <p className="t-meta">
+            A clean boot. Nothing was left half-finished, {formatRelative(summary.started_at)}.
+          </p>
+        ) : (
+          <StateStrip lines={scans} />
+        )}
+      </div>
+    </>
   );
 }

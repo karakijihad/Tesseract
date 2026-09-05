@@ -385,15 +385,14 @@ def wanted_extras(profile: Profile, cfg: HardwareConfig) -> list[str]:
     never run costs ~2 GB and buys nothing, and it breaks the form's promise
     that declining a lane costs nothing.
 
-    **Nobody is asked about acceleration, and that is the design.** The form
-    used to carry a "GPU acceleration" row, and it could not be made honest:
-    acceleration has no switch of its own because `hardware.yaml` already
-    declares what each extra is FOR (`extra_consumers`), and those consumers
-    are the engines the operator chooses one screen earlier. Asking again
-    produced a row that could contradict the choice behind it — and, for a
-    while, a row that did nothing at all. Choosing an engine on a machine with
-    a card IS the answer, so this function derives it and no ledger entry,
-    no marker and no separate consent path is involved.
+    **Nobody is asked about acceleration, and that is the design.** A "GPU
+    acceleration" row cannot be made honest: acceleration has no switch of its
+    own because `hardware.yaml` already declares what each extra is FOR
+    (`extra_consumers`), and those consumers are the engines the operator
+    chooses one screen earlier. Asking again produces a row that contradicts
+    the choice behind it. Choosing an engine on a machine with a card IS the
+    answer, so this function derives it and no ledger entry, no marker and no
+    separate consent path is involved.
 
     A providers.yaml that cannot be read yields the profile's extras
     unchanged: this is an optimisation, and failing to read config is not a

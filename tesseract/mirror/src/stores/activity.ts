@@ -19,6 +19,10 @@ export interface ActivityRecord {
   parent_session_id: string | null;
   transcript_ref: string | null;
   result?: string | null; // terminal outcome summary — the error detail for a `failed` chip
+  // Set on a delegate that runs its work on an ephemeral lane. That lane has
+  // an activity record of its own, and the two are one unit of work, so this
+  // is what `records()` collapses the pair on.
+  lane_id?: string | null;
   started_at: string;
   updated_at: string;
 }
@@ -34,6 +38,12 @@ export const RUNNING_STATUSES = new Set([
 ]);
 export const isRunningStatus = (state: string): boolean =>
   RUNNING_STATUSES.has(state);
+
+// "lane:abc" -> "abc". Activity ids are kind-scoped; `lane_id` is bare.
+function bareId(activityId: string): string {
+  const i = activityId.indexOf(":");
+  return i >= 0 ? activityId.slice(i + 1) : activityId;
+}
 
 interface ActivityState {
   byId: Record<string, ActivityRecord>;
@@ -83,18 +93,31 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
 
   clear: () => set({ byId: {} }),
 
-  records: () =>
-    Object.values(get().byId).sort((a, b) => {
-      const ra = isRunningStatus(a.state) ? 0 : 1;
-      const rb = isRunningStatus(b.state) ? 0 : 1;
-      if (ra !== rb) return ra - rb;
-      return a.updated_at < b.updated_at
-        ? 1
-        : a.updated_at > b.updated_at
-          ? -1
-          : 0;
-    }),
+  records: () => {
+    const all = Object.values(get().byId);
+    // A delegation and the ephemeral lane it runs on are the same work under
+    // two ids, and used to list twice. The delegate row wins: it carries the
+    // task text as its label and the outcome as its result, and `openActivity`
+    // sends it to the lane's own card, so nothing is lost with the lane row.
+    const claimed = new Set(
+      all.map((r) => r.lane_id).filter((id): id is string => Boolean(id)),
+    );
+    return all
+      .filter((r) => !(r.kind === "lane" && claimed.has(bareId(r.activity_id))))
+      .sort((a, b) => {
+        const ra = isRunningStatus(a.state) ? 0 : 1;
+        const rb = isRunningStatus(b.state) ? 0 : 1;
+        if (ra !== rb) return ra - rb;
+        return a.updated_at < b.updated_at
+          ? 1
+          : a.updated_at > b.updated_at
+            ? -1
+            : 0;
+      });
+  },
 
   runningCount: () =>
-    Object.values(get().byId).filter((r) => isRunningStatus(r.state)).length,
+    get()
+      .records()
+      .filter((r) => isRunningStatus(r.state)).length,
 }));

@@ -1,12 +1,7 @@
+import { ENVELOPE_CATEGORIES } from './types';
 import type { Envelope } from './types';
 
-const VALID_CATEGORIES = new Set<string>([
-  'loop', 'session', 'planning', 'routing', 'execution',
-  'offlocal', 'cli', 'terminal', 'sandbox', 'error', 'background', 'entity',
-  'command_result', 'command', 'workspace', 'agenda', 'workers',
-  'governor', 'schedule', 'voice', 'cost', 'canvas', 'activity',
-  'chat', 'controller', 'other',
-]);
+const VALID_CATEGORIES = new Set<string>(ENVELOPE_CATEGORIES);
 
 export function isEnvelope(x: unknown): x is Envelope {
   if (typeof x !== 'object' || x === null) return false;
@@ -16,7 +11,7 @@ export function isEnvelope(x: unknown): x is Envelope {
   if (typeof (x as any).session_id !== 'string') return false;
   if (typeof (x as any).timestamp !== 'string') return false;
   if ('payload' in (x as any)) {
-    console.warn('envelope uses payload not data — backend regression?');
+    console.warn('envelope uses payload not data, which looks like a backend regression');
   }
   return true;
 }

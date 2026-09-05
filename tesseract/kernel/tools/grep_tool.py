@@ -3,8 +3,8 @@
 Concurrent-safe, read-only. Spawns `rg` as a subprocess; cancel_event
 triggers proc.terminate() for instant interrupt.
 
-Two numbers in the summary line used to be untrue, which matters because the
-summary is what a caller reads before deciding whether to look further:
+Two numbers in the summary line are easy to get wrong, and the summary is
+what a caller reads before deciding whether to look further:
 
 - `max_results` was passed to `--max-count`, which bounds matches PER FILE,
   and the header then printed the truncated line count as though it were the
@@ -27,7 +27,11 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
-from tesseract.kernel.tools._path_anchor import ReadPathRefused, anchor_read_path
+from tesseract.kernel.tools._path_anchor import (
+    ReadPathRefused,
+    anchor_read_path,
+    not_found_message,
+)
 from tesseract.paths import secret_exclusion_globs
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
 
@@ -88,12 +92,40 @@ def classify_line(line: str, search_root: str) -> tuple[str, str | None]:
     return "unknown", None
 
 
-def summarise(raw: str, search_root: str, max_results: int) -> tuple[str, list[str], dict]:
+# The smallest slice of a line worth showing. A per-line share of `max_chars`
+# works out tiny when the caller asks for many results, and a two-character
+# fragment tells a reader nothing about what matched.
+_MIN_LINE_CHARS = 200
+
+
+def _bound_line(line: str, limit: int) -> tuple[str, bool]:
+    """One output line cut to `limit` characters, and whether it was cut."""
+    if len(line) <= limit:
+        return line, False
+    return (
+        line[:limit] + f" [line cut at {limit:,} of {len(line):,} characters]",
+        True,
+    )
+
+
+def summarise(
+    raw: str,
+    search_root: str,
+    max_results: int,
+    max_chars: int = 0,
+) -> tuple[str, list[str], dict]:
     """Turn ripgrep's stdout into (header, lines_to_show, metadata).
 
-    Pure — no subprocess, no filesystem — so the reporting logic that used to
-    be reachable only through a machine-local ripgrep binary can be tested
-    directly. It previously could not be, and both of its numbers were wrong.
+    `max_chars` is the ceiling on the whole result, and 0 means no ceiling.
+    It exists because `max_results` bounds how MANY lines come back and says
+    nothing about how long one may be. A file holding one record per line,
+    which is what `.jsonl` means, can put 1.3 million characters on a single
+    line, and 250 of those made a 44 MB result no model could be sent. Each
+    line is cut to a share of the ceiling first, so one enormous line cannot
+    spend the whole budget and hide the other 249.
+
+    Pure. No subprocess, no filesystem, so the reporting logic is testable
+    directly rather than only through a machine-local ripgrep binary.
     """
     lines = raw.split("\n") if raw else []
 
@@ -110,13 +142,46 @@ def summarise(raw: str, search_root: str, max_results: int) -> tuple[str, list[s
             unknown += 1
 
     shown = lines[:max_results]
+    over_line_cap = len(lines) > len(shown)
+    lines_cut = 0
+    dropped_for_size = 0
+    if max_chars > 0:
+        per_line = max(_MIN_LINE_CHARS, max_chars // max(1, max_results))
+        bounded: list[str] = []
+        spent = 0
+        for i, line in enumerate(shown):
+            text, was_cut = _bound_line(line, per_line)
+            if spent + len(text) > max_chars:
+                dropped_for_size = len(shown) - i
+                break
+            bounded.append(text)
+            spent += len(text) + 1
+            lines_cut += int(was_cut)
+        shown = bounded
+
     match_word = "match" if total_matches == 1 else "matches"
     file_word = "file" if len(files) == 1 else "files"
     header = f"{total_matches} {match_word} in {len(files)} {file_word}"
-    if len(lines) > len(shown):
-        header += f" — showing the first {len(shown)} lines (display cap: max_results={max_results})"
+    if over_line_cap:
+        header += (
+            f". Showing the first {max_results} lines "
+            f"(display cap: max_results={max_results})"
+        )
+    if lines_cut:
+        header += (
+            f". {lines_cut} long line(s) were cut to fit max_chars={max_chars:,}. "
+            "Search a narrower path, or raise max_chars, to read them whole"
+        )
+    if dropped_for_size:
+        header += (
+            f". The last {dropped_for_size} line(s) are missing because the "
+            f"result reached max_chars={max_chars:,}"
+        )
     if unknown:
-        header += f" — WARNING: {unknown} output line(s) could not be attributed to a file, so the total may undercount"
+        header += (
+            f". WARNING: {unknown} output line(s) could not be attributed to a "
+            "file, so the total may undercount"
+        )
 
     return (
         header,
@@ -124,8 +189,10 @@ def summarise(raw: str, search_root: str, max_results: int) -> tuple[str, list[s
         {
             "total_matches": total_matches,
             "files_with_matches": len(files),
-            "truncated": len(lines) > len(shown),
+            "truncated": over_line_cap or bool(dropped_for_size),
             "unattributed_lines": unknown,
+            "lines_cut_for_size": lines_cut,
+            "lines_dropped_for_size": dropped_for_size,
         },
     )
 
@@ -143,6 +210,18 @@ class GrepInput(BaseModel):
             "Maximum number of matches to DISPLAY. The reported total is the "
             "true match count; output beyond this is summarised, not dropped "
             "silently."
+        ),
+    )
+    max_chars: int = Field(
+        default=20_000,
+        ge=0,
+        le=2_000_000,
+        description=(
+            "Ceiling on the size of the whole result, in characters. 0 means "
+            "no ceiling and hands back everything that matched, which is only "
+            "safe when you already know the files are ordinary text: a search "
+            "over machine formats that hold one record per line has returned "
+            "44 MB from 250 lines. Raise it when a match is being cut short."
         ),
     )
 
@@ -165,13 +244,16 @@ def _resolve_rg() -> str | None:
     return None
 
 
+DEFAULT_GLOB = "**/*"
+
+
 def _translate_glob(glob: str) -> str:
     """Translate Pythonic glob to rg-friendly form.
 
     `**/*` matches all files by default in rg; drop the prefix.
     Anything else passes through — rg's glob syntax is a superset.
     """
-    return "*" if glob == "**/*" else glob
+    return "*" if glob == DEFAULT_GLOB else glob
 
 
 class GrepTool(Tool):
@@ -183,12 +265,13 @@ class GrepTool(Tool):
     summary: ClassVar[str] = "Search file contents for a regex pattern via ripgrep."
     use_when: ClassVar[str] = (
         "You want the matching lines, with file and line number, rather than "
-        "a whole file — the header reports the true match and file totals even when truncated."
+        "a whole file. The header reports the true match and file totals even when truncated."
     )
     not_when: ClassVar[str] = (
         "Use `file_read` once you know which file and want its full contents, "
         "or `glob` when you want paths rather than contents."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -219,7 +302,9 @@ class GrepTool(Tool):
         except ReadPathRefused as exc:
             return ToolResult(output=str(exc), is_error=True)
         if not search_path.exists():
-            return ToolResult(output=f"Path not found: {search_path}", is_error=True)
+            return ToolResult(
+                output=not_found_message("Path", inp.path, search_path), is_error=True
+            )
 
         argv: list[str] = [
             rg,
@@ -227,13 +312,20 @@ class GrepTool(Tool):
             "--with-filename",
             "--color=never",
             "--no-heading",
-            "--glob", _translate_glob(inp.glob),
         ]
-        # ripgrep skips hidden and gitignored files by default, which already
-        # covers `.env` — but that is someone else's default, not this tool's
-        # decision, and it would stop holding the moment anyone adds `--hidden`
-        # or `--no-ignore` here. Stated explicitly so the guarantee survives
-        # that edit. Later globs win in rg, so these follow the caller's.
+        # A `--glob` takes precedence over ignore files in rg, so sending the
+        # default `**/*` did not mean "no filter": it whitelisted everything
+        # and put every gitignored path back in scope. Measured on this repo,
+        # one phrase went from 0 hits under `.trio/` to 339, and the result
+        # reached 44 MB because those files hold one record per line. Send a
+        # glob only when the caller narrowed to one, and let rg honour the
+        # ignore rules the rest of the time.
+        if inp.glob != DEFAULT_GLOB:
+            argv += ["--glob", _translate_glob(inp.glob)]
+        # `.env` is covered by the exclusions below rather than by rg's own
+        # defaults, which are someone else's decision and would stop holding
+        # the moment anyone adds `--hidden` or `--no-ignore` here. Later globs
+        # win in rg, so these follow the caller's.
         #
         # `--iglob`, not `--glob`: rg matches globs case-sensitively, while
         # `is_secret_filename` casefolds and NTFS preserves case. A file the
@@ -279,5 +371,7 @@ class GrepTool(Tool):
             return ToolResult(output=err, is_error=True)
 
         raw = stdout.decode("utf-8", errors="replace").rstrip("\n")
-        header, shown, metadata = summarise(raw, str(search_path), inp.max_results)
+        header, shown, metadata = summarise(
+            raw, str(search_path), inp.max_results, inp.max_chars
+        )
         return ToolResult(output=header + "\n" + "\n".join(shown), metadata=metadata)

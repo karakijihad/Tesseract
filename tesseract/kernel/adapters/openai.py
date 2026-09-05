@@ -18,7 +18,9 @@ import json
 import logging
 from typing import Any, AsyncGenerator
 
+from tesseract.kernel.adapters._estimate import tokens_from_chars
 from tesseract.kernel.adapters.base import (
+    CACHE_BOUNDARY,
     AdapterOptions,
     ChunkType,
     ErrorKind,
@@ -58,14 +60,32 @@ _RESPONSES_TRANSIENT_CODES = frozenset({
 })
 
 
-def _usage_raw(usage: Any, in_field: str, out_field: str, details_field: str) -> dict[str, int]:
+def _usage_raw(
+    usage: Any,
+    in_field: str,
+    out_field: str,
+    in_details_field: str,
+    out_details_field: str,
+) -> dict[str, int]:
     """Normalise a usage object into the shape STOP carries to the ledger.
 
     Four call sites — streamed and one-shot, Chat Completions and Responses —
-    apply the same three rules to two different sets of field names. Kept in
-    one place so a correction lands on all four: the one-shot paths were added
-    by copying the streamed extraction, and a rule applied to one twin and
-    missed on the other is how the `TOOL_CALL_START` gap happened.
+    apply the same rules to two different sets of field names. Kept in one
+    place so a correction lands on all four: the one-shot paths were added by
+    copying the streamed extraction, and a rule applied to one twin and missed
+    on the other is how the `TOOL_CALL_START` gap happened.
+
+    **A key the provider did not send is absent, never zero.** The ledger
+    cannot otherwise tell a model that reports no cache from one that reported
+    a cache and used none of it, and that distinction is what says whether a
+    missing charge is a provider fact or a gap in this function. It was a gap
+    here: cache reads were the only detail read, so 236M cached tokens went by
+    without one recorded cache write, and the surcharge term in `_compute_usd`
+    was never once exercised on the model doing nearly all the caching.
+
+    Reasoning tokens are read but not separately billed: on the Responses API
+    they are already inside `output_tokens`. Recording the split is how a
+    reasoning-heavy role can be told apart from a verbose one on the same row.
     """
     if not usage:
         return {}
@@ -73,19 +93,36 @@ def _usage_raw(usage: Any, in_field: str, out_field: str, details_field: str) ->
         "input_tokens": getattr(usage, in_field, 0) or 0,
         "output_tokens": getattr(usage, out_field, 0) or 0,
     }
-    details = getattr(usage, details_field, None)
-    cached = getattr(details, "cached_tokens", None) if details else None
-    if cached is not None:
-        out["cached_tokens"] = int(cached)
+    for field, source, key in (
+        ("cached_tokens", in_details_field, "cached_tokens"),
+        ("cache_creation_tokens", in_details_field, "cache_creation_tokens"),
+        ("reasoning_tokens", out_details_field, "reasoning_tokens"),
+    ):
+        details = getattr(usage, source, None)
+        value = getattr(details, key, None) if details else None
+        if value is not None:
+            out[field] = int(value)
     return out
 
 
 def _chat_usage(usage: Any) -> dict[str, int]:
-    return _usage_raw(usage, "prompt_tokens", "completion_tokens", "prompt_tokens_details")
+    return _usage_raw(
+        usage,
+        "prompt_tokens",
+        "completion_tokens",
+        "prompt_tokens_details",
+        "completion_tokens_details",
+    )
 
 
 def _responses_usage(usage: Any) -> dict[str, int]:
-    return _usage_raw(usage, "input_tokens", "output_tokens", "input_tokens_details")
+    return _usage_raw(
+        usage,
+        "input_tokens",
+        "output_tokens",
+        "input_tokens_details",
+        "output_tokens_details",
+    )
 
 
 def _chat_stop_reason(finish_reason: str) -> str:
@@ -119,24 +156,271 @@ def _classify_responses_error_code(code: str | None, msg: str) -> ErrorKind:
     return ErrorKind.UNKNOWN
 
 
-def _cache_key_from_system(system_text: str) -> str:
-    """Stable 16-hex cache-routing key derived from the system prompt.
-
-    Identical system prompts across requests → identical key → OpenAI
-    routes requests to the same cache node → prefix reuse.
-    """
-    if not system_text:
-        return ""
-    return hashlib.sha1(system_text.encode("utf-8")).hexdigest()[:16]
-
-
-# Chars of system prompt hashed into the cache-routing header value. Only
-# the PREFIX is hashed: the assembled prompt ends with an ephemeral
-# "Right now" block (minute-level local time), so a full-text hash would
-# change every minute and route each turn to a different cache node —
-# exactly the miss pattern the header exists to prevent. The first 2k
-# chars are the static IDENTITY head, stable across turns and sessions.
+# Chars of the system prompt that decide which cache a request is routed to.
+# Only the HEAD is hashed. The assembled prompt ends in a minute-level clock
+# and carries a memory capsule that changes whenever a memory is written, so
+# hashing the whole of it produces a new key constantly and sends every turn
+# to a cache that has never seen it. The first 2k chars are the identity head,
+# stable across turns and sessions.
+#
+# The truncation used to apply to the routing header only, while both
+# `prompt_cache_key` call sites hashed the whole prompt a few lines away from
+# the comment saying not to. Measured over 120 turns before the fix: 65.7% hit
+# rate, 41 full misses, 3.2M tokens re-processed at full price, and crossing a
+# minute boundary tripled the miss rate.
 _ROUTING_KEY_PREFIX_CHARS = 2000
+
+
+def _conversation_lane(messages: list[dict[str, Any]] | None) -> str:
+    """What tells this conversation apart from every other one on this machine.
+
+    The earliest message that is not the system prompt. It is fixed for the
+    life of a conversation, it is different in every conversation, and it is
+    already in the request, so nothing has to be threaded through the chain
+    or the session to reach here.
+
+    A compaction rewrites the front of the history and therefore moves this.
+    That is correct rather than a defect: the prefix genuinely changed, so the
+    old lane holds nothing worth matching, and the next turn opens a new one.
+    """
+    for msg in messages or ():
+        if not isinstance(msg, dict) or msg.get("role") == "system":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str):
+            content = json.dumps(content, sort_keys=True, default=str)
+        if content:
+            return hashlib.sha1(content.encode("utf-8")).hexdigest()[:16]
+    return ""
+
+
+def _routing_key(system_text: str, messages: list[dict[str, Any]] | None = None) -> str:
+    """Which cache this request belongs with, as 16 hex chars.
+
+    Two halves, and both are needed.
+
+    The **head** decides which prompt this is. Only the first 2k chars are
+    hashed: the assembled prompt ends in a minute-level clock and carries a
+    memory capsule that changes whenever a memory is written, so hashing all
+    of it produces a new key constantly and sends every turn to a cache that
+    has never seen it.
+
+    The **conversation** decides which of this machine's chats it is. Without
+    it the key collapses: `SOUL.md` is over 2,000 characters, so the hashed
+    head is a fragment of SOUL and nothing else, identical for the cockpit,
+    every channel chat, every sub-agent and all eleven roles that share this
+    model. Measured 2026-08-30, two live conversations alternating a second
+    apart: each sat pinned at exactly its own head size (32,804 and 32,547 of
+    93,438 and 221,331 tokens) and neither ever kept its own tail. One label
+    for everything is a label the provider cannot route on.
+
+    Every caller goes through here, so the two consumers cannot drift apart:
+    identical head and conversation, identical key, and the provider hands
+    back the prefix it already processed.
+    """
+    head = system_text[:_ROUTING_KEY_PREFIX_CHARS]
+    if not head:
+        return ""
+    lane = _conversation_lane(messages)
+    material = f"{head}\x00{lane}" if lane else head
+    return hashlib.sha1(material.encode("utf-8")).hexdigest()[:16]
+
+
+# How many breakpoints to offer. A read matches only against breakpoints
+# present in THIS request, so one is never enough: the entry the last request
+# wrote sits at the item that was ITS boundary, and this request has to be
+# offering a breakpoint there too or the match is never attempted. Measured
+# with a single breakpoint, correctly placed every turn: `cached=0`, six turns
+# out of six. Two would do for a clean conversation; eight covers a tool loop,
+# a retry, and a turn that added more than one message, and the provider reads
+# the latest fifty anyway.
+_CACHE_BREAKPOINTS = 8
+
+#: How far apart the fixed anchors sit, in items. The grid exists so two
+#: requests compute the SAME absolute positions; the stride decides how much
+#: of the tail a miss re-reads and how far back the eight marks reach. At 32 a
+#: turn appending an ordinary tool loop still shares every anchor, and seven
+#: anchors span 224 items, which covers the longest conversation measured here
+#: (974 items) at its own boundary rather than from the start.
+_ANCHOR_STRIDE = 32
+
+
+def _breakpoint_blocks(item: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """The block list a breakpoint may hang on, or None if this item is not a
+    place the provider will honour one.
+
+    Measured against the API, not inferred: a marked user item is read back
+    (9,028 of 9,048), a marked tool result is read back (13,553 of 13,593),
+    and a marked ASSISTANT item reads back ZERO. That matches the provider's
+    own account of where it puts an implicit breakpoint, the end of the latest
+    user or TOOL message, with the assistant turn named nowhere.
+
+    Marking an assistant item is therefore not a wasted marker but a silent
+    one: a conversation whose only marks were assistant turns sat at 30% for
+    sixty calls while the live tool traffic behind them was re-read every
+    iteration.
+
+    A tool result keeps its text under `output`, a user message under
+    `content`, which is the only reason this is not a one-line check.
+    """
+    if item.get("type") == "function_call_output":
+        blocks = item.get("output")
+    elif item.get("role") == "user":
+        blocks = item.get("content")
+    else:
+        return None
+    if isinstance(blocks, list) and blocks and isinstance(blocks[-1], dict):
+        return blocks
+    return None
+
+
+def _mark_breakpoints(items: list[dict[str, Any]], boundary_at: int | None) -> int:
+    """Offer the provider somewhere to match, and somewhere to write.
+
+    Implicit mode puts its one breakpoint at the end of the latest user or
+    tool message, which on this runtime is the per-turn state block: a message
+    rebuilt at the new end of every request, so the prefix it stores is one no
+    later request reproduces. Measured cost of that: the whole conversation,
+    every turn, `cached` frozen at the head.
+
+    `CACHE_BOUNDARY` names the last item that survives unchanged into the next
+    request, and the Anthropic adapter has been reading it for its own
+    breakpoints all along. Everything after it, the state block included, then
+    falls outside the cached prefix, where the provider charges it as uncached
+    input and it disturbs nothing.
+
+    Marks walk BACKWARD from there, onto the items `_breakpoint_blocks`
+    admits. The marker goes on a block and 400s on an item (`Unknown
+    parameter: input[0].prompt_cache_breakpoint`), so `function_call`,
+    `reasoning` and assistant items are stepped over: a shorter prefix caches
+    less, a rejected request caches nothing and takes the turn with it.
+
+    **One mark hugs the boundary and the rest sit on a fixed grid**, because a
+    read needs THIS request's marks to share a position with the LAST one's.
+    Marking the eight eligible items nearest the boundary is a window that
+    slides by however many items the turn appended, so a tool loop that added
+    more than the window is wide moves every mark past the previous set and
+    the whole prefix is re-read. Measured over 296 calls, 2026-09-01 to 09-03:
+    with no shared index, zero reads in 295 pairs; two pairs had none and both
+    were turns that appended more items than the window held, one of them
+    263,420 tokens. Eleven more survived on a single shared mark.
+
+    `items` is append-only, so `index // _ANCHOR_STRIDE` names the same
+    position in both requests however many arrived between them. That is the
+    whole of it: the grid is absolute, the window was relative.
+
+    The boundary mark is kept as well as the grid, and is why this is not
+    purely a grid: the anchors can sit well behind the boundary, and without a
+    mark near it everything since the last anchor is re-read every turn.
+
+    Returns how many were placed. Zero means the caller must leave
+    `prompt_cache_options` off entirely, because in explicit mode a request
+    with no breakpoint is a request with no caching at all.
+    """
+    if boundary_at is None:
+        return 0
+
+    def _eligible_at_or_below(start: int) -> int | None:
+        for index in range(min(start, boundary_at), -1, -1):
+            if _breakpoint_blocks(items[index]) is not None:
+                return index
+        return None
+
+    wanted: list[int] = []
+    tail = _eligible_at_or_below(boundary_at)
+    if tail is not None:
+        wanted.append(tail)
+    anchor = (boundary_at // _ANCHOR_STRIDE) * _ANCHOR_STRIDE
+    while anchor >= 0 and len(wanted) < _CACHE_BREAKPOINTS:
+        found = _eligible_at_or_below(anchor)
+        if found is None:
+            break
+        if found not in wanted:
+            wanted.append(found)
+        anchor -= _ANCHOR_STRIDE
+
+    for index in wanted:
+        blocks = _breakpoint_blocks(items[index])
+        if blocks is not None:
+            blocks[-1]["prompt_cache_breakpoint"] = {"mode": "explicit"}
+    return len(wanted)
+
+
+def _breakpoints_at(items: list[dict[str, Any]]) -> list[int]:
+    out = []
+    for i, item in enumerate(items):
+        blocks = _breakpoint_blocks(item) or ()
+        if any(isinstance(b, dict) and "prompt_cache_breakpoint" in b for b in blocks):
+            out.append(i)
+    return out
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:8]
+
+
+def _item_fingerprint(index: int, item: dict[str, Any]) -> str:
+    blob = json.dumps(item, sort_keys=True, default=str)
+    return "{} {} {} {} {}".format(
+        index,
+        item.get("type") or item.get("role") or "?",
+        item.get("id") or item.get("call_id") or "-",
+        _digest(blob),
+        len(blob),
+    )
+
+
+def _log_request_fingerprint(kwargs: dict[str, Any]) -> None:
+    """Everything a prefix match can see, as one greppable line per request.
+
+    `cache shape` says how much came back cached and what the request looked
+    like from the session's side. It cannot say WHERE two requests stopped
+    being the same, because the session never sees the wire items: the
+    Responses translation happens below it, and `instructions` and `tools`
+    are not in the message list at all.
+
+    So this line is the wire request itself, reduced to what prefix matching
+    depends on: the routing key, where the breakpoints went, and the head as
+    length plus hash.
+
+    The per-item half — every item as `ordinal type id hash length`, which is
+    what names the first item that stopped matching — is DEBUG, and for a
+    reason measured rather than guessed. It costs a `json.dumps` and a hash of
+    every item on every call, and it emits one log line per byte of prompt: at
+    222 items and 300KB of tool traffic that is a 20KB line and a visible
+    event-loop stall, `_digest <- _item_fingerprint` in the backend's own
+    "loop was doing" sample. An instrument that slows the runtime it measures
+    is not free evidence, it is a second problem.
+
+    So the cheap half runs always and the expensive half runs when someone is
+    looking. `TESSERACT_LOG_LEVEL=DEBUG` on the backend turns it back on, and
+    the diff it enables is the thing that found both cache defects.
+
+    Hashes, never content — these logs are read by people who are not the
+    operator.
+    """
+    try:
+        instructions = kwargs.get("instructions") or ""
+        tools = kwargs.get("tools") or []
+        items = kwargs.get("input") or []
+        logger.info(
+            "cache fingerprint: key=%s bp=%s instr=%d:%s tools=%d items=%d",
+            kwargs.get("prompt_cache_key") or "-",
+            ",".join(str(i) for i in _breakpoints_at(items)) or "-",
+            len(instructions),
+            _digest(instructions),
+            len(tools),
+            len(items),
+        )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "cache items: tools=%s | %s",
+                _digest(json.dumps(tools, sort_keys=True, default=str)),
+                " | ".join(_item_fingerprint(i, it) for i, it in enumerate(items)),
+            )
+    except Exception:
+        # An instrument that can end a turn is worse than no instrument.
+        logger.debug("cache fingerprint failed", exc_info=True)
 
 
 class OpenAIAdapter(ModelAdapter):
@@ -232,11 +516,11 @@ class OpenAIAdapter(ModelAdapter):
         if opts.reasoning_effort:
             kwargs["reasoning_effort"] = opts.reasoning_effort
         if self._supports_prompt_cache_key:
-            cache_key = _cache_key_from_system(system_text)
+            cache_key = _routing_key(system_text, messages)
             if cache_key:
                 kwargs["prompt_cache_key"] = cache_key
         if self._cache_routing_header:
-            route_key = _cache_key_from_system(system_text[:_ROUTING_KEY_PREFIX_CHARS])
+            route_key = _routing_key(system_text, messages)
             if route_key:
                 # SDK-level kwarg — rides as an HTTP header, not request body,
                 # so compat endpoints can't 400 on it.
@@ -454,7 +738,7 @@ class OpenAIAdapter(ModelAdapter):
         tools: list[dict[str, Any]] | None,
         opts: AdapterOptions,
     ) -> AsyncGenerator[StreamChunk, None]:
-        instructions, input_items = self._to_responses_input(messages)
+        instructions, input_items, boundary_at = self._to_responses_input(messages)
         kwargs: dict[str, Any] = {
             "model": opts.model,
             "input": input_items,
@@ -476,7 +760,7 @@ class OpenAIAdapter(ModelAdapter):
         if instructions:
             kwargs["instructions"] = instructions
             if self._supports_prompt_cache_key:
-                cache_key = _cache_key_from_system(instructions)
+                cache_key = _routing_key(instructions, messages)
                 if cache_key:
                     kwargs["prompt_cache_key"] = cache_key
         if tools:
@@ -495,6 +779,22 @@ class OpenAIAdapter(ModelAdapter):
             # `none` is a valid effort meaning "skip reasoning" — no blob to include.
             if opts.reasoning_effort not in ("none",):
                 kwargs["include"] = ["reasoning.encrypted_content"]
+
+        # Implicit caching puts its one breakpoint at the end of the latest
+        # user or tool message, which here is the per-turn state block, so the
+        # prefix it stores is one no later request reproduces. Placing the
+        # breakpoint ourselves puts it back on the last permanent item, and
+        # the state block falls after it, where the provider charges it as
+        # uncached input and it disturbs nothing.
+        #
+        # Only for a model that declares it: gpt-5.4-mini answers both fields
+        # with a 400, and the option is withheld when no breakpoint could be
+        # placed, because explicit mode without one turns caching off.
+        # `extra_body` because the SDK does not type the field yet.
+        if opts.prompt_cache_explicit and _mark_breakpoints(input_items, boundary_at):
+            kwargs["extra_body"] = {"prompt_cache_options": {"mode": "explicit"}}
+
+        _log_request_fingerprint(kwargs)
 
         last_error: Exception | None = None
         for attempt in range(self.max_retries):
@@ -714,9 +1014,9 @@ class OpenAIAdapter(ModelAdapter):
 
             # `response.incomplete` is the Responses-API truncation event —
             # the model hit `max_output_tokens` or a content filter mid-answer.
-            # It was previously unhandled, so a truncated stream emitted no
-            # STOP at all and the tool loop simply ran out of chunks: a turn
-            # that was cut off looked exactly like a turn that finished.
+            # Unhandled, a truncated stream emits no STOP at all and the tool
+            # loop simply runs out of chunks: a turn that was cut off would
+            # look exactly like a turn that finished.
             elif t in ("response.completed", "response.incomplete"):
                 resp = getattr(event, "response", None)
                 usage_raw = _responses_usage(
@@ -748,15 +1048,32 @@ class OpenAIAdapter(ModelAdapter):
     def _to_responses_input(
         self,
         messages: list[dict[str, Any]],
-    ) -> tuple[str, list[dict[str, Any]]]:
+    ) -> tuple[str, list[dict[str, Any]], int | None]:
         """Translate Chat-Completions-shaped history → (instructions, input items).
 
         Reasoning items (marked `_reasoning: True`) are re-hydrated as
         type="reasoning" items so encrypted_content round-trips.
+
+        The third return value carries `CACHE_BOUNDARY` across the translation,
+        for the same reason the Anthropic adapter's does: the mapping is not
+        one to one in either direction. One assistant message emits a text item
+        AND one item per tool call, an empty one emits nothing, and the orphan
+        strip at the bottom removes items after the fact. So the marked message
+        is followed by identity, and its index is read off the finished list.
         """
+        boundary_src = next(
+            (i for i, m in enumerate(messages) if m.get(CACHE_BOUNDARY)), -1
+        )
+        boundary_obj: dict[str, Any] | None = None
         instructions_parts: list[str] = []
         input_items: list[dict[str, Any]] = []
-        for m in messages:
+        for i, m in enumerate(messages):
+            # Read at the first message past the marked one, which is the
+            # earliest moment the marked one is certainly finished. When the
+            # marked message emits nothing this keeps the item before it,
+            # which is a shorter prefix and still a correct one.
+            if i == boundary_src + 1:
+                boundary_obj = input_items[-1] if input_items else None
             if m.get("_reasoning"):
                 input_items.append({
                     "type": "reasoning",
@@ -775,7 +1092,15 @@ class OpenAIAdapter(ModelAdapter):
                 input_items.append({
                     "type": "function_call_output",
                     "call_id": m.get("tool_call_id", ""),
-                    "output": content if isinstance(content, str) else json.dumps(content),
+                    # A block list rather than a bare string, because a bare
+                    # string has nowhere to hang a cache breakpoint and a tool
+                    # loop that cannot mark its own results caches none of
+                    # them. `input_text` is the only text block accepted here:
+                    # `output_text` is a 400 that names the alternatives.
+                    "output": [{
+                        "type": "input_text",
+                        "text": content if isinstance(content, str) else json.dumps(content),
+                    }],
                 })
                 continue
             if role == "assistant":
@@ -829,6 +1154,9 @@ class OpenAIAdapter(ModelAdapter):
                     if parts:
                         input_items.append({"role": "user", "content": parts})
 
+        if boundary_src == len(messages) - 1:
+            boundary_obj = input_items[-1] if input_items else None
+
         # The Responses API rejects a `function_call_output` whose `call_id`
         # has no matching `function_call` in the same input ("No tool call
         # found for function call output with call_id ..." → HTTP 400, which
@@ -849,9 +1177,47 @@ class OpenAIAdapter(ModelAdapter):
             or it.get("call_id") in call_ids
         ]
 
-        return "\n\n".join(instructions_parts), input_items
+        boundary_at = next(
+            (i for i, it in enumerate(input_items) if it is boundary_obj), None
+        )
+        if boundary_at is None and boundary_obj is not None:
+            # The marked item did not survive the orphan strip: it was a tool
+            # result whose `function_call` had been trimmed away upstream. That
+            # is a real shape — the strip exists because it once 400'd the
+            # request — and it happens on the LONGEST conversations, the ones
+            # that have been trimmed.
+            #
+            # Returning None here would be the quietest possible failure. With
+            # no breakpoint the caller withholds `prompt_cache_options` and the
+            # request falls back to implicit mode, which on this runtime's
+            # shape puts its one breakpoint on the per-turn state block and
+            # caches nothing past the system prompt — measured, six turns out
+            # of six. So the last surviving markable item stands in: a shorter
+            # prefix than we wanted, and an enormous one next to none.
+            boundary_at = next(
+                (
+                    i
+                    for i in range(len(input_items) - 1, -1, -1)
+                    if _breakpoint_blocks(input_items[i]) is not None
+                ),
+                None,
+            )
+            logger.info(
+                "cache boundary: the marked item was orphan-stripped; "
+                "falling back to item %s",
+                boundary_at,
+            )
+        return "\n\n".join(instructions_parts), input_items, boundary_at
 
     def _to_chat_completions_message(self, msg: dict[str, Any]) -> dict[str, Any]:
+        # Every key we add to a message is underscore-prefixed and none of
+        # them is a provider field. The other three translations in this tree
+        # build their output dicts from scratch, so they drop ours for free;
+        # this one forwards the message as it stands whenever the content is
+        # plain text, which is exactly the shape the runtime-state block and
+        # the cache boundary arrive in.
+        if any(k.startswith("_") for k in msg):
+            msg = {k: v for k, v in msg.items() if not k.startswith("_")}
         content = msg.get("content")
         if not isinstance(content, list):
             return msg
@@ -896,24 +1262,25 @@ class OpenAIAdapter(ModelAdapter):
 
     @staticmethod
     def count_tokens(messages: list[dict[str, Any]]) -> int:
-        total = 0
+        chars = 0
+        attachment_tokens = 0
         for msg in messages:
             if msg.get("_reasoning"):
                 # encrypted_content isn't user-visible but consumes context
-                total += len(msg.get("encrypted_content", "")) // 4
+                chars += len(msg.get("encrypted_content", ""))
                 continue
             content = msg.get("content", "")
             if isinstance(content, str):
-                total += len(content) // 4
+                chars += len(content)
             elif isinstance(content, list):
                 for block in content:
                     if not isinstance(block, dict):
                         continue
                     if "text" in block:
-                        total += len(block["text"]) // 4
+                        chars += len(block["text"])
                     elif block.get("type") in ("image", "input_image", "file", "input_file"):
-                        total += 256
-        return total
+                        attachment_tokens += 256
+        return tokens_from_chars(chars) + attachment_tokens
 
     async def check_available(self) -> bool:
         try:

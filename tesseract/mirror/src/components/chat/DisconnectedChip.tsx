@@ -5,7 +5,7 @@ export function DisconnectedChip() {
   if (status === 'connected') return null;
   return (
     <span className="awaiting-chip" style={{ margin: '8px 16px', display: 'block' }}>
-      backend disconnected — retrying…
+      backend disconnected, retrying…
     </span>
   );
 }

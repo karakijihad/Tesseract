@@ -7,16 +7,43 @@ No SDK. Just the two calls the bridge needs:
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterable
 
 import httpx
 
 from tesseract import http_client
 from tesseract.integrations._channel_attachment import ChannelAttachment
 
+log = logging.getLogger(__name__)
+
 _API_BASE = "https://api.telegram.org"
 _DEFAULT_TIMEOUT = httpx.Timeout(35.0, connect=10.0)
+
+# A connect or read failure reaching api.telegram.org is transient often
+# enough to be worth one more try, and never worth many: the operator is
+# waiting on the other end of a voice message. Three attempts is the house
+# ceiling for a retry loop.
+_TRANSPORT_ATTEMPTS = 3
+_TRANSPORT_BACKOFF_S = 0.5
+
+
+def describe_http_error(exc: Exception) -> str:
+    """An httpx failure in words, never an empty string.
+
+    `str()` on `httpx.ConnectError` and its siblings is routinely empty, and
+    an operator was shown `getFile HTTP error: ` with nothing after the colon
+    while four voice messages went missing. The class name is the half that
+    says what happened, so it always leads.
+
+    Deliberately NOT `repr(exc)`: some httpx exceptions carry the request URL,
+    and every URL here has the bot token in its path.
+    """
+    detail = str(exc).strip()
+    name = type(exc).__name__
+    return f"{name}: {detail}" if detail else name
 
 
 @dataclass(frozen=True)
@@ -29,7 +56,7 @@ class TelegramMessage:
     from_username: str | None
     text: str
     date: int
-    # Visibility-first envelope (CR-1): every recognized non-text part
+    # Visibility-first envelope: every recognized non-text part
     # surfaces as a ``ChannelAttachment`` so the assistant sees what was sent
     # even when no decoder is wired yet (status="no_handler").
     attachments: tuple[ChannelAttachment, ...] = field(default_factory=tuple)
@@ -68,7 +95,9 @@ class TelegramAPI:
         }
         if offset is not None:
             payload["offset"] = int(offset)
-        result = await self._call("getUpdates", payload, read_timeout=timeout + 10)
+        result = await self._call(
+            "getUpdates", payload, read_timeout=timeout + 10, attempts=1
+        )
         if not isinstance(result, list):
             raise TelegramAPIError(f"getUpdates returned {type(result).__name__}")
         return result
@@ -83,8 +112,8 @@ class TelegramAPI:
         disable_web_page_preview: bool = False,
         reply_markup: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Send a text message. Link previews land by default (Session 2
-        2026-05-16 — "feels like a real person"); per-call opt-out for the
+        """Send a text message. Link previews land by default ("feels like
+        a real person"); per-call opt-out for the
         rare case (progress edits, status pings) where the preview would
         clutter the conversation.
 
@@ -161,7 +190,7 @@ class TelegramAPI:
     ) -> dict[str, Any]:
         """Edit an existing message. Default keeps previews OFF on edits
         because the progress-narrative placeholder churns many times per
-        turn (CR-4) and re-fetching previews on each edit would both
+        turn and re-fetching previews on each edit would both
         flood Telegram's link cache and replace the placeholder card
         every second. The final reply lands via :meth:`send_message`
         (fresh send, previews on)."""
@@ -187,7 +216,7 @@ class TelegramAPI:
         emoji: str | None,
         is_big: bool = False,
     ) -> None:
-        """React to ``message_id`` with a single emoji (Session 3 2026-05-16).
+        """React to ``message_id`` with a single emoji.
 
         Passing ``emoji=None`` clears any prior reaction. ``is_big``
         triggers the "burst" animation Telegram uses for first-time
@@ -225,30 +254,88 @@ class TelegramAPI:
         try:
             response = await self._client.get(url)
         except httpx.HTTPError as exc:
-            raise TelegramAPIError(f"file download HTTP error: {exc}") from exc
+            raise TelegramAPIError(
+                f"file download transport error: {describe_http_error(exc)}"
+            ) from exc
         if not response.is_success:
             raise TelegramAPIError(
                 f"file download failed: HTTP {response.status_code}"
             )
         return response.content
 
-    async def fetch_url(self, url: str, *, timeout: float = 30.0) -> bytes:
-        """GET arbitrary URL bytes (Session 2 2026-05-16).
+    async def fetch_url(
+        self,
+        url: str,
+        *,
+        timeout: float = 30.0,
+        blocked_networks: Iterable[str] = (),
+        max_bytes: int | None = None,
+    ) -> bytes:
+        """GET arbitrary URL bytes, within what the caller says is fetchable.
 
         Public helper so callers don't reach into ``self._client``
         privately. Used by the bridge's ``send_photo(source_url=...)``
         path to pull an ``image_generate`` artifact or external URL
         before forwarding via ``sendPhoto``.
+
+        **The URL does not have to have come from the operator.** It can come
+        out of a page or a document the assistant was reading, and what comes
+        back is forwarded into a chat, so this is the one fetch in the runtime
+        whose result leaves the machine. Three bounds, and each is a way the
+        same request goes wrong:
+
+        * The scheme and the address it resolves to are checked, so a URL
+          naming this machine or its private network is refused rather than
+          read and forwarded. ``blocked_networks`` is the caller's list, and
+          **the request goes to the address that was checked**: validating a
+          name and then letting the client resolve it again is a check a
+          short-TTL DNS record walks straight past. The host rides in the
+          ``Host`` header and in SNI so the certificate is still checked
+          against the name.
+        * Redirects are NOT followed, and the call says so rather than
+          inheriting it. ``self._client`` is shared with every other bot API
+          call, so leaving this to httpx's default meant the property that
+          keeps a pinned fetch pinned could be revoked from a distance, by an
+          edit made for an unrelated reason. A 3xx ends here as a failure
+          instead of carrying the request past the check that just passed.
+        * The body stops at ``max_bytes``. Without it the ceiling on what is
+          read into memory is whatever the far end decides to send.
         """
+        from tesseract import net_guard
+
         try:
-            response = await self._client.get(url, timeout=timeout)
+            target, headers, sni = net_guard.pinned_target(url, blocked_networks)
+        except net_guard.Blocked as exc:
+            raise TelegramAPIError(f"fetch_url refused: {exc}") from exc
+
+        try:
+            async with self._client.stream(
+                "GET",
+                target,
+                timeout=timeout,
+                headers=headers,
+                extensions={"sni_hostname": sni},
+                follow_redirects=False,
+            ) as response:
+                if not response.is_success:
+                    raise TelegramAPIError(
+                        f"fetch_url failed: HTTP {response.status_code}"
+                    )
+                chunks: list[bytes] = []
+                read = 0
+                async for chunk in response.aiter_bytes():
+                    read += len(chunk)
+                    if max_bytes is not None and read > max_bytes:
+                        raise TelegramAPIError(
+                            f"fetch_url refused: the file is larger than the "
+                            f"{max_bytes} byte ceiling"
+                        )
+                    chunks.append(chunk)
         except httpx.HTTPError as exc:
-            raise TelegramAPIError(f"fetch_url HTTP error: {exc}") from exc
-        if not response.is_success:
             raise TelegramAPIError(
-                f"fetch_url failed: HTTP {response.status_code}"
-            )
-        return response.content
+                f"fetch_url transport error: {describe_http_error(exc)}"
+            ) from exc
+        return b"".join(chunks)
 
     async def send_voice(
         self,
@@ -260,7 +347,7 @@ class TelegramAPI:
         duration_s: int | None = None,
         reply_to_message_id: int | None = None,
     ) -> dict[str, Any]:
-        """Multipart-upload an OGG/Opus voice note (Session 2 2026-05-16).
+        """Multipart-upload an OGG/Opus voice note.
 
         Telegram renders the round voice-note UI only for ``.ogg`` files
         with Opus codec — see :mod:`tesseract.voice.encode` for the WAV→
@@ -319,7 +406,7 @@ class TelegramAPI:
         supports_streaming: bool = True,
         reply_to_message_id: int | None = None,
     ) -> dict[str, Any]:
-        """Multipart-upload a video (Session 3 2026-05-16).
+        """Multipart-upload a video.
 
         ``supports_streaming=True`` is Telegram's hint that the file is
         in streaming-friendly format (MP4/MOV); recipient clients then
@@ -354,7 +441,7 @@ class TelegramAPI:
         length_px: int | None = None,
         reply_to_message_id: int | None = None,
     ) -> dict[str, Any]:
-        """Multipart-upload a round video note (Session 3 2026-05-16).
+        """Multipart-upload a round video note.
 
         Telegram's round-video format: ``length_px`` is the square edge
         in pixels (max 640). No caption — Telegram intentionally
@@ -384,7 +471,7 @@ class TelegramAPI:
         height: int | None = None,
         reply_to_message_id: int | None = None,
     ) -> dict[str, Any]:
-        """Multipart-upload a GIF / animation (Session 3 2026-05-16).
+        """Multipart-upload a GIF / animation.
 
         Telegram's ``sendAnimation`` accepts MP4 / GIF; MP4 is the
         on-wire format Telegram clients convert all GIFs to anyway,
@@ -413,7 +500,7 @@ class TelegramAPI:
         emoji: str | None = None,
         reply_to_message_id: int | None = None,
     ) -> dict[str, Any]:
-        """Send a sticker (Session 3 2026-05-16).
+        """Send a sticker.
 
         ``sticker`` is either a Telegram ``file_id`` (string — re-use
         a sticker already on Telegram's CDN) OR raw bytes to upload as
@@ -450,7 +537,7 @@ class TelegramAPI:
         horizontal_accuracy: float | None = None,
         reply_to_message_id: int | None = None,
     ) -> dict[str, Any]:
-        """Share a static location (Session 3 2026-05-16)."""
+        """Share a static location."""
         payload: dict[str, Any] = {
             "chat_id": int(chat_id),
             "latitude": float(latitude),
@@ -472,7 +559,7 @@ class TelegramAPI:
         last_name: str | None = None,
         reply_to_message_id: int | None = None,
     ) -> dict[str, Any]:
-        """Share a contact card (Session 3 2026-05-16)."""
+        """Share a contact card."""
         payload: dict[str, Any] = {
             "chat_id": int(chat_id),
             "phone_number": phone_number,
@@ -495,7 +582,7 @@ class TelegramAPI:
         allows_multiple_answers: bool = False,
         reply_to_message_id: int | None = None,
     ) -> dict[str, Any]:
-        """Send a poll (Session 3 2026-05-16).
+        """Send a poll.
 
         2-10 options; Telegram rejects shorter / longer lists.
         """
@@ -522,7 +609,7 @@ class TelegramAPI:
         emoji: str = "🎲",
         reply_to_message_id: int | None = None,
     ) -> dict[str, Any]:
-        """Send an animated dice / game (Session 3 2026-05-16).
+        """Send an animated dice / game.
 
         Valid emojis: 🎲 (dice 1-6), 🎯 (darts 1-6), 🏀 (basketball
         1-5), ⚽ (football 1-5), 🎰 (slots 1-64), 🎳 (bowling 1-6).
@@ -543,7 +630,7 @@ class TelegramAPI:
         media: list[dict[str, Any]],
         reply_to_message_id: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Send an album of 2-10 photos/videos in one bubble (Session 3 2026-05-16).
+        """Send an album of 2-10 photos/videos in one bubble.
 
         ``media`` is a list of Telegram InputMediaPhoto / InputMediaVideo
         dicts with their ``media`` field set to either a Telegram
@@ -612,7 +699,9 @@ class TelegramAPI:
                 timeout=httpx.Timeout(120.0, connect=10.0),
             )
         except httpx.HTTPError as exc:
-            raise TelegramAPIError(f"{method} HTTP error: {exc}") from exc
+            raise TelegramAPIError(
+                f"{method} transport error: {describe_http_error(exc)}"
+            ) from exc
         try:
             payload = response.json()
         except ValueError as exc:
@@ -632,13 +721,31 @@ class TelegramAPI:
         payload: dict[str, Any],
         *,
         read_timeout: float | None = None,
+        attempts: int = _TRANSPORT_ATTEMPTS,
     ) -> Any:
         timeout = httpx.Timeout(read_timeout, connect=10.0) if read_timeout is not None else None
         url = f"{self._base_url}/bot{self._token}/{method}"
-        try:
-            response = await self._client.post(url, json=payload, timeout=timeout)
-        except httpx.HTTPError as exc:
-            raise TelegramAPIError(f"{method} HTTP error: {exc}") from exc
+        response = None
+        for attempt in range(1, attempts + 1):
+            try:
+                response = await self._client.post(url, json=payload, timeout=timeout)
+                break
+            except httpx.TransportError as exc:
+                if attempt == attempts:
+                    raise TelegramAPIError(
+                        f"{method} transport error after {attempt} attempt(s): "
+                        f"{describe_http_error(exc)}"
+                    ) from exc
+                log.warning(
+                    "telegram %s: %s (attempt %d of %d, retrying)",
+                    method, describe_http_error(exc), attempt, attempts,
+                )
+                await asyncio.sleep(_TRANSPORT_BACKOFF_S * attempt)
+            except httpx.HTTPError as exc:
+                raise TelegramAPIError(
+                    f"{method} HTTP error: {describe_http_error(exc)}"
+                ) from exc
+        assert response is not None
         try:
             data = response.json()
         except ValueError as exc:
@@ -654,7 +761,7 @@ class TelegramAPI:
 def parse_message_update(update: dict[str, Any]) -> TelegramMessage | None:
     """Parse a Telegram ``getUpdates`` envelope into a :class:`TelegramMessage`.
 
-    Visibility-first (CR-1): every recognized non-text part surfaces as
+    Visibility-first: every recognized non-text part surfaces as
     a ``ChannelAttachment`` so the bridge can forward it through the
     ``<channel_attachment>`` envelope. ``None`` is returned only when
     the update is structurally unusable (missing ``update_id``/``chat``
@@ -710,8 +817,8 @@ def _extract_attachments(
 ) -> tuple[ChannelAttachment, ...]:
     """Map a Telegram message body onto zero-or-more :class:`ChannelAttachment`.
 
-    All emitted attachments carry ``status="no_handler"`` — CR-1 only
-    surfaces visibility; CR-2 fills in concrete decoders. The caption is
+    All emitted attachments carry ``status="no_handler"`` — this layer
+    surfaces visibility only; the decoders are elsewhere. The caption is
     attached to the first non-text part so the assistant sees ``user typed X
     alongside the photo`` in one place.
     """

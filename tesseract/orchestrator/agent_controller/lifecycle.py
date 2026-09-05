@@ -77,7 +77,7 @@ class _LifecycleMixin:
         )
 
     async def _seed_activity_registry(self) -> None:
-        """AS-1 gap-b — re-index disk-durable lanes + sessions into the
+        """Re-index disk-durable lanes + sessions into the
         controller's OWN Activity registry at boot. After a controller restart
         the in-memory registry is empty, so a live lane's running/idle
         transitions (``update_lane_state``) are silently dropped (no record to
@@ -104,7 +104,7 @@ class _LifecycleMixin:
             )
 
     async def _activity_forward_loop(self) -> None:
-        """AS-1 — subscribe to the controller's `activity` bus channel and
+        """Subscribe to the controller's `activity` bus channel and
         broadcast each event to every connected client as an
         :class:`ActivityEventPush`. The Mirror's activity subscriber re-applies
         these to the Mirror-side registry. Runs for the daemon's lifetime;

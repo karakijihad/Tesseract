@@ -40,7 +40,7 @@ _TRUSTING_RECALL_SECTION = (
     "--- END NOTICE ---"
 )
 
-# CR-1 M3 — trust text for work-history hits. These are session
+# Trust text for work-history hits. These are session
 # transcripts and workshop artifacts, NOT promoted memory. The model
 # must treat them as recall (suggestions) rather than ground truth.
 _WORK_HISTORY_NOTICE = (
@@ -53,8 +53,13 @@ _WORK_HISTORY_NOTICE = (
 )
 
 _RRF_K = 60
-_TEMPORAL_HALF_LIFE_DAYS = 30
-_TEMPORAL_HIGH_IMPORTANCE_HALF_LIFE_DAYS = 60
+# Half-life of a memory's retrieval weight. Long, because this store holds
+# durable things — decisions, preferences, standing rules — where age is a weak
+# signal of irrelevance. At 30 days a rule saved two months ago carried a
+# quarter of its weight, which is a reasonable prior for news and a poor one
+# for "close the surfaces you open".
+_TEMPORAL_HALF_LIFE_DAYS = 180
+_TEMPORAL_HIGH_IMPORTANCE_HALF_LIFE_DAYS = 365
 _HIGH_IMPORTANCE_THRESHOLD = 8
 _OVERLAP_BOOST = 0.15
 
@@ -154,7 +159,7 @@ class RetrievalPipeline:
         # Cross-encoder precision stage over the merged pool (role-wired,
         # best-effort). None → retrieval keeps pure RRF ordering.
         self._reranker = reranker
-        # CR-1 M3 — non-authoritative work-history retrieval. When set,
+        # Non-authoritative work-history retrieval. When set,
         # `retrieve(..., include_work_history=True)` augments the memory
         # packet with `session:` / `workshop:` chunks. Promotion to
         # authoritative memory still requires the librarian path.
@@ -369,22 +374,20 @@ class RetrievalPipeline:
     ) -> list[RetrievalResult]:
         """BM25 + Vector search merged via RRF with temporal decay.
 
-        RC1 fix (2026-07-08): BM25 and vector search the FULL index, not
-        just Stage A's literal word-overlap candidates. Stage A's
-        `title.lower().split()` scoring drops exact-substring queries whose
-        token doesn't equal a title token verbatim (e.g. query "gate_fizz"
-        vs title token "gate_fizz.py" — the ".py" suffix breaks set
-        equality), which used to starve Stage B of a candidate that both
-        FTS5 tokenization and vector cosine would otherwise find cleanly.
-        `candidates` is no longer a gate on the search itself — it's merged
-        into the scoring context below (decay/confidence/expiry/type) so
-        every result, whether or not it made Stage A's top list, is
-        weighted and filtered consistently. `type_filter` is re-checked
-        here (not just at Stage A) for the same reason as expiry: the old
-        `candidate_ids` gate used to make Stage A's own `type_filter`
-        scoping implicitly apply to Stage B too — removing the gate means
-        a full-index BM25/vector hit of a different `MemoryType` has to be
-        dropped explicitly instead.
+        BM25 and vector search the FULL index, not just Stage A's literal
+        word-overlap candidates. Stage A's `title.lower().split()` scoring
+        drops exact-substring queries whose token doesn't equal a title token
+        verbatim (query "gate_fizz" vs title token "gate_fizz.py" — the ".py"
+        suffix breaks set equality), which would starve Stage B of a candidate
+        both FTS5 tokenization and vector cosine find cleanly. `candidates` is
+        not a gate on the search itself: it is merged into the scoring context
+        below (decay/confidence/expiry/type) so every result, whether or not it
+        made Stage A's top list, is weighted and filtered consistently.
+        `type_filter` is re-checked here (not just at Stage A) for the same
+        reason as expiry: with no `candidate_ids` gate, Stage A's own
+        `type_filter` scoping does not implicitly apply to Stage B, so a
+        full-index BM25/vector hit of a different `MemoryType` has to be
+        dropped explicitly.
         """
         candidate_map = {fm.id: fm for fm in candidates}
 
@@ -558,7 +561,7 @@ class RetrievalPipeline:
 
         stages_run: list[str] = []
 
-        # CR-1 M3 — fetch work-history once up front. None when the caller
+        # Fetch work-history once up front. None when the caller
         # didn't ask, when no work_index is wired, or on search failure.
         work_history = self._fetch_work_history(
             query,

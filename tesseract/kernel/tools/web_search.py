@@ -34,7 +34,14 @@ _PROVIDER = BraveProvider()
 class WebSearchInput(BaseModel):
     query: str = Field(description="Search query")
     count: int = Field(default=5, ge=1, le=_MAX_RESULTS, description="Number of results to return (1-10)")
-    country: str = Field(default="", description="2-letter country code for localized results, e.g. 'us', 'fr'. Empty = Brave's default.")
+    country: str = Field(
+        default="",
+        description=(
+            "Leave this empty unless the operator asked for one market's "
+            "results. Put the place in the query instead. Only some "
+            "countries are accepted, and one that is not is dropped."
+        ),
+    )
 
 
 class WebSearchTool(Tool):
@@ -47,15 +54,16 @@ class WebSearchTool(Tool):
     untrusted_source: ClassVar[bool] = True
 
     group: ClassVar[str] = "searching-the-web"
-    summary: ClassVar[str] = "Web search via Brave — a ranked list of title, URL, and short snippet."
+    summary: ClassVar[str] = "Web search via Brave. A ranked list of title, URL and short snippet."
     use_when: ClassVar[str] = (
-        "Use for breadth on current events, recent docs, or niche queries — wide results, "
+        "Use for breadth on current events, recent docs, or niche queries. Wide results, "
         "not one synthesized answer. The web is not the vault; it holds outside sources."
     )
     not_when: ClassVar[str] = (
         "Use `tavily_search` when you need denser per-result content or a synthesized answer "
         "instead of short snippets."
     )
+    depends_on: ClassVar[str] = "service:brave"
 
     @property
     def name(self) -> str:
@@ -119,7 +127,7 @@ class WebSearchTool(Tool):
 
 
 def _note_brave_tripwire(drift_kind: str, evidence: dict) -> None:
-    """AU-14 14b production tripwire — best-effort JSONL row write."""
+    """Production tripwire — best-effort JSONL row write."""
     try:
         from tesseract.orchestrator.provider_health import note_production_tripwire
         note_production_tripwire("web_search", _PROVIDER.tripwire_source, drift_kind, evidence)

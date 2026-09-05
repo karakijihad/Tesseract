@@ -12,13 +12,12 @@ record it wrote last time without keeping a second index of what it has
 written. A conversation that resumes AMENDS that record; it does not earn a
 second one.
 
-**The position decides what to write, not only whether to write.** It used to
-decide only the latter: a chat that went quiet, resumed, and went quiet again
-was recapped twice, and the second record held every turn of the first because
-the writer took the collector's whole tail. Turns 1-10 then 1-20, where it
-should have been 1-10 then 11-20. So the position now filters the turns as well
-as arming the pass — the first record for a conversation carries the tail it
-was found with, and every pass after it carries only what is new.
+**The position decides what to write, not only whether to write.** Arming
+the pass without filtering its turns recaps a chat that went quiet, resumed
+and went quiet again twice over, the second record holding every turn of the
+first: 1-10 then 1-20, where it should be 1-10 then 11-20. The first record
+for a conversation carries the tail it was found with, and every pass after
+it carries only what is new.
 
 The position is on disk. The channel sweep this replaces kept its
 last-reflected marker in a process dictionary, so every restart re-wrote the
@@ -168,9 +167,17 @@ def _summarise(lines: list[str]) -> str:
     if not stamps:
         return "no turns"
     said = sum(1 for role in roles if role == "user")
+    runtime = sum(1 for role in roles if role == "runtime")
+    # Counted rather than subtracted. A runtime turn is neither side's, and
+    # the subtraction that used to stand here handed every one of them to the
+    # assistant while the operator was credited with sentences nobody typed.
+    replied = len(stamps) - said - runtime
+    parts = [f"{said} from you", f"{replied} from the assistant"]
+    if runtime:
+        parts.append(f"{runtime} from the runtime")
     return (
-        f"{len(stamps)} turns ({said} from you / {len(stamps) - said} from the "
-        f"assistant) between {stamps[0]} and {stamps[-1]}"
+        f"{len(stamps)} turns ({' / '.join(parts)}) "
+        f"between {stamps[0]} and {stamps[-1]}"
     )
 
 

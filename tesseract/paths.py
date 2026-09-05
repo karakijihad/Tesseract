@@ -12,11 +12,11 @@ machines without the code coming with it:
   install), all derived user-state directories — ``memory-store/``,
   ``agents/``, ``vault/``, ``logs/``, ``sessions/`` — relocate together.
 
-Importing from this module avoids cycles. Modules deeper in the tree
-(``cost/ledger.py``, ``mirror/server/routes/...``) used to compute their
-own ``Path(__file__).resolve().parents[N]`` constant and never honored
-the env var; importing ``TESSERACT_HOME`` from here fixes that without
-each module touching the brain stack.
+Importing from this module avoids cycles. A module deeper in the tree
+(``cost/ledger.py``, ``mirror/server/routes/...``) computing its own
+``Path(__file__).resolve().parents[N]`` constant never honours the env
+var; importing ``TESSERACT_HOME`` from here closes that without each
+module touching the brain stack.
 """
 
 from __future__ import annotations
@@ -61,9 +61,8 @@ def system_agents_dir() -> Path:
     """Shipped agent cards, read from the sealed app tree and never copied.
 
     An update replaces `app/`, so a card improved here reaches every install
-    on the next update. Copying it into `home/` once — which is what the
-    runtime used to do — froze every shipped card at whatever the operator
-    installed, forever.
+    on the next update. Copying it into `home/` once freezes every shipped
+    card at whatever the operator installed, forever.
 
     Anchored on `TESSERACT_DIR` rather than `app_dir()`: this package IS the
     shipped tree, so the anchor holds in a dev checkout, in a packaged
@@ -80,6 +79,22 @@ def user_agents_dir() -> Path:
     compare resolved paths rather than assume they are distinct.
     """
     return _home_at_call_time() / "agents"
+
+
+def user_tools_dir() -> Path:
+    """Tool classes the assistant built for the operator — state, not code.
+
+    The counterpart to `user_agents_dir()`: an update replaces `app/`, so a
+    tool written here outlives every version. There is no `system_tools_dir()`
+    beside it, because the shipped tools are registered by name in
+    `brain/boot.py` rather than discovered from a directory, and a home tool
+    may not take a shipped tool's name (`kernel/home_tools.py`).
+
+    In a dev checkout `home_dir()` IS `TESSERACT_DIR`, so this resolves inside
+    the source package. That is the same collapse `user_agents_dir()` lives
+    with, and it is gitignored for the same reason.
+    """
+    return _home_at_call_time() / "tools"
 
 
 def config_dir() -> Path:
@@ -144,16 +159,33 @@ _HOME_LOG_DIRS = frozenset(
         # decides which schemas ride every turn, and it should be the same
         # answer on the second PC.
         "usage",
+        # Which agent cards were reached, and when. Same argument as `usage`
+        # one layer up: it decides which cards are worth keeping, and a card
+        # invoked daily on one machine is not an unused card because the
+        # second PC has never called it.
+        "agents",
     }
 )
 _RUNTIME_LOG_DIRS = frozenset(
     {
         "audit", "circuit-breakers", "supervisor", "janitor", "provider-health",
         "tokenjuice", "governor",
+        # One line each time the runtime put something right about itself, or
+        # tried to and could not. Machine-local for the same reason
+        # `circuit-breakers` is: what broke and what was done about it is a
+        # fact about THIS machine, and carrying it to the second PC would
+        # describe an outage that never happened there.
+        "repairs",
         # One file per boot, named for its boot id. Machine ops: which run of
         # this process on this machine said what. Never synced — a per-launch
         # file travelling to the other PC is noise, not history.
         "backend",
+        # One row each time the event loop was blocked long enough to threaten
+        # liveness, with what it was doing. As machine-local as `backend`: the
+        # stall belongs to this PC's disk, drivers and load, and carrying it to
+        # the second machine would describe a slowdown that never happened
+        # there.
+        "loop-stalls",
     }
 )
 
@@ -181,7 +213,12 @@ _RUNTIME_LOG_DIRS = frozenset(
 #   1. It must be somewhere `file_write` can legitimately land an artifact —
 #      AUTO for `workshop/`, `vault/raw/` and `logs/sessions/`; the default
 #      ASK posture for `downloads/` and `uploads/`, which are artifact sinks
-#      the operator is handed paths to.
+#      the operator is handed paths to; an EXPLICIT ask row for `tools/`,
+#      where the write is the approval to run the file and reading it back is
+#      the point of having written it. An ASK path here is a decision, so it
+#      is named twice: once below and once in
+#      `tests/fix_pass_2026_08_09_read_anchor::_ASK_POSTURE_READABLE`, and the
+#      guard fails if either half is missing.
 #   2. It must contain no path carrying a DENY or narrower override. This is
 #      why `workspace` is absent: every document in it — `SOUL.md`,
 #      `USER.md`, `OPERATING.md`, `WORKSHOP.md`, `DIARY.md` — is DENY for
@@ -202,11 +239,17 @@ READABLE_STATE_PREFIXES: tuple[str, ...] = (
     "downloads",
     "uploads",
     "workshop",
+    # Tools the assistant wrote (`user_tools_dir`). `file_write` anchors a
+    # bare relative path at the state root, so it writes `tools/x.py` there;
+    # without this entry the read tools anchor the same string at the code
+    # tree instead and report "not found". Writing a tool it cannot then read
+    # back means it cannot fix one, and fixing one is most of the point.
+    "tools",
     "vault/raw",
     "logs/sessions",
     # The runtime's own account of itself: the watchman's hourly reports, the
-    # evidence files behind them, and `WHAT-RUNS.md`. Added when the tracker
-    # was built (AR-7b item 11), for a reason the other entries share — the
+    # evidence files behind them, and `WHAT-RUNS.md`. Here for a reason the
+    # other entries share — the
     # runtime writes a path and then tells the assistant to read it, and a
     # pointer to a file the read tools cannot open is worse than no pointer.
     # Nothing under it is a secret or an operator document; it is derived
@@ -257,6 +300,13 @@ _SECRET_FILENAMES: frozenset[str] = frozenset(
         "credentials.json",
     }
 )
+# The assistant's own credential store is `<home>/credentials/credentials.json`
+# (`tesseract/credentials/paths.py`), and both of its components are in the set
+# above. `refuse_if_secret_path` walks a path component by component, so the
+# directory is refused as well as the file and nothing else can be parked in
+# there and read back out. Those two names were chosen for that reason rather
+# than found to fit afterwards, and moving the store means adding whatever it
+# moves to is named here in the same edit.
 _SECRET_SUFFIXES: tuple[str, ...] = (".pem", ".pfx", ".p12", ".keystore")
 _TEMPLATE_SUFFIXES: tuple[str, ...] = (".example", ".template", ".sample", ".dist")
 
@@ -294,6 +344,25 @@ def is_secret_filename(name: str) -> bool:
     if folded.startswith(".env."):
         return True
     return folded.endswith(_SECRET_SUFFIXES)
+
+
+def secret_path_component(path: "Path | str") -> str | None:
+    """The first component of `path` that is credential-bearing, or None.
+
+    Component-wise rather than leaf-only, because `.env/keys.txt` reduces to
+    `keys.txt` and a directory is as good a hiding place as a name.
+
+    Lives HERE rather than beside one of its callers because it has two, on
+    opposite sides of the runtime: the read tools refuse a path with it
+    (`kernel/tools/_path_anchor.py`), and the permission gate refuses one with
+    it before any read-side tool runs (`permissions/decide.py`). Two copies of
+    this walk is how a tool added later gets checked by one of them and not the
+    other, which is exactly the gap it was written to close.
+    """
+    for part in Path(path).parts:
+        if is_secret_filename(part):
+            return part
+    return None
 
 
 def secret_exclusion_globs() -> tuple[str, ...]:

@@ -57,12 +57,11 @@ class LibrarianHeartbeatJob(BaseJob):
             payload["distilled"] = distill_stats
 
             candidates = distill_stats.get("candidates", 0)
-            # This used to publish an agenda candidate whenever distillation
-            # produced something. It was the third publisher into one source,
-            # and it was telling the assistant something it is already told:
-            # the session-reflection prompt sends it to `pending_growth.md` by
-            # name. The count stays in the payload, which the stage's manifest
-            # row carries.
+            # No agenda candidate is published when distillation produces
+            # something: it would be a third publisher into one source, telling
+            # the assistant what the session-reflection prompt already tells it
+            # by sending it to `pending_growth.md` by name. The count stays in
+            # the payload, which the stage's manifest row carries.
             return JobResult(
                 job_name=ctx.job_name,
                 run_id=ctx.run_id,

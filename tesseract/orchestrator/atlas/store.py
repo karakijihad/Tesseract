@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from tesseract.orchestrator.atlas.model import Conflict, Edge, Node
+from tesseract.orchestrator.atlas.model import Conflict, Edge, Node, Region
 
 
 def atlas_dir() -> Path:
@@ -31,6 +31,24 @@ def atlas_path() -> Path:
     return atlas_dir() / "atlas.json"
 
 
+@dataclass(frozen=True)
+class Delta:
+    """What became part of the graph in the pass that drew it.
+
+    Written into the file rather than recomputed, because the two readers of
+    it — `ATLAS.md` and the graph surface — have to agree, and the only way
+    they can is by reading one recorded answer. Recomputing on the surface
+    would need the previous graph, which the pass overwrote.
+
+    Absent is not empty. A graph drawn before this was recorded, or by
+    something that did not record it, carries `None`, and a reader says what
+    changed is not known rather than that nothing did.
+    """
+
+    nodes: tuple[str, ...] = ()
+    edges: tuple[str, ...] = ()
+
+
 @dataclass
 class Atlas:
     """Nodes and edges, keyed by id, plus what produced them."""
@@ -40,6 +58,14 @@ class Atlas:
     nodes: dict[str, Node] = field(default_factory=dict)
     edges: dict[str, Edge] = field(default_factory=dict)
     conflicts: dict[str, Conflict] = field(default_factory=dict)
+    # What this build added over the one before it. Set by `run_build` from
+    # the one comparison, `report.deltas`.
+    delta: Delta | None = None
+    # Where each node sits, settled at build time by `layout.py` and written
+    # beside the nodes rather than into a file of its own. It is a pure
+    # function of the graph, so keeping it here is what stops the two from ever
+    # describing different pictures.
+    positions: dict[str, tuple[float, float]] = field(default_factory=dict)
 
     def add_node(self, node: Node) -> Node:
         """First sighting wins `first_seen`; everything else is this build's.
@@ -51,19 +77,13 @@ class Atlas:
         """
         existing = self.nodes.get(node.id)
         if existing is not None:
-            node = Node(
-                id=node.id,
-                kind=node.kind,
-                title=node.title,
-                locator=node.locator,
-                builder_version=node.builder_version,
-                first_seen=existing.first_seen,
-                updated_at=node.updated_at,
-                content_hash=node.content_hash,
-                input_stamp=node.input_stamp,
-                aliases=node.aliases,
-            )
+            node = node.with_first_seen(existing.first_seen)
         self.nodes[node.id] = node
+        # A position is a fact about the finished graph, so a graph that gains
+        # a node no longer has one. Cheap during a build, where the map is
+        # empty until the last step; the point is that a later builder cannot
+        # leave a node the surface has nowhere to draw.
+        self.positions.clear()
         return node
 
     def add_edge(self, edge: Edge) -> Edge:
@@ -73,6 +93,18 @@ class Atlas:
     def add_conflict(self, conflict: Conflict) -> Conflict:
         self.conflicts[conflict.id] = conflict
         return conflict
+
+    def counts_by_region(self) -> dict[Region, int]:
+        """How many nodes are in each compartment, every compartment named.
+
+        A region with no nodes reports zero rather than being absent: the
+        surface has to be able to say the body is not in the graph yet, and a
+        missing key reads as a region nobody thought of.
+        """
+        counts = {region: 0 for region in Region}
+        for node in self.nodes.values():
+            counts[node.region] += 1
+        return counts
 
     def edges_from(self, node_id: str) -> list[Edge]:
         return [e for e in self.edges.values() if e.subject == node_id]
@@ -84,11 +116,26 @@ class Atlas:
             "node_count": len(self.nodes),
             "edge_count": len(self.edges),
             "conflict_count": len(self.conflicts),
+            "region_counts": {
+                region.value: count for region, count in self.counts_by_region().items()
+            },
             "nodes": [n.as_json() for n in sorted(self.nodes.values(), key=lambda n: n.id)],
             "edges": [e.as_json() for e in sorted(self.edges.values(), key=lambda e: e.id)],
             "conflicts": [
                 c.as_json() for c in sorted(self.conflicts.values(), key=lambda c: c.id)
             ],
+            "positions": {
+                node_id: [x, y]
+                for node_id, (x, y) in sorted(self.positions.items())
+            },
+            "delta": (
+                None
+                if self.delta is None
+                else {
+                    "nodes": list(self.delta.nodes),
+                    "edges": list(self.delta.edges),
+                }
+            ),
         }
 
     @classmethod
@@ -102,6 +149,19 @@ class Atlas:
             conflicts={
                 c["id"]: Conflict.from_json(c) for c in raw.get("conflicts") or ()
             },
+            positions={
+                str(node_id): (float(pair[0]), float(pair[1]))
+                for node_id, pair in (raw.get("positions") or {}).items()
+                if isinstance(pair, (list, tuple)) and len(pair) == 2
+            },
+            delta=(
+                None
+                if not isinstance(raw.get("delta"), dict)
+                else Delta(
+                    nodes=tuple(str(i) for i in raw["delta"].get("nodes") or ()),
+                    edges=tuple(str(i) for i in raw["delta"].get("edges") or ()),
+                )
+            ),
         )
 
 
@@ -127,4 +187,4 @@ def save(atlas: Atlas, path: Path | None = None) -> Path:
     return target
 
 
-__all__ = ["Atlas", "atlas_dir", "atlas_path", "load", "save"]
+__all__ = ["Atlas", "Delta", "atlas_dir", "atlas_path", "load", "save"]

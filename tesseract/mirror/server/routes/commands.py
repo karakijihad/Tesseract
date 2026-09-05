@@ -18,7 +18,7 @@ async def list_commands(request: web.Request) -> web.Response:
     registry = request.app.get("command_registry")
     if registry is None:
         # The boot graph's `wiring` layer hasn't built it yet — a 200
-        # with an empty list used to be cached as "loaded with zero commands"
+        # with an empty list must not cache as "loaded with zero commands"
         # by the frontend, so every `/save` and `/reset` looked nonexistent
         # until the page reloaded. 503 lets the frontend distinguish "not
         # ready, retry" from "ready and genuinely empty".

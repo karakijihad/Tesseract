@@ -1,4 +1,4 @@
-"""ProbeResult dataclass + RoleProbe Protocol — the AU-14 contract."""
+"""ProbeResult dataclass + RoleProbe Protocol — the probe contract."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ class ProbeResult:
     JSONL reader (``tesseract.orchestrator.provider_health.tail_recent``)
     uses ``ok`` to bucket rows fast without parsing ``drift_kind``.
     ``evidence`` is free-form, recorded verbatim into the JSONL line so
-    the AU-5 mapper has enough context to draft a proposal.
+    the mapper has enough context to draft a proposal.
     """
 
     role: str

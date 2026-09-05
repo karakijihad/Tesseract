@@ -22,6 +22,19 @@ from tesseract.scheduler.pipeline.artifacts import atomic_write_json, pipeline_r
 log = logging.getLogger(__name__)
 
 
+#: What a run id says about how the run was started. A run of ONE stage, fired
+#: by hand, is written into the same directory as the nightly row's own runs
+#: and is not one: "did last night's pass finish" must not be answered by a
+#: stage somebody ran at noon. The id is the honest discriminator, because the
+#: manifest's `entry` is the ROW either way (that is what its spend bills to).
+SINGLE_STAGE_PREFIX = "stage-"
+
+
+def is_single_stage(manifest: "RunManifest") -> bool:
+    """True for a run of one stage started by hand rather than by the row."""
+    return manifest.run_id.startswith(SINGLE_STAGE_PREFIX)
+
+
 @dataclass(frozen=True)
 class StageRow:
     stage: str
@@ -90,6 +103,18 @@ class RunManifest:
     # that happened this run, and a setting changed once and forgotten is not.
     # As a row it made the whole nightly pass report `refused` forever.
     disabled: list[str] = field(default_factory=list)
+    # The manifest entry this run belongs to — the row's name, or the stage's
+    # own name for a single stage run by hand. Recorded because a run record
+    # nobody can attribute cannot be rendered: the strip needs the row to know
+    # which stages were declared and never reached, and inferring it from the
+    # first committed row leaves an open run with nothing committed unnameable.
+    entry: str = ""
+    # The task this run worked, when it worked one. A turn taking up an
+    # accepted task writes it here and its own id onto the task, so the join
+    # is written from both ends; a nightly run leaves it empty. It is also
+    # the recorder the atlas has been waiting for: which run acted on which
+    # agenda item was the one edge nothing on this machine produced.
+    task_id: str = ""
     completed_at: datetime | None = None
 
     @property
@@ -110,6 +135,8 @@ class RunManifest:
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "not_due": list(self.not_due),
             "disabled": list(self.disabled),
+            "entry": self.entry,
+            "task_id": self.task_id,
             "stages": [row.to_dict() for row in self.rows],
         }
 
@@ -123,6 +150,8 @@ class RunManifest:
             rows=[StageRow.from_dict(row) for row in raw.get("stages") or []],
             not_due=list(raw.get("not_due") or []),
             disabled=list(raw.get("disabled") or []),
+            entry=str(raw.get("entry") or ""),
+            task_id=str(raw.get("task_id") or ""),
             completed_at=datetime.fromisoformat(completed) if completed else None,
         )
 
@@ -138,8 +167,12 @@ class ManifestStore:
     def open_path(self) -> Path:
         return self._root / "current.json"
 
+    @property
+    def runs_dir(self) -> Path:
+        return self._root / "runs"
+
     def run_path(self, run_id: str) -> Path:
-        return self._root / "runs" / f"{run_id}.json"
+        return self.runs_dir / f"{run_id}.json"
 
     def load_open(self) -> RunManifest | None:
         """The manifest of a run that never finished, or None."""
@@ -193,4 +226,11 @@ class MemoryManifestStore:
         manifest.completed_at = datetime.now(timezone.utc)
 
 
-__all__ = ["ManifestStore", "MemoryManifestStore", "RunManifest", "StageRow"]
+__all__ = [
+    "ManifestStore",
+    "MemoryManifestStore",
+    "RunManifest",
+    "SINGLE_STAGE_PREFIX",
+    "StageRow",
+    "is_single_stage",
+]

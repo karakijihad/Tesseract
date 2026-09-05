@@ -8,9 +8,8 @@ File layout (under ``<TESSERACT_HOME>/agenda/``):
 
 Atomic write per record: ``<pid>.<6hex>.tmp`` + ``os.replace`` (same
 volume → atomic on Windows + POSIX). Per-writer tmp suffix prevents two
-concurrent writers from interleaving over a shared temp file —
-mirrors the AU-3 ``workers/record.py::_atomic_write_json`` pattern after
-the reviewer flagged the race there.
+concurrent writers from interleaving over a shared temp file, mirroring
+the ``workers/record.py::_atomic_write_json`` pattern.
 
 ``index.jsonl`` is intentionally not the source of truth — recovery
 reads ``active/*.json``, the index is the audit log. A missing index row
@@ -35,6 +34,7 @@ from tesseract.orchestrator.autonomy.models import (
     AgendaItem,
     AgendaSource,
     AgendaStatus,
+    ObligationFrozen,
     StatusTransition,
     TERMINAL_STATUSES,
     TransitionActor,
@@ -81,6 +81,43 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 _INDEX_LOCK = threading.Lock()
 
 
+def prune_index_rows(ids: set[str]) -> int:
+    """Drop every `index.jsonl` row about the given ids. Returns how many went.
+
+    By id and never by date, so an item's rows leave the index only when its
+    record has left the archive: the two age together, and the completion
+    figures that read the index never lose an item whose record is still on
+    disk. Under the append's own lock, so a transition recorded between the
+    read and the replace cannot land in neither. A row that will not parse is
+    kept; an unreadable row is not a licence to guess whose it was.
+    """
+    if not ids:
+        return 0
+    path = agenda_index_path()
+    with _INDEX_LOCK:
+        if not path.is_file():
+            return 0
+        keep: list[str] = []
+        removed = 0
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                row_id = json.loads(line).get("id")
+            except (ValueError, AttributeError):
+                keep.append(line)
+                continue
+            if row_id in ids:
+                removed += 1
+            else:
+                keep.append(line)
+        if removed:
+            tmp = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(3)}.tmp")
+            tmp.write_text("".join(f"{row}\n" for row in keep), encoding="utf-8")
+            os.replace(str(tmp), str(path))
+    return removed
+
+
 def _append_index(row: dict[str, Any]) -> None:
     """Append a single JSON line to ``index.jsonl``. Best-effort: write failures log and fall through."""
     path = agenda_index_path()
@@ -95,10 +132,9 @@ def _append_index(row: dict[str, Any]) -> None:
 class AgendaStore:
     """CRUD over per-file agenda items. Construct once per backend.
 
-    The store keeps no in-memory cache — every read scans disk. Volume
-    is small (Phase 1 ceiling: a few hundred active items) and re-scan
-    is simpler than cache coherence. AU-5 may add a cache later if
-    profiling shows the scan cost is real.
+    The store keeps no in-memory cache — every read scans disk. Volume is
+    small (a few hundred active items) and re-scan is simpler than cache
+    coherence.
 
     Construction takes no arguments by design: every path resolves
     against ``TESSERACT_HOME`` at call time so test fixtures that
@@ -222,13 +258,40 @@ class AgendaStore:
 
     def save(self, item: AgendaItem) -> Path:
         """Atomic rewrite; recomputes score before writing. Terminal items route
-        to ``_archive``. Returns the resolved on-disk path."""
+        to ``_archive``. Returns the resolved on-disk path.
+
+        What the item owes is checked against the record on disk first: once
+        the work has run, `goal` and `success_criteria` may differ from the
+        saved copy only if an operator amendment row was appended since. The
+        check lives here and not on the model because the model cannot see
+        what it used to say, and every path to disk passes through this door.
+        """
         self.recompute_score(item)
+        path = agenda_item_path(item.id)
+        self._refuse_silent_amendment(item, path)
         if item.is_terminal():
             return self._archive(item)
-        path = agenda_item_path(item.id)
         _atomic_write_json(path, item.model_dump(mode="json"))
         return path
+
+    @staticmethod
+    def _refuse_silent_amendment(item: AgendaItem, path: Path) -> None:
+        if not path.exists():
+            return
+        saved = AgendaItem.model_validate(
+            json.loads(path.read_text(encoding="utf-8"))
+        )
+        if not saved.has_run():
+            return
+        if saved.goal == item.goal and saved.success_criteria == item.success_criteria:
+            return
+        if item.amended_since(len(saved.status_history)):
+            return
+        raise ObligationFrozen(
+            f"agenda item {item.id!r} has run, and what it owes changed without "
+            f"an operator amendment. Use `amend` with a reason, or leave the "
+            f"goal and its criteria as they were."
+        )
 
     def transition(
         self,
@@ -242,6 +305,10 @@ class AgendaStore:
         prior = item.status
         if new_status == prior:
             return item
+        # Checked before the item is mutated, so a refused write leaves the
+        # in-memory status where the disk has it. `save` checks again; the
+        # second read is the price of one door.
+        self._refuse_silent_amendment(item, agenda_item_path(item.id))
         item.transition_to(new_status, reason=reason, by=by)
         self.save(item)
         _append_index(
@@ -285,9 +352,10 @@ class AgendaStore:
     def _pool(self, items: list[AgendaItem] | None):
         """The caller's already-read active set, or a fresh read.
 
-        Four scanners take the same optional set — a caller admitting one draft
-        used to pay four walks of the store, and one draining ten events forty.
-        The fallback stays because the `None` path is live: `routes/agenda.py`
+        Four scanners take the same optional set. Without it, a caller admitting
+        one draft pays four walks of the store, and one draining ten events pays
+        forty. The fallback stays because the `None` path is live:
+        `routes/agenda.py`
         calls `find_dedupe` with nothing to hand it.
         """
         return items if items is not None else self.iter_active()
@@ -300,7 +368,7 @@ class AgendaStore:
         items: list[AgendaItem] | None = None,
     ) -> AgendaItem | None:
         """Scan active items for a matching (goal, source) pair. Used
-        by AU-5 mappers to avoid re-admitting the same observer signal
+        by the mappers to avoid re-admitting the same observer signal
         every minute. Linear scan; volume is small enough.
 
         ``items`` lets a caller that already holds the active set pass it in
@@ -394,6 +462,11 @@ class AgendaStore:
         dst = agenda_archive_path(item.id, month)
         dst.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write_json(dst, item.model_dump(mode="json"))
+        # The row that outlives the record. Written here, at the one door
+        # every finished item passes through, so no close is missing one.
+        from tesseract.orchestrator.autonomy.agenda_history import record_closed
+
+        record_closed(item)
         # Remove the active copy after the archive write commits.
         active = agenda_item_path(item.id)
         try:

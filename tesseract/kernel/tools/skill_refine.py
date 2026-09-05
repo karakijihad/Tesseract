@@ -1,21 +1,29 @@
-"""skill_refine tool — propose a revised body for an existing active skill.
+"""skill_refine tool — revise an existing active skill.
 
-Phase 4 (capability-growth) follow-up. The chat-side companion to the
-`skill_refinement` scheduler job: when the assistant notices a live skill's instructions
-are stale or wrong, it drafts an improved SKILL.md and files a `skill_refinement`
-card. It does NOT apply the change — activation stays with the operator (the
-card's approve route overwrites the live SKILL.md). Same invariant as every
-Phase-4 surface: no skill mutates live without operator approval.
+The chat-side companion to the `skill_refinement` scheduler job: when the
+assistant notices a live skill's instructions are stale or wrong, it drafts an
+improved SKILL.md and this tool replaces the live one.
 
-Files a `skill_refinement` WorkspaceEvent with `{name, current_markdown,
-proposed_markdown}`; the pending file is the LIVE skill (unchanged until
-approve). Dedups against an already-open card for the same skill.
+**The gate is the approval.** The tool's posture is whatever `permissions.yaml`
+says for the mode the install runs in: `ask` where the operator keeps the
+decision, so the prompt they answer IS the approval, and `auto` where they have
+given the assistant that decision. It used to file a card the operator had to
+click regardless of mode, which meant an install set to run on its own still
+stopped here, and a hardcoded ASK bypassed the file that is the authority on
+what asks.
+
+The revision goes through `brain/skills.py::replace_skill_body`, the one path
+that changes a live skill, so a playbook's previous revision is kept under
+`history/<version>/` and a proposal that is not a later revision is refused
+before anything is touched. A `skill_refinement` card is still filed, as the
+record of what changed and why, and it is settled as applied.
+
+Unattended (no operator on any surface) this is refused like any other write.
 """
 
 from __future__ import annotations
 
 import logging
-import tempfile
 from pathlib import Path
 from typing import Any, Callable, ClassVar, Optional
 
@@ -25,6 +33,7 @@ from tesseract.brain.skills import (
     SKILL_FILENAME,
     list_skills_names,
     load_skill_folder,
+    replace_skill_body,
 )
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
 from tesseract.workspace_events import EventStore, WorkspaceEvent
@@ -38,12 +47,12 @@ class SkillRefineInput(BaseModel):
     proposed_markdown: str = Field(
         description=(
             "The full revised SKILL.md (frontmatter + body). Its frontmatter "
-            "`name` must equal `name`. Applied to the live skill only on "
-            "operator approval."
+            "`name` must equal `name`. For a playbook, `version` must be a "
+            "whole number greater than the live one; the live revision is kept."
         )
     )
     rationale: str = Field(
-        description="Why the skill needs revising — shown to the operator."
+        description="Why the skill needs revising. Recorded on the card."
     )
 
 
@@ -52,16 +61,17 @@ class SkillRefineTool(Tool):
     risk_class: ClassVar[str] = "propose"
 
     group: ClassVar[str] = "extending-yourself"
-    summary: ClassVar[str] = "Propose a revised body for an existing active skill."
+    summary: ClassVar[str] = "Revise an existing active skill or playbook."
     use_when: ClassVar[str] = (
         "Use when a live skill's instructions are stale, wrong, or caused "
-        "repeated failures. Files a card; the live skill is unchanged until "
-        "the operator approves."
+        "repeated failures, or when a playbook needs a step changed. Replaces "
+        "the live file; a playbook's previous revision is kept."
     )
     not_when: ClassVar[str] = (
-        "for a skill that does not exist yet, use `skill_create` instead — "
+        "for a skill that does not exist yet, use `skill_create` instead. "
         "this tool only refines an already-active one."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(
         self,
@@ -69,10 +79,15 @@ class SkillRefineTool(Tool):
         event_store: Optional[EventStore] = None,
         *,
         app_provider: Optional[Callable[[], Any]] = None,
+        tool_names: Optional[Callable[[], Optional[frozenset[str]]]] = None,
     ) -> None:
         self._skills_dir = skills_dir
         self._event_store = event_store
         self._app_provider = app_provider
+        # The live registry's names, for the door a revised playbook goes
+        # through: a step naming a tool the runtime does not have is refused
+        # here as it is in `skill_create`.
+        self._tool_names = tool_names or (lambda: None)
 
     @property
     def name(self) -> str:
@@ -89,7 +104,8 @@ class SkillRefineTool(Tool):
         return False
 
     def check_permissions(self, tool_input: BaseModel, context: ToolContext) -> PermissionResult:
-        return PermissionResult.ASK
+        # `permissions.yaml` decides, per mode. See the module docstring.
+        return PermissionResult.PASSTHROUGH
 
     async def run(self, tool_input: BaseModel, context: ToolContext) -> ToolResult:
         inp = (
@@ -106,95 +122,51 @@ class SkillRefineTool(Tool):
                 ),
                 is_error=True,
             )
-
-        validation_error = _validate_proposal(inp.name, inp.proposed_markdown)
-        if validation_error:
-            return ToolResult(output=validation_error, is_error=True)
-
-        if self._event_store is None:
-            return ToolResult(
-                output="No workspace event store wired — cannot file a refinement card.",
-                is_error=True,
-            )
-
-        # Dedup: don't stack a second open card for the same skill.
-        try:
-            open_cards = [
-                ev for ev in self._event_store.list_events(
-                    kinds=("skill_refinement",), status="pending",
-                )
-                if (ev.payload or {}).get("name") == inp.name
-            ]
-        except Exception:
-            open_cards = []
-        if open_cards:
-            return ToolResult(
-                output=(
-                    f"A refinement card for {inp.name!r} is already open "
-                    f"({open_cards[0].event_id}). Resolve it before proposing another."
-                ),
-                is_error=True,
-            )
+        if not inp.proposed_markdown.strip():
+            return ToolResult(output="proposed_markdown must not be empty.", is_error=True)
 
         current = _read_current(self._skills_dir, inp.name)
-        event = WorkspaceEvent.new(
-            kind="skill_refinement",
-            source="agent",
-            title=f"Skill refinement: {inp.name}",
-            summary=inp.rationale,
-            payload={
-                "name": inp.name,
-                "current_markdown": current,
-                "proposed_markdown": inp.proposed_markdown,
-                "origin": "skill_refine",
-            },
+        err = replace_skill_body(
+            self._skills_dir, inp.name, inp.proposed_markdown, tool_names=self._tool_names()
         )
-        try:
-            self._event_store.append_event(event)
-        except Exception:
-            logger.exception("skill_refine: append card failed for %s", inp.name)
-            return ToolResult(output="Failed to file the refinement card.", is_error=True)
+        if err is not None:
+            return ToolResult(output=f"Not applied: {err}", is_error=True)
 
-        try:
-            if self._app_provider is not None:
-                app = self._app_provider()
-                if app is not None:
-                    await broadcast_workspace_event(app, event)
-        except Exception:
-            logger.warning("skill_refine: broadcast failed for %s", inp.name, exc_info=True)
-
-        return ToolResult(
-            output=(
-                f"Filed a refinement proposal for {inp.name} ({event.event_id}). "
-                "The live skill is unchanged until the operator approves the card."
+        revised = load_skill_folder(self._skills_dir / inp.name)
+        version = f" v{revised.version}" if revised is not None and revised.version else ""
+        note = ""
+        if self._event_store is not None:
+            event = WorkspaceEvent.new(
+                kind="skill_refinement",
+                source="agent",
+                title=f"Skill revised: {inp.name}{version}",
+                summary=inp.rationale,
+                payload={
+                    "name": inp.name,
+                    "current_markdown": current,
+                    "proposed_markdown": inp.proposed_markdown,
+                    "origin": "skill_refine",
+                },
             )
-        )
+            try:
+                self._event_store.append_event(event)
+                self._event_store.update_event_status(
+                    event.event_id, "applied", reason="applied by skill_refine"
+                )
+                note = f" Recorded as {event.event_id}."
+            except Exception:
+                logger.exception("skill_refine: recording the revision failed for %s", inp.name)
+                note = " The revision is live; recording it in the Inbox failed."
+            else:
+                try:
+                    if self._app_provider is not None:
+                        app = self._app_provider()
+                        if app is not None:
+                            await broadcast_workspace_event(app, event)
+                except Exception:
+                    logger.warning("skill_refine: broadcast failed for %s", inp.name, exc_info=True)
 
-
-def _validate_proposal(name: str, proposed: str) -> str | None:
-    """Round-trip the proposed SKILL.md; return an error message or None."""
-    if not proposed.strip():
-        return "proposed_markdown must not be empty."
-    tmp_root = Path(tempfile.mkdtemp())
-    folder = tmp_root / name
-    folder.mkdir(parents=True, exist_ok=True)
-    try:
-        (folder / SKILL_FILENAME).write_text(proposed, encoding="utf-8")
-        entry = load_skill_folder(folder)
-        if entry is None:
-            return "proposed_markdown failed loader validation (frontmatter/size)."
-        if entry.name != name:
-            return f"proposed frontmatter name {entry.name!r} must match {name!r}."
-        return None
-    except Exception as exc:  # noqa: BLE001
-        return str(exc)
-    finally:
-        try:
-            (folder / SKILL_FILENAME).unlink(missing_ok=True)
-            folder.rmdir()
-            tmp_root.rmdir()
-        except OSError:
-            pass
+        return ToolResult(output=f"Revised {inp.name}{version}; the live skill is updated.{note}")
 
 
 def _read_current(skills_dir: Path, name: str) -> str:

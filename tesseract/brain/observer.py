@@ -83,7 +83,10 @@ class ObserverConfig:
     timeout_seconds: int
     max_retries: int
     reasoning_effort: str = ""
+    # Which catalog tier the role rides, so its cost rows say so themselves.
+    tier: str = ""
     use_responses_api: bool = False
+    prompt_cache_explicit: bool = False
     stream: bool = True
 
     @classmethod
@@ -101,7 +104,9 @@ class ObserverConfig:
             timeout_seconds=provider_cfg["timeout_seconds"],
             max_retries=provider_cfg["max_retries"],
             reasoning_effort=entry.get("reasoning_effort", ""),
+            tier=entry.get("tier", ""),
             use_responses_api=bool(entry.get("use_responses_api", False)),
+            prompt_cache_explicit=bool(entry.get("prompt_cache_explicit", False)),
             stream=bool(entry.get("stream", True)),
         )
 
@@ -169,6 +174,7 @@ class Observer:
             context_window=self._config.context_window,
             reasoning_effort=self._config.reasoning_effort,
             use_responses_api=self._config.use_responses_api,
+            prompt_cache_explicit=self._config.prompt_cache_explicit,
             stream=self._config.stream,
         )
 
@@ -224,12 +230,11 @@ class Observer:
             logger.info("observer skipped — %s", exc)
             return ""
         except asyncio.TimeoutError:
-            # Counted, like the incremental path. These two handlers used to
-            # disagree: a hang here only dropped the observation, so a
-            # provider that accepts the connection and never streams could
-            # cost the full timeout on every operator-triggered `/observe`
-            # forever with the breaker still green. The breaker is per
-            # provider-entry, not per call path, so both paths feed it.
+            # Counted, like the incremental path. Dropping the observation
+            # without counting would let a provider that accepts the connection
+            # and never streams cost the full timeout on every
+            # operator-triggered `/observe` with the breaker still green. The
+            # breaker is per provider-entry, not per call path.
             logger.warning(
                 "observer call exceeded %ss (provider %s/%s hung) — counting as failure",
                 self._config.timeout_seconds,
@@ -240,7 +245,7 @@ class Observer:
             return ""
         # Stateless and incremental paths share the same counter so the
         # ObserverStatsChip "N obs" / "N tok" / "last fired" reading reflects
-        # *every* model invocation, not just stateful ones (fix-pass 2026-05-01).
+        # *every* model invocation, not just stateful ones.
         # Lock matches `observe_incremental`'s mutation site so concurrent
         # stateless callers don't race the counters.
         async with self._lock:
@@ -353,6 +358,14 @@ class Observer:
         extra_placeholders: dict[str, str] | None = None,
         user_nudge: str = "Emit your one observation now, or NONE.",
     ) -> list[dict[str, Any]]:
+        # One funnel for both `observe` and `observe_incremental`, which is
+        # why the invocation is recorded here: it is the point where the card
+        # becomes a model call, and counting it at boot (where the observer is
+        # built) would say it ran on a machine that never observed anything.
+        from tesseract.agents.invocations import record as _record_invocation
+
+        _record_invocation(self._agent_def.name or "observer", via="observer")
+
         return [
             {
                 "role": "system",
@@ -407,10 +420,13 @@ class Observer:
             self._cost_ledger.check_preflight("observer_agent")
 
         collected: list[str] = []
+        # The provider's own usage dict, kept whole rather than unpacked into
+        # locals: `CostUsage.from_raw` is the one place that decides what a
+        # missing key means, and three copies of that decision is what this
+        # function used to be one of.
+        usage_raw: dict[str, Any] = {}
         input_tokens = 0
         output_tokens = 0
-        cached_tokens = 0
-        cache_creation_tokens = 0
         try:
             async for chunk in self._adapter.stream(
                 messages=messages, tools=None, options=self.options
@@ -420,10 +436,9 @@ class Observer:
                 elif chunk.type == ChunkType.STOP:
                     usage = chunk.raw.get("usage") if chunk.raw else None
                     if isinstance(usage, dict):
+                        usage_raw = dict(usage)
                         input_tokens = int(usage.get("input_tokens") or 0)
                         output_tokens = int(usage.get("output_tokens") or 0)
-                        cached_tokens = int(usage.get("cached_tokens") or 0)
-                        cache_creation_tokens = int(usage.get("cache_creation_tokens") or 0)
                 elif chunk.type == ChunkType.ERROR:
                     logger.warning("observer stream error: %s", chunk.error)
                     return None, output_tokens
@@ -434,18 +449,17 @@ class Observer:
         joined = "".join(collected)
         if output_tokens == 0 and joined:
             output_tokens = max(1, len(joined) // 4)
+            # The estimate replaces the provider's figure on the row too, so
+            # what is billed and what is recorded stay the same number.
+            usage_raw["output_tokens"] = output_tokens
 
         if self._cost_ledger is not None and (input_tokens or output_tokens):
             try:
                 self._cost_ledger.record(
                     "observer_agent",
                     self._config.model,
-                    CostUsage(
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                        cached_tokens=cached_tokens,
-                        cache_creation_tokens=cache_creation_tokens,
-                    ),
+                    CostUsage.from_raw(usage_raw),
+                    tier=self._config.tier or "",
                 )
             except RuntimeError:
                 logger.exception("observer cost record failed")

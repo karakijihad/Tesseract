@@ -26,9 +26,9 @@ trees:
     keep_days: 14
     action: delete
 
-  # The live drawer holds a working week; a conversation older than that is
+  # History holds a working week; a conversation older than that is
   # marked archived where it is — same file, same id, same creation date —
-  # and stays reachable from the drawer's archive view. Never deleted:
+  # and stays reachable from the rail's archive tab. Never deleted:
   # removing a conversation is your own act, through the app.
   sessions:
     keep_days: 7
@@ -38,7 +38,16 @@ trees:
   # delegation. Aged on the newest file inside, so a lane still being written
   # to is never taken.
   lane_archives:
-    keep_days: 60
+    keep_days: 10
+    action: delete
+
+  # One copy of the whole project per delegated task that edited code, kept
+  # after the task finished. A task that did NOT finish cleanly keeps its copy
+  # whatever this says: that copy is the only place its work survives, and the
+  # app would rather hold a stale one than lose the only output of a task that
+  # went wrong.
+  worker_archives:
+    keep_days: 7
     action: delete
 
   # One file per backend launch, so the set grows with launches rather than
@@ -66,11 +75,23 @@ trees:
     keep_days: 30
     action: delete
 
+  # The drift check's record of how the runtime is trending. One row per run,
+  # in files named by date. Only the latest row is ever read — drift is a
+  # state, not a count — so a window removes history behind a verdict that
+  # stays. The watchman's own judge writes no dated files: its standing-fault
+  # store is a live pointer like `latest.json`, and it forgets a recovered
+  # fault two days after announcing it.
+  conscience:
+    keep_days: 60
+    action: delete
+
   # Every permission decision the runtime has made — the record an
   # investigation reads. Rows older than the window move to a dated file in
   # approvals-archive/ and are never dropped; `delete` is refused at load.
-  # 90 days is the window, not the lifetime: nothing here shortens how long
-  # the evidence exists, only how much of it the live file carries.
+  # The window is not the lifetime: nothing here shortens how long the
+  # evidence exists, only how much of it the live file carries. No number is
+  # written in this comment on purpose, because the window below is editable
+  # from the app and a comment restating it goes stale the first time it is.
   approvals_ledger:
     keep_days: 90
     action: archive
@@ -84,9 +105,39 @@ trees:
     keep_days: 90
     action: delete
 
-# Deliberately not swept, so their absence is a decision rather than an
-# oversight: runtime/logs/audit/*.jsonl, governor/pauses.jsonl and
-# provider-health/*.jsonl are written per event and are small enough that a
-# window would cost more than it saves. The aggregate <process>.log files are
-# bounded by size rotation. If one of these starts growing, it gets a row
-# here rather than a special case somewhere else.
+  # The full record of every finished agenda item, bucketed by the month it
+  # closed, and the index rows that describe it. Before a record is deleted,
+  # one compact line about it is written to agenda/history/, which is never
+  # aged, so an old task can still be named and counted. The completion
+  # figures on the Autonomy panel read the index, so they cover this window.
+  agenda_records:
+    keep_days: 180
+    action: delete
+
+  # One record per conversation turn, in a directory named for the day it
+  # started: the steps it took, and the one outcome it ended on. Recovery
+  # reads the unfinished ones at boot, which is a question about the last few
+  # minutes, and everything else it answers is about the last few days.
+  # Deleted rather than archived because the conversation itself is the
+  # durable copy: the transcript keeps what was said, and this keeps how the
+  # turn ran. Set `archive` to keep the old records in runtime/turns/archive/.
+  turn_manifests:
+    keep_days: 30
+    action: delete
+
+  # One row each time the event loop was blocked long enough to threaten the
+  # supervisor's heartbeat, with the frames it was in. Written only when it
+  # happens, so a healthy machine adds nothing for weeks and a bad afternoon
+  # adds a few hundred rows. Deleted rather than archived: the value is in
+  # comparing this week with last week, and a block from the spring explains
+  # nothing about today.
+  loop_stalls:
+    keep_days: 30
+    action: delete
+
+# What is deliberately NOT swept is declared in tesseract/retention/policy.py
+# as `KEPT`, not as a comment here: from a directory listing a decision and an
+# oversight look identical, so the app subtracts both lists from what it finds
+# under the log trees and shows whatever is left as a tree nothing has decided
+# about. If one of those starts growing, it gets a row above or a `Kept`
+# entry, rather than a special case somewhere else.

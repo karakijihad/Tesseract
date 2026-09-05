@@ -29,6 +29,7 @@ class ProjectListTool(Tool):
         "what is registered and which project is currently active."
     )
     not_when: ClassVar[str] = ""
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -49,7 +50,7 @@ class ProjectListTool(Tool):
 
         store = ProjectStore()
         try:
-            projects, active = store.snapshot()
+            projects, active, _identity = store.snapshot()
         except ProjectStoreError as exc:
             return ToolResult(output=f"project_list: {exc}", is_error=True)
         # `active` is resolved against the roster, so an id pointing at a

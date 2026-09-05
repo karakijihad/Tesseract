@@ -26,7 +26,7 @@ _CHUNK_CATEGORY = {
 }
 
 
-# WP-2: turn_id is stamped only on envelopes whose meaning is scoped to a
+# turn_id is stamped only on envelopes whose meaning is scoped to a
 # single chat or synthetic-workspace turn. Broadcast envelopes (cost
 # delta, log_error, agenda/worker/governor state changes, workspace
 # events) are out-of-turn signals — they cross turn boundaries and would
@@ -34,6 +34,11 @@ _CHUNK_CATEGORY = {
 # if they inherited a parent task's `syn:` id via `loop.create_task`
 # context capture.
 _TURN_SCOPED_ENVELOPE_TYPES: frozenset[str] = frozenset({
+    # Stats describe one chat's history, and a conductor fan-out emits
+    # them for chats the operator is not looking at. Without the stamp the
+    # frontend cannot tell which, and the Settings bar drew whichever
+    # arrived last.
+    "session_stats",
     "loop_start",
     "loop_end",
     "stream_start",
@@ -299,11 +304,10 @@ def make_voice_woken(session_id: str) -> dict[str, Any]:
     """`voice_woken` envelope — the wake phrase just landed, mid-utterance.
 
     Sent the moment the decoder hears it, not when the operator stops
-    talking. That timing is the whole reason this exists: the gate used to
-    decide on the committed buffer, so someone could speak for a minute and
-    only then learn that nothing had been listening. There was no instant at
-    which a truthful "go ahead" could have been shown, because nothing had
-    decided yet.
+    talking. That timing is the whole reason this exists: deciding on the
+    committed buffer instead lets someone speak for a minute and only then
+    learn that nothing was listening, with no instant at which a truthful
+    "go ahead" could have been shown.
 
     Fires at most once per utterance — it marks an edge, not a state. A
     second occurrence of the phrase in the same breath is the same answer.
@@ -417,7 +421,7 @@ def make_config_reloaded(
     detail: dict[str, Any],
     ok: bool,
 ) -> dict[str, Any]:
-    """Phase 18 — `config_reloaded` envelope. Fired by `ConfigWatcher`
+    """`config_reloaded` envelope. Fired by `ConfigWatcher`
     whenever a file under `tesseract/config/*.yaml` changes (or fails to
     reload). Frontend toasts the summary and bumps `configReloadCount`
     so dependent panels can refetch on demand. `ok=False` flips the
@@ -473,7 +477,7 @@ def make_tasks_state(
     *,
     items: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Phase 3 — operator-visible todo checklist (Claude Code TodoWrite
+    """Operator-visible todo checklist (Claude Code TodoWrite
     analog). Fired after `tasks_set` / `tasks_update` TOOL_RESULT lands.
     `items` is the full list (post-mutation); the frontend replaces
     its local snapshot wholesale rather than diffing — keeps the wire
@@ -494,7 +498,7 @@ def make_queued_message(
     queue_size: int,
     position: int,
 ) -> dict[str, Any]:
-    """Phase 2 / conversation-layer Task 4.2 (Q2) — operator typed/voiced a
+    """The operator typed or voiced a
     follow-up while a turn is in flight for that chat. Emitted immediately
     so the frontend can render a "queued" badge under the active assistant
     bubble. `queue_size` is the depth AFTER the new entry was added;
@@ -529,7 +533,7 @@ def make_steered(
     is stamped explicitly (not left to the turn-scoped ContextVar) since a
     steer can target any open chat, not just the one currently focused.
 
-    `applied` (Task 5.2 review fix-pass): True means `text` actually landed
+    `applied`: True means `text` actually landed
     in the running turn's inject queue (the branch above). `handle_steer`
     also degrades to a normal `_start_turn` send when the focused chat's
     turn finishes right before the steer lands — that path passes
@@ -553,8 +557,8 @@ def make_steer_rejected(
     text: str,
     reason: str,
 ) -> dict[str, Any]:
-    """conversation-layer Task 5.1 (Q3), review fix-pass — a steer for a
-    BACKGROUND (non-focused) chat with no active turn is dropped rather than
+    """A steer for a BACKGROUND (non-focused) chat with no active turn is
+    dropped rather than
     misrouted into the focused chat (`_start_turn` can only target
     `session.active_chat_id`). House convention is that drops are never
     silent (cf. `make_queue_overflow` above): this envelope tells the

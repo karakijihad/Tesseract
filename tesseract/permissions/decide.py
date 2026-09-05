@@ -35,6 +35,7 @@ deleted.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from tesseract.kernel.tools.base import (
@@ -43,23 +44,24 @@ from tesseract.kernel.tools.base import (
     ToolContext,
     ToolResult,
 )
-from tesseract.paths import home_dir, install_root
+from tesseract.paths import home_dir, install_root, secret_path_component
 from tesseract.permissions import approval_log
 from tesseract.permissions.path_validator import validate_path
-from tesseract.permissions.policy import PermissionPolicy
+from tesseract.permissions.policy import WRITE_PATH_FIELDS, PermissionPolicy
 
 AskFn = Callable[[Tool, Any, ToolContext], Awaitable[bool]]
 
-# Tools whose path arguments are sent through `validate_path` before the
-# tool runs, mapped to the raw-input keys to validate. Audit fix C1:
-# 2026-04-29. file_copy validates only its destination here (its source is a
-# read, and appears in `_READ_PATH_TOOLS` below); file_move validates both
-# ends (removing the source is a write).
-_WRITE_PATH_TOOLS: dict[str, tuple[str, ...]] = {
-    "file_write": ("file_path", "path"),
-    "file_copy": ("dest_path",),
-    "file_move": ("source_path", "dest_path"),
-}
+# Tools whose path arguments are sent through `validate_path` before the tool
+# runs, mapped to the raw-input keys to validate. file_copy validates only its
+# destination here (its source is a read, and appears in `_READ_PATH_TOOLS`
+# below); file_move validates both ends, because removing the source is a
+# write.
+#
+# The map itself lives in `policy.py`, because the posture resolver needs the
+# same answer and knew only `file_path`/`path` while this list sat here. An
+# override written for the transfer verbs therefore matched nothing and still
+# read as closed, which is how a copy onto the soul resolved AUTO.
+_WRITE_PATH_TOOLS = WRITE_PATH_FIELDS
 
 # Read-side path tools. Until this existed, `validate_path` ran only against
 # the write tools, so `file_read` with an absolute path reached any file on
@@ -100,8 +102,8 @@ logger = logging.getLogger(__name__)
 #: The two shapes a gated call comes back to the model in. Named here because
 #: `workspace/OPERATING.md` teaches the model to tell them apart, and that
 #: paragraph is generated from these two constants rather than transcribed —
-#: a reworded refusal used to leave the document describing a sentence the
-#: runtime had stopped sending.
+#: a reworded refusal would otherwise leave the document describing a
+#: sentence the runtime no longer sends.
 DENIED_PREFIX = "permission denied"
 #: NOT "declined". `ask_fn` returns one bool for two different events and the
 #: ledger keeps them apart (`result: deny` vs `result: timeout, actor:
@@ -126,6 +128,83 @@ NOT_APPROVED_TEMPLATE = (
 )
 
 
+
+def _gated_path_anchors() -> tuple[str, ...]:
+    """Every root a gated tool resolves a relative path against.
+
+    Not a guess and not a mode: the actual, enumerated set, because the tools
+    disagree with each other and each disagreement has cost a finding.
+
+    - ``home_dir()``   — `file_copy`/`file_move` via
+      `file_write.py::_resolve_for_check`, and `file_write` itself.
+    - ``install_root()`` — the read boundary `validate_path` joins a relative
+      read path onto.
+    - ``Path.cwd()``   — `vault_ingest` opens a bare ``Path(source_path)``
+      (`kernel/tools/vault_ingest.py`), and the `channel_send_*` media tools do
+      the same, so for those the process CWD IS the anchor.
+
+    Resolved at call time. The CWD can move, and a set captured at import would
+    be the stale-list problem this function exists to replace.
+
+    Every root is resolved defensively and a root that cannot be resolved is
+    DROPPED rather than raised. `Path.cwd()` raises when the directory the
+    process was launched from has been deleted underneath it, which is a real
+    state, and this is called inside the permission gate: an exception here is
+    a tool call that got neither an allow nor a deny and left no row in the
+    approval log. Losing one anchor narrows the check to the rest; losing the
+    gate refuses nothing at all.
+    """
+    anchors: list[str] = []
+    for root in (home_dir, install_root, Path.cwd):
+        try:
+            anchors.append(str(root()))
+        except (OSError, RuntimeError, ValueError):
+            logger.warning("secret-path anchor unavailable: %s", root.__name__)
+    return tuple(anchors)
+
+
+def _secret_component(raw_path: str, anchors: tuple[str, ...]) -> str | None:
+    """The credential-bearing component of `raw_path`, under EVERY root a tool
+    might resolve it against.
+
+    This mechanism has been wrong four times, and every one was the same
+    mistake: the check looked at a different file from the one the tool would
+    open, because it committed to ONE anchor.
+
+    1. It resolved against the process CWD alone. `file_copy`/`file_move`
+       anchor at `home_dir()`, so an ordinary-named link in the state root was
+       invisible here and followed there.
+    2. It was anchored per MODE. `file_copy` carries its source in the READ
+       map, whose root is `install_root()`, while the transfer resolves at
+       `home_dir()` — parent and child, still disagreeing.
+    3. It took `home_dir()` and `install_root()` and dropped the CWD, which is
+       exactly what `vault_ingest` and the media tools use.
+    4. A per-tool anchor map would be a third list beside the two path maps,
+       and both of those have gone stale inside one phase.
+
+    So it takes them ALL, from `_gated_path_anchors`. A false positive costs a
+    refusal on a path that is credential-named under one of the runtime's own
+    roots, which should be refused anyway; a false negative hands out the
+    store. The trade is not close, and this is deliberately over-inclusive.
+
+    Every call into `pathlib` is guarded, construction included. This runs
+    INSIDE the permission gate, and an exception escaping it is a tool call
+    that got neither an allow nor a deny and left no row in the approval log.
+    """
+    builders = [lambda: Path(raw_path)]
+    for anchor in anchors:
+        builders.append(lambda a=anchor: Path(a) / raw_path)
+        builders.append(lambda a=anchor: (Path(a) / raw_path).resolve())
+    for build in builders:
+        try:
+            offender = secret_path_component(build())
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if offender is not None:
+            return offender
+    return None
+
+
 async def evaluate(
     tool: Tool,
     validated: Any,
@@ -141,7 +220,13 @@ async def evaluate(
     channel for non-read-only tools, or operator decline). Returns `None`
     when the caller should run `await tool.run(validated, context)`.
     """
-    summary = approval_log.summarize_input(raw_input)
+    # Redacted BEFORE it is summarised, because summarising only truncates.
+    # `approvals.jsonl` records every ASK call whether the operator allows it
+    # or refuses it, and it is rolled to an archive rather than deleted, so a
+    # password typed into a page lived there for the life of the install. The
+    # tool says which of its own fields must not be kept
+    # (`Tool.redacted_input_fields`); a tool that declares none is unchanged.
+    summary = approval_log.redacted_summary(tool, raw_input)
 
     decision = tool.check_permissions(validated, context)
     if decision == PermissionResult.DENY:
@@ -173,6 +258,78 @@ async def evaluate(
             raw_path = raw_input.get(path_key) or ""
             if not raw_path:
                 continue
+            # Credential-bearing names, refused before anything else looks
+            # at the path. Five properties, and they are written down together
+            # because this mechanism has now been found wanting twice and each
+            # time the fix satisfied the property in front of it:
+            #
+            #   1. EVERY path field of EVERY gated tool is checked, not the
+            #      read-mode ones. `file_move` carries its source in the WRITE
+            #      map (it moves a file, so containment is judged against the
+            #      write root), and a mode-conditional check read straight past
+            #      it while refusing `file_copy` beside it.
+            #   2. Seen the way the TOOL will see it, under EVERY root any
+            #      gated tool resolves against (`_gated_path_anchors`). Four
+            #      findings landed here, each because the check committed to
+            #      one anchor and some tool used another: the CWD alone, then
+            #      per-mode, then home and install without the CWD that
+            #      `vault_ingest` and the media tools actually use. Over-
+            #      inclusive on purpose: a false positive refuses a
+            #      credential-named path under one of the runtime's own roots.
+            #   3. Component-wise, never leaf-only, because a directory is as
+            #      good a hiding place as a name.
+            #   4. One implementation, shared with the read tools
+            #      (`paths.py::secret_path_component`), so the gate and
+            #      `_path_anchor.py` cannot come to refuse different sets.
+            #   5. Fails closed and never raises out of the gate. BOTH calls
+            #      are guarded, and ValueError is in the guard: a path with an
+            #      embedded null raises ValueError, not OSError, and a guard
+            #      that named only OSError and RuntimeError let it escape
+            #      `evaluate` as an unhandled exception with no posture
+            #      decision recorded. The property was written here before it
+            #      was true, which is its own lesson.
+            #
+            # Checking WRITE fields too is deliberate, not a side effect of
+            # covering `file_move`. A file the assistant creates under a
+            # credential-bearing name is a file the read tools can never open
+            # again, which is the write-then-cannot-read asymmetry
+            # `READABLE_STATE_PREFIXES` exists to prevent; refusing the write
+            # is the coherent half of refusing the read.
+            #
+            # What it is NOT is a boundary against code running as the same OS
+            # user, and no comment here may say otherwise.
+            offender = _secret_component(str(raw_path), _gated_path_anchors())
+            if offender is not None:
+                logger.warning(
+                    "secret path refused for %s: %s", tool.name, offender
+                )
+                await approval_log.record_ask(
+                    session_id=context.session_id,
+                    call_id=context.current_call_id,
+                    tool_name=tool.name,
+                    input_summary=summary,
+                    posture_source="secret_path",
+                    result="deny",
+                    actor="system",
+                )
+                return ToolResult(
+                    output=(
+                        f"{DENIED_PREFIX}: {tool.name} may not "
+                        + (
+                            f"create or overwrite {offender!r}, which is a "
+                            f"credential name. A file written under it could "
+                            f"never be read back."
+                            if mode == "write"
+                            else f"read {offender!r}, which holds credentials. "
+                            f"Key PRESENCE is reported by Settings; key VALUES "
+                            f"are not readable by design, and copying, moving, "
+                            f"ingesting or attaching the file is the same read."
+                        )
+                    ),
+                    is_error=True,
+                    denied_hard=True,
+                    deny_reason=f"secret_path: {offender}",
+                )
             valid, reason = validate_path(
                 str(raw_path), write_root=write_root, read_root=read_root, mode=mode
             )
@@ -310,8 +467,8 @@ async def evaluate(
 
     # Everything that reaches this line ran without anyone being asked.
     #
-    # It used to write nothing, on the reasoning that nothing was approved so
-    # there was no approval to log. That holds right up against
+    # Writing nothing here, on the reasoning that nothing was approved so
+    # there is no approval to log, holds right up against
     # `permissions.yaml`, which puts `memory_save`, `web_search` and
     # `delegate_coder` on AUTO, and against autonomy, which runs unattended:
     # the combination is mutating, outbound action with no durable record
@@ -358,6 +515,13 @@ def _resolve_posture_source(
                     if prefix and path_norm.startswith(prefix):
                         return "path"
         if policy.has_mode_override(tool_name):
+            return "mode"
+        # A mode baseline decided this call too, unless something under it
+        # spoke first. The ledger should say "mode" there rather than
+        # "default": nothing in `tools:` chose it.
+        if policy.mode_baseline() is not None and policy.default_posture(
+            tool_name
+        ) == policy.mode_baseline():
             return "mode"
     except AttributeError:
         return "default"

@@ -1,7 +1,6 @@
 """TTS streaming pipeline.
 
-Extracted from ``ws.py`` 2026-05-23 (codex audit m2 follow-up). Owns the
-per-sentence chained synth, the end-of-turn terminator flush, the
+Owns the per-sentence chained synth, the end-of-turn terminator flush, the
 voice-overage ask card, and the provider-failure toast. Reaches back
 into ``ws.py`` only for two side-effecting helpers (``_spawn_tracked``
 for tracked tasks and ``_emit_cost_state`` for the post-unlock HUD
@@ -135,7 +134,7 @@ async def _maybe_emit_tts_sentences(
     if engine is None:
         return
     mode = normalize_voice_mode(getattr(session, "voice_mode", None))
-    # mirror-multi-chat inc.C — a background (non-active) chat turn streams text
+    # A background (non-active) chat turn streams text
     # to its slice but stays silent (D8).
     if tts_suppressed(session) or mode in SILENT_VOICE_MODES:
         return
@@ -333,14 +332,17 @@ async def _emit_tts_failure_instruction(
     exception type+message so the operator sees what actually broke;
     the ``log.exception`` already covered by the caller still hits the
     pulse via the log forwarder, but the toast is a faster signal.
-    Budget failures use the overage UX. Suppressed when the turn was
-    already cancelled — a torn-down HTTP request raising mid-flight
-    isn't a real provider failure.
+    Budget failures use the overage UX.
+
+    Deliberately NOT gated on ``session.current_turn_task``: a channel wake
+    turn clears that slot before it runs, and the provider outage that goes
+    unreported is exactly the one nobody is sitting in front of.
+
+    A closed socket is not a case to guard either: ``send_envelope`` drops the
+    frame and still writes the envelope to the session's event log.
     """
     state = _tts_state(session)
     if getattr(state, "tts_failure_notified", False):
-        return
-    if session.current_turn_task is None:
         return
     state.tts_failure_notified = True
     if exc is None:
@@ -393,11 +395,10 @@ def _lane_engine(app: web.Application, lane: str) -> str:
     engine = app.get("tts_engine")
     if engine is None or not lane:
         return lane
-    if lane == getattr(engine, "kokoro_provider_key", ""):
-        return "kokoro"
-    if lane == getattr(engine, "gemini_provider_key", ""):
-        return "cloud"
-    return lane
+    entry = getattr(engine, "lanes", {}).get(lane)
+    if entry is None:
+        return lane
+    return "cloud" if entry.adapter == "gemini" else entry.adapter
 
 
 def _lane_substitution(app: web.Application, provider: str) -> tuple[bool, str]:
@@ -418,13 +419,8 @@ def _lane_substitution(app: web.Application, provider: str) -> tuple[bool, str]:
     primary = getattr(engine, "provider_key", "")
     if not primary or provider == primary:
         return False, ""
-    if primary == getattr(engine, "kokoro_provider_key", ""):
-        reason = getattr(engine, "kokoro_disabled_reason", "")
-    elif primary == getattr(engine, "gemini_provider_key", ""):
-        reason = getattr(engine, "gemini_disabled_reason", "")
-    else:
-        reason = ""
-    return True, reason
+    entry = getattr(engine, "lanes", {}).get(primary)
+    return True, entry.disabled_reason if entry else ""
 
 
 async def _announce_lane_substitution(

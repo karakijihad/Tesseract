@@ -1,0 +1,33 @@
+/* The proportion bar. A track, and a fill across some part of it.
+
+   Lifted out of the tool usage chart when the playbook gauge beside it needed
+   the same bar. Its own sheet rather than a second copy in another surface's
+   file, so how wide, how tall and how rounded the app's bars are is answered
+   once. A caller decides the ratio and the surrounding layout; it never
+   decides the paint. */
+
+.meter {
+  display: block;
+  height: var(--space-3);
+  background: var(--panel-divider);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.meter__fill {
+  display: block;
+  height: 100%;
+  /* A ratio that rounds to nothing still has to be visible: a playbook read
+     once beside one read forty times is the reading, and a bar of zero pixels
+     says it was never read at all. */
+  min-width: 2px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+/* The one variant, and it carries meaning rather than decoration: a bar that
+   is how much of something went WRONG is not the same fact as how much of it
+   happened. */
+.meter__fill--bad {
+  background: var(--bad);
+}

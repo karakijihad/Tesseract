@@ -99,10 +99,11 @@ verbs:
   memory.search: "auto"
   vault.search: "auto"
   vault.query: "auto"
+  atlas.query: "auto"   # read-only walk over the derived graph
   memory.save: "ask"
   memory.update: "ask"
   vault.ingest: "auto"
-  # The whole lane surface runs unattended (operator's call, 2026-08-03): a
+  # The whole lane surface runs unattended, by the operator's decision: a
   # relay that stops for approval at every hop is not a relay. What this gives
   # up is real and worth naming — lane.send/lane.turn inject instruction text
   # into a CLI running outside this permission engine, and the ASK prompt was

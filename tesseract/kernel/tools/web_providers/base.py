@@ -9,6 +9,7 @@ quotas) lives only in the concrete provider modules (`brave.py`,
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
@@ -17,6 +18,8 @@ import httpx
 
 from tesseract import http_client
 from tesseract.kernel.tools.base import ToolResult
+
+log = logging.getLogger(__name__)
 
 # Called as `note_tripwire(drift_kind, evidence)` on every failure branch.
 # Optional: a tool passing `None` gets identical error handling with no
@@ -114,16 +117,23 @@ class WebSearchProvider(ABC):
     #: and a service switched off means the operator wants it off.
     service: str
 
+    #: Request keys that bias the answer rather than ask the question. When
+    #: the provider refuses a request and its body names one of these,
+    #: `fetch_json` drops it and asks once more instead of losing the search.
+    #: A model cannot see a provider's closed enum, so a value it guesses
+    #: here must never be the difference between results and none.
+    optional_params: tuple[str, ...] = ()
+
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Reject a bad `http_method` at class-definition time.
 
-        This used to be checked inside `fetch_json`, which is the wrong
-        altitude twice over: the failure arrived per request rather than once,
-        after an `httpx.AsyncClient` had been built for a call that was never
-        going to be sent, and as an uncaught traceback where every other
-        invalid-input path in this package returns a `ToolResult`. The value is
-        a class attribute written by hand, so it is knowable at import — and a
-        provider that cannot send a request should not survive being defined.
+        Checking this inside `fetch_json` is the wrong altitude twice over: the
+        failure arrives per request rather than once, after an
+        `httpx.AsyncClient` has been built for a call that was never going to be
+        sent, and as an uncaught traceback where every other invalid-input path
+        in this package returns a `ToolResult`. The value is a class attribute
+        written by hand, so it is knowable at import — and a provider that cannot
+        send a request should not survive being defined.
 
         Abstract intermediates are skipped: only a class that declares the
         attribute is checked, so a subclass hierarchy may fill it in later.
@@ -177,6 +187,25 @@ class FetchOutcome:
     error: ToolResult | None = None
 
 
+def _refused_optional_params(
+    provider: "WebSearchProvider", request: dict[str, Any], body: str
+) -> tuple[str, ...]:
+    """Which of the provider's optional keys this error body blames.
+
+    Matched against the response text rather than a parsed shape: every
+    provider words its validation errors differently, and the key's own name
+    appearing in the refusal is the one signal they all share. Only keys the
+    request actually carried are returned, so a body that merely mentions a
+    word cannot drop something that was never sent.
+    """
+    if not body:
+        return ()
+    lowered = body.lower()
+    return tuple(
+        key for key in provider.optional_params
+        if key in request and key.lower() in lowered
+    )
+
 async def fetch_json(
     provider: WebSearchProvider,
     *,
@@ -188,46 +217,73 @@ async def fetch_json(
     """Send `provider`'s request, map failures to operator-facing
     messages, and decode the JSON body. Shared by every tool in this
     package so the GET/POST -> status-check -> decode shape lives in
-    exactly one place."""
+    exactly one place.
+
+    **A hint the provider refuses does not cost the search.** A key named in
+    `provider.optional_params` is a bias, not the question: Brave's `country`
+    narrows results to a market it supports, and the model has to guess a
+    closed list it cannot see. Seven searches about Beirut were lost in one
+    day to `country=lb`, which Brave does not accept, while the same batch's
+    one search sent with `country=us` returned results. So a 4xx that names
+    such a key drops it and asks once more. Exactly once, and only when
+    something was actually dropped, so a provider that refuses every request
+    still fails after two calls rather than looping."""
     headers = provider.auth_headers(api_key)
+    dropped: tuple[str, ...] = ()
 
-    try:
-        async with http_client.async_client(timeout=timeout) as client:
-            if provider.http_method == "GET":
-                r = await client.get(provider.endpoint, headers=headers, params=request)
-            elif provider.http_method == "POST":
-                r = await client.post(provider.endpoint, headers=headers, json=request)
-            else:
-                # Unreachable: `WebSearchProvider.__init_subclass__` refuses
-                # any other value at class-definition time. Kept as an
-                # assertion so the branch cannot fall through silently and
-                # POST a GET provider's query params as a JSON body.
-                raise AssertionError(
-                    f"{type(provider).__name__}.http_method passed class-time "
-                    f"validation but is {provider.http_method!r}"
+    while True:
+        try:
+            async with http_client.async_client(timeout=timeout) as client:
+                if provider.http_method == "GET":
+                    r = await client.get(provider.endpoint, headers=headers, params=request)
+                elif provider.http_method == "POST":
+                    r = await client.post(provider.endpoint, headers=headers, json=request)
+                else:
+                    # Unreachable: `WebSearchProvider.__init_subclass__` refuses
+                    # any other value at class-definition time. Kept as an
+                    # assertion so the branch cannot fall through silently and
+                    # POST a GET provider's query params as a JSON body.
+                    raise AssertionError(
+                        f"{type(provider).__name__}.http_method passed class-time "
+                        f"validation but is {provider.http_method!r}"
+                    )
+        except httpx.TimeoutException:
+            if note_tripwire:
+                note_tripwire("latency_spike", {"timeout_seconds": timeout})
+            return FetchOutcome(error=ToolResult(output=provider.timeout_message(timeout), is_error=True))
+        except httpx.HTTPError as e:
+            if note_tripwire:
+                note_tripwire("http_error", {"exception": repr(e)})
+            return FetchOutcome(error=ToolResult(output=provider.request_error_message(e), is_error=True))
+
+        if r.status_code == 401:
+            if note_tripwire:
+                note_tripwire("unavailable", {"status_code": 401})
+            return FetchOutcome(error=ToolResult(output=provider.unauthorized_message(), is_error=True))
+        if r.status_code == 429:
+            if note_tripwire:
+                note_tripwire("http_error", {"status_code": 429, "reason": "rate limit"})
+            return FetchOutcome(error=ToolResult(output=provider.rate_limited_message(), is_error=True))
+        if r.status_code >= 400:
+            body = r.text[:200]
+            refused = _refused_optional_params(provider, request, body)
+            if refused and not dropped:
+                dropped = refused
+                request = {k: v for k, v in request.items() if k not in refused}
+                log.info(
+                    "%s refused %s; asking again without it",
+                    provider.service, ", ".join(refused),
                 )
-    except httpx.TimeoutException:
-        if note_tripwire:
-            note_tripwire("latency_spike", {"timeout_seconds": timeout})
-        return FetchOutcome(error=ToolResult(output=provider.timeout_message(timeout), is_error=True))
-    except httpx.HTTPError as e:
-        if note_tripwire:
-            note_tripwire("http_error", {"exception": repr(e)})
-        return FetchOutcome(error=ToolResult(output=provider.request_error_message(e), is_error=True))
-
-    if r.status_code == 401:
-        if note_tripwire:
-            note_tripwire("unavailable", {"status_code": 401})
-        return FetchOutcome(error=ToolResult(output=provider.unauthorized_message(), is_error=True))
-    if r.status_code == 429:
-        if note_tripwire:
-            note_tripwire("http_error", {"status_code": 429, "reason": "rate limit"})
-        return FetchOutcome(error=ToolResult(output=provider.rate_limited_message(), is_error=True))
-    if r.status_code >= 400:
-        body = r.text[:200]
-        if note_tripwire:
-            note_tripwire("http_error", {"status_code": r.status_code, "body": body})
-        return FetchOutcome(error=ToolResult(output=provider.http_error_message(r.status_code, body), is_error=True))
+                continue
+            if note_tripwire:
+                note_tripwire("http_error", {"status_code": r.status_code, "body": body})
+            return FetchOutcome(
+                error=ToolResult(
+                    output=provider.http_error_message(r.status_code, body),
+                    is_error=True,
+                )
+            )
+        break
 
     try:
         data = r.json()

@@ -1,11 +1,11 @@
-"""AU-16 S2 — ``DigestDailyJob``.
+"""``DigestDailyJob``.
 
-Daily UTC rollup of every seal produced on a given date into one global
+Daily rollup of every seal produced on a given date into one global
 digest file at ``memory-store/trees/global/<YYYY-MM-DD>.md``. The job
 is fully idempotent — it recomputes the day's file from the seal store
 every run, so reruns are cheap and converge to the same state.
 
-By default the job digests *today* (UTC). Callers can pass
+By default the job digests *today* on the operator's clock. Callers can pass
 ``ctx.config["target_date"]`` (ISO date string) to rebuild a specific
 day, useful when backfilling after a long downtime.
 """
@@ -15,9 +15,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 
+from tesseract.lib.clock import to_local
 from tesseract.memory.leaf_seals import Seal, iter_seals
 from tesseract.memory.trees.global_tree import write_daily_digest
 from tesseract.scheduler.base_job import BaseJob
@@ -32,7 +33,7 @@ def _collect_and_write(target: date) -> tuple[list[Seal], Path]:
     ``index_rebuild``'s FTS rebuild."""
     seals_today = [
         seal for seal in iter_seals()
-        if seal.sealed_at.astimezone(timezone.utc).date() == target
+        if to_local(seal.sealed_at).date() == target
     ]
     path = write_daily_digest(target, seals_today)
     return seals_today, path
@@ -43,7 +44,7 @@ class DigestDailyJob(BaseJob):
 
     Configuration via ``ctx.config``:
 
-    - ``target_date``: ISO date string. Defaults to ``ctx.fired_at`` UTC.
+    - ``target_date``: ISO date string. Defaults to the local day ``ctx.fired_at`` fell on.
     """
 
     uses_llm = False
@@ -55,7 +56,7 @@ class DigestDailyJob(BaseJob):
             target = (
                 date.fromisoformat(raw)
                 if raw
-                else ctx.fired_at.astimezone(timezone.utc).date()
+                else to_local(ctx.fired_at).date()
             )
         except ValueError:
             return JobResult(

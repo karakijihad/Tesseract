@@ -17,6 +17,7 @@ import { IconButton } from '../../components/common/IconButton';
 import { Button } from '../../components/common/Button';
 import { Input } from '../../components/common/Input';
 import { Textarea } from '../../components/common/Textarea';
+import { Markdown } from '../../components/common/Markdown';
 
 const POLL_MS = 1500;
 
@@ -174,7 +175,7 @@ export function LaneRenderer({ descriptor }: RendererProps) {
           {/* Armed, it asks again as a tick rather than growing into a word —
               the row is four icons wide and a fifth shape in it reads as a
               different control appearing. */}
-          <Hint label={confirmDelete ? 'Confirm — terminate lane' : 'Delete lane'}>
+          <Hint label={confirmDelete ? 'Confirm: terminate lane' : 'Delete lane'}>
             <IconButton
               ariaLabel={confirmDelete ? 'Confirm terminate lane' : 'Delete lane'}
               active={confirmDelete}
@@ -189,8 +190,12 @@ export function LaneRenderer({ descriptor }: RendererProps) {
         </div>
       ) : null}
       <div className="lane-card__stream" ref={scrollRef}>
+        {/* The cursor is the event's byte offset in the lane log, which is
+            its identity. `c`/`i` keep the two spaces apart: an event with no
+            cursor falls back to its position, and a bare `0` would otherwise
+            be the same key as the first line of the log. */}
         {(lane?.events ?? []).map((e, i) => (
-          <LaneEventRow key={`${e.cursor ?? i}`} event={e} />
+          <LaneEventRow key={e.cursor !== undefined ? `c${e.cursor}` : `i${i}`} event={e} />
         ))}
         {(lane?.events?.length ?? 0) === 0 ? (
           <div className="lane-card__empty t-meta">no activity yet</div>
@@ -199,10 +204,10 @@ export function LaneRenderer({ descriptor }: RendererProps) {
       <div className="lane-card__input">
         <Textarea
           className="lane-card__draft"
-          placeholder={gone ? 'lane closed — no longer reachable' : `Message ${name}…`}
+          placeholder={gone ? 'lane closed, no longer reachable' : `Message ${name}…`}
           value={draft}
           ariaLabel={`Message ${name}`}
-          rows={2}
+          rows={1}
           disabled={gone}
           onChange={setDraft}
           onKeyDown={(e) => {
@@ -229,7 +234,16 @@ export function LaneEventRow({ event }: { event: LaneEvent }) {
   switch (event.kind) {
     case 'assistant_text':
     case 'assistant_text_partial':
-      return <div className="lane-ev lane-ev--text">{String(p.text ?? '')}</div>;
+      // A lane's reply is prose, so it gets the app's markdown renderer.
+      // Printed raw, a delegate's file list arrived as literal asterisks
+      // and backticks.
+      return (
+        <div className="lane-ev lane-ev--text">
+          <Markdown streaming={event.kind === 'assistant_text_partial'}>
+            {String(p.text ?? '')}
+          </Markdown>
+        </div>
+      );
     case 'tool_use':
       return (
         <div className="lane-ev lane-ev--tool">
@@ -257,7 +271,7 @@ export function LaneEventRow({ event }: { event: LaneEvent }) {
       return msg ? <div className="lane-ev lane-ev--sent">{msg}</div> : null;
     }
     case 'turn_ended':
-      return <div className="lane-ev lane-ev--turn t-meta">— turn complete —</div>;
+      return <div className="lane-ev lane-ev--turn t-meta">turn complete</div>;
     case 'error':
       return <div className="lane-ev lane-ev--error">error: {String(p.message ?? p.error ?? '')}</div>;
     case 'closed':

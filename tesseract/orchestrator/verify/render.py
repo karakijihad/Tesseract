@@ -30,9 +30,9 @@ def _render_step(step: StepResult) -> list[str]:
     if step.outcome is StepOutcome.PASSED:
         return [f"{head} ({step.command})"]
     if step.outcome is StepOutcome.NOT_CONFIGURED:
-        return [f"{head} — {step.skipped_reason}"]
+        return [f"{head}, {step.skipped_reason}"]
 
-    lines = [f"{head} — {step.command}"]
+    lines = [f"{head}: {step.command}"]
     if step.exit_code is not None:
         lines.append(f"  exit code: {step.exit_code}")
     if step.skipped_reason:
@@ -49,11 +49,11 @@ def _render_step(step: StepResult) -> list[str]:
 def render_gate(result: GateResult) -> str:
     """Plain-text brief of a gate run. Not compressed — see `render_gate_for_model`."""
     if result.ok and result.vacuous:
-        headline = "verification gate: NOT RUN — no verify commands are configured"
+        headline = "verification gate: NOT RUN. No verify commands are configured"
     elif result.ok:
         headline = "verification gate: PASSED"
     elif result.blocked_steps and not result.failed_steps:
-        headline = "verification gate: BLOCKED — no step was allowed to run to completion"
+        headline = "verification gate: BLOCKED. No step was allowed to run to completion"
     else:
         headline = "verification gate: FAILED"
 

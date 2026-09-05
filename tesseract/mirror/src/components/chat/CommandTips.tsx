@@ -7,12 +7,12 @@ import { Chip } from '../common/Chip';
 interface Tip {
   cmd: string;
   description: string;
-  opensDrawer?: boolean;
+  opensRail?: boolean;
   opensResetDialog?: boolean;
 }
 
 const TIPS: Tip[] = [
-  { cmd: '/sessions', description: 'open the sessions drawer', opensDrawer: true },
+  { cmd: '/sessions', description: 'show the conversations rail', opensRail: true },
   { cmd: '/save',     description: 'save current session (add a name to fork)' },
   { cmd: '/reset',    description: 'clear chat (asks: reflect first?)', opensResetDialog: true },
   { cmd: '/compact',  description: 'summarize + trim history' },
@@ -20,7 +20,7 @@ const TIPS: Tip[] = [
 ];
 
 export function CommandTips() {
-  const setDrawerOpen = useUIStore((s) => s.setDrawerOpen);
+  const setChatRailOpen = useUIStore((s) => s.setChatRailOpen);
   const openResetDialog = useResetDialogStore((s) => s.openDialog);
 
   const run = (tip: Tip) => {
@@ -29,7 +29,7 @@ export function CommandTips() {
       return;
     }
     sendCommand(tip.cmd);
-    if (tip.opensDrawer) setDrawerOpen(true);
+    if (tip.opensRail) setChatRailOpen(true);
   };
 
   return (
@@ -41,7 +41,7 @@ export function CommandTips() {
             <Hint label={`Run ${t.cmd}`} position="bottom">
               <Chip onClick={() => run(t)}>{t.cmd}</Chip>
             </Hint>
-            <span className="command-tips-desc">— {t.description}</span>
+            <span className="command-tips-desc">{t.description}</span>
           </li>
         ))}
       </ul>

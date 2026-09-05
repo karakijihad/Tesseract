@@ -1,7 +1,7 @@
 """Runtime endpoints — operator-driven backend shutdown + supervisor
 visibility.
 
-AU-1 S2:
+Routes:
 
 * ``POST /api/runtime/shutdown`` writes operator_quit intent and
   triggers an aiohttp graceful shutdown. Operator-session-auth-gated;
@@ -82,7 +82,7 @@ async def get_status(request: web.Request) -> web.Response:
     Anonymous-readable on purpose — UI polls this without any session
     context. The data is operator-visible: backend uptime, supervisor
     pid + alive flag, latest intent (if any persisted between routes),
-    crash storm marker, AU-2 recovery summary. No secrets.
+    crash storm marker, recovery summary. No secrets.
     """
     home = TESSERACT_HOME
     pid, alive = _read_supervisor_pid(home)
@@ -287,11 +287,80 @@ async def post_runtime_restart(request: web.Request) -> web.Response:
     })
 
 
+async def get_config_replaced(request: web.Request) -> web.Response:
+    """GET /api/runtime/config-replaced — what the last update replaced.
+
+    ``{}`` when nothing was, which is most updates: a release that ships the
+    settings an install already has replaces nothing and says nothing.
+
+    The connect toast is a moment and this is the record of the same event.
+    An operator who has four panes of settings to put back cannot do it from a
+    message that has already faded, and the one thing they need after it is
+    gone is the list of files and the path to their old copy.
+    """
+    from tesseract.config_seed import config_replaced_marker_path
+
+    try:
+        payload = json.loads(
+            config_replaced_marker_path().read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return web.json_response({})
+    files = [str(name) for name in (payload.get("files") or [])]
+    if not files:
+        return web.json_response({})
+    return web.json_response({
+        "files": files,
+        "backup_dir": str(payload.get("backup_dir") or ""),
+        "version": str(payload.get("version") or ""),
+        "at": str(payload.get("at") or ""),
+    })
+
+
+async def post_config_replaced_dismiss(request: web.Request) -> web.Response:
+    """POST /api/runtime/config-replaced/dismiss — the operator has read it.
+
+    Deleting the marker is the whole of it. Nothing else reads the file, and a
+    dismissed flag inside it would be a second state to keep in step with the
+    one the notice actually asks about.
+
+    Localhost only, like every other write on this module. The blast radius is
+    one notice, but a remote caller clearing it means the operator is never
+    told their settings were reset, and there is no reason for that call to
+    come from anywhere but the cockpit.
+    """
+    from tesseract.config_seed import config_replaced_marker_path
+
+    if not is_localhost_request(request):
+        return web.json_response(
+            {"error": "the cockpit dismisses this, not a remote caller"},
+            status=401,
+        )
+
+    try:
+        config_replaced_marker_path().unlink(missing_ok=True)
+    except OSError as exc:
+        log.exception("runtime: could not clear the config-replaced marker")
+        return web.json_response({"error": str(exc)}, status=500)
+    return web.json_response({"dismissed": True})
+
+
 def register(app: web.Application) -> None:
     """Register the runtime routes. Called from ``app.py::_routes``."""
     app.router.add_get("/api/runtime/status", get_status)
     app.router.add_post("/api/runtime/shutdown", post_shutdown)
     app.router.add_post("/api/runtime/restart", post_runtime_restart)
+    app.router.add_get("/api/runtime/config-replaced", get_config_replaced)
+    app.router.add_post(
+        "/api/runtime/config-replaced/dismiss", post_config_replaced_dismiss
+    )
 
 
-__all__ = ["register", "get_status", "post_shutdown", "post_runtime_restart"]
+__all__ = [
+    "register",
+    "get_status",
+    "post_shutdown",
+    "post_runtime_restart",
+    "get_config_replaced",
+    "post_config_replaced_dismiss",
+]

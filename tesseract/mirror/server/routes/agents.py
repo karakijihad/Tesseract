@@ -1,4 +1,4 @@
-"""Agents registry REST routes — read-only until MO-8 (Provisional Registry)."""
+"""Agents registry REST routes — read-only."""
 
 from __future__ import annotations
 
@@ -25,11 +25,11 @@ log = logging.getLogger(__name__)
 def _load_bundle() -> Any | None:
     """The config bundle, or None if it cannot be read.
 
-    Loaded ONCE per request and threaded through the serializers. It used to be
-    loaded per agent inside `_resolve_model_ref`, which meant a full YAML parse
-    of the config tree for every row — with twenty agents, twenty parses on the
-    event loop, and `/api/agents` taking eight seconds while every other
-    request queued behind it.
+    Loaded ONCE per request and threaded through the serializers. Loading it
+    per agent inside `_resolve_model_ref` is a full YAML parse of the config
+    tree for every row — with twenty agents, twenty parses on the event loop,
+    and `/api/agents` taking eight seconds while every other request queues
+    behind it.
     """
     try:
         from tesseract.config.loader import ConfigError, load_config

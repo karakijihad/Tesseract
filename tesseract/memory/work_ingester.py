@@ -1,6 +1,6 @@
 """Chunkers + indexer entry points for session/workshop content.
 
-CR-1 (2026-05-22). Pure-function chunkers are unit-testable in
+Pure-function chunkers are unit-testable in
 isolation; the indexer entry points (``index_session_file``,
 ``index_workshop_file``) wire chunks into a :class:`WorkIndex` and
 handle stat / re-ingest.
@@ -117,15 +117,17 @@ def index_session_file(index: WorkIndex, path: Path, *, include_tool: bool = Fal
         return 0
     started = data.get("started_at") or data.get("ended_at") or ""
     session_id = path.stem
-    index.delete_by_path(str(path))
-    n = 0
-    for chunk in chunk_session_history(history, include_tool=include_tool):
-        # ``turn_idx`` keeps the position in the original history array
-        # (sparse when role=tool messages are skipped). ``chunk_idx`` is
-        # the 0-based dense ordinal across emitted chunks — what the
-        # WorkChunk docstring promises and what range-based consumers
-        # need.
-        index.add(WorkChunk(
+    # Built whole, then written in one transaction. Chunk by chunk with a
+    # commit each was the single largest thing blocking the backend's event
+    # loop (measured 2026-09-02), and it left a window where the file's old
+    # chunks were gone and its new ones half written.
+    #
+    # ``turn_idx`` keeps the position in the original history array (sparse
+    # when role=tool messages are skipped). ``chunk_idx`` is the 0-based dense
+    # ordinal across emitted chunks — what the WorkChunk docstring promises and
+    # what range-based consumers need.
+    chunks = [
+        WorkChunk(
             source="session",
             source_path=str(path),
             source_ref=session_id,
@@ -134,9 +136,12 @@ def index_session_file(index: WorkIndex, path: Path, *, include_tool: bool = Fal
             chunk_idx=n,
             ts=chunk["ts"] or str(started),
             text=chunk["text"],
-        ))
-        n += 1
-    return n
+        )
+        for n, chunk in enumerate(
+            chunk_session_history(history, include_tool=include_tool)
+        )
+    ]
+    return index.replace_path(str(path), chunks)
 
 
 def index_workshop_file(index: WorkIndex, path: Path) -> int:
@@ -153,10 +158,11 @@ def index_workshop_file(index: WorkIndex, path: Path) -> int:
         return 0
     parent_slug = path.parent.name or path.stem
     ts = _iso_from_mtime(path)
-    index.delete_by_path(str(path))
-    n = 0
-    for chunk in chunk_workshop_markdown(markdown):
-        index.add(WorkChunk(
+    # One transaction, for the reason the session path takes one. Both ingest
+    # paths write the same way so neither can quietly go back to a commit per
+    # chunk, which is what `file_write` was doing on every workshop save.
+    chunks = [
+        WorkChunk(
             source="workshop",
             source_path=str(path),
             source_ref=parent_slug,
@@ -165,9 +171,10 @@ def index_workshop_file(index: WorkIndex, path: Path) -> int:
             chunk_idx=int(chunk["chunk_idx"]),
             ts=ts,
             text=chunk["text"],
-        ))
-        n += 1
-    return n
+        )
+        for chunk in chunk_workshop_markdown(markdown)
+    ]
+    return index.replace_path(str(path), chunks)
 
 
 def _iso_from_mtime(path: Path) -> str:
@@ -189,9 +196,9 @@ def backfill(
     on each ingest).
 
     The conversations arrive as paths rather than as a directory to glob. They
-    live in ``sessions/chats/`` now and ``chat_store`` owns that walk — this
-    used to take the legacy ``sessions/`` directory and glob it non-
-    recursively, which meant it never saw a chat conversation at all.
+    live in ``sessions/chats/`` and ``chat_store`` owns that walk. Globbing
+    the ``sessions/`` directory non-recursively instead never sees a chat
+    conversation at all.
     """
     out = {"chats": 0, "workshop": 0}
     for path in chat_files or ():

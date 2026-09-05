@@ -10,6 +10,7 @@ import {
   type InboxFilter,
 } from './workspace/InboxPanel';
 import { DailyBriefTab } from './workspace/DailyBriefTab';
+import { UpdateNotice } from './workspace/UpdateNotice';
 import './workspace/WorkspaceView.css';
 
 /** Inbox slices are rail sections and event kinds are rail filters — the two
@@ -71,11 +72,18 @@ export function WorkspaceView() {
           meta,
           actions: inboxActions,
           render: () => (
-            <InboxPanel
-              filter={f.key}
-              kinds={kinds}
-              onKindsAvailable={onKindsAvailable}
-            />
+            <>
+              {/* Above the list, on every inbox slice: an update that reset
+                  the operator's settings is not one item among their pending
+                  ones, and it renders nothing at all on an install that has
+                  not been updated. */}
+              <UpdateNotice />
+              <InboxPanel
+                filter={f.key}
+                kinds={kinds}
+                onKindsAvailable={onKindsAvailable}
+              />
+            </>
           ),
         })),
       },
@@ -115,6 +123,7 @@ export function WorkspaceView() {
 
   return (
     <RailView
+      view="workspace"
       groups={groups}
       label="Workspace sections"
       initial={filter}

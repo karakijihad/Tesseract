@@ -97,126 +97,30 @@ export function intervalToSeconds(f: IntervalFields): number {
 
 export function validateInterval(f: IntervalFields): string | null {
   if (f.days < 0 || f.hours < 0 || f.minutes < 0 || f.seconds < 0) return 'negative values not allowed';
-  if (f.days > 365) return 'days must be 0–365';
-  if (f.hours > 23) return 'hours must be 0–23';
-  if (f.minutes > 59) return 'minutes must be 0–59';
-  if (f.seconds > 59) return 'seconds must be 0–59';
+  if (f.days > 365) return 'days must be 0 to 365';
+  if (f.hours > 23) return 'hours must be 0 to 23';
+  if (f.minutes > 59) return 'minutes must be 0 to 59';
+  if (f.seconds > 59) return 'seconds must be 0 to 59';
   if (intervalToSeconds(f) === 0) return 'interval must be non-zero';
   return null;
 }
 
 export function validateDaily(f: DailyFields): string | null {
-  if (f.hour < 0 || f.hour > 23) return 'hour must be 0–23';
-  if (f.minute < 0 || f.minute > 59) return 'minute must be 0–59';
+  if (f.hour < 0 || f.hour > 23) return 'hour must be 0 to 23';
+  if (f.minute < 0 || f.minute > 59) return 'minute must be 0 to 59';
   return null;
 }
 
-export function validateCron(f: CronFields): string | null {
-  const fields: [string, string, number, number][] = [
-    [f.minute, 'minute', 0, 59],
-    [f.hour, 'hour', 0, 23],
-    [f.dom, 'dom', 1, 31],
-    [f.month, 'month', 1, 12],
-    [f.dow, 'dow', 0, 6],
-  ];
-  for (const [field, label, min, max] of fields) {
-    if (!field || !isValidCronField(field, min, max)) return `invalid ${label} field: ${field}`;
-  }
-  return null;
-}
-
-function isValidCronField(field: string, min: number, max: number): boolean {
-  if (field === '*') return true;
-  for (const part of field.split(',')) {
-    if (!isValidCronPart(part, min, max)) return false;
-  }
-  return true;
-}
-
-function isValidCronPart(part: string, min: number, max: number): boolean {
-  const stepMatch = /^(.+)\/(\d+)$/.exec(part);
-  if (stepMatch) {
-    const step = parseInt(stepMatch[2], 10);
-    if (step <= 0) return false;
-    return stepMatch[1] === '*' || isValidCronPart(stepMatch[1], min, max);
-  }
-  const rangeMatch = /^(\d+)-(\d+)$/.exec(part);
-  if (rangeMatch) {
-    const lo = parseInt(rangeMatch[1], 10);
-    const hi = parseInt(rangeMatch[2], 10);
-    return lo >= min && hi <= max && lo <= hi;
-  }
-  if (/^\d+$/.test(part)) {
-    const v = parseInt(part, 10);
-    return v >= min && v <= max;
-  }
-  return false;
-}
-
-// Compute next fire time for a cadence string. Interval shorthand measures
-// forward from `reference` (defaults to `now`); cron walks minute-by-minute
-// up to 366 days ahead. Returns null if unparseable or no match in window.
-export function nextFireTime(value: string, now: Date = new Date(), reference?: Date): Date | null {
-  const parsed = parseCadence(value);
-  if (parsed.mode === 'interval') {
-    const seconds = intervalToSeconds(parsed.fields);
-    if (seconds <= 0) return null;
-    const base = reference ?? now;
-    return new Date(base.getTime() + seconds * 1000);
-  }
-  const cronFields: CronFields = parsed.mode === 'daily'
-    ? { minute: String(parsed.fields.minute), hour: String(parsed.fields.hour), dom: '*', month: '*', dow: '*' }
-    : parsed.fields;
-  const dt = new Date(now.getTime());
-  dt.setSeconds(0, 0);
-  dt.setMinutes(dt.getMinutes() + 1);
-  for (let i = 0; i < 366 * 24 * 60; i++) {
-    if (cronMatch(cronFields, dt)) return new Date(dt.getTime());
-    dt.setMinutes(dt.getMinutes() + 1);
-  }
-  return null;
-}
-
-function cronMatch(f: CronFields, dt: Date): boolean {
-  return fieldMatches(f.minute, dt.getMinutes(), 0, 59)
-    && fieldMatches(f.hour, dt.getHours(), 0, 23)
-    && fieldMatches(f.dom, dt.getDate(), 1, 31)
-    && fieldMatches(f.month, dt.getMonth() + 1, 1, 12)
-    && fieldMatches(f.dow, dt.getDay(), 0, 6);
-}
-
-function fieldMatches(field: string, value: number, min: number, max: number): boolean {
-  if (field === '*') return true;
-  for (const part of field.split(',')) {
-    if (partMatches(part, value, min, max)) return true;
-  }
-  return false;
-}
-
-function partMatches(part: string, value: number, min: number, max: number): boolean {
-  const stepMatch = /^(.+)\/(\d+)$/.exec(part);
-  if (stepMatch) {
-    const step = parseInt(stepMatch[2], 10);
-    const base = stepMatch[1];
-    let lo = min;
-    let hi = max;
-    if (base !== '*') {
-      const rangeMatch = /^(\d+)-(\d+)$/.exec(base);
-      if (rangeMatch) { lo = parseInt(rangeMatch[1], 10); hi = parseInt(rangeMatch[2], 10); }
-      else if (/^\d+$/.test(base)) { lo = parseInt(base, 10); hi = max; }
-    }
-    if (value < lo || value > hi) return false;
-    return (value - lo) % step === 0;
-  }
-  const rangeMatch = /^(\d+)-(\d+)$/.exec(part);
-  if (rangeMatch) {
-    return value >= parseInt(rangeMatch[1], 10) && value <= parseInt(rangeMatch[2], 10);
-  }
-  if (/^\d+$/.test(part)) {
-    return parseInt(part, 10) === value;
-  }
-  return false;
-}
+// The cron grammar is NOT read here. `GET /api/schedule/cadence` answers
+// whether a cadence is valid, what it says and when it next fires, from the
+// croniter the scheduler itself runs on. This file used to answer all three
+// with a hand-written parser and a hand-written matcher, and the two readings
+// disagreed four separate times: named weekdays, named months, Sunday's
+// second number, day-of-month required WITH day-of-week rather than either,
+// and `?`, `L` and `#`. Each was a cadence the operator could not create and
+// the runtime would have run. What is left here shapes the picker's own
+// fields into a string and checks its own numeric inputs, which is a
+// question about this form and not about the grammar.
 
 export function humanizeDelta(ms: number): string {
   if (ms < 0) return 'past';

@@ -19,25 +19,13 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Any, Callable, ClassVar
+from typing import Any, Callable, ClassVar, Mapping
 
 import yaml
 
+from tesseract.brain.cost import overage as _overage
+
 logger = logging.getLogger(__name__)
-
-# OpenAI's published prompt-cache discount for GPT-5 family: cached input
-# billed at 10% of the uncached rate. Default fallback when a model entry
-# does not specify `cost_per_mtok_cached_in` explicitly. Anthropic cache-
-# READ also bills at 10% of base, so this default works there too. Gemini
-# bills cached input at ~25% of base — set the explicit field for that.
-CACHED_INPUT_RATE = 0.1
-
-# Anthropic prompt-cache WRITE surcharge: `cache_creation_input_tokens`
-# from the message_start usage object are billed at 1.25× the base input
-# rate. Other providers either don't report cache creation or fold it into
-# uncached input — they leave `cache_creation_tokens=0` and this term
-# contributes nothing.
-CACHE_CREATION_RATE = 1.25
 
 # Cost UX overhaul (2026-04-27): instead of a hard cut at 100% of cap, the
 # operator gets two distinct surfaces:
@@ -49,12 +37,18 @@ CACHE_CREATION_RATE = 1.25
 #      show in red"). On approve, the ledger unlocks that scope for the
 #      rest of the local-tz day. On deny, the turn aborts with the toast.
 # Both flags are scope-keyed (`global`, `role:<name>`, `voice:<kind>:<provider>`)
-# and reset on midnight rollover. No on-disk persistence — restarting Mirror
-# re-asks if a scope was previously unlocked, which is the correct safety
-# bias (an unintended overage shouldn't survive an operator restart).
+# and reset on midnight rollover. The overage approval is WRITTEN DOWN
+# (`cost/overage.py`), stamped with the day it belongs to; the warning flag is
+# not, because re-showing a toast after a restart costs nothing. It was
+# memory-only on the reasoning that a restart should re-ask, and that reasoning
+# cost a day: an approval given minutes after a breaker tripped on the cap was
+# invisible to every other reader, which went on believing the cap still
+# refused. The day stamp is what makes persisting it safe — a file from
+# yesterday answers for yesterday and is ignored.
 # `warning_at_pct` lives in models.yaml so the operator can tune it per
 # project without a code change.
 
+from tesseract.orchestrator.turns.context import turn_identity as _turn_identity
 from tesseract.paths import CONFIG_DIR as _CONFIG_DIR, home_dir as _home_dir
 
 _DEFAULT_PROVIDERS_YAML = _CONFIG_DIR / "providers.yaml"
@@ -81,6 +75,54 @@ class BudgetExhausted(Exception):
             f"spent ${spent_usd:.4f} / cap ${cap_usd:.4f}"
         )
 
+    def as_sentence(self) -> str:
+        """The refusal in plain words, composed where the numbers are known.
+
+        `str(self)` is machine text: it names a scope and a role and spells the
+        amounts to four places. It reached a phone verbatim, was caught by the
+        channel's leak filter because it contains a slash, and arrived as
+        "I hit an error processing that. Try again?" — so a deliberate refusal
+        with a known cause read as a fault with none, and the work stopped with
+        nothing to act on.
+
+        Says the consequence and then the remedy, and carries no path, so
+        nothing downstream has to guess whether it is safe to send.
+        """
+        return (
+            f"{self._spent_against_cap()}, so this turn did not run. Approve "
+            f"going over, or it resets at midnight."
+        )
+
+    def as_question(self) -> str:
+        """The same numbers, put as the decision they actually are.
+
+        `as_sentence` is what a person reads when nobody could be asked. This
+        is what they read when they can answer, on whatever surface they are
+        standing on. The cap is a signal rather than a wall and the choice is
+        theirs, so this says what each answer does, including the part they
+        need before they can answer at all: a yes opens the rest of the day
+        for this scope, not just the turn in front of them.
+        """
+        return (
+            f"{self._spent_against_cap()}. Going over is your call. Approve "
+            f"and this turn runs, and the rest of today stays open for it. "
+            f"Reject and it waits until midnight."
+        )
+
+    def _spent_against_cap(self) -> str:
+        """What ran out and by how much. No slash: the channel's leak filter
+        reads one as a path marker, which is what ate this message live."""
+        if self.scope == "global":
+            what = "Today's total budget"
+        elif self.scope == "voice":
+            what = "Today's voice budget"
+        else:
+            what = f"Today's budget for {self.role}"
+        return (
+            f"{what} is spent: ${self.spent_usd:.2f} against a cap of "
+            f"${self.cap_usd:.2f}"
+        )
+
     def scope_key(self) -> str:
         """Derived stable key for `unlock_overage()` / overage-ask
         envelopes. Mirrors the format documented above
@@ -105,12 +147,42 @@ class CostUsage:
 
     input_tokens: int = 0
     output_tokens: int = 0
-    cached_tokens: int = 0
-    # Anthropic-only: tokens written to the prompt cache during this turn.
-    # Billed at 1.25× base input rate per the Anthropic prompt-cache docs
-    # (creation surcharge). Adapters that don't expose this field leave it
-    # at 0 and the surcharge term contributes nothing.
-    cache_creation_tokens: int = 0
+    # None means the provider did not report the class at all; 0 means it
+    # reported none. Pricing treats both as zero today, but only the first is
+    # a reason to go and look at the adapter, and collapsing them is how
+    # `cache_creation_tokens` read as a settled zero on 236M cached tokens
+    # while the field was simply never extracted.
+    cached_tokens: int | None = None
+    # Tokens written to the prompt cache during this turn. Anthropic reports it
+    # directly. OpenAI implicit caching reports nothing and bills non-cached
+    # input as a write, which is a pricing rule and lives with the catalog, not
+    # here.
+    cache_creation_tokens: int | None = None
+    # Already inside `output_tokens` on the Responses API, so it is recorded
+    # rather than billed: it says how much of an answer was thinking.
+    reasoning_tokens: int | None = None
+
+    @classmethod
+    def from_raw(cls, usage: dict) -> "CostUsage":
+        """Build from a STOP chunk's `raw["usage"]`.
+
+        One constructor because three callers had written the same coercion by
+        hand (`chat.py`, `metered_adapter.py`, `observer.py`) and all three
+        spelled a missing key as `0`. A key absent here stays `None`, which is
+        the whole point of the field: `int(x or 0)` is what made an unextracted
+        class indistinguishable from a real zero.
+        """
+        def _opt(key: str) -> int | None:
+            value = usage.get(key)
+            return None if value is None else int(value)
+
+        return cls(
+            input_tokens=int(usage.get("input_tokens") or 0),
+            output_tokens=int(usage.get("output_tokens") or 0),
+            cached_tokens=_opt("cached_tokens"),
+            cache_creation_tokens=_opt("cache_creation_tokens"),
+            reasoning_tokens=_opt("reasoning_tokens"),
+        )
 
 
 @dataclass(frozen=True)
@@ -149,9 +221,9 @@ class VoiceRate:
     price of.
 
     The unit travels with the rate rather than being implied by which
-    side of the subsystem the lane sits on. It used to be implied — TTS
-    meant per-character, STT meant per-audio-hour — and that held only
-    while every TTS lane was a local one billing $0. A cloud lane that
+    side of the subsystem the lane sits on. Implying it — TTS means
+    per-character, STT means per-audio-hour — holds only while every TTS
+    lane is a local one billing $0. A cloud lane that
     bills per second of produced speech has no per-character rate to
     state, and inventing one by dividing through by a typical character
     count would put a fabricated number in the operator's spend view.
@@ -183,6 +255,96 @@ class VoiceCostEvent:
 
 
 @dataclass(frozen=True)
+class ModelPrice:
+    """What one model charges, exactly as its catalog entry declares it.
+
+    Every rate that turns a token into money lives here and comes from
+    `providers.yaml`. Nothing in this module supplies a default for one. Two
+    module constants used to, and they were one provider's discount applied to
+    every provider. The discount is not even a family property: Grok reads at
+    16% of base, and GPT-5.4 at 25% while GPT-5.4-mini reads at 10%. A
+    plausible total computed from the wrong rate is the one kind of error
+    nothing downstream can see.
+
+    `cache_write_from` is the piece that cannot be read off a usage payload,
+    because the two providers disagree about what a cache write even is:
+
+    - `reported` — the provider counts written tokens and says so, and they
+      are ADDITIONAL to `input_tokens`. Anthropic.
+    - `uncached_input` — the provider counts nothing, and bills the non-cached
+      part of the prompt at the write rate INSTEAD of the base rate. OpenAI
+      implicit caching. Only above `cache_write_min_prompt_tokens`, below which
+      the prompt is not cacheable at all and no premium applies.
+    - `""` — no cache-write charge.
+
+    Getting that distinction wrong is not a rounding error: `reported` adds a
+    term, `uncached_input` replaces one.
+    """
+
+    input_per_mtok: float
+    output_per_mtok: float
+    cache_read_per_mtok: float | None = None
+    cache_write_per_mtok: float | None = None
+    cache_write_from: str = ""
+    cache_write_min_prompt_tokens: int = 0
+
+    _SOURCES: ClassVar[tuple[str, ...]] = ("", "reported", "uncached_input")
+
+    @classmethod
+    def from_fields(cls, fields: Mapping[str, Any], model: str) -> "ModelPrice | None":
+        """One parser. Four call sites read the catalog (two constructors and
+        two reload paths) and each used to spell this out by hand, which is how
+        `cost_per_mtok_cached_in` came to be honoured in some and how a fifth
+        rate would have been added to three of the four."""
+        p_in = fields.get("cost_per_mtok_in")
+        p_out = fields.get("cost_per_mtok_out")
+        if p_in is None or p_out is None:
+            return None
+        source = str(fields.get("cache_write_from") or "")
+        if source not in cls._SOURCES:
+            raise RuntimeError(
+                f"{model}: cache_write_from is {source!r}, which is not one of "
+                f"{cls._SOURCES}. It says how the provider counts a cache "
+                "write, and a guess here mis-bills every cached turn"
+            )
+        read = fields.get("cost_per_mtok_cached_in")
+        write = fields.get("cost_per_mtok_cache_write")
+        return cls(
+            input_per_mtok=float(p_in),
+            output_per_mtok=float(p_out),
+            cache_read_per_mtok=None if read is None else float(read),
+            cache_write_per_mtok=None if write is None else float(write),
+            cache_write_from=source,
+            cache_write_min_prompt_tokens=int(
+                fields.get("cache_write_min_prompt_tokens") or 0
+            ),
+        )
+
+    @property
+    def is_free(self) -> bool:
+        """Nothing this model does costs money.
+
+        Here rather than at the caller, because `MeteredAdapter` used to answer
+        this by indexing the pricing dict's values as a 2-tuple. That is a
+        second module holding an opinion about this one's internal shape, and
+        it broke silently the moment the shape changed: every scheduled call
+        would have raised `TypeError` before reaching the budget check the
+        wrapper exists to perform.
+        """
+        return self.input_per_mtok == 0.0 and self.output_per_mtok == 0.0
+
+    @classmethod
+    def coerce(cls, value: Any) -> "ModelPrice":
+        """Accept the legacy `(in, out)` pair. Fixtures across the older cost
+        suites build a ledger with `pricing={"m": (1.0, 2.0)}` and mean exactly
+        a model with no cache rates, which is what this produces."""
+        if isinstance(value, ModelPrice):
+            return value
+        p_in, p_out = value
+        return cls(input_per_mtok=float(p_in), output_per_mtok=float(p_out))
+
+
+@dataclass(frozen=True)
 class CostEvent:
     """One appended ledger entry. UTC timestamp; daily grouping by local-tz date."""
 
@@ -192,11 +354,23 @@ class CostEvent:
     model: str
     input_tokens: int
     output_tokens: int
-    cached_tokens: int
+    # `None` where the provider reported no such class. See `CostUsage`.
+    cached_tokens: int | None
     cost_usd: float
     daily_total_usd: float
     role_total_usd: float
-    cache_creation_tokens: int = 0
+    cache_creation_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    # Which piece of work paid, read off `orchestrator.turns.context` at the
+    # write. Empty outside a turn, and that emptiness is the claim: a scheduled
+    # job's row is nobody's turn rather than the last turn's.
+    turn_id: str = ""
+    task_id: str = ""
+    # Which tier the call rode when the row was written: the caller's word
+    # where it has one, else the catalog's for the model name. Kept on the
+    # row so a model that later moves tiers does not rewrite what old rows
+    # cost.
+    tier: str = ""
 
 
 @dataclass(frozen=True)
@@ -221,37 +395,28 @@ def _local_today_iso() -> str:
 
 
 def _caps_from_bundle(bundle) -> dict[str, float]:
-    """Every daily ceiling, keyed by what it bills — a role or an entry.
+    """Every daily ceiling, keyed by what it bills.
 
-    Two declarations, one dict, because the ledger has one notion of a spend
-    source and both are one. A role's cap is the older half and covers the
-    pillars — chat, the seats, the defaults. A manifest entry's cap covers work
-    that is not a pillar and used to have a role invented for it purely to hold
-    this number.
+    One declaration, one file. A block under `roles.yaml::roles` is either a
+    seat some work fills — chat, the delegation seats, the agent defaults — or
+    a thing the app runs on its own, named for its manifest entry. The ledger
+    has one notion of a spend source and treats both as one, which is why they
+    can live together: `panel_writer` bills on the string `panel_writer`
+    whichever kind of thing it is.
 
-    It is read here, at construction, and again on every `reload()` — which is
-    the reason the manifest is where a per-entry ceiling can live at all.
-    Registered from anywhere else it would survive exactly until the next time
-    the operator saved a yaml file and the watcher rebuilt this dict.
+    The manifest declared these numbers until 2026-08-25 and no longer does. A
+    ceiling has to be changeable by the person paying for it, and in Python it
+    was sealed source in an installed app: unreachable from the cockpit, and
+    unreachable from a phone.
 
-    A name declared in both halves takes the entry's number. There is one
-    spend source with that name whatever declared it, and the manifest is the
-    newer authority; a silent maximum would make the effective ceiling depend
-    on which file was edited last.
+    Read here at construction and again on every `reload()`, so an edit takes
+    effect without a restart.
     """
     caps: dict[str, float] = {}
     for role_name, role_cfg in bundle.roles.items():
         cap = role_cfg.overrides.get("daily_budget_usd")
         if cap is not None:
             caps[role_name] = float(cap)
-    try:
-        from tesseract.scheduler.manifest.registry import ENTRIES
-    except Exception:  # noqa: BLE001 — a ledger without the manifest still bills
-        log.exception("cost ledger: manifest unreadable; per-entry caps not applied")
-        return caps
-    for entry in ENTRIES:
-        if entry.daily_budget_usd is not None:
-            caps[entry.name] = float(entry.daily_budget_usd)
     return caps
 
 
@@ -359,15 +524,15 @@ class CostLedger:
     enabled: bool
     warning_at_pct: float
     per_role_caps: dict[str, float]
-    pricing: dict[str, tuple[float, float]]   # keyed by model name (provider catalog)
+    # Model name to its declared rates. A legacy `(in, out)` pair is accepted
+    # and coerced, which is what the older fixtures pass.
+    pricing: dict[str, ModelPrice]
     log_path: Path
-    # Per-model explicit cached-input rate. When absent for a model, the
-    # ledger falls back to `cost_per_mtok_in × CACHED_INPUT_RATE`. Populated
-    # from the optional `cost_per_mtok_cached_in` field on each catalog
-    # entry — set it for providers (e.g. Gemini) whose cached rate isn't 10%.
-    cached_pricing: dict[str, float] = field(default_factory=dict)
     voice_tts_pricing: dict[str, VoiceRate] = field(default_factory=dict)
     voice_stt_pricing: dict[str, VoiceRate] = field(default_factory=dict)
+    # Model name to catalog tier (`api` / `cli` / `local`), from the same walk
+    # that builds `pricing`. Written on every row, see `CostEvent.tier`.
+    tiers: dict[str, str] = field(default_factory=dict)
     providers_yaml: Path = _DEFAULT_PROVIDERS_YAML
     roles_yaml: Path = _DEFAULT_ROLES_YAML
     # Test-only — when set, ``reload()`` re-parses this single-file fixture
@@ -391,12 +556,23 @@ class CostLedger:
     _subscribers: list[CostSubscriber] = field(default_factory=list)
     # Cost UX overhaul (see WARNING_AT_PCT). Both reset on midnight roll.
     _warned_today: set[str] = field(default_factory=set)
+    # "The operator approved going past the cap." Held here as a cache and
+    # written down by `cost/overage.py`, stamped with the day it belongs to.
+    # It used to be memory-only, on the reasoning that a restart should re-lock
+    # the cap. That cost a day: an approval given minutes after a breaker
+    # tripped on the cap could not be seen by anything but the process that
+    # asked for it, so every other reader went on believing the cap still
+    # refused. The day stamp is what makes persisting it safe, and it is now
+    # the same answer in every process rather than one answer per process.
     _overage_unlocked_today: set[str] = field(default_factory=set)
+    # (mtime, size) of the approvals file the set above was built from.
+    _unlocks_fingerprint: tuple[int, int] | None = None
     # Operator-paused spend sources (a role name or "global"). A paused source
     # hard-blocks in check_preflight regardless of remaining cap. Runtime-only
-    # (no on-disk persistence) — a restart clears pauses, the same safety bias
-    # as _overage_unlocked_today. Not reset at midnight (a pause is an explicit
-    # operator hold, not a per-day budget flag).
+    # (no on-disk persistence) — a restart clears pauses. Not reset at midnight
+    # either: a pause is an explicit operator hold rather than a per-day budget
+    # flag, so it has no day to be stamped with, which is what makes the
+    # approval above safe to keep and this not.
     _paused_sources: set[str] = field(default_factory=set)
 
     @classmethod
@@ -426,17 +602,13 @@ class CostLedger:
 
         per_role_caps: dict[str, float] = _caps_from_bundle(bundle)
 
-        pricing: dict[str, tuple[float, float]] = {}
-        cached_pricing: dict[str, float] = {}
-        for _ref, _conn, model in bundle.all_models():
-            p_in = model.fields.get("cost_per_mtok_in")
-            p_out = model.fields.get("cost_per_mtok_out")
-            if p_in is None or p_out is None:
-                continue
-            pricing[model.model] = (float(p_in), float(p_out))
-            p_cached = model.fields.get("cost_per_mtok_cached_in")
-            if p_cached is not None:
-                cached_pricing[model.model] = float(p_cached)
+        pricing: dict[str, ModelPrice] = {}
+        tiers: dict[str, str] = {}
+        for ref, _conn, model in bundle.all_models():
+            tiers.setdefault(model.model, ref.split(".", 1)[0])
+            price = ModelPrice.from_fields(model.fields, model.model)
+            if price is not None:
+                pricing[model.model] = price
 
         voice_tts_pricing, voice_stt_pricing = _voice_pricing_from_bundle(bundle)
 
@@ -454,9 +626,9 @@ class CostLedger:
             warning_at_pct=warning_at_pct,
             per_role_caps=per_role_caps,
             pricing=pricing,
-            cached_pricing=cached_pricing,
             voice_tts_pricing=voice_tts_pricing,
             voice_stt_pricing=voice_stt_pricing,
+            tiers=tiers,
             log_path=resolved_log_path,
             providers_yaml=bundle.providers_path,
             roles_yaml=bundle.roles_path,
@@ -496,18 +668,15 @@ class CostLedger:
         per_role_raw = ct_raw.get("per_role") or {}
         per_role_caps = {role: float(cap) for role, cap in per_role_raw.items()}
 
-        pricing: dict[str, tuple[float, float]] = {}
-        cached_pricing: dict[str, float] = {}
+        pricing: dict[str, ModelPrice] = {}
         for _role_name, role_cfg in (raw.get("roles") or {}).items():
             for entry in role_cfg.get("resolution") or []:
                 model = entry.get("model")
-                p_in = entry.get("cost_per_mtok_in")
-                p_out = entry.get("cost_per_mtok_out")
-                if model and p_in is not None and p_out is not None and model not in pricing:
-                    pricing[model] = (float(p_in), float(p_out))
-                    p_cached = entry.get("cost_per_mtok_cached_in")
-                    if p_cached is not None:
-                        cached_pricing[model] = float(p_cached)
+                if not model or model in pricing:
+                    continue
+                price = ModelPrice.from_fields(entry, model)
+                if price is not None:
+                    pricing[model] = price
 
         voice_raw = ct_raw.get("voice") or {}
         voice_tts = _voice_rates_from_raw(voice_raw.get("tts"), kind="tts")
@@ -527,7 +696,6 @@ class CostLedger:
             warning_at_pct=warning_at_pct,
             per_role_caps=per_role_caps,
             pricing=pricing,
-            cached_pricing=cached_pricing,
             voice_tts_pricing=voice_tts,
             voice_stt_pricing=voice_stt,
             log_path=resolved_log_path,
@@ -559,7 +727,7 @@ class CostLedger:
 
     # ── Public API ─────────────────────────────────────────────
 
-    def record(self, role: str, model: str, usage: CostUsage) -> CostEvent:
+    def record(self, role: str, model: str, usage: CostUsage, *, tier: str = "") -> CostEvent:
         """Compute USD, append JSONL, return the event.
 
         Unknown `(role, model)` raises — silent zero-billing is a bug, not a
@@ -568,17 +736,22 @@ class CostLedger:
         registered via `subscribe()` are fired outside the lock with
         `(event, budget_state)` so callbacks may invoke other ledger
         methods without deadlocking.
+
+        `tier` is the caller's word for which tier the call actually rode
+        (`AdapterOptions.tier`), and it wins; a caller that has none gets the
+        catalog's answer for the model name, which is ambiguous only where one
+        name is listed under two tiers.
         """
         if not self.enabled:
             with self._lock:
-                return self._build_event(role, model, usage, cost_usd=0.0)
+                return self._build_event(role, model, usage, cost_usd=0.0, tier=tier)
 
         with self._lock:
             self._maybe_roll_midnight()
             cost = self._compute_usd(role, model, usage)
             self._daily_total_usd += cost
             self._role_totals_usd[role] = self._role_totals_usd.get(role, 0.0) + cost
-            event = self._build_event(role, model, usage, cost_usd=cost)
+            event = self._build_event(role, model, usage, cost_usd=cost, tier=tier)
             self._append_jsonl(event)
             state = self._budget_state_locked(role)
 
@@ -626,31 +799,27 @@ class CostLedger:
 
         new_caps: dict[str, float] = _caps_from_bundle(bundle)
 
-        new_pricing: dict[str, tuple[float, float]] = {}
-        new_cached_pricing: dict[str, float] = {}
-        for _ref, _conn, model in bundle.all_models():
-            p_in = model.fields.get("cost_per_mtok_in")
-            p_out = model.fields.get("cost_per_mtok_out")
-            if p_in is None or p_out is None:
-                continue
-            new_pricing[model.model] = (float(p_in), float(p_out))
-            p_cached = model.fields.get("cost_per_mtok_cached_in")
-            if p_cached is not None:
-                new_cached_pricing[model.model] = float(p_cached)
+        new_pricing: dict[str, ModelPrice] = {}
+        new_tiers: dict[str, str] = {}
+        for ref, _conn, model in bundle.all_models():
+            new_tiers.setdefault(model.model, ref.split(".", 1)[0])
+            price = ModelPrice.from_fields(model.fields, model.model)
+            if price is not None:
+                new_pricing[model.model] = price
 
         new_voice_tts, new_voice_stt = _voice_pricing_from_bundle(bundle)
 
         with self._lock:
             # Roll midnight before the write so reload-after-midnight doesn't
             # strand yesterday's totals under today's caps. `budget_state()`
-            # would roll on the next read anyway, but Phase 14 may also read
+            # would roll on the next read anyway, but a caller may also read
             # internal counters (or a `cap_usd` snapshot) right after reload.
             self._maybe_roll_midnight()
             self.enabled = new_enabled
             self.warning_at_pct = new_warn_pct
             self.per_role_caps = new_caps
             self.pricing = new_pricing
-            self.cached_pricing = new_cached_pricing
+            self.tiers = new_tiers
             self.voice_tts_pricing = new_voice_tts
             self.voice_stt_pricing = new_voice_stt
 
@@ -669,18 +838,15 @@ class CostLedger:
         per_role_raw = ct_raw.get("per_role") or {}
         new_caps = {role: float(cap) for role, cap in per_role_raw.items()}
 
-        new_pricing: dict[str, tuple[float, float]] = {}
-        new_cached_pricing: dict[str, float] = {}
+        new_pricing: dict[str, ModelPrice] = {}
         for _role_name, role_cfg in (raw.get("roles") or {}).items():
             for entry in role_cfg.get("resolution") or []:
                 model = entry.get("model")
-                p_in = entry.get("cost_per_mtok_in")
-                p_out = entry.get("cost_per_mtok_out")
-                if model and p_in is not None and p_out is not None and model not in new_pricing:
-                    new_pricing[model] = (float(p_in), float(p_out))
-                    p_cached = entry.get("cost_per_mtok_cached_in")
-                    if p_cached is not None:
-                        new_cached_pricing[model] = float(p_cached)
+                if not model or model in new_pricing:
+                    continue
+                price = ModelPrice.from_fields(entry, model)
+                if price is not None:
+                    new_pricing[model] = price
 
         voice_raw = ct_raw.get("voice") or {}
         new_voice_tts = _voice_rates_from_raw(voice_raw.get("tts"), kind="tts")
@@ -692,7 +858,6 @@ class CostLedger:
             self.warning_at_pct = new_warn_pct
             self.per_role_caps = new_caps
             self.pricing = new_pricing
-            self.cached_pricing = new_cached_pricing
             self.voice_tts_pricing = new_voice_tts
             self.voice_stt_pricing = new_voice_stt
 
@@ -798,6 +963,7 @@ class CostLedger:
         """
         with self._lock:
             self._maybe_roll_midnight()
+            self._resync_unlocks()
             global_warning = self._daily_total_usd >= self.warning_usd
             global_blocked = self._daily_total_usd >= self.cap_usd
             roles: dict[str, dict[str, Any]] = {}
@@ -932,15 +1098,52 @@ class CostLedger:
     def is_overage_unlocked(self, scope_key: str) -> bool:
         with self._lock:
             self._maybe_roll_midnight()
+            self._resync_unlocks()
             return scope_key in self._overage_unlocked_today
 
     def unlock_overage(self, scope_key: str) -> None:
         """Operator approved continuing past 100%. Until midnight,
         future preflight checks for this scope will skip the cap test.
-        Idempotent."""
+        Idempotent.
+
+        Written down as well as remembered, so the other process sharing this
+        budget and the recovery pass explaining a refusal both see the same
+        answer. See `cost/overage.py` for why the day stamp is what makes that
+        safe."""
         with self._lock:
             self._maybe_roll_midnight()
             self._overage_unlocked_today.add(scope_key)
+            _overage.record(
+                scope_key,
+                today=self._current_local_date,
+                when=datetime.now().astimezone(),
+                path=_overage.unlocks_path(self.log_path),
+            )
+            self._unlocks_fingerprint = _overage.fingerprint(
+                _overage.unlocks_path(self.log_path)
+            )
+
+    def _resync_unlocks(self) -> None:
+        """Pick up an approval given somewhere else. Must hold `_lock`.
+
+        A stat in the common case. The file is the record and this set is a
+        cache of it, the same shape `_resync_from_log` uses for spend and for
+        the same reason: two processes share one budget, and a cache nobody
+        revalidates is how they disagree about it.
+
+        A union, not an assignment, and the file is append-only for the same
+        reason: within a day an approval is only ever granted. Nothing revokes
+        one before midnight, so there is no state the file could carry that
+        this set should drop.
+        """
+        path = _overage.unlocks_path(self.log_path)
+        state = _overage.fingerprint(path)
+        if state == self._unlocks_fingerprint:
+            return
+        self._overage_unlocked_today |= set(
+            _overage.read(self._current_local_date, path)
+        )
+        self._unlocks_fingerprint = state
 
     # ── Operator budget controls (MCP budget.* verbs, P3) ──────────
 
@@ -1007,6 +1210,7 @@ class CostLedger:
             # each authorises up to the full cap, so the ceiling is per-process
             # instead of per-day.
             self._resync_from_log()
+            self._resync_unlocks()
             state = self._budget_state_locked(role)
             role_unlocked = f"role:{role}" in self._overage_unlocked_today
             global_unlocked = "global" in self._overage_unlocked_today
@@ -1224,15 +1428,59 @@ class CostLedger:
                 f"no pricing for model={model} (role={role}) in providers.yaml — "
                 "add cost_per_mtok_in / cost_per_mtok_out to the catalog entry"
             )
-        p_in, p_out = pricing
-        uncached_input = max(0, usage.input_tokens - usage.cached_tokens)
-        p_cached = self.cached_pricing.get(model, p_in * CACHED_INPUT_RATE)
-        return (
-            uncached_input * p_in
-            + usage.cached_tokens * p_cached
-            + usage.cache_creation_tokens * p_in * CACHE_CREATION_RATE
-            + usage.output_tokens * p_out
-        ) / 1_000_000
+        price = ModelPrice.coerce(pricing)
+
+        # Four rules, and they have to hold together. Held apart, each of them
+        # has already been the way to get this wrong:
+        #
+        #   1. Every token is billed exactly once. `cached` is a subset of
+        #      `input_tokens` on both providers, so the base term is the
+        #      remainder and never the whole.
+        #   2. A class the provider REPORTED that the catalog cannot price
+        #      raises. Pricing it at zero is what let 236M cached tokens
+        #      through under one provider's discount applied to all of them.
+        #   3. A class the provider did not report contributes nothing and
+        #      raises nothing. `None` is not an unpriced charge, it is no
+        #      charge, and conflating the two would fail every local model.
+        #   4. A cache write ADDS a term where the provider counts one, and
+        #      REPLACES the base term where it does not. See `ModelPrice`.
+        def _rate(value: float | None, what: str, tokens: int) -> float:
+            if value is None:
+                raise RuntimeError(
+                    f"{model} (role={role}) billed {tokens} {what} tokens and "
+                    f"providers.yaml declares no rate for them. Add it to the "
+                    f"catalog entry: a missing rate is not a free token"
+                )
+            return value
+
+        cached = usage.cached_tokens or 0
+        uncached = max(0, usage.input_tokens - cached)
+
+        total = usage.output_tokens * price.output_per_mtok
+        if cached:
+            total += cached * _rate(price.cache_read_per_mtok, "cached input", cached)
+
+        writes_the_prompt = (
+            price.cache_write_from == "uncached_input"
+            and usage.input_tokens >= price.cache_write_min_prompt_tokens
+        )
+        if writes_the_prompt:
+            # Rule 4, replacing. The provider counts no writes and bills the
+            # fresh part of a cacheable prompt at the write rate. Below the
+            # minimum the prompt is not cacheable at all, so the base rate
+            # stands and adding the premium there would overcharge every short
+            # call — which is the same error in the other direction.
+            total += uncached * _rate(price.cache_write_per_mtok, "cache write", uncached)
+        else:
+            total += uncached * price.input_per_mtok
+
+        if price.cache_write_from == "reported":
+            written = usage.cache_creation_tokens or 0
+            if written:
+                # Rule 4, adding. These are not inside `input_tokens`.
+                total += written * _rate(price.cache_write_per_mtok, "cache write", written)
+
+        return total / 1_000_000
 
     def _compute_voice_usd(
         self, kind: str, provider: str, usage: TtsUsage | SttUsage
@@ -1304,9 +1552,10 @@ class CostLedger:
             logger.warning("cost ledger voice JSONL write failed: %s (continuing)", exc)
 
     def _build_event(
-        self, role: str, model: str, usage: CostUsage, cost_usd: float
+        self, role: str, model: str, usage: CostUsage, cost_usd: float, tier: str = ""
     ) -> CostEvent:
         now_utc = datetime.now(timezone.utc).replace(microsecond=0)
+        who = _turn_identity()
         return CostEvent(
             timestamp=now_utc.isoformat().replace("+00:00", "Z"),
             local_date=self._today_fn(),
@@ -1316,9 +1565,13 @@ class CostLedger:
             output_tokens=usage.output_tokens,
             cached_tokens=usage.cached_tokens,
             cache_creation_tokens=usage.cache_creation_tokens,
+            reasoning_tokens=usage.reasoning_tokens,
             cost_usd=cost_usd,
             daily_total_usd=self._daily_total_usd,
             role_total_usd=self._role_totals_usd.get(role, 0.0),
+            turn_id=who.turn_id,
+            task_id=who.task_id,
+            tier=tier or self.tiers.get(model, ""),
         )
 
     def _append_jsonl(self, event: CostEvent) -> None:
@@ -1336,9 +1589,13 @@ class CostLedger:
                             "output_tokens": event.output_tokens,
                             "cached_tokens": event.cached_tokens,
                             "cache_creation_tokens": event.cache_creation_tokens,
+                            "reasoning_tokens": event.reasoning_tokens,
                             "cost_usd": round(event.cost_usd, 8),
                             "daily_total_usd": round(event.daily_total_usd, 8),
                             "role_total_usd": round(event.role_total_usd, 8),
+                            "turn_id": event.turn_id,
+                            "task_id": event.task_id,
+                            "tier": event.tier,
                         }
                     )
                     + "\n"
@@ -1357,7 +1614,12 @@ class CostLedger:
             # *daily*. Yesterday's "I approved overage" must NOT carry
             # into today — operator gets a clean budget at midnight.
             self._warned_today = set()
+            # Yesterday's file is ignored by its own date stamp, so the cache
+            # is all there is to clear. Dropping the fingerprint too, or the
+            # next resync would see an unmoved file and skip the read that
+            # would have told it today has nothing approved.
             self._overage_unlocked_today = set()
+            self._unlocks_fingerprint = None
         self._current_local_date = today
 
     def _seed_from_log(self) -> None:

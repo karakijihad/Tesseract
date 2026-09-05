@@ -47,7 +47,7 @@ async def controller_session_status_handler(request: web.Request) -> web.Respons
         return web.json_response(
             {"error": "not_found", "session_id": session_id}, status=404
         )
-    # X-2 (2026-06-02) — surface ``transcript_path`` (under
+    # Surface ``transcript_path`` (under
     # ``<TESSERACT_HOME>/agent_controller/transcripts/``) so the Mirror
     # completion card can show the operator where to find the on-disk
     # transcript after the live WS has dropped.

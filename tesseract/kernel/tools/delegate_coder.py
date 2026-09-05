@@ -39,7 +39,7 @@ class DelegateCoderInput(BaseModel):
         description=(
             "Stall ceiling in seconds (10-1800, default 300): give up only "
             "after this long with NO activity from the CLI. An actively "
-            "working delegate keeps going — lane waits bound silence, not "
+            "working delegate keeps going. Lane waits bound silence, not "
             "total duration, because a wall-clock cap abandons healthy long "
             "tasks."
         ),
@@ -48,7 +48,7 @@ class DelegateCoderInput(BaseModel):
         default=None,
         description=(
             "Borrow a specific CLI for this one call. Leave unset to use "
-            "whichever CLI holds the coder seat in roles.yaml — that is the "
+            "whichever CLI holds the coder seat in roles.yaml. That is the "
             "normal path. Set it only when this particular task wants a "
             "different one. Any provider with a `<name>_cli` role in "
             "roles.yaml is borrowable; an unknown name is refused with the "
@@ -73,7 +73,7 @@ class DelegateCoderInput(BaseModel):
             "parallel. Use spawn_check (poll) or spawn_await (block) to "
             "retrieve the result later. Set false ONLY when the next step in "
             "the same turn must consume the result immediately and there's "
-            "nothing else to do meanwhile — the foreground path blocks the "
+            "nothing else to do meanwhile. The foreground path blocks the "
             "entire turn for the full delegate duration (up to `timeout` "
             "seconds). Foreground requests whose timeout exceeds "
             "runtime.yaml::max_foreground_delegate_timeout_s are "
@@ -99,14 +99,18 @@ class DelegateCoderTool(Tool):
     summary: ClassVar[str] = "Delegates a coding task to whichever CLI fills the coder seat."
     use_when: ClassVar[str] = (
         "Use for heavy builds, multi-file refactors, or large reads that need sustained "
-        "focus. Brief it with the root symptom, what you expected, and what you ruled out "
-        "— never your worry about the mess you made getting there."
+        "focus. Brief it with the root symptom, what you expected, and what you ruled out. "
+        "Never your worry about the mess you made getting there."
     )
     not_when: ClassVar[str] = (
-        "Review, not build — use `delegate_auditor`. A persistent "
-        "controller session — use `delegate_agent_controller`. A markdown "
-        "sub-agent task — use `invoke_agent`."
+        "Work you can do in this seat. Reading a few files, one edit, a script, "
+        "a fix whose shape you can already see: do it yourself, because it is "
+        "faster and you can check the result as you go. "
+        "Review, not build: use `delegate_auditor`. A persistent "
+        "controller session: use `delegate_agent_controller`. A markdown "
+        "sub-agent task: use `invoke_agent`."
     )
+    depends_on: ClassVar[str] = "role:coder"
 
     @property
     def name(self) -> str:

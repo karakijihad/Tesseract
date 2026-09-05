@@ -102,7 +102,7 @@ async def _dispatch(app: web.Application, session: ServerSession, raw: str) -> N
 # `ws_connection.append_log_entry` / `ws_connection.TESSERACT_HOME` instead —
 # `_autosave` resolves them via ws_connection's own module globals.
 from tesseract.mirror.server.ws_connection import (  # noqa: E402
-    _activity_events_pump,
+    _channel_forward_pump,
     _autosave,
     _emit_cost_state,
     _emit_entity_signals,
@@ -132,9 +132,8 @@ from tesseract.mirror.server.chat_lifecycle import (  # noqa: E402
 )
 
 
-# Voice handlers moved to `tesseract/mirror/server/voice_io.py`
-# (codex audit m2 follow-up, 2026-05-23). Re-exported here for the
-# existing call sites in `_dispatch`.
+# Voice handlers live in `tesseract/mirror/server/voice_io.py`.
+# Re-exported here for the call sites in `_dispatch`.
 from tesseract.mirror.server.voice_io import (  # noqa: E402
     _accumulate_voice_pcm,
     _handle_voice_cancel,
@@ -217,7 +216,7 @@ def _resolve_overage_ask(session: ServerSession, data: dict) -> None:
 
 
 # TTS pipeline lives in `tesseract/mirror/server/tts.py` since
-# 2026-05-23 (codex audit m2 follow-up). Re-exported below for
+# Re-exported below for
 # `_handle_voice_cancel` and for external callers/tests reaching these
 # names via `tesseract.mirror.server.ws` (chunk_handler.py and
 # turn_runner.py import their own copies directly since SDD Task 1.3).
@@ -366,22 +365,21 @@ from tesseract.mirror.server.turn_intake import (  # noqa: E402
 )
 
 
-# Stream parser + sentence/paragraph splitters moved to
-# `tesseract/mirror/server/stream_parser.py` (codex audit m2 follow-up,
-# 2026-05-23). Re-exported below for any caller that still imports them
-# from ws.
+# Stream parser + sentence/paragraph splitters live in
+# `tesseract/mirror/server/stream_parser.py`. Re-exported below for any
+# caller that imports them from ws.
 
 
 # TTS pipeline functions moved to tts.py (see import above).
 
 # Chunk-handling cluster (`_handle_chunk`, `_LegacyTurnStateView`, its orb/
 # voice/posture emit helpers, and `_broadcast_workspace_reply`) moved to
-# `chunk_handler.py` (SDD Task 1.3). Re-exported here for production call
+# `chunk_handler.py`. Re-exported here for production call
 # sites and test fixtures that still reach these names via
 # `tesseract.mirror.server.ws`. Tests that patch the emit helpers to
 # intercept a real `_handle_chunk` call must patch `chunk_handler.X`
 # instead — `_handle_chunk` resolves them via chunk_handler's own module
-# globals, so a patch on this ws re-export no longer intercepts.
+# globals, so a patch on this ws re-export does not intercept.
 from tesseract.mirror.server.chunk_handler import (  # noqa: E402
     _DEEP_FOCUS_TOOL_THRESHOLD,
     _HAPPY_IMPORTANCE,
@@ -414,7 +412,7 @@ async def _handle_command(app: web.Application, session: ServerSession, data: di
         log.debug("ws: unknown command %r ignored", head_token)
         return
 
-    # inc.C — block session-mutating slash commands while ANY chat has a turn
+    # Block session-mutating slash commands while ANY chat has a turn
     # in flight: a background conductor turn holds the stream lock + mutates
     # session state too, so the active-slot check alone would miss it.
     busy = session.has_running_turn()

@@ -51,33 +51,50 @@ async def _start_channel_turn(
     body: str,
     on_progress: Any | None = None,
     error_out: list[str] | None = None,
+    refused_out: list[bool] | None = None,
+    fold_when_needed: Any | None = None,
 ) -> str | None:
     """Drive a plain chat turn for an external-channel message.
 
     Unlike workspace reply dispatch, this does NOT involve the
     ``workspace_events`` / ``workspace_reply`` machinery — channels are
-    transient brainstorm surfaces (MO-9-10) whose conversation history
+    transient brainstorm surfaces whose conversation history
     lives in :class:`ConversationStore`, not in the operator workspace.
 
     ``on_progress``: optional ``Callable[[ProgressEvent], Awaitable[None]]``.
     When supplied, fires for tool-call lifecycle chunks
     (``TOOL_CALL_START`` / ``TOOL_RESULT``) plus elapsed-time pulses
     (15/30/60/120 s). Exceptions are logged + swallowed so a broken
-    progress lambda never aborts the turn. CR-4.
+    progress lambda never aborts the turn.
 
     Returns the assistant's reply text (empty string when the turn
     produced no text) or ``None`` on stream error / cancellation so the
     caller can decide whether to surface a fallback to the remote user.
-    The chat history is kept (``transient=False``) so the per-channel
-    sliding window can replay context across turns; the bridge trims
-    the window after each turn via :func:`apply_retention_inplace`.
+    The chat history is kept (``transient=False``) so the chat can replay
+    context across turns; the adapter bounds it after the turn via
+    :func:`tesseract.mirror.server.after_turn.after_turn`, the same function
+    and the same threshold the cockpit uses.
+
+    ``fold_when_needed``: the caller's own after-turn compaction hook, handed
+    to the tool loop so a turn that outgrows the ceiling on its own folds and
+    carries on. The same callable the caller invokes at the end of the turn,
+    passed rather than rebuilt, so there is one compaction call site and not a
+    mid-turn variant of it.
 
     ``error_out``: optional list the caller can pass to observe a
     turn-level error even though this function still returns reply text
     for it (the ``⚠`` envelope below) — populated with the raw
     ``error_holder`` entries when the stream produced an error envelope.
-    Additive / opt-in: existing call sites that omit it are unaffected
-    (fix pass 1, idle-wake-design.md §G1 outcome-based breaker accounting).
+    Additive / opt-in: existing call sites that omit it are unaffected.
+
+    ``refused_out``: optional list, filled with one bool saying whether the
+    runtime declined to BEGIN this turn (a spending cap, a tool cap) as opposed
+    to running it and failing. Answered here, by the turn, for the same reason
+    the cockpit answers it in ``turn_runner``: the session's
+    ``last_turn_outcome`` outlives the turn that set it, so a caller reading it
+    afterwards can be handed the PREVIOUS turn's refusal and forgive a real
+    failure. Guarded on the stream having run to exhaustion, which is when
+    ``send`` has just written that field.
     """
     del app, channel, chat_id  # reserved for future per-channel hooks (cost tagging, etc.)
     if session.current_turn_task and not session.current_turn_task.done():
@@ -94,6 +111,10 @@ async def _start_channel_turn(
     cancel_event.clear()
     reply_holder: list[str] = []
     error_holder: list[str] = []
+    # Error text the runtime wrote itself, kept apart from what an exception
+    # left behind. `error_holder` stays raw because the log wants the numbers.
+    composed: list[str] = []
+    stream_ok = False
     history_before = len(session.chat_session.history)
 
     # Track the most recent TOOL_CALL_START's (id → name, input) so we
@@ -131,6 +152,7 @@ async def _start_channel_turn(
             raise
 
     async def _drive() -> None:
+        nonlocal stream_ok
         from tesseract.integrations._channel_progress import ProgressEvent
         from tesseract.mirror.server.stream_parser import _parse_tagged_stream
 
@@ -157,7 +179,9 @@ async def _start_channel_turn(
                 await _safe_progress(ProgressEvent(kind="intent", text=text))
 
         try:
-            async for chunk in session.chat_session.send(body):
+            async for chunk in session.chat_session.send(
+                body, fold_when_needed=fold_when_needed,
+            ):
                 if chunk.type == ChunkType.TEXT and chunk.text:
                     reply_holder.append(chunk.text)
                     if on_progress is not None:
@@ -170,7 +194,14 @@ async def _start_channel_turn(
                         # The block closed: the sentence is whole, so it can be
                         # said. Emitting per piece would send it a word at a
                         # time as the provider streams it.
-                        if parse_state == "intent" and next_state != "intent":
+                        #
+                        # Driven off the buffer, not off a state EDGE. The edge
+                        # only sees a block that straddles two chunks; a whole
+                        # `<intent>…</intent>` inside one chunk — which is every
+                        # intent on a non-streaming adapter, `stream: false` in
+                        # `providers.yaml` — entered and left "outside", so it
+                        # was collected and silently never said.
+                        if intent_buf and next_state != "intent":
                             await _flush_intent()
                         parse_state = next_state
                 elif chunk.type == ChunkType.TOOL_CALL_START:
@@ -200,6 +231,16 @@ async def _start_channel_turn(
                         ))
                 elif chunk.type == ChunkType.ERROR:
                     error_holder.append(chunk.error or "stream error")
+                    # A chunk that names its own reason was composed by the
+                    # runtime: it is already plain words with no path in it, so
+                    # it does not go through the shape check below. That check
+                    # exists for exception text, and it treats any slash as a
+                    # path marker — which is how a budget refusal reading
+                    # `spent $3.0617 / cap $3.0000` reached the operator as
+                    # "I hit an error processing that" while they were mid work.
+                    if (chunk.raw or {}).get("reason"):
+                        composed.append(chunk.error or "")
+            stream_ok = True
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -261,6 +302,13 @@ async def _start_channel_turn(
                 session.chat_session.confirm_spawn_delivery()
         except Exception:
             log.exception("channel turn: spawn delivery commit/rollback failed")
+    if refused_out is not None:
+        from tesseract.orchestrator.outcome import RunOutcome
+
+        refused_out.append(
+            stream_ok
+            and getattr(session.chat_session, "last_turn_outcome", None) is RunOutcome.REFUSED
+        )
     if turn_cancelled:
         return None
 
@@ -275,21 +323,18 @@ async def _start_channel_turn(
                 break
     if error_holder:
         # Stream produced an error envelope (tool-cap hit, adapter crash,
-        # cancellation). Pre-fix code returned ``None`` here, leaving
-        # channel users with the bridge's generic "(no reply produced
-        # this turn)" message. Append the error text to whatever partial
-        # reply we have so the user sees something concrete and knows
-        # to retry / rephrase.
+        # cancellation). Returning ``None`` here would leave the channel with
+        # the bridge's generic "(no reply produced this turn)". The error text
+        # goes onto whatever partial reply there is, so the person sees
+        # something concrete and knows to retry or rephrase.
         log.warning("channel turn error for %s: %s", session.session_id, error_holder[0])
         if error_out is not None:
             error_out.extend(error_holder)
-        # Redaction keys off the SHAPE of the message, not off who is reading.
-        # It used to key off `channel_tier`, and the tier is gone (2026-08-15 —
-        # single-operator install), but the protection was never really about
-        # the reader: a channel reply transits a third party's servers, so
-        # exception text carrying internal paths does not belong in it whoever
-        # holds the phone.
-        suffix = _channel_safe_error(error_holder[0])
+        # Redaction keys off the SHAPE of the message, not off who is reading:
+        # a channel reply transits a third party's servers, so exception text
+        # carrying internal paths does not belong in it whoever holds the
+        # phone.
+        suffix = composed[0] if composed else _channel_safe_error(error_holder[0])
         if reply:
             reply = f"{reply}\n\n⚠ {suffix}"
         else:

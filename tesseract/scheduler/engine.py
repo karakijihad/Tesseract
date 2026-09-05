@@ -24,6 +24,8 @@ from tesseract.scheduler.config_loader import (
     persist_job_add,
     persist_job_remove,
     persist_job_update,
+    refuse_cadence,
+    system_rows,
 )
 from tesseract.scheduler.log import append_run_log, load_last_runs
 from tesseract.scheduler.manifest.entry import MIN_SUMMARY_CHARS
@@ -38,10 +40,23 @@ from tesseract.orchestrator.activity.hooks import fail_routine, register_routine
 log = logging.getLogger(__name__)
 
 MAX_CONSECUTIVE_FAILURES = _default_max_failures()
+
+
+class AlreadyRunning(RuntimeError):
+    """A hand-fired run was asked for while one is already in flight.
+
+    Its own type because the caller's answer differs from every other refusal
+    here: nothing is wrong, the job is simply already doing the thing, and a
+    surface should say that rather than report a failure.
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__(f"{name} is already running")
+        self.name = name
 TICK_SECONDS = 60
 ALARM_TICK_SECONDS = 10
 
-# Phase 18 Task B — handler whitelist. agent-authored or REST-authored
+# Handler whitelist. Agent-authored or REST-authored
 # `schedule_create` calls must reference a class under one of these
 # module prefixes; arbitrary import paths are refused. Operators can
 # extend the whitelist by editing this constant or by adding a new
@@ -131,6 +146,12 @@ class SchedulerEngine:
     # replay can wait minutes, long past the 60s `last_fired_at` dedupe, and
     # a `*/5` cron job would otherwise double-fire ungated mid-queue.
     _catchup_pending: set[str] = field(default_factory=set)
+    # Jobs a run is inside right now, by whichever door it came through.
+    # `_run_job` owns this: the guard began on `run_now` alone, which covered
+    # the panel's button against the `schedule_run` tool and left the commoner
+    # collision open — a six minute run started at 22:59 was still going when
+    # the 23:00 tick fired the same job, and both ran.
+    _running: set[str] = field(default_factory=set)
     # Where trigger rows keep their position. Injectable so a test can point
     # it at `tmp_path`; built on first use rather than at construction because
     # its default path resolves `TESSERACT_HOME` and an engine is constructed
@@ -188,6 +209,91 @@ class SchedulerEngine:
             raise TypeError(f"{dotted} must subclass BaseJob")
         return cls
 
+    def _regate_rows(self) -> list[str]:
+        """Ask the tool gate about every armed row, now that there is an app.
+
+        `__post_init__` cannot: it runs before `start`, so there is no app and
+        no registry to resolve a posture against, and a row read off disk comes
+        up exactly as the file wrote it. That leaves a window where a row
+        naming a tool the operator keeps behind a prompt reads as ON, in the
+        Schedule view and in Managed system, until its first fire refuses it.
+        Nothing ungated ever ran in that window, because the job checks again
+        when it fires. What was wrong was the answer the panel gave.
+
+        Safe to ask here, and `config/boot.yaml` is why: `tool_registry` is in
+        the `core` layer and the scheduler is in `wiring`, layers run in
+        sequence, so the registry is built and its policy attached before this
+        is reached. If that ever stops being true, `_armable` says nothing
+        rather than disarming, and the fire-time check still holds the line.
+        """
+        refused: list[str] = []
+        for name, rt in self.registry.items():
+            if not rt.enabled:
+                continue
+            if self._armable(rt.cfg, refused):
+                continue
+            rt.enabled = False
+            rt.cfg = rt.cfg.model_copy(update={"enabled": False})
+            # Written down, not just held in memory. Otherwise the file still
+            # says the row is on, every boot reads it, turns it off again and
+            # files another identical card: the repetition the fire-time path
+            # was already fixed for. Persisting makes the second boot a no-op,
+            # which is the dedupe, and makes the file agree with the panel.
+            #
+            # So the card names only what the write actually took. A row whose
+            # write failed will be disarmed again next boot, and announcing it
+            # now would announce it again then, which is the thing being
+            # avoided. The failure goes to the log, where it belongs.
+            try:
+                self._persist_job(name, {"enabled": False})
+            except Exception:  # noqa: BLE001 — the row is off either way
+                log.exception("scheduler: could not write %s off", name)
+                refused.remove(name)
+        if refused:
+            log.warning(
+                "scheduler: %d row(s) came up off, the tool they run needs "
+                "approval: %s",
+                len(refused),
+                ", ".join(refused),
+            )
+        return refused
+
+    async def _say_which_rows_came_up_off(self, refused: list[str]) -> None:
+        """Tell the operator about a row boot turned off.
+
+        A log line is not telling anybody. The reload door renders its
+        refusals into a toast because a person is at the screen when a reload
+        happens; boot has no session to toast, and the row will not fire, so
+        the fire-time card never comes either. That leaves the Workspace,
+        which is where a decision waits regardless of who is connected.
+
+        Best effort throughout. A row that could not be announced is still
+        correctly off, and a boot must not fail over a card.
+        """
+        if not refused:
+            return
+        try:
+            from tesseract.paths import home_logs_root
+            from tesseract.workspace_events import EventStore, WorkspaceEvent
+
+            rows = ", ".join(refused)
+            event = WorkspaceEvent.new(
+                kind="nudge",
+                source="agent",
+                title=f"{len(refused)} scheduled job(s) came up off",
+                summary=(
+                    f"{rows} run tools that need your approval, so they were "
+                    "turned off at startup rather than failing every time they "
+                    "came round. Set the tool to auto in permissions.yaml if "
+                    "you want it running on its own, then switch the job back "
+                    "on."
+                ),
+                payload={"origin": "scheduler_boot", "jobs": list(refused)},
+            )
+            EventStore(home_logs_root()).append_event(event)
+        except Exception:  # noqa: BLE001 — the rows are off either way
+            log.exception("scheduler: could not announce the rows that came up off")
+
     async def start(self, app: Any) -> None:
         self._app = app
         self._stopping.clear()
@@ -206,6 +312,7 @@ class SchedulerEngine:
 
         verify_live()
         self.boot_findings = self._run_boot_checks()
+        await self._say_which_rows_came_up_off(self._regate_rows())
         now = datetime.now(timezone.utc)
         # Owner request 2026-04-29 — Mirror schedule view should show the
         # persisted last-run timestamp on boot. `_compute_catchup` already
@@ -231,6 +338,12 @@ class SchedulerEngine:
                 async with catchup_sem:
                     # Re-stamp at actual start so the 60s tick dedupe is
                     # anchored to real execution, not queue-entry time.
+                    if not self._claim(name):
+                        log.info(
+                            "scheduler: %s is already running, so its catchup is skipped",
+                            name,
+                        )
+                        return
                     rt.last_fired_at = datetime.now(timezone.utc)
                     await self._run_job(name, rt, now, trigger="catchup")
             finally:
@@ -257,9 +370,9 @@ class SchedulerEngine:
 
         Reported rather than fatal: three agenda sources have no producer on
         this tree today, and a backend that refused to boot until they were
-        wired would trade a silent gap for an unusable app. AR-7 decides
-        whether each is wired or deleted; until then boot says so every time,
-        and the list stays readable for the health surface.
+        wired would trade a silent gap for an unusable app. Each is either
+        wired or deleted; until then boot says so every time, and the list
+        stays readable for the health surface.
         """
         try:
             from tesseract.scheduler.pipeline.checks import (
@@ -412,10 +525,81 @@ class SchedulerEngine:
     def configs(self) -> list[JobConfig]:
         return [rt.cfg for rt in self.registry.values()]
 
+    def _check_tool_gate(self, handler: str, config: dict[str, Any]) -> None:
+        """Refuse a tool-running row whose tool needs approval.
+
+        Resolved against the live policy every time rather than remembered on
+        the row: `permissions.yaml` is the authority and it can change after a
+        row is armed. `ToolNotSchedulable` is a `ValueError`, so every caller
+        that already reports a bad cadence reports this the same way.
+        """
+        from tesseract.scheduler import tool_gate
+
+        registry, policy = tool_gate.runtime_from_app(self._app)
+        # The context the row would actually run under, not a bare one. A tool
+        # answering `check_permissions` is being asked about a specific call,
+        # and asking it under different conditions from the ones it will meet
+        # is how the gate and the runtime start giving different answers.
+        tool_gate.check_job(
+            handler,
+            config,
+            registry=registry,
+            policy=policy,
+            context=tool_gate.scheduled_context(app=self._app),
+        )
+
+    def _armable(self, cfg: JobConfig, refused: list[str] | None = None) -> bool:
+        """Whether a row read off disk may come up armed.
+
+        Shared by the two doors that read rows off disk rather than being
+        handed one: `reload_jobs`, when the watcher sees `schedule.yaml`
+        change, and `_regate_rows` at boot. Neither is a tool call, and
+        `schedule.yaml` is not one of the four files closed to `file_write`,
+        so a row gated when it was created can have its `tool` swapped
+        underneath it and a row can be written enabled having passed through
+        no door at all. The job refuses the call either way, so nothing
+        ungated ever runs; what this fixes is the Schedule panel saying ON
+        about a row that cannot.
+
+        **It only ever lowers.** `enabled` also carries what the operator last
+        set and what the breaker decided after a run, and neither is this
+        function's to undo.
+
+        A gate that cannot read the policy says nothing here, because turning
+        good rows off over an unreadable policy would be the guard causing the
+        outage. That is not the shipped boot order (`config/boot.yaml` builds
+        `tool_registry` in `core` and the scheduler in `wiring`, in sequence);
+        it is an engine built with no app, which is every test harness.
+        """
+        from tesseract.scheduler.tool_gate import ToolNotSchedulable
+
+        if not cfg.enabled:
+            return False
+        try:
+            self._check_tool_gate(cfg.handler, cfg.config)
+        except ToolNotSchedulable as refusal:
+            if refusal.unknown:
+                return True
+            log.warning(
+                "scheduler.reload_jobs: %s stays off — %s", cfg.name, refusal.reason
+            )
+            # Named to the caller, not only to the log. A row the FIRE refuses
+            # files a card and sends a message; a row a reload refuses fired
+            # nothing, so without this it just goes quiet, which is the state
+            # a schedule must never be in.
+            if refused is not None:
+                refused.append(cfg.name)
+            return False
+        return True
+
     def set_enabled(self, name: str, enabled: bool) -> None:
         rt = self.registry.get(name)
         if rt is None:
             raise KeyError(name)
+        # Arming is where a row becomes able to act, so the tool gate answers
+        # here as well as at creation. Turning one OFF is always allowed.
+        if enabled:
+            self._check_tool_gate(rt.cfg.handler, rt.cfg.config)
         rt.enabled = enabled
         # Re-enabling a tripped job also resets the breaker so it fires next tick.
         if enabled:
@@ -434,8 +618,9 @@ class SchedulerEngine:
         on_failure: str = "log",
         retry_policy: RetryPolicy | None = None,
         config: dict[str, Any] | None = None,
+        delivery: list[str] | None = None,
     ) -> JobConfig:
-        """Phase 18 Task B — register a new job at runtime.
+        """Register a new job at runtime.
 
         Validates: name uniqueness, handler dotted-path against
         `ALLOWED_HANDLER_PREFIXES`, cadence (interval shorthand or cron),
@@ -460,13 +645,9 @@ class SchedulerEngine:
             )
         if on_failure not in ("log", "alert", "disable"):
             raise ValueError(f"on_failure must be log/alert/disable, got {on_failure!r}")
-        # Cadence validation reuses the same shape `set_cadence` enforces.
-        interval = _parse_interval(cadence)
-        if interval is None:
-            try:
-                croniter(cadence, datetime.now(timezone.utc))
-            except Exception as exc:
-                raise ValueError(f"invalid cadence {cadence!r}: {exc}") from exc
+        # Same rule and same message as `set_cadence`, because they are the
+        # two doors onto one question.
+        interval = self._validated_interval(cadence)
         # Resolve the handler before we persist — fail loudly here rather
         # than silently parking a placeholder job. It runs BEFORE the summary
         # check so the claim below is true: the mechanics are what make it a
@@ -475,13 +656,17 @@ class SchedulerEngine:
         handler_cls = self._resolve_handler(handler)
         if handler_cls is _PlaceholderJob:
             raise ValueError(f"handler {handler!r} is not importable")
+        # A row that runs a tool may only name one that already runs without
+        # asking. `tool_gate` holds the reasoning; a row on any other handler
+        # passes straight through.
+        self._check_tool_gate(handler, config or {})
         # Last, so a row whose cadence or handler is wrong hears about that
         # first.
         if len(summary.strip()) < MIN_SUMMARY_CHARS:
             raise ValueError(
                 f"job {name!r} needs a summary of at least {MIN_SUMMARY_CHARS} "
                 "characters saying what it is for — it is the line you will read "
-                "in WHAT-RUNS.md and in the Schedule tab months from now, when "
+                "in WHAT-RUNS.md and in Managed system months from now, when "
                 "the handler name no longer tells you anything"
             )
         # Build the typed config — pydantic raises ValidationError on
@@ -496,6 +681,7 @@ class SchedulerEngine:
             on_failure=on_failure,
             retry_policy=retry,
             config=config or {},
+            delivery=delivery,
         )
         persist_job_add(self.config_dir, job_cfg)
         self.registry[name] = _JobRuntime(
@@ -509,7 +695,7 @@ class SchedulerEngine:
         return job_cfg
 
     def remove_job_runtime(self, name: str) -> JobConfig:
-        """Phase 18 Task B — remove a registered job at runtime.
+        """Remove a registered job at runtime.
 
         Returns the removed JobConfig. Raises KeyError if the name is
         not registered. The `schedule.yaml` entry is also removed; if
@@ -539,7 +725,7 @@ class SchedulerEngine:
         return cfg
 
     def reload_jobs(self) -> dict[str, list[str]]:
-        """Phase 18 — diff the on-disk `schedule.yaml` against the live
+        """Diff the on-disk `schedule.yaml` against the live
         registry and re-arm without restart.
 
         Returns a summary `{"added", "removed", "changed"}` of job names so
@@ -556,6 +742,9 @@ class SchedulerEngine:
         added: list[str] = []
         removed: list[str] = []
         changed: list[str] = []
+        # Rows this reload turned off because the tool they name needs
+        # approval. Carried out so a surface can say so.
+        refused: list[str] = []
 
         for name in fresh_names - live_names:
             job_cfg = fresh[name]
@@ -567,7 +756,7 @@ class SchedulerEngine:
                 cfg=job_cfg,
                 handler_cls=handler_cls,
                 interval_seconds=_parse_interval(job_cfg.cadence),
-                enabled=job_cfg.enabled and handler_cls is not _PlaceholderJob,
+                enabled=self._armable(job_cfg, refused) and handler_cls is not _PlaceholderJob,
             )
             added.append(name)
 
@@ -589,6 +778,10 @@ class SchedulerEngine:
             retry_changed = rt.cfg.retry_policy != new_cfg.retry_policy
             inner_config_changed = rt.cfg.config != new_cfg.config
             model_role_changed = rt.cfg.model_role != new_cfg.model_role
+            # Where a row reports is a thing about the row like any other. It
+            # was left out when `delivery` was added, so editing it in the file
+            # was acknowledged by the watcher and then ignored until a restart.
+            delivery_changed = rt.cfg.delivery != new_cfg.delivery
             if not any((
                 cadence_changed,
                 when_changed,
@@ -598,6 +791,7 @@ class SchedulerEngine:
                 retry_changed,
                 inner_config_changed,
                 model_role_changed,
+                delivery_changed,
             )):
                 continue
             if model_role_changed:
@@ -611,7 +805,7 @@ class SchedulerEngine:
                     cfg=new_cfg,
                     handler_cls=handler_cls,
                     interval_seconds=_parse_interval(new_cfg.cadence),
-                    enabled=new_cfg.enabled and handler_cls is not _PlaceholderJob,
+                    enabled=self._armable(new_cfg, refused) and handler_cls is not _PlaceholderJob,
                 )
             else:
                 rt.cfg = new_cfg
@@ -619,16 +813,30 @@ class SchedulerEngine:
                     rt.interval_seconds = _parse_interval(new_cfg.cadence)
                 if enabled_changed:
                     rt.enabled = (
-                        new_cfg.enabled and rt.handler_cls is not _PlaceholderJob
+                        self._armable(new_cfg, refused)
+                        and rt.handler_cls is not _PlaceholderJob
                     )
                     if rt.enabled:
                         rt.consecutive_failures = 0
+                elif inner_config_changed and rt.enabled:
+                    # The row kept its enabled flag and changed WHAT IT RUNS,
+                    # which is the swap the gate has to see. Re-gating here can
+                    # only turn a row off: `rt.enabled` also carries a decision
+                    # this process made after a run (the breaker at
+                    # `_apply_outcome`), and an edit to something else must not
+                    # resurrect it.
+                    rt.enabled = self._armable(new_cfg, refused)
             changed.append(name)
 
         log.info(
             "scheduler.reload_jobs: +%d -%d ~%d", len(added), len(removed), len(changed)
         )
-        return {"added": added, "removed": removed, "changed": changed}
+        return {
+            "added": added,
+            "removed": removed,
+            "changed": changed,
+            "refused": refused,
+        }
 
     def set_model_role(self, name: str, model_role: str | None) -> None:
         """Update the per-job LLM role override.
@@ -655,12 +863,21 @@ class SchedulerEngine:
 
         The tracker renders a row with no summary as a gap and asks for one —
         so there has to be a way to answer that is not "hand-edit the yaml".
-        `_persist_job` refuses a shipped row, because what the app's own work is
-        for is the manifest's to say, not a data file's.
+        A shipped row is refused, because what the app's own work is for is the
+        manifest's to say, not a data file's.
+
+        Asked here for `set_cadence`'s reason: the write refuses it too, and
+        `_persist_job` swallows that, so the caller was told the sentence had
+        been changed while the yaml still held the app's.
         """
         rt = self.registry.get(name)
         if rt is None:
             raise KeyError(name)
+        if name in system_rows(self.config_dir):
+            raise ValueError(
+                f"what {name!r} is for is set by the app, so it cannot be "
+                "changed here. Rows you wrote yourself say what you tell them."
+            )
         cleaned = summary.strip()
         if len(cleaned) < MIN_SUMMARY_CHARS:
             raise ValueError(
@@ -670,7 +887,49 @@ class SchedulerEngine:
         rt.cfg = rt.cfg.model_copy(update={"summary": cleaned})
         self._persist_job(name, {"summary": cleaned})
 
+    def _validated_interval(self, cadence: str) -> int | None:
+        """Seconds for an interval cadence, ``None`` for a cron one, raising
+        on either kind the scheduler cannot actually run.
+
+        **A cadence under the tick is refused rather than accepted and
+        rounded.** The loop looks at every row once every ``tick_seconds`` and
+        fires what is due, so a row asking for less is checked at the tick like
+        everything else. Arming it anyway leaves a row that READS as thirty
+        seconds in `schedule.yaml`, prints as thirty seconds in
+        `WHAT-RUNS.md`, and fires once a minute, which nobody finds out unless
+        they count. Measured 2026-08-26 on a live row.
+
+        Both doors this repo owns come through here, so there is one rule and
+        one message. A hand-edited `schedule.yaml` is not refused, for the
+        same reason a missing `summary` is not: refusing a file we do not own
+        would refuse to boot.
+        """
+        interval = _parse_interval(cadence)
+        if interval is None:
+            try:
+                croniter(cadence, datetime.now(timezone.utc))
+            except Exception as exc:
+                raise ValueError(f"invalid cadence {cadence!r}: {exc}") from exc
+            return None
+        if interval < self.tick_seconds:
+            raise ValueError(
+                f"a cadence of {cadence!r} would still only fire once every "
+                f"{self.tick_seconds} seconds, because that is how often the "
+                f"scheduler looks at every row. Ask for {self.tick_seconds}s or "
+                "longer, and say if you need it faster than that"
+            )
+        return interval
+
     def set_cadence(self, name: str, cadence: str) -> None:
+        """Re-time a row, if this is a row whose timing the operator owns.
+
+        The ownership question is asked HERE as well as inside
+        `persist_job_update`, and that is not a second rule: both call
+        `refuse_cadence`. It is asked here because `_persist_job` logs and
+        swallows what the write raises, so a refusal reached from a command or
+        a tool would otherwise be reported as a change that worked and would be
+        live in memory until the next restart put it back.
+        """
         rt = self.registry.get(name)
         if rt is None:
             raise KeyError(name)
@@ -680,12 +939,12 @@ class SchedulerEngine:
                 "cadence would leave it with two firing rules. Tune `when_config`, or "
                 "disable it"
             )
-        interval = _parse_interval(cadence)
-        if interval is None:
-            try:
-                croniter(cadence, datetime.now(timezone.utc))
-            except Exception as exc:  # pragma: no cover — croniter-internal
-                raise ValueError(f"invalid cadence {cadence!r}: {exc}") from exc
+        refusal = refuse_cadence(
+            name, system_rows(self.config_dir).get(name), cadence
+        )
+        if refusal:
+            raise ValueError(refusal)
+        interval = self._validated_interval(cadence)
         rt.cfg = rt.cfg.model_copy(update={"cadence": cadence})
         rt.interval_seconds = interval
         self._persist_job(name, {"cadence": cadence})
@@ -710,6 +969,42 @@ class SchedulerEngine:
         except Exception:
             log.exception("scheduler: persist %s %r failed — change is live but not on disk", name, updates)
 
+    def is_running(self, name: str) -> bool:
+        """Whether a run of this job is in flight, by any door.
+
+        Public because a caller that spawns `run_now` as a task cannot see the
+        refusal it would raise: the exception lands in the task and is logged,
+        not answered. Asking first is how the operator gets told.
+
+        **It answers a question for a person and reserves nothing.** Every
+        caller has an await between asking and acting, so the answer can be
+        stale by the time it is used, and the guard is `_claim` below. Reading
+        this as a gate is what left the trigger path open.
+
+        Every path answers here because `_claim` is what records it. Two
+        answers to `is this running` is the shape this panel exists to remove,
+        and the panel's own `firing_now()` reads the activity registry, which
+        has always covered both.
+        """
+        return name in self._running
+
+    def _claim(self, name: str) -> bool:
+        """Take the in-flight seat for `name`, or report that it is taken.
+
+        **The check and the claim are one act, and it is synchronous.** Asking
+        first and starting later is not a guard: `_tick` decided a row was free
+        while building `armed`, then `_tick_triggers` awaited every condition
+        before firing, and a run started by hand inside that await was invisible
+        to a decision already made. Measured at two concurrent runs of one job.
+
+        So every door claims here, at the moment it commits, rather than inside
+        the coroutine that eventually runs. `_run_job` only releases.
+        """
+        if name in self._running:
+            return False
+        self._running.add(name)
+        return True
+
     async def run_now(self, name: str, *, trigger: str) -> JobResult:
         """Fire a registered job immediately, off-schedule.
 
@@ -727,6 +1022,12 @@ class SchedulerEngine:
         rt = self.registry.get(name)
         if rt is None:
             raise KeyError(name)
+        # One run of a job at a time. Refused here rather than left to
+        # `_run_job`, because the caller asked for a run and deserves to be
+        # told it is not getting one; `_run_job` is also the tick's path, and
+        # a tick skips quietly rather than raising.
+        if not self._claim(name):
+            raise AlreadyRunning(name)
         fired_at = datetime.now(timezone.utc)
         rt.last_fired_at = fired_at
         return await self._run_job(name, rt, fired_at, trigger=trigger)
@@ -775,10 +1076,19 @@ class SchedulerEngine:
         for name, rt in self.registry.items():
             if not rt.enabled or name in self._catchup_pending:
                 continue
+            if name in self._running:
+                # A run started by hand is still going. Firing the same job on
+                # top of it is two passes over the same files, and the clock
+                # coming round is the weakest of the reasons to want that.
+                log.info("scheduler: %s is still running, so this tick skips it", name)
+                continue
             if rt.cfg.when:
                 armed.append((name, rt))
                 continue
             if not self._should_fire(rt, now_utc, now_local):
+                continue
+            if not self._claim(name):
+                log.info("scheduler: %s is still running, so this tick skips it", name)
                 continue
             rt.last_fired_at = now_utc
             self.spawn_tracked_task(
@@ -818,6 +1128,12 @@ class SchedulerEngine:
             # Position first, then dispatch. The reverse order re-fires on the
             # next tick if the run outlives it, and for a row that calls a
             # model that is a second bill for one event.
+            # Asked again here, not only in `_tick`. Every condition above was
+            # awaited, and a run started by hand inside that await would not be
+            # in the answer this loop was handed.
+            if not self._claim(name):
+                log.info("scheduler: %s is still running, so this tick skips it", name)
+                continue
             record_trigger_fired(name, now_utc, self._watermark_store())
             rt.fired_this_process = True
             rt.last_fired_at = now_utc
@@ -858,23 +1174,61 @@ class SchedulerEngine:
         fired_at: datetime,
         trigger: str = "scheduled",
     ) -> JobResult:
-        """Run a job with retry + circuit-breaker bookkeeping. Never raises."""
-        if trigger not in TRIGGER_SOURCES:
-            raise ValueError(
-                f"unknown trigger {trigger!r} for job {name!r}: expected one of "
-                f"{', '.join(sorted(TRIGGER_SOURCES))}"
+        """Run a job with retry + circuit-breaker bookkeeping. Never raises.
+
+        **Whatever happens here, the seat is freed.** The caller claimed it
+        with `_claim` before committing, so the `finally` covers this whole
+        function and not only the attempt loop: a bad trigger name or a handler
+        whose constructor throws would otherwise leave a job marked as running
+        for the life of the process, and every later run of it refused. A
+        refusal that outlives one bad run is worse than the defect the seat
+        exists to prevent.
+        """
+        try:
+            if trigger not in TRIGGER_SOURCES:
+                raise ValueError(
+                    f"unknown trigger {trigger!r} for job {name!r}: expected one of "
+                    f"{', '.join(sorted(TRIGGER_SOURCES))}"
+                )
+            handler = rt.handler_cls()
+            attempts = rt.cfg.retry_policy.max_retries + 1
+            backoff = rt.cfg.retry_policy.backoff_seconds
+            result = JobResult(job_name=name, run_id="", ok=False, detail="no attempts")
+            run_id = uuid.uuid4().hex
+            # The seat is already held by whichever door committed to this run.
+            # Held again here so a direct call in a test behaves like the real
+            # paths, and because `add` on a set that has it changes nothing.
+            # Registered BEFORE the envelope: the broadcast awaits a socket
+            # write, which yields the loop, and a surface that re-reads on that
+            # envelope would ask what is running before this had said anything.
+            self._running.add(name)
+            register_routine(run_id, label=name)
+            await _broadcast_envelope(self._app, "schedule_job_started", {
+                "job_name": name,
+                "run_id": run_id,
+                "fired_at": fired_at.isoformat(),
+            })
+            return await self._attempt_job(
+                name, rt, fired_at, trigger, handler, attempts, backoff, result, run_id
             )
-        handler = rt.handler_cls()
-        attempts = rt.cfg.retry_policy.max_retries + 1
-        backoff = rt.cfg.retry_policy.backoff_seconds
-        result = JobResult(job_name=name, run_id="", ok=False, detail="no attempts")
-        run_id = uuid.uuid4().hex
-        await _broadcast_envelope(self._app, "schedule_job_started", {
-            "job_name": name,
-            "run_id": run_id,
-            "fired_at": fired_at.isoformat(),
-        })
-        register_routine(run_id, label=name)
+        finally:
+            self._running.discard(name)
+
+    async def _attempt_job(
+        self,
+        name: str,
+        rt: _JobRuntime,
+        fired_at: datetime,
+        trigger: str,
+        handler: BaseJob,
+        attempts: int,
+        backoff: int,
+        result: JobResult,
+        run_id: str,
+    ) -> JobResult:
+        """The retry loop and its bookkeeping. Split out so `_run_job` can hold
+        the in-flight seat around the whole of it in one `finally`, rather than
+        threading one through every return the loop already has."""
         for attempt in range(attempts):
             ctx = JobContext(
                 job_name=name,
@@ -884,6 +1238,14 @@ class SchedulerEngine:
                 config=dict(rt.cfg.config),
                 log_dir=self.log_dir,
                 model_role=rt.cfg.model_role,
+                # A row named after its manifest entry bills to itself. A
+                # handler that runs under many operator-chosen names says which
+                # entry it belongs to, so its ceiling binds instead of the row
+                # spending under a name nothing declares a cap for.
+                billing_key=type(handler).billing_entry or name,
+                delivery=(
+                    None if rt.cfg.delivery is None else tuple(rt.cfg.delivery)
+                ),
                 cost_ledger=(
                     self._app.get("cost_ledger") if self._app is not None else None
                 ),
@@ -940,14 +1302,25 @@ class SchedulerEngine:
         }
         await _broadcast_envelope(self._app, "schedule_job_done", done_payload)
         if (not result.ok) and rt.cfg.on_failure == "alert":
-            await _broadcast_envelope(self._app, "schedule_job_failed", {
+            alert = {
                 "job_name": name,
                 "run_id": run_id,
                 "ok": False,
                 "detail": result.detail,
                 "consecutive_failures": rt.consecutive_failures,
                 "circuit_broken": circuit_broken,
-            })
+            }
+            # The panel and the channel, not one or the other. The envelope is
+            # how a row's failure reaches a screen that is already open; the
+            # notification is how it reaches an operator who is not at it, and
+            # routing can take that one away without taking the row off the
+            # panel. Neither waits on the other: one is a socket write on this
+            # machine and the other is an HTTP call to a channel, and both
+            # swallow their own failures.
+            await asyncio.gather(
+                _broadcast_envelope(self._app, "schedule_job_failed", alert),
+                self._announce_failure(rt, alert),
+            )
         # Operator must not lose a failed run to a silent chip disappearance
         # (2026-07-05) — a successful run's chip is removed as before, a
         # failed run's chip transitions to ``failed`` and stays until the
@@ -957,6 +1330,25 @@ class SchedulerEngine:
         else:
             fail_routine(run_id, detail=result.detail)
         return result
+
+    async def _announce_failure(self, rt: _JobRuntime, alert: dict[str, Any]) -> None:
+        """Tell the operator a row they asked about failed.
+
+        Where it goes is the row's `delivery` if it stated one and
+        `routing.yaml::schedule_failed` otherwise. A notifier that is absent
+        (a test, a boot with no channels) is not a failure of the job: the run
+        log and the envelope both already have this.
+        """
+        app = self._app
+        notifier = app.get("outbound_notifier") if hasattr(app, "get") else None
+        if notifier is None:
+            return
+        try:
+            await notifier.notify(
+                "schedule_failed", alert, destinations=rt.cfg.delivery,
+            )
+        except Exception:
+            log.exception("scheduler: could not send the failure of %s", rt.cfg.name)
 
     def _apply_outcome(self, rt: _JobRuntime, result: JobResult) -> None:
         if result.ok:

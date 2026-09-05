@@ -49,7 +49,7 @@ export const useToastStore = create<ToastStore>((set, get) => ({
       // Look at the most recent toast — if same prefix and within
       // window, coalesce instead of stacking. Prefix = up to first em
       // dash / hyphen which separates the spawn kind from the summary.
-      const prefix = message.split(/\s[—-]\s/)[0];
+      const prefix = message.split(/\s[—-]\s/)[0]; // copy-exempt: matches legacy toast text, not copy
       const head = state.toasts[state.toasts.length - 1];
       if (
         head &&

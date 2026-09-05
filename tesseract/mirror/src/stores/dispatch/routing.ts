@@ -48,7 +48,7 @@ export function handleRouting(env: Envelope): void {
         const primaryLabel = data.primary
           ? `${data.primary.provider}/${data.primary.model}`
           : "primary";
-        const reason = data.fallback_reason ? ` — ${data.fallback_reason}` : "";
+        const reason = data.fallback_reason ? `: ${data.fallback_reason}` : "";
         useToastStore
           .getState()
           .push(

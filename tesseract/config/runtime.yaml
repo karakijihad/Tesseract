@@ -42,6 +42,31 @@ agent_question_timeout_s: 900
 # hung subprocesses are already killed by their own shorter timeout.
 spawn_stall_seconds: 900
 
+# How long a background spawn may run before the heartbeat starts a turn to
+# say it is still going, in seconds. The turn only reports. It never stops the
+# work, and the assistant decides from there whether to keep waiting, check it,
+# steer it, or stop it. The reminder then backs off by doubling, so at 180 it
+# lands at 3, 6, 12, 24 and 48 minutes rather than every three minutes for as
+# long as the job runs. 0 turns the heartbeat off entirely and leaves only the
+# completion path.
+spawn_heartbeat_seconds: 180
+
+# The largest share of the model's context window that ONE tool result may
+# take, as a fraction. A result over the line is cut, and the cut says so.
+# This is the backstop behind each tool's own limits: a tool bounds what it
+# returns, and this bounds what any tool can put in front of the model at all.
+# It exists because a single grep came back 44 MB (one match inside a file
+# holding one record per line), which made the next request too large for
+# every model in the chain, and the session could not call any of them. A
+# result already in history cannot be shrunk after the fact, so the cut has
+# to happen when the result arrives.
+# 1.0 turns the ceiling off and restores the old behaviour.
+tool_result_window_share: 0.60
+
+# How often the heartbeat looks at what is running, in seconds. Shorter than
+# the threshold above, or a spawn crosses it and waits for the next look.
+spawn_heartbeat_interval_s: 60
+
 # Maximum number of agents that may sit pending approval before further
 # unattended agent-creation requests are refused. Attended (operator-driven)
 # creation is always allowed.
@@ -58,3 +83,53 @@ chat_queue_max: 10
 # It answers a question rather than describing a scene, so this is a cap on a
 # paragraph, not on a report.
 screen_look_answer_chars: 1200
+
+# How long a shutdown waits for turns that are still running, in seconds.
+# Deliberately not "wait as long as it takes": a wedged turn must not be able
+# to hold a restart open forever. When the wait runs out with work still in
+# flight, the runtime tells whoever was waiting and records a fault.
+shutdown_drain_seconds: 10
+
+# How long a turn may go without starting a new step before the panel stops
+# calling it working, in seconds. A turn says it is alive by beginning
+# something: a model call, a batch of tools. Past this it is drawn as working
+# below what it promised, naming what it is held on, instead of going on
+# looking busy while nothing moves.
+#
+# This is a patience dial and not a measurement. It is how long the operator
+# is willing to watch a still screen before wanting to be told, and the honest
+# way to set it is to move it when a real wait reads wrong. Crossing it never
+# stops the turn: this phase makes silence visible, and whether a turn should
+# have a ceiling at all is a separate decision.
+turn_step_expected_within_s: 90
+
+# `api_request` — how long to wait for a service to answer, in seconds.
+api_request_timeout_s: 60
+
+# `api_request` — how much of a reply is read off the wire, in bytes. A
+# destination chooses how much it sends, and the reply is held whole because
+# it has to be CHECKED whole: the check for a stored value is an exact match,
+# so a reply cut before the check leaves a fragment nothing can find.
+api_request_max_body_bytes: 2000000
+
+# `api_request` — how much of that reply is reported back, in characters.
+# Keep it well below api_request_max_body_bytes. The gap is load-bearing
+# rather than spare margin: the read ceiling is itself a cut, and a value
+# straddling it can only stay out of the report while the report is the
+# shorter of the two.
+api_request_report_chars: 20000
+
+# `command_run` — how long a command holding one of the assistant's accounts
+# may run, in seconds. It is killed when this runs out, rather than left to
+# finish quietly: a process that outlives the call still holds the value.
+command_run_timeout_s: 120
+
+# `command_run` — how much of what a command prints is read, in bytes. Read
+# whole for the same reason a reply is: the check for a stored value is an
+# exact match, so output cut before the check leaves a fragment nothing finds.
+command_run_max_output_bytes: 2000000
+
+# `command_run` — how much of that output is reported back, in characters.
+# Below command_run_max_output_bytes for the same load-bearing reason the
+# api_request pair gives.
+command_run_report_chars: 20000

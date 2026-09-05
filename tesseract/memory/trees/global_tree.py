@@ -1,6 +1,6 @@
-"""AU-16 S2 — global daily digest tree.
+"""Global daily digest tree.
 
-One file per UTC date at
+One file per local calendar date at
 ``<TESSERACT_HOME>/memory-store/trees/global/<YYYY-MM-DD>.md``,
 listing every seal produced on that date. Operator's "what happened
 today across every source" answer.
@@ -13,7 +13,9 @@ import os
 import secrets
 from datetime import date, datetime, timezone
 from pathlib import Path
+from tesseract.lib.clock import to_local
 
+from tesseract.lib.atomic_replace import replace_with_retry
 from tesseract.memory.leaf_seals import Seal
 from tesseract.memory.leaves import _resolve_home
 
@@ -25,8 +27,12 @@ def GLOBAL_TREES_ROOT() -> Path:
 
 
 def daily_digest_path(when: date | datetime) -> Path:
+    # A digest covers a day somebody lived through, so an instant handed here
+    # is reduced on their clock. Naming it in UTC put the last hours of every
+    # evening into the next day's file, and the reader that looks up "today"
+    # (`brain/prompt_content.py`) has always asked on the local one.
     if isinstance(when, datetime):
-        when = when.astimezone(timezone.utc).date()
+        when = to_local(when).date()
     return GLOBAL_TREES_ROOT() / f"{when.isoformat()}.md"
 
 
@@ -39,7 +45,7 @@ def write_daily_digest(when: date | datetime, seals: list[Seal]) -> Path:
     incrementally patching.
     """
     if isinstance(when, datetime):
-        when = when.astimezone(timezone.utc).date()
+        when = to_local(when).date()
     target = daily_digest_path(when)
     target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -50,7 +56,7 @@ def write_daily_digest(when: date | datetime, seals: list[Seal]) -> Path:
         sources[s.source_slug] = sources.get(s.source_slug, 0) + 1
         total_leaves += s.leaf_count
 
-    # AU-16 frontmatter contract — Obsidian's graph view picks up the
+    # Frontmatter contract — Obsidian's graph view picks up the
     # `global-digest` color group via the leading tag.
     lines: list[str] = [
         "---",
@@ -85,7 +91,7 @@ def write_daily_digest(when: date | datetime, seals: list[Seal]) -> Path:
     body = "\n".join(lines).rstrip() + "\n"
     tmp = target.with_name(f"{target.stem}.{os.getpid()}.{secrets.token_hex(3)}.tmp")
     tmp.write_text(body, encoding="utf-8")
-    os.replace(tmp, target)
+    replace_with_retry(tmp, target)
     return target
 
 

@@ -4,50 +4,46 @@ Two jobs summarise the previous day — the chat digest and the feedback sweep �
 and both were carrying their own copy of this, differing only in a type
 annotation. One copy, because the question is one question.
 
-**A day here is a UTC calendar day, and that is not the same day the record
-store means.** `chat_store` decides staleness by the operator's LOCAL date and
-the drawer groups by it, so away from UTC the two disagree at the edges — a
-late-evening turn is filed under a day the operator has not reached yet. The
-split is real and is left alone here deliberately: closing it moves content
-between the `memory-store/daily/<date>.md` notes someone already has, which is
-their call to make rather than a refactor's.
+**A day here is the operator's day, on this machine's clock.** Instants stay
+UTC on disk; only the question "which calendar day does this belong to" is
+answered locally. It has to be: `chat_store` decides staleness by the local
+date and the drawer groups by it, so a UTC answer here filed a late-evening
+turn under a day the operator had not reached yet.
 """
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from typing import Any
 
+from tesseract.lib import clock
 from tesseract.mirror.server import chat_store
 from tesseract.mirror.server.chat_store import ChatRecord
 
-
-def parse_stamp(stamp: str | None) -> datetime | None:
-    if not stamp:
-        return None
-    try:
-        return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
-def utc_day(stamp: str | None) -> date | None:
-    """The UTC calendar date a stamp falls on, or None if it will not parse."""
-    parsed = parse_stamp(stamp)
-    return parsed.astimezone(timezone.utc).date() if parsed is not None else None
+# Through the MODULE, never `from ... import to_local`. The clock moved to
+# `lib/clock.py` on the operator's 2026-08-31 ruling that the whole app is
+# timezone based, and a bound name would have left this module with a second
+# seam: a test standing the machine at UTC+5 patches one place and every app
+# that reads a day follows. A `from` import here silently would not.
+__all__ = ["message_day", "records_covering", "target_day", "turns_on"]
 
 
 def message_day(msg: dict[str, Any]) -> date | None:
-    """The UTC date one turn was said on. None when the turn is unstamped —
+    """The local date one turn was said on. None when the turn is unstamped —
     history predating per-message timestamps, which callers treat as "cannot
     place" rather than "does not count"."""
     stamp = msg.get("timestamp")
-    return utc_day(stamp) if isinstance(stamp, str) and stamp.strip() else None
+    return clock.local_day(stamp) if isinstance(stamp, str) and stamp.strip() else None
 
 
 def target_day(fired_at: datetime) -> date:
-    """The day these jobs summarise: the UTC day before the one they ran in."""
-    return (fired_at - timedelta(days=1)).date()
+    """The day these jobs summarise: the local day before the one they ran in.
+
+    `fired_at` is a UTC instant, so the local day it fell on is the one the
+    operator was living in when the job ran, not the one the clock in London
+    was showing.
+    """
+    return (clock.to_local(fired_at) - timedelta(days=1)).date()
 
 
 def records_covering(target: date) -> list[ChatRecord]:
@@ -60,19 +56,19 @@ def records_covering(target: date) -> list[ChatRecord]:
     retraction.
 
     A record is kept when `target` falls within `[start.date(), end.date()]`
-    rather than when a single stamp matches. A conversation that crossed
-    midnight used to land entirely in the later day's digest and go missing
-    from the earlier one's. It now appears in both, and the callers filter to
-    the target day per MESSAGE — which is what keeps a record that spans a week
-    from being reported as one day's work.
+    rather than when a single stamp matches. On a single stamp a conversation
+    that crossed midnight lands entirely in the later day's digest and goes
+    missing from the earlier one's. It appears in both, and the callers filter
+    to the target day per MESSAGE — which is what keeps a record that spans a
+    week from being reported as one day's work.
     """
     kept: list[ChatRecord] = []
     for record in chat_store.list_records(include_archived=True):
-        start = parse_stamp(record.started_at)
+        start = clock.parse_stamp(record.started_at)
         if start is None:
             continue
-        end = parse_stamp(record.ended_at) or start
-        if start.astimezone(timezone.utc).date() <= target <= end.astimezone(timezone.utc).date():
+        end = clock.parse_stamp(record.ended_at) or start
+        if clock.to_local(start).date() <= target <= clock.to_local(end).date():
             kept.append(record)
     return kept
 
@@ -97,8 +93,6 @@ def turns_on(record: ChatRecord, target: date) -> list[dict[str, Any]]:
     )
     out: list[dict[str, Any]] = []
     for msg in record.history:
-        if msg.get("_reasoning"):
-            continue
         if msg.get("role") not in ("user", "assistant"):
             continue
         day = message_day(msg)

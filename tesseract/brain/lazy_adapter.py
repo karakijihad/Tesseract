@@ -54,6 +54,18 @@ class LazyAdapter(ModelAdapter):
         return self._adapter is not None
 
     @property
+    def defers_tool_loading(self) -> bool:  # type: ignore[override]
+        """False until the entry is built, and that is the safe direction.
+
+        The tool payload is assembled before the turn picks an entry, so an
+        unbuilt entry cannot be asked without paying the client build this
+        class exists to avoid. Answering False means the payload stays the
+        filtered one — the behaviour every entry already handles — rather than
+        a whole registry sent to a provider that would have to read all of it.
+        """
+        return bool(getattr(self._adapter, "defers_tool_loading", False))
+
+    @property
     def model(self) -> str:
         """The catalog's model name, so a log line never forces a build."""
         return self._ref.model.model

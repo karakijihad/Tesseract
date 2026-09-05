@@ -25,7 +25,7 @@ class SurfaceUpdateTool(Tool):
     summary: ClassVar[str] = "Mutate an existing surface's props or title (shallow merge)."
     use_when: ClassVar[str] = (
         "You need to change what an existing card shows without recreating "
-        "it — swap html/text/props or the title. Props merge shallowly into "
+        "it: swap html, text, props or the title. Props merge shallowly into "
         "the existing payload."
     )
     not_when: ClassVar[str] = (
@@ -33,6 +33,7 @@ class SurfaceUpdateTool(Tool):
         "cleanly). Raising an existing card to the front is `surface_focus`, "
         "not this."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

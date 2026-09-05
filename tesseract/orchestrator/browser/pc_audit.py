@@ -1,4 +1,4 @@
-"""P4-2 — PC/browser tool audit sink: one JSON line per Tier-2 call to
+"""PC/browser tool audit sink: one JSON line per Tier-2 call to
 ``<TESSERACT_HOME>/logs/audit/pc.jsonl``. Path resolved at call time,
 async, lock-serialized, best-effort."""
 

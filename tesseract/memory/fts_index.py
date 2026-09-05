@@ -84,11 +84,10 @@ class FTSIndex:
 
     def _with_recovery(self, action: str, fn, on_failure, detail: str = ""):
         """Run `fn()` against `self._conn`. On exception: roll back, log the
-        real exception (RC2 — no more blind `except Exception: pass`),
-        reconnect, and retry once against the fresh connection. Returns
-        `fn()`'s result, or `on_failure` if the retry also fails — so a
-        single bad transaction can no longer poison every later call on
-        this instance until process restart.
+        real exception (never a blind `except Exception: pass`), reconnect,
+        and retry once against the fresh connection. Returns `fn()`'s result,
+        or `on_failure` if the retry also fails — so a single bad transaction
+        cannot poison every later call on this instance until process restart.
         """
         try:
             result = fn()

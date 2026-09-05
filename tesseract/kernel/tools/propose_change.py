@@ -25,8 +25,10 @@ from tesseract.kernel.workspace_changes import (
     PROPOSABLE_PATHS,
     ProposeError,
     compute_diff,
+    document_posture,
     hash_text,
     preview_change,
+    settle_proposal,
     validate_action,
     validate_target,
     workspace_events_dir,
@@ -81,7 +83,7 @@ class ProposeChangeTool(Tool):
     group: ClassVar[str] = "asking-without-blocking"
     summary: ClassVar[str] = "Request a change to an operator-owned workspace file, gated on approval."
     use_when: ClassVar[str] = (
-        "Use for any self-edit to a workspace document — how you sound, what "
+        "Use for any self-edit to a workspace document: how you sound, what "
         "you have learned about the operator, how you work. Nothing is applied "
         "until the operator approves the diff in the inbox."
     )
@@ -89,6 +91,7 @@ class ProposeChangeTool(Tool):
         "replying inside an existing comment thread, use `workspace_reply` or "
         "`agenda_comment`."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(self, repo_root: Path) -> None:
         self._repo_root = repo_root
@@ -174,6 +177,22 @@ class ProposeChangeTool(Tool):
             },
         )
 
+        # One door. The posture decides whether this waits for the operator or
+        # is applied now and filed as history; the tool does not branch on the
+        # mode itself, and neither does the other propose tool.
+        posture = document_posture(context)
+        event, applied, error = settle_proposal(
+            event=event,
+            target_path=inp.target_path,
+            action=action,
+            content=content,
+            section=inp.section,
+            expected_hash_before=expected_hash_before,
+            posture=posture,
+        )
+        if error is not None:
+            return ToolResult(output=f"propose_change: {error}", is_error=True)
+
         try:
             store = EventStore(workspace_events_dir())
             store.append_event(event)
@@ -184,16 +203,27 @@ class ProposeChangeTool(Tool):
                 is_error=True,
             )
 
-        return ToolResult(
-            output=(
+        if applied is not None:
+            settled = (
+                f"No change: {applied.no_op_reason}."
+                if applied.no_op_reason
+                else f"Applied to {label} ({inp.target_path})."
+            )
+            note = f"{settled} Filed in the workspace inbox as history."
+        else:
+            note = (
                 f"Proposed change to {label} ({inp.target_path}). "
-                f"Operator will approve or reject in the workspace inbox. "
-                f"event_id={event.event_id}"
-            ),
+                f"Operator will approve or reject in the workspace inbox."
+            )
+
+        return ToolResult(
+            output=f"{note} event_id={event.event_id}",
             metadata={
                 "event_id": event.event_id,
                 "target_path": inp.target_path,
                 "action": action,
                 "bytes_after": len(after.encode("utf-8")),
+                "posture": posture,
+                "status": event.status,
             },
         )

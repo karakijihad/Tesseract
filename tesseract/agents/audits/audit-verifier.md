@@ -8,7 +8,7 @@ description: >
   Emits a new structured audit file using the Critical / Major / Minor /
   Informational severity grammar. If the new audit has no Critical or Major
   findings, the SU-4 loop terminates — the fix is confirmed clean.
-underlying_tool: delegate_codex_exec
+underlying_tool: delegate_second_opinion
 default_posture: auto
 inputs:
   scope: string         # path or directory (same as the original audit)

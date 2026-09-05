@@ -1,10 +1,10 @@
 """``python -m tesseract.supervisor`` — entry point.
 
-AU-1 Session 1 covers:
+Modes:
   (default)     run supervisor in foreground
   --status      report current backend state without starting
-  --force       reserved for Session 2 (crash-storm bypass); currently
-                logs a warning and proceeds normally
+  --force       reserved for the crash-storm bypass; currently logs a
+                warning and proceeds normally
 
 Reads the backend port from ``tesseract/config/mirror.yaml`` so the
 heartbeat URL matches the configured listener.
@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import sys
 from pathlib import Path
@@ -53,9 +54,38 @@ def _resolve_health_url() -> str:
 
 
 def _setup_logging(home: Path) -> None:
+    """The supervisor's own log, rotated like every other process log.
+
+    It was the one that was not. `logsetup.py` rotates the backend's and the
+    controller's at the ceiling `mirror.yaml` sets, `console_capture.py`
+    rotates what a child process prints, and this opened a plain
+    `FileHandler`: one file, appended to for the life of the install, with
+    nothing ageing it either (`retention/policy.py::KEPT` deliberately does
+    not, on the stated grounds that these are bounded by size instead).
+
+    So the claim was true of two files out of the three it named, and the
+    third grew forever. It also carries the record the Autonomy panel reads
+    crashes from, which is a reader with a ceiling on how much it will open.
+
+    Falling back to a plain handler is deliberate: this runs before anything
+    else and a supervisor that will not start because it could not read a
+    config block is worse than one whose log does not rotate.
+    """
     log_dir = home.parent / "runtime" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    handler = logging.FileHandler(log_dir / "supervisor.log", encoding="utf-8")
+    path = log_dir / "supervisor.log"
+    try:
+        from tesseract.logsetup import load_logging_config
+
+        cfg = load_logging_config()
+        handler: logging.Handler = RotatingFileHandler(
+            path,
+            maxBytes=int(cfg["max_bytes"]),
+            backupCount=int(cfg["backup_count"]),
+            encoding="utf-8",
+        )
+    except Exception:  # noqa: BLE001 — a log that does not rotate beats no supervisor
+        handler = logging.FileHandler(path, encoding="utf-8")
     handler.setFormatter(
         logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
     )

@@ -13,6 +13,7 @@ from typing import Any, Literal
 from aiohttp import web
 
 from tesseract.brain.chat import ChatSession
+from tesseract.mirror.server.chat_record import default_chat_title
 from tesseract.mirror.server.event_log import EventLog
 from tesseract.mirror.server.voice_loop import VoiceLoop
 
@@ -56,10 +57,26 @@ def _new_chat_meta(
     stamp = now.isoformat()
     return ChatMeta(
         chat_id=chat_id,
-        title=title or now.strftime("%Y-%m-%d %H:%M"),
+        title=title or default_chat_title(now),
         created_at=stamp,
         started_at=stamp,
     )
+
+
+def stamp_chat_id(chat_session: Any, chat_id: str) -> None:
+    """Tell a chat session which chat it is, at the one moment that is known.
+
+    Every registration point calls it, so a chat rebuilt from disk on restore
+    knows its id as surely as one created fresh. Anything the assistant leaves
+    behind records this, which is how a press on a card drawn an hour ago
+    reaches the conversation that drew it rather than whichever is in focus.
+
+    Defensive on the attribute: several doubles stand in for a ChatSession, and
+    a chat that cannot be stamped should still register.
+    """
+    context = getattr(chat_session, "tool_context", None)
+    if context is not None:
+        context.chat_id = chat_id
 
 
 @dataclass
@@ -114,14 +131,13 @@ class ServerSession:
     # (`app["parked_asks"]`) so parked entries survive WS disconnect /
     # session cleanup — never a per-session lifetime.
     parked_asks: dict[str, "ParkedAsk"] = field(default_factory=dict)
-    # CR-1: discriminator between the operator-facing cockpit session
+    # Discriminator between the operator-facing cockpit session
     # (Mirror WebSocket; ``app["server_sessions"]``) and a headless
-    # channel session (Telegram/WhatsApp/etc.; bridge-owned). CR-3 keys
-    # the prompt overlay off this; CR-5 keys the ASK-gate behavior off
-    # it. Pure addition in CR-1 — no existing code path branches on it.
+    # channel session (Telegram/WhatsApp/etc.; bridge-owned). The prompt
+    # overlay and the ASK-gate behaviour both key off this.
     kind: SessionKind = "cockpit"
     turn_count: int = 0
-    # mirror-multi-chat P2 inc.C — turn tasks keyed by chat_id (was a single
+    # Turn tasks keyed by chat_id (rather than a single
     # `current_turn_task`). The active chat's task is exposed via the
     # `current_turn_task` property+setter below, so every legacy reader/writer
     # (busy checks, channel-bridge driver, cancel, cleanup) keeps working
@@ -132,7 +148,7 @@ class ServerSession:
     # now, so the lock's remaining job is audio ordering — a second active-chat
     # send waits for the first so the operator never hears two replies overlap.
     # Background chats stream lock-free; synthetic workspace turns do NOT take
-    # this lock (they suppress text output — unchanged WP-2 concurrency).
+    # this lock (they suppress text output).
     turn_stream_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     started_at: str = ""
     # Tool name keyed by call_id, populated on TOOL_CALL_END, popped on TOOL_RESULT.
@@ -151,12 +167,15 @@ class ServerSession:
     # Background entity_signals pump task. Cancelled in websocket_handler.finally
     # before autosave so pump shutdown can't be skipped by an autosave exception.
     entity_signals_task: asyncio.Task[None] | None = None
-    # Y-2 — Surface Protocol event forwarder pump (channel "surface").
+    # Surface Protocol event forwarder pump (channel "surface").
     # Cancelled symmetrically in websocket_handler.finally.
     surface_events_task: asyncio.Task[None] | None = None
-    # AS-1 — Unified Activity event forwarder pump (channel "activity").
+    # Unified Activity event forwarder pump (channel "activity").
     # Cancelled symmetrically in websocket_handler.finally.
     activity_events_task: asyncio.Task[None] | None = None
+    # Panel cache-staleness forwarder pump (channel "panel").
+    # Cancelled symmetrically in websocket_handler.finally.
+    panel_events_task: asyncio.Task[None] | None = None
     # Autosave timer (`session_autosave`). Cancelled symmetrically in
     # websocket_handler.finally, before the teardown save.
     autosave_task: asyncio.Task[None] | None = None
@@ -167,17 +186,27 @@ class ServerSession:
     # Wall-clock of the most recent `_run_turn` start. Seeded at session-open
     # so a fresh, untouched session isn't instantly considered idle.
     last_turn_at: datetime | None = None
-    # Phase 16 S2 — per-session voice PCM accumulator. Lazily allocated on the
+    # Per-session voice PCM accumulator. Lazily allocated on the
     # first BINARY frame; `voice_commit` drains it through `STTEngine`,
     # `voice_cancel` clears it. Capped at `VOICE_PCM_BUFFER_CAP_BYTES` (5 min
     # at 16 kHz/16-bit mono = 9_600_000 bytes). Excess frames trim the head.
     voice_pcm_buffer: bytearray | None = None
-    # The wake decoder's per-utterance state. The gate used to run on the
-    # committed buffer, which meant nothing knew whether an utterance had
-    # woken the assistant until the operator stopped talking — so a minute of
-    # speech could be discarded a minute after the phrase that should have
-    # started it. The decoder is a streaming one; these three let it decide
-    # while the operator is still speaking.
+    # Bumped by every operator cancel. `voice_commit` reads it on the way in
+    # and again after transcribing, and drops the utterance if it moved.
+    #
+    # Clearing the buffer is not enough on its own: by the time a cancel
+    # arrives the commit handler usually holds its own reference to the audio
+    # and is inside STT, so the buffer it clears is one nothing is reading.
+    # Muting mid-sentence looked like it worked and then the transcript
+    # arrived and was answered, because VAD closes an utterance a few hundred
+    # milliseconds after the last word and a hand takes longer than that.
+    voice_epoch: int = 0
+    # The wake decoder's per-utterance state. Running the gate on the
+    # committed buffer means nothing knows whether an utterance woke the
+    # assistant until the operator stops talking, so a minute of speech is
+    # discarded a minute after the phrase that should have started it. The
+    # decoder is a streaming one; these three let it decide while the
+    # operator is still speaking.
     #
     # `wake_stream` is sherpa's per-utterance handle (0.33 ms to make).
     # `wake_fired` is the verdict so far. `wake_decidable` is the one that
@@ -202,7 +231,7 @@ class ServerSession:
     # sitting here, so a rejected or queued-behind payload leaves nothing for
     # another turn to pick up.
     voice_commit_at: float | None = None
-    # SC-5 — server-side voice-input state machine (idle → listening →
+    # Server-side voice-input state machine (idle → listening →
     # transcribing → idle). Owns the `voice_state` wire emissions for the
     # speech-in half; the speech-back half (RESPONDING / SPEAKING) is
     # downstream (orb `thinking` + frontend `speaking_back`). See
@@ -214,7 +243,7 @@ class ServerSession:
     # Stop, WS cleanup) reach each turn's per-turn TTS state through this map
     # since their tasks don't see the turn's ContextVar.
     turn_states_by_chat: dict[str, Any] = field(default_factory=dict)
-    # Phase 16 S3 — per-turn TTS state.
+    # Per-turn TTS state.
     # MIGRATED to `TurnState` (turn_context.py); these
     # session fields remain as transitional fallbacks for direct-call test
     # paths (same contract as the Codex-fix M1 fields above). New code reads
@@ -277,11 +306,10 @@ class ServerSession:
     # overwrite a queued operator chat/voice payload. Multiple workspace
     # arrivals queue in arrival order — they're independent threads, no
     # last-wins coalescing. Capped at 64 to bound memory if the operator's
-    # WS is wedged for a long time. Codex-fix m1 (2026-05-23): WP-2
-    # moved queue ownership from the chat-lane tail-drain to
-    # `_drain_same_event_queue` in ws.py — synthetic-turn completions
-    # are the sole driver of this queue now (Phase 1 same-event ordering,
-    # Phase 2 cross-thread fill). Overflow on append routes through
+    # WS is wedged for a long time. Queue ownership is
+    # `_drain_same_event_queue` in ws.py, not the chat-lane tail-drain, so
+    # synthetic-turn completions are the sole driver. Overflow on append
+    # routes through
     # `_enqueue_workspace_payload` which fires `cleared` on the evicted
     # head so its indicator doesn't hang.
     pending_workspace_payloads: deque[dict[str, Any]] = field(
@@ -318,17 +346,17 @@ class ServerSession:
     # `_run_turn`. The finally block reads this to decide whether to
     # confirm or rollback the deferred workspace delivery flags.
     workspace_reply_succeeded: bool = False
-    # MP-2 ambient observer: per-turn view-context snapshot the Mirror
+    # Ambient observer: per-turn view-context snapshot the Mirror
     # ships on `chat_message` envelopes. `_run_turn` consumes and clears
     # before each call to `chat_session.send` so the snapshot only
     # influences the turn it was captured for.
     pending_view_snapshot: dict[str, Any] | None = None
-    # WP-2: serialize WebSocket writes. aiohttp's `ws.send_json` is not
+    # Serialize WebSocket writes. aiohttp's `ws.send_json` is not
     # safe for concurrent coroutines; without this lock, two parallel
     # turns emitting envelopes can interleave frame bytes. Held only
     # for the duration of one send — sub-millisecond on healthy WS.
     ws_send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    # WP-2: in-flight synthetic workspace turns keyed by event_id. Each
+    # In-flight synthetic workspace turns keyed by event_id. Each
     # value is the asyncio.Task running an ephemeral forked ChatSession
     # (see ChatSession.fork_for_synthetic). Independent of
     # `current_turn_task` so chat + synthetic turns run concurrently;
@@ -366,6 +394,7 @@ class ServerSession:
             now = datetime.now().astimezone()
             cid = self.active_chat_id or uuid.uuid4().hex
             self.chats = {cid: self.chat_session}
+            stamp_chat_id(self.chat_session, cid)
             self.chat_meta = {cid: _new_chat_meta(cid, now)}
             self.active_chat_id = cid
             self.chat_order = [cid]
@@ -385,16 +414,61 @@ class ServerSession:
         now = now or datetime.now().astimezone()
         cid = uuid.uuid4().hex
         self.chats[cid] = chat_session
+        stamp_chat_id(chat_session, cid)
         self.chat_meta[cid] = _new_chat_meta(cid, now, title=title)
         self.chat_order.append(cid)
-        while len(self.chat_order) > MAX_OPEN_CHATS:
-            self.archive_chat(self.chat_order[0])
+        self.enforce_open_cap()
         return cid
 
+    def evict_chat(self, chat_id: str) -> None:
+        """Drop a chat from the OPEN SET without archiving it.
+
+        The cap is this connection's memory window, not a filing decision. It
+        used to be enforced with ``archive_chat``, which set ``archived`` on the
+        victim's meta, so opening an eleventh conversation told the operator
+        they had archived one they never touched, and the autosave wrote that
+        claim to disk.
+
+        The ChatSession stays in ``chats``, exactly as ``archive_chat`` leaves
+        it, so switching back costs no rebuild. What leaves is the order, which
+        is what the cap is about.
+        """
+        if chat_id in self.chat_order:
+            self.chat_order.remove(chat_id)
+
+    def enforce_open_cap(self) -> list[str]:
+        """Trim the open set to ``MAX_OPEN_CHATS``, oldest first. Returns the
+        ids that left, so a caller can tell the surface which ones went."""
+        evicted: list[str] = []
+        while len(self.chat_order) > MAX_OPEN_CHATS:
+            victim = self.chat_order[0]
+            self.evict_chat(victim)
+            evicted.append(victim)
+        return evicted
+
     def switch_chat(self, chat_id: str) -> None:
-        """Make ``chat_id`` the active chat. Raises ``KeyError`` if unknown."""
+        """Make ``chat_id`` the active chat. Raises ``KeyError`` if unknown.
+
+        An ARCHIVED chat is refused: ``archive_chat`` leaves the session in
+        ``chats`` for the restore window, so without this guard a second switch
+        would repoint the active chat at something flagged archived and absent
+        from the order, and turns would run into it. `chat.restore` is the way
+        back, and it un-archives deliberately.
+        """
         if chat_id not in self.chats:
             raise KeyError(chat_id)
+        # `.get`, not `[...]`: the two maps are kept in step in production but a
+        # caller holding only a ChatSession may never have made a meta, and a
+        # missing one is not an archived one.
+        meta = self.chat_meta.get(chat_id)
+        if meta is not None and meta.archived:
+            raise ValueError(f"{chat_id} is archived")
+        # A chat evicted by the cap is still here and still un-archived;
+        # switching to it puts it back in the order rather than leaving the
+        # active chat outside the set it belongs to.
+        if chat_id not in self.chat_order:
+            self.chat_order.append(chat_id)
+            self.enforce_open_cap()
         self.active_chat_id = chat_id
         self.chat_session = self.chats[chat_id]
 
@@ -428,20 +502,25 @@ class ServerSession:
         A chat archived THIS session is still in ``chats`` — un-archive its meta
         and re-add it to ``chat_order``. A chat archived in a PRIOR session is gone
         from the live registry; the caller rebuilds it from disk and passes
-        ``chat_session`` + ``meta``. Enforces the open cap (D5, oldest auto-archives)
+        ``chat_session`` + ``meta``.
+
+        ``chat.switch`` uses the rebuilt form too, for a conversation that was
+        never archived and simply fell outside this connection's memory window.
+        Nothing is un-archived in that case: the meta it passes already says
+        so, and the archived branch above is not taken. Enforces the open cap (D5, oldest auto-archives)
         and switches active to the restored chat. Raises ``KeyError`` if the chat is
         absent from memory and no rebuilt session was supplied."""
         if chat_id in self.chats:
             self.chat_meta[chat_id].archived = False
         elif chat_session is not None and meta is not None:
             self.chats[chat_id] = chat_session
+            stamp_chat_id(chat_session, chat_id)
             self.chat_meta[chat_id] = meta
         else:
             raise KeyError(chat_id)
         if chat_id not in self.chat_order:
             self.chat_order.append(chat_id)
-        while len(self.chat_order) > MAX_OPEN_CHATS:
-            self.archive_chat(self.chat_order[0])
+        self.enforce_open_cap()
         self.switch_chat(chat_id)
 
     @property
@@ -488,10 +567,10 @@ async def send_envelope(session: ServerSession, envelope: dict[str, Any] | None)
     have no UI surface). A closed WS swallows the send silently — the event
     log still captures the envelope for audit/replay.
 
-    WP-2: holds `session.ws_send_lock` across the WS write so two parallel
-    turns (chat + synthetic) can't interleave frame bytes. Test stubs that
-    predate WP-2 may not declare the lock attribute — those fall back to
-    a direct send (tests are single-threaded, no contention).
+    Holds `session.ws_send_lock` across the WS write so two parallel turns
+    (chat + synthetic) can't interleave frame bytes. A test stub that does
+    not declare the lock attribute falls back to a direct send (tests are
+    single-threaded, no contention).
     """
     if envelope is None:
         return

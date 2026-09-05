@@ -18,16 +18,16 @@ turn on — as the posture it ships in. In that default mode, writing to a
 file and running a command both stop and ask. Reading is free, and so is
 looking something up. There is a second mode for unattended work that
 relaxes this, and you turn it on deliberately. See
-[Permissions](../mechanisms/permissions.md) for the rest, including the
+[Permissions](/mechanisms/permissions/) for the rest, including the
 things that run without asking because you set them up that way.
 
 **It remembers on purpose, not by hoarding.** Memory decays and consolidates.
 The goal is a store that gets sharper over time rather than one that gets
-bigger. See [Memory](../anatomy/memory.md).
+bigger. See [Memory](/anatomy/memory/).
 
 **It keeps working when you are not there.** On its own schedule, under the
 same budget and the same permission gate as when you are watching. See
-[Autonomy](../anatomy/autonomy.md).
+[Autonomy](/anatomy/autonomy/).
 
 ## What it is not
 

@@ -1,4 +1,4 @@
-"""AU-16 S2 — tree-scoped query surface for ``memory_search``.
+"""Tree-scoped query surface for ``memory_search``.
 
 Default ``memory_search`` behaviour is unchanged: omitting ``scope``
 routes through the existing :class:`RetrievalPipeline`. Passing
@@ -27,6 +27,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
+from tesseract.lib.clock import to_local
 
 from tesseract.memory.trees.global_tree import (
     daily_digest_path,
@@ -191,7 +192,11 @@ def _query_global(*, since: datetime | None) -> list[TreeQueryHit]:
     if since is None:
         target = dates[0]
     else:
-        cutoff = since.astimezone(timezone.utc).date()
+        # `list_digest_dates` parses the FILENAMES, which are local
+        # calendar days, so the cutoff has to be one. In UTC this
+        # excluded a digest written an hour ago and returned the day
+        # before it as the latest.
+        cutoff = to_local(since).date()
         candidates = [d for d in dates if d <= cutoff]
         if not candidates:
             return []

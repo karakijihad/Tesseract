@@ -1,4 +1,7 @@
-# Connecting a CLI to TESSERACT
+---
+title: Connecting a CLI
+description: Drive the running app from a terminal-side agent over MCP.
+---
 
 TESSERACT is an MCP server as well as an MCP client. A terminal-side agent —
 Claude Code, Codex, or any MCP client — can connect to the running app and

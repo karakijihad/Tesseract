@@ -55,8 +55,8 @@ export function ObserverSection() {
               <Hint
                 label={
                   isArmed
-                    ? 'Observer is on — background passes run on your turns'
-                    : 'Observer is off — arm it to run background passes'
+                    ? 'The observer is on, and runs a pass alongside your turns'
+                    : 'The observer is off. Switch it on to run a pass alongside your turns.'
                 }
               >
                 <Button
@@ -77,7 +77,7 @@ export function ObserverSection() {
           {isArmed && <ObserverStatsChip />}
           {newestFirst.length === 0 ? (
             <div className="t-caption right-section-empty">
-              no observations yet — type /observe in chat, or arm the observer for background passes
+              no observations yet. Type /observe in chat, or switch the observer on to run a pass alongside your turns.
             </div>
           ) : (
             <ul className="right-section-list observer-list">

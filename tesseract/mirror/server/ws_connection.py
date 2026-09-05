@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -31,6 +32,15 @@ from tesseract.mirror.server.session import (
 from tesseract.mirror.server.voice_io import note_voice_audio
 
 log = logging.getLogger(__name__)
+
+#: The background-bus channels this socket forwards verbatim, and the session
+#: slot each pump's task lives in. Adding a channel is one row: the pump, the
+#: spawn and the cancel all read this.
+_FORWARDED_CHANNELS: tuple[tuple[str, str], ...] = (
+    ("surface_events_task", "surface"),
+    ("activity_events_task", "activity"),
+    ("panel_events_task", "panel"),
+)
 
 # Frontend `IntensitySignals.BACKEND_STALENESS_MS = 3000`. Pumping every 2.0s
 # keeps the freshness window with a 1s jitter margin.
@@ -71,7 +81,20 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
         log.info("ws: chat infra not ready yet — asking client to reconnect")
         await ws.close(code=WSCloseCode.TRY_AGAIN_LATER, message=b"chat infra booting")
         return ws
-    # 2026-05-15 — any operator WS connection counts as a renderer for
+    # Paired with the closing line in `finally`. Building a session is not free
+    # (adapter chain, tool registry, chat restore) and tearing one down persists
+    # and re-indexes every open chat, so a connection that cycles costs both
+    # ends repeatedly. A teardown line on its own reads identically whether the
+    # session lived six seconds or six hours, and says nothing about who ended
+    # it.
+    opened_at = time.monotonic()
+    # `getattr`, because a line whose only job is to be readable later must not
+    # be able to end the connection it is describing.
+    log.info(
+        "ws: session %s open (origin=%s, peer=%s)",
+        session.session_id, origin or "(none)", getattr(request, "remote", None) or "?",
+    )
+    # Any operator WS connection counts as a renderer for
     # agent-spawned PTY panes. Previously `primary_ws` was only set when
     # the operator dispatched a `terminal_*` message (i.e. while on the
     # Terminal tab); an agent-spawned viewer pane (`start_controller_session`
@@ -80,58 +103,76 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     # so the viewer-pane open works whenever a Mirror tab is open.
     # `pty_manager.cleanup_for_ws` clears the ref on disconnect.
     request.app["primary_ws"] = ws
-    await send_envelope(session, make_envelope(
-        "session_created",
-        "session",
-        session.session_id,
-        {
-            "session_id": session.session_id,
-            "started_at": datetime.now(timezone.utc).isoformat(),
-            # mirror-multi-chat inc.B — the frontend seeds its active chat
-            # slice from this so the default slice key matches the backend's
-            # chat_id; turn-scoped envelopes (inc.A) then route by exact id.
-            "active_chat_id": session.active_chat_id,
-            # P3 — the open-chat list (newest-first, with titles) so the tab
-            # strip rehydrates on (re)connect and survives a page reload.
-            "chats": _open_chats_payload(session),
-        },
-    ))
-    await _announce_replaced_config(session)
-    await _emit_cost_state(request.app, session)
-    await _emit_entity_signals(request.app, session)
-    await _flush_stt_fallback_notice(request.app, session)
-    session.entity_signals_task = _spawn_tracked(
-        request.app,
-        _entity_signals_pump(request.app, session),
-        f"entity_signals_pump:{session.session_id}",
-    )
-    session.surface_events_task = _spawn_tracked(
-        request.app,
-        _surface_events_pump(request.app, session),
-        f"surface_events_pump:{session.session_id}",
-    )
-    session.activity_events_task = _spawn_tracked(
-        request.app,
-        _activity_events_pump(request.app, session),
-        f"activity_events_pump:{session.session_id}",
-    )
-    session.autosave_task = _spawn_tracked(
-        request.app,
-        session_autosave.autosave_pump(request.app, session),
-        f"autosave_pump:{session.session_id}",
-    )
-    # Spawn push Stage 2 — wrap every open chat's spawn completion notifier so a
-    # background spawn finishing while that chat is idle starts a proactive turn.
-    spawn_wake.install(request.app, session)
-    # A result that landed while the backend was down was replayed into its
-    # rebuilt chat at restore. Wake that chat now rather than making the
-    # operator speak first — same reason a live completion wakes an idle chat.
-    spawn_wake.reconcile_on_connect(request.app, session)
-    # Lazy: `_dispatch` stays in ws.py (the slim router), which re-exports
-    # this module's public names — a module-level import here would cycle
-    # with that re-export.
-    from tesseract.mirror.server import ws as _ws
+    # The try starts HERE, not at the receive loop. Everything below can
+    # raise (a client that vanishes during the handshake makes the first
+    # `send_envelope` fail), and four background pumps are already spawned
+    # by the end of it. Opening the block at the loop instead leaves that
+    # failure with an open log line and no close, and leaks every pump it
+    # started.
     try:
+        await send_envelope(session, make_envelope(
+            "session_created",
+            "session",
+            session.session_id,
+            {
+                "session_id": session.session_id,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                # The frontend seeds its active chat
+                # slice from this so the default slice key matches the backend's
+                # chat_id; turn-scoped envelopes then route by exact id.
+                "active_chat_id": session.active_chat_id,
+                # P3 — the open-chat list (newest-first, with titles) so the tab
+                # strip rehydrates on (re)connect and survives a page reload.
+                "chats": _open_chats_payload(session),
+            },
+        ))
+        await _announce_replaced_config(session)
+        # The measured shape of this conversation, sent once on connect. It
+        # used to ride only on a finished turn, so a surface that reads it
+        # (the compaction bar) had nothing to draw until the operator
+        # happened to run one. A panel that is blank until you poke something
+        # unrelated reads as broken, and it was.
+        from tesseract.mirror.server.turn_runner import emit_stats
+
+        await emit_stats(request.app, session, chat_id=session.active_chat_id)
+        await _emit_cost_state(request.app, session)
+        await _emit_entity_signals(request.app, session)
+        await _flush_stt_fallback_notice(request.app, session)
+        session.entity_signals_task = _spawn_tracked(
+            request.app,
+            _entity_signals_pump(request.app, session),
+            f"entity_signals_pump:{session.session_id}",
+        )
+        # Surface Protocol events, Unified Activity deltas, and the nudge that
+        # tells a settings panel one of its cached fetches is out of date. All
+        # three are operator-global: a tool call in any session lights up the
+        # cockpit in front of the operator.
+        for attribute, channel in _FORWARDED_CHANNELS:
+            setattr(
+                session,
+                attribute,
+                _spawn_tracked(
+                    request.app,
+                    _channel_forward_pump(session, channel),
+                    f"{channel}_events_pump:{session.session_id}",
+                ),
+            )
+        session.autosave_task = _spawn_tracked(
+            request.app,
+            session_autosave.autosave_pump(request.app, session),
+            f"autosave_pump:{session.session_id}",
+        )
+        # Spawn push Stage 2 — wrap every open chat's spawn completion notifier so a
+        # background spawn finishing while that chat is idle starts a proactive turn.
+        spawn_wake.install(request.app, session)
+        # A result that landed while the backend was down was replayed into its
+        # rebuilt chat at restore. Wake that chat now rather than making the
+        # operator speak first — same reason a live completion wakes an idle chat.
+        spawn_wake.reconcile_on_connect(request.app, session)
+        # Lazy: `_dispatch` stays in ws.py (the slim router), which re-exports
+        # this module's public names — a module-level import here would cycle
+        # with that re-export.
+        from tesseract.mirror.server import ws as _ws
         async for msg in ws:
             if msg.type == WSMsgType.TEXT:
                 await _ws._dispatch(request.app, session, msg.data)
@@ -150,9 +191,19 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
             elif msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSING):
                 break
     finally:
+        # `getattr` for the same reason the open line uses it: this runs in a
+        # `finally` that owns every teardown step below it, so a diagnostic
+        # that raised here would skip the cancels and the save.
+        log.info(
+            "ws: session %s closing after %.1fs (close_code=%s, turns=%d)",
+            session.session_id,
+            time.monotonic() - opened_at,
+            getattr(ws, "close_code", None),
+            getattr(session, "turn_count", 0),
+        )
         await _cancel_entity_signals_pump(session)
-        await _cancel_surface_events_pump(session)
-        await _cancel_activity_events_pump(session)
+        for attribute, channel in _FORWARDED_CHANNELS:
+            await _cancel_pump(session, attribute, channel)
         # Before the teardown save below: both write the same files, and the
         # last word must be the complete save.
         await _cancel_autosave_pump(session)
@@ -169,11 +220,15 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
 async def _announce_replaced_config(session: ServerSession) -> None:
     """Tell the operator this release replaced their config, once.
 
-    Boot is where the replacement happens and there is no WS open then, so
-    the notice waits here for the first connection and the marker is cleared
-    as it fires — an operator told on every launch that their settings were
-    replaced learns to dismiss the message, which is the one message that
-    must not become furniture.
+    Boot is where the replacement happens and there is no WS open then, so the
+    notice waits here for the first connection, and firing it stamps
+    `announced` on the marker — an operator told on every launch that their
+    settings were replaced learns to dismiss the message, which is the one
+    message that must not become furniture.
+
+    The marker itself SURVIVES. A toast is gone in seconds and the operator
+    may have several panes of settings to put back; the Workspace notice reads
+    the same file and stays until they dismiss it.
 
     Rides the existing `config_reloaded` envelope rather than inventing one:
     the file really did change under the running process, so bumping the
@@ -189,7 +244,7 @@ async def _announce_replaced_config(session: ServerSession) -> None:
     except (OSError, ValueError):
         return
     files = [str(name) for name in (payload.get("files") or [])]
-    if not files:
+    if not files or payload.get("announced"):
         return
     backup_dir = str(payload.get("backup_dir") or "")
     try:
@@ -208,9 +263,11 @@ async def _announce_replaced_config(session: ServerSession) -> None:
         log.exception("could not announce the config replacement")
         return
     try:
-        marker.unlink(missing_ok=True)
+        marker.write_text(
+            json.dumps({**payload, "announced": True}, indent=2), encoding="utf-8"
+        )
     except OSError:
-        log.exception("could not clear the config-replaced marker")
+        log.exception("could not stamp the config-replaced marker")
 
 
 async def _flush_stt_fallback_notice(app: web.Application, session: ServerSession) -> None:
@@ -330,80 +387,22 @@ async def _entity_signals_pump(app: web.Application, session: ServerSession) -> 
 
 
 async def _cancel_entity_signals_pump(session: ServerSession) -> None:
-    task = session.entity_signals_task
-    if task is None or task.done():
-        return
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-    except Exception:
-        log.exception("entity_signals pump exit raised for %s", session.session_id)
-    session.entity_signals_task = None
+    """Named rather than inlined: the teardown order is what it is called at."""
+    await _cancel_pump(session, "entity_signals_task", "entity_signals")
 
 
-async def _surface_events_pump(app: web.Application, session: ServerSession) -> None:
-    # Surfaces are view-scoped but operator-global — a surface a tool spawns
-    # from any session must light up on the Mirror canvas. Filter by channel
-    # only; the frontend re-keys the `{kind, channel: "surface", …}` envelope
-    # to a `category: "canvas"` Envelope and routes it to the surfaces store.
+async def _channel_forward_pump(session: ServerSession, channel: str) -> None:
+    """Forward every background-bus envelope on ``channel`` to this socket.
+
+    One pump for three channels, because the three differed only in the string
+    they filtered on and a fourth copy is how the next one drifts.
+
+    **Replay is dropped, deliberately.** Each of these channels has a REST
+    catch-up path the frontend already calls on mount, so replaying the ring
+    buffer could re-insert a surface the hydrate had settled, or announce a
+    staleness the panel has already answered. What this carries is live only.
+    """
     from tesseract.orchestrator.background_event_bus import get_background_bus
-    from tesseract.orchestrator.surfaces.events import CHANNEL as SURFACE_CHANNEL
-
-    bus = get_background_bus()
-    _replay, queue = bus.subscribe()
-    # Surfaces have a REST catch-up path: the frontend
-    # `GET /api/surfaces/{view}` on canvas mount fetches the current persisted
-    # state. So we deliberately DROP the ring-buffer replay here and forward
-    # only live events — replaying stale `surface_created`/`_closed` deltas
-    # could otherwise re-insert a ghost card the REST hydrate already settled.
-    try:
-        while not session.ws.closed:
-            try:
-                event = await queue.get()
-            except asyncio.CancelledError:
-                raise
-            if not _envelope_for_channel(event.data, SURFACE_CHANNEL):
-                continue
-            if session.ws.closed:
-                return
-            try:
-                await send_envelope(session, event.data)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception("surface forward failed for %s", session.session_id)
-    except asyncio.CancelledError:
-        raise
-    finally:
-        bus.unsubscribe(queue)
-
-
-async def _cancel_surface_events_pump(session: ServerSession) -> None:
-    task = session.surface_events_task
-    if task is None or task.done():
-        return
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-    except Exception:
-        log.exception("surface pump exit raised for %s", session.session_id)
-    session.surface_events_task = None
-
-
-async def _activity_events_pump(app: web.Application, session: ServerSession) -> None:
-    # AS-1 — Unified Activity stream. Operator-global like surfaces:
-    # delegates (this process), lanes + controller sessions (pushed from the
-    # controller daemon into this process's registry+bus). Filter by channel
-    # only; the frontend re-keys the `{kind, channel: "activity", …}` envelope
-    # into its activity store. Replay is DROPPED — `GET /api/activity` is the
-    # catch-up path, so replaying stale deltas could re-insert a ghost the
-    # REST hydrate already settled (same reasoning as the surface pump).
-    from tesseract.orchestrator.background_event_bus import get_background_bus
-    from tesseract.orchestrator.activity import CHANNEL as ACTIVITY_CHANNEL
 
     bus = get_background_bus()
     _replay, queue = bus.subscribe()
@@ -413,7 +412,7 @@ async def _activity_events_pump(app: web.Application, session: ServerSession) ->
                 event = await queue.get()
             except asyncio.CancelledError:
                 raise
-            if not _envelope_for_channel(event.data, ACTIVITY_CHANNEL):
+            if not _envelope_for_channel(event.data, channel):
                 continue
             if session.ws.closed:
                 return
@@ -422,15 +421,20 @@ async def _activity_events_pump(app: web.Application, session: ServerSession) ->
             except asyncio.CancelledError:
                 raise
             except Exception:
-                log.exception("activity forward failed for %s", session.session_id)
+                log.exception(
+                    "%s forward failed for %s", channel, session.session_id
+                )
     except asyncio.CancelledError:
         raise
     finally:
         bus.unsubscribe(queue)
 
 
-async def _cancel_activity_events_pump(session: ServerSession) -> None:
-    task = session.activity_events_task
+async def _cancel_pump(
+    session: ServerSession, attribute: str, label: str
+) -> None:
+    """Cancel one of this session's pumps and clear its slot."""
+    task = getattr(session, attribute, None)
     if task is None or task.done():
         return
     task.cancel()
@@ -439,22 +443,19 @@ async def _cancel_activity_events_pump(session: ServerSession) -> None:
     except asyncio.CancelledError:
         pass
     except Exception:
-        log.exception("activity pump exit raised for %s", session.session_id)
-    session.activity_events_task = None
+        log.exception("%s pump exit raised for %s", label, session.session_id)
+    setattr(session, attribute, None)
 
 
 async def _cancel_autosave_pump(session: ServerSession) -> None:
-    task = session.autosave_task
-    if task is None or task.done():
-        return
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-    except Exception:
-        log.exception("autosave pump exit raised for %s", session.session_id)
-    session.autosave_task = None
+    """Named for the same reason, and this one carries a rule with it.
+
+    It has to run BEFORE the teardown save, because both write the same files
+    and the last word must be the complete save. A test hooks this name to
+    prove that ordering, which is why it stays a function rather than becoming
+    a fourth row in `_FORWARDED_CHANNELS`.
+    """
+    await _cancel_pump(session, "autosave_task", "autosave")
 
 
 def _envelope_for_channel(payload: Any, channel: str) -> bool:
@@ -468,10 +469,10 @@ def _session_chat_summary(session: ServerSession) -> tuple[int, int]:
 
     The legacy close-log counted only the active chat's turns; with multi-chat
     that under-reports a session that ran background chats. Turns = user turns
-    (``len(history) // 2``) summed over every open + archived chat.
+    (`ChatSession.turn_count`) summed over every open + archived chat.
     """
     chats = getattr(session, "chats", None) or {}
-    total_turns = sum(len(getattr(cs, "history", []) or []) // 2 for cs in chats.values())
+    total_turns = sum(cs.turn_count() for cs in chats.values())
     return len(chats), total_turns
 
 
@@ -498,17 +499,31 @@ async def _autosave(app: web.Application, session: ServerSession) -> None:
     # Flush every chat to its own sessions/chats/<chat_id>.json (open +
     # archived) so multi-chat state survives a restart. `skip_empty` stays
     # False here — archive state belongs on disk for a chat that was never
-    # typed in. `save_chat` stamps `ended_at`, so this write is also what
-    # closes the record.
-    try:
-        n = chat_store.persist_session_chats(
+    # typed in. This does NOT stamp a close time: `save_chat` reads `ended_at`
+    # off the last message, so a conversation is dated by when it last changed
+    # rather than by when the connection carrying it happened to end.
+    # Both halves write files and one of them writes SQLite, so both go to a
+    # thread. On the loop they were the largest measured source of blocking in
+    # the backend (2026-09-02): a long conversation is a lot of bytes to
+    # serialise and a lot of rows to index, and while that ran nothing else in
+    # the process moved, including the health probe the supervisor kills the
+    # backend for not answering.
+    #
+    # `WorkIndex` is built for this: its connections are thread-local for
+    # exactly this reason and its own docstring says so.
+    def _persist_and_index() -> tuple[int, int]:
+        saved = chat_store.persist_session_chats(
             session, model=getattr(opts, "model", "") or "",
         )
+        # Must follow persist so the files exist on disk. Kept in the same
+        # thread hop rather than two: they are one act, and splitting them
+        # would put the loop back between a write and the index of it.
+        return saved, chat_store.index_session_chats(session)
+
+    try:
+        n, indexed = await asyncio.to_thread(_persist_and_index)
         if n:
             log.info("autosaved %d chat(s) for session %s", n, session.session_id)
-        # Index every chat into the work-index for recall — not just the active
-        # one. Must follow persist so the files exist on disk.
-        indexed = chat_store.index_session_chats(session)
         if indexed:
             log.info("recall-indexed %d chat(s) for session %s", indexed, session.session_id)
     except Exception:

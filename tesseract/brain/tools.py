@@ -16,6 +16,7 @@ path. Address in a later session.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,9 +31,11 @@ from tesseract.kernel.tokenjuice import (
     project_rules_dir as _tj_project_rules_dir,
     user_rules_dir as _tj_user_rules_dir,
 )
+from tesseract.brain import tool_availability
 from tesseract.brain.tool_usage import record_tool_call
 from tesseract.kernel.adapters.cli import _HARD_ERROR_NEEDLES
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.tool_search import TOOL_SEARCH_NAME
 from tesseract.permissions import approval_log
 from tesseract.permissions.decide import AskFn, evaluate as evaluate_permission
 from tesseract.permissions.policy import PermissionPolicy
@@ -99,7 +102,14 @@ def _declares_sealed_target(target_paths: Any, workspace_root: str) -> bool:
         safe_cwd,
     )
 
-    base = safe_cwd(workspace_root or ".")
+    try:
+        base = safe_cwd(workspace_root or ".")
+    except SealViolation:
+        # No directory outside the seal exists to anchor against, so nothing
+        # can be shown to land outside it either. This gate answers "does
+        # this declare a sealed target", and the honest answer when the
+        # machine has nowhere safe is yes.
+        return True
     for raw in target_paths:
         candidate = Path(str(raw))
         resolved = candidate if candidate.is_absolute() else base / candidate
@@ -183,6 +193,16 @@ def _invalidate_cli_auth_on_failure(tool_name: str, result: ToolResult) -> None:
 @dataclass
 class ToolRegistry:
     tools: dict[str, Tool] = field(default_factory=dict)
+    #: Whether the empty-working-set fallback has already said so. See
+    #: `schemas_for_adapter`; it clears when the set comes back.
+    #:
+    #: Advisory and unsynchronised on purpose, unlike `tools`, which the
+    #: snapshot discipline in `schemas_for_adapter` exists to protect because
+    #: a worker thread swaps it. Nothing branches on this flag: the worst a
+    #: race costs is one warning printed twice or skipped once. It is written
+    #: down because the next piece of state added to this class should not
+    #: read this one as a precedent for skipping that discipline.
+    _warned_empty_working_set: bool = False
 
     def register(self, tool: Tool) -> None:
         self.tools[tool.name] = tool
@@ -194,7 +214,10 @@ class ToolRegistry:
         return list(self.tools.keys())
 
     def schemas_for_adapter(
-        self, enabled_extended: set[str] | None = None
+        self,
+        enabled_extended: set[str] | None = None,
+        *,
+        defer_outside_working_set: bool = False,
     ) -> list[dict[str, Any]]:
         """Tool schemas in the shape adapters expect.
 
@@ -212,24 +235,102 @@ class ToolRegistry:
         `ChatSession._tool_schemas` via its `_enabled_extended_tools`.
         Visibility only — `execute_tool` resolves any registered tool by
         name regardless of tier.
+
+        ``defer_outside_working_set`` is the same decision made the other way,
+        for an adapter that declares `defers_tool_loading`. The whole registry
+        goes down the wire with everything outside the working set flagged
+        `defer_loading`, and the provider matches those server-side and appends
+        the schemas it needs INSIDE the request — so a demoted tool costs no
+        round trip there. `tool_search` is left out of that payload: the
+        provider's own search does the job, and shipping both is a model
+        choosing between two doors into the same room.
+
+        The working set is identical under both paths. What changes is whether
+        the tools outside it travel as deferred entries or do not travel at
+        all; nothing moves between tiers, and nothing about permission changes.
         """
-        if enabled_extended is None:
-            selected = self.tools.values()
-        else:
-            selected = [
+        # One snapshot, read once. `home_tools.sync_home_tools` swaps this
+        # dict from a worker thread, so re-reading `self.tools` between the
+        # passes below could build a payload whose core and deferred halves
+        # disagree about which tools exist.
+        every = list(self.tools.values())
+        # The working set first, in registry order, then anything `tool_search`
+        # unlocked this session — appended, never interleaved.
+        #
+        # Tool schemas are serialised ahead of the system prompt, so the first
+        # byte that moves in this list invalidates the cached prefix behind it:
+        # the prompt, the memory capsule and the whole conversation. Selecting
+        # unlocked tools by re-filtering the registry put each one at its
+        # REGISTRATION position, which for a tool registered early is near the
+        # front of the block. Measured 2026-08-30: every tool-count change in a
+        # live session reported `cached=0` rather than the core block's own
+        # size, three times in one conversation, re-reading 223,470 tokens at
+        # full price to advertise three tools the model had already been handed
+        # in `tool_search`'s result.
+        #
+        # Appending bounds it: the core block holds still, so what survives is
+        # everything before the first unlock. It does not remove the cost, and
+        # nothing here can — the fix that does is not advertising an unlocked
+        # tool at all, which needs the provider to accept a call for a name it
+        # was not shown.
+        core = [t for t in every if getattr(t, "tier", "extended") == "core"]
+        if enabled_extended:
+            core += [
                 t
-                for t in self.tools.values()
-                if getattr(t, "tier", "extended") == "core"
-                or t.name in enabled_extended
+                for t in every
+                if getattr(t, "tier", "extended") != "core"
+                and t.name in enabled_extended
             ]
-        return [
-            {
-                "name": t.name,
-                "description": t.description,
-                "input_schema": t.input_schema.model_json_schema(),
-            }
-            for t in selected
-        ]
+        deferred: list[Any] = []
+        if enabled_extended is None:
+            selected = list(every)
+        elif defer_outside_working_set:
+            core = [t for t in core if t.name != TOOL_SEARCH_NAME]
+            loaded = {t.name for t in core}
+            deferred = [
+                t
+                for t in every
+                if t.name not in loaded and t.name != TOOL_SEARCH_NAME
+            ]
+            # Never defer everything: the provider rejects a payload where no
+            # tool is loaded, and a session whose working set is somehow empty
+            # would reach nothing at all rather than reaching it one turn late.
+            selected = [*core, *deferred] if core else list(every)
+            if not core:
+                deferred = []
+                # Said out loud, because the fallback's cost is the whole
+                # registry at full price on every turn and the only other
+                # signal is a payload panel somebody has to be looking at.
+                #
+                # Once, not once per request. This is reached from
+                # `_tool_schemas` inside the tool loop, so a condition that
+                # cannot clear on its own would print on every model call and
+                # teach a reader to filter the log. Latched on the registry
+                # and released when the set comes back, the way a breaker
+                # reports a trip rather than every call after it.
+                if not self._warned_empty_working_set:
+                    self._warned_empty_working_set = True
+                    logger.warning(
+                        "working set resolved empty: sending all %d tool "
+                        "schemas undeferred. Check working_set.yaml::core.",
+                        len(every),
+                    )
+            else:
+                self._warned_empty_working_set = False
+        else:
+            selected = core
+        deferred_names = {t.name for t in deferred}
+        schemas: list[dict[str, Any]] = []
+        for t in selected:
+            # `to_schema`, not the same three keys written again. `tool_search`
+            # already builds a tool's schema through it, so a second copy here
+            # meant the shape a demoted tool arrives in and the shape it is
+            # unlocked in were two definitions that had to be edited together.
+            schema = t.to_schema()
+            if t.name in deferred_names:
+                schema["defer_loading"] = True
+            schemas.append(schema)
+        return schemas
 
 
 async def execute_tool(
@@ -243,12 +344,108 @@ async def execute_tool(
     """Validate, permission-check, and run a single tool call.
 
     Permission decision lives in `permissions/decide.py::evaluate` — the
-    single source of truth for tool decisions. This function is the thin
+    single source of truth for tool decisions. `_dispatch_tool` is the thin
     wrapper that does input-schema validation up front and `tool.run()`
     when `decide.evaluate` returns `None` (proceed). When `decide.evaluate`
     returns a `ToolResult`, that result is the final outcome (denial or
     operator decline).
+
+    **This is where a stored credential is stopped.** Every tool result in the
+    runtime comes out of this function — the chat loop, the brief route,
+    `surface_open`, the autonomy worker, the open verb and the CLI script all
+    call it — so it is the one place a value arriving from outside can be
+    caught before it is part of the conversation. The leak the threat model
+    names is not the model choosing to disclose a password: it is a service
+    returning the authenticated URL in a 401 body, or an exception whose
+    frames carry the header, and both arrive here as a `ToolResult`.
+
+    Stopping it on the way IN rather than filtering on the way out is what
+    makes the four sinks clean by construction: a value that never enters
+    history is never written to the session file, never sent to the provider,
+    never folded into a compaction summary and never saved as a memory. The
+    filters at those four boundaries stay as backstops for a value that
+    arrived by some route this one does not cover.
+
+    The screen wraps the dispatch rather than sitting on each `return`, so a
+    branch added later cannot be the one that forgets. That includes the two
+    error returns, which interpolate an exception's own text and are the most
+    likely carriers of the header case above.
     """
+    return _screen_result(
+        await _dispatch_tool(
+            registry=registry,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            context=context,
+            ask_fn=ask_fn,
+            policy=policy,
+        ),
+        tool_name,
+    )
+
+
+def _screen_result(result: ToolResult, tool_name: str) -> ToolResult:
+    """Replace any stored credential in a tool's result with a named marker.
+
+    Degrades rather than fails closed, and that is the deliberate half. A
+    credential store that cannot be read must not turn every tool call in the
+    runtime into an error — the operator would lose the machine over a
+    corrupt file. What it does instead is refuse to pass the result through,
+    which loses one tool's output and says why. The path that fails CLOSED is
+    the provider request, where the cost of guessing wrong is the value
+    leaving the machine.
+    """
+    from tesseract.credentials.redaction import RedactionUnavailable, redact_payload
+
+    try:
+        output = redact_payload(result.output)
+        metadata = redact_payload(result.metadata) if result.metadata else result.metadata
+        deny_reason = redact_payload(result.deny_reason)
+    except RedactionUnavailable as exc:
+        logger.error("tool %s: result withheld, %s", tool_name, exc)
+        # `deny_reason` is REPLACED, not preserved and not blanked, and it is
+        # the field this branch originally forgot. `dataclasses.replace` keeps
+        # what it is not given, and `chat.py::_result_chunk` tests
+        # `denied_hard` FIRST and copies `deny_reason` into the chunk verbatim
+        # — so a branch that withheld the output was still handing that string
+        # to the transcript.
+        #
+        # Replaced rather than blanked because `chunk_handler.py` reads it as
+        # `raw.get("deny_reason", "denied")`, and an empty string is a present
+        # key: the surface would show a hard denial with no reason on it. This
+        # text is the runtime's own, so it carries nothing from the tool.
+        withheld = (
+            f"{tool_name} ran, and its result was withheld: the credential "
+            f"store could not be read, so the result could not be checked "
+            f"for credentials. {exc}"
+        )
+        return dataclasses.replace(
+            result,
+            output=withheld,
+            is_error=True,
+            metadata=None,
+            deny_reason=withheld if result.denied_hard else "",
+        )
+    if (
+        output == result.output
+        and metadata is result.metadata
+        and deny_reason == result.deny_reason
+    ):
+        return result
+    return dataclasses.replace(
+        result, output=output, metadata=metadata, deny_reason=deny_reason
+    )
+
+
+async def _dispatch_tool(
+    *,
+    registry: ToolRegistry,
+    tool_name: str,
+    tool_input: dict[str, Any],
+    context: ToolContext,
+    ask_fn: AskFn | None,
+    policy: PermissionPolicy | None,
+) -> ToolResult:
     tool = registry.get(tool_name)
     if tool is None:
         return ToolResult(output=f"unknown tool: {tool_name}", is_error=True)
@@ -275,6 +472,14 @@ async def execute_tool(
     if context.policy is None and policy is not None:
         context.policy = policy
 
+    # Before the permission gate, on purpose: asking the operator to approve a
+    # call the runtime is about to refuse anyway is the confusing half. After
+    # validation, because a call that never had a valid shape says nothing
+    # about whether the thing behind it is answering.
+    unavailable = tool_availability.gate(tool, tool_name)
+    if unavailable is not None:
+        return unavailable
+
     refusal = await _installed_tree_source_edit_refusal(tool_name, validated, tool_input, context)
     if refusal is not None:
         return refusal
@@ -300,13 +505,15 @@ async def execute_tool(
         result = await tool.run(validated, context)
     except Exception as e:
         logger.exception("tool %s execution failed", tool_name)
+        tool_availability.record(tool, tool_name, exc=e)
         return ToolResult(output=f"tool {tool_name} error: {e}", is_error=True)
+    tool_availability.record(tool, tool_name, result=result)
 
     _invalidate_cli_auth_on_failure(tool_name, result)
     return _apply_tokenjuice(result, tool_name, tool_input)
 
 
-# ── TokenJuice (AU-15) — tool-output compression ────────────────────────────
+# ── TokenJuice — tool-output compression ────────────────────────────
 # Loaded once on first call; reset_tokenjuice_cache() exists for test fixtures
 # that need to reload after a config swap or TESSERACT_HOME monkeypatch.
 _TJ_CACHE: dict[str, Any] = {"config": None, "rules": None, "init_failed": False}
@@ -399,10 +606,17 @@ def _apply_tokenjuice(
         return result
     if pr.text == result.output:
         return result
+    # `timed_out` carried too. Rebuilding field by field dropped it, and it is
+    # the one field with a consumer that branches on it rather than displaying
+    # it: `kernel_worker_runner` reads it to tell "ran out of time, park it"
+    # from "the tool failed, mark it FAILED". Compression only rewrites a
+    # result whose text it actually changed, which a timed-out `lane_turn`
+    # returning a large partial answer is exactly the shape of.
     return ToolResult(
         output=pr.text,
         is_error=result.is_error,
         metadata=result.metadata,
         denied_hard=result.denied_hard,
         deny_reason=result.deny_reason,
+        timed_out=result.timed_out,
     )

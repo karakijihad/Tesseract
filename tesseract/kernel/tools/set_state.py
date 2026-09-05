@@ -51,7 +51,7 @@ class SetStateInput(BaseModel):
         description=(
             "Discrete orb state. Allowed: 'happy', 'deep_focus', 'dreaming', 'idle'. "
             "Loop-driven reactive states (thinking/speaking/listening/error/spawning) "
-            "are not settable here — they're driven by what's actually happening."
+            "cannot be set here. They follow what is actually happening."
         ),
     )
 
@@ -65,13 +65,14 @@ class SetStateTool(Tool):
     summary: ClassVar[str] = "Sets a discrete orb state: happy, deep_focus, dreaming, or idle."
     use_when: ClassVar[str] = (
         "Call on a real shift: happy after a breakthrough, deep_focus for sustained work, dreaming "
-        "between turns, idle to settle back. Use sparingly — the runtime auto-sets some of these "
+        "between turns, idle to settle back. Use sparingly, because the runtime sets some of these itself "
         "itself, so don't double-fire."
     )
     not_when: ClassVar[str] = (
         "reactive states, loop-driven and not settable here; continuous shading, `set_mood`; "
         "hiding the orb, `orb_visibility`."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(self, affect: EntityAffect) -> None:
         self._affect = affect
@@ -87,7 +88,7 @@ class SetStateTool(Tool):
     def is_concurrency_safe(self) -> bool:
         # EntityAffect lives on the tool instance in the shared ToolRegistry —
         # two concurrent set() calls last-write-wins on the entity state.
-        # WP-2 synthetic registry will omit this tool entirely.
+        # The synthetic registry omits this tool entirely.
         return False
 
     def is_read_only(self) -> bool:

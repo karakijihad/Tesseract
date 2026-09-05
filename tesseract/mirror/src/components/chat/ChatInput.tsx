@@ -59,8 +59,6 @@ export function ChatInput({ variant }: Props) {
   const voiceMode = useVoiceStore((s) => s.voiceMode);
   const voiceState = useVoiceStore((s) => s.state);
   const partialTranscript = useVoiceStore((s) => s.partialTranscript);
-  const notHeard = useVoiceStore((s) => s.notHeard);
-  const woken = useVoiceStore((s) => s.woken);
   const history = useMemo(
     () =>
       messages
@@ -122,6 +120,25 @@ export function ChatInput({ variant }: Props) {
     setUploadError(null);
     fileInputRef.current?.reset();
   }, [sessionId]);
+
+  // The autosize below measures once per value. A panel still being laid out
+  // when that runs returns a height for a width the textarea is about to stop
+  // having, and nothing asks again — an empty composer sat 161px tall.
+  // Width only: the callback writes a height, so watching height would be
+  // watching itself.
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    let lastWidth = el.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (el.clientWidth === lastWidth) return;
+      lastWidth = el.clientWidth;
+      el.style.height = 'auto';
+      el.style.height = `${Math.max(el.scrollHeight, 24)}px`;
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   useLayoutEffect(() => {
     const el = textareaRef.current;
@@ -254,7 +271,7 @@ export function ChatInput({ variant }: Props) {
         const head = trimmed.slice(1).split(/\s+/)[0].toLowerCase();
         const suggestions = head ? matchingCommands(head).slice(0, 2) : [];
         const hint = suggestions.length
-          ? `Unknown command /${head} — did you mean ${suggestions.map((c) => '/' + c.name).join(' or ')}?`
+          ? `Unknown command /${head}. Did you mean ${suggestions.map((c) => '/' + c.name).join(' or ')}?`
           : `Unknown command /${head}. To send literally, wrap in quotes: "/${head}"`;
         useToastStore.getState().push(hint);
         return;
@@ -479,25 +496,6 @@ export function ChatInput({ variant }: Props) {
         {previewChip && (
           <div className="chat-input-preview-chip" aria-live="polite">{previewChip}</div>
         )}
-        {woken && (
-          // Shown WHILE the operator is still speaking. The gate decides per
-          // frame now, so this is the answer to "did it hear me" arriving at
-          // the only time it is useful — before they have said the rest.
-          <div className="chat-input-preview-chip is-woken" aria-live="polite">
-            <span className="chat-input-woken-mark">heard you</span>
-            keep going
-          </div>
-        )}
-        {notHeard && (
-          // The wake gate refused this. Shown rather than suppressed: the
-          // preview had already vanished on speech-end, and nothing
-          // replacing it is what makes a missed wake word read as a dead
-          // mic. It fades itself — see `NOT_HEARD_MS`.
-          <div className="chat-input-preview-chip is-not-heard" aria-live="polite">
-            <span className="chat-input-not-heard-mark">not heard</span>
-            {notHeard}
-          </div>
-        )}
         {uploadError && <div className="chat-upload-error">{uploadError}</div>}
         {queueLabel && (
           <div className="chat-queue-pill t-meta" aria-label={queueLabel}>{queueLabel}</div>
@@ -537,7 +535,7 @@ export function ChatInput({ variant }: Props) {
           <>
             {canSteer(isStreaming, value) && (
               <Hint
-                label="Redirect now — fold this text into the current turn (Enter/Send would queue it for after; Stop cancels the turn entirely)"
+                label="Redirect now: fold this text into the current turn (Enter/Send would queue it for after; Stop cancels the turn entirely)"
                 position="top"
                 maxWidth={260}
               >

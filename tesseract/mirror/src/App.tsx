@@ -17,7 +17,6 @@ import { installFullscreenKey } from "./lib/fullscreen";
 import { CockpitStage } from "./cockpit/CockpitStage";
 import { GlobalCanvas } from "./components/layout/GlobalCanvas";
 import { MotionTestPanel } from "./components/debug/MotionTestPanel";
-import { SessionDrawer } from "./components/sessions/SessionDrawer";
 import { ToastStack } from "./components/ui/ToastStack";
 import { ResetConfirmDialog } from "./components/chat/ResetConfirmDialog";
 import { CliAuthNotice } from "./components/notices/CliAuthNotice";
@@ -168,7 +167,6 @@ function App() {
     <>
       <CockpitStage />
       <GlobalCanvas />
-      <SessionDrawer />
       <ToastStack />
       <ResetConfirmDialog />
       <CliAuthNotice />

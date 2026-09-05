@@ -94,7 +94,7 @@ def is_degenerate_goal(text: str) -> bool:
     """True only for STRUCTURALLY broken goals safe to prune at admission
     regardless of source: empty/whitespace, punctuation/digit-only (e.g. a
     lone ``}``), or shorter than 3 chars. Intentionally does NOT judge
-    prose quality — that is the agent-vet's job (Phase 2). Must never fire
+    prose quality — that is the agent-vet's job. Must never fire
     on a real English directive like ``act on heartbeat observation: ...``."""
     s = (text or "").strip()
     if len(s) < 3:

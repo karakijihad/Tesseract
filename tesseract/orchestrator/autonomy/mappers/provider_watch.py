@@ -1,12 +1,11 @@
 """Provider watch hits → AgendaItemDraft.
 
-AU-5 cross-ref: once AU-14
-ships the probe substrate and writes
+Where the probe substrate writes
 ``<TESSERACT_HOME>/logs/provider-health/*.jsonl``, the provider-watch
 publisher reads the rolling window and emits one
-:class:`AutonomyEvent` per drift event. Today's narrower input is the
-existing ``provider_watch`` scheduler job's digest — the kernel reads
-its job-done payload when it carries a ``new_models`` or
+:class:`AutonomyEvent` per drift event. The narrower input is the
+``provider_watch`` scheduler job's digest — the kernel reads its
+job-done payload when it carries a ``new_models`` or
 ``deprecated_models`` list.
 
 The draft is always ``propose`` — provider swaps affect role wiring

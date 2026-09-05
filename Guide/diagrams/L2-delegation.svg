@@ -12,7 +12,7 @@
       </defs>
 
       <rect x="0" y="70" width="936" height="88" rx="4" fill="rgba(255,255,255,0.016)"/>
-      <text x="8" y="62" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" letter-spacing="1.4" fill="rgba(234,234,248,0.38)">HAND OFF</text>
+      <text x="8" y="62" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" letter-spacing="1.4" fill="rgba(234,234,248,0.55)">HAND OFF</text>
 
       <rect x="16" y="90" width="128" height="48" rx="3" fill="url(#d-node)" stroke="rgba(234,234,248,0.55)"/>
       <text x="80" y="112" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#f5f5fa" text-anchor="middle">the Agent</text>
@@ -27,7 +27,7 @@
       <text x="440" y="110" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#9d8fff" text-anchor="middle">a role, not an app</text>
       <text x="440" y="126" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="rgba(234,234,248,0.55)" text-anchor="middle">coder · auditor</text>
       <line x1="320" y1="114" x2="360" y2="114" stroke="rgba(234,234,248,0.55)" stroke-width="1.1" marker-end="url(#d-arw)"/>
-      <text x="440" y="176" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="rgba(234,234,248,0.38)" text-anchor="middle">whoever the role ref names — cli.* or api.*, plus fallbacks</text>
+      <text x="440" y="176" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="rgba(234,234,248,0.55)" text-anchor="middle">whoever the role ref names — cli.* or api.*, plus fallbacks</text>
 
       <rect x="560" y="90" width="152" height="48" rx="3" fill="url(#d-node)" stroke="rgba(234,234,248,0.55)"/>
       <text x="636" y="110" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#f5f5fa" text-anchor="middle">you watch it work</text>
@@ -42,5 +42,5 @@
       <path d="M838 90 L838 46 L80 46 L80 86" fill="none" stroke="#7c6cf0" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#d-arw-v)"/>
       <rect x="283.7" y="41.8" width="350.6" height="11.0" fill="#0b0b16"/><text x="459" y="50" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#9d8fff" text-anchor="middle">not awaited inline — the turn ends, the result arrives later</text>
 
-      <text x="468" y="216" font-family="JetBrains Mono, ui-monospace, monospace" font-size="10" fill="rgba(234,234,248,0.38)" text-anchor="middle">stalled and lost lanes get their own injected notices</text>
+      <text x="468" y="216" font-family="JetBrains Mono, ui-monospace, monospace" font-size="10" fill="rgba(234,234,248,0.55)" text-anchor="middle">stalled and lost lanes get their own injected notices</text>
     </svg>

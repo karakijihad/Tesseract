@@ -1,4 +1,4 @@
-"""AU-16 S1 — ``SealJob``.
+"""``SealJob``.
 
 For each ``LeafBuffer`` whose backlog crosses a size OR age threshold,
 compresses the buffered leaves into a single ``Seal`` artefact, then
@@ -65,11 +65,17 @@ class SealJob(BaseJob):
         buf_root = Path(buf_root_cfg).resolve() if buf_root_cfg else buffers_root()
         now = datetime.now(timezone.utc)
 
-        def _process() -> tuple[int, int, int, int]:
+        def _process() -> tuple[int, int, int, int, list[str], list[str]]:
             seals_written = 0
             leaves_sealed = 0
             leaves_missing = 0
             buffers_walked = 0
+            # WHICH, not how many. This job wrote four counts and held every
+            # id it had just minted: the map could say the capture row ran and
+            # never what it produced, and a recorder that writes how many
+            # cannot be made to say which by a better reader downstream.
+            seal_ids: list[str] = []
+            sealed_into: list[str] = []
             # Held for the whole pass — see `LEAF_PIPELINE_LOCK`'s
             # docstring. Must not interleave with `AppendBufferJob`
             # appending an id + transitioning its leaf to BUFFERED: this
@@ -119,7 +125,7 @@ class SealJob(BaseJob):
                         summary_body=body,
                     )
                     write_seal(seal)
-                    # AU-16 S2 — fold the seal into the per-source tree immediately.
+                    # Fold the seal into the per-source tree immediately.
                     # Topic + global trees catch up on their own cadences (those
                     # require cross-seal aggregation that doesn't belong in the
                     # sealing hot path).
@@ -138,11 +144,16 @@ class SealJob(BaseJob):
 
                     buffer.clear()
                     seals_written += 1
-            return buffers_walked, seals_written, leaves_sealed, leaves_missing
+                    seal_ids.append(seal.seal_id)
+                    # Deduped, because one source can seal twice in a pass and
+                    # the tree it appends to is the same tree both times.
+                    if seal.source_slug not in sealed_into:
+                        sealed_into.append(seal.source_slug)
+            return (buffers_walked, seals_written, leaves_sealed, leaves_missing,
+                    seal_ids, sealed_into)
 
-        buffers_walked, seals_written, leaves_sealed, leaves_missing = (
-            await asyncio.to_thread(_process)
-        )
+        (buffers_walked, seals_written, leaves_sealed, leaves_missing,
+         seal_ids, sealed_into) = await asyncio.to_thread(_process)
 
         return JobResult(
             job_name=ctx.job_name,
@@ -157,6 +168,8 @@ class SealJob(BaseJob):
                 "seals_written": seals_written,
                 "leaves_sealed": leaves_sealed,
                 "leaves_missing": leaves_missing,
+                "seal_ids": seal_ids,
+                "sealed_into": sealed_into,
             },
             duration_ms=(time.monotonic() - t0) * 1000.0,
         )

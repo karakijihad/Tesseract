@@ -123,6 +123,12 @@ export type SurfaceRenderStatus =
 export type ReportRender = (
   status: SurfaceRenderStatus,
   detail?: string,
+  /** What `surface_control` can ask this card, in its verbs. Omitted means
+   *  the card did not say, which `surface_list` reports as unknown; an empty
+   *  array is the card saying it takes nothing. Reported rather than derived
+   *  from the card's type, because for a framed page it is a property of the
+   *  page. */
+  controls?: readonly string[],
 ) => void;
 
 // A descriptor is renderable only at the version this build speaks. A v2

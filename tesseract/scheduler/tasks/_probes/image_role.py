@@ -1,10 +1,10 @@
-"""Image-generation role probe — text-to-image known-good call.
+"""Image-generation probe — text-to-image known-good call.
 
-Triggers ``image_generate`` with a high-contrast prompt and a pinned
-square frame, so a drifting endpoint is the only thing that can change
-the result shape. Healthy responses return a JPEG/PNG/WebP of at least
-the ``_UNIFORM_IMAGE_BYTE_FLOOR`` size; smaller payloads come back from
-the tool as ``is_error=True`` with the uniform-image message, which the
+Triggers ``image_generate`` against ONE catalog ref with a high-contrast
+prompt and a pinned square frame, so a drifting endpoint is the only thing
+that can change the result shape. Healthy responses return a JPEG/PNG/WebP of
+at least the ``_UNIFORM_IMAGE_BYTE_FLOOR`` size; smaller payloads come back
+from the tool as ``is_error=True`` with the uniform-image message, which the
 probe maps to ``drift_kind="uniform_output"``.
 """
 
@@ -20,6 +20,7 @@ from tesseract.kernel.tools.image_generate import (
     ImageGenerateInput,
     ImageGenerateTool,
 )
+from tesseract.orchestrator import provider_failure
 from tesseract.scheduler.tasks._probes.base import ProbeResult
 
 log = logging.getLogger(__name__)
@@ -31,10 +32,14 @@ class ImageRoleProbe:
     role_kind: ClassVar[str] = "image_generation"
 
     def __init__(self, tool: ImageGenerateTool | None = None) -> None:
-        # Stateless tool; tests can inject a fake exposing ``run``.
+        # Stateless tool; tests can inject a fake exposing ``attempt_ref``.
         self._tool = tool or ImageGenerateTool()
 
     async def probe(self, role_name: str, ref: str) -> ProbeResult:
+        # `role_name` is the billing key and the status line's label; `ref` is
+        # the entry actually asked. Routing through the role would walk its
+        # chain and answer for the primary, so a fallback would be recorded
+        # healthy on the strength of a call it never received.
         ctx = ToolContext(
             workspace_root="",
             session_id=f"provider-probe-{role_name}",
@@ -58,7 +63,7 @@ async def _run_probe(
     t0 = time.monotonic()
     now = datetime.now(timezone.utc).isoformat()
     try:
-        result = await tool.run(inp, ctx)
+        result = await tool.attempt_ref(ref, inp, ctx)
     except Exception as exc:  # noqa: BLE001
         log.warning("image probe crashed for role=%s: %r", role_name, exc)
         return ProbeResult(
@@ -66,7 +71,7 @@ async def _run_probe(
             ref=ref,
             ok=False,
             drift_kind="http_error",
-            evidence={"exception": repr(exc)},
+            evidence=provider_failure.evidence(provider_failure.from_exception(exc)),
             probed_at=now,
             latency_ms=(time.monotonic() - t0) * 1000.0,
         )
@@ -80,7 +85,19 @@ async def _run_probe(
             ref=ref,
             ok=False,
             drift_kind=drift,
-            evidence={"output": output[:500], "metadata": dict(metadata)},
+            # An error result is not automatically the provider's. The tool
+            # returns `is_error` before any request leaves this machine for an
+            # inactive role, an unset API key env var, a catalog entry with no
+            # `payload_profile` — six paths, all of them this runtime's own
+            # misconfiguration, all of them recorded here as a provider outage
+            # until the tool started saying which side it failed on.
+            evidence=provider_failure.evidence(
+                provider_failure.ours(output)
+                if metadata.get(provider_failure.FAULT_ORIGIN_KEY) == provider_failure.FAULT_OURS
+                else provider_failure.theirs(output),
+                output=output[:500],
+                metadata=dict(metadata),
+            ),
             probed_at=now,
             latency_ms=latency_ms,
         )

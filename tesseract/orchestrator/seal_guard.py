@@ -13,6 +13,8 @@ nothing here can see what it does.
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 from tesseract.paths import app_dir, runtime_dir
@@ -27,8 +29,51 @@ class SealViolation(RuntimeError):
     """Raised when a subprocess would start inside a sealed tree."""
 
 
+def _scratch_cwd() -> Path:
+    """A writable directory outside the seal, for when the workshop is not.
+
+    Never `home_dir()` itself, which is what this replaced: the state root
+    sits directly above `memory-store/`, `vault/` and `config/`, and keeping
+    a CLI away from those is the entire reason the workshop is the fallback.
+
+    One directory per PROCESS, not per call. The workshop being unusable is
+    normally a standing condition — it exists as a file, or the permission is
+    wrong — so a fresh `mkdtemp` each time would leave another empty
+    directory in the system temp folder on every delegation, forever, with
+    nothing reaping them.
+
+    **Every candidate is checked, including the last one.** An earlier version
+    called the temp root "outside the install by construction" and returned it
+    unchecked, which is the same assumption this whole module exists to
+    refuse: `tempfile.gettempdir()` reads `TMPDIR`/`TEMP`/`TMP`, so it is an
+    environment variable, not a fact. Nothing in this repo points it into the
+    install, and the default Windows temp folder is a sibling of
+    the install root rather than a child, so this is narrow. It is also one
+    line to check, and an unchecked fallback inside a guard is how the bare
+    state root survived here in the first place.
+
+    Raises `SealViolation` when every candidate is sealed. That is not a
+    fallback failing, it is the machine having nowhere safe to run a CLI, and
+    a caller that starts one anyway is worse off than one that stops.
+    """
+    root = Path(tempfile.gettempdir())
+    for candidate in (root / f"tesseract-cwd-{os.getpid()}", root):
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            assert_cwd_outside_seal(candidate)
+        except (OSError, SealViolation):
+            continue
+        return candidate
+    raise SealViolation(
+        f"no working directory outside the sealed tree is available: the "
+        f"workshop under {os.fspath(root)!r}'s sibling state root could not "
+        f"be used and the temp root itself resolves inside the seal. Check "
+        f"whether TEMP/TMP/TMPDIR points into the installation."
+    )
+
+
 def safe_cwd(preferred: str | Path) -> Path:
-    """`preferred` if it is outside the seal, otherwise the state root.
+    """`preferred` if it is outside the seal, otherwise the workshop.
 
     For callers that did not choose their working directory on purpose. The
     delegate tools inherit `ToolContext.workspace_root`, which IS the code tree
@@ -56,8 +101,13 @@ def safe_cwd(preferred: str | Path) -> Path:
         fallback = home_dir() / "workshop"
         try:
             fallback.mkdir(parents=True, exist_ok=True)
-        except OSError:  # pragma: no cover — fall back to the state root
-            fallback = home_dir()
+            # Checked, not assumed. `mkdir(exist_ok=True)` succeeds on an
+            # existing directory symlink, so a `workshop` junction pointing
+            # into the sealed tree would otherwise be handed straight back as
+            # the safe answer.
+            assert_cwd_outside_seal(fallback)
+        except (OSError, SealViolation):
+            fallback = _scratch_cwd()
         log.warning(
             "seal: %s is inside the sealed tree — running in %s instead",
             preferred,

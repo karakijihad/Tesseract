@@ -1,6 +1,6 @@
 """Out-of-process supervisor for the Mirror backend.
 
-AU-1: the supervisor owns the backend lifecycle, distinguishes
+The supervisor owns the backend lifecycle, distinguishes
 operator-initiated shutdown from crashes, and refuses to respawn after
 operator intent. Lives outside the backend so a backend crash can't
 take the supervisor with it.

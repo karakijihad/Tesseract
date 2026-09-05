@@ -2,7 +2,7 @@
 
 Composes with the existing ``mission.WorkQueue`` rather than replacing
 it. The WorkQueue handles the asyncio plumbing; ``WorkerLane`` is the
-admission gate AgendaStore (AU-4) calls BEFORE submitting — it answers
+admission gate AgendaStore calls BEFORE submitting — it answers
 "is there headroom for one more ``claude_cli`` worker right now, and
 does this item's risk class permit dispatch?"
 
@@ -12,7 +12,7 @@ Two checks, in order:
    ``<TESSERACT_HOME>/workers/active/``. Reject if at or above
    ``max_concurrent``. Pulled from ``mirror.yaml::mission.lanes.worker.
    <kind>`` (int shape) or ``mission.lanes.<kind>.max_concurrent``
-   (dict shape — AU-3 S2 adds the dict form alongside ``retry``).
+   (dict shape, which also carries ``retry``).
 2. **Risk class.** Reject if the requested item's risk class is more
    permissive than the worker kind's class ceiling. ``operator_gate``
    workers can run ``operator_gate`` items; an ``autonomous`` worker
@@ -47,7 +47,7 @@ class AdmissionDecision(str, Enum):
     REJECT_UNCONFIGURED = "reject_unconfigured"
 
 
-# Canonical reason strings — promoted from inline literals per the AU-3
+# Canonical reason strings, named here rather than inline per the
 # S1 reviewer (R4). Tests import these rather than hard-coding the
 # string, mirroring the convention in
 # ``orchestrator/recovery/transitions.py``'s REASON_* block.
@@ -113,8 +113,7 @@ def _risk_within(item: RiskClass, ceiling: RiskClass) -> bool:
 
 def _parse_cap(raw: Any) -> int | None:
     """``mirror.yaml::mission.lanes.worker.<kind>`` accepts two shapes:
-    plain int (legacy) and ``{max_concurrent: N, retry: {...}}`` (AU-3
-    S2 extension)."""
+    a plain int and ``{max_concurrent: N, retry: {...}}``."""
     if isinstance(raw, int):
         return raw if raw >= 0 else None
     if isinstance(raw, dict):
@@ -131,7 +130,7 @@ class WorkerLane:
 
     Stateless — the count of running workers per kind comes from
     ``list_active_records()`` at decision time, so cap-changes via
-    config hot-reload (AU-8) take effect immediately for the next
+    config hot-reload take effect immediately for the next
     admission decision.
     """
 
@@ -186,8 +185,7 @@ class WorkerLane:
         Uses the count-only ``iter_active_status_summary`` (raw JSON
         peek for kind+status only) rather than a full Pydantic parse,
         because this is called on the admission hot path and would
-        otherwise cost N model-validations per dispatch decision once
-        AU-5 wires real concurrent workers."""
+        otherwise cost N model-validations per dispatch decision."""
         target = kind.value
         terminal = {s.value for s in TERMINAL_STATUSES}
         return sum(

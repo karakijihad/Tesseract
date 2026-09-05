@@ -51,6 +51,7 @@ class TavilyExtractTool(Tool):
     not_when: ClassVar[str] = (
         "Use `tavily_search` or `web_search` first when you don't yet have a specific URL."
     )
+    depends_on: ClassVar[str] = "service:tavily"
 
     @property
     def name(self) -> str:

@@ -1,4 +1,4 @@
-"""AU-16 S1 — ``ExtractChunkJob``.
+"""``ExtractChunkJob``.
 
 Picks up every leaf currently in ``LeafState.PENDING_EXTRACTION``,
 normalises whitespace, sniffs ``[[wikilinks]]`` into entities, scores

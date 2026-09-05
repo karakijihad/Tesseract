@@ -1,6 +1,6 @@
 """lane_close — terminate a lane.
 
-X-4 Session B. ASK-gated — closing a lane terminates the underlying
+ASK-gated — closing a lane terminates the underlying
 CLI subprocess and archives the lane directory. Reason strings should
 match the contract's enum: `operator_close`, `timeout`,
 `error_unrecoverable`, `mission_complete`, `shutdown`."""
@@ -37,9 +37,10 @@ class LaneCloseTool(Tool):
     summary: ClassVar[str] = "Terminate a lane's CLI subprocess and archive its on-disk record."
     use_when: ClassVar[str] = "Use when a lane's work is done and its process and history should stop existing."
     not_when: ClassVar[str] = (
-        "pausing without ending the process — no lane tool does that; `lane_read`/`lane_status` "
+        "pausing without ending the process. No lane tool does that; `lane_read` and `lane_status` "
         "just stop being polled instead."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

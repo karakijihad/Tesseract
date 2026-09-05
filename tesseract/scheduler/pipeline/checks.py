@@ -9,8 +9,8 @@ case the missing half is silent by construction:
   forever, so the ceiling in the config was never a ceiling.
 
 These report rather than raise. Three producers are missing on this tree right
-now (AR-7 decides whether each is wired or deleted), and a backend that refuses
-to boot until then would be a worse answer than one that says so every time.
+now, each waiting to be wired or deleted, and a backend that refuses to
+boot until then would be a worse answer than one that says so every time.
 The graph checks in `graph.py` DO raise: those cover a declaration this code
 owns, where a partial run has no safe meaning.
 """
@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 
 # Which `daily_caps` key is populated by which writer. A cap with no entry
 # here, or one whose writer no longer resolves, is a ceiling that cannot be
-# reached — the state `daily_caps.tokens` and `.seconds` were in until AR-1.
+# reached, which is the state `daily_caps.tokens` and `.seconds` were in.
 # The `schedule.yaml` rows that run a pipeline row. If the declaration does
 # not hold, these are the jobs to disable — and only these: every other row on
 # the machine is unaffected by a bad edge in the pipeline graph.

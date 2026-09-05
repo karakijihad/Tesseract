@@ -23,6 +23,12 @@ class BraveProvider(WebSearchProvider):
     endpoint = "https://api.search.brave.com/res/v1/web/search"
     http_method = "GET"
     tripwire_source = "api.brave.search"
+    # Brave accepts `country` from a closed list of markets and refuses
+    # anything else with a 422. Lebanon is not on it, and seven searches
+    # about Beirut were lost to `country=lb` in one day while the same
+    # batch's `country=us` search returned results. The location was
+    # already in the query text both times.
+    optional_params = ("country",)
 
     def missing_key_message(self) -> str:
         return _MISSING_KEY_HINT

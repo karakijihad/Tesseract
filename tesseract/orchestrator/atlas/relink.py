@@ -63,8 +63,17 @@ def orphan_memories(atlas: Atlas) -> list[str]:
     out: list[str] = []
     for node_id in report.orphans(atlas):
         node = atlas.nodes.get(node_id)
-        if node is not None and node.kind is NodeKind.MEMORY:
-            out.append(node_id.removeprefix("mem:"))
+        if node is None or node.kind is not NodeKind.MEMORY:
+            continue
+        # The prefix as well as the kind, because the kind alone stopped
+        # being enough: a diary entry is a record in the memory store and is
+        # drawn as a memory, and it has no id in the store's own id space at
+        # all. Handing `diary:2026-08-15` to the linker would ask it to
+        # re-link a memory that does not exist, and `removeprefix` would have
+        # passed the whole string through unchanged rather than failing.
+        if not node_id.startswith("mem:"):
+            continue
+        out.append(node_id.removeprefix("mem:"))
     return out
 
 

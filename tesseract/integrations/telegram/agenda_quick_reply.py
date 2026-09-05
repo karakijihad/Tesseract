@@ -1,4 +1,4 @@
-"""Inbound quick-reply parser for AU-10.
+"""Inbound quick-reply parser for agenda items.
 
 Telegram operators reply ``<agenda_id>:<verb>`` to approve / deny /
 snooze an agenda item without opening Mirror. Verbs:
@@ -31,6 +31,27 @@ log = logging.getLogger(__name__)
 
 
 QuickReplyVerb = Literal["approve", "deny", "cancel", "snooze"]
+
+#: A verb, in one character, for somewhere with no room for the word.
+#: Telegram caps a button's callback data at 64 bytes and an agenda id is up
+#: to 59 of them (`mint_agenda_id` truncates the slug at 40), so the verb gets
+#: one. Every verb starts with a different letter and this asserts it rather
+#: than assuming: two verbs sharing an initial would silently make one of them
+#: unreachable from a button.
+VERB_LETTERS: dict[str, QuickReplyVerb] = {
+    "a": "approve",
+    "d": "deny",
+    "c": "cancel",
+    "s": "snooze",
+}
+
+
+def letter_for(verb: str) -> str:
+    """The one character that stands for `verb`, or `""` if none does."""
+    for letter, named in VERB_LETTERS.items():
+        if named == verb:
+            return letter
+    return ""
 
 # ``ag-YYYY-MM-DD-HHMM-<slug>`` per ``mint_agenda_id``.
 _AGENDA_ID = re.compile(
@@ -71,6 +92,32 @@ def looks_like_quick_reply(text: str) -> bool:
     return _AGENDA_ID.match(stripped) is not None
 
 
+async def _record(reply: QuickReply, *, actor: str, allowed: bool) -> None:
+    """Put the decision in `approvals.jsonl`, where every other one is.
+
+    Here rather than at either caller, so a decision made by typing and the
+    same decision made by tapping a button land as the same row. Two writers
+    would be two answers to "did the operator approve this", and the ledger's
+    whole value is that there is one.
+
+    Only approve and deny are recorded. A snooze grants nothing and refuses
+    nothing, it moves the item down the queue, and the ledger's `result`
+    vocabulary has no word for that; inventing one would make the count of
+    approvals stop meaning approvals.
+    """
+    from tesseract.permissions.approval_log import record_ask
+
+    await record_ask(
+        session_id=actor,
+        call_id=reply.agenda_id,
+        tool_name=f"agenda:{reply.verb}",
+        input_summary={"agenda_id": reply.agenda_id, "verb": reply.verb},
+        posture_source="agenda_decision",
+        result="allow_once" if allowed else "deny",
+        actor="operator",
+    )
+
+
 async def apply_quick_reply(
     reply: QuickReply,
     *,
@@ -107,6 +154,7 @@ async def apply_quick_reply(
                 fulfilled += 1
         item.updated_at = moment
         store.save(item)
+        await _record(reply, actor=actor, allowed=True)
         return {
             "ok": True,
             "verb": "approve",
@@ -122,6 +170,7 @@ async def apply_quick_reply(
             reason="operator_telegram_deny",
             by="operator",
         )
+        await _record(reply, actor=actor, allowed=False)
         return {
             "ok": True,
             "verb": reply.verb,
@@ -181,6 +230,8 @@ def format_reply_body(result: dict[str, Any]) -> str:
 __all__ = [
     "QuickReply",
     "QuickReplyVerb",
+    "VERB_LETTERS",
+    "letter_for",
     "SNOOZE_PRIORITY_DELTA",
     "SNOOZE_PRIORITY_FLOOR",
     "apply_quick_reply",

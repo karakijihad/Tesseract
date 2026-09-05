@@ -291,3 +291,96 @@
 .nav-rail__row--reset {
   opacity: 0.8;
 }
+
+/* ── a rail row that carries its section's own line ──────────────
+   The rail becomes the overview rather than a menu: the room's state is on
+   its row, so a room is readable without opening it. Rows without `said` and
+   without `mark` are untouched, which is every other rail in the app. */
+
+.nav-rail__fold {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 var(--space-2);
+}
+
+.nav-rail__lines {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* A rail whose rows carry a line needs the width to carry it. 176px was set
+   for one word per row. */
+.nav-rail--said {
+  flex-basis: 236px;
+}
+
+.nav-rail__said {
+  font-size: var(--t-meta-size);
+  color: var(--text-meta);
+  line-height: 1.35;
+  /* Two lines, then it stops. One producer writes three words into this and
+     another writes a sentence, and a rail row that grows to fit the longest
+     one is a rail that moves whenever the machine does. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+/* The state edge. `unwired` is outlined rather than filled: nothing produces
+   this yet, which is not a health state and must never read as a quiet one. */
+.nav-rail__mark {
+  flex: 0 0 auto;
+  align-self: stretch;
+  width: var(--space-3);
+  min-height: var(--space-14);
+  border-radius: var(--space-2);
+  background: var(--border-muted);
+}
+
+.nav-rail__row--said {
+  align-items: stretch;
+}
+
+.nav-rail__row--ok   .nav-rail__mark { background: var(--ok); }
+.nav-rail__row--warn .nav-rail__mark { background: var(--warn); }
+.nav-rail__row--bad  .nav-rail__mark { background: var(--bad); }
+
+/* Unwired is a broken edge, not a faint one. A 1px dashed border on a 3px bar
+   reads as nothing, which is the one thing this state must never do. */
+.nav-rail__row--unwired .nav-rail__mark {
+  background: repeating-linear-gradient(
+    var(--border-visible) 0 var(--space-4),
+    transparent var(--space-4) var(--space-8)
+  );
+}
+
+.nav-rail__row--warn .nav-rail__said { color: var(--warn); }
+.nav-rail__row--bad  .nav-rail__said { color: var(--bad); }
+
+/* Folded: a strip of marks, and the words are gone rather than truncated. */
+.nav-rail.is-folded {
+  flex-basis: 46px;
+}
+
+.nav-rail.is-folded .nav-rail__lines,
+.nav-rail.is-folded .nav-rail__group-label,
+.nav-rail.is-folded .nav-rail__foot,
+.nav-rail.is-folded .nav-rail__count,
+.nav-rail.is-folded .nav-rail__tick {
+  display: none;
+}
+
+.nav-rail.is-folded .nav-rail__row {
+  justify-content: center;
+  padding: var(--space-8) var(--space-4);
+}
+
+.nav-rail.is-folded .nav-rail__mark {
+  width: var(--space-8);
+  min-height: var(--space-8);
+  height: var(--space-8);
+  border-radius: 50%;
+}

@@ -94,7 +94,7 @@ export function KeysMcp({
       <Note>
         MCP is how another program talks to this one. A client connects to the
         address below and can then search this assistant's memory and vault,
-        watch what it is doing, and ask it to act — under the same permission
+        watch what it is doing, and ask it to act, under the same permission
         rules a person sitting here gets.
       </Note>
       <Note>
@@ -110,8 +110,8 @@ export function KeysMcp({
         <label className="cost-row__label">Accept connections</label>
         <span className="t-meta">
           {mcp.enabled
-            ? "on — restart for it to start serving"
-            : "off — nothing can connect, including this app's terminal"}
+            ? "on. Restart for it to start serving."
+            : "off. Nothing can connect, including this app's terminal."}
         </span>
         <span className="cost-row__spend t-meta">
           <Switch
@@ -168,7 +168,7 @@ export function KeysMcp({
           {armed && (
             <span className="t-meta">
               {" "}
-              the current token is lost — but it keeps working, and the new one
+              the current token is lost, but it keeps working and the new one
               does not, until you restart
             </span>
           )}
@@ -178,12 +178,12 @@ export function KeysMcp({
       {minted ? (
         <Note>
           This is the only time the token is shown. Copy the block below into
-          your client's config now — after you leave this screen it cannot be
+          your client's config now. After you leave this screen it cannot be
           read back, only replaced.
         </Note>
       ) : hasToken ? (
         <Note>
-          A token is set but cannot be shown — it was displayed once, when it
+          A token is set but cannot be shown. It was displayed once, when it
           was made. Replace it to get a block you can paste.
         </Note>
       ) : null}
@@ -193,7 +193,7 @@ export function KeysMcp({
           <div className="cost-row">
             <label className="cost-row__label">Client config</label>
             <span className="t-meta">
-              {pasteable ? "paste into your client" : "shape only — no token"}
+              {pasteable ? "paste into your client" : "shape only, no token"}
             </span>
             <span className="cost-row__spend t-meta">
               <Button

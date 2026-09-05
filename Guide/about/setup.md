@@ -175,7 +175,31 @@ api:
           audio_output: false
 ```
 
-Add `MYPROVIDER_API_KEY=` to `.env`, restart once, and `api.myprovider.their_model` becomes selectable everywhere — including the Settings dropdown.
+Add `MYPROVIDER_API_KEY=` to `.env`, restart once, and `api.myprovider.their_model` becomes selectable everywhere, including the Settings dropdown.
+
+**If the provider caches prompts, add its cache prices too.** Most charge less
+for a part of the prompt they have seen before, and some charge extra the first
+time they store it. TESSERACT will not guess either number: if the provider
+reports cached tokens and you have not said what they cost, the spending record
+for that call is refused and the call is not counted. Add whichever of these the
+provider's pricing page lists:
+
+```yaml
+        cost_per_mtok_cached_in: 0.10     # what a repeated part of the prompt costs
+        cost_per_mtok_cache_write: 1.25   # what storing it the first time costs
+        cache_write_from: reported        # or: uncached_input
+        cache_write_min_prompt_tokens: 1024
+```
+
+`cache_write_from` says how the provider counts the storing. Use `reported`
+when it tells you how many tokens it stored, and those are charged on top of
+the prompt. Use `uncached_input` when it tells you nothing and instead charges
+a higher rate for the part of the prompt it had not seen, with
+`cache_write_min_prompt_tokens` set to the shortest prompt it will store. Leave
+`cache_write_from` out if there is no charge for storing.
+
+Rates change. Put the date you checked them in `price_checked`, and if the
+provider has announced a new price, put the day it starts in `price_expires`.
 
 A provider with its *own* protocol (not OpenAI-compatible) needs code, not config. That's a change to the application itself rather than to your settings.
 

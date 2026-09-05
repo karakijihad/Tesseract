@@ -1,8 +1,7 @@
 """Observer consent + activation endpoints.
 
 Backend handlers for the four `/api/observer/*` paths that
-`tesseract/mirror/src/stores/observer.ts` already calls. Phase 12 left
-them returning 404; Phase 3 wires them.
+`tesseract/mirror/src/stores/observer.ts` calls.
 
 State lives on the aiohttp `app` and is in-memory only:
 
@@ -96,7 +95,7 @@ async def arm(request: web.Request) -> web.Response:
     if subscriber is not None:
         subscriber.arm()
     request.app["observer_state"] = "armed"
-    # Phase 6 (terminal-control 2026-05-16) — observer-always-on. Bulk-
+    # Observer-always-on. Bulk-
     # grant consent for every live pane so re-arming immediately resumes
     # PTY observation without waiting for the operator to spawn fresh
     # panes. New panes spawned while armed also auto-grant via

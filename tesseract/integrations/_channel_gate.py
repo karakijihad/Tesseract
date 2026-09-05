@@ -19,6 +19,16 @@ the button said "the assistant will retry next turn". Awaiting the answer
 deletes the token, the fingerprint match, the TTL and the whole next-turn
 concept along with the bug.
 
+**A tool call is not the only thing this carries.** The budget overage
+asks the same question through the same registry and the same inline
+keyboard: the operator hit a spent cap mid research on their phone, the
+conversation stopped, and the reason it stopped was that
+``_build_headless_session`` handed every channel session a callback that
+denied without asking. A cap is a signal rather than a wall and whoever is
+standing in front of it decides, so the decision is offered wherever it is
+delivered. One registry, one callback verb, one timeout: a second approval
+path with its own rules is the fork this whole funnel exists to prevent.
+
 Two operator-side actions resolve the pending future, from either surface:
 
 - **Approve** — the tool runs, in the turn the operator was already looking
@@ -50,12 +60,15 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from tesseract.integrations._conversation_store import ConversationStore
 from tesseract.kernel.tools.base import Tool, ToolContext
 from tesseract.mirror.server.session import ServerSession
 from tesseract.workspace_events.events import EventStore, WorkspaceEvent
+
+if TYPE_CHECKING:  # `tesseract.brain.cost` is a heavy import for a type
+    from tesseract.brain.cost import BudgetExhausted
 
 log = logging.getLogger(__name__)
 
@@ -138,9 +151,19 @@ class PendingAsk:
 
     event_id: str
     chat_id: str
-    tool_name: str
+    #: What is being decided, in one short phrase, for the log line and for
+    #: the closed prompt. A tool's name, or ``budget overage``. Not
+    #: ``tool_name``: the budget question this registry also carries has no
+    #: tool, and calling its scope one would put a lie in a log line.
+    what: str
+    #: The per-turn suppression key. Empty when the ask is not a tool call:
+    #: preflight raises once per turn, so there is no loop to suppress.
     args_hash: str
     future: asyncio.Future[bool] = field(repr=False)
+    #: What the closed prompt says after a yes. The entry carries it because
+    #: the callback that closes the prompt answers both kinds and should not
+    #: have to work out which one it just resolved.
+    approved_note: str = ""
 
 
 #: ``event_id -> PendingAsk``. Owned by the bridge so both the Telegram
@@ -227,14 +250,12 @@ def build_channel_ask_fn(
        ``decision_timeout_s``, or a new inbound message cancelled the wait.
        Refuse; the model is told it was not approved, which is true.
 
-    **The workspace is not one of those paths.** It used to be: the question
-    was a workspace inbox card, and the channel prompt was a notification
-    broadcast off it. That put the decision on the one surface an operator away
-    from their desk cannot reach, and delivered two prompts for one call. The
-    operator's rule — *"inputs are a funnel… the moment you send the
-    communication it should pass"* — puts the wall at the door the request came
-    through. The workspace now gets a record of what happened, after it has
-    happened, and decides nothing.
+    **The workspace is not one of those paths.** A workspace inbox card puts
+    the decision on the one surface an operator away from their desk cannot
+    reach, and delivers two prompts for one call. The operator's rule —
+    *"inputs are a funnel… the moment you send the communication it should
+    pass"* — puts the wall at the door the request came through. The workspace
+    gets a record of what happened, after it has happened, and decides nothing.
     """
 
     async def _ask(tool: Tool, validated: Any, context: ToolContext) -> bool:
@@ -274,9 +295,10 @@ def build_channel_ask_fn(
         entry = PendingAsk(
             event_id=prompt_id,
             chat_id=str(chat_id),
-            tool_name=tool.name,
+            what=tool.name,
             args_hash=h,
             future=loop.create_future(),
+            approved_note=f"Running {tool.name} now.",
         )
         pending_asks[prompt_id] = entry
 
@@ -288,9 +310,9 @@ def build_channel_ask_fn(
             )
             delivered = False
         if not delivered:
-            # Nobody was asked, so nobody can answer. This is the failure the
-            # workspace fallback used to paper over — and papering over it is
-            # how a dead approval button went unnoticed for three months.
+            # Nobody was asked, so nobody can answer. A fallback that papers
+            # over this is how a dead approval button goes unnoticed for
+            # three months.
             pending_asks.pop(prompt_id, None)
             per_turn.add(h)
             log.warning(
@@ -358,6 +380,184 @@ def build_channel_ask_fn(
         return approved
 
     return _ask
+
+
+#: Puts the budget question in front of the operator ON the channel they are
+#: standing on. Same contract as :data:`ChannelAsker`: the prompt id the answer
+#: will come back against, plus the exception holding the numbers. False or a
+#: raise means nobody was shown it.
+OverageAsker = Callable[[str, "BudgetExhausted"], Awaitable[bool]]
+
+
+def build_channel_overage_ask_fn(
+    *,
+    session: ServerSession,
+    channel: str,
+    chat_id: str,
+    display_name: str,
+    event_store: EventStore | None,
+    pending_asks: PendingAsks,
+    decision_timeout_s: int,
+    ask_on_channel: OverageAsker,
+) -> Callable[["BudgetExhausted"], Awaitable[bool]]:
+    """Build the ``overage_ask_fn`` a channel session runs on a spent cap.
+
+    Wired onto ``ChatSession.overage_ask_fn``, which ``chat.py`` calls from
+    preflight: a yes unlocks the scope for the rest of the day and the turn
+    runs, a no falls through to the refusal the operator already reads. Until
+    this existed every channel session was given a callback that returned
+    ``False`` without asking anybody, so a cap reached mid conversation ended
+    it with no decision offered and nothing to act on.
+
+    Three exit paths, and they are the tool gate's minus the one that does not
+    apply:
+
+    1. **Undeliverable** — the question never reached them, so waiting for an
+       answer would be waiting for nobody. Refuse now.
+    2. **Answered** — approve or reject, handed straight back to preflight.
+    3. **Timed out or superseded** — nobody answered inside
+       ``decision_timeout_s``, or a new inbound message cancelled the wait.
+       Refuse: silence must never spend money.
+
+    There is no per-turn suppression, because there is nothing to suppress.
+    Preflight raises once per ``send()``, so a second question means a second
+    turn, and somebody who said no at 3pm may well say yes at 4.
+    """
+
+    async def _ask(exc: "BudgetExhausted") -> bool:
+        # Registered BEFORE the question is delivered, for the reason the tool
+        # gate documents: the operator can tap faster than this coroutine
+        # resumes, and a future created afterwards would miss the tap.
+        loop = asyncio.get_running_loop()
+        prompt_id = f"ask_{uuid.uuid4().hex[:12]}"
+        scope_key = exc.scope_key()
+        entry = PendingAsk(
+            event_id=prompt_id,
+            chat_id=str(chat_id),
+            what="budget overage",
+            args_hash="",
+            future=loop.create_future(),
+            approved_note="Going over the cap. This turn runs now.",
+        )
+        pending_asks[prompt_id] = entry
+
+        try:
+            delivered = await ask_on_channel(prompt_id, exc)
+        except Exception:
+            log.exception(
+                "channel gate: asking about the %s cap on %s/%s raised",
+                scope_key, channel, chat_id,
+            )
+            delivered = False
+        if not delivered:
+            pending_asks.pop(prompt_id, None)
+            log.warning(
+                "channel gate: could not deliver the %s cap question to %s/%s "
+                "— refusing instead of waiting on a prompt nobody saw",
+                scope_key, channel, chat_id,
+            )
+            return False
+
+        log.info(
+            "channel gate: asked %s about the %s cap for %s/%s — waiting up "
+            "to %ss", prompt_id, scope_key, channel, chat_id, decision_timeout_s,
+        )
+
+        try:
+            # `shield` for the reason `ask_gate.py` documents at length: bare
+            # `wait_for` cancels the future it is waiting on, so a decision
+            # landing at the boundary instant would be discarded.
+            approved = await asyncio.wait_for(
+                asyncio.shield(entry.future), timeout=decision_timeout_s,
+            )
+        except asyncio.TimeoutError:
+            approved = False
+            log.info(
+                "channel gate: no decision on %s within %ss — the cap holds",
+                prompt_id, decision_timeout_s,
+            )
+        except asyncio.CancelledError:
+            pending_asks.pop(prompt_id, None)
+            raise
+        finally:
+            pending_asks.pop(prompt_id, None)
+
+        _record_overage_outcome(
+            event_store,
+            channel=channel,
+            chat_id=chat_id,
+            display_name=display_name,
+            session_id=session.session_id,
+            exc=exc,
+            prompt_id=prompt_id,
+            approved=approved,
+        )
+
+        log.info(
+            "channel gate: %s the %s cap on %s/%s (%s)",
+            "approved going over" if approved else "held",
+            scope_key, channel, chat_id, prompt_id,
+        )
+        return approved
+
+    return _ask
+
+
+def _record_overage_outcome(
+    event_store: EventStore | None,
+    *,
+    channel: str,
+    chat_id: str,
+    display_name: str,
+    session_id: str,
+    exc: "BudgetExhausted",
+    prompt_id: str,
+    approved: bool,
+) -> None:
+    """Write the money decision down, after it has been made.
+
+    Same shape and same best-effort rule as :func:`_record_outcome`: it lands
+    already decided, so nothing in the inbox offers a verdict on a turn that
+    has already run or already been refused. Spending is the one thing an
+    operator is most likely to want to look back at, and a decision taken on a
+    phone would otherwise leave no trace on the surface they audit from.
+    """
+    if event_store is None:
+        return
+    verdict = "approved" if approved else "refused"
+    try:
+        event = WorkspaceEvent.new(
+            kind="agent_post",
+            source="agent",
+            title=f"going over the {exc.scope_key()} cap {verdict} on {channel}",
+            summary=f"{display_name} ({chat_id}): {exc.as_sentence()}",
+            payload={
+                "channel": channel,
+                "chat_id": chat_id,
+                "session_id": session_id,
+                "scope_key": exc.scope_key(),
+                "scope": exc.scope,
+                "role": exc.role,
+                "spent_usd": exc.spent_usd,
+                "cap_usd": exc.cap_usd,
+                "prompt_id": prompt_id,
+                "decision": verdict,
+                "decided_on_channel": True,
+            },
+            priority=3,
+            author_id=f"{channel}:{chat_id}",
+            author_display=display_name,
+        )
+        event_store.append_event(event)
+        event_store.update_event_status(
+            event.event_id, verdict if approved else "rejected",
+            reason=f"{channel}_gate_decision",
+        )
+    except Exception:
+        log.exception(
+            "channel gate: could not record the %s of the %s cap",
+            verdict, exc.scope_key(),
+        )
 
 
 def _record_outcome(

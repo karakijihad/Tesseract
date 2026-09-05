@@ -13,7 +13,7 @@ Nothing reaches the model until three things happen. The turn is **priced**
 against the budget and refused outright if there is no headroom. **Pending
 signals** — things that finished while you were away — are folded in. And
 memory is **recalled**, which is its own four-stage pipeline; see
-[Memory](memory.md).
+[Memory](/anatomy/memory/).
 
 Only then is the prompt built.
 

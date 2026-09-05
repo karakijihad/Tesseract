@@ -1,4 +1,5 @@
 import { Note } from "../../components/common/Note";
+import { DataTable } from "../../components/common/DataTable";
 import { useMemo, useState } from "react";
 
 import {
@@ -100,6 +101,14 @@ function groupByTier(providers: CapabilityProvider[]): TierGroup[] {
   });
 }
 
+/** Three questions per row, the same three for a chat provider, a tier, a
+ *  service and a channel: what it is, whether it is on, and why. */
+const CAP_COLUMNS = [
+  { label: "capability", width: "minmax(0, 1fr)" },
+  { label: "state", width: "minmax(0, 260px)" },
+  { label: "detail", width: "minmax(0, 1fr)" },
+];
+
 export function CapabilitiesSection() {
   const {
     data: caps,
@@ -163,45 +172,51 @@ export function CapabilitiesSection() {
   return (
     <section className="settings-section">
       <Note>
-        Nothing is required — every provider and key below is optional. This
+        Nothing is required. Every provider and key below is optional. This
         shows what&rsquo;s live, what&rsquo;s off, and why.
       </Note>
       {(error || saveError) && (
         <Note tone="bad">{error ?? saveError}</Note>
       )}
 
-      {/* Grouped and indented the way a tier groups its providers — the rows
-          under Chat sat flush with it and read as four unrelated entries. And
-          they are named for what they are: the chain is ordered, so the first
-          is what speaks and the rest are what catch it when it cannot. */}
-      <div>
-        <div className="cost-row">
-          <label className="cost-row__label">Chat</label>
-          <span className="t-meta">
-            {dot(caps.chat.available)}{" "}
-            {caps.chat.available ? "available" : "not available"}
-          </span>
-          <span className="cost-row__spend t-meta">
-            {caps.chat.reason ?? "a configured chat provider resolved"}
-          </span>
-        </div>
-        {caps.chat.candidates.map((c, index) => (
-          <div className="cost-row" key={`${c.provider}/${c.model}`}>
-            <label className="cost-row__label">
-              {"    "}
-              <span className="provider-row__toggle-gap" aria-hidden="true" />{" "}
-              {c.provider}
-            </label>
-            <span className="t-meta">
-              {dot(c.available)} {c.model}
-            </span>
-            <span className="cost-row__spend t-meta">
-              {index === 0 ? "primary" : `fallback ${index}`} ·{" "}
-              {c.reason ?? "ready"}
-            </span>
-          </div>
-        ))}
-      </div>
+      {/* One table rather than a header row with indented rows under it. The
+          chain is ordered, so the first candidate is what speaks and the rest
+          are what catch it when it cannot. */}
+      <DataTable
+        label="Chat providers"
+        columns={CAP_COLUMNS}
+        rows={[
+          {
+            key: "chat",
+            cells: [
+              <span className="cap-cell__name">Chat</span>,
+              <span className="t-meta">
+                {dot(caps.chat.available)}{" "}
+                {caps.chat.available ? "available" : "not available"}
+              </span>,
+              <span className="t-meta">
+                {caps.chat.reason ?? "a configured chat provider resolved"}
+              </span>,
+            ],
+          },
+          ...caps.chat.candidates.map((c, index) => ({
+            key: `${c.provider}/${c.model}`,
+            cells: [
+              <span className="cap-cell__name cap-cell__name--child">
+                <span className="provider-row__toggle-gap" aria-hidden="true" />
+                {c.provider}
+              </span>,
+              <span className="t-meta">
+                {dot(c.available)} {c.model}
+              </span>,
+              <span className="t-meta">
+                {index === 0 ? "primary" : `fallback ${index}`} ·{" "}
+                {c.reason ?? "ready"}
+              </span>,
+            ],
+          })),
+        ]}
+      />
 
       {/* Deliberately a pointer and not an editor. Reordering, adding and
           dropping a fallback already have one home — the chain the role
@@ -209,192 +224,202 @@ export function CapabilitiesSection() {
           two writers and two places to read the order from. This screen
           reports; that one edits, and it shows the same per-entry status. */}
       <Note>
-        This is a report. To change what serves chat &mdash; reorder the
-        fallbacks, add one, drop one &mdash; edit its chain in Settings &rarr;
+        This is a report. To change what serves chat, whether that is
+        reordering the fallbacks, adding one or dropping one, edit its chain in
+        Settings &rarr;
         Chains.
       </Note>
 
-      <div className="cost-row" style={{ marginTop: "0.75rem" }}>
-        <label className="cost-row__label">Providers</label>
-        <span className="t-meta" />
-        <span className="cost-row__spend t-meta" />
-      </div>
       <Note>
         Switching one off writes <code>enabled: false</code> to providers.yaml
-        and reloads without a restart. Nothing warns you first &mdash; if a role
+        and reloads without a restart. Nothing warns you first, and if a role
         still points at it, the failure names the flag that is off.
       </Note>
-      {tierGroups.map((g) => {
-        const onCount = g.providers.filter((p) => p.provider_enabled).length;
-        return (
-          <div key={g.tier}>
-            <div className="cost-row">
-              <label className="cost-row__label">
-                <Checkbox
-                  checked={g.tierEnabled}
-                  disabled={savingKey !== null}
-                  onChange={(next) => void onToggle(g.tier, null, next)}
-                  ariaLabel={`${g.tier} tier enabled`}
-                />{" "}
-                {g.tier}
-              </label>
-              <span className="t-meta">
-                {g.tierEnabled ? "tier on" : "tier off"}
-              </span>
-              <span className="cost-row__spend t-meta">
-                {g.tierEnabled
-                  ? `${onCount} of ${g.providers.length} on`
-                  : "gates every provider below"}
-              </span>
-            </div>
-            {g.providers.map((p) => (
-              <div className="cost-row" key={`${p.tier}.${p.provider}`}>
-                <label className="cost-row__label">
-                  {"    "}
-                  <Hint label={g.tierEnabled
+      <DataTable
+        label="Providers"
+        columns={CAP_COLUMNS}
+        rows={tierGroups.flatMap((g) => {
+          const onCount = g.providers.filter((p) => p.provider_enabled).length;
+          return [
+            {
+              key: g.tier,
+              cells: [
+                <label className="cap-cell__name">
+                  <Checkbox
+                    checked={g.tierEnabled}
+                    disabled={savingKey !== null}
+                    onChange={(next) => void onToggle(g.tier, null, next)}
+                    ariaLabel={`${g.tier} tier enabled`}
+                  />{" "}
+                  {g.tier}
+                </label>,
+                <span className="t-meta">
+                  {g.tierEnabled ? "tier on" : "tier off"}
+                </span>,
+                <span className="t-meta">
+                  {g.tierEnabled
+                    ? `${onCount} of ${g.providers.length} on`
+                    : "gates every provider below"}
+                </span>,
+              ],
+            },
+            ...g.providers.map((p) => ({
+              key: `${p.tier}.${p.provider}`,
+              cells: [
+                <label className="cap-cell__name cap-cell__name--child">
+                  <Hint
+                    label={
+                      g.tierEnabled
                         ? undefined
-                        : `the ${g.tier} tier switch is off — turn it on to use this provider`}>
+                        : `the ${g.tier} tier switch is off. Turn it on to use this provider.`
+                    }
+                  >
                     <Checkbox
                       checked={p.provider_enabled}
-                      // The tier switch already gates this provider, so editing
-                      // its own flag would change nothing visible. It keeps its
-                      // stored value for when the tier comes back on.
+                      // The tier switch already gates this provider, so
+                      // editing its own flag would change nothing visible. It
+                      // keeps its stored value for when the tier comes back on.
                       disabled={!g.tierEnabled || savingKey !== null}
                       onChange={(next) => void onToggle(p.tier, p.provider, next)}
                       ariaLabel={`${p.tier}.${p.provider} enabled`}
                     />
                   </Hint>{" "}
                   {p.provider}
-                </label>
+                </label>,
                 <span className="t-meta">
                   {statusDot(p.status)} {statusLabel(p.status)} ·{" "}
                   {p.key_name ?? "no key required"}
-                </span>
-                <span className="cost-row__spend t-meta">
-                  {p.reason ?? "verified working"}
-                </span>
-              </div>
-            ))}
-          </div>
-        );
-      })}
+                </span>,
+                <span className="t-meta">{p.reason ?? "verified working"}</span>,
+              ],
+            })),
+          ];
+        })}
+      />
 
       {/* The section's own switch, which was the missing half of gating the
           service boxes on it: the route has always taken
           `{tier: "services", provider: null}`, and with no control for it the
           section could be turned off from here and never back on. It is the
-          tier row above, one section down. */}
-      <div className="cost-row" style={{ marginTop: "0.75rem" }}>
-        <label className="cost-row__label">
-          {servicesSection === null ? (
-            <span className="provider-row__toggle-gap" aria-hidden="true" />
-          ) : (
-            <Checkbox
-              checked={servicesSection}
-              disabled={savingKey !== null}
-              onChange={(next) => void onToggle("services", null, next)}
-              ariaLabel="services section enabled"
-            />
-          )}{" "}
-          Integrations
-        </label>
-        <span className="t-meta">
-          {servicesSection === null
-            ? ""
-            : servicesSection
-              ? "section on"
-              : "section off"}
-        </span>
-        <span className="cost-row__spend t-meta">
-          {servicesSection === false ? "gates every service below" : ""}
-        </span>
-      </div>
-      {caps.integrations.map((i) => {
-        // Every row here is governed by a switch, so every row has one — a
-        // service's lives in providers.yaml and a channel's in channels.yaml,
-        // which is a fact about files and was never a reason for one row on
-        // the screen to be the only one you cannot throw.
-        const section = i.service ? "services" : "channels";
-        const block = i.service ?? i.channel;
-        return (
-          <div className="cost-row" key={`${section}.${block ?? i.name}`}>
-            {/* The same three columns as the providers above, in the same
-                order: the switch sits beside the NAME it switches, and the key
-                sits in the state column with the dot that reports it. */}
-            <label className="cost-row__label">
-              {"    "}
-              {block ? (
-                <Hint
-                  label={
-                    !(i.section_enabled ?? true)
-                      ? "the services section switch is off in providers.yaml — turn it on to use this"
-                      : i.channel
-                        ? "takes effect on the next start — a running bridge is not stopped live"
-                        : undefined
-                  }
-                >
+          first row of this table. */}
+      <DataTable
+        label="Integrations"
+        columns={CAP_COLUMNS}
+        rows={[
+          {
+            key: "integrations",
+            cells: [
+              <label className="cap-cell__name">
+                {servicesSection === null ? (
+                  <span className="provider-row__toggle-gap" aria-hidden="true" />
+                ) : (
                   <Checkbox
-                    // `?? ` on both, for the reason the boundary exists: a
-                    // backend a release behind this screen sends neither
-                    // field, and `disabled={!undefined}` is every switch on
-                    // the panel dead with nothing on screen saying why.
-                    checked={i.service_enabled ?? i.enabled}
-                    // The box shows the flag it WRITES, not the AND. Showing
-                    // the AND made a service read off whenever the `services`
-                    // section switch was off, and clicking it then rewrote an
-                    // already-true per-service flag with nothing visible
-                    // happening. Gated instead, like a provider under a tier.
-                    disabled={!(i.section_enabled ?? true) || savingKey !== null}
-                    onChange={(next) => void onToggle(section, block, next)}
-                    ariaLabel={`${section}.${block} enabled`}
+                    checked={servicesSection}
+                    disabled={savingKey !== null}
+                    onChange={(next) => void onToggle("services", null, next)}
+                    ariaLabel="services section enabled"
                   />
-                </Hint>
-              ) : (
-                <span className="provider-row__toggle-gap" aria-hidden="true" />
-              )}{" "}
-              {i.name}
-              {/* Two verbs and a count, with the rest on hover. The label was
-                  the whole joined list, which made the browser row seven times
-                  the width of the ones above it and pushed its own columns off
-                  the grid the providers share. */}
-              {i.unlocks.length > 0 && (
-                <Hint label={i.unlocks.join(", ")}>
-                  <span className="t-meta">
-                    {" — "}
-                    {i.unlocks.slice(0, 2).join(", ")}
-                    {i.unlocks.length > 2
-                      ? ` +${i.unlocks.length - 2} more`
-                      : ""}
-                  </span>
-                </Hint>
-              )}
-            </label>
-            <span className="t-meta">
-              {/* A service gated by a download rather than a key reports the
-                  switch alone — there is no token to be present, and naming a
-                  key it does not have would be the third column lying. */}
-              {dot(i.key_name ? i.key_present && i.enabled : i.enabled)}{" "}
-              {i.enabled
-                ? "on"
-                : i.service_enabled ?? i.enabled
-                  ? "off — section"
-                  : "off"}{" "}
-              · {i.key_name ?? "no key required"}
-            </span>
-            <span className="cost-row__spend t-meta">
-              {!i.enabled
-                ? i.key_present
-                  ? "switched off in config — key is set"
-                  : "switched off in config"
-                : !i.key_name
-                  ? "downloads on next start if missing"
-                  : i.key_present
-                    ? "set"
-                    : "not set"}
-            </span>
-          </div>
-        );
-      })}
+                )}{" "}
+                Integrations
+              </label>,
+              <span className="t-meta">
+                {servicesSection === null
+                  ? ""
+                  : servicesSection
+                    ? "section on"
+                    : "section off"}
+              </span>,
+              <span className="t-meta">
+                {servicesSection === false ? "gates every service below" : ""}
+              </span>,
+            ],
+          },
+          ...caps.integrations.map((i) => {
+            // Every row here is governed by a switch, so every row has one. A
+            // service's lives in providers.yaml and a channel's in
+            // channels.yaml, which is a fact about files and was never a
+            // reason for one row on the screen to be the only one you cannot
+            // throw.
+            const section = i.service ? "services" : "channels";
+            const block = i.service ?? i.channel;
+            return {
+              key: `${section}.${block ?? i.name}`,
+              cells: [
+                <label className="cap-cell__name cap-cell__name--child">
+                  {block ? (
+                    <Hint
+                      label={
+                        !(i.section_enabled ?? true)
+                          ? "the services section switch is off in providers.yaml. Turn it on to use this."
+                          : i.channel
+                            ? "takes effect on the next start. Anything already running is not stopped."
+                            : undefined
+                      }
+                    >
+                      <Checkbox
+                        // `??` on both, for the reason the boundary exists: a
+                        // backend a release behind this screen sends neither
+                        // field, and `disabled={!undefined}` is every switch
+                        // on the panel dead with nothing saying why.
+                        checked={i.service_enabled ?? i.enabled}
+                        // The box shows the flag it WRITES, not the AND.
+                        // Showing the AND made a service read off whenever the
+                        // section switch was off, and clicking it then rewrote
+                        // an already-true per-service flag with nothing
+                        // visible happening.
+                        disabled={!(i.section_enabled ?? true) || savingKey !== null}
+                        onChange={(next) => void onToggle(section, block, next)}
+                        ariaLabel={`${section}.${block} enabled`}
+                      />
+                    </Hint>
+                  ) : (
+                    <span className="provider-row__toggle-gap" aria-hidden="true" />
+                  )}{" "}
+                  {i.name}
+                  {/* Two verbs and a count, with the rest on hover. The label
+                      was the whole joined list, which made the browser row
+                      seven times the width of the ones above it. */}
+                  {i.unlocks.length > 0 && (
+                    <Hint label={i.unlocks.join(", ")}>
+                      <span className="t-meta">
+                        {", "}
+                        {i.unlocks.slice(0, 2).join(", ")}
+                        {i.unlocks.length > 2
+                          ? ` +${i.unlocks.length - 2} more`
+                          : ""}
+                      </span>
+                    </Hint>
+                  )}
+                </label>,
+                <span className="t-meta">
+                  {/* A service gated by a download rather than a key reports
+                      the switch alone: there is no token to be present, and
+                      naming a key it does not have would be the third column
+                      lying. */}
+                  {dot(i.key_name ? i.key_present && i.enabled : i.enabled)}{" "}
+                  {i.enabled
+                    ? "on"
+                    : i.service_enabled ?? i.enabled
+                      ? "off at the section"
+                      : "off"}{" "}
+                  · {i.key_name ?? "no key required"}
+                </span>,
+                <span className="t-meta">
+                  {!i.enabled
+                    ? i.key_present
+                      ? "switched off in config, though the key is set"
+                      : "switched off in config"
+                    : !i.key_name
+                      ? "downloads on next start if missing"
+                      : i.key_present
+                        ? "set"
+                        : "not set"}
+                </span>,
+              ],
+            };
+          }),
+        ]}
+      />
 
       {/* Setting a key, the file it lives in, and the restart that loads it
           all moved to Settings → Keys below. Two restart buttons on one
@@ -411,10 +436,10 @@ export function CapabilitiesSection() {
         </Button>
         <ResetDefaults
           run={onResetDefaults}
-          reach="every switch above — your keys and your channels are not touched"
+          reach="every switch above. Your keys and your channels are not touched."
         />
         <span className="t-meta">
-          An update never changes a switch you already have — resetting is how
+          An update never changes a switch you already have, so resetting is how
           you take a new default.
         </span>
       </div>

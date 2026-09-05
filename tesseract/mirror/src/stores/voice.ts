@@ -150,6 +150,11 @@ const persistVoiceMode = (mode: VoiceMode) => {
 /** How long a refused utterance stays on screen. Long enough to read two
  * words and understand they were not heard; short enough that it is gone
  * before the next thing you say. */
+/** Stands in for the preview when the host browser has no Web Speech API.
+ *  Exported so the marker can tell the two apart and not render it as a
+ *  transcript. */
+export const NOT_HEARD_BARE = '\u0000no-preview';
+
 export const NOT_HEARD_MS = 2000;
 
 export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
@@ -187,17 +192,18 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
   markWoken: () => set({ woken: true, notHeard: '' }),
   clearWoken: () => set({ woken: false }),
   markNotHeard: () => {
+    // The words are a bonus, not the point. `lastPreview` comes from the Web
+    // Speech API, which the Tauri webview does not ship, so requiring it meant
+    // the one signal that says "sound arrived and was refused" never appeared
+    // on the surface the operator actually runs. A refused utterance now
+    // always marks, with the words when there are words.
     const text = get().lastPreview.trim();
-    // Nothing to hold: the browser preview is best-effort and absent when
-    // Web Speech is unavailable. A marker with no words would say less than
-    // the pulse row already does.
-    if (!text) return;
-    set({ notHeard: text });
+    set({ notHeard: text || NOT_HEARD_BARE });
     setTimeout(() => {
       // Only if it is still the same one. A second utterance arriving
       // inside the window owns the surface, and clearing on this timer
       // would wipe its preview instead.
-      if (get().notHeard === text) set({ notHeard: '' });
+      if (get().notHeard === (text || NOT_HEARD_BARE)) set({ notHeard: '' });
     }, NOT_HEARD_MS);
   },
   setSpeakingLane: (engine, isFallback) => set({ speakingLane: { engine, isFallback } }),

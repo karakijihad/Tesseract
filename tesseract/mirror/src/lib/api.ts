@@ -1,4 +1,5 @@
 import type {
+  CadenceReading,
   SoulResponse,
   BreakersResponse,
   IdentityResponse,
@@ -29,6 +30,10 @@ import type {
   AgentsListResponse,
   Alarm,
   AlarmsResponse,
+  CredentialRemoveResponse,
+  CredentialSavePayload,
+  CredentialSaveResponse,
+  CredentialsResponse,
   EnvKeysResponse,
   EnvKeysWriteResponse,
   EnvKeyTokenResponse,
@@ -133,9 +138,44 @@ async function _retryingFetch(
 async function apiFetch<T>(path: string): Promise<T> {
   const res = await _retryingFetch(`${BASE}${path}`, {}, TIMEOUT_MS);
   if (!res.ok) {
-    throw new ApiError(res.status, `HTTP ${res.status}: ${res.statusText}`);
+    // The body first. Routes here write the operator a sentence saying what
+    // is wrong and what to do, and this threw all of them away for
+    // `HTTP 500: Internal Server Error`, which says neither. The pattern is
+    // the one `uploadChatAttachment` already uses a few hundred lines down;
+    // it just was not in the shared helper, so every caller lost it.
+    let message = `HTTP ${res.status}: ${res.statusText}`;
+    let payload: Record<string, unknown> | undefined;
+    try {
+      const body = await res.json();
+      if (body && typeof body === "object") payload = body;
+      if (body?.error) message = String(body.error);
+    } catch {
+      // A body that is not JSON is not a second failure. The status line
+      // above is what the caller gets, exactly as before.
+    }
+    throw new ApiError(res.status, message, payload);
   }
   return res.json() as Promise<T>;
+}
+
+/** What the Kernel rail draws, built by the runtime against the config as it
+ *  stands. Through `apiFetch` like everything else: the panel runs on the dev
+ *  server's port in development, so a bare relative fetch reaches Vite and not
+ *  the backend, which is exactly what a raw `fetch()` here did once. */
+export async function fetchKernelManifest(): Promise<KernelManifestResponse> {
+  return apiFetch<KernelManifestResponse>("/api/cockpit/kernel-manifest");
+}
+
+/** The wire shape is declared once, in `cockpit/kernel/flows.ts`, beside the
+ *  component that draws it. It was declared here too, loosely (`kind: string`
+ *  where the renderer wants a union), and the two met at an unchecked cast: a
+ *  new `kind` from the builder would have compiled clean on both sides and
+ *  shown up as a blank node. */
+export type { Flow as KernelFlow, FlowNode as KernelFlowNode } from
+  "../cockpit/kernel/flows";
+
+export interface KernelManifestResponse {
+  flows: import("../cockpit/kernel/flows").Flow[];
 }
 
 export async function fetchCostState(): Promise<CostStateData> {
@@ -307,7 +347,12 @@ export async function postCapabilitiesResetDefaults(): Promise<CapabilitiesReset
 /** The panes with a reset button, each naming the keys it writes. The backend
  *  refuses anything else — `factory_reset.SCOPES` is the authority and
  *  `settings.py::_RESETTABLE` is the half of it a screen may ask for. */
-export type ResetScope = "session" | "loop_limits" | "cost" | "tools";
+export type ResetScope =
+  | "session"
+  | "compaction"
+  | "loop_limits"
+  | "cost"
+  | "tools";
 
 // Restores one pane's settings from the factory config beside the code — the
 // copy an update replaces, so this is the running release's defaults. Scoped
@@ -315,7 +360,7 @@ export type ResetScope = "session" | "loop_limits" | "cost" | "tools";
 // reset touches. A dev checkout has one config tree and so nothing to restore.
 export async function postResetDefaults(
   scope: ResetScope,
-): Promise<{ changed: string[]; missing: string[] }> {
+): Promise<{ changed: string[]; missing: string[]; has_defaults?: boolean }> {
   return apiPost("/api/settings/reset-defaults", { scope });
 }
 
@@ -365,6 +410,34 @@ export async function postMcpEnabled(
   enabled: boolean,
 ): Promise<EnvKeysWriteResponse> {
   return apiPost<EnvKeysWriteResponse>("/api/env-keys/mcp", { enabled });
+}
+
+// ── Credentials ────────────────────────────────
+// The assistant's own accounts. Nothing here returns a value: a report says
+// whether one is stored, and the runtime spends it at the moment of the call.
+
+export async function fetchCredentials(): Promise<CredentialsResponse> {
+  return apiFetch<CredentialsResponse>("/api/credentials");
+}
+
+export async function saveCredential(
+  payload: CredentialSavePayload,
+): Promise<CredentialSaveResponse> {
+  return apiPost<CredentialSaveResponse>("/api/credentials", payload);
+}
+
+/** Drop every value and keep the account, so the assistant still knows it
+ *  exists and can ask for it again. The boxes stay. */
+export async function clearCredentialValue(
+  id: string,
+): Promise<CredentialSaveResponse> {
+  return apiPost<CredentialSaveResponse>("/api/credentials/clear", { id });
+}
+
+export async function removeCredential(
+  id: string,
+): Promise<CredentialRemoveResponse> {
+  return apiPost<CredentialRemoveResponse>("/api/credentials/remove", { id });
 }
 
 export async function fetchSoul(): Promise<SoulResponse> {
@@ -823,22 +896,6 @@ export async function postKokoroAction(
 
 // ── Conversations ────
 
-export interface SessionPreview {
-  chat_id: string;
-  title: string;
-  started_at: string;
-  ended_at: string | null;
-  turn_count: number;
-  model: string;
-  turns: Array<{ role: "user" | "assistant"; text: string }>;
-}
-
-export async function fetchSessionPreview(id: string): Promise<SessionPreview> {
-  return apiFetch<SessionPreview>(
-    `/api/chats/${encodeURIComponent(id)}/preview`,
-  );
-}
-
 // A conversation is renamed, not renamed-into-a-new-file: the id and the
 // creation stamp do not move. The handler writes the new title through to any
 // live session holding the chat, so the next autosave does not undo it.
@@ -870,6 +927,9 @@ export interface ScheduleHandlerEntry {
 
 export interface ScheduleHandlersResponse {
   handlers: ScheduleHandlerEntry[];
+  /** The shortest summary the engine will accept. Sent rather than typed
+   *  here: the rule is the manifest's and a copy of it drifts silently. */
+  minSummaryChars: number;
 }
 
 export interface ScheduleCreateInput {
@@ -895,6 +955,15 @@ export interface ScheduleCreateResponse {
 
 export async function fetchScheduleHandlers(): Promise<ScheduleHandlersResponse> {
   return apiFetch<ScheduleHandlersResponse>("/api/schedule/handlers");
+}
+
+/** What a cadence means, from the scheduler that runs it. The one reader:
+ *  a form that decided this for itself was a second implementation of the
+ *  same grammar, and the two disagreed four separate times. */
+export async function readCadence(value: string): Promise<CadenceReading> {
+  return apiFetch<CadenceReading>(
+    `/api/schedule/cadence?value=${encodeURIComponent(value)}`,
+  );
 }
 
 export async function fetchScheduleRoles(): Promise<ScheduleRolesResponse> {
@@ -1057,6 +1126,10 @@ export interface WakeStatus {
   samples: number;
   threshold: number | null;
   models_present: boolean;
+  /** Why this machine cannot run the decoder, or null when it can. Null is
+   * the only value that makes `armed` true, because a gate that cannot load
+   * passes every utterance through. */
+  blocked_reason: string | null;
 }
 
 export interface WakeCalibrateResult {
@@ -1272,6 +1345,101 @@ export async function fetchSystem(
   return apiFetch<CapabilitySnapshot>(path);
 }
 
+// Whether version control is usable on this machine, and on what. Read-only:
+// the panel reports state and changes nothing. `clean: null` means the
+// question could not be answered, which is not the same as a clean tree, and
+// is what every non-active project reports because only the active one is
+// walked.
+/** Who the assistant is when it runs git here.
+ *
+ *  One shape for both answers to the question. `credential_ref` is null when
+ *  it pushes with this machine's own sign-in, and an account id when it
+ *  brought its own. `credential_ready` is null when there is nothing to be
+ *  ready, and also when the credential store could not be opened, which is
+ *  different news from an empty one. */
+export interface GitIdentity {
+  name: string;
+  email: string;
+  credential_ref: string | null;
+  credential_ready: boolean | null;
+}
+
+export interface GitProjectRow {
+  id: string;
+  name: string;
+  root: string;
+  /** Whether the folder is still on this machine. A registration outlives the
+   *  directory it names — one was deleted by hand and stayed in the registry
+   *  as the OPEN project — so a row that cannot be found says so instead of
+   *  reporting whatever a failed probe returned. */
+  root_exists: boolean;
+  active: boolean;
+  is_repo: boolean;
+  remote: string | null;
+  branch: string | null;
+  clean: boolean | null;
+  /** This project's OWN answer, null when it uses the machine's. */
+  identity: GitIdentity | null;
+}
+
+export interface GitState {
+  git_installed: boolean;
+  git_version: string | null;
+  gh_installed: boolean;
+  gh_authenticated: boolean;
+  gh_account: string | null;
+  gh_protocol: string | null;
+  gh_scopes: string[];
+  /** The identity every project uses unless it names its own. */
+  identity: GitIdentity | null;
+  projects: GitProjectRow[];
+}
+
+/** `fresh` re-runs the machine probes instead of reading what they last said.
+ *  Only the button that offers to check again sends it: those two answers cost
+ *  most of a second and cannot change while nobody touches this machine. */
+export async function fetchGitState(fresh = false): Promise<GitState> {
+  return apiFetch<GitState>(`/api/settings/git${fresh ? "?fresh=1" : ""}`);
+}
+
+/** Say who the assistant pushes as. `scope` null is this machine's default; a
+ *  project id overrides it for that project alone. `credential` null uses this
+ *  machine's own sign-in, so the token half is optional and the flow is not. */
+export async function connectGitIdentity(input: {
+  scope: string | null;
+  name: string;
+  email: string;
+  credential: { account: string; token: string; host: string } | null;
+}): Promise<{ identity: GitIdentity }> {
+  return apiPost("/api/settings/git/identity", input);
+}
+
+/** Clear an identity and forget the token it named. Leaves the repository,
+ *  its remote and this machine's own sign-in alone. */
+export async function disconnectGitIdentity(
+  scope: string | null,
+): Promise<{ disconnected: string | null }> {
+  return apiPost("/api/settings/git/identity/remove", { scope });
+}
+
+/** Choose which project the assistant is working on. */
+export async function openGitProject(id: string): Promise<{ id: string; name: string }> {
+  return apiPost("/api/settings/git/active", { id });
+}
+
+/** Drop a registration. Never touches the folder it named. */
+export async function forgetGitProject(id: string): Promise<{ removed: string }> {
+  return apiPost("/api/settings/git/remove", { id });
+}
+
+/** Register a folder. Re-registering a known folder updates it in place. */
+export async function registerGitProject(
+  root: string,
+  name?: string,
+): Promise<{ id: string; name: string; root: string }> {
+  return apiPost("/api/settings/git/register", { root, name });
+}
+
 // What the launch reconcile pass concluded. `attention` is deliberately the
 // short list — a dependency that is fine has nothing to say, and a panel that
 // is usually full is one people stop reading.
@@ -1420,11 +1588,24 @@ export async function fetchAgentSource(
   );
 }
 
+export interface AgentSaved {
+  name: string;
+  path: string;
+  saved: boolean;
+  origin: 'system' | 'user';
+  shadows_system: boolean;
+  /** Set when the save forked a shipped card. Said at the moment it happens,
+   *  because from then on that agent stops receiving what an update brings. */
+  notice?: string;
+}
+
 export async function saveAgentSource(
   name: string,
   source: string,
-): Promise<{ name: string; path: string; saved: boolean }> {
-  return apiPost(`/api/agents/${encodeURIComponent(name)}/source`, { source });
+): Promise<AgentSaved> {
+  return apiPost<AgentSaved>(`/api/agents/${encodeURIComponent(name)}/source`, {
+    source,
+  });
 }
 
 export async function toggleAgentDisabled(
@@ -1508,13 +1689,28 @@ export interface AgendaItem {
     | "done"
     | "cancelled"
     | "abandoned"
-    | "superseded";
+    | "superseded"
+    | "failed";
   status_history: AgendaTransition[];
   blocked_reason: string | null;
   last_decision: string | null;
   linked_missions: string[];
   linked_workers: string[];
   operator_priority: number;
+  success_criteria: string;
+  verification: string;
+  turn_ids: string[];
+  attempts: AgendaAttempt[];
+  current_checkpoint: string | null;
+  schema_version: number;
+}
+
+export interface AgendaAttempt {
+  turn_id: string;
+  started_at: string;
+  ended_at: string | null;
+  outcome: string;
+  reason: string;
 }
 
 export interface ApprovalGate {
@@ -1855,6 +2051,838 @@ export async function fetchPruned(
   );
 }
 
+// ── The operations strip — the open pipeline run and the last closed one ─────
+//
+// Every string a person reads here comes from the backend: the step reasons,
+// and the entry's own summary. Nothing in the strip explains what a step is
+// for, because an explanation written here goes stale the first time the step
+// changes.
+
+export type OperationalState =
+  | 'running'
+  | 'idle'
+  | 'pending'
+  | 'degraded'
+  | 'failed'
+  | 'refused'
+  | 'not_instrumented'
+  | 'unknown';
+
+export interface PipelineStageReason {
+  code: string;
+  message: string;
+}
+
+export interface PipelineStage {
+  stage: string;
+  summary: string;
+  state: OperationalState;
+  observedAt: string | null;
+  expectedWithin: number | null;
+  reason: PipelineStageReason | null;
+  source: 'runtime' | 'scheduler-run-record' | 'worker-record' | 'none';
+  changed: number;
+  refused: number;
+  durationMs: number;
+  outcome: string | null;
+}
+
+export interface PipelineRun {
+  runId: string;
+  entry: string;
+  summary: string;
+  why: string;
+  kind: string | null;
+  owner: string | null;
+  chains: string[];
+  anchor: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  durationMs: number;
+  open: boolean;
+  state: OperationalState;
+  stages: PipelineStage[];
+}
+
+export interface PipelineResponse {
+  current: PipelineRun | null;
+  previous: PipelineRun | null;
+  /** When the named row is next due, off the operator's own schedule. Null
+   *  when the row has no cadence, is turned off, or the schedule is
+   *  unreadable. */
+  nextFireAt: string | null;
+  observedAt: string;
+}
+
+export async function fetchPipeline(): Promise<PipelineResponse> {
+  return apiFetch<PipelineResponse>('/api/autonomy/pipeline');
+}
+
+// ── The floor plan's map ────────────────────────────────────────────────
+//
+// Nodes, edges and bands, every one of them declared in the backend. Nothing
+// on this picture is drawn from a list kept here: a node the frontend invented
+// is a claim about the machine that nothing checks.
+
+export interface MapLiveness {
+  state: OperationalState;
+  /** What to call this state on screen. The backend's word, never one written
+   *  here: `not_instrumented` is unreadable to anybody who has not read the
+   *  code, and the translation belongs where the state is defined. */
+  label: string;
+  observedAt: string | null;
+  reason: PipelineStageReason | null;
+  source: 'runtime' | 'scheduler-run-record' | 'worker-record' | 'none';
+}
+
+export interface MapNode {
+  name: string;
+  band: string;
+  summary: string;
+  site: string | null;
+  liveness: MapLiveness;
+  /** What opening this node opens, one level down. Null where nothing does. */
+  opens: { kind: string; id: string } | null;
+  /** Only on a node that fires work, from its manifest entry. */
+  why?: string;
+  kind?: string;
+  owner?: string;
+  runs?: string;
+  groups?: string[];
+  lastRunId?: string | null;
+}
+
+export interface MapEdge {
+  source: string;
+  target: string;
+  carries: string;
+}
+
+export interface MapBand {
+  id: string;
+  label: string;
+}
+
+export interface MachineMapResponse {
+  bands: MapBand[];
+  nodes: MapNode[];
+  edges: MapEdge[];
+  observedAt: string;
+}
+
+export async function fetchMachineMap(): Promise<MachineMapResponse> {
+  return apiFetch<MachineMapResponse>('/api/autonomy/map');
+}
+
+// ── The Health room ─────────────────────────────────────────────────────
+//
+// One feed for the whole room. Which band a department lands in is derived
+// from its state in the backend and travels with it, so the view never decides
+// what a state means: a room that sorted its own rows would be a second
+// definition of health, and the first one to go stale.
+
+export type HealthBand = 'needs_action' | 'blind' | 'operating';
+
+export interface HealthDepartment {
+  name: string;
+  band: HealthBand;
+  state: OperationalState;
+  /** What to call this state on screen. The backend's word. */
+  label: string;
+  /** What is true of it, in the producer's own sentence. */
+  said: string;
+  at: string | null;
+  /** The one number worth putting beside it, when there is one. */
+  value: string;
+}
+
+export interface JudgeStage {
+  stage: string;
+  kept: number;
+  dropped: number;
+}
+
+export interface RuntimeLine {
+  at: string | null;
+  sortKey: string;
+  source: string;
+  text: string;
+  severity: 'info' | 'warn' | 'bad';
+}
+
+/** The report the watchman writes and the brief sends, as the operator's own
+ *  copy. `state` says whether there is one to read: `read` carries the text,
+ *  `none` means nothing has written one here, and `unknown` means one exists
+ *  and could not be opened. Those are three different claims and the room
+ *  draws each of them. */
+export interface HealthReport {
+  state: 'read' | 'none' | 'unknown';
+  /** Why there is nothing to read, when there is nothing to read. */
+  said?: string;
+  path?: string;
+  text?: string;
+  /** Whether the report was longer than the room will carry. */
+  cut?: boolean;
+  /** Whether a model wrote the sentence at the top of it. Without one the
+   *  report is the counted lines alone, which is worth knowing before reading
+   *  it as prose. */
+  narrated?: boolean;
+}
+
+export interface HealthResponse {
+  departments: HealthDepartment[];
+  /** The judge's steps as counts. A judge nobody can inspect is a filter. */
+  judge: JudgeStage[];
+  /** What the last sweep wrote down, in full. */
+  report: HealthReport;
+  tail: RuntimeLine[];
+  /** When the watchman last looked. Null when it never has here. */
+  sweptAt: string | null;
+  observedAt: string;
+}
+
+export async function fetchHealth(): Promise<HealthResponse> {
+  return apiFetch<HealthResponse>('/api/autonomy/health');
+}
+
+// ── One entry's card ────────────────────────────────────────────────────
+//
+// Level 3 for every room. Every word of it is the manifest's, rendered
+// verbatim: a job explained in the frontend is a job whose explanation goes
+// stale the first time the job changes.
+
+export interface EntrySchedule {
+  cadence: string;
+  enabled: boolean;
+  nextFireAt: string | null;
+}
+
+/** One step inside a run, as that run recorded it. */
+export interface EntryStage {
+  stage: string;
+  /** What this step is for, in the words the stage declares. Empty for a step
+   *  that has been renamed or removed since the run. */
+  summary: string;
+  outcome: string;
+  state: OperationalState;
+  label: string;
+  reason: string;
+  changed: number;
+  refused: number;
+  /** How long it ran, in words. The backend's reading. */
+  took: string;
+}
+
+export interface EntryRun {
+  runId: string | null;
+  firedAt: string | null;
+  completedAt: string | null;
+  outcome: string;
+  state: OperationalState;
+  label: string;
+  reason: string;
+  trigger: string;
+  /** The steps this run took. Empty for anything that is not a row with a
+   *  subgraph under it, which is most entries. */
+  stages: EntryStage[];
+  /** Declared steps that were not due this time, and ones turned off. Names
+   *  only: a step that did not run has nothing of its own to report. */
+  notDue: string[];
+  turnedOff: string[];
+}
+
+export interface EntryCardResponse {
+  name: string;
+  /** True when the app declares this one, which is what makes every field
+   *  below the manifest's. False for a row the operator wrote: it still runs
+   *  on its own, and the app makes no claim about what it costs. */
+  declared: boolean;
+  /** What it does. The manifest's sentence, or the operator's own. */
+  summary: string;
+  /** What would be lost if it stopped. The manifest's sentence. */
+  why: string;
+  kind: string | null;
+  owner: string | null;
+  runs: string;
+  /** What each of those is called on a surface. The backend's words: the enum
+   *  values are slugs, and the translation belongs where they are declared.
+   *  Null where the app declares nothing. */
+  kindLabel: string | null;
+  ownerLabel: string | null;
+  runsLabel: string;
+  chains: string[];
+  /** Each chain in words: its name and the models it tries, in order, or what
+   *  the entry rides when the work it starts picks the chain. The slug is the
+   *  key and this is what a person reads. */
+  chainLabels: string[];
+  /** What fires it, for anything that waits on an event rather than a clock.
+   *  Null where a cadence answers instead. */
+  firesOn: string | null;
+  site: string | null;
+  substrate: string | null;
+  dailyBudgetUsd: number | null;
+  /** What this entry has spent today, off the same ledger key as the ceiling
+   *  beside it. `0` is an answer. Null means nothing is metering at all. */
+  spentToday: number | null;
+  /** Null for anything that is not a schedule row. */
+  schedule: EntrySchedule | null;
+  /** What may be changed, answered by the backend rather than worked out
+   *  here. A view that decided would draw a control the write then refuses. */
+  canSetCadence: boolean;
+  /** Why there is no cadence control, in the backend's words. Null wherever
+   *  the control is drawn. */
+  cadenceNotice: string | null;
+  canSetCeiling: boolean;
+  recent: EntryRun[];
+  observedAt: string;
+}
+
+export async function fetchEntryCard(name: string): Promise<EntryCardResponse> {
+  return apiFetch<EntryCardResponse>(
+    `/api/autonomy/entry/${encodeURIComponent(name)}`,
+  );
+}
+
+// ── Managed system: what the app runs for you, and what you added ──────
+//
+// Ownership is the axis because it is what decides what happens on an update.
+// Every state, every word and every answer to "may this row be deleted" is the
+// backend's: a view that decided what `last_result.ok` looks like would be a
+// second definition of a run's outcome, and the first one to drift.
+
+export interface ManagedLine {
+  name: string;
+  /** Who wrote it: the app, or the operator. */
+  origin: 'system' | 'user';
+  /** That same bit in the word every surface uses for it. The backend's, so
+   *  this room and `WHAT-RUNS.md` cannot call it two things. Empty on a
+   *  roster where it cannot vary: nothing ships an alarm, so marking every
+   *  alarm row would be chrome the row pays width for. */
+  tag: string;
+  state: OperationalState;
+  /** What to call that state. The backend's word. */
+  label: string;
+  /** What is true of it, in the producer's own sentence. */
+  said: string;
+  /** When it last did anything. */
+  at: string | null;
+  /** The one fact worth putting beside it: when it next fires, or which role
+   *  an agent rides. */
+  value: string;
+  /** What opening it opens, one level down. Null where nothing does. */
+  opens: { kind: string; id: string } | null;
+  enabled: boolean;
+  canRun: boolean;
+  canToggle: boolean;
+  canDelete: boolean;
+}
+
+/** A playbook: a skill that has written down the procedure contract. Its own
+ *  shape rather than a `ManagedLine`, because what it carries (a version, a
+ *  lifecycle status, the steps it counts, the sentence for why it cannot run)
+ *  is not what a schedule, an agent or an alarm carries. */
+export interface ManagedPlaybook {
+  name: string;
+  /** Always the operator's own: nothing ships a playbook. */
+  origin: 'system' | 'user';
+  /** It can run, or it cannot. The backend's, with its label. */
+  state: OperationalState;
+  label: string;
+  version: string;
+  /** draft, active or retired. The backend's word. */
+  status: string;
+  /** What it is for, in its own author's sentence. */
+  description: string;
+  /** When to reach for it. */
+  useWhen: string;
+  trigger: string;
+  /** How many steps it names. */
+  steps: number;
+  /** Why it cannot run, in one sentence, or null where it can. */
+  cannotRun: string | null;
+  /** Where it lives on disk, under the skills tree. */
+  path: string;
+}
+
+export interface ManagedResponse {
+  schedules: ManagedLine[];
+  agents: ManagedLine[];
+  alarms: ManagedLine[];
+  playbooks: ManagedPlaybook[];
+  observedAt: string;
+}
+
+export async function fetchManaged(): Promise<ManagedResponse> {
+  return apiFetch<ManagedResponse>('/api/autonomy/managed');
+}
+
+// ── Channels: whether anything it writes can reach you ──────────────────
+//
+// Not a settings list. The room answers whether the operator is being reached
+// at all, so the door leads and the kinds follow it. Every state, every word
+// and every answer to "may this be muted" is the backend's.
+
+export interface ChannelKind {
+  name: string;
+  state: OperationalState;
+  label: string;
+  said: string;
+  /** When this kind last reached you, or null if it has not on this machine. */
+  at: string | null;
+  /** `mute`, `unmute`, or nothing for a kind that may not be muted. */
+  acts: string[];
+  value: string;
+  exempt: boolean;
+  muted: boolean;
+}
+
+export interface ChannelDoor {
+  name: string;
+  state: OperationalState;
+  label: string;
+  said: string;
+  at: string | null;
+  value: string;
+  acts: string[];
+}
+
+export interface SentMessage {
+  category: string;
+  at: string | null;
+  channels: string[];
+  /** What it actually said. The operator's own copy of their own message. */
+  text: string;
+}
+
+export interface ChannelsResponse {
+  kinds: ChannelKind[];
+  lastMessage: SentMessage | null;
+  adapters: ChannelDoor[];
+  observedAt: string;
+}
+
+// ── Memory: the library, and what last night changed in it ──────────────
+//
+// Counts and sizes from the trees themselves, the nightly pass's own steps as
+// that run recorded them, and whether a question asked NOW can be answered.
+// Nothing here is derived in the view.
+
+export interface MemoryLine {
+  name: string;
+  state: OperationalState;
+  label: string;
+  said: string;
+  at: string | null;
+  value: string;
+}
+
+export interface MemoryResponse {
+  trees: MemoryLine[];
+  /** The library stages of the last nightly pass, as `EntryStage` rows. */
+  lastNight: EntryStage[];
+  /**
+   * Why there are none, when there are none. Never run, an unreadable record,
+   * and a pass that touched nothing are three different claims, and the
+   * backend writes the sentence so no view has to guess which.
+   */
+  lastNightSaid: string;
+  retrieval: MemoryLine[];
+  observedAt: string;
+}
+
+export async function fetchAutonomyMemory(): Promise<MemoryResponse> {
+  return apiFetch<MemoryResponse>('/api/autonomy/memory');
+}
+
+export async function fetchAutonomyChannels(): Promise<ChannelsResponse> {
+  return apiFetch<ChannelsResponse>('/api/autonomy/channels');
+}
+
+// ── Atlas: the map of how everything connects ───────────────────────────
+//
+// A small room on purpose. The graph itself is its own surface, because a
+// canvas demands the whole screen and the one thing it cannot help with is a
+// failed run. What is here is whether the map is current, what it could not
+// make sense of, and what it does not cover at all.
+
+export interface AtlasResponse {
+  /** The map as it stands: how much is in it, what disagrees, what points at
+   *  a record that is not there, and what nothing points at. */
+  graph: MemoryLine[];
+  /** What this machine holds that the map does not reach, and why. The
+   *  backend declares it beside the builders it is about. */
+  notReached: MemoryLine[];
+  /** The steps of the last nightly pass that drew or checked it. */
+  lastPass: EntryStage[];
+  /** Why there are none, when there are none. Never run, an unreadable
+   *  record, and a pass that did not draw are three different claims. */
+  lastPassSaid: string;
+  observedAt: string;
+}
+
+export async function fetchAutonomyAtlas(): Promise<AtlasResponse> {
+  return apiFetch<AtlasResponse>('/api/autonomy/atlas');
+}
+
+// ── The graph itself ────────────────────────────────────────────────────
+//
+// A different question from the room above. That one says whether the map is
+// current; this is every node and link a canvas needs, in one read.
+//
+// Nothing in this payload is the frontend's to work out. Where a node sits was
+// settled by the build, how connected it is comes from the same count the hub
+// list ranks by, and what is new since the last pass is what the build wrote
+// down. A picture that recomputes any of them is a second answer.
+
+export interface GraphNode {
+  id: string;
+  /** What the record IS. Decides its colour, and only its colour. */
+  kind: string;
+  /** Which compartment of the one brain it belongs to. */
+  region: string;
+  title: string;
+  /** The file or line it came from, as the builder recorded it. */
+  locator: string;
+  x: number;
+  y: number;
+  /** How many other records it is connected to. The count `ATLAS.md` ranks
+   *  its hubs by, so a big dot here and a hub row there are one claim. */
+  degree: number;
+  /** When the graph first saw it. Not when the record changed: an atlas node
+   *  carries the moment the BUILD ran and nothing else. */
+  firstSeen: string | null;
+}
+
+export interface GraphEdge {
+  id: string;
+  subject: string;
+  object: string;
+  type: string;
+  /** Where the claim came from: operator, the record itself, or a model. */
+  provenance: string;
+  /** Who made the link, as distinct from where the claim came from. */
+  creator: string;
+  /** The exact span or line supporting it. */
+  locator: string;
+  confidence: number | null;
+  assertedBy: string;
+  /** Whether it joins two compartments. The crossing links are what make this
+   *  one brain rather than four piles, so the backend marks them. */
+  crosses: boolean;
+}
+
+export interface GraphRegion {
+  key: string;
+  label: string;
+  /** How many records are in the compartment. */
+  count: number;
+  /** How many of them the picture drew. */
+  drawn: number;
+}
+
+export interface GraphKind {
+  key: string;
+  /** What a record of this kind IS, in words. The model's own phrase: a
+   *  legend that named these itself would be a second vocabulary. */
+  label: string;
+  region: string;
+  drawn: number;
+}
+
+export interface GraphWord {
+  key: string;
+  label: string;
+}
+
+export interface GraphRecordField {
+  key: string;
+  /** The value as the file has it. Empty means the record carries the field
+   *  and did not fill it, which the surface renders as `Empty`. */
+  value: string;
+}
+
+export interface GraphRecord {
+  id: string;
+  kind: string;
+  region: string;
+  title: string;
+  /** The file or line it came from, as the builder recorded it. Relative, so
+   *  nothing here carries the operator's own directory layout. */
+  locator: string;
+  /** The record's own fields, in the order the file carries them. */
+  properties: GraphRecordField[];
+  body: string;
+  bodyIsMarkdown: boolean;
+  truncated: boolean;
+  /** Set only when there is nothing to show, and it says WHICH way of having
+   *  nothing: no file of its own, a file that is gone, a file the library
+   *  keeps but does not read, or one it will not open. */
+  said: string;
+  aliases: string[];
+}
+
+export async function fetchGraphRecord(id: string): Promise<GraphRecord> {
+  return apiFetch<GraphRecord>(
+    `/api/autonomy/graph/record?id=${encodeURIComponent(id)}`,
+  );
+}
+
+export interface GraphResponse {
+  /** `null` when there is no picture. The reason is `said`: a machine nobody
+   *  has mapped and a file that cannot be read are different claims. */
+  built: {
+    at: string | null;
+    builderVersion: number;
+    stale: boolean;
+    nodes: number;
+    edges: number;
+    conflicts: number;
+    /** Nodes the build left without a position. They would all draw on the
+     *  origin, so the surface says so instead. */
+    unplaced: number;
+  } | null;
+  /** What the surface prints over the picture, in the backend's words. */
+  said: string;
+  regions: GraphRegion[];
+  /** The key to the colours: only the kinds actually on the picture,
+   *  because a legend naming a colour the reader cannot find is a colour
+   *  they will go looking for. */
+  kinds: GraphKind[];
+  /** What each way of coming to know something means, in words. A table
+   *  rather than a word on every link. */
+  provenance: GraphWord[];
+  /** What each KIND of link says, in words, for the kinds on the picture.
+   *  A control offering `similar_to` would be offering a machine word. */
+  links: GraphWord[];
+  /** The most connected records, by the same count and the same floor
+   *  `ATLAS.md` ranks its hub list by. One of the ways into the picture, and
+   *  bounded to what was drawn. */
+  hubs: string[];
+  drawn: {
+    nodes: number;
+    edges: number;
+    /** Links with an end off the picture. Counted, never drawn: a line to
+     *  nowhere would claim a connection the reader cannot follow. */
+    edgesHidden: number;
+    of: number;
+  };
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  /** What became part of the graph in the pass that drew it. `known: false`
+   *  means the pass recorded none, which is not the same as none arriving. */
+  delta: { known: boolean; nodes: string[]; edges: string[] };
+  /** What this machine holds that the map does not reach, and why. */
+  notReached: { what: string; why: string }[];
+  observedAt: string;
+}
+
+/** How much of the map to draw. `''` is the shipped ceiling, which is what a
+ *  picture opens on; `'all'` is every record the graph holds, which the
+ *  backend clamps to the graph's own size so a number past the end means the
+ *  same thing. */
+export async function fetchGraph(drawn = ''): Promise<GraphResponse> {
+  const query = drawn ? `?drawn=${encodeURIComponent(drawn)}` : '';
+  return apiFetch<GraphResponse>(`/api/autonomy/graph${query}`);
+}
+
+// ── What it throws away ─────────────────────────────────────────────────
+//
+// Three bands: what has a window, what is kept on purpose, and what nothing
+// has decided about. The third is the one the room exists for, because from a
+// directory listing a decision and an oversight look identical.
+
+export interface RetentionLine extends MemoryLine {
+  /** What would be lost if this stopped being kept. The tree's own words,
+   *  under the sentence rather than inside it. */
+  detail: string;
+  /** The name the window control calls this tree by. Empty on a row whose
+   *  window is not the operator's to set, which is how the two read-only
+   *  bands stay read-only without the room deciding that for itself. */
+  tree: string;
+  /** The window it is on now, for the field to start at. Null wherever
+   *  `tree` is empty. The sentence already says it in words; this is the
+   *  same number for a control to hold, never a second account of it. */
+  days: number | null;
+}
+
+export interface RetentionResponse {
+  /** Every tree with a window, what the last sweep did to it, and its size. */
+  ages: RetentionLine[];
+  /** The trees declared as a decision never to age, with the reason. */
+  kept: RetentionLine[];
+  /** Everything else under the log trees, biggest first. */
+  undecided: RetentionLine[];
+  /** Set when no sweep has run here, or when its record could not be read.
+   *  Empty when the bands speak for themselves. */
+  lastSweepSaid: string;
+}
+
+/** One number over a fortnight, with what it is and what its shape means.
+ *
+ * Every string here is the backend's. The room draws bars and a readout and
+ * writes none of the words, the same rule every other room on this panel
+ * follows. */
+export interface HistorySeries {
+  key: string;
+  /** Which band the room draws it under. One of `HistoryResponse.groups`. */
+  group: string;
+  /** What the tab says. Short, because it sits beside others. */
+  title: string;
+  /** What the chart is OF, over it. */
+  headline: string;
+  /** Suffix on the readout. Empty for a count. */
+  unit: string;
+  /** What it is for and what the shape means. Printed under the chart. */
+  why: string;
+  /** Which of the panel's meanings the bars carry. Never a colour. */
+  tone: string;
+  values: number[];
+  /** One ISO date per value, oldest first, so the readout can name the day
+   *  under the pointer rather than counting bars. */
+  days: string[];
+  /** How many of those days the record behind it actually covers. Short of
+   *  the full span means the left of the chart is missing, not quiet. */
+  reaches: number;
+  /** `not_instrumented` when nothing kept the record at all. */
+  state: OperationalState;
+  label: string;
+  /** Why there is no chart, when there is none. Empty when there is one. */
+  cannotSay: string;
+  /** That the left of the chart is the end of the record rather than a quiet
+   *  week. Empty when the record covers the whole span. */
+  shortSay: string;
+}
+
+/** One row of what a task cost, or one measure the card can or cannot make.
+ *  Shaped as a `StateLine`, and every word on it is the backend's. */
+export interface HistoryLine {
+  key: string;
+  state: OperationalState;
+  label: string;
+  name: string;
+  said: string;
+  value?: string;
+  when?: string;
+}
+
+export interface HistorySpent {
+  title: string;
+  /** What the room says when no task has been paid for yet. */
+  empty: string;
+  tasks: HistoryLine[];
+  measuresTitle: string;
+  /** The closed set of measures. One with no producer arrives as
+   *  `not_instrumented` and is never drawn as a zero. */
+  measures: HistoryLine[];
+}
+
+export interface HistoryResponse {
+  days: number;
+  /** The bands the series are drawn under, in order, with their titles. */
+  groups: { key: string; title: string }[];
+  series: HistorySeries[];
+  spent: HistorySpent | null;
+  observedAt: string | null;
+}
+
+export async function fetchAutonomyHistory(): Promise<HistoryResponse> {
+  return apiFetch<HistoryResponse>('/api/autonomy/history');
+}
+
+export async function fetchAutonomyRetention(): Promise<RetentionResponse> {
+  return apiFetch<RetentionResponse>('/api/autonomy/retention');
+}
+
+// ── What each room says about itself ────────────────────────────────────
+//
+// The rail is the overview: eight rows, eight sentences, one glance. The
+// counting happens in the backend and the phrasing happens in a model under
+// the rule the watchman follows, so a figure that was not observed is dropped
+// and the counts are published instead. Nothing here writes a word of it.
+
+export interface RoomLinePayload {
+  key: string;
+  /** The sentence, or the counted facts when no model could be reached. */
+  said: string;
+  /** What the room is FOR, which is a different question from what is in it
+   *  now. It does not change, and no model writes it. */
+  purpose: string;
+  /** What it was written from. Every line on this panel is traceable. */
+  facts: string[];
+}
+
+export interface RoomLinesResponse {
+  rooms: RoomLinePayload[];
+  observedAt: string;
+}
+
+export async function fetchRoomLines(): Promise<RoomLinesResponse> {
+  return apiFetch<RoomLinesResponse>('/api/autonomy/rooms');
+}
+
+// ── Overview: the room the panel opens on ───────────────────────────────
+//
+// Four figures over three bands. The join that fills the first band used to
+// happen here, in TSX, which meant the panel's most important list was
+// assembled by the one layer with no access to what a state means. It is the
+// backend's now, and this file describes the shape it arrives in.
+
+export interface OverviewLine {
+  name: string;
+  state: OperationalState;
+  /** What to call that state. The backend's word. */
+  label: string;
+  /** What is true of it, in the producer's own sentence. */
+  said: string;
+  at: string | null;
+  /** The one number worth putting beside it: how long it has been going, how
+   *  long it took, or where it came from. */
+  value: string;
+  /** What opening it opens, one level down. Null where nothing does. */
+  opens: { kind: string; id: string } | null;
+  /** What may be done from the row itself. The backend's answer, as `canRun`
+   *  is in Managed system. */
+  acts: string[];
+  /** What a verb is applied to, where that is not what the row is called. A
+   *  paused source reads as words and is unpaused by its identifier. Absent
+   *  means the two are the same and `name` is the target. */
+  actsOn?: string;
+}
+
+export interface OverviewFigure {
+  key: string;
+  value: string;
+  label: string;
+  /** Whether this number is one the operator should look at. */
+  warn: boolean;
+}
+
+export interface OverviewResponse {
+  figures: OverviewFigure[];
+  wantsYou: OverviewLine[];
+  wantsYouTotal: number;
+  /** Records of finished things too old to list. Counted, never hidden
+   *  without saying so. */
+  aged: number;
+  workingNow: OverviewLine[];
+  workingNowTotal: number;
+  ranWhileAway: OverviewLine[];
+  ranWhileAwayTotal: number;
+  /** Every held agenda item, uncapped. Blocked and paused lists exactly these
+   *  and a room whose subject is what is held may not cap what it shows. */
+  held: OverviewLine[];
+  /** Every open task: what you asked for and the machine still owes you.
+   *  Uncapped, like held, because a thing owed may not be hidden. */
+  owed: OverviewLine[];
+  /** Every source the governor stopped. */
+  paused: OverviewLine[];
+  observedAt: string;
+}
+
+export async function fetchOverview(): Promise<OverviewResponse> {
+  return apiFetch<OverviewResponse>('/api/autonomy/overview');
+}
+
 export interface MuteSourceResponse {
   source: string;
   muted: boolean;
@@ -2001,29 +3029,12 @@ export async function decideParkedAsk(
   });
 }
 
-// -- AU-10 outbound notifications ----------------------------------------
-
-export interface NotificationCategoryRow {
-  category: string;
-  exempt: boolean;
-}
-
-export interface NotificationChannelRow {
-  name: string;
-  enabled: boolean;
-  muted_yaml: string[];
-  muted_runtime: string[];
-  muted_effective: string[];
-}
-
-export interface NotificationsConfig {
-  categories: NotificationCategoryRow[];
-  channels: NotificationChannelRow[];
-}
-
-export async function getNotificationsConfig(): Promise<NotificationsConfig> {
-  return apiFetch<NotificationsConfig>("/api/notifications/config");
-}
+// -- Muting one kind of outbound message ---------------------------------
+//
+// The write only. What each kind is, where it goes and what holds it back is
+// the Channels room's own payload, which joins this route's catalog with the
+// routing table and the rate ledger: three fetches and a merge in TSX was the
+// shape that made a settings list out of a room about being reached.
 
 export interface NotificationsMuteResponse {
   channel: string;
@@ -2039,22 +3050,6 @@ export async function postNotificationMute(body: {
   muted: boolean;
 }): Promise<NotificationsMuteResponse> {
   return apiPost<NotificationsMuteResponse>("/api/notifications/mute", body);
-}
-
-export interface NotificationsRatesRow {
-  channel: string;
-  category: string;
-  cap_per_hour: number;
-  used_last_hour: number;
-  exempt: boolean;
-}
-
-export interface NotificationsRatesResponse {
-  rows: NotificationsRatesRow[];
-}
-
-export async function getNotificationsRates(): Promise<NotificationsRatesResponse> {
-  return apiFetch<NotificationsRatesResponse>("/api/notifications/rates");
 }
 
 /** One spend window, beside the identical span immediately before it — the

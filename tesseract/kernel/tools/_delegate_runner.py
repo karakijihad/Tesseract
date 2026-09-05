@@ -36,7 +36,7 @@ def _cli_disabled_reason(provider: str, tier: str = "cli") -> str | None:
     except Exception:  # noqa: BLE001
         return None
 
-# Timeout-evidence bounds (delegate visibility fix-pass 2026-07-10). Safety
+# Timeout-evidence bounds. Safety
 # caps on the best-effort target_paths walk, not tunables — a delegate that
 # declares a giant tree still gets bounded snapshot cost.
 _SNAPSHOT_MAX_FILES = 5_000
@@ -96,9 +96,10 @@ SEAT_TOOLS: dict[str, str] = {
 """Delegation seat → the tool that runs it.
 
 Listed rather than derived from the ``delegate_`` prefix because that prefix
-also covers tools that are not seats (`delegate_codex_exec`,
-`delegate_agent_controller`), and a prefix match would silently constrain them
-too. A third seat is one entry plus its tool; nothing here names a vendor —
+also covers tools that RUN a seat without being the seat's own tool
+(`delegate_second_opinion`) and tools that are not seats at all
+(`delegate_agent_controller`), and a prefix match would silently constrain
+them too. A third seat is one entry plus its tool; nothing here names a vendor —
 who fills a seat is `roles.yaml`.
 """
 
@@ -148,6 +149,12 @@ class DelegateSeat:
     model: str
     provider: str
     tier: str
+    # The argv that hands this provider's CLI one prompt with no writes, read
+    # straight off `providers.yaml`. `None` for an api seat, which has no
+    # command line at all, and for a cli provider whose catalog entry does not
+    # say how. A caller that needs one reports which of those two it got
+    # rather than assembling a command line of its own.
+    read_only_command: tuple[str, ...] | None = None
 
 
 def resolve_delegate_seat(
@@ -207,7 +214,13 @@ def _seat_from_ref(ref) -> DelegateSeat:
     # whole ref where a CLI lane carries a bare model id — the CLI gets the id
     # as a `--model` flag, and a ref there would be meaningless.
     model = ref.ref if tier == "api" else ref.model.model
-    return DelegateSeat(kind=lane_kind, model=model, provider=provider, tier=tier)
+    return DelegateSeat(
+        kind=lane_kind,
+        model=model,
+        provider=provider,
+        tier=tier,
+        read_only_command=getattr(ref.connection, "read_only_command", None),
+    )
 
 
 def snapshot_target_state(
@@ -321,8 +334,8 @@ async def provision_delegate_mcp(kind: str, workspace_root: str) -> None:
             lambda: mcp_provision.provision(
                 kind,
                 load_mcp_config(),
-                # Where the project-scope scheme used to write, so where a
-                # stale entry can still shadow the user-scope one.
+                # Where the project-scope scheme writes, so where a stale
+                # entry can shadow the user-scope one.
                 cleanup_dirs=[Path(workspace_root)],
             )
         )
@@ -370,9 +383,9 @@ async def run_delegate_foreground(
     )
 
     # Snapshot the declared edit targets so a stall can report what the
-    # delegate actually accomplished before it went quiet (fix-pass
-    # 2026-07-10: a killed delegate had written 9 files and the assistant saw only
-    # "timed out", so it redid the work).
+    # delegate actually accomplished before it went quiet: a killed
+    # delegate that wrote nine files and reports only "timed out"
+    # gets the work done twice.
     #
     # Anchored on `working_dir`, not `context.workspace_root`: the two differ
     # exactly when `safe_cwd` relocated the run out of the sealed tree, which
@@ -399,10 +412,15 @@ async def run_delegate_foreground(
         # Provider rides even the failure paths: an auth-shaped message here
         # is exactly the case cli-auth invalidation exists for, and it reads
         # the provider off the result.
+        #
+        # The class rides too. A worker record groups its failures by
+        # `error_class`, so a delegation that died because no controller
+        # daemon answered was filed under the same heading as one that died
+        # any other way.
         return ToolResult(
             output=f"{tool_name} unavailable: {exc}",
             is_error=True,
-            metadata={"provider": provider},
+            metadata={"provider": provider, "error_class": type(exc).__name__},
         )
     except asyncio.CancelledError:
         raise
@@ -410,7 +428,7 @@ async def run_delegate_foreground(
         return ToolResult(
             output=f"{tool_name} failed: {exc}",
             is_error=True,
-            metadata={"provider": provider},
+            metadata={"provider": provider, "error_class": type(exc).__name__},
         )
 
     if result.timed_out:
@@ -426,6 +444,39 @@ async def run_delegate_foreground(
     # provider's cached subscription state. A seat no longer implies one — the
     # caller may have borrowed the other CLI for this call.
     return replace(result, metadata={**(result.metadata or {}), "provider": provider})
+
+
+def _lane_binder(registry, handle):
+    """A one-argument callback the lane runner invokes with the lane it opened.
+
+    A closure rather than a direct import: this is kernel code, and reaching
+    into the spawn module would invert the dependency. The registry is duck
+    typed for the same reason.
+    """
+
+    def bind(lane_id: str) -> None:
+        mark = getattr(registry, "mark_lane", None)
+        if mark is not None:
+            mark(handle, lane_id)
+
+    return bind
+
+
+def _activity_binder(registry, handle):
+    """A callback the lane runner invokes with each batch of events it sees.
+
+    Same closure-over-duck-type shape as `_lane_binder`, and for the same
+    reason. This is what lets `spawn_check` answer "is it progressing" instead
+    of only "did it finish": the poll loop already has the events, so nothing
+    reads the lane's log to find out.
+    """
+
+    def note(count: int) -> None:
+        noter = getattr(registry, "note_activity", None)
+        if noter is not None:
+            noter(handle, count)
+
+    return note
 
 
 async def run_delegate(
@@ -504,7 +555,7 @@ async def run_delegate(
     # background default is safe everywhere.
     registry = getattr(context, "spawns", None)
 
-    # Foreground hard cap (fix-pass 2026-07-10): a blocking delegate wedges
+    # Foreground hard cap: a blocking delegate wedges
     # the whole chat turn — queued operator messages can't drain until it
     # returns. Long foreground requests are auto-flipped to background when a
     # registry exists rather than trusting the chat brain's judgment.
@@ -563,6 +614,13 @@ async def run_delegate(
             )
         except SpawnCapExceeded as exc:
             return spawn_cap_tool_result(exc)
+        # The runner learns the lane id after this handle exists, and the
+        # handle is what the Mirror shows — so hand it the way back. Set on the
+        # same box the cancel path already reads, after `register`, which is
+        # safe because the coroutine cannot start before this returns to the
+        # event loop.
+        lane_ref["on_lane_open"] = _lane_binder(registry, handle)
+        lane_ref["on_activity"] = _activity_binder(registry, handle)
         return ToolResult(
             output=(
                 f"{flip_note}{tool_name} spawned in background: handle="

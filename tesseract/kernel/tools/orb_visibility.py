@@ -47,7 +47,7 @@ class OrbVisibilityTool(Tool):
     risk_class: ClassVar[str] = "autonomous"
 
     group: ClassVar[str] = "being-present"
-    summary: ClassVar[str] = "Shows or hides the orb — the assistant's body — in the Mirror cockpit."
+    summary: ClassVar[str] = "Shows or hides the orb, which is the assistant's body, in the Mirror cockpit."
     use_when: ClassVar[str] = (
         "Use when the operator asks you to hide or show yourself, or to shed GPU/CPU load by "
         "pausing the render loop. Same switch as the operator's HUD toggle."
@@ -55,6 +55,7 @@ class OrbVisibilityTool(Tool):
     not_when: ClassVar[str] = (
         "how the orb looks or behaves while visible, which is `set_mood` or `set_state`."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(self, app_provider: Optional[Callable[[], Any]] = None) -> None:
         """``app_provider`` resolves the Mirror ``web.Application`` at call

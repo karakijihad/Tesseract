@@ -1,29 +1,41 @@
-export type EnvelopeCategory =
-  | "loop"
-  | "session"
-  | "planning"
-  | "routing"
-  | "execution"
-  | "offlocal"
-  | "cli"
-  | "terminal"
-  | "sandbox"
-  | "error"
-  | "background"
-  | "entity"
-  | "command_result"
-  | "command"
-  | "workspace"
-  | "agenda"
-  | "workers"
-  | "governor"
-  | "schedule"
-  | "cost"
-  | "voice"
-  | "canvas"
-  | "activity"
-  | "chat"
-  | "other";
+/** Every category an envelope may carry, and the runtime check for one.
+ *
+ * A list and a type used to be written out separately, and they drifted: the
+ * type gained `panel` and the guard in `envelope.ts` did not, so every
+ * panel-refresh envelope was dropped as malformed and the Credentials panel
+ * went on showing what it had fetched on mount. One array, and the type is
+ * read off it. */
+export const ENVELOPE_CATEGORIES = [
+  "loop",
+  "session",
+  "planning",
+  "routing",
+  "execution",
+  "offlocal",
+  "cli",
+  "terminal",
+  "sandbox",
+  "error",
+  "background",
+  "entity",
+  "command_result",
+  "command",
+  "workspace",
+  "agenda",
+  "workers",
+  "governor",
+  "schedule",
+  "cost",
+  "voice",
+  "canvas",
+  "activity",
+  "chat",
+  "panel",
+  "controller",
+  "other",
+] as const;
+
+export type EnvelopeCategory = (typeof ENVELOPE_CATEGORIES)[number];
 
 export interface Envelope<T = Record<string, unknown>> {
   type: string;
@@ -118,7 +130,16 @@ export interface ChatAttachment {
 
 export interface ChatMessage {
   id: string;
-  role: "user" | "assistant" | "entity" | "error";
+  // `marker` is not a speaker. It is a transcript entry the runtime's
+  // compaction leaves behind, rendered as a divider rather than a bubble
+  // (`components/chat/FoldMarker.tsx`). It carries no content of its own.
+  //
+  // `runtime` is a turn the runtime started and nobody typed: a background
+  // task finishing, one taking too long, a press on a card the assistant
+  // drew, the end-of-session reflection. It has content, and it is not the
+  // operator's, so it draws as a rule with a label rather than a bubble
+  // wearing their name (`components/chat/RuntimeNote.tsx`).
+  role: "user" | "assistant" | "entity" | "error" | "marker" | "runtime";
   content: string;
   attachments?: ChatAttachment[];
   statusText?: string;
@@ -127,6 +148,9 @@ export interface ChatMessage {
   toolCalls?: ToolCall[];
   toolResults?: ToolResult[];
   status?: "complete" | "interrupted" | "queued";
+  /** Which runtime injection this is, on a `runtime` message. One of
+   *  `brain/chat.py::RUNTIME_ORIGINS`; the note labels itself from it. */
+  runtimeOrigin?: string;
   // FIFO queue slot (1-based) assigned client-side at send time while a
   // turn is streaming (Q2 frontend). Only meaningful while status is
   // `queued` — cleared when the bubble flips to `complete`/`interrupted`.
@@ -157,8 +181,10 @@ export interface SessionCreatedData {
   // envelopes (which carry the same id) route by exact match.
   active_chat_id: string;
   // mirror-multi-chat P3 — the open-chat list (newest-first, with titles) so
-  // the tab strip rehydrates on (re)connect and survives a page reload.
-  chats?: { chat_id: string; title: string }[];
+  // the open-chat set rehydrates on (re)connect and survives a page reload.
+  // `created_at` is what the line above the transcript shows, and is the only
+  // source for the chat this connection just seeded, which is on no disk yet.
+  chats?: { chat_id: string; title: string; created_at?: string }[];
 }
 
 export interface SessionMeta {
@@ -167,9 +193,16 @@ export interface SessionMeta {
   // date or a name from it.
   chat_id: string;
   title: string;
+  // The start of the first thing the operator typed, and the label a row
+  // shows. Sent only when the title is still the stamp the chat was born
+  // with, so an operator rename outranks it by this being empty.
+  snippet?: string;
   created_at: string;
   started_at: string;
   ended_at: string | null;
+  // When the conversation was last used, which is the day a row is filed
+  // under. Not `ended_at`, which a sibling chat's save re-stamps.
+  last_active_at?: string;
   turn_count: number;
   model: string;
   archived?: boolean;
@@ -188,8 +221,16 @@ export interface RawHistoryEntry {
     function: { name: string; arguments: string };
   }>;
   tool_call_id?: string;
+  // `_runtime` is stamped by `ChatSession` on the messages it wrote itself
+  // (`brain/chat.py::_RUNTIME_KEY`). The running summary a fold leaves behind
+  // carries `"running_summary"`, which is how a reloaded transcript knows
+  // where the fold was without reading the text a participant could have
+  // typed. Every other value is a turn the runtime started
+  // (`RUNTIME_ORIGINS`), and the same reasoning applies: the text ships in a
+  // public repo, so the mark is the only safe way to know who wrote it.
+  _runtime?: string;
   // `_meta` is written by `ChatSession._append_assistant_message` and read
-  // by `rawHistoryToMessages` so resumed bubbles show the model badge and
+  // by `rehydrateHistory` so resumed bubbles show the model badge and
   // token-cache pill they had live.
   _meta?: {
     model?: { role: string; provider: string; model: string; tier: string };
@@ -226,6 +267,10 @@ export interface SessionCompactData {
   tokens_before: number;
   tokens_after: number;
   trigger: "manual" | "auto";
+  /** Turns the fold kept word for word. The divider goes in FRONT of them,
+   *  because everything above it is what was summarised and these were not.
+   *  Absent from an older backend, which lands the divider at the end. */
+  tail_turns?: number;
 }
 
 export interface CostBudgetStateData {
@@ -321,6 +366,41 @@ export interface SessionStatsData {
   turns: number;
   compact_threshold_tokens: number;
   compact_threshold_ratio: number;
+  // Measured after every turn, not derived from the setting. The head anchor
+  // and the tail are what a fold always leaves behind, so their sum is the
+  // floor a control has to draw if it is not going to promise a threshold the
+  // runtime will refuse. Optional because a measurement can fail where the
+  // rest of the payload still stands.
+  context_window?: number;
+  head_anchor_tokens?: number;
+  tail_tokens?: number;
+  tail_turns?: number;
+  keep_recent_turns?: number;
+  unfoldable_tokens?: number;
+  fold_trigger_tokens?: number;
+  // What the fold trigger governs. `tokens` is the whole assembled payload,
+  // including the system prompt and the transient late half that a fold can
+  // never remove, so a fullness bar has to divide THIS by `foldCeiling`.
+  // Optional for the same reason as the rest: a measurement can fail.
+  foldable_tokens?: number;
+}
+
+/** Where a fold actually happens, which is what a fullness figure is
+ *  measured against. `fold_trigger_tokens` is the runtime's own measured
+ *  trigger and carries the floor it enforces; `compact_threshold_tokens` is
+ *  the setting alone, and stands in only when a measurement failed. Mirrors
+ *  `brain/context_report.py::fold_ceiling`, so the bar and the answer the
+ *  assistant gives cannot disagree. */
+export function foldCeiling(stats: SessionStatsData): number {
+  return stats.fold_trigger_tokens || stats.compact_threshold_tokens || 0;
+}
+
+/** How much of the conversation the fold ceiling is measured against.
+ *  `tokens` is the whole payload; the trigger governs only the part a fold can
+ *  remove. Mirrors `brain/context_report.py::render`, and falls back to the
+ *  whole payload for a session too old to report the split. */
+export function foldableTokens(stats: SessionStatsData): number {
+  return stats.foldable_tokens || stats.tokens;
 }
 
 export interface LoopStartData {
@@ -392,11 +472,15 @@ export interface StreamErrorData {
   resets?: number;
 }
 
-// category: 'command_result' — slash-command outcome (only emitted on
-// failure). `severity=warning` → toast only, orb stays normal (e.g. delete
-// not_found, an operator typo). `severity=error` → toast + orb red (e.g.
-// io_error). See `_cmd_delete` in tesseract/mirror/server/ws.py.
-export type CommandSeverity = "warning" | "error";
+// category: 'command_result' — slash-command outcome. `severity` decides how
+// it is said and `ok` only decides whether the orb reacts. `info` → a plain
+// toast either way (`/compact` on a chat that still fits, `/reflect` starting
+// in the background). `warning` → toast only, orb stays normal (e.g. delete
+// not_found, an operator typo). `error` → toast + orb red (e.g. io_error).
+// The backend has always sent `info` on two commands; this type said it could
+// not happen and the handler dropped it. See `_cmd_delete` in
+// tesseract/mirror/server/ws.py.
+export type CommandSeverity = "info" | "warning" | "error";
 
 export interface CommandResultData {
   command: string;
@@ -502,6 +586,11 @@ export interface ToolStatusEntry {
 export interface CliStartData {
   call_id: string;
   tool: string;
+  // The tool call this stream belongs to, when it is not what the stream is
+  // keyed on. A delegate's stream and its tool call share an id; an
+  // in-process sub-agent's card is bound to the spawn handle instead, so
+  // without this the Kernel rail counts one delegation as two fires.
+  origin_call_id?: string;
 }
 
 export interface CliOutputData {
@@ -1000,6 +1089,21 @@ export interface IdentityCompactThreshold {
   context_window: number;
   tokens: number;
   keep_recent_turns: number;
+  /** The shipped default, for the line marking where a fresh install sits. */
+  compact_ratio?: number | null;
+  headroom_multiplier?: number | null;
+  comfortable_multiplier?: number | null;
+  /* The measured floor is NOT here. It is per conversation, and this answers
+   * a GET with no session and no chat, so it cannot say whose floor it would
+   * be reporting. It rides `SessionStatsData` instead. */
+  /** The bounds the route enforces, so the control does not keep its own. */
+  ratio_min?: number;
+  ratio_max?: number;
+  turns_min?: number;
+  turns_max?: number;
+  /** Where a fresh install starts, from the sealed factory config. Distinct
+   *  from `compact_ratio`, which is the running value the pane overwrites. */
+  shipped_ratio?: number | null;
 }
 
 export interface IdentityVoiceProviderConfig {
@@ -1016,7 +1120,7 @@ export interface IdentityVoiceProviderConfig {
 export interface IdentityCostTracking {
   enabled: boolean;
   /** Single percentage applied uniformly to global + every per_role cap +
-   * every per-voice-provider cap. Stored as a 0–1 fraction in models.yaml
+   * every per-voice-provider cap. Stored as a 0 to 1 fraction in providers.yaml
    * (`warning_at_pct: 0.75`); the UI presents it as a percentage. */
   warning_at_pct: number;
   /** Derived: sum of all `per_role` caps plus every voice provider's
@@ -1036,6 +1140,12 @@ export interface IdentityCostTracking {
 export interface IdentityResponse {
   name: string;
   operator_name: string;
+  /** When this instance started existing, ISO-8601 with an offset. `null`
+   *  when the file has not been stamped, which is a fresh install. */
+  born_at: string | null;
+  /** Days since `born_at`, counted by the same helper that writes the age
+   *  line into the assistant's own prompt, so the two cannot disagree. */
+  age_days: number | null;
   version: string;
   security_mode: string;
   model_role: string;
@@ -1061,6 +1171,12 @@ export interface ToolEntry {
   mode_override: boolean;
   /** True when this tool has `path_overrides` entries (real posture depends on input path). */
   path_sensitive: boolean;
+  /** `shipped` for tools TESSERACT comes with, `custom` for ones written into
+   *  the operator's own tools folder. One registry and one tag: every panel
+   *  that lists tools filters on this rather than reading a second roster. */
+  origin?: 'shipped' | 'custom';
+  /** `core` rides every turn, `extended` is found with tool_search. */
+  tier?: 'core' | 'extended';
 }
 
 export interface ToolsResponse {
@@ -1225,6 +1341,12 @@ export interface Agent {
   status: AgentStatus;
   max_tokens_override: number | null;
   disabled: boolean;
+  /** Which half owns the card: the app ships it, or the operator wrote it.
+   *  Read off where the loader resolved it, never off the name. */
+  origin: 'system' | 'user';
+  /** The operator's own copy is covering a shipped one, so it no longer
+   *  follows what an update brings. */
+  shadows_system: boolean;
 }
 
 export interface AgentDetail extends Agent {
@@ -1299,7 +1421,115 @@ export interface EnvKeyTokenResponse {
   report: EnvKeysResponse;
 }
 
+// The assistant's own accounts. A different lifecycle from the keys above:
+// those are the app's, provisioned at install; these belong to the assistant
+// and the operator adds them over time.
+//
+// One direction only. A value goes IN on a save, because the operator has to
+// type it somewhere and the panel is that somewhere. Nothing carries one back:
+// no response shape here has a value field, and no endpoint returns one.
+
+export interface CredentialInjection {
+  /** Where a consumer puts the value: a header, a query parameter, an
+   *  environment variable, or the web address itself, which is how git over
+   *  https authenticates. The assistant chooses this, not the operator. */
+  kind: "header" | "query" | "env" | "url";
+  name: string;
+  /** What goes in front of the value, for the services that want one. */
+  prefix: string;
+  /** Which of the account's fields is the one that gets sent. */
+  field: string;
+}
+
+/** One named value on an account. Most accounts hold a single field called
+ *  `value`; a sign-in that takes a set of values holds one per box, and the
+ *  assistant asks for the extra ones by name. */
+export interface CredentialField {
+  name: string;
+  /** What to put above the box. Falls back to the field's own name. */
+  label: string;
+  has_value: boolean;
+  state: "empty" | "unverified" | "foreign" | "ready";
+}
+
+export interface Credential {
+  id: string;
+  service: string;
+  account: string;
+  purpose: string;
+  injection: CredentialInjection;
+  /** Exact hostnames. A subdomain is not covered by its parent. */
+  allowed_hosts: string[];
+  /** In the order they were asked for, which is the order to render them. */
+  fields: CredentialField[];
+  /** Whether ANY field holds something, which is not the same as usable. */
+  has_value: boolean;
+  /** Whether the values can actually be sent, which `has_value` does not say.
+   *  A store copied from another computer or another Windows account holds
+   *  values that never open, and `foreign` is that case; an account still
+   *  missing one of its boxes is `incomplete`. Derived once in the store so
+   *  no surface works it out for itself. */
+  spend_state:
+    | "waiting"
+    | "empty"
+    | "incomplete"
+    | "unverified"
+    | "foreign"
+    | "ready";
+  /** The assistant asked for this one and it is waiting on the operator. */
+  requested: boolean;
+  /** Whether there is a box on this row for a person to fill in: an
+   *  unanswered request, or a field the assistant asked for later. Separate
+   *  from `requested`, which `spend_state` reads as an unconditional
+   *  "nothing is known here" and so cannot be set for an ask on an account
+   *  that already holds values. This is what the panel sorts and counts on. */
+  needs_operator: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CredentialsResponse {
+  credentials: Credential[];
+  /** The store encrypts with the Windows user's own key. Where that is not
+   *  available nothing can be saved, and the panel says so rather than
+   *  failing at the moment a token is typed. */
+  dpapi_available: boolean;
+}
+
+export interface CredentialSaveResponse {
+  credential: Credential;
+  report: CredentialsResponse;
+}
+
+export interface CredentialRemoveResponse {
+  removed: string;
+  report: CredentialsResponse;
+}
+
+export interface CredentialSavePayload {
+  id: string | null;
+  service: string;
+  account: string;
+  purpose: string;
+  injection: CredentialInjection;
+  allowed_hosts: string[];
+  /** Only the boxes actually typed into. A field left out keeps whatever is
+   *  stored, so an operator correcting a purpose cannot destroy the
+   *  credential. Clearing has its own endpoint. */
+  values?: Record<string, string>;
+}
+
 export interface AgentsListResponse {
   agents: Agent[];
   errors: string[];
+}
+
+/** `GET /api/schedule/cadence`. The scheduler's own reading of a cadence:
+ *  whether it will take it, what is wrong if not, how it reads, and when it
+ *  next comes round. A surface renders these and works out none of them. */
+export interface CadenceReading {
+  ok: boolean;
+  problem: string;
+  words: string;
+  nextFireAt: string | null;
 }

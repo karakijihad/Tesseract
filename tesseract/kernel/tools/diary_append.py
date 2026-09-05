@@ -35,7 +35,7 @@ class DiaryAppendInput(BaseModel):
     text: str = Field(
         description=(
             "First-person reflection (1-3 short sentences ideal). "
-            "What you noticed about yourself this turn or session — "
+            "What you noticed about yourself this turn or session. "
             "what landed, what felt off, what you'd do differently. "
             "Not a fact about the operator (use memory_save for that)."
         )
@@ -50,13 +50,14 @@ class DiaryAppendTool(Tool):
     group: ClassVar[str] = "remembering"
     summary: ClassVar[str] = "Append a first-person reflection to the assistant's private diary."
     use_when: ClassVar[str] = (
-        "Use for self-observations about a session — what landed, what felt "
+        "Use for self-observations about a session: what landed, what felt "
         "off, what you'd do differently. Read DIARY.md before first use."
     )
     not_when: ClassVar[str] = (
         "use `memory_save` for facts about the operator or the project. Not "
         "retrieved by `memory_search`; it's walled off from routine recall."
     )
+    depends_on: ClassVar[str] = ""
 
     """Append a first-person reflection entry to today's diary file.
 

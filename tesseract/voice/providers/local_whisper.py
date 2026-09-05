@@ -218,7 +218,7 @@ def resolve_device(cfg: LocalWhisperConfig) -> tuple[str, str]:
 def get_model(cfg: LocalWhisperConfig) -> Any:
     """Return the cached faster-whisper model for ``cfg``.
 
-    Channel adapters (CR-2) need to call ``model.transcribe`` against a file path
+    Channel adapters need to call ``model.transcribe`` against a file path
     so PyAV/ffmpeg handles arbitrary containers — this keeps the cache singular.
     """
     return _get_model(cfg)

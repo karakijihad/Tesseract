@@ -7,17 +7,6 @@ import type {
 } from '../lib/types';
 import { BACKEND_BASE } from '../lib/endpoints';
 
-// Per-day grouping + archive lazy-fetch.
-export interface DayGroup {
-  // Always 'YYYY-MM-DD', from the conversation's `created_at`. The old
-  // 'custom' bucket existed only to catch a filename that would not parse as
-  // a date, and a uuid names no date to fall back from.
-  date: string;
-  runs: SessionMeta[];
-  run_count: number;
-  total_turns: number;
-}
-
 // Archiving is a flag on the record, not a folder it was moved into — so
 // there is no month bucket to show and `ended_at` is what "when" means here.
 export type ArchivedSession = SessionMeta;
@@ -28,21 +17,23 @@ interface SessionStore {
   // until 2026-08-18 — auto-resume matched it against a directory listing.
   lastChatId: string | null;
   latestStats: SessionStatsData | null;
-  days: DayGroup[];
+  /** Which conversation `latestStats` describes. Stats are per chat, and a
+   *  switch leaves the previous chat's numbers standing until the new one
+   *  emits its own, so a reader has to check before trusting them. */
+  latestStatsChatId: string | null;
   archive: ArchivedSession[];
   archiveLoaded: boolean;
   setSessionList: (data: SessionListData) => void;
   setLastChatId: (chatId: string | null) => void;
-  setLatestStats: (data: SessionStatsData) => void;
+  setLatestStats: (data: SessionStatsData, chatId: string | null) => void;
   fetchList: () => Promise<void>;
-  fetchDays: () => Promise<void>;
   fetchArchive: () => Promise<void>;
 }
 
 // fetchList dedupe — the list is requested from three independent triggers
-// (WS-connect auto-resume, SessionDrawer open/mutate, session_* envelope
-// handlers) which can fire near-simultaneously and produce burst duplicates
-// of GET /api/chats. Concurrent callers share the in-flight promise; no
+// (WS-connect auto-resume, the chat rail opening or mutating, session_*
+// envelope handlers) which can fire near-simultaneously and produce burst
+// duplicates of GET /api/chats. Concurrent callers share the in-flight; no
 // TTL, so a mutation-triggered refresh after completion always refetches.
 let _fetchListInflight: Promise<void> | null = null;
 
@@ -52,12 +43,13 @@ export const useSessionStore = create<SessionStore>()(
       sessions: [],
       lastChatId: null,
       latestStats: null,
-      days: [],
+      latestStatsChatId: null,
       archive: [],
       archiveLoaded: false,
       setSessionList: (data) => set({ sessions: data.sessions }),
       setLastChatId: (chatId) => set({ lastChatId: chatId }),
-      setLatestStats: (data) => set({ latestStats: data }),
+      setLatestStats: (data, chatId) =>
+        set({ latestStats: data, latestStatsChatId: chatId }),
       fetchList: async () => {
         if (_fetchListInflight) return _fetchListInflight;
         _fetchListInflight = (async () => {
@@ -65,7 +57,9 @@ export const useSessionStore = create<SessionStore>()(
             const res = await fetch(`${BACKEND_BASE}/api/chats`);
             if (!res.ok) return;
             const body = (await res.json()) as { chats: SessionMeta[] };
-            set({ sessions: body.chats });
+            // A body without `chats` is a list of none, not a crash in the
+            // rail that renders straight from this.
+            set({ sessions: body.chats ?? [] });
           } catch (err) {
             console.warn('fetchList failed', err);
           } finally {
@@ -74,22 +68,12 @@ export const useSessionStore = create<SessionStore>()(
         })();
         return _fetchListInflight;
       },
-      fetchDays: async () => {
-        try {
-          const res = await fetch(`${BACKEND_BASE}/api/chats/days`);
-          if (!res.ok) return;
-          const body = (await res.json()) as { days: DayGroup[] };
-          set({ days: body.days });
-        } catch (err) {
-          console.warn('fetchDays failed', err);
-        }
-      },
       fetchArchive: async () => {
         try {
           const res = await fetch(`${BACKEND_BASE}/api/chats?archived=only`);
           if (!res.ok) return;
           const body = (await res.json()) as { chats: ArchivedSession[] };
-          set({ archive: body.chats, archiveLoaded: true });
+          set({ archive: body.chats ?? [], archiveLoaded: true });
         } catch (err) {
           console.warn('fetchArchive failed', err);
         }

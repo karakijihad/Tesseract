@@ -46,7 +46,7 @@ export function VoiceComposer() {
 
   if (!supported) {
     return (
-      <Hint label="Voice composer unavailable — your browser doesn't expose SpeechRecognition">
+      <Hint label="The voice composer is unavailable because this browser does not offer SpeechRecognition">
         <Button onClick={() => {}} disabled>
           Voice unavailable
         </Button>

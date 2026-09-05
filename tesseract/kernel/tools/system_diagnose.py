@@ -28,7 +28,7 @@ class SystemDiagnoseInput(BaseModel):
         default=False,
         description=(
             "Include the raw evidence dict for each check (model lists, probe "
-            "rows, per-job last runs). Verbose — leave off unless the summary "
+            "rows, per-job last runs). Verbose. Leave it off unless the summary "
             "line is not enough to answer the question."
         ),
     )
@@ -48,8 +48,12 @@ class SystemDiagnoseTool(Tool):
     )
     not_when: ClassVar[str] = (
         "for behavioural drift rather than machine health, use "
-        "`conscience_status` instead."
+        "`conscience_status` instead; for whether the runtime's own "
+        "departments need the operator, which is the Health room of the "
+        "autonomy panel and a different question from whether this machine "
+        "is well, use `autonomy_read`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

@@ -6,8 +6,8 @@ gone quiet earns its recap. They fire in minutes because the capture window is
 lost otherwise, and their thresholds — not the clock — decide when anything
 happens.
 
-`leaf_seal` used to be its own `*/15` row while intake ran `*/5`. On one row it
-is checked every five minutes instead of every fifteen. Nothing about when it
+`leaf_seal` rides intake's row rather than a `*/15` row of its own, so it is
+checked every five minutes instead of every fifteen. Nothing about when it
 SEALS changes: `max_buffer_leaves` and `max_buffer_age_seconds` still decide
 that, and checking three times as often only means a ripe buffer waits less.
 
@@ -135,6 +135,7 @@ CAPTURE_ROW = register_row(
         stages=(
             job_stage(
                 name="leaf_intake",
+                summary="Admits waiting leaves and appends them to their buffer.",
                 job=LeafIntakeJob,
                 writes=("leaf_buffers",),  # recorded; sealing reads the files
                 cadence=StageCadence.CONTINUOUS,
@@ -144,6 +145,10 @@ CAPTURE_ROW = register_row(
             ),
             job_stage(
                 name="leaf_seal",
+                summary=(
+                    "Compresses a buffer that crossed its size or age threshold into one "
+                    "seal, and marks its leaves sealed."
+                ),
                 job=SealJob,
                 # `after`, not `reads`. Sealing walks the buffer files on disk;
                 # it does not consume anything intake returned, and as two cron
@@ -161,6 +166,10 @@ CAPTURE_ROW = register_row(
             ),
             job_stage(
                 name="conversation_reflect",
+                summary=(
+                    "Writes one recap for every conversation that has gone quiet, whichever "
+                    "entry point it arrived through, tagged with that entry point."
+                ),
                 job=ConversationReflectJob,
                 # `after`, for the same reason sealing is: the funnel reads the
                 # session and channel stores, not anything the two leaf stages

@@ -1,13 +1,12 @@
-"""SQLite derived index over the chat records — the drawer's day view, fast.
+"""SQLite derived index over the chat records — their headers, fast.
 
 Same role as ``tesseract/memory/fts_index.py`` and ``work_index.py``: the
 canonical state is ``sessions/chats/<chat_id>.json``, this is derived from it,
 and it is always rebuildable — ``chat_store.rebuild_metadata_index()``.
 
-Why: ``chat_store.list_by_day`` loads every chat to read six header fields, and
-``/api/chats/days`` is hit on every drawer open, so the cost grows with the
-operator's whole history rather than with what is shown. One query returns the
-same rows.
+Why: reading a header off a record means parsing the whole transcript for six
+fields, so a listing costs the operator's whole history rather than what is
+shown. One query returns the same rows.
 
 Schema (one row per chat record)::
 
@@ -25,8 +24,10 @@ Three things the retiring session index carried are gone with the filename they
 were parsed out of. ``date_prefix`` and its ``custom`` bucket: a uuid names no
 date, so there is nothing to fall back from and ``created_at`` answers every
 time. ``archived_in``: the month came from the archive FOLDER a file was moved
-into, and a chat record never moves — archived is a flag, and "archived in
-which month" is ``ended_at``. And ``session_id`` is not carried at all: it is
+into, and a chat record never moves — archived is a flag, and nothing records
+when it was set. ``ended_at`` does not answer it: that is when the
+conversation last changed, read off its last message, so a chat shelved today
+whose last turn was in July carries July. And ``session_id`` is not carried at all: it is
 minted per WebSocket connection and resolves to nothing.
 
 This module knows nothing about the chat store — the record's owner builds the
@@ -145,7 +146,7 @@ class ChatMetadataIndex:
         """Drop every row and insert these. Returns the count written.
 
         One transaction, so a reader never sees an empty index between the
-        delete and the insert — the day view falls back to the disk walk on an
+        delete and the insert — a reader falls back to the disk walk on an
         empty read, and a rebuild is exactly when that walk is most expensive.
         """
         try:
@@ -167,10 +168,10 @@ class ChatMetadataIndex:
     ) -> list[dict[str, Any]]:
         """The header fields for each chat, newest-created first.
 
-        The grouping into days lives in ``chat_store`` and runs over these rows
-        or over parsed records interchangeably — the retiring index re-derived
-        the day view here instead, and its sort key had to be kept "matching"
-        a copy in another module by comment.
+        Rows only. Whatever a caller wants to do with them it does over these
+        or over parsed records interchangeably — the retiring index derived its
+        own view here instead, and its sort key had to be kept "matching" a
+        copy in another module by comment.
         """
         sql = (
             "SELECT chat_id, title, created_at, started_at, ended_at, "
@@ -203,7 +204,7 @@ class ChatMetadataIndex:
         ]
 
     def chat_ids(self) -> set[str]:
-        """Every id the index holds. One column, no parse — what the day view
+        """Every id the index holds. One column, no parse — what ``headers``
         reconciles against the record files before it trusts itself."""
         try:
             return {row[0] for row in self._conn.execute(

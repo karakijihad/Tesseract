@@ -115,6 +115,11 @@ async def close_all(request: web.Request) -> web.Response:
     closed: list[str] = []
     errored: list[str] = []
     lane_targets: list[tuple[str, str]] = []
+    # A delegation owns the ephemeral lane it runs on, and cancelling it awaits
+    # the spawn, whose own `finally` closes that lane. Closing it again here
+    # reaches an archived lane directory and comes back as an error the operator
+    # did nothing to deserve, so the delegate's lane is left to the delegate.
+    delegated_lanes = {r.lane_id for r in records if r.lane_id}
 
     for r in records:
         if r.state == "failed":
@@ -136,7 +141,11 @@ async def close_all(request: web.Request) -> web.Response:
                 registry.remove(r.activity_id)  # no live spawn → drop the stale chip
                 closed.append(r.activity_id)
         elif r.kind == "lane" and ":" in r.activity_id:
-            lane_targets.append((r.activity_id, r.activity_id.split(":", 1)[1]))
+            lane_id = r.activity_id.split(":", 1)[1]
+            if lane_id in delegated_lanes:
+                closed.append(r.activity_id)  # its delegate closes it
+                continue
+            lane_targets.append((r.activity_id, lane_id))
 
     if lane_targets:
         lane_closed, lane_errored = await _close_lanes(request.app, lane_targets)

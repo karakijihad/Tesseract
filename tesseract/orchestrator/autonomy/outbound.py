@@ -1,22 +1,27 @@
-"""OutboundNotifier — AU-10.
+"""OutboundNotifier.
 
-Single notify path for autonomous → operator pings over Telegram (and any
-future channel that implements ``ChannelAdapter``). Replaces the two
+Single notify path for autonomous → operator pings. Replaces the two
 hand-rolled rate-cap-exempt closures (Governor + UpgradeManager restart)
 with a unified surface that:
 
-* formats per-category messages via small inline templates,
+* composes each kind into a `Message` that carries no channel's markup,
+  and lets the channel it is going to do the reading,
+* sends each kind to the channels `config/routing.yaml` names for it, all of
+  them at once, so one channel refusing decides nothing for the others,
 * honours per-(category, channel) sliding-window rate caps loaded from
   ``channels.yaml::<channel>.outbound_rate``,
 * skips muted categories (union of ``channels.yaml::<channel>.muted_categories``
   and the dashboard-editable ``<HOME>/runtime/outbound-mutes.json``),
 * lets EXEMPT categories (``recovery_summary``, ``crash_storm_latched``,
-  ``awaiting_operator``) bypass the cap entirely per GOVERNANCE §9 + the
-  AU-10 phase doc.
+  ``awaiting_operator``) bypass the cap entirely: the operator MUST see
+  those.
 
-The notifier dispatches via the same ``send_to_operators`` helper the
-existing rate-cap-exempt paths already use, so allowlist + tier semantics
-do not diverge between exempt and capped categories.
+Which channel a kind reaches is the operator's, and it is read from the table
+rather than decided here. No channel is named in this file: a destination is a
+name in the table, and `integrations/_outbound.py` turns a name into the people
+on it. The ``channel_name="telegram"`` default argument that used to stand in
+for a routing decision is gone, and so is the import that reached into the
+Telegram package for a sender.
 
 Durable state lives at ``<TESSERACT_HOME>/runtime/outbound-rates.json``
 (sliding window timestamps per ``(channel, category)``). Path resolution
@@ -26,57 +31,57 @@ tmp_path)`` keep production runtime untouched.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import secrets
+import sys
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Literal
+from typing import IO, Any, Awaitable, Callable, Iterator, Literal, Sequence
 
+from tesseract.orchestrator.autonomy.broadcasts import BROADCASTS
+from tesseract.orchestrator.autonomy.message import Message, compose, render_plain
 from tesseract.paths import TESSERACT_HOME, runtime_dir
 
 log = logging.getLogger(__name__)
 
 
 NotificationCategory = Literal[
-    "agenda_started",
-    "agenda_blocked",
     "awaiting_operator",
     "recovery_summary",
     "governor_pause",
-    "upgrade_restarting",
-    "upgrade_applied",
     "crash_storm_latched",
     "runtime_report",
+    "schedule_failed",
+    "scheduled_task_result",
+    "voice_lane_down",
 ]
 
-CATEGORIES: tuple[NotificationCategory, ...] = (
-    "agenda_started",
-    "agenda_blocked",
-    "awaiting_operator",
-    "recovery_summary",
-    "governor_pause",
-    "upgrade_restarting",
-    "upgrade_applied",
-    "crash_storm_latched",
-    "runtime_report",
+#: Every kind, and it is derived from the declaration rather than repeated
+#: beside it. The two lists were separate and could disagree; one of them was
+#: also four entries longer than anything that could emit them.
+CATEGORIES: tuple[NotificationCategory, ...] = tuple(BROADCASTS)  # type: ignore[assignment]
+
+#: The kinds that ignore a mute and a rate cap. Declared per kind rather than
+#: listed here, so "the operator must see this" is stated where the kind is.
+EXEMPT_CATEGORIES: frozenset[NotificationCategory] = frozenset(
+    kind for kind, spec in BROADCASTS.items() if spec.must_be_seen  # type: ignore[misc]
 )
 
-EXEMPT_CATEGORIES: frozenset[NotificationCategory] = frozenset(
-    {"recovery_summary", "crash_storm_latched", "awaiting_operator"}
+#: The kinds the per-hour cap does not apply to. Not the same set as the one
+#: above and not a subset of it either: a kind can be ordinary enough to mute
+#: and still be something the operator asked for on a cadence of their own,
+#: which is its own rate limit. Muting still reaches everything here.
+UNCAPPED_CATEGORIES: frozenset[NotificationCategory] = EXEMPT_CATEGORIES | frozenset(
+    kind for kind, spec in BROADCASTS.items() if not spec.rate_capped  # type: ignore[misc]
 )
 
 DEFAULT_RATE_PER_HOUR = 6
 DEFAULT_WINDOW_SECONDS = 3600
-MAX_MESSAGE_CHARS = 512
-# Every other category is a ping about one event and 512 characters is more
-# than it needs. The runtime report is a list — its findings ARE its content,
-# and three of ten reached the operator while seven were unreachable from the
-# message. Telegram accepts 4096 per message; the rest is headroom for the
-# HTML the template adds around each line.
-RUNTIME_REPORT_MAX_CHARS = 3500
 
 
 def _home() -> Path:
@@ -92,19 +97,46 @@ def outbound_mutes_path() -> Path:
     return runtime_dir() / "outbound-mutes.json"
 
 
+def outbound_recent_path() -> Path:
+    return runtime_dir() / "outbound-recent.json"
+
+
+# How many sent messages the runtime keeps. Bounded by construction rather
+# than by a retention window: the file is rewritten whole on every send, so it
+# never grows and nothing has to age it. The panel shows the newest and the
+# rest are there for a reader tracing what a night said.
+RECENT_SENT_KEPT = 20
+#: How much of a message the operator's own copy keeps. Every kind but one
+#: is a ping about a single event and needs far less; the runtime report is
+#: a list, and its record is a reminder of what was said rather than the
+#: artefact, which is on disk and named in the message itself.
+RECENT_SENT_MAX_CHARS = 512
+
+
 @dataclass(frozen=True)
 class NotifyResult:
     """Return value from :meth:`OutboundNotifier.notify`.
 
-    ``sent`` is the count of operator chat_ids the body actually reached.
-    ``skipped`` is the cap/mute/no-bridge no-op shape so callers can log
-    *why* a notification was dropped without parsing strings."""
+    ``sent`` is the count of operator chat_ids the body actually reached,
+    summed over every channel the kind is routed to. ``skipped`` is the
+    cap/mute/no-destination no-op shape so callers can log *why* a
+    notification was dropped without parsing strings. ``reason`` holds the
+    distinct reasons across those channels, and ``by_channel`` says which
+    channel gave which, so a message that reached one of two says so.
+    """
 
     category: NotificationCategory
     sent: int = 0
     skipped: bool = False
     reason: str = ""
     errors: int = 0
+    by_channel: tuple[tuple[str, str], ...] = ()
+    #: Recipients who got part of it and not the rest. Counted in `errors`
+    #: too, because they did not get what was sent. Named separately because
+    #: "did anything reach them" and "did all of it" are different questions,
+    #: and a caller that needs the first should read a number rather than
+    #: match a reason string.
+    partial: int = 0
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -119,6 +151,101 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
         except OSError:
             pass
         raise
+
+
+def _lock_refused(wait: bool) -> str:
+    """Why the lock was not taken, in the words that send a reader the right way.
+
+    A non-blocking attempt fails because another process HOLDS the lock, which
+    is the case `wait=False` exists for and is nothing to do with the platform.
+    Both used to log "the record lock is unavailable here", so a two-writer race
+    during a crash-storm exit read as a machine that cannot lock at all.
+    """
+    if wait:
+        return "outbound: the record lock is unavailable here"
+    return (
+        "outbound: another process holds the record lock; writing without it, "
+        "so one row of what was sent can be lost"
+    )
+
+
+@contextmanager
+def _across_processes(path: Path, *, wait: bool = True) -> Iterator[None]:
+    """Hold `<path>.lock` for the whole read-modify-write, or fall open.
+
+    `wait=False` gives up rather than queueing for it. The supervisor records
+    what it said on its way out of a crash storm, and the blocking primitive
+    below retries for about ten seconds before it raises: a process that is
+    trying to exit must not wait that long for a bookkeeping row, least of all
+    on a machine that is already misbehaving.
+
+    More than one process sends on this machine: the supervisor writes its own
+    kinds and the backend writes the rest. An atomic write keeps the file from
+    tearing, and does nothing about two writers that both read the same twenty
+    rows and both write nineteen of them back with their own on top. The lock
+    is over the pair, not over the write.
+
+    Falls open where the platform primitive is missing, on the same rule the
+    writer itself follows: a message that reached the operator and was not
+    written down is still a message that reached them.
+    """
+    handle: IO[bytes] | None = None
+    locked = False
+    lock_path = path.with_name(f"{path.name}.lock")
+    try:
+        try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            handle = open(lock_path, "a+b")
+        except OSError:
+            yield
+            return
+        if sys.platform == "win32":
+            try:
+                import msvcrt
+
+                msvcrt.locking(
+                    handle.fileno(),
+                    msvcrt.LK_LOCK if wait else msvcrt.LK_NBLCK,
+                    1,
+                )
+                locked = True
+            except OSError:
+                log.warning(_lock_refused(wait))
+            except ImportError:
+                log.warning("outbound: the record lock is unavailable here")
+        else:
+            try:
+                import fcntl
+
+                flags = fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB
+                fcntl.flock(handle.fileno(), flags)
+                locked = True
+            except OSError:
+                log.warning(_lock_refused(wait))
+            except ImportError:
+                log.warning("outbound: the record lock is unavailable here")
+        try:
+            yield
+        finally:
+            if locked:
+                try:
+                    if sys.platform == "win32":
+                        import msvcrt
+
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    log.exception("outbound: the record lock would not release")
+    finally:
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
 
 
 # -- Rate ledger ----------------------------------------------------------
@@ -211,130 +338,76 @@ class RateLedger:
         self._persist()
 
 
-# -- Templates ------------------------------------------------------------
-
-
-def _truncate(text: str, limit: int = MAX_MESSAGE_CHARS) -> str:
-    text = text.strip()
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1].rstrip() + "…"
-
-
-def _agenda_chip(context: dict[str, Any]) -> str:
-    """Format a short item identifier for the body."""
-    item_id = str(context.get("item_id") or context.get("agenda_id") or "").strip()
-    goal = str(context.get("goal") or "").strip()
-    chip = f"<code>{item_id}</code>" if item_id else ""
-    if goal:
-        chip = f"{chip} · {goal}" if chip else goal
-    return chip
-
-
-def format_message(category: NotificationCategory, context: dict[str, Any]) -> str:
-    """Per-category Telegram-HTML body. ≤512 chars after truncation.
-
-    Templates intentionally avoid jinja: the inputs are small and typed,
-    and a python-format helper keeps the templates inspectable without
-    a dependency. Reply hints (``<id>:approve`` / ``:deny`` / ``:snooze``)
-    are appended for categories that route through the inbound mapper.
-    """
-    if category == "agenda_started":
-        body = f"<b>Started</b> · {_agenda_chip(context)}"
-        rationale = str(context.get("rationale") or "").strip()
-        if rationale:
-            body += f"\n{rationale}"
-        return _truncate(body)
-    if category == "agenda_blocked":
-        body = f"<b>Blocked</b> · {_agenda_chip(context)}"
-        reason = str(context.get("reason") or "").strip()
-        if reason:
-            body += f" · {reason}"
-        return _truncate(body)
-    if category == "awaiting_operator":
-        chip = _agenda_chip(context)
-        item_id = str(context.get("item_id") or context.get("agenda_id") or "").strip()
-        body = f"<b>Awaiting operator</b> · {chip}"
-        gates = context.get("gates")
-        if isinstance(gates, list) and gates:
-            body += f" · gates: {', '.join(str(g) for g in gates)}"
-        if item_id:
-            body += (
-                f"\nReply <code>{item_id}:approve</code> · "
-                f"<code>{item_id}:deny</code> · <code>{item_id}:snooze</code>"
-            )
-        return _truncate(body)
-    if category == "recovery_summary":
-        text = str(context.get("text") or "").strip()
-        if not text:
-            text = "Recovery pass complete."
-        return _truncate(text)
-    if category == "governor_pause":
-        source = str(context.get("source") or "").strip()
-        detector = str(context.get("detector") or "").strip()
-        reason = str(context.get("reason") or "").strip()
-        body = f"<b>Governor</b> · source <code>{source}</code> paused"
-        if detector:
-            body += f" · {detector}"
-        if reason:
-            body += f" · {reason}"
-        return _truncate(body)
-    if category == "upgrade_restarting":
-        text = str(context.get("text") or "").strip()
-        if text:
-            return _truncate(text)
-        upgrade_id = str(context.get("upgrade_id") or "").strip()
-        klass = str(context.get("class") or "").strip()
-        body = "<b>Upgrade</b> · restart required"
-        if klass:
-            body += f" · {klass}"
-        if upgrade_id:
-            body += f" · <code>{upgrade_id}</code>"
-        return _truncate(body)
-    if category == "upgrade_applied":
-        upgrade_id = str(context.get("upgrade_id") or "").strip()
-        klass = str(context.get("class") or "").strip()
-        body = "<b>Upgrade applied</b>"
-        if klass:
-            body += f" · {klass}"
-        if upgrade_id:
-            body += f" · <code>{upgrade_id}</code>"
-        return _truncate(body)
-    if category == "crash_storm_latched":
-        body = "<b>Crash storm latched</b> · supervisor refused respawn"
-        reason = str(context.get("reason") or "").strip()
-        if reason:
-            body += f" · {reason}"
-        return _truncate(body)
-    if category == "runtime_report":
-        # The watchman, and only when it found a defect — a quiet runtime
-        # sends nothing at all rather than an hourly all-clear.
-        lines = [str(line) for line in (context.get("lines") or [])]
-        count = int(context.get("defects") or len(lines))
-        report_path = str(context.get("report_path") or "").strip()
-        head = f"<b>Runtime</b> · {count} thing(s) went wrong"
-        # The pointer is reserved before the findings are laid out. A message
-        # that drops the link to fit one more finding has lost the only part
-        # of itself that reaches the ones it could not carry.
-        pointer = f"\n\nFull report: <code>{report_path}</code>" if report_path else ""
-        budget = RUNTIME_REPORT_MAX_CHARS - len(head) - len(pointer)
-        shown: list[str] = []
-        for line in lines:
-            entry = f"\n· {line}"
-            withheld = len(lines) - len(shown) - 1
-            tail = f"\n· …and {withheld} more" if withheld else ""
-            if len(entry) + len(tail) > budget:
-                break
-            budget -= len(entry)
-            shown.append(entry)
-        body = head + "".join(shown)
-        if len(shown) < len(lines):
-            body += f"\n· …and {len(lines) - len(shown)} more"
-        return _truncate(body + pointer, RUNTIME_REPORT_MAX_CHARS)
-    return _truncate(str(context.get("text") or category))
-
-
 # -- Mute store -----------------------------------------------------------
+
+
+def _clip(text: str, limit: int) -> str:
+    text = (text or "").strip()
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "\u2026"
+
+
+def read_recent_sent() -> list[dict[str, Any]]:
+    """What the runtime last said to the operator, newest first.
+
+    Empty when it has said nothing on this machine, which is a real answer and
+    not a missing one.
+    """
+    path = outbound_recent_path()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError):
+        log.warning("outbound: the recent-sent record at %s is unreadable", path)
+        return []
+    rows = raw.get("sent") if isinstance(raw, dict) else None
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
+def record_sent(
+    category: str,
+    text: str,
+    channels: Sequence[str],
+    *,
+    now: datetime | None = None,
+    wait_for_lock: bool = True,
+) -> None:
+    """Keep this message, dropping the oldest past `RECENT_SENT_KEPT`.
+
+    Best effort on purpose: a message that reached the operator and could not
+    be written down is still a message that reached them, and failing the send
+    over its own record would be the wrong way round.
+
+    `category` is a plain string rather than a `NotificationCategory`, because
+    the brief and the offline path both record kinds that are routed but are
+    not notification categories. It is only ever written out as text.
+
+    `wait_for_lock=False` for a caller that is on its way out of the process.
+    It keeps the same best-effort promise with a shorter one attached: it will
+    not queue behind another writer to keep it, **and it therefore writes
+    unlocked when another writer holds the lock**. That is the one exception to
+    the cross-process guarantee above: two writers can interleave and one row
+    can be lost. Chosen over blocking a process that is trying to exit.
+    """
+    when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    row = {
+        "category": str(category),
+        "at": when.isoformat(),
+        "channels": [str(c) for c in channels],
+        # What it actually said. The operator's own copy of their own
+        # notification, on their own machine, and the only place it exists
+        # after Telegram has it.
+        "text": _clip(text, RECENT_SENT_MAX_CHARS),
+    }
+    path = outbound_recent_path()
+    try:
+        # Read and write under one lock. Apart, two processes sending together
+        # keep one row and drop the other.
+        with _across_processes(path, wait=wait_for_lock):
+            kept = [row, *read_recent_sent()][:RECENT_SENT_KEPT]
+            _atomic_write_json(path, {"schema": 1, "sent": kept})
+    except Exception:  # noqa: BLE001 — the send already happened
+        log.warning("outbound: could not record what was sent to the operator")
 
 
 def read_runtime_mutes() -> dict[str, list[str]]:
@@ -368,41 +441,61 @@ def write_runtime_mutes(mutes: dict[str, list[str]]) -> None:
 # -- Notifier -------------------------------------------------------------
 
 
-BridgeGetter = Callable[[], Any | None]
 ChannelsConfigGetter = Callable[[], Any | None]
-Sender = Callable[..., Awaitable[dict[str, Any]]]
+#: What an adapter is, from here: something that takes the composed message
+#: and says how many people it reached. How that message READS, and what it
+#: costs to send, are both the channel's own business, which is what keeps this
+#: file free of any one channel's vocabulary.
+Adapter = Callable[[Message], Awaitable[dict[str, Any]]]
+
+
+@dataclass(frozen=True)
+class _Delivered:
+    """What one channel did with one message.
+
+    A named record rather than a tuple, because it grew a fifth field and the
+    unpacking sites did not all grow with it: a partial delivery is neither a
+    send nor a plain failure, and every reader of this has to see which it is.
+    """
+
+    channel: str
+    sent: int
+    errors: int
+    reason: str
+    partial: int
 
 
 class OutboundNotifier:
     """Single notify path. Construct once per backend; pass into the
     Governor / UpgradeManager / recovery hook so every outbound path
-    shares the same rate ledger + mute logic."""
+    shares the same rate ledger + mute logic.
+
+    Where a kind goes is `config/routing.yaml`, read through
+    ``outbound_routing``. It used to be ``notify``'s ``channel_name`` default
+    argument, which no caller ever passed.
+
+    ``adapters`` overrides how a named channel is reached. Left out, a name
+    resolves through the channel registry, which is the only way this class
+    learns that Telegram exists at all."""
 
     def __init__(
         self,
         *,
-        bridge_getter: BridgeGetter,
         channels_config_getter: ChannelsConfigGetter,
-        sender: Sender | None = None,
         clock: Callable[[], datetime] | None = None,
         ledger: RateLedger | None = None,
+        adapters: dict[str, Adapter] | None = None,
+        routing_getter: Callable[[], Any | None] | None = None,
     ) -> None:
-        self._bridge_getter = bridge_getter
+        self._adapters = dict(adapters or {})
+        self._routing_getter = routing_getter
         self._channels_config_getter = channels_config_getter
-        self._sender = sender
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._ledger = ledger or RateLedger()
 
     @property
     def ledger(self) -> RateLedger:
         return self._ledger
-
-    def _resolve_sender(self) -> Sender:
-        if self._sender is not None:
-            return self._sender
-        from tesseract.integrations.telegram.brief_push import send_to_operators
-
-        return send_to_operators
 
     def _channel_block(self, name: str) -> Any | None:
         cfg = self._channels_config_getter() if self._channels_config_getter else None
@@ -443,72 +536,212 @@ class OutboundNotifier:
         except (TypeError, ValueError):
             return DEFAULT_RATE_PER_HOUR
 
+    def _destinations(self, category: NotificationCategory) -> tuple[str, ...]:
+        """The channels this kind goes to, from the operator's table.
+
+        A broken file of THEIRS already degrades to the shipped rows inside
+        `load_outbound_routing`, so what reaches this handler is a shipped
+        table that cannot be read: an install with nothing left to fall back
+        on. Nothing is sent, and the log says why."""
+        routing = self._routing_getter() if self._routing_getter else None
+        if routing is None:
+            from tesseract.orchestrator.autonomy.outbound_routing import (
+                load_outbound_routing,
+            )
+
+            try:
+                routing = load_outbound_routing()
+            except Exception:
+                log.exception("outbound: routing table unreadable for %s", category)
+                return ()
+        return tuple(routing.destinations(category))
+
+    def _adapter_for(self, channel: str) -> Adapter:
+        override = self._adapters.get(channel)
+        if override is not None:
+            return override
+        from tesseract.integrations._outbound import operator_sender
+
+        return operator_sender(channel)
+
+    async def _deliver(
+        self,
+        category: NotificationCategory,
+        message: Message,
+        channel: str,
+        now: datetime,
+    ) -> tuple[str, int, int, str]:
+        """One channel's share of a notification: ``(channel, sent, errors, reason)``.
+
+        Two guards, because the mute and the cap answer different questions.
+        Exempt categories bypass BOTH (GOVERNANCE §9: the operator MUST see
+        crash-storm / recovery / awaiting-operator pings even if a dashboard
+        toggle was flipped by accident). Uncapped ones bypass only the cap: a
+        scheduled row's result is rate-limited by the cadence the operator
+        chose, and one shared bucket per kind would drop the twentieth row
+        because the first nineteen had fired. Muting still reaches it.
+
+        Routing is a separate question and stays the operator's: a kind they
+        sent to no channel is sent to no channel, exempt or not.
+        """
+        if category not in EXEMPT_CATEGORIES and self._muted(channel, category):
+            return _Delivered(channel, 0, 0, "muted", 0)
+        if category not in UNCAPPED_CATEGORIES:
+            cap = self._cap_for(channel, category)
+            if cap <= 0:
+                return _Delivered(channel, 0, 0, "cap_zero", 0)
+            if not self._ledger.allowed(channel, category, cap, now=now):
+                return _Delivered(channel, 0, 0, "rate_capped", 0)
+
+        # Fail where it is used, not at load: a channel can be written into
+        # the table before anything can speak it, and the sender says so.
+        adapter = self._adapter_for(channel)
+        try:
+            result = await adapter(message)
+        except Exception:
+            log.exception(
+                "outbound: sender raised for category=%s channel=%s", category, channel,
+            )
+            return _Delivered(channel, 0, 1, "sender_raised", 0)
+
+        sent = int(result.get("sent", 0)) if isinstance(result, dict) else 0
+        errors = int(result.get("errors", 0)) if isinstance(result, dict) else 0
+        reason = str(result.get("reason") or "") if isinstance(result, dict) else ""
+        # A partial delivery reached the operator and is not a clean send.
+        # `fan_out` counts it as an error, correctly, and names it here so the
+        # two things that follow from "did anything reach them" can still be
+        # answered: the record of what they were told, and the warning that
+        # nobody was.
+        partial = int(result.get("partial", 0)) if isinstance(result, dict) else 0
+        if reason and not sent and not partial:
+            log.warning(
+                "outbound: %s was routed to %r and reached nobody: %s",
+                category, channel, reason,
+            )
+        if partial:
+            log.warning(
+                "outbound: %s reached %d recipient(s) on %r only in part",
+                category, partial, channel,
+            )
+        if (sent > 0 or partial) and category not in UNCAPPED_CATEGORIES:
+            self._ledger.register(channel, category, now=now)
+        return _Delivered(channel, sent, errors, reason, partial)
+
     async def notify(
         self,
         category: NotificationCategory,
         context: dict[str, Any] | None = None,
         *,
-        channel_name: str = "telegram",
+        destinations: Sequence[str] | None = None,
     ) -> NotifyResult:
+        """Send one kind, to the channels the table names for it.
+
+        ``destinations`` is for a caller that owns a narrower answer than the
+        table's: a schedule row saying where IT reports. Three states, and the
+        difference between the last two is the whole point of the parameter
+        being optional rather than defaulted:
+
+        * ``None`` — the table decides. A row that says nothing about
+          delivery follows the kind, so nothing has to be set twice.
+        * a list of names — those channels instead, for this call only.
+        * an EMPTY list — nowhere, deliberately. Same meaning an empty row
+          has in the table.
+
+        It replaces WHERE, never WHETHER. A mute, a rate cap and a
+        safety-critical kind's exemption from both still apply inside every
+        channel named here, exactly as they do to a channel the table named.
+        """
         ctx = dict(context or {})
-        bridge = self._bridge_getter()
-        if bridge is None:
-            return NotifyResult(category=category, skipped=True, reason="no_bridge")
+        if destinations is None:
+            targets = self._destinations(category)
+        else:
+            named = (str(name).strip() for name in destinations)
+            targets = tuple(dict.fromkeys(name for name in named if name))
+        if not targets:
+            return NotifyResult(category=category, skipped=True, reason="no_destination")
 
-        # Exempt categories bypass mute AND rate cap (GOVERNANCE §9: the
-        # operator MUST see crash-storm / recovery / awaiting-operator
-        # pings even if a dashboard toggle was flipped by accident).
-        if category not in EXEMPT_CATEGORIES and self._muted(channel_name, category):
-            return NotifyResult(category=category, skipped=True, reason="muted")
-
-        now = self._clock()
-        if category not in EXEMPT_CATEGORIES:
-            cap = self._cap_for(channel_name, category)
-            if cap <= 0:
-                return NotifyResult(category=category, skipped=True, reason="cap_zero")
-            if not self._ledger.allowed(channel_name, category, cap, now=now):
-                return NotifyResult(category=category, skipped=True, reason="rate_capped")
-
-        text = format_message(category, ctx)
-        if not text:
+        message = compose(category, ctx)
+        if not (message.title or message.body or message.bullets or message.facts):
             return NotifyResult(category=category, skipped=True, reason="empty_text")
 
-        sender = self._resolve_sender()
-        bridge_state = getattr(bridge, "_state", None)
-        allowlist = getattr(bridge_state, "allowlist", None)
-        poll_state = getattr(bridge_state, "poll_state", None)
-        user_tier = getattr(poll_state, "user_tier", None)
-        try:
-            result = await sender(
-                text,
-                bridge=bridge,
-                allowlist=allowlist,
-                user_tier=user_tier if isinstance(user_tier, dict) else None,
-            )
-        except Exception:
-            log.exception("outbound: sender raised for category=%s", category)
-            return NotifyResult(category=category, errors=1, reason="sender_raised")
+        now = self._clock()
+        # One channel refusing, capping or failing must not decide anything
+        # for the others: the whole point of a table with two names in a row
+        # is that they are two answers, not one with a backup.
+        outcomes = await asyncio.gather(
+            *(self._deliver(category, message, channel, now) for channel in targets),
+            return_exceptions=True,
+        )
 
-        sent = int(result.get("sent", 0)) if isinstance(result, dict) else 0
-        errors = int(result.get("errors", 0)) if isinstance(result, dict) else 0
-        if sent > 0 and category not in EXEMPT_CATEGORIES:
-            self._ledger.register(channel_name, category, now=now)
-        return NotifyResult(category=category, sent=sent, errors=errors)
+        sent = 0
+        errors = 0
+        partial = 0
+        by_channel: list[tuple[str, str]] = []
+        reasons: list[str] = []
+        for channel, outcome in zip(targets, outcomes):
+            if isinstance(outcome, BaseException):
+                log.exception(
+                    "outbound: delivery raised for category=%s channel=%s",
+                    category, channel, exc_info=outcome,
+                )
+                errors += 1
+                by_channel.append((channel, "delivery_raised"))
+                reasons.append("delivery_raised")
+                continue
+            sent += outcome.sent
+            errors += outcome.errors
+            partial += outcome.partial
+            by_channel.append((outcome.channel, outcome.reason or "sent"))
+            if outcome.reason and outcome.reason not in reasons:
+                reasons.append(outcome.reason)
+
+        # Only what actually left the machine. A kind that was muted, capped
+        # or routed nowhere said nothing to the operator, and a record of it
+        # would be a record of a message they never got. A message that
+        # arrived in part DID leave, and the operator has some of it in front
+        # of them, so it is recorded on the channels that carried any of it.
+        if sent > 0 or partial:
+            # Plainly, not as any one channel read it. Two channels can
+            # render the same message differently, and the operator's copy is
+            # of what was SAID.
+            record_sent(
+                category,
+                render_plain(message),
+                [
+                    name for name, why in by_channel
+                    if why in {"sent", "partial_delivery"}
+                ],
+                now=now,
+            )
+
+        return NotifyResult(
+            category=category,
+            sent=sent,
+            errors=errors,
+            skipped=sent == 0 and errors == 0,
+            reason=", ".join(reasons),
+            by_channel=tuple(by_channel),
+            partial=partial,
+        )
 
 
 __all__ = [
     "CATEGORIES",
+    "UNCAPPED_CATEGORIES",
     "DEFAULT_RATE_PER_HOUR",
     "DEFAULT_WINDOW_SECONDS",
     "EXEMPT_CATEGORIES",
-    "MAX_MESSAGE_CHARS",
     "NotificationCategory",
     "NotifyResult",
     "OutboundNotifier",
     "RateLedger",
-    "format_message",
+    "RECENT_SENT_KEPT",
+    "RECENT_SENT_MAX_CHARS",
     "outbound_mutes_path",
     "outbound_rates_path",
+    "outbound_recent_path",
+    "read_recent_sent",
     "read_runtime_mutes",
+    "record_sent",
     "write_runtime_mutes",
 ]

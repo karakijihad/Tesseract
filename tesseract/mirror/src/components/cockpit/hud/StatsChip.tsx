@@ -1,4 +1,6 @@
+import { useConversationStore } from "../../../stores/conversation";
 import { useSessionStore } from "../../../stores/session";
+import { foldCeiling, foldableTokens } from "../../../lib/types";
 import { colorBand } from "../../../lib/money";
 import { sendCommand } from "../../../lib/commands";
 import { Hint } from "../../ui/Hint";
@@ -17,12 +19,18 @@ interface StatsChipProps {
 }
 
 export function StatsChip({ hintPosition = "top" }: StatsChipProps) {
-  const stats = useSessionStore((s) => s.latestStats);
+  const latest = useSessionStore((s) => s.latestStats);
+  const latestChatId = useSessionStore((s) => s.latestStatsChatId);
+  const activeChatId = useConversationStore((s) => s.activeChatId);
+  // Stats are per conversation. Every focus change asks the backend for the
+  // new chat's numbers, but until they land these belong to the chat that was
+  // left, and drawing them here labelled them as this one's.
+  const stats = latestChatId === activeChatId ? latest : null;
 
   if (!stats) {
     return (
       <Hint
-        label="No stats yet — click to request"
+        label="No stats yet. Click to request them."
         position={hintPosition}
         maxWidth={240}
       >
@@ -31,7 +39,7 @@ export function StatsChip({ hintPosition = "top" }: StatsChipProps) {
           onClick={() => sendCommand("/stats")}
           ariaLabel="No stats yet"
         >
-          <span className="hud-stats-text">Turns 0 · —</span>
+          <span className="hud-stats-text">Turns 0 · {'—'}</span>
           <span
             className="hud-stats-bar hud-stats-bar--empty"
             aria-hidden="true"
@@ -41,15 +49,17 @@ export function StatsChip({ hintPosition = "top" }: StatsChipProps) {
     );
   }
 
-  const threshold = stats.compact_threshold_tokens;
-  const totalRatio = threshold > 0 ? Math.min(stats.tokens / threshold, 1) : 0;
-  const systemRatio =
-    threshold > 0 ? Math.min(stats.system_tokens / threshold, 1) : 0;
-  const conversationRatio = Math.max(totalRatio - systemRatio, 0);
+  const threshold = foldCeiling(stats);
+  // The slice the ceiling governs, not the whole payload. Dividing `tokens` by
+  // it drew the bar over-full by the size of the system prompt and the turn's
+  // late half, and disagreed with what `context_read` reports for the same
+  // conversation.
+  const measured = foldableTokens(stats);
+  const totalRatio = threshold > 0 ? Math.min(measured / threshold, 1) : 0;
   const band = colorBand(totalRatio);
   const label =
-    `Turns ${stats.turns} · ${formatTokens(stats.tokens)} of ${formatTokens(threshold)} ` +
-    `(${formatTokens(stats.system_tokens)} manifest · ${formatTokens(stats.tokens - stats.system_tokens)} chat)`;
+    `Turns ${stats.turns} · ${formatTokens(measured)} of ${formatTokens(threshold)} ` +
+    `(${formatTokens(stats.system_tokens)} manifest, which the ceiling already excludes)`;
 
   return (
     <Hint label={label} position={hintPosition} maxWidth={320}>
@@ -60,16 +70,18 @@ export function StatsChip({ hintPosition = "top" }: StatsChipProps) {
         ariaLabel={label}
       >
         <span className="hud-stats-text">
-          Turns {stats.turns} · {formatTokens(stats.tokens)}
+          Turns {stats.turns} · {formatTokens(measured)}
         </span>
+        {/* One fill. The bar used to draw the manifest as a share of this
+            ceiling and the conversation as the rest, but the ceiling already
+            has the manifest taken out of it (`fold_trigger_tokens` is the
+            ratio's share of the window MINUS the system prompt), so the two
+            segments were fractions of different things. The manifest's size
+            stays in the hint, where `context_report.render` also keeps it. */}
         <span className="hud-stats-bar" aria-hidden="true">
           <span
-            className="hud-stats-fill hud-stats-fill--system"
-            style={{ width: `${Math.round(systemRatio * 100)}%` }}
-          />
-          <span
             className="hud-stats-fill hud-stats-fill--chat"
-            style={{ width: `${Math.round(conversationRatio * 100)}%` }}
+            style={{ width: `${Math.round(totalRatio * 100)}%` }}
           />
         </span>
       </Chip>

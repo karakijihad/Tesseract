@@ -1,6 +1,6 @@
 """schedule_remove tool — operator-or-the assistant removal of a scheduler job.
 
-Phase 18 Task B. ASK-gated. Calls `SchedulerEngine.remove_job_runtime`
+ASK-gated. Calls `SchedulerEngine.remove_job_runtime`
 which trims the operator's `schedule.yaml` and the live registry.
 
 Removes the operator's own jobs only. A job the app ships is declared in
@@ -37,6 +37,7 @@ class ScheduleRemoveTool(Tool):
         "ships, which cannot be removed and only disabled; canceling a one-time reminder, which "
         "is `alarm_cancel`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

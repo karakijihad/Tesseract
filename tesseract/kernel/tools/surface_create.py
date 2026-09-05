@@ -20,7 +20,7 @@ from tesseract.orchestrator.surfaces.store import get_surface_store
 class SurfaceCreateInput(BaseModel):
     type: str = Field(
         description=(
-            "Surface type — drives the renderer. One of the protocol "
+            "Surface type. Drives the renderer. One of the protocol "
             "vocabulary: folder, file, url, app, terminal, browser, document, "
             "media, iframe, webview, lane, channel, mission, "
             "memory, approval, code, markdown, html, form, tree, timeline, "
@@ -32,11 +32,13 @@ class SurfaceCreateInput(BaseModel):
     props: dict[str, Any] = Field(
         default_factory=dict,
         description=(
-            "Renderer payload — key depends on type: html {html} (a full "
-            "document or fragment; text/content/body also accepted), "
+            "Renderer payload. The key depends on the type: html {html, live} "
+            "(a full document or fragment; text/content/body also accepted; "
+            "`live: true` makes the card report what the operator presses in "
+            "it, which is what a game or a form needs and a chart does not), "
             "markdown {text}, code {text,language}, file {text}, "
             "folder {root}, webview/browser/url/iframe {url} "
-            "(http(s) only — file:// URLs are blocked by the browser), "
+            "(http and https only, because file:// URLs are blocked by the browser), "
             "image {url}."
         ),
     )
@@ -50,14 +52,14 @@ class SurfaceCreateInput(BaseModel):
     mode: str = Field(
         default="embedded",
         description=(
-            "embedded (canvas card) | external (not drawn — NOT an OS open; "
+            "embedded (canvas card) | external (not drawn, and NOT an OS open; "
             "use `open` for that) | background (no visual)."
         ),
     )
     replaces: str | None = Field(
         default=None,
         description=(
-            "surface_id this new surface supersedes — it's closed automatically "
+            "surface_id this new surface supersedes. It is closed automatically "
             "once the new one is created. Use it on a fallback so the dead card "
             "doesn't pile up when one supersedes another. Best-effort; an "
             "unknown/already-closed id is ignored."
@@ -70,22 +72,23 @@ class SurfaceCreateTool(Tool):
     risk_class: ClassVar[str] = "autonomous"
     group: ClassVar[str] = "showing-the-operator"
     summary: ClassVar[str] = (
-        "Author a card from content you generated — html, markdown, code, or a chart."
+        "Author a card from content you generated: html, markdown, code, or a chart."
     )
     use_when: ClassVar[str] = (
         "An `html` surface renders in a sandboxed iframe with an opaque "
-        "origin, so keep it self-contained; storage calls are safe but reset "
-        "on every mount, and the card takes keyboard input only once focused. "
-        "Returns surface_id — `surface_update` mutates it, `replaces` hands "
-        "off cleanly."
+        "origin, so keep it self-contained; storage resets on every mount. "
+        "Any card you author obeys `surface_control`, so name every control. "
+        "Add `props.live: true` when you need to KNOW what the operator "
+        "pressed, as a game or a form does. Returns surface_id."
     )
     not_when: ClassVar[str] = (
-        "Anything that already exists — a url, a file, a folder, an app — is "
+        "Anything that already exists, whether a url, a file, a folder or an app, is "
         "`open`'s job. In particular, never hand-write an `<iframe>` for a "
         "video or another third-party page: the opaque origin makes the "
         "embedded player throw on storage and the card renders black. The fix "
         "is the verb, not the markup."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -107,6 +110,11 @@ class SurfaceCreateTool(Tool):
                 position=inp.position,
                 size=inp.size,
                 mode=inp.mode,
+                # The card remembers which conversation drew it, so a press in
+                # it later reaches that conversation rather than whichever is
+                # in focus. Empty outside a chat (autonomy, a sub-agent, the
+                # scheduler), which leaves the card unowned and silent.
+                owner_chat=context.chat_id,
             )
         except Exception as exc:  # noqa: BLE001 — surface as clean tool error
             return ToolResult(output=f"surface_create failed: {exc}", is_error=True)

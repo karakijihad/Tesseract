@@ -24,6 +24,7 @@ from tesseract.context.circuit_breaker import CircuitBreaker
 from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
 from tesseract.memory.vault_librarian import _parse_llm_json
 from tesseract.memory.vault_manager import VaultManager
+from tesseract.lib import clock
 
 if TYPE_CHECKING:
     from tesseract.brain.boot import VaultConfig
@@ -77,14 +78,15 @@ class VaultLinter:
         self._config = config
         self._adapter = adapter
         self._adapter_options = adapter_options
-        self._breaker = CircuitBreaker(name="vault_lint", max_failures=3, log_dir=log_dir)
+        self._breaker = CircuitBreaker(name="vault_lint", log_dir=log_dir)
         self._agents_dir = agents_dir
         self._agent: AgentDefinition | None = None
 
     async def run(self, dry_run: bool = False) -> VaultLintReport:
         report = VaultLintReport()
         source_slugs = self._list_source_slugs()
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        # The operator's today: this stamps entries they read back.
+        today = clock.today().isoformat()
 
         self._pass_orphan(source_slugs, report, today, dry_run)
         self._pass_stale(source_slugs, report, today, dry_run)
@@ -150,22 +152,16 @@ class VaultLinter:
             report.failures.append("contradict: no adapter available")
             return
 
+        from tesseract.agents.invocations import record as _record_invocation
+
+        _record_invocation("vault-lint", via="vault_lint")
         template = self._get_agent().get_section("Contradiction Prompt")
         if not template:
             report.failures.append("contradict: vault-lint.md missing 'Contradiction Prompt' section")
             return
 
-        # Guard on failures *this run*, not the cross-run `is_tripped` flag.
-        # The breaker rehydrates as tripped on a fresh process (so the
-        # JSONL reflects last known state for the conscience signal), but
-        # a new run should still attempt the first call — half-open probe.
-        # Success heals (record_success writes the "reset" event because
-        # is_tripped is still True at call time); 3 in-run failures stop
-        # us hammering. Without this, a rehydrated-tripped breaker
-        # short-circuits every run forever and never gets a chance to heal.
-        failures_this_run = 0
         for slug_a, slug_b, shared in pairs:
-            if failures_this_run >= self._breaker.max_failures:
+            if not self._breaker.allow(subject=f"contradiction check on {slug_a} and {slug_b}"):
                 report.failures.append(f"contradict: breaker tripped at ({slug_a}, {slug_b})")
                 break
             summary_a = _page_summary(self._manager, slug_a)
@@ -182,7 +178,6 @@ class VaultLinter:
                 self._breaker.record_success()
             except Exception as exc:  # noqa: BLE001 — breaker records + continues
                 self._breaker.record_failure(str(exc))
-                failures_this_run += 1
                 report.failures.append(f"contradict: adapter error on ({slug_a}, {slug_b}): {exc}")
                 continue
 

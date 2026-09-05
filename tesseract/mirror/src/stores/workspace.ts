@@ -7,6 +7,7 @@ export type EventKind =
   | 'agent_approval'
   | 'skill_approval'
   | 'skill_refinement'
+  | 'working_set_proposal'
   | 'soul_proposal'
   | 'change_proposal'
   | 'mission_reflection_proposal'
@@ -101,15 +102,24 @@ function pickNewer(local: string | undefined, remote: string | undefined): strin
 
 class HttpError extends Error {
   status: number;
-  constructor(path: string, status: number) {
+  // What the route said went wrong. One status covers several refusals here,
+  // so the code alone cannot decide what to tell the operator.
+  reason: string;
+  constructor(path: string, status: number, reason = '') {
     super(`${path} ${status}`);
     this.status = status;
+    this.reason = reason;
   }
+}
+
+async function failure(path: string, r: Response): Promise<HttpError> {
+  const body = (await r.json().catch(() => ({}))) as { error?: unknown };
+  return new HttpError(path, r.status, typeof body.error === 'string' ? body.error : '');
 }
 
 async function jget<T>(path: string): Promise<T> {
   const r = await fetch(`${BACKEND_BASE}${path}`);
-  if (!r.ok) throw new HttpError(path, r.status);
+  if (!r.ok) throw await failure(path, r);
   return r.json() as Promise<T>;
 }
 
@@ -119,8 +129,41 @@ async function jpost<T>(path: string, body: unknown): Promise<T> {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!r.ok) throw new HttpError(path, r.status);
+  if (!r.ok) throw await failure(path, r);
   return r.json() as Promise<T>;
+}
+
+function upsert(list: WorkspaceEvent[], event: WorkspaceEvent): WorkspaceEvent[] {
+  const idx = list.findIndex((e) => e.event_id === event.event_id);
+  if (idx < 0) return [event, ...list];
+  const next = list.slice();
+  next[idx] = event;
+  return next;
+}
+
+/** Put one event on the side its status belongs to.
+ *
+ * `events` is the pending inbox and `history` is everything decided, so a row
+ * whose status just changed has to move rather than be written where it was.
+ * Deciding a row used to drop it from the inbox and the file watcher then
+ * broadcast the same row back a quarter of a second later, which put it
+ * straight back into the pending list: the operator saw an approved row
+ * reappear, the badge kept counting it, and only a reload sorted it out.
+ */
+function place(
+  state: { events: WorkspaceEvent[]; history: WorkspaceEvent[] },
+  event: WorkspaceEvent,
+): { events: WorkspaceEvent[]; history: WorkspaceEvent[] } {
+  if (event.status === 'pending') {
+    return {
+      events: upsert(state.events, event),
+      history: state.history.filter((e) => e.event_id !== event.event_id),
+    };
+  }
+  return {
+    events: state.events.filter((e) => e.event_id !== event.event_id),
+    history: upsert(state.history, event),
+  };
 }
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
@@ -185,13 +228,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
   },
 
-  upsertEvent: (event) => {
-    const events = get().events.slice();
-    const idx = events.findIndex((e) => e.event_id === event.event_id);
-    if (idx >= 0) events[idx] = event;
-    else events.unshift(event);
-    set({ events });
-  },
+  upsertEvent: (event) => set((s) => place(s, event)),
 
   appendComment: (comment) => {
     // Live-push from `workspace_comment_appended` envelope. Dedupe by
@@ -237,12 +274,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         `/api/workspace/event/${event_id}/decision`,
         { decision, reason: reason ?? '' },
       );
-      set((s) => ({
-        events: s.events.filter((e) => e.event_id !== updated.event_id),
-        history: s.history.some((e) => e.event_id === updated.event_id)
-          ? s.history.map((e) => (e.event_id === updated.event_id ? updated : e))
-          : s.history,
-      }));
+      set((s) => place(s, updated));
       return true;
     } catch (err) {
       const status = err instanceof HttpError ? err.status : 0;
@@ -257,6 +289,20 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         void get().fetchHistory();
         // Settled from the operator's side: the row is gone either way.
         return true;
+      }
+      const reason = err instanceof HttpError ? err.reason : '';
+      if (status === 409 && reason === 'concurrent_modification') {
+        // The file moved after the proposal was written. The backend has
+        // rewritten the card against the file as it stands now, so pull it
+        // back in: what is on screen is what a second Approve would commit.
+        // Narrowed on the reason, because the other refusals that share this
+        // status are about the change itself, not about the file moving.
+        void get().refreshEvent(event_id);
+        set({
+          lastError:
+            'This file changed after the proposal was written. The card now shows the change against the file as it is now. Approve again to apply it.',
+        });
+        return false;
       }
       // Real failure (5xx, network, parse). Keep the row in place so
       // the operator can retry, surface the error so they can read it.

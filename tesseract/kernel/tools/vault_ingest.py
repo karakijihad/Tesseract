@@ -46,8 +46,9 @@ class VaultIngestTool(Tool):
         "suggested filing location, then again with confirmed_path to execute."
     )
     not_when: ClassVar[str] = (
-        "reading what the vault already holds — that is `vault_query` or `vault_search`."
+        "reading what the vault already holds. That is `vault_query` or `vault_search`."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(
         self,

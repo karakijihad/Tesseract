@@ -1,12 +1,12 @@
 """Delegation over the lane path — the only transport `delegate_*` uses.
 
-There used to be two delegation systems. `lane_turn` crossed IPC to the
-controller daemon and got a named, durable lane with a replayable event
-stream, an interrupt, and a record that survived a restart. `delegate_coder`
-and `delegate_auditor` ran a local subprocess inside the Mirror backend and got
-a spawn handle: no event stream, no interrupt, journaled as lost on restart.
-The assistant held both and had to reason about two lifecycle and recovery models for
-what looks like one act.
+One delegation system, not two. Every delegate crosses IPC to the
+controller daemon and gets a named, durable lane with a replayable event
+stream, an interrupt, and a record that survives a restart. A local
+subprocess inside the Mirror backend gets a spawn handle instead: no event
+stream, no interrupt, journaled as lost on restart. Holding both would make
+the assistant reason about two lifecycle and recovery models for what looks
+like one act.
 
 A delegation is now a turn on an EPHEMERAL lane: same identity, same event
 stream, same interrupt, same wait primitive — closed on the way out whatever
@@ -20,7 +20,8 @@ import asyncio
 import logging
 from typing import Any
 
-from tesseract.kernel.tools.base import CliSink, ToolContext, ToolResult
+from tesseract.kernel.tools.base import ToolContext, ToolResult
+from tesseract.kernel.tools.cli_stream import emit_cli_event as _emit
 from tesseract.orchestrator.agent_controller.lanes.tool_support import maybe_await
 
 log = logging.getLogger(__name__)
@@ -82,40 +83,12 @@ async def resolve_delegation_manager(context: ToolContext) -> Any:
     return manager
 
 
-async def _emit(
-    sink: CliSink | None,
-    call_id: str,
-    event: str,
-    payload: dict[str, Any],
-    *,
-    shielded: bool = False,
-) -> None:
-    """Push one event to the operator's view. Never load-bearing.
-
-    `shielded` is for the terminal event: it is emitted from a `finally`
-    whose usual trigger is a cancellation, and an unshielded await there
-    would be cancelled before the sink saw it — leaving the card open,
-    which is the bug the finally exists to close."""
-    if sink is None:
-        return
-    try:
-        call = sink(event, call_id, payload)
-        await (asyncio.shield(asyncio.ensure_future(call)) if shielded else call)
-    except Exception:  # noqa: BLE001 — the operator's view is never load-bearing
-        log.debug("delegate: cli_sink %s failed", event, exc_info=True)
-    except asyncio.CancelledError:
-        # The shielded emit is already on its way; don't let the card's
-        # terminal event swallow the cancellation itself.
-        raise
-
-
 def render_event(event: Any) -> str:
     """One lane event as the line the operator would have seen scroll past.
 
-    The DelegateCard used to be fed raw subprocess bytes. Lane events carry
-    the same story in typed form, so this renders rather than replays —
-    which is also why tool calls stay visible instead of being flattened
-    into whatever the CLI happened to print."""
+    The DelegateCard is fed lane events, not raw subprocess bytes, so this
+    renders rather than replays — which is also why tool calls stay visible
+    instead of being flattened into whatever the CLI happened to print."""
     payload = event.payload
     if event.kind == "assistant_text":
         return str(payload.get("text") or "")
@@ -192,6 +165,14 @@ async def run_delegation_on_lane(
         # learns the lane here.
         lane_ref["manager"] = manager
         lane_ref["lane_id"] = lane_id
+        # And for the operator's view: the spawn's own record names the lane,
+        # so the Mirror shows one row for the delegation instead of two.
+        bind = lane_ref.get("on_lane_open")
+        if callable(bind):
+            try:
+                bind(lane_id)
+            except Exception:  # noqa: BLE001 — reflection is never load-bearing
+                log.debug("delegate: lane bind failed for %s", lane_id, exc_info=True)
     # Everything after the open is inside the cleanup, including the
     # cli_start emit: a cancellation landing on that await is a
     # CancelledError, which is a BaseException, so an emit outside the try
@@ -228,7 +209,24 @@ async def run_delegation_on_lane(
                     metadata={"lane_id": lane_id},
                 )
 
+            # Wired unconditionally, unlike the sink it also feeds: the
+            # activity stamp is what a background delegation's `spawn_check`
+            # reports, and a background spawn has no `cli_sink` at all. Before
+            # this the only caller that knew a delegate was still emitting was
+            # a cockpit card, which a background spawn never draws.
+            note_activity = (lane_ref or {}).get("on_activity")
+
             async def _tap(events: list[Any]) -> None:
+                if callable(note_activity):
+                    try:
+                        note_activity(len(events))
+                    except Exception:  # noqa: BLE001 — reflection is never load-bearing
+                        log.debug(
+                            "delegate: activity stamp failed for %s",
+                            lane_id, exc_info=True,
+                        )
+                if sink is None:
+                    return
                 for event in events:
                     rendered = render_event(event)
                     if rendered:
@@ -245,7 +243,7 @@ async def run_delegation_on_lane(
                     turn_id,
                     timeout=timeout_s,
                     poll_s=poll_s,
-                    on_events=_tap if sink is not None else None,
+                    on_events=_tap,
                 )
             )
         finally:
@@ -274,7 +272,33 @@ async def run_delegation_on_lane(
     finally:
         await _close_lane(manager, lane_id)
 
-    metadata = {
+    return delegate_result(
+        tool_name=tool_name,
+        cli_label=cli_label,
+        outcome=outcome,
+        timeout_s=timeout_s,
+        lane_id=lane_id,
+        turn_id=turn_id or "",
+    )
+
+
+def delegate_result(
+    *,
+    tool_name: str,
+    cli_label: str,
+    outcome: Any,
+    timeout_s: float,
+    lane_id: str,
+    turn_id: str,
+) -> ToolResult:
+    """What the caller is told, given how the lane turn ended.
+
+    Named and lifted out of `run_delegation_on_lane` so it can be exercised
+    without a lane. This is the sentence a model and an operator both read
+    when a delegation fails, and a test that recomputed the expression instead
+    of calling it would stay green through any change to it.
+    """
+    metadata: dict[str, Any] = {
         "tool": tool_name,
         "lane_id": lane_id,
         "turn_id": turn_id,
@@ -285,7 +309,7 @@ async def run_delegation_on_lane(
         body = outcome.reply_text or f"({cli_label} produced no output)"
         return ToolResult(
             output=(
-                f"{body}\n\n[{tool_name} stalled — no lane activity for "
+                f"{body}\n\n[{tool_name} stalled \u2014 no lane activity for "
                 f"{timeout_s:.0f}s; the partial reply above is everything it "
                 f"emitted]"
             ),
@@ -296,6 +320,15 @@ async def run_delegation_on_lane(
     if outcome.is_error:
         detail = outcome.error or "the CLI reported a failed turn"
         body = outcome.reply_text or ""
+        # Say which half of this result is the PROVIDER's, because the
+        # availability breaker reads it to decide whether the seat is spent
+        # and `body` is the delegate model's own uninspected prose. A coding
+        # task about rate limiting, an auth bug or a 500 handler writes every
+        # word `classify` looks for, and without this the seat would be shut
+        # by the delegate DISCUSSING the subject rather than hitting it.
+        from tesseract.orchestrator.provider_failure import evidence, theirs
+
+        metadata["fault"] = evidence(theirs(detail))
         return ToolResult(
             output=f"{body}\n\n[{tool_name} failed: {detail}]".strip(),
             is_error=True,
@@ -345,5 +378,6 @@ __all__ = [
     "make_delegate_cancel",
     "render_event",
     "resolve_delegation_manager",
+    "delegate_result",
     "run_delegation_on_lane",
 ]

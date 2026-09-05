@@ -1,6 +1,6 @@
 """Pydantic v2 schemas for the catalog YAMLs.
 
-Loaded by the ``yaml_change_proposal`` apply path (MO-10-2) to validate
+Loaded by the ``yaml_change_proposal`` apply path to validate
 the proposed-after state before atomic write. Loader (``loader.py``) MAY
 optionally validate at boot; today it does not — these schemas are
 gating-only, not boot-blocking, so a schema bug can't brick the runtime.

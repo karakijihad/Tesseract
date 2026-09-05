@@ -9,6 +9,7 @@ chat with no live ChatSession. Hard-delete requires a prior archive (D1).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from aiohttp import web
@@ -35,34 +36,20 @@ def _busy(chat_id: str) -> web.Response:
 async def list_chats_handler(request: web.Request) -> web.Response:
     """`?include_archived=1` widens to archived too; `?archived=only` narrows
     to archived alone, which is what the drawer's archive section wants and
-    what the widener could never express."""
+    what the widener could never express.
+
+    Off the event loop: building the rows opens and JSON-parses every record,
+    which measured 154 ms over a 3.3 MB library and grows with how long the
+    operator has owned the app. The cost is the same in a thread; what changes
+    is that health, heartbeats and inbound turns are not held behind it.
+    """
     raw = (request.query.get("archived") or "").lower()
-    rows = chat_store.list_chats(
+    rows = await asyncio.to_thread(
+        chat_store.list_chats,
         include_archived=_truthy(request.query.get("include_archived")),
         archived_only=raw == "only",
     )
     return web.json_response({"chats": rows})
-
-
-async def list_chats_by_day_handler(request: web.Request) -> web.Response:
-    """Per-day grouped view, newest day first; runs within a day newest first.
-
-    Grouped by `created_at` — the stamp made once when the conversation was
-    created. There is no `custom` bucket: that existed only because a filename
-    had to be parsed back into a date and sometimes would not.
-    """
-    raw = (request.query.get("archived") or "").lower()
-    return web.json_response({"days": chat_store.list_by_day(
-        include_archived=_truthy(request.query.get("include_archived")),
-        archived_only=raw == "only",
-    )})
-
-
-async def preview_chat_handler(request: web.Request) -> web.Response:
-    preview = chat_store.preview_chat(request.match_info["chat_id"], max_turns=6)
-    if preview is None:
-        return web.json_response({"error": "not_found"}, status=404)
-    return web.json_response(preview)
 
 
 async def get_chat_handler(request: web.Request) -> web.Response:

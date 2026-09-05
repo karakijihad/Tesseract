@@ -18,12 +18,72 @@ from pathlib import Path
 from typing import Any
 
 from tesseract.agents.loader import AgentDefinition, list_agents, load_agent
-from tesseract.brain.chat import ChatSession
+from tesseract.brain.chat import (
+    DEFAULT_COMPACT_THRESHOLD,
+    DEFAULT_HEAD_ANCHOR_MESSAGES,
+    DEFAULT_HEADROOM_MULTIPLIER,
+    DEFAULT_KEEP_RECENT_TURNS,
+    DEFAULT_PROMPT_CHAR_BUDGET,
+    DEFAULT_SUMMARY_CHAR_BUDGET,
+    ChatSession,
+)
 from tesseract.brain.cost.ledger import CostLedger
 from tesseract.brain.tools import AskFn, ToolRegistry
 from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
 from tesseract.kernel.tools.base import ToolContext
 from tesseract.permissions.policy import PermissionPolicy
+
+
+@dataclasses.dataclass(frozen=True)
+class CompactionSettings:
+    """The knobs a fold reads, carried from the parent's config.
+
+    A sub-agent runs against the same context window as its parent, so it has
+    to fold on the operator's settings. Without this it took ChatSession's
+    dataclass defaults, which exist for sessions built outside boot, while the
+    parent ran `roles.yaml::compaction` against the same window.
+
+    Read where the config is (`boot.register_agent_session_tools`) and moved
+    from where the operator moves it: the compact-threshold route calls
+    `update_compaction` on both tools in the same request that writes the file,
+    so a drag reaches a sub-agent as immediately as it reaches a chat.
+    """
+
+    compact_threshold: float = DEFAULT_COMPACT_THRESHOLD
+    headroom_multiplier: float = DEFAULT_HEADROOM_MULTIPLIER
+    keep_recent_turns: int = DEFAULT_KEEP_RECENT_TURNS
+    head_anchor_messages: int = DEFAULT_HEAD_ANCHOR_MESSAGES
+    summary_char_budget: int = DEFAULT_SUMMARY_CHAR_BUDGET
+    #: The character ceiling on one assembled prompt. It belongs to the MODEL
+    #: (`providers.yaml::max_prompt_chars`) and a chain carries its tightest
+    #: member's, so a sub-agent left on the dataclass default was guarded by a
+    #: number belonging to nothing it talks to. A catalog entry accepts
+    #: 424,448 characters and the default is 900,000.
+    prompt_char_budget: int = DEFAULT_PROMPT_CHAR_BUDGET
+
+
+class CarriesCompaction:
+    """A tool that builds sub-agent sessions and holds the fold settings.
+
+    Both tools that call `build_agent_session` need the same two things: to
+    remember what boot read, and to take a new reading when the operator moves
+    one. Two identical copies of that is two chances for a sub-agent started
+    one way to fold differently from one started the other.
+    """
+
+    _compaction: "CompactionSettings | None" = None
+
+    def update_compaction(self, **changes: Any) -> None:
+        """Move the fold settings the NEXT sub-agent will be built with.
+
+        What this holds is what boot read, because `rebuild_adapters`
+        re-registers these tools only when they have gone missing. Without
+        this, a sub-agent started after the operator moves a compaction setting
+        folds on the value the file had at boot while its parent folds on the
+        new one, against the same context window.
+        """
+        if self._compaction is not None and changes:
+            self._compaction = dataclasses.replace(self._compaction, **changes)
 
 
 class AgentBuildError(Exception):
@@ -48,6 +108,7 @@ def build_agent_session(
     ask_fn: AskFn | None,
     cost_ledger: CostLedger | None = None,
     model_role: str | None = None,
+    compaction: CompactionSettings | None = None,
 ) -> ChatSession:
     """Load an agent definition and construct (but do not start) a ChatSession.
 
@@ -81,7 +142,8 @@ def build_agent_session(
     if agent.disabled:
         raise AgentBuildError(
             f"Agent {name!r} is disabled. Re-enable it from the "
-            "Agents tab (frontmatter `disabled: false`) before invoking."
+            "Autonomy panel, under Managed system, or set `disabled: false` on "
+            "its card, before invoking."
         )
 
     if _is_cli_role(agent.model_role):
@@ -91,6 +153,17 @@ def build_agent_session(
             "chat model today. Use delegate_coder / delegate_auditor with the "
             "agent's Role/Rules prepended to the task prompt instead."
         )
+
+    # Past the gates, so a disabled or CLI-wired card is not counted as having
+    # run. The roster's question is whether this card was ever REACHED.
+    from tesseract.agents.invocations import record as _record_invocation
+
+    # The SLUG, which is the file's own name and the key every reader uses:
+    # the roster lists cards by filename stem and looks each one up by that
+    # string. A card whose frontmatter `name` differs from its filename would
+    # otherwise write its history under one name and be read under the other,
+    # so it would run all day and still read as never invoked.
+    _record_invocation(name, via="invoke_agent")
 
     sub_registry = _build_sub_registry(parent_registry, agent)
     system_prompt = _compose_sub_system_prompt(agent, sub_registry.names())
@@ -124,6 +197,8 @@ def build_agent_session(
         or ask_fn
     )
 
+    folding = compaction or CompactionSettings()
+
     return ChatSession(
         adapter=sub_adapter,
         system_prompt=system_prompt,
@@ -135,6 +210,12 @@ def build_agent_session(
         ask_fn=effective_ask_fn,
         policy=policy,
         cost_ledger=cost_ledger,
+        compact_threshold=folding.compact_threshold,
+        headroom_multiplier=folding.headroom_multiplier,
+        keep_recent_turns=folding.keep_recent_turns,
+        head_anchor_messages=folding.head_anchor_messages,
+        summary_char_budget=folding.summary_char_budget,
+        prompt_char_budget=folding.prompt_char_budget,
         # M5 — inherit the parent's concurrent-spawn cap so a sub-agent's own
         # fan-out is bounded too (was uncapped: child registry never got it).
         spawn_max_concurrent=effective_context.spawn_max_concurrent,

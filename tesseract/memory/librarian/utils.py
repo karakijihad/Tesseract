@@ -14,7 +14,7 @@ from tesseract.memory.librarian.constants import (
     _BOOKKEEPING_TITLE_PREFIXES,
     _DISTILL_BULLET_MAX_CHARS,
 )
-from tesseract.memory.types import MemoryFrontmatter
+from tesseract.memory.types import MemoryFrontmatter, summarize
 
 
 def _is_bookkeeping_title(title: str) -> bool:
@@ -44,18 +44,14 @@ def _is_bookkeeping_entry(fm: MemoryFrontmatter) -> bool:
 def _clip_words(text: str, max_len: int) -> str:
     """Clip `text` to ≤max_len chars on a word boundary, appending '…' if cut.
 
-    Hard-slices when no whitespace fits in range. Trailing '…' is included
-    in the budget — the rendered string is never longer than max_len.
+    The librarian's name for `memory.types.summarize`. One implementation, so
+    two callers cannot disagree about where a summary ends.
     """
     if max_len <= 0:
         return ""
-    if not text or len(text) <= max_len:
+    if not text:
         return text
-    head = text[: max_len - 1]
-    cut = head.rfind(" ")
-    if cut <= 0:
-        return head.rstrip() + "…"
-    return head[:cut].rstrip() + "…"
+    return summarize(text, max_len)
 
 
 def _anchor_slug(title: str) -> str:

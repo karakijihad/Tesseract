@@ -2,8 +2,8 @@
 
 Single envelope per boot. Shape locked in
 `_shared/recovery-state-machine.md §Recovery summary envelope`.
-The Mirror dashboard's Recovery pane (AU-7) consumes this directly;
-the Telegram nudge (AU-2 S2) renders a one-line digest.
+The Mirror dashboard's Recovery pane consumes this directly;
+the Telegram nudge renders a one-line digest.
 """
 
 from __future__ import annotations
@@ -71,11 +71,12 @@ def empty_scan_counts() -> dict[str, dict[str, int]]:
     ``schedule.completed`` / ``schedule.failed`` count what landed in
     runs.jsonl during the lookback window — these are the rows that
     DID complete (engine writes them post-completion). Crash-interrupted
-    firings leave no row at all in S1; AU-2 S2 will add a started-row
-    log marker so the bucket gains true ``interrupted`` semantics.
+    firings leave no row at all; a started-row log marker would give
+    the bucket true ``interrupted`` semantics.
     """
     return {
         "workers": {"preserved": 0, "interrupted": 0, "failed": 0},
+        "turns": {"interrupted": 0, "preserved": 0, "unreadable": 0},
         "schedule": {"completed": 0, "failed": 0},
         "agenda": {"resume_queued": 0, "blocked": 0, "preserved": 0},
     }
@@ -110,8 +111,16 @@ def build_recovery_event(summary: RecoverySummary) -> WorkspaceEvent:
 
 def _render_summary_text(summary: RecoverySummary) -> str:
     """One-line plain-text summary that fits in the inbox preview and
-    the AU-2 S2 Telegram nudge."""
+    the Telegram nudge."""
     parts: list[str] = []
+    # First, because it is the only line here about a person who was left
+    # waiting. Everything else on this envelope is about the machine.
+    cut_short = (summary.scans.get("turns") or {}).get("interrupted", 0)
+    if cut_short:
+        parts.append(
+            f"{cut_short} conversation{'s' if cut_short != 1 else ''} stopped "
+            f"mid answer and got no reply"
+        )
     sched = summary.scans.get("schedule") or {}
     failed_runs = sched.get("failed", 0)
     if failed_runs:

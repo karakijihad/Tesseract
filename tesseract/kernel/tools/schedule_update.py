@@ -1,9 +1,12 @@
 """schedule_update tool — adjust a registered job at runtime.
 
-AU-19. ASK-gated (operator-visible config edit). Accepts any combination
+ASK-gated (operator-visible config edit). Accepts any combination
 of ``cadence``/``enabled``/``model_role``; routes to the matching
 ``SchedulerEngine`` setter (``set_cadence``/``set_enabled``/``set_model_role``).
 At least one field must be present.
+
+The setters decide what a job the app ships will accept, and the refusal comes
+back here as the tool's error. This module states no rule of its own.
 """
 
 from __future__ import annotations
@@ -19,7 +22,12 @@ class ScheduleUpdateInput(BaseModel):
     name: str = Field(description="Registered job name.")
     cadence: str | None = Field(
         default=None,
-        description="New interval shorthand or cron. Leave unset to keep current.",
+        description=(
+            "New interval shorthand or cron. On a job the app ships, only one "
+            "that fires at a set time of day takes this, and only to move it "
+            "to another time: how often the app's own work runs is set by the "
+            "app. Leave unset to keep current."
+        ),
     )
     enabled: bool | None = Field(
         default=None,
@@ -28,7 +36,7 @@ class ScheduleUpdateInput(BaseModel):
     summary: str | None = Field(
         default=None,
         description=(
-            "Replace what this job says it is for — the line the operator reads "
+            "Replace what this job says it is for. This is the line the operator reads "
             "in WHAT-RUNS.md. Only their own rows: what a job the app ships is "
             "for belongs to the app. Leave unset to keep current."
         ),
@@ -73,9 +81,12 @@ class ScheduleUpdateTool(Tool):
         "tracker reports it has no summary."
     )
     not_when: ClassVar[str] = (
-        "deleting a job entirely, which is `schedule_remove`; firing it once now, which is "
-        "`schedule_run`; a one-time reminder, which is `alarm_set`."
+        "changing how often a job the app ships runs, which is set by the app "
+        "and refused here: turn that job off instead. Deleting a job entirely "
+        "is `schedule_remove`; firing it once now is `schedule_run`; a one-time "
+        "reminder is `alarm_set`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

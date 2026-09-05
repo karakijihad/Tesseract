@@ -1,1 +1,1 @@
-"""Per-kind attachment decoders (CR-2) — voice, image, document."""
+"""Per-kind attachment decoders — voice, image, document."""

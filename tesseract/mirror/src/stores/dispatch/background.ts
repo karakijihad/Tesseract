@@ -38,8 +38,8 @@ export function handleBackground(env: Envelope): void {
       if (!_observerUnavailableToastShown) {
         const msg =
           data.reason === "observer_error"
-            ? "Observer error — check server logs"
-            : "Observer unavailable — check API keys";
+            ? "The observer hit an error. Check the server logs."
+            : "The observer is unavailable. Check the API keys.";
         useToastStore.getState().push(msg, "error");
         _observerUnavailableToastShown = true;
       }

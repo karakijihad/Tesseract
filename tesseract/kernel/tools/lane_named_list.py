@@ -1,6 +1,6 @@
 """lane_named_list — enumerate all named-lane bindings.
 
-X-5 Session A. Read-only (AUTO). Returns every persistent name→lane_id
+Read-only (AUTO). Returns every persistent name→lane_id
 binding known to the NamedLaneManager. Does not filter orphans (bindings
 whose underlying lane is closed) — caller uses lane_status to probe
 liveness."""
@@ -33,6 +33,7 @@ class LaneNamedListTool(Tool):
         "one name's binding, which is `lane_named_get`; live lanes by id, which is `lane_list`; "
         "a binding's liveness, which is `lane_status`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

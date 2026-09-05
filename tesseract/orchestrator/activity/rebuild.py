@@ -1,9 +1,9 @@
-"""AS-1 Phase 6 — re-index disk-durable substrates into the activity registry.
+"""Re-index disk-durable substrates into the activity registry.
 
 Runs at boot in BOTH processes that hold an Activity registry:
 - the **Mirror** process (before the live push subscriber connects), so the
   registry reflects already-running persistent work; and
-- the **controller** daemon (``daemon.py::_seed_activity_registry``, AS-1 gap-b),
+- the **controller** daemon (``daemon.py::_seed_activity_registry``),
   so its own registry isn't empty after a restart — otherwise live lane
   ``update_lane_state`` transitions are dropped and named lanes show under their
   bare id until the next ``ensure``.
@@ -35,7 +35,7 @@ from tesseract.orchestrator.activity.registry import (
 
 log = logging.getLogger(__name__)
 
-# Lifecycles/statuses that mean "no longer running" — skipped at rebuild so
+# Lifecycles/statuses that mean "not running" — skipped at rebuild so
 # the registry seeds only actually-live work (closed lanes are already
 # archived out of ``list_lane_ids``; closed sessions still have records).
 # ``closing`` is transitionally dead — its close→removed push may already have

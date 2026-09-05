@@ -57,6 +57,66 @@ function divergenceSummary(d: Divergence): string {
   return parts.join(" and ");
 }
 
+// Where the licence lives, and what the app is built from. The AGPL asks that
+// people who use the software can get its source; the app said nothing about
+// its own terms until this block existed. The repository is the canonical
+// place for both files, so these link out rather than bundling a copy that
+// could fall behind.
+//
+// The copyright line is one line beginning "Copyright" on purpose, link and
+// all: `test_no_pii_in_production_tree.py` exempts exactly that shape, so the
+// author's name and profile ride inside the notice rather than needing the
+// guard widened for them. Do not let a formatter wrap this line. Splitting the
+// anchor onto its own line puts the handle outside the exemption and fails
+// that test, which is the intended outcome rather than a nuisance.
+const REPO = "https://github.com/karakijihad/Tesseract/blob/main";
+
+export function LicenceBlock() {
+  return (
+    <Block title="Licence">
+      <div className="system-grid">
+        <div className="system-row">
+          <span className="system-label t-meta">licence</span>
+          <span className="system-value">GNU Affero General Public License, version 3 or later</span>
+        </div>
+        <div className="system-row">
+          <span className="system-label t-meta">copyright</span>
+          <span className="system-value">
+            Copyright (C) 2026 TESSERACT. Developed and owned by <a href="https://github.com/karakijihad" target="_blank" rel="noopener noreferrer">Jihad Karaki</a>.
+          </span>
+        </div>
+        <div className="system-row">
+          <span className="system-label t-meta">source</span>
+          <span className="system-value">
+            <span className="system-update-note t-meta">
+              You can read, change and share every line that runs on your
+              machine. If you run a modified copy as a service other people
+              reach over a network, they are entitled to your source.{" "}
+            </span>
+            <a href={`${REPO}/LICENSE`} target="_blank" rel="noopener noreferrer">
+              Read the licence
+            </a>
+          </span>
+        </div>
+        <div className="system-row">
+          <span className="system-label t-meta">built from</span>
+          <span className="system-value">
+            <span className="system-update-note t-meta">
+              The speech models, voices, wake word and software libraries each
+              carry their own terms. One of them, the wake word model, has an
+              unsettled licence worth reading before you rely on it
+              commercially.{" "}
+            </span>
+            <a href={`${REPO}/NOTICE.md`} target="_blank" rel="noopener noreferrer">
+              Read the notices
+            </a>
+          </span>
+        </div>
+      </div>
+    </Block>
+  );
+}
+
 export function AboutSection() {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const behind = useUpdateStore((s) => s.behind);
@@ -124,7 +184,7 @@ export function AboutSection() {
               <>
                 {behind > 0 && !applying && (
                   <span className="system-update-note t-meta">
-                    {behind} commit{behind === 1 ? "" : "s"} behind — apply from
+                    {behind} commit{behind === 1 ? "" : "s"} behind. Apply it from
                     the update chip in the top HUD{" "}
                   </span>
                 )}
@@ -162,7 +222,7 @@ export function AboutSection() {
             <span className="system-label t-meta">new version</span>
             <span className="system-value">
               <span className="system-update-note t-meta">
-                TESSERACT {exeVersion} is available — downloads, verifies, and
+                TESSERACT {exeVersion} is available. It downloads, verifies, and
                 restarts the app{" "}
               </span>
               <Button
@@ -179,7 +239,7 @@ export function AboutSection() {
             <span className="system-label t-meta">divergence</span>
             <span className="system-value">
               <span className="system-update-note t-meta">
-                local history diverged from origin/main —{" "}
+                local history has moved away from origin/main.{" "}
                 {describeDivergence(divergence)}
               </span>{" "}
               <Button
@@ -192,6 +252,7 @@ export function AboutSection() {
         )}
       </div>
       </Block>
+      <LicenceBlock />
       <ModeSection />
       <RuntimeSection />
       {confirmingDiscard && divergence && (

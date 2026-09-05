@@ -1,0 +1,234 @@
+/* The conversations rail: new, history and archive in one surface. */
+
+.chat-rail {
+  flex: none;
+  width: 264px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-surface);
+  border-right: var(--stroke-1) solid var(--panel-border);
+}
+
+.chat-rail__new {
+  padding: var(--space-14) var(--space-10) var(--space-12);
+}
+
+.chat-rail__new .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+/* One type tier throughout, the caption tier the New chat button wears.
+   Scoped so they outrank `.t-caption`'s own colour. */
+.chat-rail .chat-rail__day,
+.chat-rail .chat-rail__running,
+.chat-rail .chat-rail__time,
+.chat-rail .chat-rail__empty {
+  color: var(--text-meta);
+}
+
+.chat-rail .chat-rail__title {
+  color: var(--text-secondary);
+}
+
+.chat-rail .chat-rail__title.is-current {
+  color: var(--text-primary);
+}
+
+.chat-rail__running {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: 0 var(--space-14) var(--space-10);
+}
+
+.chat-rail__pip {
+  width: var(--space-6);
+  height: var(--space-6);
+  border-radius: var(--radius-pill);
+  background: var(--text-disabled);
+  flex: none;
+}
+
+.chat-rail__pip--live {
+  background: var(--ok);
+  box-shadow: 0 0 var(--space-6) var(--ok-bold);
+  animation: chat-rail-pulse var(--motion-beat) ease-in-out infinite;
+}
+
+@keyframes chat-rail-pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.chat-rail__list {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 var(--space-8) var(--space-12);
+  min-height: 0;
+}
+
+.chat-rail__day {
+  padding: var(--space-12) var(--space-8) var(--space-6);
+}
+
+.chat-rail__empty {
+  padding: var(--space-12) var(--space-8);
+}
+
+/* A bare line. `Row` owns the cursor, focus ring and Enter/Space. */
+.chat-rail__row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-7) var(--space-8);
+  border-radius: var(--radius-sm);
+}
+
+.chat-rail__row:hover {
+  background: var(--wash-sm);
+}
+
+.chat-rail__dot {
+  width: var(--space-5);
+  height: var(--space-5);
+  border-radius: var(--radius-pill);
+  background: var(--text-ghost);
+  flex: none;
+}
+
+.chat-rail__dot--live {
+  background: var(--ok);
+  animation: chat-rail-pulse var(--motion-beat) ease-in-out infinite;
+}
+
+/* Blocked on a tool ASK. Steady, not pulsing. */
+.chat-rail__flag {
+  flex: none;
+  width: var(--space-5);
+  height: var(--space-5);
+  border-radius: var(--radius-pill);
+  background: var(--warn);
+  box-shadow: 0 0 var(--space-4) var(--warn-bold);
+}
+
+.chat-rail__title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-rail__time {
+  flex: none;
+}
+
+/* Hidden until the row is reached, so the list reads as a list. */
+.chat-rail__acts {
+  display: none;
+  gap: var(--space-2);
+  flex: none;
+}
+
+.chat-rail__row:hover .chat-rail__acts,
+.chat-rail__row:focus-within .chat-rail__acts {
+  display: flex;
+}
+
+.chat-rail__row:hover .chat-rail__time,
+.chat-rail__row:focus-within .chat-rail__time {
+  display: none;
+}
+
+.chat-rail__here {
+  position: absolute;
+  left: 0;
+  top: var(--space-8);
+  bottom: var(--space-8);
+  width: var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+}
+
+.chat-rail__confirm {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-6) var(--space-8) var(--space-8);
+}
+
+.chat-rail__row-error {
+  padding: 0 var(--space-8) var(--space-8);
+  color: var(--accent-error);
+}
+
+.chat-rail__gear {
+  margin-left: auto;
+}
+
+.chat-rail__prefs {
+  padding: 0 var(--space-14) var(--space-12);
+}
+
+/* Both numbers in one aligned grid: label, then its stepper. */
+.chat-rail__prefs-grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: var(--space-8) var(--space-10);
+}
+
+.chat-rail .chat-rail__pref-label,
+.chat-rail .chat-rail__pref-unit {
+  color: var(--text-meta);
+}
+
+.chat-rail__stepper {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.chat-rail__pref-value {
+  min-width: var(--space-20);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-rail .chat-rail__prefs-error {
+  padding-bottom: var(--space-8);
+  color: var(--accent-error);
+}
+
+/* Selection mode. The box sits beside the row rather than inside it, so the
+   row keeps its own full click target and the box keeps its own. */
+.chat-rail__line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+.chat-rail__line > .chat-rail__row {
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-rail__select {
+  display: flex;
+  align-items: center;
+  padding-left: var(--space-6);
+  flex: none;
+}
+
+.chat-rail__select-all {
+  padding: var(--space-8) var(--space-10) var(--space-4);
+}

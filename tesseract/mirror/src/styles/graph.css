@@ -1,0 +1,587 @@
+/* The graph surface.
+ *
+ * The way in runs the full width, because there is no picture yet. Once one is
+ * chosen it is two columns: everything made of words on the left, the picture
+ * on the right taking all of what is left. Nothing sits UNDER the canvas and
+ * nothing is beside it but the one column, so the map is a rectangle whose size
+ * does not change with what else is being read. The key to the colours and the
+ * hint are drawn over the picture for the same reason.
+ *
+ * Nothing in this file carries a colour of its own. The six kind colours are
+ * `--graph-*` in `tokens.css`, and the rules below forward them: the picture's
+ * palette and the key's dots are the same six values, so a colour changed in
+ * the brand file changes both. */
+
+.graph-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+  height: 100%;
+  min-height: 0;
+  /* The map takes what the controls above it leave, and nothing sits under it
+     any more: the key and the hint are drawn over the picture, the counts are
+     on one line with the drawn sentence, and what the map does not reach is on
+     the way in. That is what stops the canvas being outranked, and it is why
+     this can stay `auto` rather than becoming `hidden`.
+
+     `hidden` was the first answer here and it was the wrong one: the wheel over
+     the canvas belongs to the picture, so a panel too short for the controls
+     would have clipped them with nothing anywhere to scroll. `auto` costs
+     nothing when it fits, and the map fits. */
+  overflow-y: auto;
+  padding: var(--space-12);
+  /* The container is the SURFACE, because a container query styles a
+     container's descendants and never the container itself. The panel is
+     draggable, so the window's width answers a different question. */
+  container-type: inline-size;
+  container-name: graph;
+}
+
+/* The backend's sentence over the picture. Body rank, not meta: it says how
+ * much of the library is drawn, which is the first thing a reader has to
+ * know and not an aside. */
+.graph-said {
+  color: var(--ink-72);
+  margin: 0;
+}
+
+.graph-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+}
+
+.graph-legend__count {
+  margin-left: var(--space-6);
+}
+
+/* Two columns: everything made of words on the left, the picture on the right.
+   The operator's split, and the reason is that a control above the map and a
+   record beside it were each taking a bite out of the map, so an open record
+   halved it. Now the map is one rectangle whose size does not depend on what
+   else is being read. */
+.graph-body {
+  display: flex;
+  gap: var(--space-12);
+  flex: 1;
+  /* A floor under the row rather than under the canvas: the canvas has no
+     content of its own to hold itself open, and a floor on it would stretch
+     the column beside it to match. */
+  min-height: 240px;
+  min-width: 0;
+}
+
+/* The words. A readable column that does not grow into the picture, and it
+   scrolls on its own so an open record cannot push the map anywhere. */
+.graph-side {
+  flex: 0 0 clamp(260px, 28%, 400px);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+  overflow-y: auto;
+}
+
+/* Every card in the rail keeps its own height. Without this a flex column that
+   overflows squeezes its children instead of scrolling, and the cards nearest
+   the bottom lose their content rather than going below the fold. */
+.graph-side > * {
+  flex-shrink: 0;
+}
+
+/* The open record, first in the rail. It does NOT scroll on its own: the rail
+   is the scroller, and a scrolling card inside a scrolling column gives a
+   reader two bars to guess between and hides the record's own end. */
+.graph-inspector {
+  min-width: 0;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-12);
+  border: var(--stroke-1) solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+
+.graph-inspector__name {
+  margin: 0;
+  font-size: var(--t-sub-size);
+  font-family: var(--t-sub-family);
+  color: var(--ink-100);
+}
+
+.graph-inspector__where {
+  margin: 0;
+  word-break: break-all;
+}
+
+/* The record's own fields, in the order the file carries them. A two-column
+ * grid rather than a table, so a long value wraps under its key instead of
+ * stretching the column every other row sits in. */
+.graph-props {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: var(--space-4) var(--space-10);
+  margin: 0;
+}
+
+.graph-props__row {
+  display: contents;
+}
+
+.graph-props__key {
+  margin: 0;
+  word-break: break-word;
+}
+
+.graph-props__value {
+  margin: 0;
+  color: var(--ink-72);
+  word-break: break-word;
+}
+
+/* A field the record carries and did not fill. Dimmer than a value, because
+ * `Empty` is the app's word and not the record's. */
+.graph-props__value--empty {
+  color: var(--ink-38);
+}
+
+/* Machine text, never markdown. A run's payload is a structure, and reading
+ * it as prose would turn its punctuation into headings. */
+.graph-raw {
+  margin: 0;
+  padding: var(--space-8);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta-size);
+  color: var(--ink-72);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+.graph-touches {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* One connection: the record at the other end, where it came from, and the
+ * line that supports it. Three stacked lines, which is this surface's own row
+ * shape; `Row` owns how it activates. */
+.graph-touch {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-8);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+
+.graph-touch__name {
+  color: var(--ink-100);
+}
+
+.graph-touch__where {
+  word-break: break-all;
+}
+
+/* The picture takes whatever height is left. `min-height: 0` because a flex
+ * child's default floor is its content, and a canvas has none — without it the
+ * stage grows past the panel and the page scrolls instead of the picture
+ * filling it. */
+.graph-stage {
+  position: relative;
+  flex: 1;
+  /* Its height is the row's, which carries the floor. The canvas has no
+     content of its own to hold itself open, so without a floor somewhere
+     every other band on this surface outranked the one thing it exists to
+     show and the map drew in about a hundred pixels. */
+  min-height: 0;
+  min-width: 0;
+  border: var(--stroke-1) solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-deep);
+  overflow: hidden;
+}
+
+/* Before a way in is chosen there is no picture, and the stage says so rather
+   than standing empty. The two columns are the same two either way, which is
+   what stops the surface reflowing when a way in is picked. */
+.graph-stage--waiting {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: var(--space-16);
+}
+
+/* What can be done to the picture from the block that describes it. */
+.graph-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+}
+
+/* The picture's labels are painted by script, which takes a font string and
+ * not CSS. The type still comes from here: `brand.ts` reads this element's
+ * own resolved `font-size`, because reading the TOKEN would hand it the
+ * unevaluated `calc()` and `ctx.font` ignores an invalid value in silence. */
+.graph-canvas {
+  font-size: var(--t-caption-size);
+  font-family: var(--t-caption-family);
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  touch-action: none;
+}
+
+.graph-canvas:active {
+  cursor: grabbing;
+}
+
+/* Over the picture rather than under it: the stage takes every pixel the
+ * controls leave, so anything under it is height taken from the map. */
+/* One line, with the rest on hover, so it has to take the pointer: it was
+   five lines of paragraph lying across the foot of the canvas and covering
+   the records underneath it. */
+.graph-hint {
+  position: absolute;
+  right: var(--space-10);
+  bottom: var(--space-8);
+  margin: 0;
+  cursor: help;
+  border-bottom: var(--stroke-1) dotted var(--border-muted);
+}
+
+/* The key, standing in the top left corner of the picture it explains.
+   A column and not a row: across the bottom it wrapped onto a second line at
+   any real width and ran under the records, so the thing explaining the
+   picture was sitting on it. A column is as tall as it has entries and never
+   as wide as the canvas.
+
+   Its clicks pass through to the canvas: it is a key and not a control, and a
+   dead patch over the map would be a place the map cannot be dragged from. */
+.graph-key {
+  position: absolute;
+  left: var(--space-10);
+  top: var(--space-10);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  pointer-events: none;
+}
+
+.graph-key__item {
+  display: grid;
+  /* Three columns, so the marks line up under each other and the counts line
+     up under each other however long a name is. A flex row let every entry
+     start its count wherever its own name happened to end. */
+  grid-template-columns: var(--space-8) 1fr auto;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+.graph-key__count {
+  color: var(--ink-38);
+}
+
+/* The dot IS the colour, so it is the one thing here big enough to read at
+ * meta rank. The base is the colour a kind nobody has coloured draws in, which
+ * matches what the canvas falls back to. */
+.graph-key__dot {
+  width: var(--space-8);
+  height: var(--space-8);
+  border-radius: var(--radius-pill);
+  background: var(--neutral);
+  flex-shrink: 0;
+}
+
+/* The kinds that are EVENTS rather than knowledge wear their shape here too,
+   because a key that draws a disc for something the map draws as a triangle
+   is teaching a different alphabet than the picture uses. Three shapes, three
+   meanings: pointing up is something the body did, on its corner is something
+   found wrong, square is something it decided to do. Everything the machine
+   KNOWS stays a disc, so the split a reader has to learn is one split. */
+.graph-key__dot--run {
+  border-radius: 0;
+  clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+}
+
+.graph-key__dot--feedback {
+  border-radius: 0;
+  clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+}
+
+.graph-key__dot--agenda {
+  border-radius: var(--radius-xs);
+}
+
+.graph-key__dot--memory { background: var(--graph-memory); }
+.graph-key__dot--wiki_page { background: var(--graph-wiki); }
+.graph-key__dot--raw_source { background: var(--graph-source); }
+.graph-key__dot--entity { background: var(--graph-entity); }
+.graph-key__dot--run { background: var(--graph-run); }
+.graph-key__dot--feedback { background: var(--graph-feedback); }
+.graph-key__dot--tree { background: var(--graph-tree); }
+.graph-key__dot--tag { background: var(--graph-tag); }
+.graph-key__dot--agenda { background: var(--graph-agenda); }
+.graph-key__dot--capability { background: var(--graph-capability); }
+.graph-key__dot--playbook { background: var(--graph-playbook); }
+
+/* ── Where a visit starts ────────────────────────────────────────────────
+ *
+ * The map opens on the ways in rather than on the library, so this is the
+ * first thing on the surface and it is a list of choices. Each row stacks its
+ * name over what it shows, which is why it carries a class of its own: the
+ * shared row is a line, and this one is two. */
+.graph-ways {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+}
+
+.graph-ways__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.graph-ways__row,
+.graph-find__hit {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.graph-ways__name {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-6);
+  color: var(--ink-100);
+}
+
+.graph-ways__why,
+.graph-find__where {
+  word-break: break-word;
+}
+
+/* Finding a record by name. The field grows and the hits sit under it, over
+ * whatever is below: a list that pushed the picture down the screen every
+ * time a letter was typed would move the thing being searched for. */
+.graph-find {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* It takes the room left over BESIDE the other two controls, and only there.
+   Growing is a fact about the toolbar's row and not about the search: on the
+   entry state, where it sits in a column, the same rule stretched it down the
+   panel and left the ways in at the bottom of a field of nothing. */
+.graph-tools .graph-find {
+  flex: 1 1 220px;
+}
+
+.graph-find__field {
+  width: 100%;
+}
+
+.graph-find__hits {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  margin-top: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 260px;
+  overflow-y: auto;
+  padding: var(--space-4);
+  border: var(--stroke-1) solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  box-shadow: 0 8px 32px var(--scrim-lg);
+}
+
+.graph-find__name {
+  color: var(--ink-100);
+}
+
+/* The controls over the picture: back to the ways in, the search, and how far
+ * out the links are followed. One row, because all three are about the view
+ * and none of them is about a record. */
+.graph-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-8);
+}
+
+.graph-tools__reach {
+  flex-wrap: wrap;
+}
+
+/* Narrowing what is drawn. Folded away, because six controls above a picture
+ * is a form, and never silently: the head carries how many are on. */
+.graph-filters {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.graph-filters__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.graph-filters__on {
+  margin-left: var(--space-6);
+}
+
+.graph-filters__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: var(--space-8);
+  border: var(--stroke-1) solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+
+.graph-filters__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.graph-filters__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+}
+
+/* A checklist reads down, one to a line. It was `flex-wrap` from the chip row
+   it replaced, which put three boxes on one line and ran each label into the
+   next box: a list you have to parse before you can read it is not a
+   checklist. */
+.graph-filters__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* Whether the group is narrowing anything, on the same line as its name and
+   pushed to the end of it. Without the gap the two ran together as one word:
+   "what kind of recordall of them". */
+.graph-filters__state {
+  margin-left: var(--space-8);
+  color: var(--text-meta);
+}
+
+.graph-filters__group > .t-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-8);
+}
+
+/* The records held on the picture while something else is looked at. */
+.graph-pins {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+}
+
+/* What can be done to the picture from an open record. */
+.graph-inspector__acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+}
+
+/* The cockpit's default panel is narrower than this was drawn for. Under it
+ * the legend and the key stack rather than wrapping mid-row, and the picture
+ * keeps a floor so it does not collapse to nothing between two lists. */
+@container graph (max-width: 560px) {
+  .graph-legend,
+  .graph-key {
+    flex-direction: column;
+    gap: var(--space-6);
+  }
+
+  /* Side by side, the words and the picture are both too narrow to be either.
+     They stack, the picture keeps a fixed height, and the surface scrolls. */
+  .graph-body {
+    flex-direction: column;
+  }
+
+  .graph-side {
+    flex: 0 0 auto;
+    overflow-y: visible;
+  }
+
+  .graph-stage {
+    flex: 0 0 260px;
+  }
+
+  /* Too little width for a key beside a picture. It goes back under the
+     canvas, where a narrow panel has the scroll to reach it. */
+  .graph-key {
+    position: static;
+    max-width: none;
+  }
+
+  /* The three controls over the picture stack rather than squeezing the
+     search field to nothing. */
+  .graph-tools {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+
+/* ── The map, drawn inside the Atlas room ────────────────────────────────
+ *
+ * The same surface as the panel, given a height. Inside a room it has no
+ * panel to fill, so without one the canvas collapses to nothing: a flex child
+ * with `height: 100%` in an auto-height parent resolves to zero, and the map
+ * would be a caption over a hairline.
+ *
+ * Tall enough for the picture to be a picture and short enough that the bands
+ * under it are still on the screen with it, which is the whole reason it is
+ * here rather than behind a door.
+ */
+/* The Atlas room IS the map. It fills the room rather than sitting at a fixed
+   height with bands under it: everything the room used to say beneath the
+   picture is a tab beside it now, so there is nothing left to leave room for.
+   The floor is what stops the canvas collapsing in a parent whose own height
+   is content-driven. */
+.atlas-map {
+  flex: 1;
+  min-height: var(--atlas-map-h);
+  display: flex;
+  flex-direction: column;
+}
+
+/* The embedded copy draws no header of its own and needs no padding: the room
+   already provides both. */
+.graph-view--embedded {
+  padding: 0;
+  height: 100%;
+}
+
+.atlas-map__acts {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-8);
+}

@@ -10,7 +10,7 @@ import { StreamingBubble } from '../components/chat/StreamingBubble';
 import { ApprovalCard } from '../components/chat/ApprovalCard';
 import { CostOverageCard } from '../components/chat/CostOverageCard';
 import { ChatInput } from '../components/chat/ChatInput';
-import { ChatManager } from '../components/chat/ChatManager';
+import { ChatRail, fullStamp } from '../components/chat/ChatRail';
 import { CommandTips } from '../components/chat/CommandTips';
 import { DisconnectedChip } from '../components/chat/DisconnectedChip';
 import { TodosCard } from '../components/chat/TodosCard';
@@ -19,6 +19,8 @@ import { useCostStore } from '../stores/cost';
 import { useTasksStore } from '../stores/tasks';
 import { useStickToBottom } from '../hooks/useStickToBottom';
 import { Button } from '../components/common/Button';
+import { EdgeTab } from '../components/common/EdgeTab';
+import { useUIStore } from '../stores/ui';
 
 // `.chat-scroll` spaces in-flow rows with `gap: 14px` (chat.css). The
 // virtualized rows are position:absolute and never receive that flex gap, so
@@ -52,6 +54,12 @@ export function ChatView() {
         if (m.status === 'complete') lastIdx = i;
       } else if (m.role === 'user' && m.status !== 'interrupted') {
         lastUserIdx = i;
+      } else if (m.role === 'runtime') {
+        // Nothing to regenerate from. The turn under this note was started by
+        // the runtime, so there is no operator message to replay, and leaving
+        // the previous one standing would offer to re-run something the
+        // assistant was not answering.
+        lastUserIdx = -1;
       }
     }
     return { lastAssistantCompleteIdx: lastIdx, previousUserByIdx: prevUser, hasQueued: queued };
@@ -103,6 +111,17 @@ export function ChatView() {
 
   const isEmpty = messages.length === 0 && !isStreaming && pendingApprovals.length === 0;
   const todoCount = useTasksStore(s => s.items.length);
+  const railOpen = useUIStore(s => s.chatRailOpen);
+  const setRailOpen = useUIStore(s => s.setChatRailOpen);
+
+  // The rail's rows carry a time; the conversation you are actually in carries
+  // the exact stamp, and only that. Its name is one line away in the rail and
+  // repeating it over the transcript said the same thing twice.
+  //
+  // Read from the open-chat store rather than the list of records, because a
+  // connection opens on a chat it has just seeded and no record exists for it
+  // yet. Empty until the backend says when, and then nothing is drawn.
+  const openedAt = useConversationStore(s => s.getActiveSlice()?.createdAt ?? '');
 
   const renderBubble = (m: typeof messages[number], idx: number) => {
     const prevIdx = previousUserByIdx.get(idx);
@@ -122,75 +141,91 @@ export function ChatView() {
 
   return (
     <div className="chat-view">
-      <ChatManager />
-      <div className="chat-scroll" ref={scrollRef} onScroll={handleScroll}>
-        {isEmpty ? (
-          <div className="chat-empty-state">
-            <div className="chat-empty-headline">Start a conversation</div>
-            <CommandTips />
+      <ChatRail />
+      <div className="chat-thread">
+        {/* One control on the boundary, both ways. */}
+        <EdgeTab
+          side="left"
+          inset
+          onClick={() => setRailOpen(!railOpen)}
+          ariaLabel={railOpen ? 'Hide the conversations rail' : 'Show the conversations rail'}
+        >
+          {railOpen ? '◂' : '▸'}
+        </EdgeTab>
+        {openedAt && (
+          <div className="chat-head">
+            <span className="chat-head__when t-caption">{fullStamp(openedAt)}</span>
           </div>
-        ) : (
-          <>
-            {/* Virtualized history — only viewport rows (+overscan) hit the DOM. */}
-            <div
-              style={{
-                height: `${rowVirtualizer.getTotalSize()}px`,
-                width: '100%',
-                position: 'relative',
-                flexShrink: 0,
-              }}
-            >
-              {virtualRows.map((vi) => {
-                const row = visibleRows[vi.index];
-                return (
-                  <div
-                    key={vi.key}
-                    data-index={vi.index}
-                    ref={rowVirtualizer.measureElement}
-                    style={{
-                      position: 'absolute',
-                      top: 0,
-                      left: 0,
-                      width: '100%',
-                      transform: `translateY(${vi.start}px)`,
-                      // 14px inter-row spacing replaces the flex `gap` that
-                      // absolute rows can't receive. The LAST row gets 0 so the
-                      // parent's flex gap (to StreamingBubble / cards) isn't
-                      // doubled into 28px at the history↔trailing seam.
-                      paddingBottom: vi.index === visibleRows.length - 1 ? 0 : ROW_GAP_PX,
-                    }}
-                  >
-                    {renderBubble(row.m, row.idx)}
-                  </div>
-                );
-              })}
-            </div>
-            {isStreaming && <StreamingBubble />}
-            {queuedRows.map(({ m, idx }) => renderBubble(m, idx))}
-            {pendingOverageAsks.map((ask) => (
-              <CostOverageCard key={ask.call_id} ask={ask} />
-            ))}
-            {pendingApprovals.map((a, idx) => (
-              <ApprovalCard key={a.call_id} approval={a} isPrimary={idx === 0} />
-            ))}
-          </>
         )}
+        <div className="chat-scroll" ref={scrollRef} onScroll={handleScroll}>
+          {isEmpty ? (
+            <div className="chat-empty-state">
+              <div className="chat-empty-headline">Start a conversation</div>
+              <CommandTips />
+            </div>
+          ) : (
+            <>
+              {/* Virtualized history — only viewport rows (+overscan) hit the DOM. */}
+              <div
+                style={{
+                  height: `${rowVirtualizer.getTotalSize()}px`,
+                  width: '100%',
+                  position: 'relative',
+                  flexShrink: 0,
+                }}
+              >
+                {virtualRows.map((vi) => {
+                  const row = visibleRows[vi.index];
+                  return (
+                    <div
+                      key={vi.key}
+                      data-index={vi.index}
+                      ref={rowVirtualizer.measureElement}
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        transform: `translateY(${vi.start}px)`,
+                        // 14px inter-row spacing replaces the flex `gap` that
+                        // absolute rows can't receive. The LAST row gets 0 so the
+                        // parent's flex gap (to StreamingBubble / cards) isn't
+                        // doubled into 28px at the history↔trailing seam.
+                        paddingBottom: vi.index === visibleRows.length - 1 ? 0 : ROW_GAP_PX,
+                      }}
+                    >
+                      {renderBubble(row.m, row.idx)}
+                    </div>
+                  );
+                })}
+              </div>
+              {isStreaming && <StreamingBubble />}
+              {queuedRows.map(({ m, idx }) => renderBubble(m, idx))}
+              {pendingOverageAsks.map((ask) => (
+                <CostOverageCard key={ask.call_id} ask={ask} />
+              ))}
+              {pendingApprovals.map((a, idx) => (
+                <ApprovalCard key={a.call_id} approval={a} isPrimary={idx === 0} />
+              ))}
+            </>
+          )}
+        </div>
+        {userScrolledUp && (
+          <div className="scroll-to-bottom">
+            <Button tone="primary" onClick={stickToLatest} ariaLabel="Jump to latest">
+              ↓ Jump to latest
+            </Button>
+          </div>
+        )}
+        <ActivityTaskbar />
+        {todoCount > 0 && (
+          <div className="chat-todos-strip">
+            <TodosCard />
+          </div>
+        )}
+        <DisconnectedChip />
+        <ChatInput variant="inline" />
       </div>
-      {userScrolledUp && (
-        <div className="scroll-to-bottom">
-          <Button tone="primary" onClick={stickToLatest} ariaLabel="Jump to latest">
-            ↓ Jump to latest
-          </Button>
-        </div>
-      )}
-      <ActivityTaskbar />
-      {todoCount > 0 && (
-        <div className="chat-todos-strip">
-          <TodosCard />
-        </div>
-      )}
-      <DisconnectedChip />
-      <ChatInput variant="inline" />
     </div>
   );
 }

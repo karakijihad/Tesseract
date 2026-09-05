@@ -119,8 +119,8 @@ export function TopStatusHud() {
         ) : null}
         {speakingLane && (
           <Hint label={speakingLane.isFallback
-                ? `${speakingLane.engine} is speaking — not the voice you chose. Open Settings → Local models for why.`
-                : `${speakingLane.engine} is speaking — the voice you chose`}>
+                ? `${speakingLane.engine} is speaking, and it is not the voice you chose. Open Settings, then Local models, to see why.`
+                : `${speakingLane.engine} is speaking, which is the voice you chose`}>
             <span
               className={`top-status-hud__voice t-meta${speakingLane.isFallback ? " is-fallback" : ""}`}
             >
@@ -135,7 +135,7 @@ export function TopStatusHud() {
           type="button"
           className={`top-status-hud__activity${running > 0 ? " is-live" : ""}`}
           aria-expanded={mapOpen}
-          aria-label={`${running} running — toggle activity map`}
+          aria-label={`${running} running. Show or hide the activity map.`}
           onClick={() => setMapOpen((v) => !v)}
         >
           <span className="top-status-hud__activity-glyph" aria-hidden="true">
@@ -155,8 +155,8 @@ export function TopStatusHud() {
             disabled={updateApplying}
             aria-label={
               updateApplying
-                ? "Applying update — TESSERACT will restart shortly"
-                : `Update available, ${updateBehind} commit${updateBehind === 1 ? "" : "s"} behind — click to apply`
+                ? "Applying the update. TESSERACT will restart shortly."
+                : `An update is available, ${updateBehind} commit${updateBehind === 1 ? "" : "s"} ahead of this one. Click to apply it.`
             }
             onClick={() => void applyUpdate()}
           >
@@ -193,16 +193,16 @@ export function TopStatusHud() {
         )}
         {showExeChip && (
           <Hint label={exeApplying
-                ? "Downloading the new version — TESSERACT will restart itself"
-                : `TESSERACT ${exeVersion} is available — click to download and restart`}>
+                ? "Downloading the new version. TESSERACT will restart itself."
+                : `TESSERACT ${exeVersion} is available. Click to download it and restart.`}>
             <button
               type="button"
               className="top-status-hud__update"
               disabled={exeApplying}
               aria-label={
                 exeApplying
-                  ? "Downloading the new version — TESSERACT will restart itself"
-                  : `TESSERACT ${exeVersion} is available — click to download and restart`
+                  ? "Downloading the new version. TESSERACT will restart itself."
+                  : `TESSERACT ${exeVersion} is available. Click to download it and restart.`
               }
               onClick={() => void exeApply()}
             >
@@ -219,8 +219,8 @@ export function TopStatusHud() {
               onClick={() => void applyUpdate()}
             >
               {manualRestart
-                ? "update failed — restart TESSERACT"
-                : "update failed — retry"}
+                ? "The update failed. Restart TESSERACT."
+                : "The update failed. Click to try again."}
             </button>
           </Hint>
         )}

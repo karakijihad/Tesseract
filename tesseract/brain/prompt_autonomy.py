@@ -24,8 +24,8 @@ logger = logging.getLogger("tesseract.brain.prompt")
 
 # Open agenda statuses that count as "on the assistant's plate" — everything
 # non-terminal (`TERMINAL_STATUSES` in `orchestrator/autonomy/models.py`).
-# `unvetted` is not here and no longer needs to be: the vetter that held items
-# in it is deleted, so nothing new can enter that status.
+# `unvetted` is not here: no vetter holds items in it, so nothing can
+# enter that status.
 OPEN_AGENDA_STATUSES = frozenset({
     "proposed", "selected", "running", "awaiting_operator",
     "resume_queued", "blocked",
@@ -86,10 +86,8 @@ def _read_failures_snapshot(failures_scope: str | None) -> FailuresSnapshot:
 
     ``failures_scope is None`` renders no streak line at all — correct for
     a frozen/boot prompt assembled with no per-turn session in flight
-    (whole-phase review fix, 2026-07-06: the streak used to be a single
-    process-global slot read by every caller regardless of which chat was
-    running, so one chat's tool failure rendered in every other chat's
-    digest).
+    The streak is per-chat: a process-global slot would render one chat's
+    tool failure in every other chat's digest.
 
     Breaker log dir resolved at call time (never cached) via the canonical
     `TESSERACT_HOME`-env-override idiom (`kernel/workspace_changes.py::

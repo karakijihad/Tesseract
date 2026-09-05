@@ -268,7 +268,7 @@ export function WakeWordSection() {
             onKeyDown={(e) => e.key === "Enter" && void savePrefix()}
           />
           <span className="t-meta">
-            The phrase is these two words — “{status.phrase}”. The second is the
+            The phrase is these two words, “{status.phrase}”. The second is the
             name, on the Identity tab.
           </span>
         </div>
@@ -277,7 +277,7 @@ export function WakeWordSection() {
       {!status.models_present && (
         <Note tone="warn">
           The wake-word models are not installed yet. They arrive with the
-          listening models — reinstall those from Capabilities and this can
+          listening models. Reinstall those from Capabilities and this can
           record.
         </Note>
       )}
@@ -286,7 +286,7 @@ export function WakeWordSection() {
         <Note tone="warn">
           Checked for “{status.calibrated_for}”. What was confirmed is that
           those two words are heard reliably, so a rename cannot carry it over
-          — run it again for “{status.phrase}”.
+          Run it again for “{status.phrase}”.
         </Note>
       )}
 
@@ -325,17 +325,25 @@ function StateLine({ status }: { status: WakeStatus }) {
   // Three states said as three things. The middle one is the one that would
   // otherwise be silently wrong: switched on is not the same as listening.
   if (!status.enabled)
-    return <Note>Off — every utterance dispatches.</Note>;
+    return <Note>Off. Everything you say starts a turn.</Note>;
+  if (status.blocked_reason)
+    return (
+      <Note tone="bad">
+        On, but this machine cannot run it: {status.blocked_reason}. Every
+        utterance dispatches until that is fixed, so it behaves as if the wake
+        word were off however many times you have checked it.
+      </Note>
+    );
   if (!status.armed)
     return (
       <Note tone="warn">
-        On, but not checked yet — so every utterance still dispatches. Say the
+        On, but not checked yet, so everything you say still starts a turn. Say the
         phrase below, watch it land, and it starts filtering.
       </Note>
     );
   return (
     <Note>
-      Listening for “{status.phrase}”. Only that starts a turn — confirmed at{" "}
+      Listening for “{status.phrase}”. Only that starts a turn. Confirmed at{" "}
       {status.threshold?.toFixed(2)} across {status.samples} takes.
     </Note>
   );
@@ -378,7 +386,7 @@ function Running({
         <>
           <span className="wake-prompt t-body">Say the phrase</span>
           <span className="t-meta">
-            take {Math.min(done + 1, PHRASE_TAKES)} of {PHRASE_TAKES} —{" "}
+            take {Math.min(done + 1, PHRASE_TAKES)} of {PHRASE_TAKES},{" "}
             {speaking ? "listening…" : "waiting for you"}
           </span>
         </>
@@ -386,8 +394,8 @@ function Running({
         <>
           <span className="wake-prompt t-body">{sentences[done] ?? ""}</span>
           <span className="t-meta">
-            read it aloud — line {Math.min(done + 1, sentences.length)} of{" "}
-            {sentences.length} — {speaking ? "listening…" : "waiting for you"}
+            read it aloud, line {Math.min(done + 1, sentences.length)} of{" "}
+            {sentences.length}. {speaking ? "listening…" : "waiting for you"}
           </span>
         </>
       )}

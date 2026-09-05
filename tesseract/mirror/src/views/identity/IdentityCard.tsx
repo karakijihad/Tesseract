@@ -34,6 +34,10 @@ export function IdentityCard() {
     operator: string;
   } | null>(null);
   const [saving, setSaving] = useState(false);
+  // Read-only, and there is nothing to set: the first boot stamps it once.
+  const [birth, setBirth] = useState<{ bornAt: string; ageDays: number } | null>(
+    null,
+  );
   // Read-only here: the phrase is half this name, so the card shows what
   // it currently is. Editing it lives with the rest of voice.
   const [wakePrefixText, setWakePrefixText] = useState("hey");
@@ -76,6 +80,11 @@ export function IdentityCard() {
         setName(ident.name);
         setOperator(ident.operator_name);
         setWakePrefixText(voice.wake_word_prefix);
+        setBirth(
+          ident.born_at && ident.age_days !== null
+            ? { bornAt: ident.born_at, ageDays: ident.age_days }
+            : null,
+        );
         setSaved({
           name: ident.name,
           operator: ident.operator_name,
@@ -143,7 +152,7 @@ export function IdentityCard() {
           />
           <span className="t-meta identity-field-hint">
             What it answers to, everywhere. Renaming leaves the workspace
-            documents alone — those are prose it wrote, not a template.
+            documents alone, because those are prose it wrote, not a template.
           </span>
         </div>
 
@@ -165,6 +174,17 @@ export function IdentityCard() {
           </span>
         </div>
 
+        {birth && (
+          <div className="identity-field">
+            <span className="identity-field-label t-meta">age</span>
+            <span className="t-meta">
+              Day {birth.ageDays}, counted from {formatBirthday(birth.bornAt)}.
+              The assistant is told the same number at the top of every turn.
+              It is stamped once, on the first run.
+            </span>
+          </div>
+        )}
+
         {/* Voice lives in Settings → Voice, all of it: which voice speaks,
             the wake word, and training it. The name above is half the wake
             phrase, which is why this points across rather than staying
@@ -174,7 +194,7 @@ export function IdentityCard() {
           <span className="identity-field-label t-meta">voice</span>
           <span className="t-meta">
             How it sounds and what wakes it are in Settings → Voice. The wake
-            phrase is “{phrase}” — the second word is the name above, so
+            phrase is “{phrase}”, and the second word is the name above, so
             renaming changes it.
           </span>
         </div>
@@ -193,4 +213,22 @@ export function IdentityCard() {
       </div>
     </Block>
   );
+}
+
+/** The birth date, in the reader's own locale.
+ *
+ * The stored value carries a time and an offset because the prompt counts
+ * days with it. Neither belongs on this line: what the operator is reading is
+ * how long they have had this instance, and to the minute is a precision the
+ * sentence cannot use.
+ */
+function formatBirthday(iso: string): string {
+  const when = new Date(iso);
+  return Number.isNaN(when.getTime())
+    ? iso
+    : when.toLocaleDateString([], {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      });
 }

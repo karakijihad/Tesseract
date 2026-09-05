@@ -14,8 +14,7 @@ Use cases:
 Distinct from ``workspace_post`` (Slack-style inbox feed) and
 ``channel_notify`` (Telegram outbound). ``chat_initiate`` lights up the
 Mirror's chat tab specifically — the place the operator already watches
-agent-side prose. AU-10 will layer rate-cap categories on top; for now
-this is a primitive without backoff.
+agent-side prose. This is a primitive without backoff.
 
 ``default_posture="auto"`` matches sibling outbound tools.
 """
@@ -43,7 +42,7 @@ class ChatInitiateInput(BaseModel):
     text: str = Field(
         description=(
             "What to say. One short paragraph; long-form belongs in "
-            "workspace_post. Markdown-light is fine — the chat tab "
+            "workspace_post. A little Markdown is fine, because the chat tab "
             "renders it like any assistant message."
         ),
     )
@@ -67,12 +66,13 @@ class ChatInitiateTool(Tool):
     summary: ClassVar[str] = "Starts a new chat turn unprompted, without an inbound operator message."
     use_when: ClassVar[str] = (
         "Use for alerts, nudges, check-ins, or delegate/job results the operator should see now. "
-        "Be sparing — the chat tab is for live conversation, not a feed."
+        "Be sparing. The chat tab is for live conversation, not a feed."
     )
     not_when: ClassVar[str] = (
         "replying to what the operator just said, which needs no tool; a durable inbox item, "
         "`workspace_post`; a push to an external chat channel, `channel_notify`."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(self, app_provider: Optional[Callable[[], Any]] = None) -> None:
         """``app_provider`` resolves the Mirror ``web.Application`` at call

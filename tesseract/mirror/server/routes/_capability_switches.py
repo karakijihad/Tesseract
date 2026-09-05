@@ -147,7 +147,7 @@ def _queued_download(
     candidates = (
         list(_OPTIONAL_BLOCKS) if provider is None else [provider]
     )
-    # One rule for both branches. It used to be two: the tier branch checked
+    # One rule for both branches. As two, the tier branch checked
     # the per-provider switch and the single-provider branch checked nothing,
     # so re-enabling one service under a section that was off announced a
     # download the boot path would refuse.

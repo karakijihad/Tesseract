@@ -1,10 +1,10 @@
-"""Auto-extract URLs from inbound channel messages (Session 3 2026-05-16).
+"""Auto-extract URLs from inbound channel messages.
 
 When the operator shares a link on Telegram (article, doc, YouTube,
-GitHub PR…), the assistant used to see only the URL string. The operator had to
-manually ask "read this link". This module detects URLs and pulls their
-content via Tavily extract so the page content rides into the chat turn
-as part of the recall context.
+GitHub PR…), the assistant would otherwise see only the URL string and have
+to be asked to read it. This module detects URLs and pulls their content via
+Tavily extract so the page content rides into the chat turn as part of the
+recall context.
 
 Best-effort throughout: no API key, network failure, or extraction
 error degrades silently to "URLs were detected but not extracted"

@@ -11,19 +11,20 @@ and publish a ``surface`` event so live operators re-render. Operator-origin
 events (``apply_event``) persist but do NOT re-publish — the originating
 client already moved the card; echoing it back is redundant.
 
-Render reports (``record_render``) are the one piece of state here that is
-deliberately NOT persisted: they describe what a *client* currently has on
-screen, so writing them to the canvas-state file would let a stale ``mounted``
-outlive the browser that reported it and survive a restart with nothing
-rendering at all. That is precisely the over-claim this channel exists to
-close, so absence has to stay readable as absence.
+Render reports (``record_render``) and the in-card event log (``card_events``)
+are the state here that is deliberately NOT persisted: they describe what a
+*client* currently has on screen, so writing them to the canvas-state file
+would let a stale ``mounted`` outlive the browser that reported it and survive
+a restart with nothing rendering at all. That is precisely the over-claim this
+channel exists to close, so absence has to stay readable as absence.
 """
 
 from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
+from collections import deque
+from typing import Any, Callable
 
 from tesseract.orchestrator.surfaces.descriptor import (
     BoundSession,
@@ -52,6 +53,29 @@ RENDER_STATUSES = frozenset({"mounted", "degraded", "errored", "unmounted"})
 # A renderer's reason is a caption, not a log line — it goes into a tool
 # result the model reads, so it is bounded here rather than at the sink.
 _DETAIL_CAP = 300
+#: A card listing more verbs than this is not describing itself, it is
+#: filling a listing the model has to read on every turn it looks.
+_CONTROLS_CAP = 12
+#: How many presses and edits one card keeps. A log, not a history: what the
+#: assistant needs is what happened since it last looked, and a card someone
+#: is clicking through would otherwise grow without end in a process that
+#: never restarts.
+_EVENT_LOG_CAP = 24
+#: A control's name and the value typed into it, bounded. A card's markup is
+#: not always the assistant's own writing, and this text lands in a tool
+#: result the model reads: a page cannot be allowed to send a paragraph and
+#: have it arrive as though the operator had pressed something called that.
+_EVENT_TARGET_CAP = 80
+_EVENT_VALUE_CAP = 200
+
+
+def _bounded(value: Any) -> Any:
+    """A logged value, small enough that a page cannot write an essay into
+    the assistant's reading of what the operator did. Numbers and booleans
+    pass through; anything else becomes bounded text."""
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return str(value)[:_EVENT_VALUE_CAP]
 
 
 class SurfaceStore:
@@ -62,13 +86,27 @@ class SurfaceStore:
         # surface_id -> {status, detail, at}. In-memory by design (see module
         # docstring); a report never outlives the process that heard it.
         self._render: dict[str, dict[str, str]] = {}
+        # surface_id -> the last few things the operator did IN a card, as
+        # opposed to the things they did TO one. Same reasoning as the render
+        # reports: it describes a live client, so it is never persisted.
+        self._events: dict[str, deque[dict[str, Any]]] = {}
+        # surface_id -> the chat that drew it. Provenance, not client state,
+        # but still in memory only: a chat id names a conversation in THIS
+        # process, and one restored from a canvas file would name a chat that
+        # no longer exists. A card that outlives its chat is simply unowned.
+        self._owner: dict[str, str] = {}
+        # Called when the operator presses something inside a card whose owner
+        # is known. Set by the Mirror at boot; None everywhere else, which is
+        # what keeps this module free of any import of the server. A press is
+        # recorded either way, so nothing is lost when nobody is listening.
+        self.press_notifier: Callable[[str, str, dict[str, Any]], None] | None = None
 
     # -- hydration ---------------------------------------------------------
 
     def _ensure_view(self, view: str) -> dict[str, SurfaceDescriptor]:
         """Lazily load a view's surfaces from disk on first touch so cards
         survive a brain restart. When no operator file exists yet, seed the
-        source-controlled baseline layout (Y-3) so a first visit looks
+        source-controlled baseline layout so a first visit looks
         familiar; seeding is in-memory only — the descriptors carry stable
         ids, so a re-seed on the next boot is idempotent, and the first
         operator interaction persists the layout (`apply_event` → `_persist`).
@@ -167,9 +205,23 @@ class SurfaceStore:
     # -- render reports (client → tool) ------------------------------------
 
     def record_render(
-        self, surface_id: str, *, status: str, detail: str = ""
-    ) -> dict[str, str] | None:
-        """Record what a client says it did with this card.
+        self,
+        surface_id: str,
+        *,
+        status: str,
+        detail: str = "",
+        controls: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Record what a client says it did with this card, and what it says
+        the card can be asked to do.
+
+        `controls` is the card answering "what can I be told?" in its own
+        words. It is reported rather than derived because only the renderer
+        knows: whether a framed page publishes a way in depends on the page,
+        and a second copy of that judgement in Python would be one more thing
+        to keep in step with the one that is actually true. An empty list is
+        meaningful and different from absent: the card mounted and can be
+        asked nothing.
 
         Returns the stored report, or None when the surface is unknown — a
         report for a card the store never had is dropped rather than kept,
@@ -184,15 +236,66 @@ class SurfaceStore:
             )
         if self._get(surface_id) is None:
             return None
-        report = {
+        report: dict[str, Any] = {
             "status": status,
             "detail": detail[:_DETAIL_CAP],
             "at": utc_now_iso(),
         }
+        if controls is not None:
+            report["controls"] = [str(c) for c in controls][:_CONTROLS_CAP]
         self._render[surface_id] = report
         return report
 
-    def render_report(self, surface_id: str) -> dict[str, str] | None:
+    def owner_of(self, surface_id: str) -> str:
+        """The chat that drew this card, or `""` for one nobody claims: a card
+        from a previous run, or one the operator's own client created."""
+        return self._owner.get(surface_id, "")
+
+    def _notify_press(
+        self, surface_id: str, event: str, entry: dict[str, Any], *, first: bool = False
+    ) -> None:
+        """Tell the owning conversation that a control was used.
+
+        Only a press. An `edited` fires on every keystroke a field reports, and
+        the assistant reads those when it looks; a press is the deliberate act,
+        and it is the one worth interrupting for.
+
+        Never raises. The press is already recorded by the time this runs, so a
+        notifier that fails costs proactivity and nothing else, and the caller
+        is a route serving a client that did its part.
+        """
+        if event != "clicked" or self.press_notifier is None:
+            return
+        owner = self._owner.get(surface_id, "")
+        if not owner:
+            # Said out loud, once per card, because the silent version of this
+            # cost a live game: presses were recorded, everything returned 200,
+            # and nothing woke, with no line anywhere saying why. A card is
+            # unowned when it was drawn outside a conversation, or when the
+            # conversation that drew it never learned its own id.
+            if first:
+                log.info(
+                    "surface %s has no owning chat, so a press in it wakes "
+                    "nobody; it is still readable through surface_control",
+                    surface_id,
+                )
+            return
+        try:
+            self.press_notifier(surface_id, owner, entry)
+        except Exception:  # noqa: BLE001 — a press is recorded whatever this does
+            log.exception("surface press notifier failed for %s", surface_id)
+
+    def card_events(self, surface_id: str) -> list[dict[str, Any]]:
+        """What the operator did inside this card, oldest first.
+
+        Empty is the answer for a card nobody has touched and for one whose
+        page sends nothing, and the caller cannot tell those apart. That is
+        the honest state of it: a page reports a press because the bridge in
+        it does, and nothing here can know whether one happened unheard.
+        """
+        return list(self._events.get(surface_id, ()))
+
+    def render_report(self, surface_id: str) -> dict[str, Any] | None:
         """The last report for this card, or None if no client ever said
         anything. None is meaningful: nothing is holding it on screen, or
         nothing has since this process started."""
@@ -210,6 +313,7 @@ class SurfaceStore:
         size: dict[str, float] | None = None,
         mode: str = "embedded",
         title: str | None = None,
+        owner_chat: str = "",
     ) -> str:
         if safe_view(view) is None:
             # Refused here and not only at the sink. `write_view_blob` returns
@@ -244,6 +348,8 @@ class SurfaceStore:
         if desc.mode != "external":
             surfaces[desc.id] = desc
             self._persist(view)
+        if owner_chat:
+            self._owner[desc.id] = owner_chat
         publish_surface_event(
             kind="surface_created", view=view, data=desc.model_dump(mode="json")
         )
@@ -304,6 +410,8 @@ class SurfaceStore:
         view, _ = found
         del self._views[view][surface_id]
         self._render.pop(surface_id, None)
+        self._events.pop(surface_id, None)
+        self._owner.pop(surface_id, None)
         self._persist(view)
         return view
 
@@ -381,7 +489,25 @@ class SurfaceStore:
         if event == "closed":
             # No re-publish: the operator's client already removed the card.
             return self._remove(surface_id) is not None
-        # clicked / edited / highlighted are observational — no state change.
+        if event in ("clicked", "edited"):
+            # Kept rather than dropped, which is the whole of this half of the
+            # bridge: a card the assistant authored can now tell it that a
+            # button was pressed, and `surface_control read` is where it looks.
+            # Still no state change and still no re-publish: the client that
+            # sent it already knows.
+            if self._get(surface_id) is None:
+                return False
+            log_ = self._events.setdefault(surface_id, deque(maxlen=_EVENT_LOG_CAP))
+            entry = {
+                "event": event,
+                "target": str(detail.get("target") or "")[:_EVENT_TARGET_CAP],
+                "value": _bounded(detail.get("value")),
+                "at": utc_now_iso(),
+            }
+            log_.append(entry)
+            self._notify_press(surface_id, event, entry, first=len(log_) == 1)
+            return True
+        # highlighted is observational — no state change.
         return self._get(surface_id) is not None
 
 

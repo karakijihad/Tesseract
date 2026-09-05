@@ -30,7 +30,7 @@ export function RawConfigSection() {
   return (
     <section className="settings-section">
       <Note>
-        Read-only. Safe-list only — no secrets, no .env, no workspace files.
+        Read-only, and only from the safe list: no secrets, no .env, no workspace files.
         {files ? ` ${files.length} files.` : " …"}
       </Note>
       {error && <Note tone="bad">{error}</Note>}

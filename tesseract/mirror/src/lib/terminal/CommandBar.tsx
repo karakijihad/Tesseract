@@ -16,12 +16,12 @@ async function handleCommand(input: string): Promise<void> {
   if (cmd === '/help') {
     writeToPane([
       '── Commands ──',
-      '  /theme list             — Show available themes',
-      '  /theme use <name>       — Switch active theme',
-      '  /record new [shell]     — Open a new recorded terminal tab',
-      '  /recordings list        — List saved recordings',
-      '  /recordings play <id>   — Replay a recording inside Mirror',
-      '  /help                   — Show this help',
+      '  /theme list             Show available themes',
+      '  /theme use <name>       Switch active theme',
+      '  /record new [shell]     Open a new recorded terminal tab',
+      '  /recordings list        List saved recordings',
+      '  /recordings play <id>   Replay a recording inside Mirror',
+      '  /help                   Show this help',
     ].join('\r\n'));
     return;
   }

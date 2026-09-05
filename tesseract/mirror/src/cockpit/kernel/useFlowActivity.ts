@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useEntityStore } from '../../stores/entity';
 import { useToolActivityStore } from '../../stores/toolActivity';
 import { useVoiceStore } from '../../stores/voice';
-import { flowById, type FlowNode } from './flows';
+import { useKernelManifest, type FlowNode } from './flows';
 import type { EntityState } from '../../lib/types';
 
 // One cursor per flow, and a trail behind it. The old synapse column lit a
@@ -165,7 +165,11 @@ export function useFlowActivity(flowId: string): FlowActivity {
   const counts = useToolActivityStore((s) => s.counts);
   const recent = useRecentTool();
 
-  const flow = flowById(flowId);
+  // Subscribed rather than read once: the manifest arrives after first paint,
+  // and a hook that read it at mount would light nothing for the life of the
+  // panel.
+  const flows = useKernelManifest((s) => s.flows);
+  const flow = flows.find((f) => f.id === flowId);
   const nodes = flow?.nodes ?? [];
 
   let signal: string | null = null;

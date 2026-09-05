@@ -1,4 +1,4 @@
-"""SC-5 — server-side voice-input state machine.
+"""Server-side voice-input state machine.
 
 The full voice loop spans frontend + backend. This module owns the
 BACKEND (speech-in) half and produces the `voice_state` wire values that

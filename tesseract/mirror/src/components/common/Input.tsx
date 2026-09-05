@@ -1,6 +1,6 @@
 import type { Ref } from "react";
 
-type InputType = "text" | "number" | "search" | "password" | "date";
+type InputType = "text" | "number" | "search" | "password" | "date" | "time";
 
 interface InputProps {
   value: string;

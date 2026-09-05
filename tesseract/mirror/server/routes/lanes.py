@@ -1,4 +1,4 @@
-"""CV-1 — Mirror REST bridge to the controller-owned lane substrate.
+"""Mirror REST bridge to the controller-owned lane substrate.
 
 The ``LaneManager`` (and its ``NamedLaneManager`` binding layer) lives in the
 controller daemon, a supervised sibling process. Mirror does not host a lane

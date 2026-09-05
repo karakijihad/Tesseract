@@ -15,9 +15,17 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from tesseract.conscience.reader import load_latest_report
+from tesseract.conscience.reader import load_latest_report, report_counts
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
 from tesseract.paths import home_dir, log_dir
+
+
+def _counts(report: dict) -> dict:
+    """The tallies, whatever shape wrote them. One reader, in
+    `conscience/reader.py`: this file and the heartbeat both learned that
+    `counts` had replaced `summary` and the system prompt did not, which is
+    why the shape question does not live in any of the three."""
+    return report_counts(report)
 
 
 def _drift_dir() -> Path:
@@ -44,13 +52,14 @@ class ConscienceStatusTool(Tool):
     summary: ClassVar[str] = "Check the most recent behavioural-drift report."
     use_when: ClassVar[str] = (
         "Use when asked how you're holding up, when something feels off, or "
-        "before a long-running task — signal statuses, worst-status summary, "
+        "before a long-running task. Signal statuses, worst-status summary, "
         "how long ago it was scraped."
     )
     not_when: ClassVar[str] = (
         "for machine health (GPU, models, breakers, disk) rather than "
         "behavioural drift, use `system_diagnose` instead."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -74,7 +83,8 @@ class ConscienceStatusTool(Tool):
                 output=(
                     "Conscience status: no report yet. The conscience_heartbeat job "
                     "hasn't fired — it ships disabled by default; toggle it on in the "
-                    "Mirror Schedule tab, or ask the operator to run it once."
+                    "Autonomy panel, under Managed system, or ask the operator to run it "
+                    "once."
                 ),
                 metadata={"report_available": False},
             )
@@ -82,7 +92,7 @@ class ConscienceStatusTool(Tool):
             output=_format(report, verbose=inp.verbose),
             metadata={
                 "report_available": True,
-                "summary": report.get("summary") or {},
+                "summary": _counts(report),
                 "timestamp": report.get("timestamp"),
             },
         )
@@ -93,7 +103,7 @@ def _format(report: dict[str, Any], *, verbose: bool) -> str:
     age = _format_age(ts)
     window = report.get("window_hours")
     signals = report.get("signals") or []
-    summary = report.get("summary") or {}
+    summary = _counts(report)
 
     ok = int(summary.get("ok", 0))
     warn = int(summary.get("warn", 0))

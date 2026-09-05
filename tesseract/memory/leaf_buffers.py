@@ -1,4 +1,4 @@
-"""AU-16 S1 — per-source rolling buffers of admitted leaves.
+"""Per-source rolling buffers of admitted leaves.
 
 A buffer is an append-only newline-delimited list of leaf ids belonging
 to one source (chat channel, agent, integration). ``AppendBufferJob``
@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
+from tesseract.lib.atomic_replace import replace_with_retry
 from tesseract.memory.leaves import _resolve_home
 
 log = logging.getLogger(__name__)
@@ -148,7 +149,7 @@ class LeafBuffer:
             f"{self._path.stem}.{os.getpid()}.{secrets.token_hex(3)}.tmp"
         )
         tmp.write_text("", encoding="utf-8")
-        os.replace(tmp, self._path)
+        replace_with_retry(tmp, self._path)
 
     def stale(self, *, now: datetime, max_age_seconds: float) -> bool:
         """True when the file exists and its last mtime is older than

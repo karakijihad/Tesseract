@@ -1,11 +1,11 @@
-"""AU-16 S2 — per-source rolling tree.
+"""Per-source rolling tree.
 
 One markdown file per source slug at
 ``<TESSERACT_HOME>/memory-store/trees/source/<source-slug>.md``.
 
 Each ``Seal`` artefact produced by ``SealJob`` is appended (newest-first)
 as a single section block. The tree stays operator-readable in any
-text editor and is the canonical input for the AU-21 + AU-20 surfaces
+text editor and is the canonical input for the surfaces
 that ask "what's been happening on this source?".
 
 The on-disk format is intentionally append-cheap (rewrite once,
@@ -40,6 +40,7 @@ import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 
+from tesseract.lib.atomic_replace import replace_with_retry
 from tesseract.memory.leaf_seals import Seal
 from tesseract.memory.leaves import _resolve_home
 
@@ -55,6 +56,20 @@ def source_tree_path(source_slug: str) -> Path:
 
 
 _SECTION_HEADER_RE = re.compile(r"^## Seal (?P<seal_id>seal_[a-f0-9]+) — ", re.M)
+
+#: How large a live tree is allowed to get before its oldest seals move to the
+#: archive beside it. Chosen to sit under the prompt layer's per-file cap so
+#: the capsule reads a WHOLE file rather than a cut one: a tree read at the cap
+#: is honest (it is newest-first, so the cut falls on the oldest material and
+#: says so) but it grows without end, and an operator opening it in an editor
+#: meets a wall rather than a file. `test_the_roll_stays_under_the_read_cap`
+#: holds the two numbers together so they cannot drift apart.
+SOURCE_TREE_ROLL_CHARS = 11_000
+
+#: Rolled-out seals live one level down, so the capsule's `glob("*.md")` at the
+#: tree root never sees them. Nothing is deleted — the archive is on disk, in
+#: the same format, and `memory_search` and the vault still reach it.
+ARCHIVE_DIRNAME = "archive"
 
 
 def _format_section(seal: Seal) -> str:
@@ -79,7 +94,7 @@ def _format_section(seal: Seal) -> str:
 
 
 def _format_header(source_slug: str) -> str:
-    # AU-16 frontmatter contract — Obsidian's graph view picks up the
+    # Frontmatter contract — Obsidian's graph view picks up the
     # `source-summary` color group via the leading tag.
     return (
         "---\n"
@@ -119,10 +134,67 @@ def write_seal_section(seal: Seal) -> Path:
     else:
         new_body = _format_header(seal.source_slug) + section
 
-    tmp = target.with_name(f"{target.stem}.{os.getpid()}.{secrets.token_hex(3)}.tmp")
-    tmp.write_text(new_body, encoding="utf-8")
-    os.replace(tmp, target)
+    _atomic_write(target, _roll(seal.source_slug, new_body))
     return target
+
+
+def archive_path(source_slug: str) -> Path:
+    return SOURCE_TREES_ROOT() / ARCHIVE_DIRNAME / f"{source_slug}.md"
+
+
+def _split_sections(body: str) -> tuple[str, list[str]]:
+    """The banner, and each seal section newest-first."""
+    parts = body.split("\n## Seal ")
+    header = parts[0].rstrip() + "\n\n"
+    sections = ["## Seal " + p.rstrip() + "\n" for p in parts[1:]]
+    return header, sections
+
+
+def _roll(source_slug: str, body: str) -> str:
+    """Move the oldest seals out of an oversized tree, and return what stays.
+
+    Newest-first is what makes this cheap: the sections to keep are a prefix,
+    and the ones to roll are the remainder, so no reordering is involved. The
+    newest section always stays even if it alone is over the threshold —
+    rolling out the seal that was just written would be absurd.
+    """
+    if len(body) <= SOURCE_TREE_ROLL_CHARS:
+        return body
+    header, sections = _split_sections(body)
+    if len(sections) <= 1:
+        return body
+
+    kept: list[str] = []
+    size = len(header)
+    for section in sections:
+        if kept and size + len(section) > SOURCE_TREE_ROLL_CHARS:
+            break
+        kept.append(section)
+        size += len(section) + 1
+    rolled = sections[len(kept) :]
+    if not rolled:
+        return body
+
+    archive = archive_path(source_slug)
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    existing = archive.read_text(encoding="utf-8") if archive.exists() else ""
+    if existing:
+        # The archive is newest-first too, and everything arriving is older
+        # than everything already there, so it goes on the end.
+        new_archive = existing.rstrip() + "\n\n" + "\n".join(rolled)
+    else:
+        new_archive = _format_header(source_slug) + "\n".join(rolled)
+    _atomic_write(archive, new_archive)
+    log.info(
+        "source tree %s: rolled %d seal(s) to %s", source_slug, len(rolled), archive.name
+    )
+    return header + "\n".join(kept)
+
+
+def _atomic_write(target: Path, body: str) -> None:
+    tmp = target.with_name(f"{target.stem}.{os.getpid()}.{secrets.token_hex(3)}.tmp")
+    tmp.write_text(body, encoding="utf-8")
+    replace_with_retry(tmp, target)
 
 
 def read_source_tree(source_slug: str) -> str | None:
@@ -140,7 +212,10 @@ def list_source_tree_paths() -> list[Path]:
 
 
 __all__ = [
+    "ARCHIVE_DIRNAME",
     "SOURCE_TREES_ROOT",
+    "SOURCE_TREE_ROLL_CHARS",
+    "archive_path",
     "list_source_tree_paths",
     "read_source_tree",
     "source_tree_path",

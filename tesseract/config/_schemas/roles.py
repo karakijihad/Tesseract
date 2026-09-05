@@ -15,7 +15,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # The one definition of catalog-ref syntax, imported rather than restated —
 # a second copy here would drift from what the loader actually enforces.
 from tesseract.config.loader import _REF_RE as _CATALOG_REF_RE
-from tesseract.config.loader import ROLE_MODES, ROLE_MODE_INACTIVE
+from tesseract.config.loader import (
+    DEFAULT_COMPACT_RATIO,
+    DEFAULT_HEADROOM_MULTIPLIER,
+    DEFAULT_PROMPT_CHAR_BUDGET,
+    ROLE_MODES,
+    ROLE_MODE_INACTIVE,
+)
 
 # The loader keeps inactive roles as unresolved stubs (`_build_role` skips
 # `chain_refs` entirely), so a stale chain or ref on one never blocks boot.
@@ -130,6 +136,39 @@ class VoiceBlock(_Permissive):
     tts: VoiceLane | None = None
 
 
+class Compaction(BaseModel):
+    """How compaction bounds a conversation, for every role at once.
+
+    Top level rather than per role because these describe the mechanism and
+    not who is using it: a fold always leaves the head anchor and the verbatim
+    tail behind, whichever model is answering.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: What share of the context window a conversation may fill before a fold
+    #: runs, and the ONE thing that decides it. Named `compact_ratio` because
+    #: it is the setting and not a fallback for one; it was `default_ratio`
+    #: while a second trigger derived from `prompt_char_budget` quietly
+    #: outranked it on every real configuration.
+    compact_ratio: float = Field(default=DEFAULT_COMPACT_RATIO, gt=0.0, lt=1.0)
+    #: How far clear of that unfoldable floor the trigger must sit. At or below
+    #: it, a fold cannot get under the line it just crossed and fires again on
+    #: the next turn, and every turn after, spending a summarisation call each
+    #: time. Must exceed 1.0 or it is not headroom.
+    headroom_multiplier: float = Field(default=DEFAULT_HEADROOM_MULTIPLIER, gt=1.0)
+    #: What the operator is advised to leave, as a multiple of the floor.
+    #: Advice rather than a limit: nothing refuses a setting below it.
+    comfortable_multiplier: float = Field(default=2.0, gt=1.0)
+    #: The hard ceiling on one assembled prompt, in characters. Characters and
+    #: not tokens because one chain member rejects on characters. An EMERGENCY
+    #: guard: `compact_ratio` is what bounds a conversation, and this is what
+    #: stops a single turn that outgrew it from failing every model in the
+    #: chain. Boot refuses a `compact_ratio` this cannot carry rather than
+    #: silently folding earlier than the operator asked for.
+    prompt_char_budget: int = Field(default=DEFAULT_PROMPT_CHAR_BUDGET, gt=0)
+
+
 class RolesConfig(BaseModel):
     """Top-level shape of ``roles.yaml``."""
 
@@ -137,6 +176,7 @@ class RolesConfig(BaseModel):
 
     embeddings: Embeddings
     reranker: Reranker | None = None
+    compaction: Compaction = Field(default_factory=Compaction)
     chains: dict[str, list[str]] = Field(default_factory=dict)
     roles: dict[str, RoleBody] = Field(default_factory=dict)
     voice: VoiceBlock | None = None

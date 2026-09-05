@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePath
 
 import yaml
+from tesseract.lib import clock
 
 logger = logging.getLogger(__name__)
 
@@ -176,11 +177,13 @@ class VaultManager:
     def suggest_raw_filing_path(self, filename: str) -> str:
         """Suggest a path inside vault/raw/{YYYYMMDD}/{slug}.ext for new uploads.
 
-        AU-22 (2026-05-18): daily granularity. Operator drops research into
-        `vault/raw/<YYYYMMDD>/` and the AU-22 watcher scans only date-named
+        Daily granularity. The operator drops research into
+        `vault/raw/<YYYYMMDD>/` and the watcher scans only date-named
         subfolders matching `^\\d{8}$`.
         """
-        date_folder = datetime.now(timezone.utc).strftime("%Y%m%d")
+        # The operator drops files into a folder named for the day THEY
+        # are in. A UTC name puts an evening drop under tomorrow.
+        date_folder = clock.today().strftime("%Y%m%d")
         slug = Path(filename).stem.lower().replace(" ", "-").replace("_", "-")
         ext = Path(filename).suffix.lower()
         return f"raw/{date_folder}/{slug}{ext}"
@@ -477,7 +480,7 @@ class VaultManager:
     ) -> str:
         """Suggest a vault-relative filing path based on extension and date."""
         ext = Path(filename).suffix.lower()
-        date_folder = datetime.now(timezone.utc).strftime("%Y-%m")
+        date_folder = clock.today().strftime("%Y-%m")
 
         if source_url and ext in (".md", ".html", ".htm", ".txt"):
             category = "snapshots"
@@ -605,7 +608,8 @@ class VaultManager:
         else:
             content += f"\n\n{section_header}\n{entry}"
 
-        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        # Written into a line the operator reads back.
+        date_str = clock.today().isoformat()
         recent_entry = f"- {date_str}: Added {title} ({category})"
         if "## Recent Additions" in content:
             content = content.replace(

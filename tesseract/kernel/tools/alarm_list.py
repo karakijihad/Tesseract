@@ -25,6 +25,7 @@ class AlarmListTool(Tool):
     summary: ClassVar[str] = "Lists every pending alarm with its label, fire time, and recurrence."
     use_when: ClassVar[str] = "Use before canceling or snoozing so you know the label or id to reference."
     not_when: ClassVar[str] = "registered scheduler jobs, which is `schedule_list`."
+    depends_on: ClassVar[str] = ""
 
     def __init__(self, alarm_registry: AlarmRegistry) -> None:
         self._registry = alarm_registry

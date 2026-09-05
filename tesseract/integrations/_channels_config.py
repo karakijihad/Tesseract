@@ -1,13 +1,14 @@
 """Typed ``channels.yaml`` model.
 
-Two-tier shape (2026-05-18 refactor):
+Two-tier shape:
 
 * **Global ``defaults:``** — settings that apply to every channel
   adapter unless the channel block sparse-overrides them. Today:
   ``attachments``, ``extract``, ``cost``, ``gate_policy``.
 * **Per-channel block (``telegram:``, ``whatsapp:``, …)** — fields
-  intrinsic to ONE channel: ``enabled``, ``display_name``, ``brief_push``,
-  ``outbound_rate``, ``muted_categories``. Any of the global blocks
+  intrinsic to ONE channel: ``enabled``, ``display_name``,
+  ``outbound_rate``, ``muted_categories``. Where a KIND of message goes
+  is not intrinsic to a channel and lives in ``routing.yaml``. Any of the global blocks
   above can ALSO live here as a per-channel override (sparse — only
   the keys you list are overridden; the rest still inherit from
   ``defaults``).
@@ -90,26 +91,37 @@ class CostCaps(BaseModel):
         return value
 
 
-GatePolicyKind = Literal["workspace_nudge", "deny"]
+GatePolicyKind = Literal["ask_on_channel", "deny"]
+
+#: What `ask_on_channel` was called when the mode did something else. It posted
+#: a notice and left the turn to fend for itself; since the gate started asking
+#: in the chat and waiting for the tap, the name described nothing the code
+#: does. Accepted forever so an installed config keeps parsing — a rename that
+#: bricks a machine is worse than a name that lies.
+_GATE_KIND_ALIASES = {"workspace_nudge": "ask_on_channel"}
 
 
 class GatePolicy(BaseModel):
     model_config = _FROZEN
-    on_ask: GatePolicyKind = "workspace_nudge"
+    on_ask: GatePolicyKind = "ask_on_channel"
     #: How long a gated call waits for the operator before refusing itself.
     #: The turn is parked on that wait and the bridge serialises a chat's
     #: turns, so this is also the longest the bot could stay busy on one
     #: prompt — except that a new inbound message cancels the wait, which is
-    #: what keeps a long value safe. Was `approve_next_turn_ttl_s` when a tap
-    #: armed a token for a later turn instead of answering the call in hand.
+    #: what keeps a long value safe.
     decision_timeout_s: int = Field(default=1800, ge=60, le=86_400)
+
+    @field_validator("on_ask", mode="before")
+    @classmethod
+    def _accept_the_old_name(cls, value: Any) -> Any:
+        return _GATE_KIND_ALIASES.get(value, value)
 
 
 # -- Per-channel-only blocks (no inheritance — these are intrinsic) ---
 
 
 class OutboundRate(BaseModel):
-    """AU-10 — per-(category, channel) sliding-window rate cap."""
+    """Per-(category, channel) sliding-window rate cap."""
 
     model_config = _FROZEN
     default_per_hour: int = Field(default=6, ge=0)
@@ -117,6 +129,34 @@ class OutboundRate(BaseModel):
 
 
 # -- Defaults + per-channel override block ----------------------------
+
+
+class OutboundFetch(BaseModel):
+    """What the runtime may pull down to forward into a chat.
+
+    A media send can be given a URL rather than bytes, and the bytes it comes
+    back with leave the machine. So the address it names is checked before it
+    is fetched, against ranges that are deliberately stricter than `open`'s:
+    that verb shows a page to the operator on their own screen, this one
+    forwards what it read to a chat.
+    """
+
+    model_config = _FROZEN
+    blocked_networks: frozenset[str] = frozenset()
+    #: Bytes past which the fetch stops. Telegram's own photo ceiling is
+    #: 10 MB; this bounds what is read into memory before that is known.
+    max_bytes: int = Field(default=26_214_400, ge=1)
+
+    @field_validator("blocked_networks")
+    @classmethod
+    def _parseable_networks(cls, v: frozenset[str]) -> frozenset[str]:
+        """A malformed CIDR would silently stop blocking anything, which is
+        the worst failure mode a denylist has."""
+        import ipaddress
+
+        for entry in v:
+            ipaddress.ip_network(entry, strict=False)
+        return v
 
 
 class Defaults(BaseModel):
@@ -127,6 +167,7 @@ class Defaults(BaseModel):
     extract: ExtractCaps = ExtractCaps()
     cost: CostCaps = CostCaps()
     gate_policy: GatePolicy = GatePolicy()
+    outbound_fetch: OutboundFetch = OutboundFetch()
 
 
 class ChannelOverrides(BaseModel):
@@ -139,9 +180,7 @@ class ChannelOverrides(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
     enabled: bool = True
     display_name: str = ""
-    # MO-10-3 — daily-brief Telegram push (channel-specific gate).
-    brief_push: bool = False
-    # AU-10 — autonomous outbound notification knobs (channel-specific).
+    # Autonomous outbound notification knobs (channel-specific).
     outbound_rate: OutboundRate = OutboundRate()
     muted_categories: list[str] = Field(default_factory=list)
     # Sparse overrides — None means inherit from ``defaults``.
@@ -149,6 +188,7 @@ class ChannelOverrides(BaseModel):
     extract: ExtractCaps | None = None
     cost: CostCaps | None = None
     gate_policy: GatePolicy | None = None
+    outbound_fetch: OutboundFetch | None = None
 
 
 @dataclass(frozen=True)
@@ -159,13 +199,13 @@ class ResolvedChannel:
     name: str
     enabled: bool
     display_name: str
-    brief_push: bool
     outbound_rate: OutboundRate
     muted_categories: list[str]
     attachments: AttachmentCaps
     extract: ExtractCaps
     cost: CostCaps
     gate_policy: GatePolicy
+    outbound_fetch: OutboundFetch
 
 
 # -- Top-level config ------------------------------------------------
@@ -212,13 +252,13 @@ class ChannelsConfig(BaseModel):
             name=name,
             enabled=override.enabled,
             display_name=override.display_name or name.title(),
-            brief_push=override.brief_push,
             outbound_rate=override.outbound_rate,
             muted_categories=list(override.muted_categories),
             attachments=override.attachments or self.defaults.attachments,
             extract=override.extract or self.defaults.extract,
             cost=override.cost or self.defaults.cost,
             gate_policy=override.gate_policy or self.defaults.gate_policy,
+            outbound_fetch=override.outbound_fetch or self.defaults.outbound_fetch,
         )
 
     def defaults_only(self, name: str) -> ResolvedChannel:
@@ -230,13 +270,13 @@ class ChannelsConfig(BaseModel):
             name=name,
             enabled=False,
             display_name=name.title(),
-            brief_push=False,
             outbound_rate=OutboundRate(),
             muted_categories=[],
             attachments=self.defaults.attachments,
             extract=self.defaults.extract,
             cost=self.defaults.cost,
             gate_policy=self.defaults.gate_policy,
+            outbound_fetch=self.defaults.outbound_fetch,
         )
 
     def channel_block(self, name: str) -> ResolvedChannel | None:
@@ -261,7 +301,15 @@ class ChannelsConfig(BaseModel):
 # -- Loader ---------------------------------------------------------
 
 
-def channel_key_env(channel: str, default: str = "") -> str:
+#: The env var a channel's credential falls back to when `channels.yaml`
+#: cannot be read or predates the `api_key_env` declaration. Named here rather
+#: than passed by each caller, because the bridge passed nothing and the
+#: offline backstop passed a name: the path built to speak when everything else
+#: has failed came up while the bridge it backs up stayed down.
+CHANNEL_KEY_ENV_FALLBACK = {"telegram": "TELEGRAM_BOT_TOKEN"}
+
+
+def channel_key_env(channel: str, default: str | None = None) -> str:
     """The env var name `channels.yaml::<channel>.api_key_env` declares.
 
     The typed model above ignores unknown keys, so this reads the raw file:
@@ -269,9 +317,14 @@ def channel_key_env(channel: str, default: str = "") -> str:
     and the runtime that actually reads the credential must resolve it from
     the same place or the file is describing something it does not control.
 
-    Falls back to `default` when the block or the key is absent, so a config
-    predating the declaration still starts the channel.
+    Falls back when the block or the key is absent, so a config predating the
+    declaration still starts the channel. `default` overrides the fallback for
+    a caller that has its own; left out, every caller for one channel gets the
+    same answer, which is the point. Two callers passing different fallbacks is
+    how the backstop came to work while the bridge did not.
     """
+    if default is None:
+        default = CHANNEL_KEY_ENV_FALLBACK.get(channel, "")
     try:
         raw = yaml.safe_load(_channels_yaml_path().read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError):
@@ -292,9 +345,7 @@ def _channels_yaml_path() -> Path:
 def _split_top_level(raw: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """Split the YAML root into ``defaults`` block + per-channel blocks.
 
-    Any top-level key that is not ``defaults`` (or the historical
-    ``channels`` legacy compat block, dropped in this refactor) is
-    treated as a channel name. Channel dicts of arbitrary names are
+    Any top-level key that is not ``defaults`` is treated as a channel name. Channel dicts of arbitrary names are
     fine — adding a ``whatsapp:`` block tomorrow works without code.
     """
     defaults_block = raw.get("defaults") or {}
@@ -348,6 +399,5 @@ __all__ = [
     "GatePolicyKind",
     "OutboundRate",
     "ResolvedChannel",
-    "RetentionBlock",
     "load_channels_config",
 ]

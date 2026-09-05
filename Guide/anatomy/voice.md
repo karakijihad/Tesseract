@@ -30,7 +30,7 @@ become a quiet turn, and it does not become a turn you have to undo.
 
 The wake word passes everything through until you have said the phrase once in
 Settings and watched it land — see
-[The wake word](../mechanisms/wake-word.md).
+[The wake word](/mechanisms/wake-word/).
 
 ## Speaking
 

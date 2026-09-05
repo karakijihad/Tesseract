@@ -11,8 +11,7 @@
  * 2026-05-16 audit follow-up: pane polls the selected user's
  * conversation every `CONV_POLL_MS` while mounted so Telegram replies
  * land without a manual Refresh. Render order flipped to newest-first
- * and the visible slice is capped at `CONV_DISPLAY_CAP` (mirrors the
- * retention cap surfaced in the hint line). */
+ * and the visible slice is capped at `CONV_DISPLAY_CAP`. */
 import { NavRail } from '../../components/common/NavRail';
 import { Note } from '../../components/common/Note';
 import { useEffect, useMemo } from 'react';
@@ -31,7 +30,6 @@ interface ConversationsPaneProps {
 
 interface RetentionHintProps {
   count: number;
-  cap: number;
 }
 
 // Poll cadence for the active conversation. 5s strikes a balance: fast
@@ -41,11 +39,9 @@ interface RetentionHintProps {
 // unmounts or the operator switches users.
 const CONV_POLL_MS = 5000;
 
-// Hard cap on rows rendered in the pane. Mirrors the retention window
-// (`channels.yaml::telegram.max_turns_in_context`, default 20) so the
-// operator sees exactly the slice the assistant still has in its context —
-// older rows persist in the JSONL but aren't rendered here. Bumping
-// this cap risks a long-scroll list that obscures recent replies.
+// Hard cap on rows rendered in the pane — a reading decision, not a
+// statement about what the assistant remembers. Older rows persist in the
+// JSONL; bumping this risks a long-scroll list that obscures recent replies.
 const CONV_DISPLAY_CAP = 20;
 
 function _fmtTs(iso: string): string {
@@ -59,12 +55,13 @@ function _fmtTs(iso: string): string {
   }
 }
 
-function RetentionHint({ count, cap }: RetentionHintProps) {
+function RetentionHint({ count }: RetentionHintProps) {
   return (
     <div className="channel-conv-retention t-meta" data-testid="channel-conv-retention">
-      Last {Math.min(count, cap)} turn{cap === 1 ? '' : 's'} retained in the
-      agent&apos;s context (max: {cap}); older messages persist here but are out
-      of its prompt.
+      Showing the last {count} message{count === 1 ? '' : 's'}. The assistant
+      holds this chat in context until it compacts, then carries a summary
+      forward, and there is no fixed turn window. Everything persists here either
+      way.
     </div>
   );
 }
@@ -118,14 +115,6 @@ export function ConversationsPane({ channel }: ConversationsPaneProps) {
     ? Boolean(pending[`${channel}:conv:${selectedUserId}`])
     : false;
 
-  // Retention cap mirrors `channels.yaml::telegram.max_turns_in_context`
-  // (default 20). Phase doc §2 names it explicitly; we hard-code the
-  // default rather than wire a /config call because the value is
-  // operator-static and the misalignment cost (a wrong number in a hint
-  // line) is small. If the cap changes per-channel later, surface it on
-  // the channel snapshot. Kept in lockstep with ``CONV_DISPLAY_CAP``.
-  const retentionCap = CONV_DISPLAY_CAP;
-
   return (
     <div className="channel-conv" data-testid="channel-conv-pane">
       {allowed.length === 0 ? (
@@ -153,7 +142,7 @@ export function ConversationsPane({ channel }: ConversationsPaneProps) {
         )}
         {selectedUserId && (
           <>
-            <RetentionHint count={rows.length} cap={retentionCap} />
+            <RetentionHint count={rows.length} />
             {convBusy && rows.length === 0 ? (
               <div className="channel-conv-empty">loading…</div>
             ) : rows.length === 0 ? (

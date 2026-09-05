@@ -1,9 +1,10 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { TopStatusHud } from "../components/cockpit/TopStatusHud";
 import { BottomHud } from "../components/cockpit/BottomHud";
 import { OrbAnchor } from "../canvas/OrbAnchor";
 import { SurfaceLayer } from "../canvas/SurfaceLayer";
+import { SurfaceDock } from "./SurfaceDock";
 import { restoreLanes } from "../canvas/laneRestore";
 import { McpApprovalsPane } from "./McpApprovalsPane";
 import { OrbCaptions } from "./OrbCaptions";
@@ -11,6 +12,7 @@ import { ParkedAsksPane } from "./ParkedAsksPane";
 import { PanelHost } from "./PanelHost";
 import { RailDockTabs } from "../components/cockpit/RailDockTabs";
 import { usePanelStore } from "./panelStore";
+import { useMaximizeRect, type StageSlot } from "./maximizeRect";
 import { installLayoutPersistence } from "./layoutPersistence";
 
 // SC-1/2/3 — the fixed spatial cockpit. The assistant orb (GlobalCanvas, full-screen
@@ -26,6 +28,24 @@ import { installLayoutPersistence } from "./layoutPersistence";
 
 export function CockpitStage() {
   const ensureRails = usePanelStore((s) => s.ensureRails);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [slot, setSlot] = useState<StageSlot | null>(null);
+  // The surface layer does not read the panel store (the canvas keeps its own
+  // import graph), so the stage measures itself and hands the maximize rect
+  // down. `PanelHost` works the same rect out from its own slot, which is the
+  // same box: both are `inset: 0` inside `.cockpit-stage`.
+  const maximizeRect = useMaximizeRect(slot);
+
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const cr = entries[0]?.contentRect;
+      if (cr) setSlot({ w: cr.width, h: cr.height });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   useEffect(() => {
     // Hydrate the operator's pinned panels + rails (default layout) and keep
@@ -42,7 +62,7 @@ export function CockpitStage() {
     <div className="cockpit-shell" data-view="orb">
       <TopStatusHud />
       <main className="cockpit-center">
-        <div className="cockpit-stage">
+        <div className="cockpit-stage" ref={stageRef}>
           <OrbAnchor />
           {/* Ambient captions of the assistant's latest line, faded under the orb —
               voice-first "what the assistant just said" without opening the Chat tab.
@@ -62,9 +82,20 @@ export function CockpitStage() {
               re-homed over the orb. SC-1 dropped the tldraw center that used to
               host them; this is their home now. Pointer-transparent overlay —
               only the cards capture input. */}
-          <SurfaceLayer view="orb" />
+          <SurfaceLayer view="orb" maximizeRect={maximizeRect} />
         </div>
       </main>
+      {/* Everything put away — minimized cards AND minimized view panels — as a
+          row of chips just above the HUD.
+
+          A sibling of the stage, not a child of it: `.cockpit-stage` sets
+          `perspective` and so is a stacking context, which traps every panel's
+          z inside it and would leave the dock under any focused panel. Out
+          here it is always reachable, which for a surface card matters because
+          the dock is its only way back. It is also outside `SurfaceLayer` so
+          the canvas keeps its own import graph: the dock reads the panel
+          store, which reaches every view. */}
+      <SurfaceDock view="orb" />
       <div className="cockpit-hud">
         <BottomHud />
       </div>

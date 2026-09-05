@@ -30,7 +30,7 @@ class WorkspacePostInput(BaseModel):
     )
     summary: str = Field(
         description=(
-            "1-3 sentences (≤1200 chars) — the body the operator reads. "
+            "1-3 sentences (1200 characters or fewer). This is the body the operator reads. "
             "Be specific. 'Noticed memory_search returns slower since "
             "yesterday's reindex' beats 'memory thing is slow'."
         ),
@@ -46,7 +46,7 @@ class WorkspacePostInput(BaseModel):
         default="agent_post",
         description=(
             "agent_post: 'leaving a note' (default). "
-            "nudge: 'please look at this' — operator-attention request."
+            "nudge: 'please look at this', a request for the operator's attention."
         ),
     )
 
@@ -66,6 +66,7 @@ class WorkspacePostTool(Tool):
         "a reply inside a thread that already exists, use `workspace_reply`; an "
         "ambient or scheduler-job signal, routed through the autonomy bus instead."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(
         self,

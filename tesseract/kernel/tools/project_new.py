@@ -67,7 +67,7 @@ class ProjectNewInput(BaseModel):
         default=None,
         description=(
             "Directory to create the project inside. Defaults to the active "
-            "project's parent — proposed for confirmation, never assumed."
+            "project's parent. Proposed for confirmation, never assumed."
         ),
     )
     dir_name: str | None = Field(
@@ -78,7 +78,7 @@ class ProjectNewInput(BaseModel):
         default=False,
         description=(
             "Create a GitHub repository and push to it. Outward-facing and not "
-            "reversible by deleting the local directory — requires an explicit "
+            "reversible by deleting the local directory. Requires an explicit "
             "yes from the operator in this same call, plus an authenticated "
             "`gh`. Leave false unless they said yes."
         ),
@@ -114,6 +114,7 @@ class ProjectNewTool(Tool):
     not_when: ClassVar[str] = (
         "for a directory that already exists, use `project_link` instead."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(
         self,

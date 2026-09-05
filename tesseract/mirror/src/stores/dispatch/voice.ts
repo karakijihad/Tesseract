@@ -77,7 +77,7 @@ export function handleVoice(env: Envelope): void {
           // mode cannot afford to be quiet.
           useToastStore
             .getState()
-            .push("Dictation contained line breaks — typed as a single line", "warning");
+            .push("The dictation had line breaks in it, so it was typed as a single line", "warning");
         }
         break;
       }

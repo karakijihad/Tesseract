@@ -151,12 +151,17 @@ export class SttStream {
 
   async stop(): Promise<void> {
     if (this.state === 'idle') return;
-    if (this.speaking) {
-      // `voice_cancel` clears the chunk-commit buffer + any pending
-      // TTS. Same envelope works for both transcribe and speak modes.
-      this.opts.sendMessage('voice_cancel', {});
-      this.speaking = false;
-    }
+    // Sent whether or not VAD still thinks you are talking, and that is the
+    // whole fix. VAD closes an utterance a few hundred milliseconds after
+    // your last word and commits it; a hand reaching for the mic takes
+    // longer than that. Gating the cancel on `speaking` therefore skipped it
+    // in the ordinary case, and muting mid-sentence transcribed and answered
+    // the sentence anyway. The server drops an utterance still in flight and
+    // ignores this when there is none. `reason: 'mute'` is what keeps it to
+    // the input half: switching your own microphone off is not a request for
+    // the assistant to stop talking.
+    this.opts.sendMessage('voice_cancel', { reason: 'mute' });
+    this.speaking = false;
     this.preSpeechFrames = [];
     await this.vad.stop();
     this.capture.stop();
@@ -165,6 +170,7 @@ export class SttStream {
     this.setState('idle');
     this.cbs.onLevel(0);
   }
+
 
   async toggle(): Promise<void> {
     if (this.state === 'idle') {

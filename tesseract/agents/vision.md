@@ -1,7 +1,7 @@
 ---
 name: vision
 version: "0.1"
-model_role: vision_agent
+model_role: channel_vision
 tools: []
 description: >
   Image-to-text specialist. Describes images, answers questions about them,

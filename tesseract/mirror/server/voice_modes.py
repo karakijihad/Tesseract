@@ -51,9 +51,9 @@ DEFAULT_VOICE_MODE = "transcribe"
 def normalize_voice_mode(mode: object) -> str:
     """The single answer to "what mode is this session in".
 
-    Four call sites used to substitute `speak` for a missing value while
-    the session dataclass defaulted to `transcribe` — two different
-    answers to the same question, and the wrong one is the audible one.
+    A call site substituting `speak` for a missing value while the session
+    dataclass defaults to `transcribe` is two different answers to the same
+    question, and the wrong one is the audible one.
     """
     if not isinstance(mode, str):
         return DEFAULT_VOICE_MODE

@@ -13,10 +13,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
-# The verify commands the gate knows how to run, in the order it runs them.
+# The verify steps the gate knows how to run, in the order it runs them.
 # Cheapest-and-most-specific first: a type error makes a test failure's stack
 # trace noise, so surfacing it first keeps the eventual auditor brief small.
-STEP_ORDER: tuple[str, ...] = ("typecheck", "lint", "test")
+# `live` is last because it is the one step that leaves the machine: it asks
+# the project's published URL whether it answers, and a tree that does not
+# build has no business being asked whether it is up.
+STEP_ORDER: tuple[str, ...] = ("typecheck", "lint", "test", "live")
 
 
 class StepOutcome(str, Enum):

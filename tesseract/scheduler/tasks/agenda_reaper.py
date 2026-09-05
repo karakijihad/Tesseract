@@ -14,13 +14,13 @@ someone recently touched survives even if it was minted long ago.
 Sub-second sweep; calls no model, sends no channel message, writes no
 memory — read store, transition, ``JobResult``.
 
-**It is the only reaper now, and that is why the table below is empty.** Two
-dedicated reapers used to own particular statuses for particular sources, and
-this job skipped those pairs to avoid applying two staleness policies to one
-item. Both were deleted with the sources they served. An exemption is a promise
-that something else will clean the item, so an exemption with no dedicated
-reaper behind it is how an item lives forever — the table stays as the
-mechanism, with nothing in it, because the next dedicated reaper will need it.
+**It is the only reaper, and that is why the table below is empty.** A
+dedicated reaper owning particular statuses for particular sources makes
+this job skip those pairs, so that two staleness policies never apply to
+one item. An exemption is a promise that something else will clean the
+item, so an exemption with no dedicated reaper behind it is how an item
+lives forever — the table stays as the mechanism, with nothing in it,
+because the next dedicated reaper will need it.
 """
 
 from __future__ import annotations
@@ -37,10 +37,16 @@ from tesseract.scheduler.types import JobContext, JobResult
 
 log = logging.getLogger(__name__)
 
-# Statuses owned by a source's dedicated reaper — never double-handled here.
-# Any status for that source NOT in this set falls through to the general sweep
-# below. Empty today: every source that had a dedicated reaper is gone.
-_BUILTIN_OWNED_STATUSES: dict[AgendaSource, frozenset[AgendaStatus]] = {}
+# Statuses owned elsewhere — never handled here. Any status for that source NOT
+# in this set falls through to the general sweep below.
+#
+# A task is owed until it is verified, honestly failed, or cancelled by the
+# operator, and none of those is this job's to decide: a task nobody has
+# touched for a week is still owed. So every open state of that source is
+# owned by the conversation and the operator, and the sweep skips it.
+_BUILTIN_OWNED_STATUSES: dict[AgendaSource, frozenset[AgendaStatus]] = {
+    AgendaSource.TASK: frozenset(AgendaStatus),
+}
 
 
 class AgendaReaperJob(BaseJob):

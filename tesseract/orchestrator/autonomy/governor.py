@@ -1,4 +1,4 @@
-"""Governor — the stop-digging detector layer (AU-6).
+"""Governor — the stop-digging detector layer.
 
 Three deterministic detectors run on cadence + on-demand:
 
@@ -21,7 +21,7 @@ restart-safe) and append a JSONL audit row to
 the ``PauseStore`` on boot + on every detector trigger so a pause set
 on tick N is honoured on tick N+1.
 
-Unpause is operator-only via REST (AU-6 §7); the governor never
+Unpause is operator-only via REST; the governor never
 auto-clears a pause.
 """
 
@@ -178,7 +178,7 @@ class PauseStore:
     cleanly. Construct once per backend (the kernel + governor share
     the same instance).
 
-    Phase 4 (2026-05-22): optional ``broadcast_hook`` fan-outs
+    The optional ``broadcast_hook`` fans out
     ``governor_pause_added`` / ``governor_pause_removed`` envelopes so the
     Mirror Autonomy tab refreshes immediately. Mirror server boot wires
     the hook; REPL / standalone contexts leave it unset.
@@ -324,8 +324,8 @@ NotifyFn = Callable[[SourcePause], Awaitable[None]]
 
 @dataclass
 class GovernorTickResult:
-    """One detector pass. Tests assert on it; the dashboard will surface
-    these in AU-7 alongside the kernel tick results."""
+    """One detector pass. Tests assert on it; the dashboard surfaces these
+    alongside the kernel tick results."""
 
     at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     pauses_added: list[SourcePause] = field(default_factory=list)
@@ -362,11 +362,11 @@ class Governor:
         # set lets ``stop()`` drain in-flight notifications cleanly
         # instead of leaking orphaned tasks past shutdown.
         self._notify_tasks: set[asyncio.Task[None]] = set()
-        # AU-7 dashboard reads this to render the most recent detector
+        # The dashboard reads this to render the most recent detector
         # pass. Updated unconditionally at the end of ``run_once`` even
         # on no-change ticks so the operator sees a fresh ``at`` stamp.
         self._last_tick_result: GovernorTickResult | None = None
-        # Phase 4 (2026-05-22) — optional governor_tick broadcaster wired by
+        # Optional governor_tick broadcaster wired by
         # Mirror server boot so the operator's Autonomy tab refreshes on
         # every cadence without polling /api/governor/state.
         self._tick_broadcast_hook: Callable[[dict[str, Any]], None] | None = None
@@ -456,7 +456,7 @@ class Governor:
     async def run_once(self) -> GovernorTickResult:
         """One detector pass. Tests call this synchronously; the loop
         calls it on cadence. Returns the new pauses + side-effects so the
-        operator-facing dashboard (AU-7) can stream the activity."""
+        operator-facing dashboard can stream the activity."""
         result = GovernorTickResult(at=self._clock())
         # Both collectors read and parse every matching agenda file, which
         # is CPU and blocking I/O on a cadence — on the loop it showed up as

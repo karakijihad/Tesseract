@@ -11,15 +11,33 @@ auto_recall:
   # still search/fetch the full record if needed.
   char_cap: 300
 
-  # Minimum retrieval score for a hit to be injected; lower-scoring hits
-  # are dropped. Score is a composite rank-based value, not a normalized
-  # similarity — tune by watching real recall logs rather than reasoning
-  # about the number in isolation.
+  # Minimum relevance for a hit to be injected. Applies ONLY to scores from
+  # the cross-encoder reranker, which is the one stage that produces a
+  # comparable number; every other stage scores on its own scale and is
+  # bounded by `top_k` instead. The reranker's score is its 0-1 relevance
+  # multiplied by a 0.85 ceiling and the memory's own confidence, so 0.01
+  # rejects what the model judged almost certainly unrelated.
   min_similarity: 0.01
 
   # Turns shorter than this many words skip retrieval entirely (a one-word
   # "ok" isn't worth a retrieval round-trip).
   min_query_words: 3
+
+  # How many connections are printed beside each recalled memory, and 0 turns
+  # them off.
+  #
+  # The map of how everything connects had been asked a question zero times in
+  # 2,387 tool calls over fifteen days, while search was asked 48 times. The
+  # tool was never hidden: it is the first thing described to the assistant on
+  # every turn. It is scoped to a question people do not ask out loud — a turn
+  # arrives as "what do I know about X", not as "how do these two connect" —
+  # so what the map knows now arrives with the memories that were already
+  # being pushed, instead of waiting to be asked.
+  #
+  # Beside the hits and never as a block of its own: a second unasked block
+  # costs every turn whether or not it earns one, and the memories are already
+  # the answer to what the turn is about.
+  connections_per_memory: 3
 
   # A memory that was just injected stays excluded from re-injection for
   # this many subsequent turns, so the same fact doesn't repeat every turn.

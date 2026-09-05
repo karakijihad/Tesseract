@@ -21,6 +21,7 @@ import json
 import logging
 from typing import Any, AsyncGenerator
 
+from tesseract.kernel.adapters._estimate import tokens_from_chars
 from tesseract.kernel.adapters.base import (
     AdapterOptions,
     ChunkType,
@@ -48,9 +49,37 @@ _GEMINI_SCHEMA_DROP_KEYS = {
 class GeminiAdapter(ModelAdapter):
     def __init__(self, *, api_key: str, timeout: float, max_retries: int) -> None:
         from google import genai
+        from google.genai.types import HttpOptions
+
+        from tesseract import http_client
 
         self._genai = genai
-        self.client = genai.Client(api_key=api_key)
+        # The app's own trust store, handed over rather than left to the SDK.
+        #
+        # `genai.Client()` with no http options builds its own context per
+        # transport, lazily, from `ssl.create_default_context`. Measured on
+        # this machine off the backend's event-loop sampler: 141 samples in
+        # `create_default_context`, reached through `_ensure_httpx_ssl_ctx`,
+        # `_ensure_aiohttp_ssl_ctx` and `_ensure_websocket_ssl_ctx` — three
+        # builds, each ~0.8s of synchronous CPU, all of them on the loop
+        # because the adapter is built on first use inside a turn.
+        #
+        # `http_client.ssl_context()` is the same store every other client
+        # here uses, built once and warmed off the loop at boot by
+        # `mirror/server/app.py::_warm_tls_trust_store`. By the time an
+        # adapter is built it is a cached attribute read.
+        #
+        # Two keys, because the SDK uses two: httpx reads `verify`, and both
+        # aiohttp and the websocket transport read `ssl`. Setting one leaves
+        # the others building their own.
+        ctx = http_client.ssl_context()
+        self.client = genai.Client(
+            api_key=api_key,
+            http_options=HttpOptions(
+                client_args={"verify": ctx},
+                async_client_args={"verify": ctx, "ssl": ctx},
+            ),
+        )
         self.timeout = timeout
         self.max_retries = max_retries
 
@@ -413,20 +442,22 @@ class GeminiAdapter(ModelAdapter):
 
     @staticmethod
     def count_tokens(messages: list[dict[str, Any]]) -> int:
-        """Rough estimate — one token per 4 chars. Matches other adapters' heuristic."""
-        total = 0
+        """Characters through the measured divisor, plus a flat charge per
+        attachment. An image has no characters and is not free."""
+        chars = 0
+        attachment_tokens = 0
         for msg in messages:
             content = msg.get("content", "")
             if isinstance(content, str):
-                total += len(content) // 4
+                chars += len(content)
             elif isinstance(content, list):
                 for part in content:
                     if isinstance(part, dict):
                         if part.get("text"):
-                            total += len(str(part.get("text", ""))) // 4
+                            chars += len(str(part.get("text", "")))
                         elif part.get("type") in ("image", "file"):
-                            total += 256
-        return total
+                            attachment_tokens += 256
+        return tokens_from_chars(chars) + attachment_tokens
 
     async def check_available(self) -> bool:
         try:

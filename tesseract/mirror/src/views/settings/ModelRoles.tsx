@@ -1,5 +1,6 @@
 import { Select } from "../../components/common/Select";
 import { Note } from "../../components/common/Note";
+import { DataTable } from "../../components/common/DataTable";
 import { Chip } from "../../components/common/Chip";
 import { useMemo, useState } from "react";
 
@@ -53,6 +54,21 @@ function chainLabel(chain: Chain): string {
       : `+${chain.entries.length - 1} fallback${chain.entries.length === 2 ? "" : "s"}`;
   return `${chain.name}  ·  ${depth}`;
 }
+
+/** Fixed widths, not content-sized ones. Target and chain used to be
+ *  `max-content`, which sizes to the row it is in: every row is its own grid,
+ *  so each one picked a different width and no column lined up with its
+ *  heading. Target is wide enough for the longest role in roles.yaml and
+ *  truncates past it (`.role-table__role` carries the ellipsis); chain fits
+ *  the fixed shape of its label. Model takes the slack. */
+const ROLE_COLUMNS = [
+  { label: "target", width: "160px" },
+  { label: "chain", width: "180px" },
+  { label: "model", width: "minmax(0, 1fr)" },
+  { label: "provider", width: "120px" },
+  { label: "context", width: "70px" },
+  { label: "status", width: "90px" },
+];
 
 export function ModelRolesSection() {
   const roles = useIdentityStore((s) => s.roles);
@@ -178,26 +194,20 @@ export function ModelRolesSection() {
   return (
     <section className="settings-section">
       <Note tone="warn">
-        Takes effect immediately — live sessions hot-swap to the new adapter on
+        Takes effect immediately. Open sessions move to the new model on
         save.
       </Note>
       <Note>
         A role follows a chain, and the chain decides which model serves it and
         what it falls back to. Changing a role here moves that role alone; to
-        change the models themselves — or move every role that shares a chain —
+        change the models themselves, or move every role that shares a chain,
         edit the chain in Chains.
       </Note>
       {error && <Note tone="bad">{error}</Note>}
-      <div className="role-table">
-        <div className="role-table__head t-meta">
-          <span>target</span>
-          <span>chain</span>
-          <span>model</span>
-          <span>provider</span>
-          <span>context</span>
-          <span>status</span>
-        </div>
-        {targetRows.map(
+      <DataTable
+        label="Roles and the models behind them"
+        columns={ROLE_COLUMNS}
+        rows={targetRows.map(
           ({ target, allow_toggle, load_bearing, mode: serverMode, allowed_kinds }) => {
             const label = target;
             const currentRef = catalog.current[target];
@@ -225,9 +235,10 @@ export function ModelRolesSection() {
             const mode = (status?.mode || serverMode || "active") as RoleMode;
             const isLoadBearing = load_bearing;
 
-            return (
-              <div key={target} className="role-table__row">
-                <span className="role-table__role">{label}</span>
+            return {
+              key: target,
+              cells: [
+                <span className="role-table__role">{label}</span>,
                 <span className="role-table__chain">
                   {chain ? (
                     <Hint
@@ -235,7 +246,7 @@ export function ModelRolesSection() {
                         chain.used_by.length > 1
                           ? `${chain.name} is shared with ${chain.used_by
                               .filter((r) => r !== target)
-                              .join(", ")} — moving this role leaves them on it`
+                              .join(", ")}. Moving this role leaves them on it.`
                           : `${chain.name} serves this role alone`
                       }
                     >
@@ -253,7 +264,7 @@ export function ModelRolesSection() {
                   ) : (
                     <span className="t-meta">—</span>
                   )}
-                </span>
+                </span>,
                 <span className="role-table__model">
                   {chain ? (
                     <span className="role-table__resolved">
@@ -277,17 +288,17 @@ export function ModelRolesSection() {
                       ]}
                     />
                   )}
-                </span>
+                </span>,
                 <span className="role-table__provider t-meta">
                   {head ? `${head.tier}.${head.provider}` : "—"}
-                </span>
+                </span>,
                 <span className="role-table__ctx t-meta">
                   {ctxLabel(head?.context_window)}
-                </span>
+                </span>,
                 <span className="role-table__status">
                   {allow_toggle ? (
                     <Hint label={isLoadBearing
-                          ? "chat_brain is load-bearing — cannot be set inactive"
+                          ? "chat_brain is what answers you, so it cannot be set inactive"
                           : mode === "active"
                             ? "click to set inactive"
                             : "click to set active"}>
@@ -306,7 +317,7 @@ export function ModelRolesSection() {
                     // status column stays consistent across all rows.
                     // role="img" + aria-label makes screen readers announce
                     // it as informational rather than a non-functional control.
-                    <Hint label="always active — addressed directly by the runtime">
+                    <Hint label="always active, because the runtime addresses it directly">
                       <span
                         className="chip chip--outline chip--good role-toggle"
                         role="img"
@@ -316,12 +327,12 @@ export function ModelRolesSection() {
                       </span>
                     </Hint>
                   )}
-                </span>
-              </div>
-            );
+                </span>,
+              ],
+            };
           },
         )}
-      </div>
+      />
     </section>
   );
 }

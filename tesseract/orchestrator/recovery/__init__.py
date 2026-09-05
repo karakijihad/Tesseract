@@ -1,7 +1,7 @@
-"""AU-2 — RecoveryManager: boot-time reconciler.
+"""RecoveryManager: boot-time reconciler.
 
 Runs once per backend boot, BEFORE scheduler catch-up and BEFORE
-AutonomyKernel resumes (AU-5). Converts ambiguous post-restart state
+AutonomyKernel resumes. Converts ambiguous post-restart state
 into explicit, operator-visible outcomes by scanning durable state and
 applying the transition map in ``_shared/recovery-state-machine.md``.
 

@@ -182,7 +182,7 @@ def is_safe_seed_target(target: Path, home: Path) -> bool:
     return True
 
 
-# Pronouns are derived from `identity.gender` rather than configured beside
+# Pronouns are derived from `identity.yaml::gender` rather than configured beside
 # it. Two fields can disagree; a derivation cannot, and there is then no
 # question which one the operator actually answered. An unrecognised value
 # falls back to the neutral row rather than raising — a gender nobody can
@@ -442,8 +442,76 @@ def ensure_config_seeded() -> None:
     from tesseract.paths import config_dir
 
     _seed_from_templates("config", config_dir())
+    _carry_identity_forward()
     replace_config_from_templates()
     _stamp_born_at_if_empty()
+
+
+#: The keys that moved out of `mirror.yaml` when identity got its own file.
+_MOVED_IDENTITY_KEYS = ("name", "operator_name", "gender", "wake_word")
+
+
+def _carry_identity_forward() -> None:
+    """Copy the identity keys into `identity.yaml` on the update that moves them.
+
+    The name, the operator's name, the gender and the wake-word block used to
+    live under `mirror.yaml::identity`. `replace_config_from_templates` carries
+    the first three across an update by reading them out of the file they are
+    IN, so without this the update that relocates them would read an
+    `identity.yaml` that has never held a name and hand the operator back the
+    shipped placeholder — a renamed assistant, on an update that was supposed
+    to move a decision rather than change it.
+
+    Runs before the replace pass and only when `identity.yaml` has no `name` of
+    its own, so it is a one-time carry rather than a second writer. Nothing is
+    deleted from `mirror.yaml`: the replace pass in the same call overwrites
+    that file with the template these keys have already left.
+    """
+    import yaml
+
+    from tesseract.lib.yaml_io import round_trip_yaml
+    from tesseract.paths import config_dir
+
+    identity_path = config_dir() / "identity.yaml"
+    mirror_path = config_dir() / "mirror.yaml"
+    if not identity_path.exists() or not mirror_path.exists():
+        return
+    try:
+        identity = yaml.safe_load(identity_path.read_text(encoding="utf-8")) or {}
+        mirror = yaml.safe_load(mirror_path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        logger.exception("could not read config while carrying identity forward")
+        return
+    if not isinstance(identity, dict) or not isinstance(mirror, dict):
+        return
+    if identity.get("name"):
+        return  # already carried, or a fresh install that seeded the new file
+    old = mirror.get("identity")
+    if not isinstance(old, dict):
+        return
+
+    carried = {key: old[key] for key in _MOVED_IDENTITY_KEYS if key in old}
+    voice = mirror.get("voice")
+    sample = (voice or {}).get("test_sample") if isinstance(voice, dict) else None
+    if not carried and not sample:
+        return
+
+    def _apply(doc: Any) -> None:
+        for key, value in carried.items():
+            doc[key] = value
+        if sample:
+            block = doc.get("voice")
+            if isinstance(block, dict):
+                block["test_sample"] = sample
+            else:
+                doc["voice"] = {"test_sample": sample}
+
+    try:
+        round_trip_yaml(identity_path, _apply)
+    except (OSError, ValueError):
+        logger.exception("could not carry identity into %s", identity_path)
+        return
+    logger.info("identity carried into identity.yaml: %s", ", ".join(sorted(carried)))
 
 
 #: Where a replaced config file is kept. One folder, rewritten each time a
@@ -452,7 +520,12 @@ def ensure_config_seeded() -> None:
 CONFIG_BACKUP_DIRNAME = "config-backup"
 
 #: Written beside the runtime manifest so a surface can tell the operator
-#: their config was replaced, and where the previous one went.
+#: their config was replaced, and where the previous one went. It OUTLIVES the
+#: toast that announces it: the toast fires once and stamps `announced`, and
+#: the file is what the Workspace notice reads until the operator dismisses
+#: it. A settings reset the operator learns about in a message that is gone
+#: before they have finished reading it is a settings reset they never learn
+#: about.
 CONFIG_REPLACED_MARKER = "config-replaced.json"
 
 
@@ -549,8 +622,9 @@ immediately before that happened.
 
 {files}
 
-Your assistant's name, your name, and its birth date were carried across —
-they are not settings, so an update does not have an opinion about them.
+Your assistant's name, your name, its birth date and the word you wake it
+with were carried across. They are not settings, so an update has no opinion
+about them.
 
 Everything else was replaced. If you had changed a model, a voice, a
 schedule or a permission, set it again in Settings. The files here are
@@ -582,11 +656,19 @@ def _write_backup_readme(replaced: list[str], backup_dir: Path) -> None:
 #: all — it carries a placeholder for each. Replacing them would rename
 #: someone's assistant and reset its age to day one, which "it is in the
 #: backup" does not answer, because getting it back means hand-editing yaml.
+#:
+#: The wake prefix is here for the same reason and not an obvious one: first-run
+#: setup ASKS for it, so `ciao` beside `Ada` is as much the operator's answer as
+#: the name is. Resetting it to the shipped `hey` leaves them saying a phrase
+#: nothing responds to, with nothing on any surface saying why. Whether the gate
+#: is switched on is NOT here — that is one visible checkbox in Settings, and a
+#: release may have a view on the default.
 _PRESERVED_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("mirror.yaml", ("identity", "name")),
-    ("mirror.yaml", ("identity", "operator_name")),
-    ("mirror.yaml", ("identity", "gender")),
+    ("identity.yaml", ("name",)),
+    ("identity.yaml", ("operator_name",)),
+    ("identity.yaml", ("gender",)),
     ("identity.yaml", ("born_at",)),
+    ("identity.yaml", ("wake_word", "prefix")),
 )
 
 
@@ -675,12 +757,25 @@ def _forget_hardware_profile_if_needed(replaced: Iterable[str]) -> None:
 
 
 def _write_config_replaced_marker(replaced: list[str], backup_dir: Path) -> None:
+    from datetime import datetime, timezone
+
+    import tesseract
+
     path = config_replaced_marker_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps(
-                {"files": sorted(replaced), "backup_dir": str(backup_dir)},
+                {
+                    "files": sorted(replaced),
+                    "backup_dir": str(backup_dir),
+                    # The version this boot is running, which is the one the
+                    # update brought: the app tree is swapped before the
+                    # backend starts, so the replacement and the new version
+                    # are the same event and the notice can say so.
+                    "version": tesseract.__version__,
+                    "at": datetime.now(timezone.utc).isoformat(),
+                },
                 indent=2,
             ),
             encoding="utf-8",
@@ -730,25 +825,26 @@ def _stamp_born_at_if_empty() -> None:
 def identity_values() -> dict[str, str]:
     """The names the workspace templates are rendered with.
 
-    Read from ``mirror.yaml`` rather than taken as arguments because the
-    identity block is the single source of truth for them, and seeding runs
-    long before a `ServerConfig` exists. `ensure_config_seeded` runs first at
-    every entry point, so the file is there to read.
+    Read from ``identity.yaml`` rather than taken as arguments because that
+    file is the single source of truth for them, and seeding runs long before a
+    `ServerConfig` exists. `ensure_config_seeded` runs first at every entry
+    point, so the file is there to read.
     """
     import yaml
 
     from tesseract.paths import config_dir
 
-    path = config_dir() / "mirror.yaml"
-    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    identity = (raw.get("identity") or {}) if isinstance(raw, dict) else {}
+    path = config_dir() / "identity.yaml"
+    identity = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(identity, dict):
+        identity = {}
     agent_name = str(identity.get("name") or "").strip()
     operator_name = str(identity.get("operator_name") or "").strip()
     if not agent_name or not operator_name:
         raise RuntimeError(
-            f"seed: {path} needs both 'identity.name' and "
-            "'identity.operator_name' — the workspace templates are rendered "
-            "from them and a blank name would be seeded into every document."
+            f"seed: {path} needs both 'name' and 'operator_name' — the "
+            "workspace templates are rendered from them and a blank name "
+            "would be seeded into every document."
         )
     gender = str(identity.get("gender") or "").strip().lower()
     if gender not in PRONOUNS:
@@ -952,6 +1048,7 @@ def unseed_copied_jobs() -> dict[str, list[str]]:
 
     from tesseract.lib.yaml_io import round_trip_yaml
     from tesseract.paths import config_dir, runtime_dir, system_config_dir
+    from tesseract.scheduler.config_loader import locked_fields_of
 
     report: dict[str, list[str]] = {"reconnected": [], "removed": [], "kept": []}
     user_dir, system_dir = config_dir(), system_config_dir()
@@ -986,11 +1083,18 @@ def unseed_copied_jobs() -> dict[str, list[str]]:
             if origin is None:
                 report["kept"].append(str(row.get("name")))
                 continue
-            # `handler` goes unconditionally: it is never overridable, and a
-            # copy of the shipped value would now be a hard error on load.
+            # A field the app decides goes unconditionally, whether or not the
+            # copy differs. Keeping one would leave a row the loader answers
+            # every boot rather than one that runs: `handler`, `when` and
+            # `summary` are a hard error there, and a cadence the app owns is
+            # named in the log and dropped. The set is the loader's own, so
+            # this cannot come to disagree with what an override may say.
+            decided = locked_fields_of(origin.get("cadence"))
             differing = [
                 key for key in list(row)
-                if key not in ("name", "handler") and row.get(key) != origin.get(key)
+                if key != "name"
+                and key not in decided
+                and row.get(key) != origin.get(key)
             ]
             if not differing:
                 del rows[index]

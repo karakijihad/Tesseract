@@ -39,10 +39,10 @@ _TEST_MAX_CHARS = 500
 _TTS_KIND = "tts"
 
 
-def _mirror_yaml_path(app: web.Application):
-    from tesseract.mirror.server.routes.settings import mirror_yaml_path
+def _identity_yaml_path(app: web.Application):
+    from tesseract.mirror.server.routes.settings import identity_yaml_path
 
-    return mirror_yaml_path(app)
+    return identity_yaml_path(app)
 
 
 def _roles_yaml_path(app: web.Application):
@@ -52,7 +52,7 @@ def _roles_yaml_path(app: web.Application):
 
 
 def sample_line(request: web.Request) -> str:
-    """The line a voice audition speaks, from ``mirror.yaml::voice.test_sample``.
+    """The line a voice audition speaks, from ``identity.yaml::voice.test_sample``.
 
     Read from disk rather than `app["config"]` for the same reason the
     voice settings panel does: the operator may have just renamed the
@@ -61,13 +61,14 @@ def sample_line(request: web.Request) -> str:
     it is spoken verbatim. Missing key raises — a sample line the operator
     can't edit is a hardcoded default by another name.
     """
-    raw = yaml.safe_load(_mirror_yaml_path(request.app).read_text(encoding="utf-8")) or {}
-    block = raw.get("voice") if isinstance(raw, dict) else None
+    raw = yaml.safe_load(_identity_yaml_path(request.app).read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    block = raw.get("voice")
     template = (block or {}).get("test_sample") if isinstance(block, dict) else None
     if not isinstance(template, str) or not template.strip():
-        raise KeyError("mirror.yaml missing required 'voice.test_sample'")
-    identity = (raw.get("identity") or {}) if isinstance(raw, dict) else {}
-    return template.replace("{name}", str(identity.get("name") or "").strip())
+        raise KeyError("identity.yaml missing required 'voice.test_sample'")
+    return template.replace("{name}", str(raw.get("name") or "").strip())
 
 
 async def get_providers(request: web.Request) -> web.Response:
@@ -308,7 +309,7 @@ async def post_test(request: web.Request) -> web.Response:
     """Synthesize the configured sample line via the TTS engine.
 
     Body: `{"text": "..."}` overrides the line for a one-off check; with
-    no text it speaks `mirror.yaml::voice.test_sample`. The voice is
+    no text it speaks `identity.yaml::voice.test_sample`. The voice is
     whatever the `voice.tts` chain resolves to, so there is nothing to
     override per call. Returns JSON with `audio_b64` + `provider` +
     `byte_count` so the caller can decode locally without a separate
@@ -378,19 +379,24 @@ async def post_test(request: web.Request) -> web.Response:
 def _wake_status_payload(app: web.Application) -> dict[str, Any]:
     from tesseract.mirror.server.wake_word import wake_phrase
     from tesseract.voice import wake_calibration
-    from tesseract.voice.wake_spotter import models_present
+    from tesseract.voice.wake_spotter import models_present, unavailable_reason
 
     config = app.get("config")
     wake = getattr(config, "wake_word", None)
     calibration = wake_calibration.load()
     phrase = wake_phrase(config) if config is not None else ""
     stale = bool(calibration and phrase and not calibration.matches_phrase(phrase))
+    # A calibration this machine cannot run is not readiness. Without this the
+    # panel read "listening for <phrase>, only that starts a turn" on an
+    # install whose decoder could not load and whose gate passed everything.
+    blocked = unavailable_reason()
     return {
         # `enabled` is permission; `armed` is readiness. Reporting one number
         # for both is how an operator ends up believing a gate is live when it
         # is passing everything through.
         "enabled": bool(getattr(wake, "enabled", False)),
-        "armed": bool(calibration) and not stale,
+        "armed": bool(calibration) and not stale and blocked is None,
+        "blocked_reason": blocked,
         "calibrated": bool(calibration),
         "stale": stale,
         "phrase": phrase,

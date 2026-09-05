@@ -1,4 +1,4 @@
-"""VaultRawWatchJob — AU-22.
+"""VaultRawWatchJob.
 
 Watches `<TESSERACT_HOME>/vault/raw/<YYYYMMDD>/` for new operator-dropped
 research material and routes each file through one of two paths:
@@ -566,8 +566,8 @@ def _append_cursor(
 def _read_cursor_keys(cursor_path: Path) -> set[tuple[str, str]]:
     """All (folder, sha) seen — any ingest_status counts as seen so the
     watcher never re-proposes a file the operator has already touched.
-    Per AU-22 contract: failed files require operator replacement (new
-    SHA) before another attempt."""
+    A failed file requires operator replacement (new SHA) before
+    another attempt."""
     if not cursor_path.exists():
         return set()
     keys: set[tuple[str, str]] = set()

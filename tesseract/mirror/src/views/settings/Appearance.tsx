@@ -28,15 +28,15 @@ const TIERS: { cls: string; name: string; role: string }[] = [
   { cls: "t-head", name: "Head", role: "The name of a surface" },
   { cls: "t-sub", name: "Sub", role: "A section inside one" },
   { cls: "t-ui", name: "UI", role: "Controls and their labels" },
-  { cls: "t-body", name: "Body", role: "Prose — replies, summaries, notes" },
+  { cls: "t-body", name: "Body", role: "Prose: replies, summaries, notes" },
   { cls: "t-caption", name: "Caption", role: "Rows, values, dense tables" },
   { cls: "t-meta", name: "Meta", role: "Hints, captions, timestamps" },
 ];
 
 const SCALES: { label: string; value: number }[] = [
   { label: "Tiny", value: 0.7 },
-  { label: "Compact", value: DEFAULT_TYPE_SCALE },
-  { label: "Regular", value: 1 },
+  { label: "Compact", value: 0.9 },
+  { label: "Regular", value: DEFAULT_TYPE_SCALE },
   { label: "Large", value: 1.15 },
 ];
 

@@ -43,23 +43,54 @@
   min-height: 120px;
 }
 
-.surface-card--locked {
-  border-style: dashed;
+/* Stowed: in the dock. Hidden, never unmounted — same treatment a minimized
+   glass panel gets, so a lane keeps polling and keeps its `mounted` report
+   while it is put away. */
+.surface-card--stowed {
+  visibility: hidden;
+  pointer-events: none;
+  opacity: 0;
 }
 
-/* Minimized: collapse body + resize handles; bar stays as grab handle to restore. */
-.surface-card--minimized {
-  min-height: 0;
+/* The dock — a centred row of chips just above the HUD, one per put-away
+   surface. Placement only: the chips carry the paint, as they do in the
+   activity taskbar.
+
+   It hangs off `.cockpit-shell`, NOT the stage. `.cockpit-stage` sets
+   `perspective`, which makes it a stacking context, so every panel's z (1000
+   and up, from the shared zStack) is trapped inside it. A dock in there sat
+   under any focused or maximized panel, which for a surface card is the only
+   way back. */
+.surface-dock {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--hud-h) + var(--space-md) * 2);
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 90%;
+  overflow-x: auto;
+  transition: bottom var(--motion-med) ease;
 }
-.surface-card--minimized .surface-card__body,
-.surface-card--minimized .resize-handle {
-  display: none;
+
+/* Tucking the HUD takes its height out of the layout, so the dock drops with
+   it. Left alone it hung at the bar's old height over nothing. */
+.cockpit-shell:has(.cockpit-hud-inner.is-tucked) .surface-dock {
+  bottom: var(--space-md);
+}
+
+/* Long titles are common here (a lane id, a file path), and a chip that grows
+   to fit one pushes the rest off the row. */
+.surface-dock__chip {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Maximized: the card fills the overlay; drag is inert, so drop the grab cue. */
-.surface-card--maximized {
-  border-radius: 0;
-}
 .surface-card--maximized .surface-card__bar {
   cursor: default;
 }
@@ -103,10 +134,6 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.surface-card__lock {
-  font-size: var(--t-body-size);
 }
 
 .surface-card__body {
@@ -455,7 +482,6 @@
 }
 .lane-ev--text {
   color: var(--text-primary);
-  white-space: pre-wrap;
 }
 /* Operator-sent message — a right-aligned accent bubble. */
 .lane-ev--sent {
@@ -506,15 +532,18 @@
 
 .lane-card__input {
   display: flex;
+  /* Same as `.hud-chat-composer`, and for the same reason: without it flex
+     stretches the Send button to the field's height, which is how a control
+     the library sizes ends up a slab. */
+  align-items: center;
   gap: var(--space-xs);
   padding: var(--space-xs) var(--space-sm);
   border-top: var(--stroke-1) solid var(--border-subtle);
 }
-/* PLACEMENT ONLY — the field is `.textarea`. A lane card is a fixed height,
-   so its composer fills what is left rather than growing. */
+/* PLACEMENT ONLY — the field is `.textarea`. The stream above takes the
+   leftover height, so the composer is the two rows it asks for. */
 .lane-card__draft {
   flex: 1 1 auto;
-  min-height: 0;
   resize: none;
 }
 

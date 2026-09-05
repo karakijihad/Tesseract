@@ -1,234 +1,157 @@
-# TESSERACT scheduler — persistent job registry.
-# Mirror toggle (/schedule-enable /schedule-disable) and /schedule-set-cadence
-# WRITE this file via ruamel round-trip (persist_job_update in config_loader.py).
-# Circuit-breaker and on_failure=disable do NOT persist — they only flip the
-# in-memory runtime flag so the YAML stays the operator's authority.
+# The jobs the app runs on its own, and when.
 #
-# Cron expressions are interpreted in **system local time** (see
-# SchedulerEngine._should_fire). Storage in runs.jsonl + last_fired_at stays
-# UTC for portability. Daytime cadences mean the operator's wall clock so a
-# PC that isn't on 24/7 still fires them. The engine catches up once per job
-# on startup if a scheduled tick was missed (see _compute_catchup).
+# This file is the app's. It is read and never written: when you turn a job off
+# or move the one that fires at a set time, that choice is saved to your own
+# schedule file as an override, so a correction in a later release still
+# reaches you. What you may change is enable and disable on any row, plus the
+# hour of the row that fires at a time of day. How often the rest run is part
+# of what the work is.
+#
+# Times are your computer's local time. If the machine was off when a job was
+# due, the app runs it once on the next start rather than replaying every
+# missed turn.
 
-# Boot catch-up throttle — max missed jobs replayed concurrently. A long
-# gap between restarts can queue many jobs; unthrottled replay can saturate
-# a free-tier provider's rate limit.
 catchup:
   concurrency: 3
-
 jobs:
-  # Leaf lifecycle jobs ushering raw memory candidates through the state
-  # machine (pending → admitted → buffered → sealed) and into the derived
-  # trees that Obsidian's graph view colour-groups. All jobs are idempotent
-  # so re-runs converge.
-
-  # The capture row: extraction, buffering and sealing in one ordered pass.
-  # Was two rows (leaf_intake */5, leaf_seal */15) whose ordering lived in the
-  # gap between their cadences. Sealing is now checked every 5 minutes instead
-  # of every 15 — when it actually SEALS is still decided by the thresholds in
-  # its own config block below, so a ripe buffer simply waits less.
-  # Stages, edges and budgets: tesseract/scheduler/pipeline/stages/capture.py.
-  - name: capture
-    cadence: "*/5 * * * *"        # every 5 min — the capture window is lost otherwise
-    handler: "tesseract.scheduler.tasks.capture_pipeline.CapturePipelineJob"
-    enabled: true
-    on_failure: log
-    retry_policy:
-      max_retries: 0
-      backoff_seconds: 0
-    config:                       # one block per stage, keyed by stage name
-      leaf_intake:
-        extract_max_per_tick: 64
-        append_max_per_tick: 256
-      leaf_seal:
-        max_buffer_leaves: 20
-        max_buffer_age_seconds: 3600   # 1h fallback so quiet sources still seal eventually
-        max_seals_per_tick: 32
-      # The funnel. Every entry point — the Mirror's chats, every channel —
-      # produces the same recap, tagged with the door it came through, so
-      # adding a channel costs an adapter and an id rather than a fourth way
-      # for a conversation to become memory.
-      conversation_reflect:
-        idle_minutes: 30          # how long quiet means over
-        lookback_hours: 48        # quiet for longer than this ended a while
-                                  # ago; without this bound the first pass on a
-                                  # machine with history recaps everything at once
-        tail_turns: 40            # how much of a long conversation reaches the recap
-        max_per_tick: 20          # a backlog is worked oldest-first over several ticks
-
-  # The consolidate row: everything that settles the day into memory, in one
-  # ordered pass. Was sixteen rows firing between 03:15 and 23:45, whose order
-  # was whatever the clock imposed — index_rebuild sat at 15:30, HOURS before
-  # every job that writes what it indexes.
-  #
-  # ITS CRON IS THE ANCHOR, and the only clock time left in this system. The
-  # stages have order, not clocks, so moving this one line moves all of them
-  # together. Set it to your quiet window; a machine that is off when it fires
-  # runs it once at the next boot, not once per missed day.
-  #
-  # `provider_probe` (was 05:30) and `agenda_reap` (was 12:30) joined it — two
-  # more hours chosen on one machine, and neither job had a reason for its own.
-  # `retention` (was `sessions_archive` 04:00 + `observer_log_prune` 16:30 +
-  # the janitor's file-ageing half) is one stage over one table now.
-  # `brief_render` (was the 08:00 `daily_brief` row) is the LAST stage, so
-  # the brief knows what the night did. WHEN it reaches you is a preference
-  # in mirror.yaml::brief, not a clock here.
-  #
-  # Stages, edges, budgets and which four call a model:
-  # tesseract/scheduler/pipeline/stages/consolidate.py — `python -m
-  # tesseract.scheduler.pipeline --list` prints them in the order they run.
-  - name: consolidate
-    cadence: "0 23 * * *"         # 23:00 local — THE anchor
-    handler: "tesseract.scheduler.tasks.consolidate_pipeline.ConsolidatePipelineJob"
-    enabled: true
-    on_failure: alert             # a nightly pass that failed should toast, not only log
-    retry_policy:
-      max_retries: 0              # a stage records its own outcome and the next anchor
-      backoff_seconds: 0          # retries it; re-running the row would re-bill the model stages
-    config:                       # one block per stage, keyed by stage name.
-                                  # `enabled: false` turns a single stage off:
-                                  # the run lists it as disabled and skips it,
-                                  # and the row's own outcome is unaffected, so
-                                  # one stage switched off does not make every
-                                  # night read as a refusal.
-                                  # `retry_policy` above covers the ROW; a
-                                  # stage's own retries are declared in code
-                                  # (only index_rebuild has any).
-      chat_digest:
-        model_role: subagents_default   # LLM role — pick from roles.yaml::roles.*
-        max_digest_chars: 6000
-      librarian_heartbeat:
-        model_role: subagents_default   # personality distillation
-      # These two name a CHAIN, not a role. Roles are pillars — chat, the
-      # seats, the defaults — and the role these used to name existed only to
-      # give them a budget line. What they spend bills to `consolidate`, whose
-      # ceiling is on its manifest entry.
-      feedback_sweep:
-        chain: chain_2                  # shared chain — see roles.yaml::chains
-      feedback_consolidator:
-        chain: chain_2
-      memory_scrub:
-        mode: fix                 # flip to "report" for a dry run first
-      interests_decay:
-        half_life_days: 30
-        days: 1
-      provider_probe: {}          # no per-role config; tests can inject {"publisher": ...}
-      brief_render:
-        model_role: agents_default  # spend ceilings live in permissions.yaml::loop_cost_caps
-      retention: {}               # windows live in config/retention.yaml — one
-                                  # table for every tree this machine ages, so
-                                  # they are not spread across stage blocks here
-      agenda_reap:                # general agenda hygiene: transitions stale
-                                  # non-terminal items to ABANDONED so the
-                                  # backlog can never starve admission again.
-                                  # Age is measured from an item's LAST status
-                                  # transition, not from when it was created.
-        max_age_days:
-          blocked: 14
-          resume_queued: 14
-          proposed: 21
-          unvetted: 21
-          awaiting_operator: 30
-        exempt_sources:
-          - operator
-
-  # The one job that reports on the runtime, and the only survivor of the five
-  # rows that used to generate work. It reads what actually happened —
-  # `runtime/logs/`, the worker records — instead of inferring intent from
-  # ambient telemetry, and a quiet window costs no model call at all, so the
-  # cost of this cadence is file reads.
-  - name: watchman
-    cadence: "15 * * * *"         # hourly
-    handler: "tesseract.scheduler.tasks.watchman.WatchmanJob"
-    enabled: true
-    on_failure: log
-    model_role: watchman
-    retry_policy:
-      max_retries: 0               # a re-read is free, but the model call inside it is not; the next tick covers the same window via the cursor
-      backoff_seconds: 0
-    config: {}
-
-  # The learning loop. Neither of these has a cadence, because neither has a
-  # rate: a weekly cron fires on two data points as readily as on two hundred,
-  # and what makes a refinement pass worth its model call is that enough has
-  # happened since the last one. `when:` names a condition in
-  # tesseract/scheduler/triggers/conditions.py and `when_config` is where you
-  # tune how much "enough" is — raise the number and they run less often, on
-  # more evidence.
-  - name: skill_refinement
-    when: skill_usage_volume       # fires once N new skill uses have been logged
-    when_config:
-      min_new_rows: 40             # ~a week of ordinary use on one machine
-    handler: tesseract.scheduler.tasks.skill_refinement.SkillRefinementJob
-    enabled: true
-    on_failure: log
-    retry_policy:
-      max_retries: 0
-      backoff_seconds: 0
-    config:
-      window_days: 14             # look back further than the trigger window:
-                                  # the trigger says WHEN to judge, this says
-                                  # how much history to judge against
-      min_loads: 4                # a skill read three times has no ratio worth reading
-      ratio_threshold: 0.34
-      max_cards: 3
-
-  - name: skill_suggest
-    when: digest_volume            # fires once N new daily digests exist to read across
-    when_config:
-      min_new_digests: 7           # a week of days that actually had activity
-    handler: tesseract.scheduler.tasks.skill_suggest.SkillSuggestJob
-    enabled: true
-    on_failure: log
-    retry_policy:
-      max_retries: 0
-      backoff_seconds: 0
-    config:
-      lookback_days: 14
-      max_suggestions: 2
-
-  # The probe again, on the other half of its contract. The nightly stage of
-  # `consolidate` is the BACKSTOP; this is the early one, and it fires when
-  # real traffic has already told us something is wrong: a `production_tripwire`
-  # row is written when a chain failed over, meaning the primary errored and a
-  # fallback answered. Waiting for 23:00 to discover a key died at breakfast is
-  # a day of every role quietly running on its second choice.
-  #
-  # Counted rather than fired per event: one incident writes several rows in
-  # seconds, and a probe calls every active role's primary — so a hair trigger
-  # would bill a sweep per retry. Raise the number and it takes more evidence.
-  - name: provider_probe
-    when: provider_failover
-    when_config:
-      # TWO, because that is what one incident measured: the pair on this
-      # machine is seven seconds apart from a single chain failing over. A
-      # threshold of three would have meant the case this row exists for — a
-      # key that died at breakfast — never firing it, and falling through to
-      # the 23:00 backstop it was built to pre-empt. Raise it if your chains
-      # are noisier than that; one row is still a retry, not an incident.
-      min_new_tripwires: 2
-    handler: tesseract.scheduler.tasks.provider_probe.ProviderProbeJob
-    enabled: true
-    on_failure: log
-    retry_policy:
-      max_retries: 0
-      backoff_seconds: 0
-    config: {}                     # tests can inject {"publisher": ...}
-
-  # An INTERVAL, not an hour. Reaping orphans has no right time of day — it has
-  # a rate, and the boot half of it already happens: the supervisor sweeps
-  # before it spawns fresh daemons, which is the moment a previous crash's
-  # leftovers are still around. This row is the other half, for a machine that
-  # stays up, and 04:30 was a wall clock chosen on one machine for work that
-  # never cared what time it was. Kill policy is fixed in the janitor's own
-  # code (fingerprinted AND orphaned); its targets are in config/janitor.yaml.
-  # What the reaper may kill is AR-11's question, not this line's.
-  - name: janitor_sweep
-    cadence: "24h"                 # every 24h of uptime, from the last sweep
-    handler: tesseract.scheduler.tasks.janitor_sweep.JanitorSweepJob
-    enabled: true
-    on_failure: log
-    retry_policy:
-      max_retries: 0
-      backoff_seconds: 0
-    config: {}
+- name: capture
+  cadence: '*/5 * * * *'
+  handler: tesseract.scheduler.tasks.capture_pipeline.CapturePipelineJob
+  enabled: true
+  on_failure: log
+  retry_policy:
+    max_retries: 0
+    backoff_seconds: 0
+  config:
+    leaf_intake:
+      extract_max_per_tick: 64
+      append_max_per_tick: 256
+    leaf_seal:
+      max_buffer_leaves: 20
+      max_buffer_age_seconds: 3600
+      max_seals_per_tick: 32
+    conversation_reflect:
+      idle_minutes: 30
+      lookback_hours: 48
+      tail_turns: 40
+      max_per_tick: 20
+- name: consolidate
+  cadence: 0 23 * * *
+  handler: tesseract.scheduler.tasks.consolidate_pipeline.ConsolidatePipelineJob
+  enabled: true
+  on_failure: alert
+  retry_policy:
+    max_retries: 0
+    backoff_seconds: 0
+  config:
+    chat_digest:
+      chain: chain_1
+      max_digest_chars: 6000
+    librarian_heartbeat:
+      chain: chain_1
+    feedback_sweep:
+      chain: chain_1
+    feedback_consolidator:
+      chain: chain_1
+    memory_scrub:
+      mode: fix
+    provider_probe: {}
+    brief_render:
+      chain: chain_1
+    retention: {}
+    agenda_reap:
+      max_age_days:
+        blocked: 14
+        resume_queued: 14
+        proposed: 21
+        unvetted: 21
+        awaiting_operator: 30
+      exempt_sources:
+      - operator
+- name: watchman
+  cadence: 15 * * * *
+  handler: tesseract.scheduler.tasks.watchman.WatchmanJob
+  enabled: true
+  on_failure: log
+  model_role: watchman
+  retry_policy:
+    max_retries: 0
+    backoff_seconds: 0
+  config: {}
+- name: skill_refinement
+  when: skill_usage_volume
+  when_config:
+    min_new_rows: 40
+  handler: tesseract.scheduler.tasks.skill_refinement.SkillRefinementJob
+  enabled: true
+  on_failure: log
+  retry_policy:
+    max_retries: 0
+    backoff_seconds: 0
+  config:
+    window_days: 14
+    min_loads: 4
+    ratio_threshold: 0.34
+    max_cards: 3
+- name: working_set_review
+  when: tool_usage_volume
+  when_config:
+    min_new_calls: 400
+  handler: tesseract.scheduler.tasks.working_set_review.WorkingSetReviewJob
+  enabled: true
+  on_failure: log
+  retry_policy:
+    max_retries: 0
+    backoff_seconds: 0
+  config:
+    window_days: 14
+    min_sessions_to_carry: 4
+    min_loads_to_carry: 4
+    min_calls_to_judge: 50
+    max_proposals: 8
+- name: playbook_extract
+  when: tasks_done_volume
+  when_config:
+    min_new_tasks: 1
+  handler: tesseract.scheduler.tasks.playbook_extract.PlaybookExtractJob
+  enabled: true
+  on_failure: log
+  retry_policy:
+    max_retries: 0
+    backoff_seconds: 0
+  config:
+    min_tool_steps: 3
+    max_proposals: 2
+- name: skill_suggest
+  when: digest_volume
+  when_config:
+    min_new_digests: 7
+  handler: tesseract.scheduler.tasks.skill_suggest.SkillSuggestJob
+  enabled: true
+  on_failure: log
+  retry_policy:
+    max_retries: 0
+    backoff_seconds: 0
+  config:
+    lookback_days: 14
+    max_suggestions: 2
+- name: provider_probe
+  when: provider_failover
+  when_config:
+    min_new_tripwires: 2
+  handler: tesseract.scheduler.tasks.provider_probe.ProviderProbeJob
+  enabled: true
+  on_failure: log
+  retry_policy:
+    max_retries: 0
+    backoff_seconds: 0
+  config: {}
+- name: janitor_sweep
+  cadence: 24h
+  handler: tesseract.scheduler.tasks.janitor_sweep.JanitorSweepJob
+  enabled: true
+  on_failure: log
+  retry_policy:
+    max_retries: 0
+    backoff_seconds: 0
+  config: {}

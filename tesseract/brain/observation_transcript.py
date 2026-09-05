@@ -20,7 +20,7 @@ from typing import Any, Deque, Literal, TypedDict
 
 CHAT_TURN_CAP = 48          # 4x DEFAULT_CONTEXT_TURNS from observer.py
 PTY_LINE_CAP = 200          # ~one terminal screen of scrollback per _shared/observer-state-shape.md
-PTY_LINE_MAX_CHARS = 2048   # per-line cap into the observer prompt (fix-pass SEC-1)
+PTY_LINE_MAX_CHARS = 2048   # per-line cap into the observer prompt
 
 # ANSI CSI escape sequences — strip before passing PTY text to the LLM.
 # Covers colors (\x1b[1;31m), cursor moves (\x1b[2J), OSC title sets
@@ -37,7 +37,7 @@ class PtyLine(TypedDict):
     timestamp: str
 
 
-# memory_deltas stream is deferred — see fix-pass 2026-04-20 / Codex #6.
+# memory_deltas stream is deferred.
 # The MemoryDelta dataclass + its feed path were removed; a future
 # memory-save subscription can reintroduce it alongside a real caller.
 

@@ -1,9 +1,9 @@
 """Line-buffered renderer for claude ``--output-format stream-json`` output.
 
-Delegate visibility fix-pass (2026-07-10): ``claude -p --output-format text``
-prints nothing until the run finishes, so the Mirror DelegateCard sat on
-"waiting for first chunk" for a whole 20-minute delegation. Switching the
-delegate to stream-json gives one NDJSON event per message; this module turns
+``claude -p --output-format text`` prints nothing until the run finishes, so
+the Mirror DelegateCard sits on "waiting for first chunk" for the length of
+the delegation. stream-json gives one NDJSON event per message; this module
+turns
 those events into human-readable transcript lines as they arrive and extracts
 the final result text at the end.
 

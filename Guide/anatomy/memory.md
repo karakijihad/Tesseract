@@ -32,5 +32,5 @@ the thing you were actually talking about.
 
 Memory also decays and consolidates. The goal is a store that gets sharper, not
 one that gets bigger — see
-[Memory and the vault](../mechanisms/memory-and-vault.md) for how it differs
+[Memory and the vault](/mechanisms/memory-and-vault/) for how it differs
 from the research library, which is designed never to forget.

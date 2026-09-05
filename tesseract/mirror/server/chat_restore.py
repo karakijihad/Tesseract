@@ -7,30 +7,49 @@ import logging
 from aiohttp import web
 
 from tesseract.brain.chat import ChatSession
-from tesseract.mirror.server.session_model import MAX_OPEN_CHATS, ChatMeta, ServerSession
+from tesseract.mirror.server.session_model import (
+    MAX_OPEN_CHATS,
+    ChatMeta,
+    ServerSession,
+    stamp_chat_id,
+)
 
 log = logging.getLogger(__name__)
 
 
 def _restore_persisted_chats(app: web.Application, session: ServerSession) -> None:
-    """P3 reload hydration — replace the single seeded chat with the persisted
-    open (non-archived) chats so the tab strip survives a page reload.
+    """P3 reload hydration — bring the persisted open (non-archived) chats back
+    into the session so a page reload does not lose them.
 
     ``chat_store`` is session-agnostic, so the open set is the global non-archived
     library, capped at ``MAX_OPEN_CHATS`` newest (D5). Each chat is rebuilt as a
-    live ``ChatSession`` carrying its persisted history; the newest is made
-    active. First run (empty library) keeps the fresh ``__post_init__`` seed.
+    live ``ChatSession`` carrying its persisted history.
     Builds into locals and assigns atomically — a mid-rebuild failure leaves the
     session untouched.
 
-    Day-rollover (operator request 2026-07-05): before listing, chats last
-    touched on a prior local calendar day are auto-archived via
-    ``chat_store.archive_stale_open_chats`` — so a connection made on a new
-    day either restores only today's still-open chats, or (if none) falls
-    through to the ``if not rows`` branch and keeps the blank fresh seed,
-    same as the never-used-Mirror-yet case. The archived chat is untouched
-    on disk otherwise — reachable via chat.restore / GET
-    /api/chats?include_archived=1.
+    **The seed stays, and the seed is what is active.** This used to make the
+    newest restored chat active and drop the ``__post_init__`` seed entirely,
+    which put the operator inside yesterday's conversation without telling
+    them: ``session_created`` carries each chat's id and title and no history,
+    so the transcript rendered empty while the backend held the whole thread,
+    and the next message was appended to it. Opening a window now gives a
+    blank conversation, which is what every other surface means by opening
+    one, and the restored chats are reachable from the rail (operator ruling,
+    2026-08-25). The seed is re-registered under a fresh id, which runs the
+    open-chat cap, so the set still totals ``MAX_OPEN_CHATS``.
+
+    **No day-rollover archive.** This used to call
+    ``chat_store.archive_stale_open_chats()`` with the default ``keep_days=0``,
+    so every chat not touched today was shelved before the list was read
+    (operator request, 2026-07-05: a new day should open on a blank chat).
+    The outcome was right and the mechanism was not: yesterday's conversation
+    was archived, and getting it back was a restore, which is not what the
+    word means to anyone. IS-18 reverses it on the operator's own instruction.
+
+    The window that files a conversation away is `retention.yaml::sessions`,
+    where it has always been and has always been a week. That sweep flips
+    ``archived`` in place on a chat quiet for `keep_days`, which is the same
+    flag this list reads, so nothing else changes.
     """
     from tesseract.mirror.server import chat_store
     # Lazy: `session_factory.py` imports `_restore_persisted_chats` from this
@@ -39,7 +58,6 @@ def _restore_persisted_chats(app: web.Application, session: ServerSession) -> No
     # cycle back into a module still mid-import.
     from tesseract.mirror.server.session_factory import new_chat_session
 
-    chat_store.archive_stale_open_chats()
     rows = chat_store.list_chats()[:MAX_OPEN_CHATS]  # newest-first, non-archived
     if not rows:
         return
@@ -70,6 +88,13 @@ def _restore_persisted_chats(app: web.Application, session: ServerSession) -> No
         # that finished under the PREVIOUS process and was never read.
         cs.replay_undelivered_completions(record.chat_id)
         chats[record.chat_id] = cs
+        # A chat rebuilt here is registered by replacing `session.chats`
+        # wholesale below, which is the one route into the live set that does
+        # not run through `create_chat` or `reopen_chat`. Without this the
+        # restored chat never learns its own id, and anything the assistant
+        # then leaves on the canvas records no owner: a press in it reaches
+        # nobody, silently, which is exactly how it failed the first time.
+        stamp_chat_id(cs, record.chat_id)
         chat_meta[record.chat_id] = ChatMeta(
             chat_id=record.chat_id,
             title=record.title,
@@ -82,8 +107,16 @@ def _restore_persisted_chats(app: web.Application, session: ServerSession) -> No
         chat_order.append(record.chat_id)
     if not chats:
         return
+    seed = session.chat_session
     session.chats = chats
     session.chat_meta = chat_meta
     session.chat_order = chat_order
-    session.active_chat_id = chat_order[-1]  # newest is active
-    session.chat_session = chats[session.active_chat_id]
+    # The blank chat you land in. ``create_chat`` mints its id, which is what
+    # keeps this to one path: reusing the ``__post_init__`` id would collide
+    # with a restored chat's whenever the two matched, and the seed would
+    # silently replace a conversation. The ChatSession object itself IS
+    # reused, because it is already built with this connection's ask gate,
+    # sink and status closures. Registering it also runs the open-chat cap,
+    # so the set still totals ``MAX_OPEN_CHATS``.
+    session.active_chat_id = session.create_chat(seed)
+    session.chat_session = seed

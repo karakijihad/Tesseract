@@ -15,15 +15,14 @@ import { Segmented } from '../../components/common/Segmented';
 // active mode forever (fresh-install bug, 2026-07-29).
 const MODE_RETRY_MS = 5000;
 
-type Mode = "max" | "standard" | "headless";
+type Mode = "max" | "free";
 
 const MODES: Array<{ id: Mode; label: string; hint: string }> = [
-  { id: "max", label: "Max", hint: "ASK on every tool call" },
-  { id: "standard", label: "Standard", hint: "ASK only on risky tools" },
-  { id: "headless", label: "Headless", hint: "All tools auto-approved" },
+  { id: "max", label: "Max", hint: "Asks before anything that reaches out" },
+  { id: "free", label: "Free", hint: "Acts without asking" },
 ];
 
-const MODE_ORDER: Record<string, number> = { max: 3, standard: 2, headless: 1 };
+const MODE_ORDER: Record<string, number> = { max: 2, free: 1 };
 
 function isDowngrade(from: string, to: Mode): boolean {
   const f = MODE_ORDER[from] ?? 0;
@@ -82,8 +81,11 @@ export function ModeSection() {
         onSelect={(id) => void selectMode(id)}
         label="Security mode"
       />
-      {securityMode === "headless" && (
-        <Note tone="warn">All tool calls auto-approved in headless mode.</Note>
+      {securityMode === "free" && (
+        <Note tone="warn">
+          Every tool runs without asking, apart from the few listed under Tools
+          as still asking. Denied tools stay denied.
+        </Note>
       )}
       {error && <Note tone="bad">{error}</Note>}
       {pending && (

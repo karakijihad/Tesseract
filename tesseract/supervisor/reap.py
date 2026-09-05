@@ -35,11 +35,11 @@ log = logging.getLogger(__name__)
 class ReapOutcome:
     """What the sweep managed to do.
 
-    ``swept`` exists because an empty ``reaped`` used to mean two opposite
-    things — "looked, found nothing" and "could not look at all". Cold boot is
+    ``swept`` exists because an empty ``reaped`` otherwise means two opposite
+    things: "looked, found nothing" and "could not look at all". Cold boot is
     exactly when the process enumeration is slowest and most likely to blow
-    its timeout, so the reaper was least trustworthy at the only moment it
-    runs, and said so in a way nothing could distinguish from success.
+    its timeout, so the reaper is least trustworthy at the only moment it
+    runs, and would say so in a way nothing could distinguish from success.
     """
 
     reaped: tuple[int, ...] = ()
@@ -182,7 +182,7 @@ def reap_orphans() -> ReapOutcome:
     Called at supervisor startup, before any child is spawned. Best-effort,
     and the outcome says which kind of best-effort it was:
     :attr:`ReapOutcome.swept` is False when the process list could not be read
-    at all, so "no orphans" and "no idea" are no longer the same answer.
+    at all, so "no orphans" and "no idea" are not the same answer.
     ``SUPERVISOR_DISABLE_REAP=1`` disables it entirely.
     """
     if os.environ.get("SUPERVISOR_DISABLE_REAP") == "1":

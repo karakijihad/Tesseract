@@ -19,8 +19,10 @@ from typing import Any
 
 from tesseract.orchestrator.outcome import RunOutcome
 from tesseract.scheduler.pipeline.artifacts import ArtifactStore, WatermarkStore
+from tesseract.scheduler.pipeline import lock
 from tesseract.scheduler.pipeline.graph import execution_order, upstreams
 from tesseract.scheduler.pipeline.manifest import (
+    SINGLE_STAGE_PREFIX,
     ManifestStore,
     MemoryManifestStore,
     RunManifest,
@@ -113,8 +115,48 @@ class PipelineRunner:
         return (anchor - last) >= (_CADENCE_PERIOD[stage.cadence] - _DUE_SLACK)
 
     async def run(self, *, anchor: datetime | None = None, resume: bool = True) -> RunManifest:
-        """One pipeline run, resuming an unfinished one if there is one."""
+        """One pipeline run, resuming an unfinished one if there is one.
+
+        Held for the whole run, because everything below shares one artifact
+        store, one set of watermarks and one manifest slot. The row WAITS for
+        a stage somebody fired by hand, where a hand-fired stage never waits
+        for the row: a stage takes seconds and its caller is standing there to
+        be told, while a night that quietly did not happen costs more. How
+        long it waits is `lock.A_ROW_WAITS`.
+
+        Taking it here rather than in `run_row` is what makes `--row` safe.
+        The terminal builds its own runner, and without this it would resume
+        the manifest the backend is writing and both would commit over each
+        other: two processes writing one record, not two runs racing.
+        """
         when = anchor or datetime.now(timezone.utc)
+        async with lock.hold(
+            self._entry or "the pipeline", "", wait_seconds=lock.A_ROW_WAITS
+        ) as taken:
+            if not taken.ok:
+                return self._not_started(when, taken)
+            return await self._run_held(when=when, resume=resume)
+
+    def _not_started(self, when: datetime, taken: lock.Taken) -> RunManifest:
+        """A run that never began, as a manifest, because that is what every
+        reader of a row expects back. It is never committed and never
+        finished: nothing ran, so there is nothing to resume and nothing to
+        record beyond the outcome the caller reports."""
+        return RunManifest(
+            run_id=f"{SINGLE_STAGE_PREFIX}{uuid.uuid4().hex}",
+            anchor=when,
+            started_at=datetime.now(timezone.utc),
+            rows=[
+                StageRow(
+                    stage=self._entry or "the pipeline",
+                    outcome=RunOutcome.REFUSED,
+                    reason=taken.why_not(wanted=self._entry or "the pipeline"),
+                )
+            ],
+            entry=self._entry,
+        )
+
+    async def _run_held(self, *, when: datetime, resume: bool) -> RunManifest:
         open_manifest = self._manifests.load_open() if resume else None
         if open_manifest is not None and (when - open_manifest.anchor) > _RESUME_MAX_AGE:
             # An interrupted run that nobody restarted for days is history, not
@@ -144,6 +186,7 @@ class PipelineRunner:
                 run_id=uuid.uuid4().hex,
                 anchor=when,
                 started_at=datetime.now(timezone.utc),
+                entry=self._entry,
             )
             self._manifests.commit(manifest)
 
@@ -184,18 +227,58 @@ class PipelineRunner:
 
         The operator's `--stage memory_lint`. Cadence is not consulted: asking
         for a stage by name IS the reason to run it.
+
+        `enabled: false` IS consulted, and the difference between the two is
+        the whole reason to say so here. A cadence says when a stage is next
+        due, which is exactly what asking for it by name overrides. The flag
+        says the operator turned it off, and nothing about the way a run was
+        started makes that stop being true — least of all now that this path
+        is reachable from a panel button and from the model on any surface,
+        rather than only from a terminal on the machine.
         """
         stage = next((s for s in self._stages if s.name == name), None)
         if stage is None:
             raise KeyError(f"no stage named {name!r}")
         when = anchor or datetime.now(timezone.utc)
-        run_id = f"stage-{uuid.uuid4().hex}"
-        row = await self._execute(stage, run_id, when)
+        run_id = f"{SINGLE_STAGE_PREFIX}{uuid.uuid4().hex}"
+        async with lock.hold(name, run_id) as taken:
+            if not taken.ok:
+                # Never waits. Whoever asked is a chat turn, a button press or
+                # somebody at a terminal, and the row they would be waiting on
+                # takes minutes.
+                return StageRow(
+                    stage=name,
+                    outcome=RunOutcome.REFUSED,
+                    reason=taken.why_not(wanted=name),
+                )
+            return await self._run_one_held(stage, run_id, when)
+
+    async def _run_one_held(
+        self, stage: Stage, run_id: str, when: datetime
+    ) -> StageRow:
+        if not self._enabled(stage):
+            # `refused` here where the row path records `disabled` instead: on
+            # the row, worst-outcome wins and a permanently-off stage would
+            # make every night read refused. A single run has no row to
+            # colour, and somebody who asked for this stage by name is owed
+            # the answer that it is switched off rather than a run.
+            row = StageRow(
+                stage=stage.name,
+                outcome=RunOutcome.REFUSED,
+                reason=(
+                    f"{stage.name} is turned off in the schedule "
+                    f"(`{self._entry or 'its row'}` sets `enabled: false` for "
+                    "it), so it was not run. Turn it back on to run it"
+                ),
+            )
+        else:
+            row = await self._execute(stage, run_id, when)
         manifest = RunManifest(
             run_id=run_id,
             anchor=when,
             started_at=datetime.now(timezone.utc),
             rows=[row],
+            entry=self._entry or stage.name,
         )
         self._manifests.finish(manifest)
         return row

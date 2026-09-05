@@ -1,18 +1,17 @@
 """agent_create tool — propose a new markdown sub-agent for the operator.
 
 The entity (or Claude during dev sessions) drafts a new specialist agent with
-a rationale. The tool validates the draft; attended sessions still ASK before
-the write.
+a rationale. The tool validates the draft; attended sessions get the posture
+`permissions.yaml` sets for the mode (`ask` under the shipped default, `auto`
+under `free`), because the file decides with no exception.
 
-Approval contract (audit M6, 2026-04-29; amended Stage 10, 2026-07-16):
-`check_permissions` returns ASK unconditionally, so `permissions.yaml`
-overrides like `headless.agent_create: auto` never reach the policy layer.
-Attended sessions route the ASK to the operator as before. Unattended (no
-`ask_fn`), the executor's Stage 10 quarantine-write carve-out
+Approval contract: `check_permissions` returns PASSTHROUGH so the policy
+layer decides. Attended sessions route an `ask` posture to the operator.
+Unattended (no `ask_fn`), the executor's quarantine-write carve-out
 (`headless_quarantine_write` ClassVar, honored by `permissions/decide.py`
 from the CLASS only — kernel-owned source, not yaml) lets the call proceed
 because the only write target is the uninvokable quarantine below. The
-operator gate now sits at ACTIVATION: `agent_promote` or the Workspace
+operator gate sits at ACTIVATION: `agent_promote` or the Workspace
 proposal card. Headless creates are additionally capped by
 `runtime.yaml::agent_pending_cap` and blocked for names the operator
 already rejected (`agents/rejected/`).
@@ -23,12 +22,12 @@ the rendered markdown + rationale. The pending file is canonical; the card
 is best-effort (a card failure warns the assistant in the tool output, never loses
 the file).
 
-Quarantine (W7-A, 2026-04-29): the new agent is written to
+Quarantine: the new agent is written to
 `agents/pending/{name}.md`, NOT directly to `agents/{name}.md`. The
 default `loader.list_agents()` does not surface pending agents, so even
 if the ASK gate is somehow bypassed (operator error, future refactor),
 generated agents are not callable until `agent_promote` moves them into
-the active directory. Defense in depth around audit M6.
+the active directory. Defense in depth.
 
 Use when:
 - "I need a specialist for X"
@@ -51,6 +50,7 @@ from typing import Any, Callable, ClassVar, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from tesseract.agents.contract import is_cli_role, is_provider_ref, knows_ref
 from tesseract.agents.loader import (
     AgentDefinition,
     list_pending_agents,
@@ -70,11 +70,12 @@ from tesseract.workspace_events.broadcast import broadcast_workspace_event
 logger = logging.getLogger(__name__)
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,31}$")
-_PROVIDER_REF_RE = re.compile(r"^(api|cli|local)\.[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
 
-
-def _is_provider_ref(value: str) -> bool:
-    return bool(_PROVIDER_REF_RE.match(value or ""))
+# The card contract, imported rather than restated. This tool is the gate the
+# contract is enforced AT, so the two have to be the same rule: a draft that
+# passes here and fails the boot check would be a proposal the operator can
+# accept and the runtime then refuses to start with.
+_is_provider_ref = is_provider_ref
 
 # Columns in agents/INDEX.md — used to format the appended row.
 _INDEX_HEADER = "| name | model_role | description |"
@@ -82,36 +83,36 @@ _INDEX_HEADER = "| name | model_role | description |"
 
 class AgentCreateInput(BaseModel):
     name: str = Field(
-        description="Slug-style name, lowercase, hyphen-separated. Must be unique. 2–32 chars."
+        description="Slug-style name, lowercase, hyphen-separated. Must be unique. 2 to 32 characters."
     )
     model_role: str = Field(
         description=(
             "Either a role name from roles.yaml (e.g. agents_default, chat_brain) "
             "or a provider-model ref from providers.yaml of shape "
-            "<tier>.<provider>.<model_id> (e.g. api.openai.gpt54_nano). Must exist."
+            "<tier>.<provider>.<model_id>. Must exist."
         )
     )
     description: str = Field(
         description="One-line human description used in INDEX.md and agent frontmatter."
     )
     role_body: str = Field(
-        description="The '## Role' section body — system-prompt style stance description."
+        description="The '## Role' section body, written as a system prompt describes a stance."
     )
     prompt_sections: dict[str, str] = Field(
         description=(
             "Additional named sections emitted under ## headers "
             "(e.g. {'Check Prompt': '...'}). At least one required. "
-            "Do not include a 'Role' key — use role_body instead."
+            "Do not include a 'Role' key; use role_body instead."
         )
     )
     rationale: str = Field(
-        description="Why this agent is needed — shown to user at approval time. Required."
+        description="Why this agent is needed. The operator reads this when approving it. Required."
     )
     max_tokens_override: int | None = Field(default=None)
     version: str = Field(default="0.1")
     proposer: Literal["entity", "claude", "codex", "user"] = Field(
         default="entity",
-        description="Who is proposing this agent — recorded for review.",
+        description="Who is proposing this agent. Recorded for review.",
     )
 
 
@@ -131,14 +132,15 @@ class AgentCreateTool(Tool):
         "operator promotes it."
     )
     use_when: ClassVar[str] = (
-        "Use when a role keeps recurring across tasks — a reviewer, "
-        "auditor, or domain specialist — worth making persistent. Always "
+        "Use when a role keeps recurring across tasks, such as a reviewer, "
+        "an auditor or a domain specialist, and is worth making persistent. Always "
         "operator-gated."
     )
     not_when: ClassVar[str] = (
-        "Activating an already-drafted agent — use `agent_promote`. "
-        "Running an existing one — use `invoke_agent`."
+        "Activating an already-drafted agent: use `agent_promote`. "
+        "Running an existing one: use `invoke_agent`."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(
         self,
@@ -172,11 +174,14 @@ class AgentCreateTool(Tool):
         return False
 
     def check_permissions(self, tool_input: BaseModel, context: ToolContext) -> PermissionResult:
-        # Always ASK — the executor handles the no-ask_fn case as DENY for
-        # non-read-only tools. Returning PASSTHROUGH would let
-        # `permissions.yaml` headless overrides (`agent_create: auto`)
-        # bypass the operator-approval invariant. Audit M6: 2026-04-29.
-        return PermissionResult.ASK
+        # `permissions.yaml` decides, per mode, with no exception (operator,
+        # 2026-09-03): `ask` under the shipped default, `auto` where the
+        # operator has given the assistant the decision. A hardcoded ASK here
+        # was honoured before the policy was read, so `free` never reached
+        # it. The unattended case is unchanged: the executor's
+        # quarantine-write carve-out, and nothing here reaches the active
+        # roster.
+        return PermissionResult.PASSTHROUGH
 
     async def run(self, tool_input: BaseModel, context: ToolContext) -> ToolResult:
         inp = (
@@ -248,16 +253,61 @@ class AgentCreateTool(Tool):
 
         # `model_role` accepts either a role name from roles.yaml (e.g.
         # `chat_brain`, `agents_default`) OR a provider-model reference of
-        # shape `<tier>.<provider>.<model_id>` (e.g. `api.openai.gpt54_nano`)
-        # so cheap-model selection per agent is one frontmatter line, not a
-        # whole new role.
+        # shape `<tier>.<provider>.<model_id>`, so cheap-model selection per
+        # agent is one frontmatter line, not a whole new role.
         valid_roles = set(self._models_config.get("roles", {}).keys())
         if not _is_provider_ref(inp.model_role) and inp.model_role not in valid_roles:
             return ToolResult(
                 output=(
                     f"Unknown model_role {inp.model_role!r}. "
-                    f"Valid roles: {sorted(valid_roles)} — "
-                    "or a provider-model ref like `api.openai.gpt54_nano`."
+                    f"Valid roles: {sorted(valid_roles)}, "
+                    "or an entry providers.yaml carries, of shape "
+                    "<tier>.<provider>.<model_id>."
+                ),
+                is_error=True,
+            )
+        # The shape being right is not the catalog holding it. A pin nothing
+        # holds resolves to no adapter, and the call then runs on whichever
+        # model reached for the card, so the pin is ignored rather than
+        # refused. The boot guard checks the same thing, and the two have to
+        # agree or the operator accepts a proposal the runtime will not honour.
+        if _is_provider_ref(inp.model_role) and knows_ref(inp.model_role) is False:
+            return ToolResult(
+                output=(
+                    f"model_role {inp.model_role!r} is not in providers.yaml. "
+                    "A pin the catalog does not hold is ignored at run time: "
+                    "the agent would quietly run on whichever model called it. "
+                    "Name an entry the catalog carries, or a role from "
+                    "roles.yaml."
+                ),
+                is_error=True,
+            )
+        # A CLI subscription has no in-process adapter, so a card wearing one
+        # can never be invoked: `invoke_agent` and `build_sub_session` both
+        # refuse it, and they are the only two ways a card becomes a call.
+        # Refused here rather than discovered later, because the boot check
+        # refuses it too and a proposal the operator accepts must not be one
+        # the runtime then declines to start with.
+        if is_cli_role(inp.model_role):
+            return ToolResult(
+                output=(
+                    f"model_role {inp.model_role!r} names a command line tool "
+                    "subscription rather than a model, and nothing that runs a "
+                    "card can drive one, so this agent could never be invoked. "
+                    "Pick a role that names a model, or hand the work to "
+                    "delegate_coder or delegate_auditor instead of to an agent."
+                ),
+                is_error=True,
+            )
+        # The other half of the contract. A card with no description is a card
+        # nothing can say the purpose of: the roster prints this field, and it
+        # is what a reader chooses by.
+        if not inp.description.strip():
+            return ToolResult(
+                output=(
+                    "description is blank. Write one sentence saying what this "
+                    "agent is for. It is the line the roster shows and the "
+                    "line anyone picking an agent reads."
                 ),
                 is_error=True,
             )
@@ -343,7 +393,7 @@ class AgentCreateTool(Tool):
                 )
                 card_note = (
                     "\nWARNING: the proposal card could not be filed in the "
-                    "Workspace Inbox — post a workspace_post note so the "
+                    "Workspace Inbox. Post a workspace_post note so the "
                     "operator knows this agent is pending."
                 )
             else:
@@ -367,7 +417,7 @@ class AgentCreateTool(Tool):
                 f"Created agent (pending promotion): {inp.name}\n"
                 f"File: {agent_path}\n"
                 f"Sections: {sections}\n\n"
-                "The agent is quarantined — it cannot be invoked until the "
+                "The agent is quarantined: it cannot be invoked until the "
                 "operator promotes it (`agent_promote` or the Workspace "
                 "proposal card)." + card_note
             )

@@ -1,8 +1,8 @@
 """Everything the app checks and repairs at launch, in one process, in order.
 
-Replaces the six concurrent subprocesses the shell used to spawn on every
-start (`provision.rs::LAUNCH_REFRESH_ASSETS`). That arrangement had two
-defects this module exists to remove, and both were in its own comments:
+One process, not the six concurrent subprocesses a shell would spawn on
+every start (`provision.rs::LAUNCH_REFRESH_ASSETS`). That arrangement has
+two defects this module exists to remove, both named in its own comments:
 
 - **Nothing shared a result.** Each fetcher re-derived which lane it wanted,
   from config, in its own interpreter — six imports of the runtime to answer

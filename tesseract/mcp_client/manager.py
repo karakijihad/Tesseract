@@ -9,13 +9,13 @@ shutdown unwinds the ``async with`` blocks. Individual ``tools/call`` RPCs run
 from other tasks (the chat turn); that is safe because they only push through
 anyio memory streams the session's own receive loop drains.
 
-Reconnect (Phase 2 deferred): a dropped session is detected by a periodic
+Reconnect: a dropped session is detected by a periodic
 ``send_ping`` and re-established with exponential backoff, bounded by a circuit
 breaker (the project-wide ``MAX_CONSECUTIVE_FAILURES``). Tools stay registered
 across a reconnect — the tool's ``session_provider`` reads the live
 ``holder.session``, which the supervise loop refreshes.
 
-Hot reload (Phase 2 deferred): ``reload`` diffs the new allowlist against live
+Hot reload: ``reload`` diffs the new allowlist against live
 holders — tearing down removed/changed servers and connecting added ones —
 wired to the Mirror config watcher on ``mcp_servers.yaml`` edits.
 
@@ -223,13 +223,21 @@ class MCPClientManager:
         without the 'no posture entry' warning and so ``permissions.yaml`` can
         still tighten a specific tool by name. Best-effort — a policy stub
         without ``merge_class_defaults`` (tests) falls back to the ASK default
-        in ``resolve_posture``."""
+        in ``resolve_posture``.
+
+        The same call holds these names out of a security mode's blanket
+        baseline. A mode that auto-allows everything is the operator trusting
+        this app; a remote server's roster is not this app, and it can grow
+        without an update."""
         if self._policy is None or not names:
             return
         merge = getattr(self._policy, "merge_class_defaults", None)
         if merge is None:
             return
         merge({n: MCPRemoteTool.default_posture for n in names})
+        exempt = getattr(self._policy, "exempt_from_baseline", None)
+        if exempt is not None:
+            exempt(names)
 
     # ── hot reload ──────────────────────────────────────────────────────
 

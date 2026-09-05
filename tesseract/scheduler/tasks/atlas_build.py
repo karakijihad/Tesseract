@@ -54,11 +54,23 @@ class AtlasBuildJob(BaseJob):
                 "edges": report.edges,
                 "memories": report.memories,
                 "pages": report.pages,
+                "trees": report.trees,
+                "diary": report.diary,
+                "tags": report.tags,
+                "agenda": report.agenda,
+                "capabilities": report.capabilities,
                 "hashes_reused": report.hashes_reused,
                 "full_rederive": report.full_rederive,
                 "atlas_path": report.path,
             }
-            if not report.nodes:
+            # The LIBRARY, not the graph. It was `not report.nodes`, and that
+            # stopped meaning what it says the day the map started drawing
+            # what the runtime is made of: a fresh install has a manifest and
+            # a pipeline whatever is in its store, so the graph is never empty
+            # again and this would have reported a full library every time.
+            if not (
+                report.memories + report.pages + report.trees + report.diary
+            ):
                 return JobResult(
                     job_name=ctx.job_name,
                     run_id=ctx.run_id,

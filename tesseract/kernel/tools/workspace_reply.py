@@ -53,6 +53,7 @@ class WorkspaceReplyTool(Tool):
         "opening a new note, use `workspace_post`; a plain in-conversation "
         "question you can just ask in the reply you are already writing."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(self, store: EventStore) -> None:
         """Writes the reply comment to disk (durable). Broadcasting is

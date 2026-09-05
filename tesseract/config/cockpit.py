@@ -1,9 +1,9 @@
 """the assistant Cockpit config accessors (``cockpit.yaml``).
 
-UI-facing configuration plus the tier-0 verification gate's tunables. The
-standing coder/auditor seating that used to live here is gone: delegation
-picks its worker through ``roles.yaml`` per call, so there is no seating to
-keep in a second place.
+UI-facing configuration plus the tier-0 verification gate's tunables. There
+is no standing coder/auditor seating here: delegation picks its worker
+through ``roles.yaml`` per call, so there is no seating to keep in a second
+place.
 """
 
 from __future__ import annotations

@@ -9,8 +9,8 @@ seeds the config tree and then applies them.
 
 Applied as *config*, never as a flag some other component checks later:
 
-- the names and the gender go to `mirror.yaml::identity`, which is what
-  renders everywhere and what the workspace templates are seeded with —
+- the names and the gender go to `identity.yaml`, which is what renders
+  everywhere and what the workspace templates are seeded with —
   the gender answer already picked the voice, and this is the same answer
   reaching what the agent is told about itself;
 - declining an engine writes `enabled: false` on its `providers.yaml`
@@ -114,7 +114,7 @@ def _clean_name(raw: Any) -> str:
 
 
 def apply_identity(answers: Mapping[str, Any]) -> list[str]:
-    """Write the names and the wake prefix into `mirror.yaml::identity`.
+    """Write the names and the wake prefix into `identity.yaml`.
 
     A blank answer leaves the shipped value alone rather than writing an
     empty name: `config_seed.identity_values()` raises on a blank name, and
@@ -146,7 +146,7 @@ def apply_identity(answers: Mapping[str, Any]) -> list[str]:
     if not wanted and not prefix:
         return []
 
-    path = config_dir() / "mirror.yaml"
+    path = config_dir() / "identity.yaml"
     if not path.exists():
         logger.warning("%s: %s missing — cannot apply names", _LABEL, path)
         return []
@@ -155,11 +155,8 @@ def apply_identity(answers: Mapping[str, Any]) -> list[str]:
 
     def _apply(doc: Any) -> None:
         nonlocal applied_prefix
-        identity = doc.get("identity")
-        if identity is None:
-            raise KeyError("identity")
         for key, value in wanted.items():
-            identity[key] = value
+            doc[key] = value
         if not prefix:
             return
         # Written into the existing block rather than creating one: the
@@ -168,7 +165,7 @@ def apply_identity(answers: Mapping[str, Any]) -> list[str]:
         # the block keeps its names and loses only the prefix — refusing
         # the whole write would cost the operator their name over the
         # smaller of the two answers.
-        block = identity.get("wake_word")
+        block = doc.get("wake_word")
         if isinstance(block, dict):
             block["prefix"] = prefix
             applied_prefix = True
@@ -176,7 +173,7 @@ def apply_identity(answers: Mapping[str, Any]) -> list[str]:
     round_trip_yaml(path, _apply)
     if prefix and not applied_prefix:
         logger.warning(
-            "%s: %s has no identity.wake_word block — prefix not applied",
+            "%s: %s has no wake_word block — prefix not applied",
             _LABEL,
             path,
         )

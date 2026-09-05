@@ -1,10 +1,27 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { Hint } from "../ui/Hint";
+import { IconButton } from "./IconButton";
+
+/** How the section behind a rail row is doing.
+ *
+ * `ok`, `warn` and `bad` are the app's own severities. `quiet` is a section
+ * with nothing to report. `unwired` is not a health state at all: it says
+ * nothing produces this yet, and it exists because a row that renders quiet
+ * when its producer is missing answers a question it cannot answer.
+ */
+export type NavRailMark = "ok" | "warn" | "bad" | "quiet" | "unwired";
 
 export interface NavRailItem<K extends string = string> {
   key: K;
   label: string;
   icon?: ReactNode;
+  /** What is in this section, in one line. The rail becomes the overview
+   *  rather than a menu: eight rows, eight sentences, one glance. The words
+   *  are the backend's; nothing here writes one. */
+  said?: ReactNode;
+  /** Drawn as the row's leading edge, and as the whole row when the rail is
+   *  folded. */
+  mark?: NavRailMark;
 }
 
 export interface NavRailFilter {
@@ -42,6 +59,9 @@ interface NavRailProps<K extends string> {
   /** Standing note under the rail — what is true of every section, said once
    *  rather than repeated in each. */
   foot?: ReactNode;
+  /** Lets the rail fold to a strip of marks, for a screen where the pane
+   *  needs the width. A thirteen inch screen is a real screen. */
+  collapsible?: boolean;
 }
 
 /** The app's one vertical section switcher — `Tabs` for a list too long to be
@@ -61,12 +81,16 @@ export function NavRail<K extends string>({
   label,
   searchable = false,
   foot,
+  collapsible = false,
 }: NavRailProps<K>) {
   const [query, setQuery] = useState("");
+  const [folded, setFolded] = useState(false);
   const needle = query.trim().toLowerCase();
 
   const shown = useMemo(() => {
-    if (!needle) return groups;
+    // A folded rail has no field to see the query in, so a rail folded while
+    // one was typed would hide rows with nothing on screen saying why.
+    if (!needle || folded) return groups;
     return groups
       .map((g) => ({
         ...g,
@@ -78,11 +102,32 @@ export function NavRail<K extends string>({
         ),
       }))
       .filter((g) => g.items.length > 0 || g.filters.length > 0);
-  }, [groups, needle]);
+  }, [groups, needle, folded]);
+
+  // A rail whose rows carry a line needs the width to carry it, and the rails
+  // that do not stay the width they were built for.
+  const says = groups.some((g) => (g.items ?? []).some((i) => i.said !== undefined));
 
   return (
-    <aside className="nav-rail" aria-label={label}>
-      {searchable && (
+    <aside
+      className={`nav-rail${says ? " nav-rail--said" : ""}${
+        folded ? " is-folded" : ""
+      }`}
+      aria-label={label}
+    >
+      {collapsible && (
+        <div className="nav-rail__fold">
+          <IconButton
+            onClick={() => setFolded((f) => !f)}
+            ariaLabel={folded ? `Open ${label.toLowerCase()}` : `Fold ${label.toLowerCase()}`}
+            active={folded}
+            testId="nav-rail-fold"
+          >
+            {folded ? "›" : "‹"}
+          </IconButton>
+        </div>
+      )}
+      {searchable && !folded && (
         <div className="nav-rail__search">
           <SearchGlyph />
           <input
@@ -109,14 +154,25 @@ export function NavRail<K extends string>({
                 type="button"
                 className={`nav-rail__row${
                   item.key === active ? " is-active" : ""
+                }${item.said !== undefined ? " nav-rail__row--said" : ""}${
+                  item.mark ? ` nav-rail__row--${item.mark}` : ""
                 }`}
                 onClick={() => onSelect(item.key)}
                 aria-current={item.key === active ? "page" : undefined}
+                aria-label={folded ? item.label : undefined}
               >
+                {item.mark && (
+                  <span className="nav-rail__mark" aria-hidden="true" />
+                )}
                 {item.icon && (
                   <span className="nav-rail__icon">{item.icon}</span>
                 )}
-                <span className="nav-rail__label">{item.label}</span>
+                <span className="nav-rail__lines">
+                  <span className="nav-rail__label">{item.label}</span>
+                  {item.said !== undefined && (
+                    <span className="nav-rail__said">{item.said}</span>
+                  )}
+                </span>
               </button>
             ))}
             {(group.filters ?? []).map((f) => {

@@ -15,6 +15,55 @@ from enum import Enum
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+#: Last-resort guard on `MemoryFrontmatter.summary`, not a style rule.
+#:
+#: A summary ends where its first paragraph ends, so its length follows the
+#: thought rather than a number. This ceiling exists only because a body can be
+#: one unbroken blob, and `list_all` parses every frontmatter on every
+#: retrieval; a summary that is a whole document would be paid for on each one.
+SUMMARY_HARD_CEILING = 1_000
+
+
+def lead_paragraph(text: str) -> str:
+    """The memory's own opening paragraph, collapsed to one line.
+
+    The natural end of a summary, and why the ceiling above rarely applies. A
+    writer who puts the fact first gets the fact; the rest of the body stays in
+    the file, one `memory_get` away.
+    """
+    # A leading markdown heading is the record's title again, not its content,
+    # so a body that opens with one would summarise to its own name.
+    blocks = [b for b in (text or "").strip().split("\n\n") if b.strip()]
+    for block in blocks:
+        without_heading = "\n".join(
+            line for line in block.splitlines() if not line.lstrip().startswith("#")
+        ).strip()
+        if without_heading:
+            return summarize(without_heading, SUMMARY_HARD_CEILING)
+    return ""
+
+
+def summarize(text: str, limit: int) -> str:
+    """One line, at most `limit` chars, cut on a word boundary and marked.
+
+    Every caller that shortens a summary goes through here, so a shortened
+    summary always looks shortened. Without the mark a cut sentence is
+    indistinguishable from a rule that genuinely ends there.
+    """
+    one_line = " ".join(text.split())
+    if len(one_line) <= limit:
+        return one_line
+    # The mark is part of the budget: a caller that asked for `limit` chars
+    # gets at most `limit`, so a render can be laid out against a fixed width.
+    if limit <= 1:
+        return "…"[:limit]
+    head = one_line[: limit - 1]
+    cut = head.rfind(" ")
+    if cut > 0:
+        head = head[:cut]
+    return head.rstrip(" ,;:.-") + "…"
+
+
 class MemoryType(str, Enum):
     USER = "user"
     FEEDBACK = "feedback"
@@ -144,7 +193,7 @@ class MemoryFrontmatter(BaseModel):
 class RetrievalPacket:
     """Return type for retrieve(). Wraps results + optional synthesis.
 
-    CR-1 follow-up (M3): ``work_history`` carries non-authoritative
+    ``work_history`` carries non-authoritative
     session + workshop chunks when the caller passed
     ``include_work_history=True``. These are NEVER folded into
     ``results`` (which is reserved for promoted memory). Formatters
@@ -162,7 +211,7 @@ class RetrievalPacket:
     # short-circuited. Surfaced so the caller (memory_search tool) can flag
     # the high-trust hit explicitly.
     short_circuited: bool = False
-    # CR-1 M3 — non-authoritative chunks merged in when the caller asks
+    # Non-authoritative chunks merged in when the caller asks
     # for work-history. Each entry is a `WorkHit` (avoids circular import
     # via `list`).
     work_history: list = field(default_factory=list)

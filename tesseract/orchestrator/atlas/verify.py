@@ -15,14 +15,18 @@ things and both are worth knowing:
 
 It cannot catch an input that changed since the build, and does not pretend
 to: comparing a week-old atlas against today's corpus reports every ordinary
-edit as drift, which is how a check becomes noise and then becomes ignored.
+edit as drift, which is how a check becomes noise and then becomes ignored. The
+run log would be the worst of those, since it only grows and anything that ran
+since the build would read as a new node — so the rebuild is anchored at the
+checked file's own `built_at` rather than at the current moment, and the run
+window is bounded on both sides.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -40,10 +44,24 @@ class VerifyReport:
     rebuilt_nodes: int
     stale_version: bool
     duration_ms: float
+    # The same count the build reported, taken again from the rebuild. A whole
+    # graph diff already covers this, and it answers "something moved" without
+    # saying WHERE — these two name the compartment, which is the half a person
+    # reads. Keyed by the region's own value, like `BuildReport.regions`.
+    live_regions: dict[str, int] = field(default_factory=dict)
+    rebuilt_regions: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def regions_agree(self) -> bool:
+        return self.live_regions == self.rebuilt_regions
 
     @property
     def clean(self) -> bool:
-        return self.drift.clean and not self.stale_version
+        return self.drift.clean and not self.stale_version and self.regions_agree
+
+
+def _regions(atlas) -> dict[str, int]:
+    return {r.value: n for r, n in atlas.counts_by_region().items()}
 
 
 def run_verify(
@@ -59,20 +77,27 @@ def run_verify(
     cfg = config or load_atlas_config()
 
     live = store.load(atlas_path)
-    rebuilt, _memories, _pages = derive(
+    # Rebuild as of the moment the file being checked was built, not now. The
+    # run log is the liveliest input here and it only grows, so rebuilding at
+    # the current moment reports every job that has run since as drift.
+    as_of = live.built_at or moment
+    rebuilt = derive(
         memory_store=memory_store,
         vault_manager=vault_manager,
-        now=moment,
+        now=as_of,
         windows=cfg.review_after_days,
         version=BUILDER_VERSION,
+        runs_within_days=cfg.body.runs_within_days,
         # No reuse: a hash carried over from the file being checked would let
         # a changed source pass its own verification.
         reuse={},
-    )
+    ).graph
     return VerifyReport(
         drift=diff.compare(live, rebuilt),
         live_nodes=len(live.nodes),
         rebuilt_nodes=len(rebuilt.nodes),
+        live_regions=_regions(live),
+        rebuilt_regions=_regions(rebuilt),
         stale_version=live.builder_version != BUILDER_VERSION,
         duration_ms=(time.monotonic() - started) * 1000.0,
     )

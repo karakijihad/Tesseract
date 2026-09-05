@@ -13,6 +13,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any, ClassVar
 
+from tesseract.orchestrator import provider_failure
+from tesseract.orchestrator.provider_failure import ProviderFault
 from tesseract.scheduler.tasks._probes.base import ProbeResult
 
 log = logging.getLogger(__name__)
@@ -51,7 +53,7 @@ async def _run_embedding_probe(
             ref=ref,
             ok=False,
             drift_kind="http_error",
-            evidence={"exception": repr(exc)},
+            evidence=provider_failure.evidence(provider_failure.from_exception(exc)),
             probed_at=now,
             latency_ms=(time.monotonic() - t0) * 1000.0,
         )
@@ -64,8 +66,13 @@ async def _run_embedding_probe(
             ref=ref,
             ok=False,
             drift_kind="shape_mismatch",
-            evidence={"reason": "embedding did not return a sized vector",
-                      "raw_type": type(vec).__name__},
+            evidence=provider_failure.evidence(
+                ProviderFault(
+                    origin="theirs", kind="shape_mismatch",
+                    detail=f"answered with something that has no length ({type(vec).__name__})",
+                ),
+                raw_type=type(vec).__name__,
+            ),
             probed_at=now,
             latency_ms=latency_ms,
         )
@@ -75,7 +82,13 @@ async def _run_embedding_probe(
             ref=ref,
             ok=False,
             drift_kind="empty_output",
-            evidence={"actual_dim": 0},
+            evidence=provider_failure.evidence(
+                ProviderFault(
+                    origin="theirs", kind="empty_answer",
+                    detail="answered with a vector of length zero",
+                ),
+                actual_dim=0,
+            ),
             probed_at=now,
             latency_ms=latency_ms,
         )
@@ -85,7 +98,15 @@ async def _run_embedding_probe(
             ref=ref,
             ok=False,
             drift_kind="shape_mismatch",
-            evidence={"expected_dim": expected_dim, "actual_dim": actual_dim},
+            evidence=provider_failure.evidence(
+                ProviderFault(
+                    origin="theirs", kind="shape_mismatch",
+                    detail=f"answered with {actual_dim} dimensions where the "
+                           f"catalog entry says {expected_dim}",
+                ),
+                expected_dim=expected_dim,
+                actual_dim=actual_dim,
+            ),
             probed_at=now,
             latency_ms=latency_ms,
         )

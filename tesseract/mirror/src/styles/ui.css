@@ -212,6 +212,15 @@
   gap: var(--space-md);
 }
 
+/* A surface that carries its own template. The section owns the whole pane,
+   including whether anything inside it scrolls, so the body adds neither
+   padding nor a scroller of its own. */
+.rail-view__body--bare {
+  overflow: hidden;
+  padding: 0;
+  gap: 0;
+}
+
 /* A view with a rail but nothing to put in it — the empty state stands where
    the rail and pane would have been. */
 .rail-view__empty {
@@ -345,6 +354,16 @@
   right: 0;
   border-right: none;
   border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+
+/* Anchored to its container rather than to the window, and to the TOP of it.
+   A rail that fills the screen is met halfway down; one inside a panel is
+   read from the top, where its list starts. */
+.edge-tab--inset {
+  position: absolute;
+  top: var(--space-10);
+  transform: none;
+  z-index: 1;
 }
 
 /* ── ComposerButton — a verb at the end of a composer ────────── */
@@ -1059,4 +1078,64 @@
 
 .note__body a {
   color: var(--accent-bright);
+}
+
+/* ── DataTable — the app's one table ─────────────────────────── */
+
+/* Four hand-rolled tables, four answers to the same object: a bordered card
+   with a pinned head, a striped list with no head inside a second card, four
+   stacked panels, and one that grew the pane instead of scrolling. The
+   caller names its columns and their widths; everything else is here. */
+.data-table {
+  display: flex;
+  flex-direction: column;
+  /* The gap IS the row separator: the ground shows through between rows that
+     paint their own. One value to change, and no border that doubles up at
+     the join. */
+  gap: var(--space-1);
+  background: var(--panel-divider);
+  border: var(--stroke-1) solid var(--panel-border);
+  border-radius: var(--radius-sm);
+  /* Scrolls inside itself so the pane around it never moves. `overflow-x` is
+     explicit because a box with `overflow-y: auto` and no `overflow-x`
+     computes the second one to `auto` as well, and then any cell a pixel
+     too wide grows a horizontal bar under the table. */
+  max-height: var(--data-table-max-height, 480px);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.data-table__head,
+.data-table__row {
+  display: grid;
+  grid-template-columns: var(--data-table-columns);
+  gap: var(--space-md);
+  align-items: center;
+  padding: var(--space-sm) var(--space-md);
+}
+
+.data-table__head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-deep);
+}
+
+.data-table__row {
+  background: var(--bg-elevated);
+}
+
+.data-table__row:hover {
+  background: var(--bg-hover);
+}
+
+/* Every cell may shrink below its content, which is what stops one long
+   value from pushing the columns out of alignment with their headings. */
+.data-table__cell {
+  min-width: 0;
+}
+
+.data-table__empty {
+  padding: var(--space-md);
+  background: var(--bg-elevated);
 }

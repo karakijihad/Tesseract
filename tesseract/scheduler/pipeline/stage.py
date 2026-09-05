@@ -2,11 +2,11 @@
 
 A stage declares its edges as data — what it reads, what it writes, how often,
 how long it may take — so an ordering can be enforced and reported rather than
-implied. `schedule.yaml` used to hold 31 independently-fired cron rows whose
-ordering lived in clock minutes: `memory_scrub --fix` at 23:45 consumed findings
+implied. Thirty-one independently-fired cron rows put their ordering in
+clock minutes instead: `memory_scrub --fix` at 23:45 consuming findings
 `memory_lint` wrote at 23:30, an edge nothing declared and nothing checked.
-Eighteen of those rows are stages of two rows now, and that pair is the last
-clock in the system.
+Eighteen of them are stages of two rows, and that pair is the last clock in
+the system.
 
 Two kinds of edge, and the difference is load-bearing: `reads` is a data
 dependency and cascades failure; `after` only orders. Most of the nightly set
@@ -22,6 +22,7 @@ from enum import Enum
 from typing import Any, Awaitable, Callable
 
 from tesseract.orchestrator.outcome import RunOutcome
+from tesseract.scheduler.manifest.entry import MIN_SUMMARY_CHARS
 
 
 class StageCadence(str, Enum):
@@ -30,7 +31,7 @@ class StageCadence(str, Enum):
 
     # Due on every invocation of its row. The capture row fires in minutes and
     # its stages decide what to do from their own thresholds, so "how often"
-    # is the row's question there and not the stage's. Added in AR-3; the
+    # is the row's question there and not the stage's. The
     # contract's `daily`/`weekly` still govern the nightly row, where cadence
     # is the whole point.
     CONTINUOUS = "continuous"
@@ -148,10 +149,17 @@ class Stage:
 
     name: str
     body: StageBody
+    # What this stage does, in the operator's language, owned here because
+    # this is the code that owns the fact. It lived in `generate_guide.py`
+    # as a `STAGE_BLURBS` dict — a build script describing a stage, which is
+    # the same defect `use_when` had before it moved onto the tool class and
+    # a job's `summary` had before it moved onto its manifest entry. Two
+    # renderers read it now: the Guide's table, and the floor plan's card.
+    summary: str = ""
     reads: tuple[str, ...] = ()
     writes: tuple[str, ...] = ()
     # Ordering without dependency: "run after that one, but do not wait on its
-    # result". Added in AR-3 batch 2, because most of the nightly set reads
+    # result", because most of the nightly set reads
     # canonical files rather than each other's output — the librarian
     # consolidates the daily layer whether or not the digest wrote to it, and
     # the memory maintenance chain must not be skipped because a model was
@@ -168,6 +176,19 @@ class Stage:
     # retrying costs nothing but time.
     retries: int = 0
     retry_backoff_seconds: float = 0.0
+    # The keys on the running backend this stage's body refuses without —
+    # `memory_bundle`, `tool_registry`. Six stages return "<key> unavailable"
+    # when the app has no handle on one, and that fact lived in a dict in the
+    # CLI module, hand-kept and admitting in its own comment that it was
+    # "verified against each module's own early-return, not assumed". A
+    # property of the stage belongs on the stage: it is what lets anything
+    # asked to run one say beforehand whether it can, in the same words,
+    # wherever it was asked from.
+    #
+    # Only the key whose absence makes the body refuse. A stage that reads
+    # another key opportunistically still runs without it, and listing that
+    # here would refuse a stage that would have worked.
+    needs_app: tuple[str, ...] = ()
     # True for a wrapped job that derives ONE calendar day from `fired_at`
     # rather than reading the window it is given. Declaration data, not a
     # closure detail: whether a stage can cover a gap in one call is a fact

@@ -20,12 +20,12 @@ backend, and to avoid a ws ↔ spawn_wake import cycle.
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Any, Callable
 
 from tesseract.context.circuit_breaker import CircuitBreaker
-from tesseract.paths import TESSERACT_HOME, log_dir
+from tesseract.mirror.server import wake_turn
+from tesseract.paths import log_dir
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,24 @@ def _stash_wake_label(session: Any, chat_id: str, handle: Any) -> None:
         labels.pop(chat_id, None)
 
 
+#: A whole nudge body, stashed by a wake that is not a completion. Same slot
+#: shape as the label above, and read FIRST, because a caller that has already
+#: written the sentence is not asking for one to be composed. Without it a
+#: heartbeat wake reached a channel as the completion text and told the
+#: operator a still-running spawn had finished: the channel driver takes no
+#: body of its own, so the only way to reach it is the function it calls.
+_WAKE_BODY_ATTR = "_spawn_wake_bodies"
+
+
+def stash_wake_body(session: Any, chat_id: str, text: str) -> None:
+    """Set the exact body the next wake turn on this chat will carry."""
+    bodies: dict[str, str] | None = getattr(session, _WAKE_BODY_ATTR, None)
+    if bodies is None:
+        bodies = {}
+        setattr(session, _WAKE_BODY_ATTR, bodies)
+    bodies[chat_id] = text
+
+
 def wake_nudge_text(session: Any, chat_id: str) -> str:
     """Render the wake-turn nudge, naming the workstream (Task 6.3) whose
     completion triggered this wake. Falls back to the bare ``_WAKE_NUDGE``
@@ -75,7 +93,15 @@ def wake_nudge_text(session: Any, chat_id: str) -> str:
     both the cockpit driver (``_wake_turn``) and the channel driver
     (``integrations/telegram/bridge.py::_wake_turn_driver``) so the two
     delivery legs never drift apart.
+
+    A body stashed by :func:`stash_wake_body` wins outright: it is a sentence
+    a caller has already written, and this function's job then is to deliver
+    it rather than to describe a completion that may not have happened.
     """
+    bodies: dict[str, str] | None = getattr(session, _WAKE_BODY_ATTR, None)
+    body = bodies.pop(chat_id, None) if bodies else None
+    if body:
+        return body
     labels: dict[str, str] | None = getattr(session, _WAKE_LABEL_ATTR, None)
     label = labels.pop(chat_id, None) if labels else None
     if not label:
@@ -97,9 +123,7 @@ def _wake_breaker_log_dir() -> Path:
     """Resolve the circuit-breaker log dir at call time (never an import-time
     constant) so a test's `monkeypatch.setenv("TESSERACT_HOME", tmp_path)`
     lands the JSONL under its own tmp dir (kernel/workspace_changes.py::
-    workspace_events_dir idiom)."""
-    override = os.environ.get("TESSERACT_HOME")
-    home = Path(override).resolve() if override else TESSERACT_HOME
+    workspace_events_dir idiom). `log_dir` reads the environment itself."""
     return log_dir("circuit-breakers")
 
 
@@ -133,10 +157,12 @@ def on_spawn_complete(
     Always runs Stage 1's floor (queue the ``[spawn_completed]`` note). Then, if
     the owning chat is idle, no wake is already pending, and the shared
     ``spawn-wake`` breaker is closed, schedules exactly one wake turn. When a
-    turn is already in flight the floor is enough — the running turn drains
-    the note at its next tool boundary / iteration 0. When the breaker is
-    open, the wake is skipped (the floor note still surfaces at the chat's
-    next operator turn — nothing is lost, only proactivity).
+    turn is already in flight the floor is enough — the note is drained at the
+    start of the next turn (`brain/chat.py::_drain_pending_suggestions`, once
+    per turn, injected at iteration 0), not part-way through the running one.
+    When the breaker is open, the wake is skipped (the floor note still
+    surfaces at the chat's next operator turn — nothing is lost, only
+    proactivity).
 
     ``turn_driver``: optional turn-driver override threaded through to
     :func:`schedule_wake` / :func:`_wake_turn` — ``None`` (default) drives
@@ -155,7 +181,11 @@ def on_spawn_complete(
         return
     if chat_id in session.spawn_wake_pending:
         return
-    if _get_wake_breaker().is_tripped:
+    if not _get_wake_breaker().allow(
+        # `getattr`, as everywhere else a handle is read here: this runs from a
+        # done-callback and a bare registry double is not a reason to raise.
+        subject=f"spawn completion {getattr(handle, 'handle_id', '?')} in chat {chat_id}"
+    ):
         return
     session.spawn_wake_pending.add(chat_id)
     if turn_driver is None:
@@ -188,7 +218,7 @@ async def _wake_turn(
     turn, if a completion landed mid-wake (after the iteration-0 drain) and the
     chat is idle again, schedules one more wake so the note isn't stranded.
 
-    G1 (fix pass 1): the shared ``spawn-wake`` breaker records the ACTUAL turn
+    G1: the shared ``spawn-wake`` breaker records the ACTUAL turn
     outcome, not just exceptions — both drivers can swallow an ordinary turn
     failure internally without raising (cockpit ``ws._run_turn``'s
     ``stream_error`` envelope; channel ``ws._start_channel_turn``'s
@@ -201,7 +231,7 @@ async def _wake_turn(
     propagating out of the driver remains the backstop path (``record_failure``
     then re-raise, unchanged from before).
 
-    G1 (fix pass 2, 2026-07-06): an operator-cancelled cockpit wake turn is
+    G1: an operator-cancelled cockpit wake turn is
     NEITHER a failure nor a success — ``ws._run_turn`` now also sets
     ``outcome["cancelled"]`` in its CancelledError branch, and a cancelled
     cockpit turn here skips both ``record_failure`` and ``record_success``
@@ -216,43 +246,22 @@ async def _wake_turn(
         return
 
     breaker = _get_wake_breaker()
-    turn_error: str | None = None
-    turn_cancelled = False
-    # Whether the turn actually delivered what it drained. A turn can end
-    # perfectly well and still not commit — an adapter error it recovered from
-    # means the retry no longer carried the block. That is the difference
-    # between "try again" and "trying again just repeats it".
-    delivery_committed = True
-    try:
-        if turn_driver is None:
-            from tesseract.mirror.server.turn_runner import _run_chat_turn
+    outcome = await wake_turn.drive(
+        app,
+        session,
+        chat_id,
+        breaker=breaker,
+        body=wake_nudge_text(session, chat_id),
+        error_label="cockpit wake turn ended in a swallowed stream_error",
+        runtime_origin="spawn_complete",
+        turn_driver=turn_driver,
+    )
+    delivery_committed = outcome.committed
 
-            outcome: dict[str, Any] = {}
-            await _run_chat_turn(
-                app, session, wake_nudge_text(session, chat_id), chat_id=chat_id, outcome=outcome,
-            )
-            delivery_committed = bool(outcome.get("committed", True))
-            if outcome.get("cancelled"):
-                turn_cancelled = True
-            elif outcome.get("ok") is False:
-                turn_error = "cockpit wake turn ended in a swallowed stream_error"
-        else:
-            turn_error = await turn_driver(app, session, chat_id)
-            delivery_committed = turn_error is None
-    except Exception as exc:
-        breaker.record_failure(str(exc))
-        raise
-    if turn_cancelled:
-        pass  # neutral — breaker state untouched
-    elif turn_error:
-        breaker.record_failure(turn_error)
-    else:
-        breaker.record_success()
-
-    # This straggler re-schedule used to be unreachable after a failed turn —
-    # the drain consumed the note whatever the outcome, so nothing was left
-    # pending to re-wake on. The delivery cursor changed that: a turn that does
-    # not commit rolls the note back, and re-waking on the note this turn just
+    # The straggler re-schedule is reachable after a failed turn only because
+    # of the delivery cursor: a drain that consumed the note whatever the
+    # outcome would leave nothing pending to re-wake on. A turn that does not
+    # commit rolls the note back, and re-waking on the note this turn just
     # failed to deliver is a loop, not a retry. Both gates are needed, and the
     # breaker alone is not enough: a turn that errors and RECOVERS ends clean,
     # so the breaker records a success and never trips while the delivery keeps
@@ -263,7 +272,9 @@ async def _wake_turn(
         chat_idle(session, chat_id)
         and cs.has_pending_spawn_completions()
         and delivery_committed
-        and not breaker.is_tripped
+        # Last, because it records what it refuses and the earlier gates are
+        # reasons the wake was never wanted in the first place.
+        and breaker.allow(subject=f"straggler completion in chat {chat_id}")
     ):
         if chat_id not in session.spawn_wake_pending:
             session.spawn_wake_pending.add(chat_id)
@@ -326,17 +337,28 @@ def wire_chat(
     channel session's wake turns route through its channel-shaped driver.
     """
     cs.spawns.completion_notifier = _build_notifier(app, session, chat_id, cs, turn_driver)
+    # The heartbeat's watch list. Registered here rather than by scanning the
+    # app because this is the one call that knows the session, the chat, the
+    # registry and the turn driver at once, and it runs for every surface that
+    # can take a wake turn. A chat wired for a completion is a chat wired for
+    # "it is still running", which is the same wake with a different trigger.
+    from tesseract.mirror.server import spawn_heartbeat
+
+    spawn_heartbeat.watch(session, chat_id, turn_driver)
+    # The key a completion is recorded under, so a result outlives the process
+    # (`brain/completion_store.py`). Set for every surface now. It was skipped
+    # for channels on the premise that "a headless session mints a fresh
+    # `active_chat_id` on every rebuild and has no restore path to replay
+    # into, so a record written under one could only ever leak" — both halves
+    # of which stopped being true when a channel got a durable chat id and a
+    # restore that replays undelivered completions.
+    cs.spawns.chat_id = chat_id
     if getattr(session, "kind", "cockpit") != "channel":
         from tesseract.mirror.server.spawn_ownership import register_owner
 
-        # The registry only learns which chat owns it here — and that is the
-        # key its completions are recorded under, so a result outlives the
-        # process (`brain/completion_store.py`). Skipped for channel sessions
-        # for the same reason ownership tracking is: a headless session mints
-        # a fresh `active_chat_id` on every rebuild and has no restore path to
-        # replay into, so a record written under one could only ever leak.
-        cs.spawns.chat_id = chat_id
-
+        # Ownership tracking stays cockpit-only: it is keyed off the app-level
+        # session registry, which headless sessions are deliberately absent
+        # from.
         cs.spawns.on_register = lambda handle: register_owner(
             app, session, cs, chat_id, handle.handle_id,
         )
@@ -394,7 +416,7 @@ def reconcile_on_connect(app: Any, session: Any) -> int:
     closed. A tripped breaker skips the sweep entirely rather than per chat —
     the failure it is counting is not chat-specific.
     """
-    if _get_wake_breaker().is_tripped:
+    if not _get_wake_breaker().allow(subject="undelivered completions at reconnect"):
         return 0
     woken = 0
     for chat_id, cs in list(session.chats.items()):

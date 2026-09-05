@@ -7,9 +7,13 @@ the `/brief` slash semantics in `_shared/brief-renderer-spec.md`). The
 the nightly `brief_render` stage calls the renderer directly with
 ``overwrite=False`` so a missed slot does not double-write.
 
-ASK-gated. The renderer fires Tavily searches and writes to
-``memory-store/daily/briefs/``; both side-effects warrant an operator
-prompt even though the tool itself is operator-initiated.
+The class floor is ASK, and ``permissions.yaml`` currently overrides it to
+``auto``: the tool writes one file into the operator's own store and calls a
+chain whose ceiling is a `roles.yaml` block named for the entry, and it is
+operator-initiated in both its call sites. It used to fire Tavily searches
+under a separate spend cap, which was the original reason for the override;
+that cap and those searches are gone, so the override now rests on the file
+write alone. ``permissions.yaml`` is the authority either way.
 """
 
 from __future__ import annotations
@@ -22,14 +26,13 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
-from tesseract import http_client
 from tesseract.agents.loader import load_agent
 from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
 from tesseract.memory.store import MemoryStore
-from tesseract.orchestrator.brief.pillars import DEFAULT_PILLARS, Pillar
-from tesseract.orchestrator.brief.renderer import BriefRenderer, CostCaps
+from tesseract.orchestrator.brief.renderer import BriefRenderer
 from tesseract.paths import TESSERACT_HOME
+from tesseract.lib import clock
 
 logger = logging.getLogger(__name__)
 
@@ -63,12 +66,14 @@ class BriefRenderTool(Tool):
     summary: ClassVar[str] = "Render today's daily brief by running the digester sub-agents."
     use_when: ClassVar[str] = (
         "Use when the operator asks to build or refresh the daily brief. "
-        "Writes to memory-store/daily/briefs/ and searches the web."
+        "Writes one file to memory-store/daily/briefs/, off stores this "
+        "machine already holds."
     )
     not_when: ClassVar[str] = (
-        "to read a brief that already exists, use `brief_read` instead — it "
+        "to read a brief that already exists, use `brief_read` instead, because it "
         "has no side effects."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(
         self,
@@ -76,43 +81,29 @@ class BriefRenderTool(Tool):
         adapter: ModelAdapter | None = None,
         adapter_options: AdapterOptions | None = None,
         memory_store: MemoryStore | None = None,
-        cost_caps: CostCaps | None = None,
         agents_dir: Path | None = None,
         briefs_dir: Path | None = None,
-        pillars: tuple[Pillar, ...] = DEFAULT_PILLARS,
-        interests_path: Path | None = None,
         event_store: "object | None" = None,
         vault_wiki_dir: Path | None = None,
-        vault_raw_dir: Path | None = None,
-        vault_librarian: "object | None" = None,
     ) -> None:
         # Late-bind TESSERACT_HOME at constructor call time so a process
         # that toggles the env var post-import (test harness, alt-home
-        # boot) still routes writes to the operator-chosen home. The
-        # pre-MO-9-13 code captured the import-time constant; the
-        # MO-9-13 reviewer flagged that as an IMPORTANT inconsistency
-        # with daily_brief._resolve_briefs_dir / _resolve_interests_path,
-        # which already late-bind. Mirror that pattern here.
+        # boot) still routes writes to the operator-chosen home. Capturing
+        # the import-time constant instead would disagree with
+        # brief_render._resolve_briefs_dir, which late-binds.
         home = Path(os.environ.get("TESSERACT_HOME") or TESSERACT_HOME).resolve()
         self._adapter = adapter
         self._adapter_options = adapter_options or AdapterOptions()
         self._memory_store = memory_store
-        self._cost_caps = cost_caps or CostCaps()
-        # `None` means the live pair of agent roots (AR-6): the digester
+        # `None` means the live pair of agent roots: the digester
         # cards are shipped, so they resolve out of the app tree unless the
         # operator shadows one. Naming a directory here restricts the load
         # to it, which is what the tests want and production does not.
         self._agents_dir = agents_dir
         self._briefs_dir = briefs_dir or (home / "memory-store" / "daily" / "briefs")
-        self._pillars = pillars
-        self._interests_path = interests_path or (
-            home / "memory-store" / "interests" / "profile.yaml"
-        )
         self._event_store = event_store
         self._vault_wiki_dir = vault_wiki_dir or (home / "vault" / "wiki")
-        self._vault_raw_dir = vault_raw_dir or (home / "vault" / "raw")
-        self._vault_librarian = vault_librarian
-        self._ecosystem_home = home
+        self._home = home
 
     @property
     def name(self) -> str:
@@ -137,22 +128,15 @@ class BriefRenderTool(Tool):
                 is_error=True,
             )
 
-        compile_fn = getattr(self._vault_librarian, "compile_source", None) if self._vault_librarian else None
         renderer = BriefRenderer(
             briefs_dir=self._briefs_dir,
-            pillars=self._pillars,
-            interests_path=self._interests_path,
             invoke_digester=_make_digester_invoker(
                 self._adapter, self._adapter_options, self._agents_dir,
             ),
-            tavily_search=_make_tavily_fetcher(context),
             memory_store=self._memory_store,
-            cost_caps=self._cost_caps,
             event_store=self._event_store,
             vault_wiki_dir=self._vault_wiki_dir,
-            vault_raw_dir=self._vault_raw_dir,
-            librarian_compile=compile_fn,
-            ecosystem_home=self._ecosystem_home,
+            home=self._home,
         )
         try:
             result = await renderer.render(target, overwrite=inp.overwrite)
@@ -172,16 +156,12 @@ class BriefRenderTool(Tool):
         return ToolResult(
             output=(
                 f"brief rendered for {target.isoformat()} → {result.path} "
-                f"(sections: {', '.join(result.sections_rendered) or 'all empty'}; "
-                f"tavily_calls={result.tavily_calls}; cost_cap_hit={result.cost_cap_hit})"
+                f"(sections: {', '.join(result.sections_rendered) or 'all empty'})"
             ),
             metadata={
                 "path": str(result.path),
                 "sections_rendered": result.sections_rendered,
                 "sections_dropped": result.sections_dropped,
-                "tavily_calls": result.tavily_calls,
-                "estimated_usd": result.estimated_usd,
-                "cost_cap_hit": result.cost_cap_hit,
                 "memory_id": result.memory_id,
                 "workspace_event_id": result.workspace_event_id,
             },
@@ -191,7 +171,9 @@ class BriefRenderTool(Tool):
 def _parse_target_date(raw: str) -> date | None:
     stripped = raw.strip()
     if not stripped:
-        return datetime.now(timezone.utc).date()
+        # The operator's today. Rendering "the brief" at 23:00 in +02:00
+        # used to file it under tomorrow.
+        return clock.today()
     try:
         return date.fromisoformat(stripped)
     except ValueError:
@@ -215,6 +197,9 @@ def _make_digester_invoker(
         system_prompt = _load_agent_system_prompt(name, agents_dir)
         if not system_prompt:
             return ""
+        from tesseract.agents.invocations import record as _record_invocation
+
+        _record_invocation(name, via="brief_render")
         body = _format_payload_for_prompt(payload)
         prompt = f"{system_prompt}\n\n---\n\nPayload:\n{body}\n\n---\n\nProduce your section now. Markdown body only, no preamble."
         try:
@@ -225,65 +210,6 @@ def _make_digester_invoker(
         return (text or "").strip()
 
     return _invoke
-
-
-def _make_tavily_fetcher(_context: ToolContext):
-    """Return a Tavily fetcher that hits the API directly.
-
-    ``TavilySearchTool`` collapses results into prose for the chat surface;
-    the renderer needs per-hit ``url`` for the dedupe store, so we call
-    the same endpoint with the same auth and return the structured
-    ``results`` list. Any failure (missing key, timeout, non-200) yields
-    ``[]`` and the renderer logs + continues to the next topic.
-    """
-    import os
-
-    import httpx
-
-    endpoint = "https://api.tavily.com/search"
-    timeout_s = 15.0
-
-    async def _fetch(query: str, options: dict) -> list[dict]:
-        api_key = os.environ.get("TAVILY_API_KEY")
-        if not api_key:
-            logger.info("brief: TAVILY_API_KEY not set; skipping query %r", query)
-            return []
-        payload: dict[str, object] = {
-            "query": query,
-            "max_results": int(options.get("max_results", 5)),
-            "search_depth": "basic",
-            # Caller may override the index: the daily brief wants "news",
-            # job-posting sweeps want "general". Default preserves brief behavior.
-            "topic": options.get("topic", "news"),
-            "include_answer": False,
-        }
-        include = list(options.get("include_domains") or [])
-        if include:
-            payload["include_domains"] = include
-        exclude = list(options.get("exclude_domains") or [])
-        if exclude:
-            payload["exclude_domains"] = exclude
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-        try:
-            async with http_client.async_client(timeout=timeout_s) as client:
-                r = await client.post(endpoint, headers=headers, json=payload)
-        except httpx.HTTPError as exc:
-            logger.info("brief: tavily query %r failed (%s)", query, exc)
-            return []
-        if r.status_code != 200:
-            logger.info("brief: tavily %s for query %r", r.status_code, query)
-            return []
-        try:
-            data = r.json()
-        except ValueError:
-            return []
-        results = data.get("results") or []
-        return [hit for hit in results if isinstance(hit, dict)]
-
-    return _fetch
 
 
 def _load_agent_system_prompt(name: str, agents_dir: Path | None) -> str:

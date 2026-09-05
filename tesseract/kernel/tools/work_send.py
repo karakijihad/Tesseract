@@ -71,13 +71,14 @@ class WorkSendTool(Tool):
     )
     use_when: ClassVar[str] = (
         "Use to course-correct or answer a question from work already in "
-        "flight — one verb, target auto-resolved — without waiting for it to "
+        "flight, with one verb and the target resolved for you, without waiting for it to "
         "finish."
     )
     not_when: ClassVar[str] = (
-        "One-shot spawn handles, which have no input channel — "
+        "One-shot spawn handles, which have no input channel. "
         "`spawn_cancel` and re-dispatch with the new instruction instead."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

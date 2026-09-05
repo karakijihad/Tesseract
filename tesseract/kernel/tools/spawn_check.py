@@ -1,14 +1,15 @@
 """spawn_check — read-only status of a background spawn handle.
 
-Phase 4 of the assistant reboot CLI-parity plan. Companion to
-`delegate_coder(background=true)` and (in a follow-up pass)
-`delegate_auditor` / `invoke_agent`. Returns running / done / failed /
-cancelled — does NOT return the full output (use `spawn_await` for
-that) so a polling-style check stays cheap.
+Companion to `delegate_coder(background=true)`, `delegate_auditor` and
+`invoke_agent`. Returns running / done / failed / cancelled, plus how many
+events the spawn has emitted and how long ago the last one landed. It does
+NOT return the full output (use `spawn_await` for that) so a polling-style
+check stays cheap.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import ClassVar
 
 from pydantic import BaseModel, Field
@@ -32,18 +33,20 @@ class SpawnCheckTool(Tool):
 
     group: ClassVar[str] = "tracking-spawned-work"
     summary: ClassVar[str] = (
-        "Read-only status check for a background spawn: running, done, failed, or cancelled."
+        "A background spawn: running, done, failed or cancelled, "
+        "and when it last emitted."
     )
     use_when: ClassVar[str] = (
-        "Use to confirm a spawn's current state — before steering it with `work_send`, or "
+        "Use to confirm a spawn's current state, before steering it with `work_send`, or "
         "deciding whether to `spawn_cancel`. A spawn-cap error wants an await or a cancel "
         "first; a depth-cap error means do the work inline and report to the parent."
     )
     not_when: ClassVar[str] = (
-        "Retrieving a finished spawn's output — that arrives on its own in "
+        "Retrieving a finished spawn's output. That arrives on its own in "
         "your next turn; use `spawn_await` only for the rare case where the "
         "result said it was too large to deliver whole."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -95,6 +98,20 @@ class SpawnCheckTool(Tool):
         )
         if handle.finished_at:
             line += f" · finished {handle.finished_at}"
+        # Progress, reported as the two numbers and never as a verdict. A long
+        # compile is legitimately quiet and calling it stalled here would be
+        # wrong; the model has the previous check's counts in its own context,
+        # so it can see the difference between six quiet minutes and none.
+        # Omitted entirely when the substrate does not report activity, which
+        # is not the same fact as "nothing has happened".
+        from tesseract.brain.spawns import handle_quiet_seconds
+
+        quiet = handle_quiet_seconds(handle, datetime.now(timezone.utc))
+        if quiet is not None:
+            line += (
+                f" · {handle.activity_events} events, last "
+                f"{quiet:.0f}s ago"
+            )
         return ToolResult(
             output=line,
             metadata={
@@ -103,5 +120,7 @@ class SpawnCheckTool(Tool):
                 "status": status,
                 "started_at": handle.started_at,
                 "finished_at": handle.finished_at,
+                "last_activity_at": handle.last_activity_at,
+                "activity_events": handle.activity_events,
             },
         )

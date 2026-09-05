@@ -1,41 +1,52 @@
-// AU-7 Phase 3 — PrunedPane.
+// What was dropped at the door, and why.
 //
-// Surfaces what the autonomy admission gate discarded, bucketed by
-// source x stage, so a recurrent-useless source is visible at a glance
-// and mutable (mute the source's future proposals) in one click.
+// The admission gate turns drafts away before they become work. Two bands: the
+// sources it turned away, worst first, each with the mute that stops a
+// recurrently useless one; and the most recent drafts themselves.
 //
-// Split into a pure `PrunedPaneView` (props in, JSX out — matches the
-// prop-driven pattern the other panes use, e.g. JournalPane) and a
-// connected `PrunedPane` wrapper that self-loads from the store. The
-// pruned ledger isn't part of the fetchAll() dashboard fan-out, so the
-// wrapper owns its own mount-time fetch (like NotificationsPane).
+// It drew a source-by-stage table and a second list of bordered cards before.
+// The table was the only one on this panel and it read as a spreadsheet in a
+// room of state lines, so a source is a row now and its stages are the
+// sentence beside it.
 
-import { Block } from '../../components/common/Block';
-import { Button } from '../../components/common/Button';
 import { useEffect } from 'react';
+import { Button } from '../../components/common/Button';
+import { Note } from '../../components/common/Note';
+import { RowActions } from '../../components/common/Row';
 import type { PrunedResponse } from '../../lib/api';
-import { formatRelative } from '../../lib/time';
 import { useAutonomyStore } from '../../stores/autonomy';
+import { Band, StateStrip, type StateLine } from '../../components/common/StateStrip';
+import { clock } from '../../lib/time';
 
-const STAGES = ['malformed', 'duplicate', 'low_value', 'capped'] as const;
-
-// Default lookback for the counts table — matches the route's own
-// default (`GET /api/autonomy/pruned?window_hours=168`).
+// The route's own default (`GET /api/autonomy/pruned?window_hours=168`).
 const DEFAULT_WINDOW_HOURS = 168;
 
-// A source at/above this many prunes in the window is flagged as the
-// recurrent-useless signal.
+// A source at or above this many in the window is the recurrently-useless
+// signal the mute exists for.
 const HOT_THRESHOLD = 10;
 
-const RECENT_CAP = 20;
-const GOAL_TRUNCATE = 60;
+const RECENT_CAP = 12;
 
-function _truncateGoal(goal: string): string {
-  return goal.length > GOAL_TRUNCATE ? `${goal.slice(0, GOAL_TRUNCATE)}…` : goal;
+// What each stage of the gate is called. The slugs are the code's; a person
+// reading a room needs what the gate decided.
+const STAGE_LABEL: Record<string, string> = {
+  malformed: 'malformed',
+  duplicate: 'already had it',
+  low_value: 'not worth doing',
+  capped: 'over the daily cap',
+};
+
+function total(stages: Record<string, number>): number {
+  return Object.values(stages).reduce((sum, n) => sum + n, 0);
 }
 
-function _sourceTotal(stageCounts: Record<string, number>): number {
-  return Object.values(stageCounts).reduce((sum, n) => sum + n, 0);
+/** What the gate did to this source, in its own terms. */
+function why(stages: Record<string, number>): string {
+  return Object.entries(stages)
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([stage, n]) => `${n} ${STAGE_LABEL[stage] ?? stage}`)
+    .join(', ');
 }
 
 export interface PrunedPaneViewProps {
@@ -56,104 +67,81 @@ export function PrunedPaneView({
   onRefresh,
 }: PrunedPaneViewProps): React.ReactElement {
   if (prunedStatus === 'error') {
-    return (
-      <Block title={null}>
-        <p className="t-meta">Failed to load pruned ledger.</p>
-      </Block>
-    );
+    return <Note tone="bad">What was dropped at the door could not be read.</Note>;
   }
-
-  if (pruned === null) {
-    return (
-      <Block title={null}>
-        <p className="t-meta">Loading…</p>
-      </Block>
-    );
-  }
+  if (pruned === null) return <></>;
 
   const sources = Object.keys(pruned.counts).sort(
-    (a, b) => _sourceTotal(pruned.counts[b]) - _sourceTotal(pruned.counts[a]),
+    (a, b) => total(pruned.counts[b]) - total(pruned.counts[a]),
   );
+
+  const sourceLines: StateLine[] = sources.map((source) => {
+    const count = total(pruned.counts[source]);
+    const muted = mutedSources.has(source);
+    const busy = pending.has(`prune-mute:${source}`);
+    return {
+      key: `source:${source}`,
+      // Turning a draft away is the gate working, so a source is quiet however
+      // many it dropped. What wants the operator is one that keeps coming
+      // back, and that is what the threshold marks.
+      state: muted ? 'idle' : count >= HOT_THRESHOLD ? 'degraded' : 'idle',
+      label: muted ? 'muted' : count >= HOT_THRESHOLD ? 'keeps coming back' : 'quiet',
+      name: source,
+      said: why(pruned.counts[source]),
+      value: String(count),
+      actions: (
+        <RowActions className="state-acts">
+          <Button
+            onClick={() => onMute(source, !muted)}
+            disabled={busy}
+            ariaLabel={`${muted ? 'Unmute' : 'Mute'} ${source}`}
+          >
+            {muted ? 'unmute' : 'mute'}
+          </Button>
+        </RowActions>
+      ),
+    };
+  });
+
   const recent = pruned.records.slice(0, RECENT_CAP);
 
   return (
-    <Block
-      title={null}
-      meta={
-        <>
-          {DEFAULT_WINDOW_HOURS}h window · {pruned.records.length} records
-          <Button onClick={onRefresh} ariaLabel="refresh pruned ledger">
-            refresh
-          </Button>
-        </>
-      }
-      testId="autonomy-pruned-pane"
-    >
+    <div data-testid="autonomy-pruned-pane">
+      <div className="managed-head">
+        <span className="t-meta">
+          The last {DEFAULT_WINDOW_HOURS} hours, {pruned.records.length} in all
+        </span>
+        <Button onClick={onRefresh} ariaLabel="read the pruned ledger again">
+          refresh
+        </Button>
+      </div>
 
       {sources.length === 0 ? (
-        <p className="t-meta">Nothing pruned in this window.</p>
+        <p className="t-meta">Nothing was turned away in this window.</p>
       ) : (
-        <table className="pruned-table" data-testid="pruned-counts-table">
-          <thead>
-            <tr>
-              <th className="t-meta">source</th>
-              {STAGES.map((stage) => (
-                <th key={stage} className="t-meta">{stage}</th>
-              ))}
-              <th className="t-meta">mute</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sources.map((source) => {
-              const stageCounts = pruned.counts[source];
-              const total = _sourceTotal(stageCounts);
-              const hot = total >= HOT_THRESHOLD;
-              const muted = mutedSources.has(source);
-              const busy = pending.has(`prune-mute:${source}`);
-              return (
-                <tr key={source} className={hot ? 'pruned-table__row--hot' : undefined}>
-                  <td>{source}</td>
-                  {STAGES.map((stage) => (
-                    <td key={stage} className="t-meta">
-                      {stageCounts[stage] ?? 0}
-                    </td>
-                  ))}
-                  <td>
-                    <Button
-                      onClick={() => onMute(source, !muted)}
-                      disabled={busy}
-                    >
-                      {muted ? 'Muted' : 'Mute'}
-                    </Button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div className="autonomy-group">
+          <Band label="Where they came from" count={sources.length} />
+          <StateStrip lines={sourceLines} />
+        </div>
       )}
 
-      <div className="autonomy-pane__group-title">recent prunes</div>
-      {recent.length === 0 ? (
-        <p className="t-meta">No prune records.</p>
-      ) : (
-        <ul className="autonomy-list" data-testid="pruned-recent-list">
-          {recent.map((rec, idx) => (
-            <li
-              key={`${rec.ts}-${rec.source}-${idx}`}
-              className="autonomy-row autonomy-row--pruned"
-            >
-              <div className="autonomy-row__head">
-                <span className="autonomy-chip autonomy-chip--source">{rec.source}</span>
-                <span className="autonomy-chip">{rec.stage}</span>
-                <span className="t-meta">{formatRelative(rec.ts)}</span>
-              </div>
-              <div className="autonomy-row__goal t-meta">{_truncateGoal(rec.goal)}</div>
-            </li>
-          ))}
-        </ul>
+      {recent.length > 0 && (
+        <div className="autonomy-group">
+          <Band label="The most recent" count={pruned.records.length} />
+          <StateStrip
+            lines={recent.map((rec, i) => ({
+              key: `${rec.ts}:${rec.source}:${i}`,
+              state: 'idle' as const,
+              label: STAGE_LABEL[rec.stage] ?? rec.stage,
+              name: rec.source,
+              said: rec.goal,
+              when: clock(rec.ts),
+              value: STAGE_LABEL[rec.stage] ?? rec.stage,
+            }))}
+          />
+        </div>
       )}
-    </Block>
+    </div>
   );
 }
 
@@ -162,12 +150,9 @@ export function PrunedPane(): React.ReactElement {
   const prunedStatus = useAutonomyStore((s) => s.prunedStatus);
   const loadPruned = useAutonomyStore((s) => s.loadPruned);
   const muteSource = useAutonomyStore((s) => s.muteSource);
-  // Select the stable `governor.data` ref (null until loaded, then a
-  // steady object) — NOT `?.pauses ?? []`, whose fresh `[]` on every call
-  // made useSyncExternalStore's snapshot change each render and spun the
-  // "getSnapshot should be cached" infinite loop that blanked the view.
-  // The `?? []` fallback lives in the render body below, where a fresh
-  // array is harmless.
+  // The stable `governor.data` ref, NOT `?.pauses ?? []`, whose fresh `[]` on
+  // every call made useSyncExternalStore's snapshot change each render and
+  // spun the "getSnapshot should be cached" loop that blanked the view.
   const governorData = useAutonomyStore((s) => s.governor.data);
   const pending = useAutonomyStore((s) => s.pendingActions);
 

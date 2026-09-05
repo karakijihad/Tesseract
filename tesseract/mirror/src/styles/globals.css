@@ -31,7 +31,6 @@
 @import "./identity.css";
 @import "./pulse.css";
 @import "./schedule.css";
-@import "./agents.css";
 @import "./chat.css";
 @import "./markdown.css";
 @import "./nav.css";
@@ -40,6 +39,7 @@
 @import "./conscience.css";
 @import "./settings.css";
 @import "./autonomy.css";
+@import "./graph.css";
 @import "./voice.css";
 @import "./canvas.css";
 @import "./surfaces.css";
@@ -176,7 +176,7 @@ body {
 }
 
 .cockpit-hud {
-  height: 48px;
+  height: var(--hud-h);
   background: var(--panel-bg);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
@@ -357,23 +357,6 @@ body {
   letter-spacing: 0.02em;
 }
 
-/* HUD sessions-drawer trigger */
-.hud-sessions {
-  border: var(--stroke-1) solid transparent;
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-  padding: var(--space-2) var(--space-8);
-  border-radius: var(--radius-xs);
-  font-size: var(--t-ui-size);
-  transition: color var(--motion-fast), border-color var(--motion-fast), background var(--motion-fast);
-}
-.hud-sessions:hover {
-  color: var(--text-primary);
-  border-color: var(--accent);
-  background: var(--accent-dim);
-}
-
 /* === LEFT PANEL === */
 .left-panel-inner,
 .right-panel-inner {
@@ -415,10 +398,16 @@ body {
    stays pinned via `position: sticky` inside that scroll context. The
    :has() rule collapses header-only (collapsed) sections to natural
    height so two collapsed sections don't waste half the panel each. */
+/* `overflow-x: hidden` belongs here, not only on `.right-panel-inner`: this
+   is the element that actually scrolls, and a box with `overflow-y: auto`
+   and no `overflow-x` computes the second one to `auto` too. So every child
+   that overflowed by a pixel grew the bar the panel is documented as never
+   wanting, on a container the outer clip could not reach. */
 .right-panel-body > .cat-section {
   flex: 1 1 0;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 .right-panel-body > .cat-section:not(:has(.right-section-list, .right-section-empty, .observer-list, .suggestions-list, .observer-stats-chip)) {
   flex: 0 0 auto;
@@ -572,7 +561,9 @@ body {
   font-family: var(--font-ui);
   background: var(--hint-bg);
   border: var(--stroke-1) solid var(--hint-border);
-  color: var(--text-primary);
+  /* Helper text, so the helper-text colour. White is the rank of the thing
+     being explained, not of the explanation. */
+  color: var(--text-meta);
   border-radius: var(--radius-xs);
   pointer-events: none;
   transition: opacity var(--motion-fast) var(--ease-out);
@@ -851,153 +842,6 @@ body {
   gap: var(--space-sm);
 }
 
-/* === SCHEDULER PANEL === */
-.sched-panel {
-  display: flex;
-  flex-direction: column;
-  border-left: var(--stroke-1) solid var(--border-subtle);
-  overflow-y: auto;
-  padding: var(--space-sm) var(--space-10);
-}
-.sched-panel-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  margin-bottom: var(--space-sm);
-}
-.sched-panel-head .t-sub { flex: 1; }
-.sched-new-btn {
-  background: var(--accent-dim);
-  color: var(--accent);
-  border: none;
-  border-radius: var(--radius-xs);
-  padding: var(--space-2) var(--space-8);
-  cursor: pointer;
-}
-.sched-new-btn:hover { background: var(--accent-glow); }
-.sched-breaker-badge {
-  font-size: var(--t-meta-size);
-  color: var(--red);
-  background: var(--red-dim);
-  padding: var(--space-1) var(--space-6);
-  border-radius: 3px;
-}
-.sched-breaker-warn { color: var(--red); }
-.sched-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  margin-bottom: var(--space-sm);
-}
-.sched-input {
-  background: var(--bg-card);
-  border: var(--stroke-1) solid var(--border-subtle);
-  border-radius: var(--radius-xs);
-  color: var(--text-primary);
-  font-family: var(--font-body);
-  font-size: var(--t-caption-size);
-  padding: var(--space-4) var(--space-6);
-}
-.sched-input:focus { border-color: var(--accent); outline: none; }
-.sched-submit {
-  align-self: flex-end;
-  background: var(--accent-dim);
-  color: var(--accent);
-  border: none;
-  border-radius: var(--radius-xs);
-  padding: var(--space-3) var(--space-10);
-  cursor: pointer;
-}
-.sched-submit:hover { background: var(--accent-glow); }
-.sched-task-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-.sched-task-row {
-  border-radius: var(--radius-xs);
-  transition: background var(--motion-fast);
-}
-.sched-task-row:hover { background: var(--bg-card); }
-.sched-task-summary {
-  display: flex;
-  align-items: center;
-  gap: var(--space-xs);
-  padding: var(--space-4) var(--space-xs);
-  cursor: pointer;
-}
-.sched-prompt {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--t-caption-size);
-}
-.sched-time {
-  font-family: var(--font-ui);
-  font-size: var(--t-meta-size);
-  flex-shrink: 0;
-}
-.sched-recur {
-  font-size: var(--t-meta-size);
-  color: var(--text-meta);
-  flex-shrink: 0;
-}
-.sched-result-badge {
-  font-size: var(--t-meta-size);
-  padding: var(--space-1) var(--space-5);
-  border-radius: 3px;
-  flex-shrink: 0;
-}
-.sched-result-badge--success { background: var(--green-dim); color: var(--green); }
-.sched-result-badge--error { background: var(--red-dim); color: var(--red); }
-.sched-status { font-size: var(--t-meta-size); flex-shrink: 0; }
-.sched-status--success { color: var(--green); }
-.sched-status--error { color: var(--red); }
-.sched-task-detail {
-  padding: var(--space-4) var(--space-sm) var(--space-8);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-.sched-prompt-full {
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 80px;
-  overflow-y: auto;
-  background: var(--bg-card);
-  border-radius: var(--radius-xs);
-  padding: var(--space-4) var(--space-6);
-  margin: 0;
-  font-size: var(--t-meta-size);
-}
-.sched-task-actions {
-  display: flex;
-  gap: var(--space-xs);
-}
-.sched-task-actions button {
-  background: var(--bg-card);
-  border: var(--stroke-1) solid var(--border-subtle);
-  border-radius: var(--radius-xs);
-  color: var(--text-secondary);
-  padding: var(--space-2) var(--space-8);
-  cursor: pointer;
-}
-.sched-task-actions button:hover { border-color: var(--accent); color: var(--accent); }
-.sched-delete:hover { border-color: var(--red) !important; color: var(--red) !important; }
-.sched-more {
-  background: none;
-  border: none;
-  color: var(--accent);
-  cursor: pointer;
-  padding: var(--space-2) 0;
-  text-align: left;
-}
-.sched-more:hover { text-decoration: underline; }
-
 /* === SECTION HEAD === */
 .section-head {
   font-family: var(--font-display);
@@ -1066,6 +910,15 @@ body {
   resize: vertical;
   min-height: 96px;
   min-width: 0;
+}
+
+/* A caller that asked for a height gets it. `rows` is a real prop on
+   `Textarea` and it was a lie for any value under about four, because the
+   floor above outranked it: a lane card asking for two rows rendered at 96px
+   and the Send button beside it stretched to match. The floor is for the
+   callers that say nothing, which is most of them. */
+.textarea[rows] {
+  min-height: 0;
 }
 
 .textarea::placeholder {
@@ -1495,7 +1348,11 @@ input[type="number"]::-webkit-inner-spin-button {
    the panels (operator caught this misalignment). */
 .chat-area {
   flex-shrink: 0;
-  padding: var(--space-10) var(--space-20) 0;
+  /* The bottom was 0, so the composer sat on the edge of the thread with the
+     Pulse tab against it. It is the last thing on the surface and the one a
+     person's eye returns to, so it gets the same room the transcript above it
+     has rather than being pushed into the corner. */
+  padding: var(--space-10) var(--space-20) var(--space-16);
 }
 
 /* Vertical stack — VoiceStatus banner sits above the input row so the
@@ -1515,7 +1372,9 @@ input[type="number"]::-webkit-inner-spin-button {
   background: var(--bg-elevated);
   border: var(--stroke-1) solid var(--panel-border);
   border-radius: var(--radius-md);
-  padding: var(--space-7);
+  /* Enough that the field and the buttons sit INSIDE the box rather than on
+     its edge. At 7px the send button's own border met the wrap's. */
+  padding: var(--space-10);
   transition: border-color var(--motion-fast) var(--ease-out);
 }
 
@@ -1646,37 +1505,6 @@ input[type="number"]::-webkit-inner-spin-button {
   background: color-mix(in srgb, var(--accent-glow) 6%, transparent);
   border-radius: var(--radius-xs);
   word-break: break-word;
-}
-
-/* The same chip, for an utterance the wake gate refused. Warn rather than
-   bad: nothing failed — it was not addressed to the assistant, which is the
-   gate working. It fades itself after `NOT_HEARD_MS`. */
-.chat-input-preview-chip.is-not-heard {
-  border-left-color: var(--warn-strong);
-  background: var(--warn-wash);
-}
-
-.chat-input-preview-chip.is-woken {
-  border-left-color: var(--ok-strong);
-  background: var(--ok-wash);
-}
-
-.chat-input-woken-mark {
-  margin-right: var(--space-8);
-  font-style: normal;
-  font-weight: var(--t-ui-weight);
-  text-transform: uppercase;
-  font-size: var(--t-meta-size);
-  color: var(--ok);
-}
-
-.chat-input-not-heard-mark {
-  margin-right: var(--space-8);
-  font-style: normal;
-  font-weight: var(--t-ui-weight);
-  text-transform: uppercase;
-  font-size: var(--t-meta-size);
-  color: var(--warn);
 }
 
 .chat-input:disabled {
@@ -1843,10 +1671,6 @@ input[type="number"]::-webkit-inner-spin-button {
   height: 100%;
   transition: width var(--motion-med) ease, background var(--motion-med);
 }
-.hud-stats-fill--system {
-  background: var(--text-meta);
-  opacity: 0.55;
-}
 .hud-stats-bar--empty { background: var(--wash-sm); }
 .hud-stats--ok .hud-stats-fill--chat   { background: var(--ok); }
 .hud-stats--warn .hud-stats-fill--chat { background: var(--warn); }
@@ -1933,56 +1757,6 @@ input[type="number"]::-webkit-inner-spin-button {
 .toast--alarm .menu-item {
   pointer-events: auto;
   min-width: 60px;
-}
-
-/* SessionDrawer — right-side overlay */
-.session-drawer {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 320px;
-  max-width: 90vw;
-  background: var(--bg-surface);
-  border-left: var(--stroke-1) solid var(--panel-border);
-  display: flex;
-  flex-direction: column;
-  z-index: 801;
-  outline: none;
-  animation: drawer-in var(--motion-med) ease-out;
-}
-@keyframes drawer-in {
-  from { transform: translateX(100%); }
-  to   { transform: translateX(0); }
-}
-.session-drawer-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  padding: var(--space-md);
-  border-bottom: var(--stroke-1) solid var(--panel-divider);
-}
-.session-drawer-title {
-  flex: 1;
-  font-size: var(--t-body-size);
-  font-weight: 600;
-  color: var(--text-primary);
-  letter-spacing: 0.038em;
-  text-transform: uppercase;
-}
-.session-drawer-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: var(--space-sm);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-.session-drawer-empty {
-  padding: var(--space-lg);
-  color: var(--text-meta);
-  font-size: var(--t-caption-size);
-  text-align: center;
 }
 
 /* D-6 (Y-3): the SpawnDrawer right-overlay shell was retired — the delegate
@@ -2152,183 +1926,6 @@ input[type="number"]::-webkit-inner-spin-button {
   text-align: center;
   color: var(--text-meta);
 }
-
-/* Phase 1 — archive section. Sessions older than 7 days are moved
-   into archive/YYYY-MM/ by the daily sessions_archive scheduler
-   tick; the drawer fetches the list lazily on first expand. */
-.session-archive-section {
-  margin-top: var(--space-sm);
-  padding-top: var(--space-sm);
-  border-top: var(--stroke-1) dashed var(--panel-divider);
-}
-
-.session-archive-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-4) var(--space-8) var(--space-8);
-}
-
-.session-archive-row {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-8);
-  padding: var(--space-3) 0;
-  font-family: var(--font-ui);
-  font-size: var(--t-caption-size);
-  color: var(--text-meta);
-}
-
-.session-archive-bucket {
-  flex-shrink: 0;
-  width: 56px;
-}
-
-.session-archive-name {
-  flex: 1;
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.session-archive-meta {
-  flex-shrink: 0;
-}
-.session-drawer-actions {
-  display: flex;
-  gap: var(--space-xs);
-  padding: var(--space-sm) var(--space-md);
-  border-bottom: var(--stroke-1) solid var(--panel-divider);
-  flex-wrap: wrap;
-  align-items: center;
-}
-/* The select-all keeps its pill frame — it is an action in a toolbar, not a
-   row's own switch. Everything inside the frame is the shared checkbox, label
-   included, so the frame is not itself a <label> competing to name the box. */
-.session-select-all {
-  display: inline-flex;
-  padding: var(--space-2) var(--space-8);
-  border: var(--stroke-1) solid var(--panel-divider);
-  border-radius: var(--radius-xs);
-  color: var(--text-secondary);
-}
-.session-select-all:hover {
-  border-color: var(--accent);
-  color: var(--text-primary);
-}
-.session-row {
-  display: flex;
-  flex-direction: row;
-  align-items: flex-start;
-  gap: var(--space-sm);
-  padding: var(--space-8) var(--space-10);
-  border: var(--stroke-1) solid transparent;
-  border-radius: var(--radius-xs);
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-  text-align: left;
-  font-family: var(--font-ui);
-}
-.session-row:hover,
-.session-row.is-focused {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-  border-color: var(--panel-divider);
-}
-.session-row.is-current {
-  border-color: var(--accent);
-  background: var(--accent-dim);
-  color: var(--accent-bright);
-}
-.session-row.is-selected {
-  border-color: var(--accent);
-  background: var(--accent-dim);
-}
-.session-row-body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  flex: 1;
-  min-width: 0;
-}
-.session-row-name {
-  font-size: var(--t-caption-size);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.session-row-meta { font-size: var(--t-meta-size); color: var(--text-meta); }
-.session-row.is-stale .session-row-name,
-.session-row.is-stale .session-row-meta { color: var(--text-meta); }
-.session-row-stale {
-  margin-left: var(--space-6);
-  padding: 0 var(--space-4);
-  border: var(--stroke-1) solid var(--panel-divider);
-  border-radius: 2px;
-  font-size: var(--t-meta-size);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-meta);
-  vertical-align: middle;
-}
-.session-row-actions {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin-left: var(--space-xs);
-}
-.session-row-rename {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: var(--space-4);
-}
-/* Width only — the field itself is `.input`. It had a raw `2px` radius where
-   the rest of the app uses the token, and a permanent accent border that made
-   every rename look focused. */
-.session-row-rename-input {
-  flex: 1;
-}
-.session-row-error {
-  margin-top: var(--space-2);
-  color: var(--bad);
-}
-.session-row-preview {
-  margin-top: var(--space-4);
-  padding: var(--space-xs);
-  background: var(--scrim-xs);
-  border-left: var(--stroke-2) solid var(--accent);
-  border-radius: 2px;
-  max-height: 220px;
-  overflow-y: auto;
-}
-.session-preview-list {
-  margin: 0;
-  padding-left: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-.session-preview-turn {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-.session-preview-role {
-  font-size: var(--t-meta-size);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-.session-preview-text {
-  font-size: var(--t-caption-size);
-  color: var(--text-secondary);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.session-preview-turn.role-user .session-preview-role { color: var(--accent-bright); }
 
 /* Chat empty-state command tips */
 .chat-empty-headline {

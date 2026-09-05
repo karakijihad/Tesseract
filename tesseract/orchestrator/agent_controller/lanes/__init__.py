@@ -1,4 +1,4 @@
-"""X-4 lane substrate — stream-resumable controller-owned coder/auditor lanes.
+"""The lane substrate — stream-resumable controller-owned coder/auditor lanes.
 
 `LaneManager` exposes the six-method `lane.*` contract documented in
 the lane contract. The substrate composes

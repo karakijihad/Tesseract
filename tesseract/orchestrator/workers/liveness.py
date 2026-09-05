@@ -21,10 +21,9 @@ every wake — is how a pulse feed becomes something the operator learns to
 ignore, which is the same failure this exists to prevent.
 
 It reads worker records rather than being read by them, which is why it lives
-in this package and not beside a scheduler job. It used to BE a scheduler
-job on its own ``*/5`` row; the kernel wakes at least that often and already
-walks worker records in the same wake, so the check rides that walk instead of
-holding a clock of its own.
+in this package and not beside a scheduler job. The kernel wakes often
+enough and already walks worker records in the same wake, so the check
+rides that walk instead of holding a clock of its own.
 """
 
 from __future__ import annotations

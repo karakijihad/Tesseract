@@ -33,3 +33,39 @@ relink:
   # than about cost; the remainder is reported and picked up tomorrow.
   max_per_run: 25
 
+# What the machine did, drawn beside what it learned and what it keeps. A run
+# becomes a node, and where a run's own record names the memories it promoted,
+# the memory is linked back to the run it came out of.
+body:
+  # How far back runs are drawn. The run log grows for as long as the machine
+  # runs, so something has to bound it, and a window is what a person means by
+  # recently. There is no second dial capping the row count: two dials where
+  # one is the real bound is how the wrong one ends up in charge.
+  runs_within_days: 30
+
+# What `atlas_query` does with a question before it starts walking. It looks up
+# starting points two ways: records whose title, id or alias contains what you
+# asked, and a keyword search over what records say. The walk then spreads out
+# from every starting point it found, so these two numbers decide how broad an
+# answer is rather than how long it takes.
+query:
+  # How many keyword matches may become starting points.
+  max_content_seeds: 10
+  # How good a keyword match has to be, as a fraction of the best match for
+  # that question. A multi-word question matches a record holding ANY of its
+  # words, so this is what stops one shared word from making two records look
+  # related: at 0.5, a record scoring less than half of the best one is not a
+  # starting point. It is a fraction rather than a number because search scores
+  # only mean anything next to each other, and a fixed number that suited a
+  # full library would return nothing at all on a new one. Zero accepts
+  # everything the search returns.
+  min_score_ratio: 0.5
+
+# The picture. What the graph surface draws at once, as opposed to what the
+# graph holds: the library grows without limit and a canvas does not.
+surface:
+  # How many records the picture draws. The most connected first, then the
+  # most recently touched, so what a map is FOR is what survives the ceiling.
+  # The surface prints this number against the whole count, because a picture
+  # that quietly shows a tenth of the library reads as a picture of all of it.
+  max_nodes_drawn: 600

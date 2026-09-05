@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from tesseract.memory.store import MemoryStore
+from tesseract.lib.clock import to_local
 from tesseract.memory.types import MemoryFrontmatter, MemoryType, Stability
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ DRIFT_TAG = "drift"
 FLAPPING_TAG = "flapping"
 # Lives under the CONSCIENCE type's canonical subdir; `MemoryStore.write`
 # routes to <store>/conscience/drift/<id>.md. The legacy "conscience"
-# tag is no longer needed — type=CONSCIENCE already encodes that.
+# tag is unnecessary — type=CONSCIENCE already encodes that.
 DRIFT_SUBDIR = "conscience/drift"
 
 
@@ -67,7 +68,10 @@ def write_drift_entry(
         return None
 
     when_utc = when.astimezone(timezone.utc)
-    date_key = when_utc.date().isoformat()
+    # The day this drift belongs to, and it goes into the title a person
+    # reads. Both this and the lookup below moved off UTC together: they were
+    # consistent with each other and wrong about which day it was.
+    date_key = to_local(when).date().isoformat()
     existing = _find_same_day_entry(
         store=store,
         signal_name=signal_name,
@@ -258,7 +262,7 @@ def _find_same_day_entry(
         created = fm.created_at
         if created.tzinfo is None:
             created = created.replace(tzinfo=timezone.utc)
-        if created.astimezone(timezone.utc).date().isoformat() != date_key:
+        if to_local(created).date().isoformat() != date_key:
             continue
         existing = store.read(fm.id, log_access=False)
         if existing is None:

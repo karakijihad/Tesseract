@@ -28,7 +28,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from tesseract.lib.clock import to_local
 from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
+from tesseract.kernel.workspace_changes import SOUL_GROWTH_SECTIONS
 from tesseract.memory.store import MemoryStore
 from tesseract.memory.types import MemoryFrontmatter
 from tesseract.paths import TESSERACT_HOME, log_dir
@@ -47,12 +49,13 @@ _PROMPT = (
     "You are reviewing the active operator-feedback memories that the assistant "
     "uses to keep its behavior aligned. Your job is to keep this set "
     "*sharp, not big*: identify duplicates that should merge, patterns "
-    "that have hardened into identity (and belong in SOUL.md Growth), "
+    "that have hardened into identity (and belong in SOUL.md), "
     "and stale records that should archive.\n\n"
     "Return ONLY a JSON object with this shape, no preamble:\n"
     "{\n"
     '  "merges":   [{"keep": "<id>", "absorb": ["<id>", ...], "reason": "<why>"}],\n'
-    '  "soul":     [{"bullet": "<≤240 chars>", "supporting_ids": ["<id>", ...]}],\n'
+    '  "soul":     [{"section": "<one named below>", "bullet": "<≤240 chars>", '
+    '"supporting_ids": ["<id>", ...]}],\n'
     '  "archives": [{"id": "<id>", "reason": "<why>"}]\n'
     "}\n\n"
     "Rules:\n"
@@ -66,6 +69,11 @@ _PROMPT = (
     "  or describes a workflow that no longer exists.\n"
     "- If nothing qualifies in a category, return an empty list — do not\n"
     "  invent proposals.\n"
+    "\n"
+    "Which part of the soul a bullet belongs to, and what each is for:\n"
+    # From the one list that declares them, so a renamed section reaches the
+    # model without anybody remembering this prompt exists.
+    + "".join(f"- {name}: {purpose}\n" for name, purpose in SOUL_GROWTH_SECTIONS.items())
 )
 
 
@@ -73,12 +81,12 @@ class FeedbackConsolidatorJob(BaseJob):
     uses_llm = True
     # A chain, not a role — see `feedback_sweep`, which shares both the chain
     # and the reason.
-    default_model_chain = "chain_2"
+    default_model_chain = "chain_1"
 
     async def run(self, ctx: JobContext) -> JobResult:
         t0 = time.monotonic()
         try:
-            target_date = ctx.fired_at.date()
+            target_date = to_local(ctx.fired_at).date()
             store_dir = _resolve_store_dir(ctx)
             # floor=1 inside the helper — consolidator reviews ALL active
             # candidates; the prompt-side floor (DIRECTIVES_IMPORTANCE_FLOOR=6)
@@ -309,7 +317,23 @@ def _clean_soul(items: Any) -> list[dict[str, Any]]:
         ids_clean = [i.strip() for i in ids if isinstance(i, str) and i.strip()]
         if len(ids_clean) < 3:
             continue
-        out.append({"bullet": bullet, "supporting_ids": ids_clean})
+        # Which part of the soul it belongs to. Dropped rather than defaulted
+        # when the model names something that is not a section: SOUL holds a
+        # section per kind of growth, and filing a bullet under one of them
+        # because the answer was unreadable is the drift the sections exist to
+        # stop. The operator sees one card fewer, not a miscategorised one.
+        section = (item.get("section") or "").strip()
+        if section not in SOUL_GROWTH_SECTIONS:
+            log.info(
+                "feedback_consolidator: soul bullet named no known section (%r); dropped",
+                section,
+            )
+            continue
+        out.append({
+            "section": section,
+            "bullet": bullet,
+            "supporting_ids": ids_clean,
+        })
     return out
 
 
@@ -432,6 +456,11 @@ def _emit_inbox_events(
                 summary=bullet[:1200],
                 payload={
                     "action": "propose_soul_growth",
+                    # Carried to the card and read back at approval. Without
+                    # it the commit refuses the proposal, so every bullet this
+                    # job raised would reach the operator and then fail to
+                    # file.
+                    "section": prop["section"],
                     "bullet": bullet,
                     "supporting_ids": prop.get("supporting_ids", []),
                     "target_date": target_date.isoformat(),

@@ -21,28 +21,61 @@ translation is added in a later session.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
+import os
 import re
 import time
 import uuid
 from collections import deque
+from enum import Enum
 import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Awaitable, Callable
 
-from tesseract.brain.auto_recall import auto_recall, format_recall_block, load_auto_recall_config
-from tesseract.brain.compaction import RUNNING_SUMMARY_PREFIX, compact_history
+from tesseract.brain import context_report
+from tesseract.brain.auto_recall import (
+    auto_recall,
+    format_recall_block,
+    load_auto_recall_config,
+    with_connections,
+)
+from tesseract.brain.compaction import (
+    RUNNING_SUMMARY_PREFIX,
+    compact_history,
+)
 from tesseract.brain.completion_store import CompletionRecord, record_from_handle
 from tesseract.brain.cost import BudgetExhausted, CostLedger, CostUsage
 from tesseract.brain.memory_suggestion import MemorySuggestion, format_for_injection
 from tesseract.brain.observation_transcript import ObservationTranscript
 from tesseract.brain.spawns import SpawnRegistry
+from tesseract.kernel.adapters._estimate import tokens_from_chars
+from tesseract.config.loader import (
+    DEFAULT_PROMPT_CHAR_BUDGET,
+    DEFAULT_COMPACT_RATIO,
+    DEFAULT_HEADROOM_MULTIPLIER as _DEFAULT_HEADROOM_MULTIPLIER,
+    DEFAULT_KEEP_RECENT_TURNS as _DEFAULT_KEEP_RECENT_TURNS,
+)
+from tesseract.config.runtime_limits import (
+    default_runtime_config_path,
+    load_tool_result_window_share,
+)
 from tesseract.orchestrator.agent_controller.interactive.registry import InteractiveSessionRegistry
+from tesseract.orchestrator.outcome import RunOutcome
+from tesseract.orchestrator.turns import (
+    TurnRecorder,
+    enter_turn,
+    going_down,
+    leave_turn,
+    turn_label,
+)
 from tesseract.brain.tools import AskFn, ToolRegistry, execute_tool
 from tesseract.kernel.adapters.base import (
     AdapterOptions,
+    CACHE_BOUNDARY,
     ChunkType,
     ModelAdapter,
     StreamChunk,
@@ -57,20 +90,38 @@ from tesseract.permissions.policy import PermissionPolicy
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_COMPACT_THRESHOLD = 0.40  # fallback when roles.yaml omits it
-DEFAULT_KEEP_RECENT_TURNS = 10
-# CR-0 (2026-05-22) — sliding window with head anchor + token-budgeted tail.
+# Imported, not restated. `roles.yaml::compaction.compact_ratio` is the
+# setting and boot reads it; this is what a session built without going
+# through boot (a sub-agent, a test) gets. The two used to be separate
+# numbers, 0.40 here against 0.5 there, and neither was ever reached.
+DEFAULT_COMPACT_THRESHOLD = DEFAULT_COMPACT_RATIO
+# How far clear of the unfoldable floor the trigger must sit. A fold always
+# leaves the head anchor and the verbatim tail behind, so a trigger at or
+# below their total cannot get under the line it just crossed and fires again
+# every turn. One value for every role: it describes how compaction works,
+# not who is using it. `roles.yaml::compaction.headroom_multiplier`.
+DEFAULT_HEADROOM_MULTIPLIER = _DEFAULT_HEADROOM_MULTIPLIER
+DEFAULT_KEEP_RECENT_TURNS = _DEFAULT_KEEP_RECENT_TURNS
+# Sliding window with head anchor + a tail measured in turns.
 # `head_anchor_messages` = first N USER messages kept verbatim across every
-# compaction (StreamingLLM-style attention sink). `active_window_tokens` is
-# the token budget for the verbatim tail; None falls back to
-# `keep_recent_turns` (legacy message-count behavior).
+# compaction (StreamingLLM-style attention sink). `keep_recent_turns` is how
+# many recent turns the tail keeps word for word, where a turn is one user
+# message and everything the assistant did before the next one — so a turn
+# with twenty tool calls is still one turn, and the tail's size is measured
+# rather than set. `_tail_ceiling_tokens` is what keeps fewer turns when they
+# do not fit.
 # `summary_char_budget` caps the running [Context from earlier...] block —
 # oldest `# Slice N` block is dropped first when over.
 DEFAULT_HEAD_ANCHOR_MESSAGES = 3
-DEFAULT_ACTIVE_WINDOW_TOKENS: int | None = None
 DEFAULT_SUMMARY_CHAR_BUDGET = 8_000
 PENDING_SUGGESTION_CAP = 8
 PENDING_CONSCIENCE_CAP = 4
+# Presses inside a card, waiting to ride into the next turn. Bounded where the
+# spawn queue is not, and the difference is the source: a spawn result arrives
+# once per thing the assistant started, while a person can click a game as fast
+# as they like. The card keeps a longer log of its own, so what falls off here
+# is still there for `surface_control action:"read"` to fetch.
+PENDING_CARD_PRESS_CAP = 8
 # Finished-background-spawn results awaiting next-turn delivery. UNBOUNDED in
 # count on purpose: this was a `deque(maxlen=8)` whose own comment admitted
 # "if many spawns finish before the assistant next acts, the oldest notices drop" —
@@ -84,16 +135,133 @@ SPAWN_COMPLETION_DELIVERY_BUDGET_CHARS = 24_000
 # leaves every finding legible rather than a page of ellipses.
 SPAWN_COMPLETION_MIN_CHARS = 400
 
-# 2026-05-17 — hard cap on the assembled prompt sent to ANY adapter in
+# Hard cap on the assembled prompt sent to ANY adapter in
 # the chain. Codex CLI errors at 1_048_576 chars (`input_too_large`);
 # leaving ~150 KB headroom for adapter wrapping + output token room.
 # `_trim_to_budget` enforces this once at the chokepoint
 # (`_messages_for_turn`) so codex, gpt-5.5, gpt-5.4-nano, gemini-2.5-flash
 # all receive a payload that fits. See the 2026-05-17 incident on a
 # Telegram chat: the prompt grew to 1.88 MB and exhausted every chain
-# entry. Trim order: oldest history → recall_context
-# sub-sections → never the system prompt or the last 3 turns.
-PROMPT_CHAR_BUDGET = 900_000
+# entry.
+#
+# This is an EMERGENCY guard, not the thing that bounds a conversation.
+# Compaction bounds it, and the char trigger below is what makes that true in
+# the char unit as well as the token one. What reaches here is a single turn
+# that outgrew the budget between two compactions — one tool loop dumping a
+# large file — so it clears re-fetchable tool results first and only drops
+# conversation as a last resort.
+#
+# **The budget is `roles.yaml::compaction`'s** and reaches a session as
+# `ChatSession.prompt_char_budget`. It was the one compaction number written in
+# source while `compact_ratio`, `headroom_multiplier`, `comfortable_multiplier`,
+# `keep_recent_turns`, `head_anchor_messages` and `summary_char_budget` were
+# all config, so the one ceiling an operator most needed to move was the one
+# they could not.
+#
+# **One trigger, and it is `compact_ratio`'s.** There used to be two. A char
+# trigger sat at `trigger_share` of this budget and `should_compact` folded if
+# either arm said yes, so the LOWER of the two decided every fold. On this
+# machine that was always the char one: 765,000 chars against a ratio trigger
+# of 262,500 tokens, and the last three folds fired at 195,141, 206,165 and
+# 233,666 tokens. The operator's dial moved nothing.
+#
+# The char arm was added for a real reason: a payload used to reach the guard
+# before the token trigger fired, and because `token_estimate` then read the
+# guard's own trimmed output, the estimate sat at ~30k forever and compaction
+# became unreachable (measured 2026-08-23 on a Telegram session: 261,867 input
+# tokens, then 30,228 on every call after, for a whole day). Two things answer
+# that now without a second trigger. `_assemble_for_turn` is what the estimate
+# reads, so it can no longer read the trim. And boot refuses a `compact_ratio`
+# whose payload would not fit this budget, naming the highest one that does, so
+# a fold above the guard cannot be configured in the first place.
+
+# How many times the guard may trim inside one turn before that is a fault
+# rather than a backstop doing its job. Once is the case it was built for: a
+# single tool loop dumping one large file. Twice means the conversation is
+# being held under the ceiling by the guard rather than by compaction.
+_GUARD_LOOP_FAULT_AT = 2
+
+# How many of the most recent tool results the emergency guard leaves alone.
+# Clearing a tool result is safe in a way that dropping a turn is not — the
+# model can call the tool again, and the conversation that explains WHY is
+# what it cannot reconstruct — but the ones it just received are the ones it
+# is reasoning about right now.
+KEEP_RECENT_TOOL_RESULTS = 6
+
+# How much of a failed tool's output the turn manifest keeps as the step's
+# reason. The record is a record of what happened, not a second copy of the
+# output — the transcript already holds that, and a manifest that grows with
+# tool output is one nobody can read at boot.
+_STEP_REASON_CHARS = 400
+
+# Replaces a cleared tool result's content. Says what happened and what to do
+# about it, because the model reads this and has to decide whether to re-run
+# the tool or carry on.
+_CLEARED_TOOL_RESULT = (
+    "[tool result cleared to fit the prompt budget. Call the tool again if you "
+    "still need its output]"
+)
+
+# The per-turn half of the system prompt arrives as a user message, because
+# that is the only role every provider lets a caller place after the
+# conversation. (Anthropic's newest models accept a trailing `role: "system"`
+# message and it would be the non-spoofable channel for this; it is not
+# portable, so the sidecar below is what tells the two apart instead.) This
+# line says whose words they are, so the assistant does not read its own
+# runtime state as something the operator just typed.
+_LATE_PROMPT_LEAD = (
+    "[runtime_state] The blocks below are this turn's own state, assembled by "
+    "the runtime rather than typed by the operator. They were read when this "
+    "turn began and replace whatever the previous turn carried.\n\n"
+)
+# Who wrote a message, on the message. The two synthetic user messages used
+# to be recognised by the text they open with, and that text ships in a
+# public repo: anyone who can reach `send()` (a channel participant, an
+# operator, a tool result read back) could type either banner and have the
+# runtime treat their words as its own. `_mid_turn` already showed the
+# shape. Stripped before the request goes out, like every other sidecar.
+# Only ever compared with itself, inside one process's logs, so a fresh secret
+# per boot is exactly right: it makes the conversation tag useless to anyone
+# correlating across runs, and costs nothing to whoever is reading one.
+_LOG_TAG_KEY = os.urandom(32)
+
+_RUNTIME_KEY = "_runtime"
+
+
+class Continuation(str, Enum):
+    """The two answers a turn may give about the conversation it is in.
+
+    There is one consolidation and it always reflects. What is chosen is only
+    what happens afterwards: keep working with the room rebuilt, or leave the
+    conversation behind. Whether the boundary was reached because the turn
+    judged it or because the window filled changes nothing about the work done
+    at it, which is why the trigger is recorded and never branched on.
+
+    Carrying on is the third answer and it is deliberately not here. Declining
+    to consolidate is not a mode of consolidating; it is not asking, and a turn
+    that says nothing has said it.
+
+    Named here rather than in the tool because the session carries the decision
+    and `after_turn` acts on it.
+    """
+
+    CONTINUE = "continue"
+    RESET = "reset"
+
+
+_RUNTIME_LATE_PROMPT = "late_prompt"
+_RUNTIME_RUNNING_SUMMARY = "running_summary"
+# The origins a caller may claim on `send(runtime_origin=...)`. A turn nobody
+# typed carries one, so the transcript can draw it as the runtime speaking and
+# a chat's name cannot be taken from it. Anything not in this set is refused
+# rather than stored: the value reaches a rendered surface, and a caller that
+# invents one there would be inventing a label nothing knows how to draw.
+RUNTIME_ORIGINS: frozenset[str] = frozenset({
+    "spawn_complete",
+    "spawn_stalled",
+    "card_press",
+    "reflection",
+})
 KEEP_LAST_TURNS = 3
 # Hard floor on the recall_context content kept inside the latest user
 # message. If trimming below this would be required, drop the block
@@ -111,7 +279,7 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# ── CR-0 compaction helpers ──────────────────────────────────────────
+# ── Compaction helpers ───────────────────────────────────────────────
 
 _SLICE_HEADER_RE = re.compile(r"^# Slice (\d+)\b", re.MULTILINE)
 
@@ -128,11 +296,7 @@ def _find_head_anchor_end(history: list[dict[str, Any]], n_msgs: int) -> int:
         return 0
     user_count = 0
     for i, msg in enumerate(history):
-        if msg.get("role") != "user":
-            continue
-        if _is_running_summary_message(msg):
-            continue
-        if msg.get("_mid_turn"):
+        if not _starts_a_turn(msg):
             continue
         user_count += 1
         if user_count > n_msgs:
@@ -140,13 +304,60 @@ def _find_head_anchor_end(history: list[dict[str, Any]], n_msgs: int) -> int:
     return len(history)
 
 
+def _is_late_prompt_message(msg: dict[str, Any]) -> bool:
+    """True for the transient message carrying the prompt's late half.
+
+    Assembled fresh every turn and never stored, so no fold can remove it,
+    and so it has no legacy form: the only one that has ever existed is the
+    one `_build_messages` just made. Nothing here reads content, which is
+    what stops a stored message that opens with the same banner from being
+    dropped out of the fold trigger's accounting.
+    """
+    return msg.get(_RUNTIME_KEY) == _RUNTIME_LATE_PROMPT
+
+
+def _starts_a_turn(msg: dict[str, Any]) -> bool:
+    """True when ``msg`` opens a turn.
+
+    A turn is one thing the operator said and everything that followed before
+    they said the next thing: the assistant's tool calls, their results, the
+    reply. So a turn with twenty tool calls is one turn, and the boundary is
+    the operator's message. The running summary is synthetic and a mid-turn
+    injection lands inside a turn already open, so neither opens one.
+    """
+    return (
+        msg.get("role") == "user"
+        and not _is_running_summary_message(msg)
+        and not msg.get("_mid_turn")
+    )
+
+
+def _turn_starts(history: list[dict[str, Any]], lower_bound: int = 0) -> list[int]:
+    """Indices in ``history`` at or after ``lower_bound`` that open a turn."""
+    return [
+        i for i in range(lower_bound, len(history)) if _starts_a_turn(history[i])
+    ]
+
+
 def _is_running_summary_message(msg: dict[str, Any]) -> bool:
-    """True if ``msg`` is the synthetic running-summary message produced
-    by ``ChatSession.compact``. Detected by role + content prefix."""
-    if msg.get("role") != "user":
-        return False
-    content = msg.get("content")
-    return isinstance(content, str) and content.startswith(RUNNING_SUMMARY_PREFIX)
+    """True only for a summary this runtime wrote.
+
+    The marker and nothing else. Accepting the tag as well looked harmless,
+    because a summary is a summary whoever wrote it, but the tag is a fixed
+    string in a public repo and this answer decides four things: whether the
+    message opens a turn, whether it counts toward the head anchor, whether a
+    channel forwards it into the rolling summary, and whether the transcript
+    draws it as a divider instead of as what somebody said. A participant who
+    types the tag got all four, which means they could make their own message
+    disappear from a reloaded conversation.
+
+    The cost is one fold: a conversation compacted before the marker existed
+    has a summary with the tag and no marker, so its next fold treats it as
+    ordinary content, folds it back in, and starts slice numbering again.
+    Nothing is lost, the text is summarised like any other, and after that
+    fold the conversation carries a marked summary like every other.
+    """
+    return msg.get(_RUNTIME_KEY) == _RUNTIME_RUNNING_SUMMARY
 
 
 def _next_slice_number(prior_summary: str | None) -> int:
@@ -196,7 +407,7 @@ def _trim_summary_to_budget(summary: str, budget_chars: int) -> str:
 # Built after a Telegram confabulation incident where the assistant replied
 # "Done. Every 15 minutes I'll fire a toast with a brief status summary"
 # without invoking schedule_update. The model bump (gpt54_mini →
-# gpt_oss_120b) is the primary defense; this audit is a backstop.
+# a small-window entry) is the primary defense; this audit is a backstop.
 #
 # Patterns intentionally narrow: only short, terminal action-claims
 # that imply an external state change. Conversational use like
@@ -396,6 +607,84 @@ _TRIM_HISTORY_MARKER = (
 _TRIM_RECALL_MARKER = "\n[recall_context shortened]\n"
 
 
+# The estimator every adapter uses counts four characters to a token, so a
+# window in tokens becomes a budget in characters the same way.
+_CHARS_PER_TOKEN = 4
+
+
+# Resolved on first use, not per tool call. `None` means not yet read.
+_RESULT_WINDOW_SHARE: float | None = None
+
+
+def _result_window_share() -> float:
+    """`tool_result_window_share`, read once per process and cached.
+
+    Two things this must not do, both learned by doing them. It must not read
+    the file on every tool call, which is a YAML parse per call for a number
+    that changes at the speed an operator edits a file. And it must not let a
+    missing config end the turn: the ceiling is a backstop, so a runtime that
+    cannot read it should lose the backstop and say so, not lose the ability
+    to call tools at all. Eight tests died mid-turn on a
+    `FileNotFoundError` from an isolated `TESSERACT_HOME`, which is exactly
+    what an installed app looks like before first-run setup writes its config.
+    """
+    global _RESULT_WINDOW_SHARE
+    if _RESULT_WINDOW_SHARE is None:
+        try:
+            _RESULT_WINDOW_SHARE = load_tool_result_window_share(
+                default_runtime_config_path()
+            )
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "tool result ceiling is off: %s. A single oversized tool "
+                "result can now make the next request too large for every "
+                "model in the chain.", exc,
+            )
+            _RESULT_WINDOW_SHARE = 1.0
+    return _RESULT_WINDOW_SHARE
+
+
+def bound_tool_result(
+    result: ToolResult,
+    tool_name: str,
+    context_window: int,
+    share: float,
+) -> ToolResult:
+    """Cut a tool result down to `share` of the model's context window.
+
+    Each tool bounds what it returns; this bounds what ANY tool can put in
+    front of the model, which is a different job. A single grep once came
+    back 44 MB, which made the next request larger than every window in the
+    chain, so the session could not reach a model at all. Nothing downstream
+    could recover it either: `_trim_history` clears OLDER tool results and
+    must leave the newest one alone, because a tool call with no result
+    breaks the pairing every provider requires. So the cut happens here, on
+    the way in, or it does not happen.
+
+    The notice carries the real numbers and what to do about them, because
+    the model reading it is the one that can act: run the call again over
+    something smaller.
+    """
+    if share >= 1 or context_window <= 0:
+        return result
+    limit = int(context_window * _CHARS_PER_TOKEN * share)
+    if limit <= 0 or len(result.output) <= limit:
+        return result
+    notice = (
+        f"\n\n[Cut here. {tool_name} returned {len(result.output):,} characters "
+        f"and the first {limit:,} are above. One tool result may not take more "
+        f"than {share:.0%} of this model's context window, or the next request "
+        "cannot be sent at all. Run the call again over something smaller, or "
+        "ask the tool for fewer characters, and it will come back whole.]"
+    )
+    logger.warning(
+        "tool result from %s cut: %d chars over the %d-char ceiling "
+        "(%.0f%% of a %d-token window)",
+        tool_name, len(result.output), limit, share * 100, context_window,
+    )
+    return dataclasses.replace(result, output=result.output[:limit] + notice)
+
+
 def _content_chars(msg: dict[str, Any]) -> int:
     """Char count of a message's content + any nested tool-call argument
     strings. Approximation — the adapter wraps these in JSON envelopes
@@ -443,31 +732,187 @@ def _shrink_recall_block(text: str, target_len: int) -> str:
     return head + _RECALL_OPEN + inner_keep + _TRIM_RECALL_MARKER + _RECALL_CLOSE + tail
 
 
+def _clear_old_tool_results(
+    messages: list[dict[str, Any]],
+    *,
+    char_limit: int,
+    protected: frozenset[int],
+) -> tuple[list[dict[str, Any]], int]:
+    """Blank the content of the oldest tool results until the payload fits.
+
+    The message STAYS in place. A ``tool`` message answers an assistant
+    ``tool_calls`` message by id, and removing one leaves a call with no
+    result, which every provider in the chain rejects. Content is what costs
+    and content is what goes, so the pairing survives.
+
+    Why this runs before anything else is dropped: a tool result is
+    re-fetchable — the model can call the tool again — and the conversation
+    explaining why it called it is not. The old order had that backwards.
+
+    Returns the list (unchanged object when nothing was cleared) and how many
+    results it cleared.
+    """
+    tool_idx = [
+        i for i, m in enumerate(messages)
+        if m.get("role") == "tool" and i not in protected
+    ]
+    if not tool_idx:
+        return messages, 0
+    # Two passes, and the second one is why a reserve cannot be an absolute
+    # count. Six untouched results at 100k each are 600k on their own, so
+    # holding them back means the budget is met by dropping CONVERSATION
+    # instead — the exact trade this function exists to refuse. So the
+    # reserve is a preference, not a floor: everything outside it goes first,
+    # and if that is still not enough the reserve goes too, oldest first.
+    # The single newest result is never cleared. That one is what the model
+    # is reasoning about right now, and a turn that cannot see the result it
+    # just asked for has nothing to say.
+    preferred = tool_idx[:-KEEP_RECENT_TOOL_RESULTS]
+    reserve = tool_idx[max(0, len(tool_idx) - KEEP_RECENT_TOOL_RESULTS):-1]
+    total = sum(_content_chars(m) for m in messages)
+    out = list(messages)
+    cleared = 0
+    for i in [*preferred, *reserve]:
+        if total <= char_limit:
+            break
+        was = _content_chars(out[i])
+        if was <= len(_CLEARED_TOOL_RESULT):
+            continue
+        out[i] = {**out[i], "content": _CLEARED_TOOL_RESULT}
+        total -= was - len(_CLEARED_TOOL_RESULT)
+        cleared += 1
+    if not cleared:
+        return messages, 0
+    return out, cleared
+
+
+def _say_it_was_trimmed(out: list[dict[str, Any]]) -> None:
+    """Put the "history was trimmed" note at the front of what is left.
+
+    One function because there were two copies, five lines apart in the same
+    routine, and a note that told the model its history had been cut is the
+    kind of thing that goes silently missing from one of two copies.
+
+    `role: assistant` and not `system`: Gemini rejects multiple system
+    messages in one call and is in our fallback chain, and an assistant-role
+    note reads naturally across every provider.
+    """
+    insert_at = 1 if (out and out[0].get("role") == "system") else 0
+    out.insert(
+        insert_at,
+        {"role": "assistant", "content": _TRIM_HISTORY_MARKER.strip()},
+    )
+
+
 def _trim_to_budget(
     messages: list[dict[str, Any]],
     *,
     char_limit: int,
+    protected: frozenset[int] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Enforce a hard char budget on the assembled message list.
 
+    ``protected`` names indices this must never drop: the per-turn half of
+    the prompt and the one-shot injection, which are runtime state rather
+    than conversation. They used to be inside the system message, which was
+    exempt by being index 0; riding as their own messages made them droppable,
+    and a trim mid-tool-loop dropped exactly them.
+
+    This is the emergency guard, and reaching it means compaction did not get
+    there first — see ``compact_char_trigger``. Every step below is therefore
+    logged at WARNING, including the ones that used to return silently: a
+    payload that quietly stopped carrying the conversation is the failure mode
+    this guard existed to prevent, and it caused it once already.
+
     Drop order, most aggressive last:
-      1. Oldest history entries (preserve system + last KEEP_LAST_TURNS).
-      2. Shrink the ``<recall_context>`` block inside the latest user
-         message.
-      3. (Last resort) emit a warning — adapter will reject. We never
-         drop the latest user message; that's the operator's actual ask.
+      1. Clear tool results, oldest first, preferring the ones outside
+         the newest KEEP_RECENT_TOOL_RESULTS and escalating into them if
+         that is not enough. Re-fetchable, so it goes first, and it goes
+         as far as it has to before any conversation is touched.
+      2. Oldest history entries (preserve system, protected, last
+         KEEP_LAST_TURNS real turns).
+      3. Shrink the ``<recall_context>`` block, in whichever message carries
+         it — a channel prepends it to the operator's own text, which is not
+         the last message in the list.
+      4. (Last resort) emit a warning — adapter will reject. We never drop
+         the newest conversation message; that's the operator's actual ask.
+         Newest CONVERSATION, not last slot: the per-turn runtime blocks ride
+         after it.
 
     Idempotent on already-small payloads.
     """
-    total = sum(_content_chars(m) for m in messages)
-    if total <= char_limit:
+    before_chars = sum(_content_chars(m) for m in messages)
+    if before_chars <= char_limit:
         return messages
 
-    keep_indices: set[int] = set()
+    messages, cleared = _clear_old_tool_results(
+        messages, char_limit=char_limit, protected=protected,
+    )
+    total = sum(_content_chars(m) for m in messages)
+    if total <= char_limit:
+        logger.warning(
+            "prompt guard: cleared %d old tool result(s), %d->%d chars "
+            "(limit %d) — conversation intact",
+            cleared, before_chars, total, char_limit,
+        )
+        return messages
+
+    keep_indices: set[int] = set(protected)
     if messages and messages[0].get("role") == "system":
         keep_indices.add(0)
-    for i in range(max(0, len(messages) - KEEP_LAST_TURNS), len(messages)):
+    # Count back real turns, skipping what is already kept. Taking the last
+    # KEEP_LAST_TURNS *slots* was right while every slot was a turn; the
+    # runtime blocks now occupy slots too, and counting them cost a real turn
+    # early in a tool loop and dropped the blocks themselves later in one.
+    kept = 0
+    for i in range(len(messages) - 1, -1, -1):
+        if kept >= KEEP_LAST_TURNS:
+            break
+        if i in keep_indices:
+            continue
         keep_indices.add(i)
+        kept += 1
+
+    # A `tool` message answers an assistant `tool_calls` message by id, and a
+    # provider rejects both halves of a broken pairing: a result whose call is
+    # gone, and a call whose result is gone. The countback above counts message
+    # SLOTS, so it can end anywhere in a tool loop and break either half.
+    # Pre-existing — the old fixed-range loop had the same blind spot and no
+    # test carried a tool message — and closed here by repairing to a fixpoint.
+    #
+    # A fixpoint rather than one pass because the two repairs feed each other:
+    # keeping a result pulls in its assistant message, and that message may
+    # carry three OTHER calls whose results are outside the window, each of
+    # which has to come back too. One forward pass pulled in the message and
+    # left those three calls unanswered, which is the shape that fails.
+    countback_kept = frozenset(keep_indices)
+    while True:
+        kept_call_ids: set[str] = set()
+        for i in keep_indices:
+            for call in messages[i].get("tool_calls") or []:
+                cid = (call or {}).get("id")
+                if cid:
+                    kept_call_ids.add(cid)
+            if messages[i].get("role") == "tool":
+                cid = messages[i].get("tool_call_id")
+                if cid:
+                    kept_call_ids.add(cid)
+        grew = False
+        for i, m in enumerate(messages):
+            if i in keep_indices:
+                continue
+            if m.get("role") == "tool":
+                match = m.get("tool_call_id") in kept_call_ids
+            else:
+                match = any(
+                    (c or {}).get("id") in kept_call_ids
+                    for c in m.get("tool_calls") or []
+                )
+            if match:
+                keep_indices.add(i)
+                grew = True
+        if not grew:
+            break
 
     out: list[dict[str, Any]] = []
     dropped = 0
@@ -479,29 +924,102 @@ def _trim_to_budget(
     if dropped:
         # Insert a marker right after the system message so the model
         # knows context was clipped (single line, low cost).
-        # `role: assistant` (not `system`) — Gemini rejects multiple
-        # system messages in one call and is in our fallback chain. An
-        # assistant-role note reads naturally across all providers.
-        insert_at = 1 if (out and out[0].get("role") == "system") else 0
-        out.insert(
-            insert_at,
-            {"role": "assistant", "content": _TRIM_HISTORY_MARKER.strip()},
-        )
+        _say_it_was_trimmed(out)
 
     total = sum(_content_chars(m) for m in out)
+    repair_added = keep_indices - countback_kept
+    if total > char_limit and repair_added:
+        # The pairing repair adds messages back AFTER the countback decided the
+        # budget, so the payload can come back over it. Drop whole tool loops
+        # from the oldest end — a loop, not a message, or the repair simply
+        # pulls the message back in on the next call.
+        #
+        # Only what the REPAIR added is eligible. The countback's own last
+        # KEEP_LAST_TURNS are the contract this function has always kept, and
+        # an earlier cut of this claw-back was written as "over budget" rather
+        # than "over budget BECAUSE of the repair" — which dropped a real turn
+        # on a payload that had no tool traffic in it at all. When the last
+        # turns alone exceed the budget the answer is still the warning below,
+        # not a shorter conversation.
+        essential = set(protected)
+        if messages and messages[0].get("role") == "system":
+            essential.add(0)
+        # The newest CONVERSATION message, which is not the last slot any
+        # more: the per-turn runtime blocks ride after it, and they are in
+        # `protected` already, so adding `len(messages) - 1` re-added one of
+        # them and left the operator's own ask covered by nothing but the
+        # countback happening to reach it.
+        newest = next(
+            (i for i in range(len(messages) - 1, -1, -1) if i not in essential),
+            None,
+        )
+        if newest is not None:
+            essential.add(newest)
+        for i in sorted(repair_added):
+            if total <= char_limit:
+                break
+            if i not in keep_indices or i in essential:
+                continue
+            loop = {i}
+            for call in messages[i].get("tool_calls") or []:
+                cid = (call or {}).get("id")
+                loop |= {
+                    j for j, m in enumerate(messages)
+                    if m.get("tool_call_id") == cid and cid
+                }
+            cid = messages[i].get("tool_call_id")
+            if cid:
+                loop |= {
+                    j for j, m in enumerate(messages)
+                    if any((c or {}).get("id") == cid
+                           for c in m.get("tool_calls") or [])
+                }
+            loop -= essential
+            if not loop:
+                continue
+            keep_indices -= loop
+            total -= sum(_content_chars(messages[j]) for j in loop)
+            dropped += len(loop)
+        out = [m for j, m in enumerate(messages) if j in keep_indices]
+        _say_it_was_trimmed(out)
+        total = sum(_content_chars(m) for m in out)
+
     if total <= char_limit:
+        # Was a bare `return out`. Dropping conversation is the most
+        # destructive thing this function does and it was the ONE exit that
+        # said nothing, so the day it fired there was no line anywhere saying
+        # the assistant had stopped carrying its own conversation.
+        logger.warning(
+            "prompt guard: dropped %d conversation message(s) after clearing "
+            "tool results, %d->%d chars (limit %d) — continuity is degraded, "
+            "recover with recall_history",
+            dropped, before_chars, total, char_limit,
+        )
         return out
 
-    # Step 2: shrink recall_context in the last user message.
-    last = out[-1]
-    content = last.get("content")
-    if isinstance(content, str) and _RECALL_OPEN in content:
-        budget_for_user = max(
+    # Step 3: shrink the recall_context block, wherever it is.
+    #
+    # Found by position rather than assumed to be last. A channel prepends the
+    # block to the operator's own message, and that message stopped being the
+    # end of the list when the per-turn state moved below it — so reading
+    # `out[-1]` shrank nothing at all and the guard skipped a whole step in
+    # silence. Searched backwards because the newest one is the turn's own.
+    at = next(
+        (
+            i
+            for i in range(len(out) - 1, -1, -1)
+            if isinstance(out[i].get("content"), str)
+            and _RECALL_OPEN in out[i]["content"]
+        ),
+        None,
+    )
+    if at is not None:
+        content = out[at]["content"]
+        budget_for_it = max(
             RECALL_CONTEXT_MIN_KEEP,
-            char_limit - sum(_content_chars(m) for m in out[:-1]),
+            char_limit - sum(_content_chars(m) for i, m in enumerate(out) if i != at),
         )
-        shrunk = _shrink_recall_block(content, target_len=budget_for_user)
-        out[-1] = {**last, "content": shrunk}
+        out[at] = {**out[at], "content": _shrink_recall_block(content, target_len=budget_for_it)}
 
     total = sum(_content_chars(m) for m in out)
     if total > char_limit:
@@ -510,9 +1028,10 @@ def _trim_to_budget(
             char_limit, total,
         )
     else:
-        logger.info(
-            "prompt trim: %d→%d chars (limit %d)",
-            sum(_content_chars(m) for m in messages), total, char_limit,
+        logger.warning(
+            "prompt guard: dropped %d conversation message(s) and shortened "
+            "recall, %d->%d chars (limit %d) — continuity is degraded",
+            dropped, before_chars, total, char_limit,
         )
     return out
 
@@ -535,8 +1054,7 @@ def _drain_workspace_comments(target_comment_id: str | None = None) -> tuple[lis
     longer used as a global flush; callers without a specific target
     have nothing to drain.
 
-    Codex audit 2026-05-06 M2: this no longer marks the comments
-    delivered. The caller is expected to call
+    This does NOT mark the comments delivered. The caller calls
     ``ChatSession.confirm_workspace_delivery`` once the synthetic
     turn's ``workspace_reply`` has succeeded. On cancel/error/no-reply
     the IDs drop without marking, so the next turn re-drains them and
@@ -700,7 +1218,7 @@ def _format_recurrence(recurrence: dict[Any, Any]) -> str:
     return " · ".join(parts) if parts else "first observed"
 
 
-# MP-2 ambient observer: defence-in-depth secret redaction. The Mirror
+# Ambient observer: defence-in-depth secret redaction. The Mirror
 # already redacts before sending, but the chat brain re-runs the same
 # regex so a misbehaving caller (tests, external integrations) cannot
 # leak token-shaped fields into the prompt.
@@ -788,7 +1306,9 @@ def _spawn_rule_name(kind: str) -> str:
     return (kind or "").split(":", 1)[0]
 
 
-def _format_completion_record(record: CompletionRecord) -> str:
+def _format_completion_record(
+    record: CompletionRecord, *, replayed: bool = False
+) -> str:
     """Render a finished background spawn as a one-shot injection block —
     carrying the RESULT, not a pointer to it.
 
@@ -802,10 +1322,20 @@ def _format_completion_record(record: CompletionRecord) -> str:
     exception, for genuinely huge output.
 
     Takes the durable record rather than the handle so a completion replayed
-    after a restart — when the handle is long gone — renders byte-identically
-    to one delivered live. Queued by ``ChatSession.ingest_spawn_completion``
-    or ``replay_undelivered_completions`` and surfaced on the next turn's
+    after a restart — when the handle is long gone — renders the same way as
+    one delivered live. Queued by ``ChatSession.ingest_spawn_completion`` or
+    ``replay_undelivered_completions`` and surfaced on the next turn's
     iteration 0 (same one-shot semantics as conscience notes).
+
+    **Except for its age, which it must not hide.** The block used to carry
+    handle, kind and status and nothing else, so a result recorded three days
+    ago read exactly like one from three seconds ago. On 2026-08-24 that is
+    precisely what happened: an audit from 2026-08-21 was replayed into a
+    reopened chat and acted on as current, and the assistant went looking for
+    a file the revert had deleted two days earlier. So the header states when
+    it finished, and ``replayed`` says outright that this came off disk rather
+    than from a handle this session started, because that is the case where
+    the tree has had time to move underneath it.
     """
     from tesseract.brain.tools import compress_for_delivery
 
@@ -823,7 +1353,18 @@ def _format_completion_record(record: CompletionRecord) -> str:
     # text is not.
     body = _wrap_untrusted(tool=kind or "spawn", output=body)
     handle_id = record.handle_id
-    header = f"[spawn_completed] handle={handle_id} kind={kind} status={status}"
+    from tesseract.brain.prompt_time import age_from_iso
+
+    finished = age_from_iso(record.finished_at or "")
+    header = (
+        f"[spawn_completed] handle={handle_id} kind={kind} status={status} "
+        f"finished={finished}"
+    )
+    if replayed:
+        header += (
+            "\nThis was recorded before now and never read. Check the current "
+            "state before acting on it: the working tree may have moved since."
+        )
     footer = f"[end of {handle_id}]"
     if compressed:
         footer = (
@@ -964,29 +1505,37 @@ class ChatSession:
     registry: ToolRegistry | None = None
     tool_context: ToolContext = field(default_factory=ToolContext)
     compact_threshold: float = DEFAULT_COMPACT_THRESHOLD
+    headroom_multiplier: float = DEFAULT_HEADROOM_MULTIPLIER
     keep_recent_turns: int = DEFAULT_KEEP_RECENT_TURNS
-    # Sliding-window knobs. See the module docstring
-    # phase-CR-0-compaction-sliding-window.md.
+    # Sliding-window knobs. See the module docstring.
     head_anchor_messages: int = DEFAULT_HEAD_ANCHOR_MESSAGES
-    active_window_tokens: int | None = DEFAULT_ACTIVE_WINDOW_TOKENS
     summary_char_budget: int = DEFAULT_SUMMARY_CHAR_BUDGET
     ask_fn: AskFn | None = None  # operator approval callback for ASK-permission tools
     policy: PermissionPolicy | None = None  # config-driven per-tool posture
     # When set, called per turn to re-assemble the system prompt — lets
     # SOUL.md edits land inside the active session instead of
     # waiting for the next one. If unset, the frozen `system_prompt` is used.
-    # CR-3 — channel sessions plumb a channel-aware builder here from
+    # Channel sessions plumb a channel-aware builder here from
     # ``_build_chat_session``; the channel overlay is inlined inside the
     # assembled manifest (cacheable prefix) rather than appended at runtime.
     prompt_builder: Callable[[], str] | None = None
-    # CR-3 observability — set to ``"channel"`` for sessions built by a
-    # channel adapter, otherwise ``"cockpit"``. Not load-bearing for the
-    # prompt (the builder already encodes the overlay); CR-5 reads this
-    # to choose between operator-attended ASK and the workspace-nudge
-    # gate. ``channel_display_name`` mirrors the value handed to the
+    # Set to ``"channel"`` for sessions built by a channel adapter,
+    # otherwise ``"cockpit"``. Not load-bearing for the prompt (the
+    # builder already encodes the overlay); the gate reads it to choose
+    # between operator-attended ASK and the workspace-nudge path.
+    # ``channel_display_name`` mirrors the value handed to the
     # channel-aware ``prompt_builder`` for the same reason.
     session_kind: str = "cockpit"
     channel_display_name: str | None = None
+    # The funnel door this session's turns come through — a node name from
+    # `orchestrator/funnel.py::NODES`, so a turn record joins to the map the
+    # floor plan already draws rather than inventing a second vocabulary for
+    # the same four doors. Set only by `session_factory._build_chat_session`,
+    # which is the one seam the cockpit and every channel are built through.
+    # Empty means this session's turns are not recorded: sub-agent sessions,
+    # the REPL and tests all build a ChatSession without going near that seam,
+    # and a manifest per synthetic turn would be noise rather than a record.
+    turn_entry: str = ""
     # Spawn halt-watchdog bound (Stage 2B). When set, each turn sweeps the
     # spawn registry for background spawns stuck `running` past this many
     # seconds and queues a one-shot `[spawn_stalled]` note. None disables the
@@ -1020,6 +1569,16 @@ class ChatSession:
         default_factory=deque,
         repr=False,
     )
+    #: Controls the operator used inside a card this chat drew. Same one-shot
+    #: shape as the conscience queue, and capped for the same reason: someone
+    #: clicking through a game while the assistant is mid-turn must not build a
+    #: block longer than the turn it lands in. The card keeps its own longer
+    #: log, which `surface_control action:"read"` returns, so the overflow is
+    #: still there to be asked for.
+    _pending_card_presses: deque[str] = field(
+        default_factory=lambda: deque(maxlen=PENDING_CARD_PRESS_CAP),
+        repr=False,
+    )
     # Handle ids of the queued spawn COMPLETIONS above (stalls and lost-spawn
     # notes have no durable record, so they never appear here). Claimed in the
     # completion store when the turn that drained them COMMITS, which is what
@@ -1040,6 +1599,79 @@ class ChatSession:
     # Drained from _pending_suggestions at send() start; stable across all
     # tool-loop iterations; cleared in finally. Not counted by should_compact.
     _turn_injection: str = field(default="", repr=False)
+    # Whether a turn is running. It was `_turn_anchor_idx`, the index of this
+    # turn's own user message, back when the per-turn blocks were inserted in
+    # front of it; those go after the whole list now, so nothing read the
+    # number as an index any more and every remaining use was `>= 0`. A bool
+    # named for the question it answers, because an int called an index is a
+    # standing invitation to use it as one.
+    #
+    # What it decides: whether this turn's reading of the prompt is worth
+    # holding (`_turn_prompt` below).
+    _turn_active: bool = field(default=False, repr=False)
+    # This turn's one reading of the prompt, head and volatile half together.
+    # Held so every tool-loop iteration sends the same bytes; `None` between
+    # turns, so a `token_estimate()` taken then builds fresh and caches
+    # nothing into the next turn. A `PromptParts` survives the round trip
+    # because it IS a `str` — the annotation is honest, not narrowing.
+    # What is cached is whatever the builder returned, INCLUDING the frozen
+    # fallback it returns when assembly fails, so one failed read pins that
+    # fallback for the turn. Deliberate: rebuilding mid-loop would change
+    # bytes the previous iteration paid to cache, and would flap the model's
+    # instructions between two prompts inside one answer.
+    _turn_prompt: str | None = field(default=None, repr=False)
+    # The head as of the last turn, kept only to notice when it moves. The
+    # head is `instructions` on the wire, which sits ahead of the tools and
+    # the whole conversation and cannot carry a cache breakpoint, so a single
+    # byte moving in it re-reads everything at full price.
+    _last_head: str | None = field(default=None, repr=False)
+    # How many turns rebuilt a head that differs from the turn before's.
+    # The cost of what is NOT held, counted rather than assumed.
+    _head_drift: int = field(default=0, repr=False)
+    # The bytes of the held sections, as this conversation first read them.
+    # Which sections those are is `prompt.HELD_SECTION_NAMES`, declared beside
+    # each builder and derived from the roster, never listed again here.
+    #
+    # A name absent from this dict was absent from the prompt on the turn the
+    # snapshot was taken, and stays absent: a capsule that shows up on turn 6
+    # because a job finally wrote one would move the head exactly as a changed
+    # capsule does, and the hold has to cover both or it covers neither.
+    #
+    # `None` means the next turn takes the snapshot, which is what a new
+    # conversation and a fold both leave behind.
+    _held_sections: dict[str, str] | None = field(default=None, repr=False)
+    # Which conversation the snapshot above was taken in, per
+    # `_conversation_id`. A `ChatSession` can be handed another conversation's
+    # history while it goes on living — `commands.py`'s batch compaction does
+    # exactly that — so a hold keyed to the object would outlive the
+    # conversation it was taken for.
+    _held_for: str | None = field(default=None, repr=False)
+    # The head revision the snapshot was taken at, per
+    # `prompt.head_revision()`. The hold covers what moves with nobody asking;
+    # this is what lets an operator ACT move it anyway, on the turn after the
+    # act, without the head being rebuilt every turn on the chance that one
+    # happened.
+    _held_revision: int | None = field(default=None, repr=False)
+    # The shape of the request this iteration sent, stashed where it was
+    # built. `_log_cache_shape` reads it; nothing else does.
+    _last_request_shape: tuple[str, int, int, int, int] | None = field(
+        default=None, repr=False
+    )
+    # The system message as the last fold decision measured it. Stashed
+    # rather than recounted, because everything that publishes it was
+    # counting `system_prompt` and that is the string frozen when the
+    # session was built, not the one a `prompt_builder` rebuilds each turn.
+    _system_tokens: int = field(default=0, repr=False)
+    # Why the last fold came back with the tokens unchanged. `compact` returns
+    # `(before, before)` for two unrelated reasons and the caller could not
+    # tell them apart, so `/compact` told the operator their chat still fits
+    # when what actually happened was the summarizer failing on a chat that
+    # does not. One of "folded", "nothing_to_fold", "summarizer_failed".
+    _last_fold_outcome: str = field(default="folded", repr=False)
+    # Turns the last fold kept word for word, so whoever reports the fold can
+    # say where its boundary was. Internal state like the two below it, not a
+    # setting: it belongs beside them rather than among the operator's knobs.
+    _last_fold_tail_turns: int = field(default=0, repr=False)
     _observer_subscriber: Any | None = field(default=None, repr=False)
     _observer_last_index: int = field(default=0, repr=False)
     # This conversation's own rolling window into the observer. It lives here
@@ -1085,7 +1717,7 @@ class ChatSession:
     # cancel/error/no-reply so the operator's intent is not silently lost.
     _pending_workspace_comment_ids: list[str] = field(default_factory=list, repr=False)
     _pending_workspace_event_ids: list[str] = field(default_factory=list, repr=False)
-    # Phase 2 (CLI parity): operator-typed messages that arrive while a turn
+    # Operator-typed messages that arrive while a turn
     # is mid-flight. The WS appends here. The tool loop drains this list
     # between iterations (inside `send`, after
     # `_run_pending_calls` yields the last result chunk) and folds each
@@ -1094,7 +1726,7 @@ class ChatSession:
     # yielded so the WS can fire `stream_user_inject` and clear the
     # frontend "queued" badge.
     pending_injected_messages: list[dict[str, Any]] = field(default_factory=list, repr=False)
-    # Phase 4 (CLI parity): background-spawn registry. Tools that take
+    # Background-spawn registry. Tools that take
     # `await=False` (currently only delegate_coder — delegate_auditor
     # and invoke_agent follow in a separate pass) register an
     # asyncio.Task here and return immediately with the handle id.
@@ -1121,6 +1753,45 @@ class ChatSession:
     # only — never persisted, cleared only by constructing a fresh
     # ChatSession.
     _recall_dedup_window: deque[set[str]] = field(default_factory=deque, repr=False)
+    # The manifest of the turn currently running, or None between turns.
+    # Opened at the top of `send()` and closed in its `finally`, so every exit
+    # path — a clean return, an operator cancel, a shutdown that kills the
+    # process — leaves the record in the state that exit means.
+    _turn_recorder: TurnRecorder | None = field(default=None, repr=False)
+    #: How the last turn on this session ended, and why. Set on every exit
+    #: path, whether or not the session records turns, because the answer is
+    #: what a surface needs in order to say something better than "no reply".
+    #: One field pair, not one per turn: turns on a session are serial.
+    last_turn_outcome: RunOutcome | None = field(default=None, repr=False)
+    last_turn_reason: str = field(default="", repr=False)
+    #: Which turn that was. Beside the pair above and set the same way, for a
+    #: surface that has already said something to the person and needs to note
+    #: it on the record so nobody says it again. `_turn_recorder` is cleared on
+    #: close and a shutdown leaves the record open, so the id has to outlive
+    #: the recorder. Empty on a session that records no turns.
+    last_turn_id: str = field(default="", repr=False)
+    #: The two char ceilings, from `roles.yaml::compaction`. Defaulted because
+    #: a session built outside the funnel (a sub-agent, the REPL, a test) still
+    #: needs a guard, and `config/loader.py` is where the one shipped answer
+    #: lives.
+    prompt_char_budget: int = DEFAULT_PROMPT_CHAR_BUDGET
+    #: How many times the emergency prompt guard has trimmed inside the turn
+    #: currently running. Reset at the top of `send`. Twice is a fault, and
+    #: `_messages_for_turn` says so once.
+    _guard_firings_this_turn: int = field(default=0, repr=False)
+    #: Every time the guard has trimmed in this session, never reset. The
+    #: per-turn count above drives the fault log and is gone the next turn, so
+    #: nothing could answer "has the guard been holding this conversation
+    #: down?" from any surface. `context_report` reads this one.
+    _guard_firings_this_session: int = field(default=0, repr=False)
+    #: What this turn asked to happen to itself once it is over: "continue",
+    #: "reset", or "" for carrying on, which is the ordinary case. Written by
+    #: `session_continue` through `ToolContext.request_continuation` and read
+    #: at the turn boundary by `after_turn`, because `compact()` and `reset()`
+    #: rewrite `history` in place: acting on it inside the turn folds away the
+    #: assistant message carrying the pending `tool_use` block before its
+    #: `tool_result` is appended, and the next request is malformed.
+    _continuation: str = field(default="", repr=False)
 
     def __post_init__(self) -> None:
         # Cross-link the spawn registry into ToolContext so tools can
@@ -1131,6 +1802,15 @@ class ChatSession:
         self.tool_context.spawns = self.spawns
         self.tool_context.interactive_sessions = self.interactive_sessions
         self.tool_context.enabled_extended_tools = self._enabled_extended_tools
+        # How full this conversation is, reachable by a tool. Everything it
+        # reports was already measured for the cockpit's HUD and could be read
+        # nowhere else, so the same question failed on a channel and in the
+        # cockpit's own chat.
+        self.tool_context.context_report = lambda: context_report.gather(self)
+        # And what it may ask to happen once the turn is over. A callable for
+        # the same reason `context_report` is one: a tool deciding this
+        # conversation is finished has no business reaching its history.
+        self.tool_context.request_continuation = self.request_continuation
         # Push-on-completion: a finished background spawn queues a next-turn
         # notice so the assistant sees it instead of relying on a poll it may never make.
         self.spawns.completion_notifier = self.ingest_spawn_completion
@@ -1154,6 +1834,85 @@ class ChatSession:
         # runtime.yaml cap; the registry enforces at register().
         self.spawns.depth = self.tool_context.spawn_depth
         self.spawns.max_depth = self.tool_context.spawn_depth_cap
+
+    def _record_step(
+        self,
+        *,
+        kind: str,
+        name: str,
+        outcome: RunOutcome,
+        reason: str = "",
+        started_at: datetime | None = None,
+    ) -> None:
+        """One step of the running turn, committed to its manifest.
+
+        A no-op when the session records no turns, so every call site reads the
+        same whether or not this session came through the funnel's seam."""
+        if self._turn_recorder is None:
+            return
+        self._turn_recorder.step(
+            kind=kind, name=name, outcome=outcome, reason=reason, started_at=started_at,
+        )
+
+    @property
+    def _turn_label(self) -> str:
+        """What to call this turn on a surface, in the door's own words.
+
+        The words are `turns.manifest.turn_label`'s, read off the record's own
+        entry, so the liveness row and the atlas node name one turn one way.
+        Per AR-8's rule every string a pane renders about the machine comes
+        from the backend, and never the operator's own text."""
+        return turn_label(self._turn_record_entry)
+
+    @property
+    def _turn_record_entry(self) -> str:
+        """The door, and which one of it, as the turn's record names it. The
+        funnel declares `channel` as a single node because every channel is the
+        same door, and a record still has to say which one a person was waiting
+        on. The bridge stamps `tool_context.channel` right after building the
+        session."""
+        entry = self.turn_entry or ""
+        if entry and self.tool_context.channel:
+            entry = f"{entry}:{self.tool_context.channel}"
+        return entry
+
+    def _beat(self, waiting_on: str) -> None:
+        """Say the turn is alive and what it is now waiting on.
+
+        Called where a step BEGINS, not where one is recorded. `_record_step`
+        above commits what a step did; this says what the turn is doing, which
+        is the only one of the two a person waiting can use. The registry's
+        `register` is an upsert that stamps `updated_at`, so the last call here
+        is the last beat, and a turn wedged inside one slow call stops beating
+        exactly while it looks busiest.
+
+        A no-op when the session records no turns, like `_record_step`."""
+        if self._turn_recorder is None:
+            return
+        from tesseract.orchestrator.activity.hooks import register_turn
+
+        register_turn(
+            self._turn_recorder.turn_id,
+            label=self._turn_label,
+            waiting_on=waiting_on,
+        )
+
+    def _close_turn_record(self, outcome: RunOutcome, reason: str = "") -> None:
+        if self._turn_recorder is None:
+            return
+        from tesseract.orchestrator.activity.hooks import remove_turn
+
+        recorder, self._turn_recorder = self._turn_recorder, None
+        leave_turn()
+        remove_turn(recorder.turn_id)
+        recorder.close(outcome, reason)
+        # A turn the process is stopping under stays open, and the next boot
+        # writes its end onto the task as `truncated`; writing it here too
+        # would give one turn two attempts that disagree.
+        if recorder.manifest.task_id and not going_down():
+            from tesseract.orchestrator.turns.tasks import note_turn_ended
+
+            note_turn_ended(recorder.manifest, outcome, reason)
 
     def _recall_excluded_ids(self) -> set[str]:
         """Union of memory ids injected within the current dedup window."""
@@ -1180,12 +1939,11 @@ class ChatSession:
     ) -> "ChatSession":
         """Return an ephemeral ChatSession for a synthetic workspace turn.
 
-        WP-2: a synthetic workspace turn runs concurrently with the chat
-        turn. It must NOT mutate the canonical history (the workspace
-        reply is delivered via the `workspace_reply` tool, not via the
-        chat conversation), and it must NOT share mutable state with the
-        chat session — see
-        the per-tool / per-infra audit that drove these decisions.
+        A synthetic workspace turn runs concurrently with the chat turn.
+        It must NOT mutate the canonical history (the workspace reply is
+        delivered via the `workspace_reply` tool, not via the chat
+        conversation), and it must NOT share mutable state with the chat
+        session.
 
         Shared (read-only or natively concurrency-safe):
           - ``adapter`` underlying chain (stateless wrappers around
@@ -1206,8 +1964,7 @@ class ChatSession:
             mingle with chat spawns.
           - ``ToolRegistry`` — copy minus ``synthetic_excluded_tools``
             (default: ``set_mood``, ``set_state`` — both wrap
-            shared-mutable state-holders on the tool instance per
-            WP-1 audit §D).
+            shared-mutable state-holders on the tool instance).
           - All ``_pending_*`` queues + ``pending_injected_messages``
             start empty.
 
@@ -1269,10 +2026,15 @@ class ChatSession:
             registry=forked_registry,
             tool_context=forked_ctx,
             compact_threshold=self.compact_threshold,
+            headroom_multiplier=self.headroom_multiplier,
             keep_recent_turns=self.keep_recent_turns,
             head_anchor_messages=self.head_anchor_messages,
-            active_window_tokens=self.active_window_tokens,
             summary_char_budget=self.summary_char_budget,
+            # The fork reuses this session's adapter, so it talks to the same
+            # model and needs the same ceiling. Left off, it took the dataclass
+            # default and a synthetic turn on a tight model was guarded by a
+            # number belonging to nothing it was about to send to.
+            prompt_char_budget=self.prompt_char_budget,
             ask_fn=self.ask_fn,
             policy=self.policy,
             prompt_builder=self.prompt_builder,
@@ -1292,10 +2054,6 @@ class ChatSession:
     def attach_observer_subscriber(self, subscriber: Any) -> None:
         self._observer_subscriber = subscriber
         self._observer_last_index = len(self.history)
-
-    def detach_observer_subscriber(self) -> None:
-        self._observer_subscriber = None
-        self._observer_emit = None
 
     def set_observer_emit(self, emit_fn: Any | None) -> None:
         self._observer_emit = emit_fn
@@ -1331,6 +2089,25 @@ class ChatSession:
         `conscience_status`.
         """
         self._pending_conscience.append(_format_conscience_transition(transition))
+
+    def ingest_card_press(self, surface_id: str, target: str, value: Any = None) -> None:
+        """Queue a control the operator used inside a card this chat drew.
+
+        The other half of the canvas bridge. A card the assistant authored
+        reports its presses, and until this they were only readable: the
+        assistant had to think to look. Now the fact rides into the next turn
+        the way a finished spawn does, and `mirror/server/card_wake.py` decides
+        separately whether to start that turn rather than wait for one.
+
+        One-shot and never persisted to history, like every sibling queue here.
+        """
+        said = f" = {value}" if value not in (None, "") else ""
+        self._pending_card_presses.append(
+            f"[card_pressed] surface={surface_id} control={target}{said}"
+        )
+
+    def has_pending_card_presses(self) -> bool:
+        return bool(self._pending_card_presses)
 
     def ingest_spawn_completion(self, handle: Any) -> None:
         """Queue a finished background spawn for next-turn injection.
@@ -1376,7 +2153,9 @@ class ChatSession:
         for record in outstanding:
             if record.handle_id in already:
                 continue
-            self._pending_spawn_completions.append(_format_completion_record(record))
+            self._pending_spawn_completions.append(
+                _format_completion_record(record, replayed=True)
+            )
             self._queued_completion_ids.append(record.handle_id)
             replayed += 1
         return replayed
@@ -1496,19 +2275,214 @@ class ChatSession:
         # Strip Mirror-only sidecars before forwarding to the provider —
         # `_meta` carries the per-turn model + token-usage Mirror replays
         # on resume, `_mid_turn` flags entries written by
-        # `_drain_user_injections` (Phase 2), and providers reject
+        # `_drain_user_injections`, and providers reject
         # unknown message fields.
         if (
             "timestamp" not in message
             and "_meta" not in message
             and "_mid_turn" not in message
+            and _RUNTIME_KEY not in message
         ):
             return message
         clean = dict(message)
         clean.pop("timestamp", None)
         clean.pop("_meta", None)
         clean.pop("_mid_turn", None)
+        clean.pop(_RUNTIME_KEY, None)
         return clean
+
+    def _head_for_turn(self, prompt: str) -> str:
+        """The head to send: held where nobody asked, rebuilt where they did.
+
+        The whole head is frozen for the life of a conversation. It was once,
+        then was not, and the list of what that has to satisfy is worth keeping
+        in one place because the next change to this has to satisfy all of it
+        at once:
+
+        1. An edit to SOUL.md, USER.md or OPERATING.md reaches the ACTIVE
+           session. That is what `prompt_builder` is FOR, and
+           `fix_pass_2026_04_24/test_prompt_rebuild.py` exists because the
+           head "was previously frozen until next session".
+        2. A directive edit reaches the next turn. `prompt.py` promises the
+           operator that "an edit is the only thing that moves them".
+        3. `project_open` reaches the next turn. An assistant still naming
+           the old project after being asked to switch is wrong in a way no
+           cache saving pays for.
+        4. The clock and the autonomy digest never enter the head at all.
+        5. The head is a cache prefix, so any byte that moves in it re-reads
+           the entire conversation behind it at full price.
+        6. What moves in the head with nobody asking is the memory capsule
+           and the diary digest, and nothing the assistant loses by holding
+           them is out of reach: `memory_search` fetches anything newer.
+        7. A new conversation reads them fresh, and so does a fold, which
+           has thrown the cached prefix away regardless.
+
+        The mistake the middle version made was reading 1 to 3 as "rebuild the
+        head every turn, in case". That pays on every turn for an act that
+        happens on almost none of them, and it left five more blocks that move
+        for nobody's reason sitting in the prefix unheld: `changes="never"` was
+        never enforced, and every one of those sections re-reads its file on
+        each assembly.
+
+        1 is answered by `prompt.bump_head_revision()`, called where the
+        operator's act lands rather than guessed at from the bytes, which
+        cannot tell an approved edit from a background job rewriting the same
+        file. It is a counter on disk, because the agent controller is a
+        separate process and a module global would never reach it.
+
+        2 is answered by NOT holding the directives at all. Nothing at a
+        memory write retires a hold, so holding them swallowed exactly the
+        edits this list promises to deliver. A section may be held only if it
+        can name what retires it (`prompt.Section.hold_reason`), and the
+        rebuild it falls back to is free while the bytes do not move.
+
+        3 is answered by taking the project block OUT of the head
+        (`Section.rides_late`), because that is the one act that must reach the
+        turn after it rather than the next conversation. 4 is the split this
+        method never sees. 5 is why holding is worth anything. 6 is what
+        makes it safe.
+
+        7 is two things, because a `ChatSession` outlives a conversation.
+        `refresh_head` covers the boundaries the session knows it crossed:
+        `reset`, and a fold, released where the fold actually rewrites the
+        history and not on the two exits where it does not. `_conversation_id`
+        covers the one it does not — a session handed another conversation's
+        history while it goes on living, which `commands.py`'s batch
+        compaction does — so a snapshot taken for one chat is never spent on
+        another.
+
+        A `prompt` with no sections on it (a plain string, or a caller that
+        built `PromptParts` from two halves) is sent whole and held not at
+        all, which is the behaviour before any of this existed. A caller that
+        APPENDED to the head keeps what it appended: the controller adds a
+        seat constraint that way, and re-joining the sections without it would
+        drop a HARD RULE on the floor to save some tokens.
+        """
+        # Local, like every other `tesseract.brain` import in this file:
+        # `prompt` reaches the workspace and the memory store at import time
+        # and nothing here needs it until a turn is being built.
+        from tesseract.brain import prompt as prompt_module
+
+        head = getattr(prompt, "head", prompt)
+        sections = getattr(prompt, "sections", None)
+        # Rebuild only the part the sections account for, and carry anything a
+        # caller put after it through untouched. A head that is not its own
+        # sections joined is one this cannot safely rewrite, so it is sent
+        # exactly as it arrived and nothing is held or recorded: no saving, no
+        # lost text. The guard is checked BEFORE the snapshot, so what is
+        # recorded is only ever bytes that were also sent.
+        as_built = (
+            prompt_module.join_sections(sections, volatile=False)
+            if sections else ""
+        )
+        if sections and head.startswith(as_built):
+            here = self._conversation_id()
+            revision = prompt_module.head_revision()
+            if (
+                self._held_sections is None
+                or self._held_for != here
+                or self._held_revision != revision
+            ):
+                self._held_sections = {
+                    name: sections[name]
+                    for name in prompt_module.HELD_SECTION_NAMES
+                    if name in sections
+                }
+                self._held_for = here
+                self._held_revision = revision
+            merged = dict(sections)
+            for name in prompt_module.HELD_SECTION_NAMES:
+                if name in self._held_sections:
+                    merged[name] = self._held_sections[name]
+                else:
+                    merged.pop(name, None)
+            head = prompt_module.join_sections(
+                merged, volatile=False
+            ) + head[len(as_built):]
+        return self._watch_head(head)
+
+    def _conversation_id(self) -> str:
+        """Which conversation this session is currently carrying.
+
+        `tool_context.chat_id` when there is one: `stamp_chat_id` sets it at
+        every registration point, the Telegram bridge sets it from the durable
+        id, and it is the same string for the life of one chat and different
+        in every other. That is what the hold needs.
+
+        `_conversation_tag` is the fallback, and only that. It hashes the
+        first message, so two chats that open with the same words share it,
+        which is fine for reading a log back and is not an identity. Nothing
+        unstamped shares a `ChatSession` with anything else today, so the
+        fallback is reached by test doubles and by nothing in production.
+        """
+        chat_id = getattr(self.tool_context, "chat_id", "")
+        return chat_id or self._conversation_tag(self.history)
+
+    def _watch_head(self, head: str) -> str:
+        """Count what the hold did not cover, and send it anyway.
+
+        The hold covers five sections, not the whole head, so this counts two
+        different things and it is worth knowing which:
+
+        - an operator act retiring the hold through `prompt.bump_head_revision`,
+          which is what the three inlined documents move on;
+        - any change to a section that rides in the head UNHELD — the tool map,
+          the saved directives, the pointer list, the channel overlay. Those
+          are rebuilt every turn by design, so a directive saved or a skill
+          written moves the head with no revision bump anywhere.
+
+        Both are bills rather than defects. What would be a defect is a number
+        that climbs while nothing was edited, no directive was saved and no
+        tool was promoted: that means a write path is retiring holds for a
+        background write, and `workspace_changes.apply_change` is where that
+        is fixed.
+        """
+        if self._last_head is None:
+            self._last_head = head
+            return head
+        if head != self._last_head:
+            self._head_drift += 1
+            logger.info(
+                "prompt head: moved %+d chars (%d time(s) this conversation); "
+                "every move re-reads the whole prompt",
+                len(head) - len(self._last_head), self._head_drift,
+            )
+            self._last_head = head
+        return head
+
+    def refresh_head(self) -> None:
+        """Drop the held sections so the next turn reads them fresh.
+
+        Called where the cached prefix is gone anyway, which is the only
+        moment a fresh capsule costs nothing.
+        """
+        self._held_sections = None
+        self._held_for = None
+        self._held_revision = None
+
+    @property
+    def head_hold(self) -> tuple[dict[str, str] | None, str | None, int | None]:
+        """The hold, for a caller that is about to borrow this session.
+
+        `commands.py` compacts a chat that is NOT the one in focus by putting
+        that chat's history onto the live session, folding, and putting the
+        live history back. The fold releases the hold, and the hold belongs to
+        the conversation whose history was moved aside — so the chat in focus
+        would pay a full re-read because a different chat was compacted from
+        the list.
+
+        `_conversation_id` cannot tell those apart: the session is still
+        stamped with the chat in focus while it carries the other one's
+        history. Only the caller knows, and it already saves and restores the
+        history, so it restores this the same way.
+        """
+        return self._held_sections, self._held_for, self._held_revision
+
+    @head_hold.setter
+    def head_hold(
+        self, hold: tuple[dict[str, str] | None, str | None, int | None]
+    ) -> None:
+        self._held_sections, self._held_for, self._held_revision = hold
 
     def _current_system_prompt(self) -> str:
         if self.prompt_builder is None:
@@ -1539,21 +2513,166 @@ class ChatSession:
         finally:
             failures_signal.reset_scope(token)
 
+    def _grown_mid_turn(self) -> bool:
+        """A cheap "is it worth asking properly" for the tool loop.
+
+        `should_compact` assembles the whole payload and rebuilds the system
+        prompt, which is right once per turn and wrong eighty times inside
+        one. This sums what history holds, which is what a fold can actually
+        remove, and it only ever decides whether to ASK: the real decision is
+        still `should_compact`'s, reached through the caller's hook.
+
+        It can be short by the size of this turn's injections, which ride on
+        the assembled user message rather than in history. That is a few
+        thousand characters against a trigger of hundreds of thousands, and the
+        turn boundary catches what it misses.
+
+        It asks the SAME question `should_compact` asks, in the same unit, off
+        a cheaper measurement: characters through the runtime's one measured
+        divisor. Asking a different question here would be a third trigger, and
+        two was already one too many.
+        """
+        chars = sum(
+            _content_chars(m)
+            for m in self.history
+            if not _is_late_prompt_message(m)
+        )
+        ctx = self.options.context_window or 0
+        if ctx <= 0:
+            return False
+        return tokens_from_chars(chars) >= self._fold_trigger_tokens(
+            ctx, self._system_tokens,
+        )
+
     def _messages_for_turn(self) -> list[dict[str, Any]]:
+        """The assembled payload, with the emergency guard applied.
+
+        What goes to the adapter. `_assemble_for_turn` is what the payload IS;
+        this is what survives the char ceiling. Anything asking how big the
+        conversation has GROWN must ask the assembly, not this — see
+        `token_estimate`.
+        """
+        msgs, protected = self._assemble_for_turn()
+        if sum(_content_chars(m) for m in msgs) > self.prompt_char_budget:
+            self._guard_firings_this_turn += 1
+            self._guard_firings_this_session += 1
+            if self._guard_firings_this_turn == _GUARD_LOOP_FAULT_AT:
+                # A fault, and `log.error` is what makes it one: `logsetup`
+                # turns a backend ERROR into an AR-15 envelope row. The guard
+                # firing twice inside a turn means compaction is not bounding
+                # the conversation and the guard is doing it instead, one
+                # cleared tool result at a time. It fired seventeen times in
+                # two minutes before anything said so. Once per turn, at the
+                # second firing: the sixteen after it are the same fault.
+                logger.error(
+                    "the prompt guard has fired %d times inside one turn — "
+                    "compaction is not bounding this conversation and the "
+                    "guard is clearing tool results to keep the turn alive",
+                    self._guard_firings_this_turn,
+                )
+        return _trim_to_budget(
+            msgs, char_limit=self.prompt_char_budget, protected=protected,
+        )
+
+    def _assemble_for_turn(self) -> tuple[list[dict[str, Any]], frozenset[int]]:
+        """Build the turn's message list. No ceiling, no trimming.
+
+        Split out from `_messages_for_turn` because `token_estimate` read that
+        method, which trimmed, so the estimate measured the guard's OUTPUT.
+        Once the guard engaged, the estimate read ~30k tokens no matter how
+        large the conversation actually was, `should_compact` compared that to
+        280k and said no, and compaction became permanently unreachable. The
+        trim hid the growth that was supposed to trigger the fix. Measured on
+        a live Telegram session, 2026-08-23.
+        """
         msgs: list[dict[str, Any]] = []
-        prompt = self._current_system_prompt()
-        if prompt:
-            msgs.append({"role": "system", "content": prompt})
-        # Anchor the injection immediately before the current user turn
-        # (which is the last history entry at send() start — see send()'s
-        # one-shot clear after iteration 0).
-        if self._turn_injection and self.history:
-            msgs.extend(self._adapter_message(m) for m in self.history[:-1])
-            msgs.append({"role": "user", "content": self._turn_injection})
-            msgs.append(self._adapter_message(self.history[-1]))
-        else:
-            msgs.extend(self._adapter_message(m) for m in self.history)
-        return _trim_to_budget(msgs, char_limit=PROMPT_CHAR_BUDGET)
+        # Built once per turn, not once per tool-loop iteration. The volatile
+        # half reads a clock and a memory tree, so rebuilding it mid-loop
+        # changes bytes the previous iteration already paid to have cached,
+        # and the turn re-processes its own tool traffic to no purpose. The
+        # approved classification is per TURN — the operator changes a
+        # directive expecting the next turn to obey — so a turn holding one
+        # reading of its own state is what was agreed, not a compromise of it.
+        prompt = self._turn_prompt
+        if prompt is None:
+            prompt = self._current_system_prompt()
+            if self._turn_active:
+                self._turn_prompt = prompt
+        # `PromptParts` says where the prompt splits. The head is everything
+        # whose bytes hold still between turns — the documents, the tool map,
+        # and the retrieved memory, held or rebuilt by `_head_for_turn`
+        # according to whether the operator or a background job moves it. The
+        # late half is only what differs on every single turn: the clock and
+        # the autonomy digest. A plain string means nothing said where to
+        # split it, so all of it goes in the system message, which is what
+        # happened before the split existed.
+        late = getattr(prompt, "late", "")
+        head = self._head_for_turn(prompt)
+        if head:
+            msgs.append({"role": "system", "content": head})
+        # The per-turn blocks go AFTER everything, past the conversation and
+        # past the operator's own message.
+        #
+        # Caching is a prefix match, so the only thing that decides how much
+        # of a request can be reused is how far down the first difference
+        # sits. A block whose bytes change every turn puts that difference
+        # wherever it is placed, and everything below it is re-read at full
+        # price. Placed above the operator's turn — where these rode until
+        # this was measured — the difference lands one turn deeper each turn,
+        # so no request ever reused more than the system message and the tool
+        # schemas, however long the conversation had grown. Placed last, the
+        # prefix is the head plus the whole conversation, it only ever grows,
+        # and what is re-read is these few hundred tokens.
+        #
+        # It costs the tool loop the same few hundred tokens per iteration,
+        # because iteration 1 has its tool traffic where iteration 0 had this
+        # block. That is the trade, and it is worth taking at this size; it
+        # would not have been while the memory capsule was still in here.
+        #
+        # After the operator's question rather than before it: this is not an
+        # instruction, it is state, and it says so in `_LATE_PROMPT_LEAD`.
+        # Appending is also legal after anything — a tool call and its result
+        # can no longer be split by it, which is what the anchor index and its
+        # three staleness guards existed to prevent.
+        #
+        # The late half stays ABOVE the injection, which is cleared after
+        # iteration 0. Both are in the tail either way; the order is kept so
+        # the assistant reads them in the order it always has.
+        trailing: list[dict[str, Any]] = []
+        if late:
+            trailing.append({
+                "role": "user",
+                "content": _LATE_PROMPT_LEAD + late,
+                _RUNTIME_KEY: _RUNTIME_LATE_PROMPT,
+            })
+        if self._turn_injection:
+            trailing.append({"role": "user", "content": self._turn_injection})
+        msgs.extend(self._adapter_message(m) for m in self.history)
+        # Say where the stable part ends, for the adapters whose provider only
+        # caches where it is told. The last message of the conversation is it:
+        # everything above grows and never rewrites, everything below is this
+        # turn's own state. Copied rather than stamped in place, because
+        # `_adapter_message` hands back the history entry itself when it has
+        # no sidecars to strip, and marking that would write into `history`.
+        if self.history:
+            msgs[-1] = {**msgs[-1], CACHE_BOUNDARY: True}
+        # With no history at all there is no turn for the state to be current
+        # as of, so it is dropped — and there is no conversation to mark the
+        # end of either. The system prompt carries its own breakpoint.
+        protected = (
+            self._append_protected(msgs, trailing) if self.history else frozenset()
+        )
+        return msgs, protected
+
+    @staticmethod
+    def _append_protected(
+        msgs: list[dict[str, Any]], trailing: list[dict[str, Any]],
+    ) -> frozenset[int]:
+        """Append the runtime blocks and report where they landed, so the
+        budget trim can keep them without recomputing the offset itself."""
+        at = range(len(msgs), len(msgs) + len(trailing))
+        msgs.extend(trailing)
+        return frozenset(at)
 
     def _drain_pending_suggestions(
         self,
@@ -1568,9 +2687,9 @@ class ChatSession:
         When ``comment_id == event_id`` the turn was fired for an
         ``operator_post`` and the post with that ``event_id`` is drained;
         otherwise the operator comment with that ``comment_id`` is drained.
-        Codex audit 2026-05-07 M1: pin the drain to the queued payload so a
-        successful reply on turn A no longer marks unrelated items B, C
-        delivered before their own queued turns execute.
+        The drain is pinned to the queued payload, so a successful reply on
+        turn A cannot mark unrelated items B, C delivered before their own
+        queued turns execute.
 
         Workspace comments are formatted as ``[workspace_comment_on_<event_id>]
         {body}``; operator_post events as ``[workspace_post_on_<event_id>]
@@ -1603,6 +2722,7 @@ class ChatSession:
             not self._pending_suggestions
             and not self._pending_conscience
             and not self._pending_spawn_completions
+            and not self._pending_card_presses
             and not workspace_comment_blocks
             and not workspace_post_blocks
         ):
@@ -1612,6 +2732,8 @@ class ChatSession:
             blocks.append(format_for_injection(self._pending_suggestions.popleft()))
         while self._pending_conscience:
             blocks.append(self._pending_conscience.popleft())
+        while self._pending_card_presses:
+            blocks.append(self._pending_card_presses.popleft())
         spawn_blocks: list[str] = []
         while self._pending_spawn_completions:
             spawn_blocks.append(self._pending_spawn_completions.popleft())
@@ -1670,7 +2792,10 @@ class ChatSession:
         if self.registry is None or not self.registry.tools:
             return None
         return self.registry.schemas_for_adapter(
-            enabled_extended=self._enabled_extended_tools
+            enabled_extended=self._enabled_extended_tools,
+            defer_outside_working_set=getattr(
+                self.adapter, "defers_tool_loading", False
+            ),
         )
 
     async def send(
@@ -1680,6 +2805,8 @@ class ChatSession:
         transient: bool = False,
         workspace_origin: dict[str, str] | None = None,
         view_snapshot: dict[str, Any] | None = None,
+        runtime_origin: str | None = None,
+        fold_when_needed: Callable[[], Awaitable[None]] | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         """Append a user turn; run the tool-call loop; yield every chunk.
 
@@ -1701,124 +2828,200 @@ class ChatSession:
         the store so a successful reply on turn A cannot mark unrelated
         items delivered before their own turns run (Codex audit 2026-05-07
         M1). ``None`` keeps the workspace stores out of the chat turn.
+
+        ``runtime_origin`` (one of :data:`RUNTIME_ORIGINS`) says the runtime
+        wrote this turn's text, not the operator. It is stamped on the stored
+        message and stripped before the request goes out, so the transcript
+        can draw it as the runtime speaking and a chat's name is never taken
+        from a sentence nobody typed. An unknown value raises: the mark is
+        what a surface renders, and a name nothing can draw is worse than the
+        bug it was meant to fix.
         """
-        # Preflight cap check — fires once per send() before mutating state so
-        # a blocked turn leaves history and cancel_event untouched. Only
-        # tier:api roles are gated; tier:cli (Claude/Codex subscriptions) and
-        # the no-tier default pass through.
-        if self.cost_ledger is not None and (self.options.tier or "api") == "api":
-            role = self.options.role or "chat_brain"
-            try:
-                self.cost_ledger.check_preflight(role)
-            except BudgetExhausted as exc:
-                # Cost UX overhaul: ask the operator before aborting.
-                # On approve, unlock the scope for the rest of the day
-                # and re-enter preflight (which now passes). On deny —
-                # or no callback — fall through to the original error
-                # chunk path so the turn still aborts cleanly.
-                approved = False
-                # A paused source (operator budget.pause_source) is an explicit
-                # hold, NOT a cap overage — the overage-ask card would mislead and
-                # its unlock can't lift a pause anyway. Fall straight to the
-                # informative error chunk. Cap overages keep the ask-to-continue UX.
-                if self.overage_ask_fn is not None and exc.scope != "paused":
-                    try:
-                        approved = await self.overage_ask_fn(exc)
-                    except Exception:
-                        approved = False
-                if approved:
-                    self.cost_ledger.unlock_overage(exc.scope_key())
-                    # Re-check preflight; a *different* scope (e.g. global
-                    # while we unlocked role) may still block. If it does,
-                    # raise to the original abort path below.
-                    try:
-                        self.cost_ledger.check_preflight(role)
-                    except BudgetExhausted as exc2:
-                        exc = exc2
-                        approved = False
-                if not approved:
-                    yield StreamChunk(
-                        type=ChunkType.ERROR,
-                        error=str(exc),
-                        raw={
-                            "severity": "warning",
-                            "reason": "budget_exhausted",
-                            "scope": exc.scope,
-                            "role": exc.role,
-                            "spent_usd": exc.spent_usd,
-                            "cap_usd": exc.cap_usd,
-                        },
+        if runtime_origin is not None and runtime_origin not in RUNTIME_ORIGINS:
+            raise ValueError(
+                f"unknown runtime_origin {runtime_origin!r}; "
+                f"expected one of {sorted(RUNTIME_ORIGINS)}"
+            )
+        # The turn's own record opens before anything can refuse it, because a
+        # turn that never began is one of the things "did it work" has to be
+        # able to answer. Synthetic workspace turns are excluded for the same
+        # reason they are kept out of history: they are rolled back at the end
+        # and a record of one describes work that no longer exists.
+        if self.turn_entry and not transient:
+            self._turn_recorder = TurnRecorder(
+                entry=self._turn_record_entry,
+                session_id=self.tool_context.session_id,
+            )
+            # Bound into `orchestrator.turns.context` so a record written under
+            # the turn (a cost row) can name it; released where it is closed.
+            enter_turn(self._turn_recorder)
+            self.last_turn_id = self._turn_recorder.turn_id
+            self._beat("getting ready")
+        else:
+            self.last_turn_id = ""
+        turn_outcome = RunOutcome.FAILED
+        turn_reason = "the turn ended without recording how"
+        # Everything from here to the streaming `try` runs with the turn's
+        # record open and its binding live, and none of it was guarded: a
+        # raise in preflight or recall left the record open on disk and the
+        # binding pointing at a dead turn for the next write in this task to
+        # read. Closed on the way out, the way the streaming `finally` does.
+        try:
+            # Preflight cap check — fires once per send() before mutating state so
+            # a blocked turn leaves history and cancel_event untouched. Only
+            # tier:api roles are gated; tier:cli (Claude/Codex subscriptions) and
+            # the no-tier default pass through.
+            if self.cost_ledger is not None and (self.options.tier or "api") == "api":
+                role = self.options.role or "chat_brain"
+                try:
+                    self.cost_ledger.check_preflight(role)
+                except BudgetExhausted as exc:
+                    # Cost UX overhaul: ask the operator before aborting.
+                    # On approve, unlock the scope for the rest of the day
+                    # and re-enter preflight (which now passes). On deny —
+                    # or no callback — fall through to the original error
+                    # chunk path so the turn still aborts cleanly.
+                    approved = False
+                    # A paused source (operator budget.pause_source) is an explicit
+                    # hold, NOT a cap overage — the overage-ask card would mislead and
+                    # its unlock can't lift a pause anyway. Fall straight to the
+                    # informative error chunk. Cap overages keep the ask-to-continue UX.
+                    if self.overage_ask_fn is not None and exc.scope != "paused":
+                        try:
+                            approved = await self.overage_ask_fn(exc)
+                        except Exception:
+                            approved = False
+                    if approved:
+                        self.cost_ledger.unlock_overage(exc.scope_key())
+                        # Re-check preflight; a *different* scope (e.g. global
+                        # while we unlocked role) may still block. If it does,
+                        # raise to the original abort path below.
+                        try:
+                            self.cost_ledger.check_preflight(role)
+                        except BudgetExhausted as exc2:
+                            exc = exc2
+                            approved = False
+                    if not approved:
+                        # Refused, not failed: the turn deliberately did not begin.
+                        # This exit is above the `try` that owns the finally below,
+                        # so it closes its own record.
+                        self.last_turn_outcome = RunOutcome.REFUSED
+                        self.last_turn_reason = str(exc)
+                        self._close_turn_record(RunOutcome.REFUSED, str(exc))
+                        yield StreamChunk(
+                            type=ChunkType.ERROR,
+                            # The sentence, not `str(exc)`. The exception's own text
+                            # is machine text and it reached a phone verbatim, where
+                            # the leak filter ate it for containing a slash. What a
+                            # person needs is the cause and the remedy.
+                            error=exc.as_sentence(),
+                            raw={
+                                "severity": "warning",
+                                "reason": "budget_exhausted",
+                                "detail": str(exc),
+                                "scope": exc.scope,
+                                "role": exc.role,
+                                "spent_usd": exc.spent_usd,
+                                "cap_usd": exc.cap_usd,
+                            },
+                        )
+                        return
+
+            self.tool_context.cancel_event.clear()
+            # P6 Task 5 — a new turn starts a fresh consecutive-error count
+            # (streak is "within a turn"); the visible failures_signal line
+            # from a PRIOR turn's streak is left alone — it only clears when
+            # the flagged tool actually succeeds.
+            self._tool_error_streak_name = ""
+            self._tool_error_streak_count = 0
+            self._guard_firings_this_turn = 0
+            # A turn that died before the boundary must not hand its decision
+            # to the next one: the conversation it wanted to leave behind is
+            # not the conversation that would be folded.
+            self._continuation = ""
+            user_message: dict[str, Any] = {
+                "role": "user",
+                "content": user_text,
+                "timestamp": _now_iso(),
+            }
+            if runtime_origin is not None:
+                user_message[_RUNTIME_KEY] = runtime_origin
+            self.history.append(user_message)
+            appended_user_idx = len(self.history) - 1
+            self._turn_active = True
+            self._turn_prompt = None
+            # Stage 2B halt-watchdog — flag wedged background spawns BEFORE the
+            # drain so a fresh `[spawn_stalled]` note rides this turn's injection.
+            self._sweep_stalled_spawns()
+            self._turn_injection = self._drain_pending_suggestions(
+                workspace_origin=workspace_origin,
+            )
+            # Synthetic workspace turns: signal post-send cleanup to drop the
+            # appended user turn + any assistant turns that follow it. Tracked
+            # here, applied in the `finally` block.
+            transient_start_idx = appended_user_idx if transient else -1
+
+            # Auto memory recall (lean-agent-os P1 Task 3) — replaces the old
+            # regex-based recall-intent nudge. Every operator turn is embedded
+            # and retrieved via the SAME pipeline `memory_search` uses (see
+            # `auto_recall.py`); relevant hits are injected as a
+            # `[recalled_memories]` block. Same one-turn lifetime as observer
+            # suggestions — cleared inside `_messages_for_turn`. Best-effort:
+            # any retrieval failure (embedder down, etc.) yields no block and
+            # the turn proceeds untouched.
+            memory_tool = self.registry.get("memory_search") if self.registry is not None else None
+            pipeline = getattr(memory_tool, "pipeline", None)
+            if pipeline is not None:
+                recall_cfg = load_auto_recall_config()
+                recall_items = await auto_recall(
+                    _flatten_message_text(user_text),
+                    pipeline,
+                    top_k=recall_cfg.top_k,
+                    char_cap=recall_cfg.char_cap,
+                    min_similarity=recall_cfg.min_similarity,
+                    min_query_words=recall_cfg.min_query_words,
+                    exclude_ids=self._recall_excluded_ids(),
+                )
+                self._record_recall_injection(
+                    {it.memory_id for it in recall_items}, recall_cfg.dedup_window_turns
+                )
+                # What the map says these records connect to, on the push that
+                # already happens rather than as a second one. `with_connections`
+                # carries the whole argument for why; in short, the atlas was
+                # scoped to a question nobody types out loud.
+                recall_items = with_connections(
+                    recall_items, limit=recall_cfg.connections_per_memory
+                )
+                recall_block = format_recall_block(recall_items)
+                if recall_block:
+                    self._turn_injection = (
+                        f"{recall_block}\n\n{self._turn_injection}"
+                        if self._turn_injection
+                        else recall_block
                     )
-                    return
 
-        self.tool_context.cancel_event.clear()
-        # P6 Task 5 — a new turn starts a fresh consecutive-error count
-        # (streak is "within a turn"); the visible failures_signal line
-        # from a PRIOR turn's streak is left alone — it only clears when
-        # the flagged tool actually succeeds.
-        self._tool_error_streak_name = ""
-        self._tool_error_streak_count = 0
-        self.history.append({
-            "role": "user",
-            "content": user_text,
-            "timestamp": _now_iso(),
-        })
-        appended_user_idx = len(self.history) - 1
-        # Stage 2B halt-watchdog — flag wedged background spawns BEFORE the
-        # drain so a fresh `[spawn_stalled]` note rides this turn's injection.
-        self._sweep_stalled_spawns()
-        self._turn_injection = self._drain_pending_suggestions(
-            workspace_origin=workspace_origin,
-        )
-        # Synthetic workspace turns: signal post-send cleanup to drop the
-        # appended user turn + any assistant turns that follow it. Tracked
-        # here, applied in the `finally` block.
-        transient_start_idx = appended_user_idx if transient else -1
+            # Ambient observer: prepend `current_view` + `view_state`
+            # so chat brain can resolve "help me with this row" against the
+            # operator's current Mirror tab. Same one-turn lifetime — the
+            # injection is cleared post-iteration-0 by `_messages_for_turn`.
+            if view_snapshot:
+                block = _format_view_snapshot(view_snapshot)
+                if block:
+                    self._turn_injection = (
+                        f"{block}\n\n{self._turn_injection}"
+                        if self._turn_injection
+                        else block
+                    )
 
-        # Auto memory recall (lean-agent-os P1 Task 3) — replaces the old
-        # regex-based recall-intent nudge. Every operator turn is embedded
-        # and retrieved via the SAME pipeline `memory_search` uses (see
-        # `auto_recall.py`); relevant hits are injected as a
-        # `[recalled_memories]` block. Same one-turn lifetime as observer
-        # suggestions — cleared inside `_messages_for_turn`. Best-effort:
-        # any retrieval failure (embedder down, etc.) yields no block and
-        # the turn proceeds untouched.
-        memory_tool = self.registry.get("memory_search") if self.registry is not None else None
-        pipeline = getattr(memory_tool, "pipeline", None)
-        if pipeline is not None:
-            recall_cfg = load_auto_recall_config()
-            recall_items = await auto_recall(
-                _flatten_message_text(user_text),
-                pipeline,
-                top_k=recall_cfg.top_k,
-                char_cap=recall_cfg.char_cap,
-                min_similarity=recall_cfg.min_similarity,
-                min_query_words=recall_cfg.min_query_words,
-                exclude_ids=self._recall_excluded_ids(),
-            )
-            self._record_recall_injection(
-                {it.memory_id for it in recall_items}, recall_cfg.dedup_window_turns
-            )
-            recall_block = format_recall_block(recall_items)
-            if recall_block:
-                self._turn_injection = (
-                    f"{recall_block}\n\n{self._turn_injection}"
-                    if self._turn_injection
-                    else recall_block
-                )
-
-        # MP-2 ambient observer: prepend `current_view` + `view_state`
-        # so chat brain can resolve "help me with this row" against the
-        # operator's current Mirror tab. Same one-turn lifetime — the
-        # injection is cleared post-iteration-0 by `_messages_for_turn`.
-        if view_snapshot:
-            block = _format_view_snapshot(view_snapshot)
-            if block:
-                self._turn_injection = (
-                    f"{block}\n\n{self._turn_injection}"
-                    if self._turn_injection
-                    else block
-                )
+        except BaseException as exc:
+            # The refused path above closes its own record and then yields, so
+            # a consumer that lets go at that yield arrives here with nothing
+            # open; its REFUSED must not be rewritten as a failure.
+            if self._turn_recorder is not None:
+                self.last_turn_outcome = RunOutcome.FAILED
+                self.last_turn_reason = f"{type(exc).__name__}: {exc}"
+                self._close_turn_record(RunOutcome.FAILED, self.last_turn_reason)
+            raise
 
         try:
             if self.options.provider and self.options.model:
@@ -1894,6 +3097,21 @@ class ChatSession:
                 adapter_error_text = ""
                 adapter_error_soft = False
 
+                # Pause, fold, continue. Compaction used to happen only
+                # BETWEEN turns, so one turn could grow past the ceiling on its
+                # own: the cap allows eighty tool calls, and a loop dumping
+                # large results crosses a budget built for a conversation. What
+                # caught it was the emergency guard, which fired seventeen
+                # times in two minutes on 2026-08-24 clearing re-fetchable tool
+                # results while the same turn added more.
+                #
+                # `fold_when_needed` is the caller's own after-turn hook,
+                # handed in rather than reimplemented, so the decision, the
+                # tally, the log entry and the notice are the ones both funnels
+                # already share. Not on iteration 0: the turn boundary just
+                # ran, and folding twice in a row buys nothing.
+                if iteration and fold_when_needed is not None and self._grown_mid_turn():
+                    await fold_when_needed()
                 # Timed on the first iteration only. Prompt assembly is the one
                 # piece of the "brain" leg that is ours rather than the
                 # provider's, and without a number for it a slow turn can only
@@ -1933,10 +3151,19 @@ class ChatSession:
                             "answer from what you have found so far and respond in plain text."
                         ),
                     })
+                _step_started = datetime.now(timezone.utc)
+                _schemas = self._tool_schemas()
+                # Recorded from what this iteration is ABOUT to send, so the
+                # cache line beside the usage costs a tuple rather than a
+                # second assembly. Rebuilding it there doubled the prompt
+                # assembly and the schema build on every round trip, which is
+                # the cost the timing three lines above exists to watch.
+                self._last_request_shape = self._request_shape(messages, _schemas)
+                self._beat("waiting for the model to answer")
                 try:
                     async for chunk in self.adapter.stream(
                         messages=messages,
-                        tools=self._tool_schemas(),
+                        tools=_schemas,
                         options=self.options,
                     ):
                         if chunk.type == ChunkType.TEXT:
@@ -1987,6 +3214,8 @@ class ChatSession:
                                 # from elsewhere, not adapter failures.
                                 # Preserve the existing terminate-cleanly
                                 # contract.
+                                turn_outcome = RunOutcome.REFUSED
+                                turn_reason = chunk.error or "the turn was stopped deliberately"
                                 return
                             adapter_error_seen = True
                             adapter_error_text = chunk.error or "unknown"
@@ -2005,6 +3234,26 @@ class ChatSession:
                         assistant_text.append("\n\n[interrupted by operator]")
                         self._append_assistant_message(assistant_text, [], last_model_meta, last_usage)
                     raise
+
+                # One step per roundtrip to the provider. A cut-off stream
+                # commits nothing on purpose: the last committed step is where
+                # the turn got to, and a call that never returned did not.
+                self._record_step(
+                    kind="model",
+                    name=self.options.role or "chat_brain",
+                    outcome=(
+                        RunOutcome.FAILED if adapter_error_seen
+                        else RunOutcome.TRUNCATED if _is_truncated_stop(stop_reason)
+                        else RunOutcome.SUCCEEDED
+                    ),
+                    reason=(
+                        adapter_error_text if adapter_error_seen
+                        else f"the provider cut the reply off ({stop_reason})"
+                        if _is_truncated_stop(stop_reason)
+                        else ""
+                    ),
+                    started_at=_step_started,
+                )
 
                 if adapter_error_seen:
                     # Persist any partial assistant text so the chat log
@@ -2046,6 +3295,12 @@ class ChatSession:
                         # Reset so the next send() starts clean — the
                         # operator will likely send a follow-up turn.
                         self._consecutive_adapter_errors = 0
+                        turn_outcome = RunOutcome.FAILED
+                        turn_reason = (
+                            f"the model failed {self.max_consecutive_adapter_errors} "
+                            f"times in a row and the breaker opened. "
+                            f"Last: {adapter_error_text}"
+                        )
                         return
                     # Inject a synthetic system message so the assistant sees the
                     # error on the next iteration and can self-correct
@@ -2187,6 +3442,19 @@ class ChatSession:
                         sum(len(p) for p in assistant_text),
                         turn_tool_invocations,
                     )
+                    # A turn that said nothing, or said half of something, ran
+                    # to the end and still did not deliver what a turn owes.
+                    # `degraded` is that distinction, and it is the reason the
+                    # vocabulary has a word between succeeded and failed.
+                    if status_only:
+                        turn_outcome = RunOutcome.DEGRADED
+                        turn_reason = "the turn ended with no reply, twice in a row"
+                    elif truncated:
+                        turn_outcome = RunOutcome.DEGRADED
+                        turn_reason = f"the reply was cut off ({stop_reason})"
+                    else:
+                        turn_outcome = RunOutcome.SUCCEEDED
+                        turn_reason = ""
                     return
 
                 turn_tool_invocations += len(pending_calls)
@@ -2200,7 +3468,7 @@ class ChatSession:
                         raw={"injected": injected, "count": len(injected)},
                     )
 
-                # Phase 4: surface any background spawns that completed
+                # Surface any background spawns that completed
                 # between iterations. The chunk carries handle id +
                 # kind + status + summary so the frontend can clear
                 # the "running" badge on the corresponding DelegateCard
@@ -2221,7 +3489,31 @@ class ChatSession:
                     )
 
                 iteration += 1
+        except asyncio.CancelledError:
+            # The 2026-08-24 incident's own shape: a shutdown drain cancels a
+            # turn that is minutes into its work. The record says so rather
+            # than the turn simply ceasing to exist.
+            turn_outcome = RunOutcome.TRUNCATED
+            turn_reason = "the turn was cancelled before it finished"
+            raise
+        except GeneratorExit:
+            # Whoever was reading this stream stopped reading it: a closed
+            # socket, a channel that hung up. Same shape as a cancel, and
+            # naming it separately is what tells the two apart afterwards.
+            turn_outcome = RunOutcome.TRUNCATED
+            turn_reason = "whoever was waiting stopped listening before the turn finished"
+            raise
+        except Exception as exc:
+            # Re-raised untouched. Catching it only buys the record a reason,
+            # and a turn whose record says `failed` with no cause is the thing
+            # this phase exists to stop.
+            turn_outcome = RunOutcome.FAILED
+            turn_reason = f"{type(exc).__name__}: {exc}"
+            raise
         finally:
+            self.last_turn_outcome = turn_outcome
+            self.last_turn_reason = turn_reason
+            self._close_turn_record(turn_outcome, turn_reason)
             # Observer notify fires here so every exit path reaches it:
             # normal completion, tool-cap overflow, operator cancel. The
             # method is idempotent (no-op when the watermark equals history
@@ -2238,7 +3530,7 @@ class ChatSession:
                     self._notify_observer_turn_end()
                 except Exception:
                     logger.exception("observer notify in finally raised")
-                # AU-16 leaf stream — emit one MemoryLeaf per completed
+                # Leaf stream — emit one MemoryLeaf per completed
                 # turn so the per-source / per-topic / global trees fill
                 # with real activity. Synthetic workspace turns are
                 # excluded (same reason as observer). Failure logs and
@@ -2250,6 +3542,8 @@ class ChatSession:
                     logger.exception("leaf emit in finally raised")
             self._strip_attachment_data_from_history(appended_user_idx)
             self._turn_injection = ""
+            self._turn_active = False
+            self._turn_prompt = None
             # Synthetic workspace turn cleanup: drop the synthetic user
             # turn AND any assistant turns appended after it. Keeps chat
             # history free of `[workspace_origin]` framing so subsequent
@@ -2271,30 +3565,145 @@ class ChatSession:
         right model name in the per-role daily total (W3 reviewer
         follow-up, 2026-04-29).
         """
-        if self.cost_ledger is None:
-            return
         billed_options = getattr(self.adapter, "last_used_options", None) or self.options
-        if not billed_options.model:
-            return
         raw = stop_chunk.raw or {}
         usage = raw.get("usage") if isinstance(raw, dict) else None
         if not isinstance(usage, dict):
             return
+        if self._bill(usage, billed_options):
+            self._log_cache_shape(usage)
+
+    def _bill(self, usage: dict[str, Any], options: AdapterOptions) -> bool:
+        """Put one provider call on the ledger. True when a row was written.
+
+        The one seam. Compaction is the reason it is named: `compact_history`
+        ran a model call and threw its STOP chunk away, so the largest single
+        input a session ever sends billed nothing at all, on a chain that is
+        not `MeteredAdapter`-wrapped and therefore had no second net under it.
+        A call that reaches a provider and not this method is spend nobody can
+        see.
+        """
+        if self.cost_ledger is None or not options.model:
+            return False
         try:
             self.cost_ledger.record(
-                billed_options.role or "chat_brain",
-                billed_options.model,
-                CostUsage(
-                    input_tokens=int(usage.get("input_tokens") or 0),
-                    output_tokens=int(usage.get("output_tokens") or 0),
-                    cached_tokens=int(usage.get("cached_tokens") or 0),
-                    cache_creation_tokens=int(usage.get("cache_creation_tokens") or 0),
-                ),
+                options.role or "chat_brain",
+                options.model,
+                CostUsage.from_raw(usage),
+                tier=options.tier or "",
             )
         except RuntimeError:
-            # Missing pricing entry in roles.yaml — logged inside ledger; the
-            # turn itself must not die because the accountant can't price it.
+            # Missing or unpriceable catalog entry — logged inside the ledger.
+            # The turn itself must not die because the accountant cannot price
+            # it.
             logger.exception("cost ledger record failed")
+            return False
+        return True
+
+    def _log_cache_shape(self, usage: dict[str, Any]) -> None:
+        """One line per provider call: what was cached, and what the request
+        was SHAPED like when it was.
+
+        This line answered the question it was added for. Roughly half the
+        input of a measured session was being paid for at full price, and two
+        shapes accounted for most of it:
+
+        - `tools` changed. Every `cached=0` line was a tool-count change, with
+          no exceptions, which is what proved the render order: tools go
+          before the system prompt, so adding one invalidates the head as well
+          as the conversation. `tool_search` unlocks a tool for the NEXT
+          ITERATION, so several landed mid-turn and re-read the whole prompt
+          seconds later.
+        - `late_at` moved. The per-turn block sat above the operator's
+          message, so each turn put the first difference one turn deeper and
+          the cache fell to a floor that was exactly the head plus the tools,
+          confirmed against four different tool counts. That is what moved it
+          below everything.
+
+        Two candidates were eliminated by the same data rather than by
+        reading: the emergency prompt guard never fired in the measured
+        window, and no gap between calls came near a cache TTL.
+
+        The fields still watch for both. `late_at` should now sit at the very
+        end of the list and `msgs` should only grow; `tools` should hold still
+        for the life of a session; `sys_chars` says whether the head itself
+        changed, which after the tiering means a memory was written.
+        """
+        shape = self._last_request_shape
+        if shape is None:
+            return
+        logger.info(
+            "cache shape: cached=%s in=%s conv=%s msgs=%d late_at=%d tools=%d sys_chars=%d",
+            usage.get("cached_tokens"),
+            usage.get("input_tokens"),
+            *shape,
+        )
+
+    @staticmethod
+    def _conversation_tag(messages: list[dict[str, Any]]) -> str:
+        """Which conversation this call belongs to, in eight hex characters.
+
+        The earliest message that is not the system prompt, keyed-hashed.
+        Fixed for the life of a conversation, different in every one, and
+        already in the request.
+
+        KEYED, with a secret made once per process and never written down. A
+        bare digest of operator text is not the same thing as no operator text:
+        eight hex characters is 32 bits, and a reader of these logs who can
+        guess a short opening line can confirm it by hashing candidates. The
+        adapter beside this one states the rule these logs are held to —
+        "hashes, never content" — and an unkeyed hash of content does not meet
+        it. The key costs nothing and the tag is only ever compared with
+        itself.
+
+        Without it these lines cannot be read at all once more than one
+        conversation is live, and one always is: the cockpit, a channel turn,
+        the observer and the panel writer all land in the same log. Every
+        analysis in this investigation that compared a call to the one before
+        it was wrong for that reason, three times, each time inventing a cache
+        miss that had not happened.
+        """
+        for msg in messages:
+            if msg.get("role") == "system":
+                continue
+            content = msg.get("content")
+            if not isinstance(content, str):
+                content = json.dumps(content, sort_keys=True, default=str)
+            if content:
+                return hmac.new(
+                    _LOG_TAG_KEY, content.encode("utf-8"), hashlib.sha256
+                ).hexdigest()[:8]
+        return "-"
+
+    @staticmethod
+    def _request_shape(
+        messages: list[dict[str, Any]], schemas: list[dict[str, Any]] | None
+    ) -> tuple[str, int, int, int, int]:
+        """`(conversation, messages, index of the per-turn block, tools, system chars)`.
+
+        Read off the request that is about to go out. Each one is a thing that
+        can shorten the cached prefix, and the line they end up on tells them
+        apart: the conversation says WHICH prefix this call was meant to reuse,
+        the index says where the per-turn block sat,
+        the tool count says whether `tool_search` grew the array mid-session,
+        and the system length says whether the head itself changed.
+        """
+        late_at = next(
+            (
+                i
+                for i, m in enumerate(messages)
+                if m.get(_RUNTIME_KEY) == _RUNTIME_LATE_PROMPT
+            ),
+            -1,
+        )
+        head = messages[0] if messages and messages[0].get("role") == "system" else None
+        return (
+            ChatSession._conversation_tag(messages),
+            len(messages),
+            late_at,
+            len(schemas or ()),
+            len(head.get("content") or "") if head else 0,
+        )
 
     def _notify_observer_turn_end(self) -> None:
         sub = self._observer_subscriber
@@ -2374,7 +3783,7 @@ class ChatSession:
 
     def _emit_turn_leaf(self, appended_user_idx: int) -> None:
         """Push one ``MemoryLeaf`` representing this completed turn into
-        the AU-16 leaf stream. Source is derived from ``session_kind``
+        the leaf stream. Source is derived from ``session_kind``
         (channel / cockpit). The lifecycle jobs (``ExtractChunkJob`` …
         ``DigestDailyJob``) pick it up on their next tick.
 
@@ -2458,7 +3867,7 @@ class ChatSession:
                 )
             return
 
-        # Partition by concurrency safety (audit M5, 2026-04-29). Tools
+        # Partition by concurrency safety. Tools
         # that mutate shared state — file_write, bash_tool, invoke_agent,
         # agent_create, delegate_*, schedule_*, set_mood/voice/state,
         # alarm_* — declare `is_concurrency_safe() is False`. Running
@@ -2480,7 +3889,10 @@ class ChatSession:
         # sees a stable message sequence.
         async def _run_one(idx: int, tc: ToolCall) -> tuple[int, ToolCall, ToolResult]:
             per_call_ctx = dataclasses.replace(
-                self.tool_context, current_call_id=tc.id,
+                self.tool_context,
+                current_call_id=tc.id,
+                turn_id=self._turn_recorder.turn_id if self._turn_recorder else "",
+                bind_task=self._turn_recorder.bind_task if self._turn_recorder else None,
             )
             result = await execute_tool(
                 registry=self.registry,
@@ -2490,7 +3902,20 @@ class ChatSession:
                 ask_fn=self.ask_fn,
                 policy=self.policy,
             )
-            return idx, tc, result
+            # Every result passes through here, so it is also where the one
+            # thing the frozen head cannot survive is caught. Only on success:
+            # a refused or failed `project_open` moved nothing, and throwing
+            # the prefix away for it would pay the whole cost of a switch that
+            # did not happen.
+            # Every result passes through here, so this is where a result too
+            # large to send is caught. Read at call time, like every other
+            # runtime limit, so an operator edit applies without a restart.
+            return idx, tc, bound_tool_result(
+                result,
+                tc.name,
+                self.options.context_window,
+                _result_window_share(),
+            )
 
         safe_indices: list[int] = []
         unsafe_indices: list[int] = []
@@ -2500,6 +3925,15 @@ class ChatSession:
                 safe_indices.append(i)
             else:
                 unsafe_indices.append(i)
+
+        # The last beat before the turn disappears into the tools. A call that
+        # hangs stops the clock here, which is what lets the panel say the turn
+        # is held on `weather_lookup` rather than that it is busy.
+        self._beat(
+            ("running " + ", ".join(dict.fromkeys(tc.name for tc in pending_calls)))
+            if pending_calls
+            else "running a tool"
+        )
 
         # trio W4 — inherit a background spawn's `spawn:<handle_id>` name
         # prefix onto fan-out tool tasks: the Mirror ask_fn detects spawn
@@ -2524,6 +3958,22 @@ class ChatSession:
         results: dict[int, tuple[ToolCall, ToolResult]] = {}
 
         def _result_chunk(tc: ToolCall, result: ToolResult) -> StreamChunk:
+            # Every tool result the turn produces passes through here, which is
+            # what makes the manifest reconcilable against the transcript: a
+            # call with no row here is a call that never returned one.
+            if result.denied_hard:
+                outcome = RunOutcome.REFUSED
+                reason = result.deny_reason or "the permission gate refused it"
+            elif result.timed_out:
+                outcome = RunOutcome.TRUNCATED
+                reason = "it ran out of time before it finished"
+            elif result.is_error:
+                outcome = RunOutcome.FAILED
+                reason = result.output[:_STEP_REASON_CHARS]
+            else:
+                outcome = RunOutcome.SUCCEEDED
+                reason = ""
+            self._record_step(kind="tool", name=tc.name, outcome=outcome, reason=reason)
             raw: dict[str, Any] = {}
             if result.denied_hard:
                 raw["denied_hard"] = True
@@ -2593,8 +4043,7 @@ class ChatSession:
                 # failures_signal so the digest carries an "escalate now"
                 # line (rule 11-error-recovery.md reads it). A success
                 # clears the streak ONLY when it's the tool actually
-                # RECORDED in failures_signal (fix-pass 1, review on
-                # commit 99f91c9a) — gating on the local per-turn tracker
+                # RECORDED in failures_signal — gating on the local tracker
                 # instead let an unrelated tool's later-turn recovery wipe
                 # a still-unresolved streak (the local tracker is reset
                 # every turn and gets reassigned to whatever tool runs
@@ -2688,11 +4137,34 @@ class ChatSession:
         if run_error is not None:
             raise run_error
 
+    def request_continuation(self, mode: str) -> None:
+        """Record what should happen to this conversation once the turn ends.
+
+        Raises `ValueError` on a mode that is not one of `Continuation`'s, so a
+        caller that misspells it hears about it instead of having its decision
+        silently dropped at the boundary.
+
+        Last call wins. A turn that asks twice has changed its mind, and
+        carrying both would mean folding a conversation on its way out.
+        """
+        self._continuation = Continuation(mode).value
+
+    def take_continuation(self) -> str:
+        """What this turn asked for, cleared as it is read.
+
+        Cleared here rather than by the reader, because the boundary acts on it
+        once and a mode left behind fires again at the end of the next turn
+        against a conversation that never asked.
+        """
+        mode, self._continuation = self._continuation, ""
+        return mode
+
     def reset(self) -> None:
         self.history.clear()
         self._observer_last_index = 0
         self._pending_suggestions.clear()
         self._pending_conscience.clear()
+        self._pending_card_presses.clear()
         # Mark every tracked spawn cancelled BEFORE the queues are cleared and
         # the store discarded, not when the scheduled `cancel_all` below finally
         # reaches it. `cancel_handle` leaves a task that already finished
@@ -2717,6 +4189,13 @@ class ChatSession:
             completion_store.discard(self.spawns.chat_id)
         self._observed_ids.clear()
         self._turn_injection = ""
+        self._turn_active = False
+        self._turn_prompt = None
+        # A wiped history is a new conversation on the same object, and the
+        # held sections are held for the life of a CONVERSATION. Nothing is
+        # cached in front of an empty history either, so reading them again is
+        # free here for the same reason it is free after a fold.
+        self.refresh_head()
         self._consecutive_adapter_errors = 0
         self._tool_error_streak_name = ""
         self._tool_error_streak_count = 0
@@ -2724,7 +4203,7 @@ class ChatSession:
         self._pending_workspace_event_ids = []
         self.pending_injected_messages = []
         self.tool_context.todos.clear()
-        # Phase 4: cancel any background spawns. cancel_all is async
+        # Cancel any background spawns. cancel_all is async
         # so schedule it on the running loop without blocking — `/reset`
         # is a sync command path and the running spawn tasks will
         # honour the cancel and unwind asynchronously. Use
@@ -2773,25 +4252,288 @@ class ChatSession:
         return drained
 
     def token_estimate(self) -> int:
-        return self.adapter.count_tokens(self._messages_for_turn())
+        """How big the conversation IS, not how big the guard let it look.
+
+        Reads the untrimmed assembly. Reading `_messages_for_turn` meant this
+        measured the guard's output, and a guarded session reported the same
+        small number every turn forever.
+        """
+        return self.adapter.count_tokens(self._assemble_for_turn()[0])
 
     def should_compact(self) -> bool:
         """True when history has grown past compact_threshold of context window.
 
-        CR-0: we still gate on a minimum history length so a fresh session
-        doesn't compact prematurely. The floor is ``head_anchor + tail + 2``
-        where tail is the active window size in messages (legacy fallback)
-        or a conservative 4-message minimum when token-budgeted.
+        We gate on a minimum history length so a fresh session doesn't
+        compact prematurely, and on there being something between the head
+        anchor and the verbatim tail for a fold to actually fold. Saying yes
+        with an empty middle is not free: the turn boundary spends a
+        reflection call, a real model turn, before `compact` discovers there
+        was nothing to do.
+
+One question, in tokens, and it is `compact_ratio`'s. It used to be
+        two: a char arm derived from the guard's budget was asked first and
+        answered yes first on every real configuration, so the dial the
+        operator turns decided nothing. The header records what that cost and
+        why the char arm is not needed to hold the guarantee it was added for.
         """
         ctx = self.options.context_window or 0
         if ctx <= 0:
             return False
-        tail_floor = (
-            4 if self.active_window_tokens is not None else self.keep_recent_turns
-        )
-        if len(self.history) <= self.head_anchor_messages + tail_floor + 2:
+        # Messages, not turns: a conservative minimum below which folding
+        # cannot be worth a model call whatever the turn count says.
+        if len(self.history) <= self.head_anchor_messages + 6:
             return False
-        return self.token_estimate() >= ctx * self.compact_threshold
+        # Assembled once and asked both questions. Assembly walks the whole
+        # history, and this runs after every turn on both surfaces.
+        # Measured here and kept, because the trigger subtracts it and because
+        # everything that reports it was counting the frozen `system_prompt`
+        # instead of the message this turn assembled.
+        foldable, self._system_tokens = self._foldable_split(
+            self._assemble_for_turn()[0]
+        )
+        if self.adapter.count_tokens(foldable) < self._fold_trigger_tokens(
+            ctx, self._system_tokens,
+        ):
+            return False
+        # An arm said yes. Whether that is worth a model call depends on there
+        # being something between the anchor and the tail, and finding out
+        # walks the turn boundaries, so it is asked last rather than first.
+        return not self._middle_is_empty()
+
+    def _foldable_split(
+        self, msgs: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Split an assembled payload into what a fold can remove, and the
+        system prompt's size.
+
+        **Pure.** It stamps nothing: `should_compact` owns `_system_tokens`
+        because the trigger subtracts it, and a reporting path that overwrote
+        it would be mutating the decision's state to draw a bar.
+
+        One definition, because the decision and the report both need it and a
+        panel measuring a different slice from the runtime is the defect
+        `fold_measurements` exists to close.
+
+        The system message is excluded because compaction cannot shrink it:
+        `compact()` rewrites `history` and never touches the head. Counting it
+        would mean a head that grew past the trigger on its own made compaction
+        fire after every turn, spend a model call, fail to get under, and fire
+        again forever.
+
+        The late half of the prompt rides as a transient user message and is
+        never written to `history`, so `compact` cannot touch it either.
+        Counting it is the system-prompt mistake in another costume: it grows
+        on its own (a clock, a memory capsule, the directives), and a payload
+        pushed over the line by it folds, fails to get under, and folds again.
+        """
+        has_system = bool(msgs) and msgs[0].get("role") == "system"
+        system_tokens = self.adapter.count_tokens(msgs[:1]) if has_system else 0
+        foldable = [
+            m
+            for m in (msgs[1:] if has_system else msgs)
+            if not _is_late_prompt_message(m)
+        ]
+        return foldable, system_tokens
+
+    def measure_payload(self) -> tuple[int, int, int]:
+        """`(total, foldable, system)` tokens, from ONE assembly.
+
+        Every reporter wants all three and the assembly walks the whole
+        history, so asking three times is three walks on a path that runs after
+        every turn. `context_report.gather` is the caller.
+        """
+        msgs = self._assemble_for_turn()[0]
+        foldable, system_tokens = self._foldable_split(msgs)
+        return (
+            self.adapter.count_tokens(msgs),
+            self.adapter.count_tokens(foldable),
+            system_tokens,
+        )
+
+    def _middle_is_empty(self) -> bool:
+        """True when a fold would find nothing between the anchor and the tail.
+
+        The same partition `compact` makes, asked before the reflection call
+        rather than after it. The running summary sits at the anchor's edge
+        and `compact` lifts it out before slicing, so it does not count as
+        something to fold.
+        """
+        anchor_end = _find_head_anchor_end(self.history, self.head_anchor_messages)
+        first = anchor_end
+        if first < len(self.history) and _is_running_summary_message(
+            self.history[first]
+        ):
+            first += 1
+        return self._compute_tail_start(self.history, anchor_end) <= first
+
+    def system_prompt_tokens(self) -> int:
+        """The system prompt as the fold decision last measured it.
+
+        Every cockpit session carries a `prompt_builder`, so `system_prompt`
+        is the string frozen at construction and not what the turn sent. The
+        stats that reach a screen have to quote the same number the trigger
+        was compared against, or the panel draws a line the runtime does not
+        use.
+        """
+        if self._system_tokens:
+            return self._system_tokens
+        # Cold: a session restored from disk has history but has not run a
+        # turn, so nothing has measured anything yet. Build the prompt rather
+        # than counting the frozen string, because the frozen string is what
+        # this method exists to stop reporting. One build, and the answer is
+        # kept for the next caller.
+        built = self._current_system_prompt()
+        # The head only, to match what `_assemble_for_turn` puts in the system
+        # message. The late half is a separate transient message and counting
+        # it here made the cold reading disagree with every warm one.
+        prompt = getattr(built, "head", built)
+        if not prompt:
+            return 0
+        # Not stored: `should_compact` writes `_system_tokens` from the message
+        # the turn assembled, and keeping this reading would pin a figure taken
+        # from a prompt that carries a clock.
+        return self.adapter.count_tokens(
+            [{"role": "system", "content": str(prompt)}]
+        )
+
+    def _fold_trigger_tokens(self, ctx: int, system_tokens: int) -> float:
+        """How large the FOLDABLE part may get before a fold is worth running.
+
+        Two numbers, and the larger wins.
+
+        The configured one is `compact_threshold` of the window, less the
+        system prompt, because the threshold is a statement about the whole
+        payload while only the rest of it can be folded.
+
+        The floor is what a fold always leaves behind — the head anchor and the
+        verbatim tail — times `headroom_multiplier`. Below that, compaction
+        cannot get under the line it just crossed, so it fires again next turn
+        and every turn after, spending a summarisation call each time to
+        achieve nothing. `roles.yaml` used to warn about this in a comment; a
+        comment cannot check itself, and the configuration it warned about
+        shipped anyway.
+
+        The floor raises the trigger and never lowers it, so a conversation
+        with room to fold still folds.
+        """
+        return self._trigger_with_floor(
+            ctx, system_tokens, self._unfoldable_tail_tokens(),
+        )
+
+    def _trigger_with_floor(
+        self, ctx: int, system_tokens: int, unfoldable: int
+    ) -> float:
+        """The two arms of the trigger, given a floor already measured.
+
+        Split out so `fold_measurements` can report the same number the
+        decision uses without measuring the floor a second time.
+        """
+        return max(
+            ctx * self.compact_threshold - system_tokens,
+            unfoldable * self.headroom_multiplier,
+        )
+
+    def turn_count(self) -> int:
+        """How many turns the conversation holds.
+
+        Turns, not messages halved. The two diverge the moment a turn calls a
+        tool, which is most of them.
+        """
+        return len(_turn_starts(self.history))
+
+    def fold_measurements(self, system_tokens: int) -> dict[str, int]:
+        """Everything the fold decision rests on, measured in one pass.
+
+        Settings draws the floor the runtime enforces, and it reads these
+        rather than recomputing them from the config. A control that derives
+        its picture from the setting instead of the measurement is how a
+        handle comes to promise something the runtime will not do, which is
+        the whole reason the tail stopped being a number somebody typed.
+        """
+        ctx = self.options.context_window or 0
+        anchor_tokens, tail_tokens, tail = self._anchor_and_tail()
+        unfoldable = anchor_tokens + tail_tokens
+        return {
+            "context_window": ctx,
+            "system_tokens": system_tokens,
+            "head_anchor_tokens": anchor_tokens,
+            "tail_tokens": tail_tokens,
+            "tail_turns": len(_turn_starts(tail)),
+            "keep_recent_turns": self.keep_recent_turns,
+            "unfoldable_tokens": unfoldable,
+            "fold_trigger_tokens": int(
+                self._trigger_with_floor(ctx, system_tokens, unfoldable)
+            ),
+            # The guard, reported alongside the fold rather than only logged.
+            # It trims an assembled prompt back under a char ceiling, and when
+            # it does the conversation is being held down by the guard instead
+            # of bounded by the dial. That was visible in the backend log and
+            # nowhere a person could reach from a phone.
+            "guard_char_budget": self.prompt_char_budget,
+            "guard_trim_tokens": tokens_from_chars(self.prompt_char_budget),
+            "guard_firings": self._guard_firings_this_session,
+        }
+
+    def _anchor_and_tail(self) -> tuple[int, int, list[dict[str, Any]]]:
+        """The head anchor and the verbatim tail, measured once.
+
+        Both halves are measured from the messages themselves: the head
+        anchor, and the turns the tail would keep if a fold ran now. Neither
+        is a configured number — the setting says how many turns, and a turn
+        has no size until you look at it.
+
+        One function because there are two readers and they must not disagree.
+        `_unfoldable_tail_tokens` is what the trigger ENFORCES and
+        `fold_measurements` is what Settings REPORTS, and a panel drawing a
+        different floor from the one the runtime uses is the whole defect this
+        workstream started from.
+        """
+        anchor_end = _find_head_anchor_end(self.history, self.head_anchor_messages)
+        anchor = self.adapter.count_tokens(self.history[:anchor_end])
+        tail_start = self._compute_tail_start(self.history, anchor_end, anchor)
+        tail = self.history[tail_start:]
+        return anchor, self.adapter.count_tokens(tail), tail
+
+    def _unfoldable_tail_tokens(self) -> int:
+        """Tokens a fold is guaranteed to keep, beyond the system prompt."""
+        anchor, tail_tokens, _ = self._anchor_and_tail()
+        return anchor + tail_tokens
+
+    def _tail_ceiling_tokens(self, anchor_tokens: int | None = None) -> int | None:
+        """The most the verbatim tail may measure, or None when unknowable.
+
+        Turns are what the operator sets, and a turn has no size: one carrying
+        twenty tool calls can outweigh fifty that carry none. So the setting
+        says how many turns to keep at most, and this says when to keep fewer.
+
+        The bound is what still leaves compaction able to win. A fold keeps
+        the head anchor and the tail, so those two have to sit under the
+        trigger with `headroom_multiplier` to spare, or the fold lands back
+        over the line it just crossed and fires again next turn.
+
+        **The system prompt is deliberately NOT subtracted here**, though it
+        is subtracted from the trigger's configured arm. Taking it off this
+        bound too collapses the ceiling to nothing whenever the prompt alone
+        exceeds `context_window * compact_threshold`, and a tail trimmed to
+        nothing makes the floor tiny, the trigger tiny, and every turn fold.
+        That is the failure this whole mechanism exists to prevent. The price
+        is that the floor arm can exceed the configured arm by at most the
+        size of the prompt, which delays a fold in a tail-heavy session and
+        can never push the trigger above `context_window * compact_threshold`.
+
+        `anchor_tokens` is accepted so a caller that has already measured the
+        anchor does not pay for it twice on a path that runs every turn.
+        """
+        ctx = self.options.context_window or 0
+        if ctx <= 0:
+            return None
+        if anchor_tokens is None:
+            anchor_end = _find_head_anchor_end(
+                self.history, self.head_anchor_messages
+            )
+            anchor_tokens = self.adapter.count_tokens(self.history[:anchor_end])
+        room = ctx * self.compact_threshold / self.headroom_multiplier
+        return max(0, int(room) - anchor_tokens)
 
     async def compact(self) -> tuple[int, int]:
         """Sliding-window compaction with head anchor + append summary.
@@ -2805,8 +4547,6 @@ class ChatSession:
         Returns (tokens_before, tokens_after). No-op (same numbers twice)
         when history is too short or summarization fails.
 
-        CR-0 (2026-05-22) replaced the prior destructive 4-6-sentence
-        rewrite.
         """
         before = self.token_estimate()
 
@@ -2818,9 +4558,13 @@ class ChatSession:
         history_clean: list[dict[str, Any]] = []
         for msg in self.history:
             if prior_summary_text is None and _is_running_summary_message(msg):
-                prior_summary_text = (msg.get("content") or "")[
-                    len(RUNNING_SUMMARY_PREFIX):
-                ].strip()
+                # Split on the blank line rather than slicing by the current
+                # prefix's length: the message may carry an older, shorter
+                # prefix, and slicing by today's length would eat the first
+                # lines of the summary itself.
+                raw = msg.get("content") or ""
+                _, sep, body = raw.partition("\n\n")
+                prior_summary_text = body.strip() if sep else ""
                 continue
             history_clean.append(msg)
 
@@ -2837,16 +4581,25 @@ class ChatSession:
             # in close succession without much new content; just keep the
             # current shape.
             logger.debug("compact: no new middle slice to summarize — no-op")
+            self._last_fold_outcome = "nothing_to_fold"
             return before, before
 
-        new_slice_summary = await compact_history(
+        folded = await compact_history(
             self.adapter,
             self.options,
             middle,
             prior_summary=prior_summary_text,
         )
+        # Billed before the summary is inspected, and billed even when the
+        # summarizer came back empty: a fold that failed sent the same input a
+        # fold that worked sends, and charging only for the successful ones is
+        # how the expensive failures stayed invisible.
+        if folded.usage:
+            self._bill(folded.usage, folded.options)
+        new_slice_summary = folded.summary
         if not new_slice_summary:
             logger.warning("compaction returned empty summary — keeping full history")
+            self._last_fold_outcome = "summarizer_failed"
             return before, before
 
         # Build the running summary message. Each compaction adds one
@@ -2863,6 +4616,7 @@ class ChatSession:
             "role": "user",
             "content": f"{RUNNING_SUMMARY_PREFIX}\n\n{combined}",
             "timestamp": timestamp,
+            _RUNTIME_KEY: _RUNTIME_RUNNING_SUMMARY,
         }
 
         self.history = [
@@ -2870,6 +4624,20 @@ class ChatSession:
             running_summary_msg,
             *active_tail,
         ]
+        # HERE, and not at the top of this method. The fold has just rewritten
+        # the front of the history, so the cached prefix is gone and a fresh
+        # capsule costs nothing. Released before the rewrite it would also
+        # fire on the two exits above — a no-op fold and a failed summariser,
+        # both of which return with the history untouched and the prefix still
+        # live. Then a background write would move the head for a fold that
+        # never happened, and re-read the whole conversation to pay for it.
+        self.refresh_head()
+        # How many turns the fold left word for word. The transcript draws its
+        # divider in front of them, because everything ABOVE the divider is
+        # what got summarised and these did not. Without it the divider was
+        # appended at the end and labelled the kept turns as folded.
+        self._last_fold_tail_turns = len(_turn_starts(active_tail))
+        self._last_fold_outcome = "folded"
         # Pre-compaction turns were already observed (or never will be — the
         # summary is synthetic). Reset the watermark to current end so future
         # _notify_observer_turn_end slices into valid positions.
@@ -2884,29 +4652,42 @@ class ChatSession:
     # ── compaction helpers ───────────────────────────────────────────
 
     def _compute_tail_start(
-        self, history: list[dict[str, Any]], lower_bound: int
+        self,
+        history: list[dict[str, Any]],
+        lower_bound: int,
+        anchor_tokens: int | None = None,
     ) -> int:
         """Return the index from which the verbatim active tail begins.
 
-        When ``active_window_tokens`` is set, walks backwards from the
-        end of ``history`` accumulating tokens until the budget is
-        reached; otherwise falls back to the legacy ``keep_recent_turns``
-        message-count window. ``lower_bound`` is the earliest index the
-        tail may start at (i.e. just after the head anchor).
+        The last ``keep_recent_turns`` turns, or fewer when they do not fit
+        under :meth:`_tail_ceiling_tokens`. ``lower_bound`` is the earliest
+        index the tail may start at, just after the head anchor.
+
+        The most recent turn is kept whatever it measures. Dropping it would
+        take away the exchange the next reply answers, and a tail that big is
+        the prompt guard's problem rather than something to solve by making
+        the assistant forget what was just said.
         """
-        if self.active_window_tokens is None:
-            cutoff = max(lower_bound, len(history) - self.keep_recent_turns)
-            return cutoff
-        budget = max(0, int(self.active_window_tokens))
-        if budget == 0:
+        starts = _turn_starts(history, lower_bound)
+        if not starts:
             return len(history)
-        acc = 0
-        tail_start = len(history)
-        for i in range(len(history) - 1, lower_bound - 1, -1):
-            msg = history[i]
-            msg_tokens = self.adapter.count_tokens([msg])
-            if acc + msg_tokens > budget and i < len(history) - 1:
+        wanted = starts[-max(1, self.keep_recent_turns):]
+        tail_start = wanted[-1]
+        ceiling = self._tail_ceiling_tokens(anchor_tokens)
+        if ceiling is None:
+            return max(lower_bound, wanted[0])
+        acc = self.adapter.count_tokens(history[tail_start:])
+        kept = 1
+        for start in reversed(wanted[:-1]):
+            turn_tokens = self.adapter.count_tokens(history[start:tail_start])
+            if acc + turn_tokens > ceiling:
                 break
-            acc += msg_tokens
-            tail_start = i
+            acc += turn_tokens
+            tail_start = start
+            kept += 1
+        if kept < len(wanted):
+            logger.info(
+                "tail: kept %d of %d turns, %d tokens under a %d ceiling",
+                kept, len(wanted), acc, ceiling,
+            )
         return max(lower_bound, tail_start)

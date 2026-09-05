@@ -1,4 +1,4 @@
-"""Length-prefixed JSON frame helpers for the MO-8-3 IPC bridge.
+"""Length-prefixed JSON frame helpers for the IPC bridge.
 
 Wire format:
 ``<4-byte little-endian uint32 length><utf-8 JSON bytes>``. Length excludes

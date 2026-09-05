@@ -8,10 +8,10 @@ through the operator's CLI subscription instead of an API key.
 
 Scope
 -----
-* **Codex only for now.** Claude has a different stream-json schema; that's
-  a follow-up. The dispatch in ``boot.build_adapter`` handles ``adapter='cli'``
-  for both providers but only ``command == 'codex'`` actually parses
-  events. ``claude`` falls back to plain-text mode.
+* **Codex only.** Only ``command == 'codex'`` parses stream events; claude
+  runs in plain-text mode, and asking it for anything else is what the
+  deleted branch did. The dispatch in ``boot.build_adapter`` handles
+  ``adapter='cli'`` for both providers.
 * **No tool-call passthrough.** When codex internally invokes a command
   (file read, web search, MCP tool), we surface it as ``StreamChunk(TEXT)``
   for visibility; we do NOT route it back through the assistant's tool registry.
@@ -48,6 +48,7 @@ import urllib.parse
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
+from tesseract.kernel.adapters._estimate import tokens_from_chars
 from tesseract.kernel.adapters.base import (
     AdapterOptions,
     ChunkType,
@@ -56,9 +57,8 @@ from tesseract.kernel.adapters.base import (
     StreamChunk,
 )
 from tesseract.kernel.adapters.cli_utils import (
-    claude_subscription_env,
-    codex_subscription_env,
-    resolve_codex_executable,
+    resolve_cli_executable,
+    subscription_env,
 )
 from tesseract.kernel.adapters.errors import classify_exception
 
@@ -232,19 +232,39 @@ class CLIAdapter(ModelAdapter):
         self.model_id = model_id
         self.timeout = timeout
         self.stream_json = stream_json
+        # Resolved on the first turn and kept. `safe_cwd` logs a warning and
+        # may create a directory, and both belong once per adapter rather
+        # than once per turn: the process working directory does not move
+        # (nothing in the runtime calls `os.chdir`), so re-deciding it every
+        # turn writes the same warning line forever and puts a `mkdir` on the
+        # event loop on a hot path. Caching does discard `safe_cwd`'s
+        # call-time resolution of `home_dir()`, and that is fine here: the
+        # only thing that moves `TESSERACT_HOME` is a restart, and a config
+        # edit rebuilds the adapter anyway.
+        self._spawn_cwd: str | None = None
+
+    def _resolve_spawn_cwd(self) -> str:
+        """Where to start the CLI, decided once.
+
+        This CLI carries its own toolbox (see "No tool-call passthrough" in
+        the class docstring), so it edits whatever its working directory
+        contains for as long as a turn runs. Spawned with no `cwd` it
+        inherited the backend's, which nothing sets and which is `app/` on a
+        packaged install. `safe_cwd` rather than an assertion because nobody
+        chose this directory on purpose: relocating keeps the CLI usable as a
+        chat brain instead of refusing every turn.
+        """
+        if self._spawn_cwd is None:
+            from tesseract.orchestrator.seal_guard import safe_cwd
+
+            self._spawn_cwd = str(safe_cwd(Path.cwd()))
+        return self._spawn_cwd
 
     def _resolve_executable(self) -> str:
-        if self.command == "codex":
-            return resolve_codex_executable()
-        return shutil.which(self.command) or self.command
+        return resolve_cli_executable(self.command)
 
     def _build_env(self) -> dict[str, str]:
-        if self.command == "codex":
-            return codex_subscription_env()
-        if self.command == "claude":
-            return claude_subscription_env()
-        import os
-        return os.environ.copy()
+        return subscription_env(self.command)
 
     def _build_argv(self, image_paths: list[Path] | None = None) -> tuple[str, ...]:
         """Argv WITHOUT the prompt — prompt is fed via stdin to dodge
@@ -266,8 +286,10 @@ class CLIAdapter(ModelAdapter):
             return (executable, "exec", *image_args, "--json", "-")
         if self.command == "codex":
             return (executable, "exec", *image_args, "-")
-        if self.command == "claude" and self.stream_json:
-            return (executable, "-p", "--output-format", "stream-json")
+        # claude has ONE argv here, and it is the plain-text one. A
+        # stream-json argv asks for a format the CLI refuses without
+        # `--verbose` and that nothing in this module parses —
+        # `_pump_plain_text` is where claude lands.
         if self.command == "claude":
             return (executable, "-p", "--output-format", "text")
         return (executable, "exec", "-")
@@ -331,6 +353,23 @@ class CLIAdapter(ModelAdapter):
             )
             return
 
+        # Resolved before the spawn attempt so that a working-directory
+        # failure is not reported as the CLI failing to start — that message
+        # sends the operator to check their codex install for a fault in
+        # this process.
+        try:
+            spawn_cwd = self._resolve_spawn_cwd()
+        except OSError as exc:
+            yield StreamChunk(
+                type=ChunkType.ERROR,
+                error=(
+                    f"cannot resolve a working directory to start "
+                    f"{self.command} in: {exc}"
+                ),
+                error_kind=ErrorKind.HARD,
+            )
+            return
+
         try:
             process = await asyncio.create_subprocess_exec(
                 *argv,
@@ -338,6 +377,7 @@ class CLIAdapter(ModelAdapter):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                cwd=spawn_cwd,
             )
         except OSError as exc:
             yield StreamChunk(
@@ -504,16 +544,16 @@ class CLIAdapter(ModelAdapter):
 
     @staticmethod
     def count_tokens(messages: list[dict[str, Any]]) -> int:
-        total = 0
+        chars = 0
         for msg in messages:
             content = msg.get("content", "")
             if isinstance(content, str):
-                total += len(content) // 4
+                chars += len(content)
             elif isinstance(content, list):
                 for block in content:
                     if isinstance(block, dict) and "text" in block:
-                        total += len(str(block["text"])) // 4
-        return total
+                        chars += len(str(block["text"]))
+        return tokens_from_chars(chars)
 
     async def check_available(self) -> bool:
         return shutil.which(self.command) is not None or shutil.which(

@@ -40,7 +40,8 @@ class ChannelHistoryReadInput(BaseModel):
     chat_ref: str = Field(description="Channel-native chat identifier (Telegram chat_id as string).")
     date: Optional[str] = Field(
         default=None,
-        description="YYYY-MM-DD — return every row from that day, chronological.",
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+        description="YYYY-MM-DD. Returns every row from that day, oldest first.",
     )
     days_back: int = Field(
         default=1, ge=1, le=30,
@@ -74,8 +75,9 @@ class ChannelHistoryReadTool(Tool):
     )
     not_when: ClassVar[str] = (
         "the topic is recent enough that memory_search or the rolling summary already "
-        "covers it — reach for those first."
+        "covers it. Reach for those first."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -99,7 +101,32 @@ class ChannelHistoryReadTool(Tool):
             tool_input if isinstance(tool_input, ChannelHistoryReadInput)
             else ChannelHistoryReadInput(**tool_input.model_dump())
         )
+        from tesseract.integrations._channel_session import durable_chat_id
         from tesseract.integrations._conversation_store import ConversationStore
+
+        # A channel turn may read its OWN log and nothing else. `chat_ref` is a
+        # plain tool argument, so without this a chat could name any other
+        # chat's id and be handed that conversation — and this tool rides every
+        # turn, so nothing stands in front of it.
+        #
+        # Gated on `context.channel`, which only a bridge sets, and NOT on
+        # `context.chat_id` being non-empty. Every chat is stamped with an id,
+        # cockpit chats included (`session_model.stamp_chat_id`, called from
+        # `__post_init__`, `create_chat` and `reopen_chat`), and a cockpit's is
+        # a random uuid4 that can never equal a `durable_chat_id`. Reading
+        # emptiness therefore refused the operator's own window every time,
+        # and told it to drop an argument the schema requires.
+        if context.channel and durable_chat_id(
+            inp.channel, inp.chat_ref,
+        ) != context.chat_id:
+            return ToolResult(
+                is_error=True,
+                output=(
+                    "channel_history_read: this conversation can only read its "
+                    "own history. Drop the channel and chat_ref arguments to "
+                    "read this one."
+                ),
+            )
 
         store = ConversationStore()
         out: list[dict[str, Any]] = []

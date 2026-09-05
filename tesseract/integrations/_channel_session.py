@@ -6,25 +6,37 @@ runtime through the same funnel, so anything true of "a chat" belongs here and
 not in one bridge. An adapter supplies its own transport (how to send a line);
 everything about what a session IS lives in this module.
 
-Two things live here, and nothing else does:
+Three things live here, and nothing else does:
 
-- **Compaction after a turn**, which is the cockpit's own hook. `turn_runner`
-  calls `auto_compact_if_needed` after every turn it drives; a channel turn
-  goes through `channel_turn` instead and used to be bounded by a 20-turn
-  sliding window of its own. That window was a second policy for a problem the
-  runtime already solved, and it made a channel a smaller assistant rather than
-  a narrower pipe. It is gone.
 - **The day boundary**, which is the one thing a channel does have that a
   cockpit does not: no visible "new chat" button. So the first message of a new
-  local day is OFFERED a fresh session. Never given one — the reset it replaces
-  wiped six hours of silence without asking and without saying it had.
+  local day is OFFERED a fresh session. Never given one — taking it would wipe
+  a night of silence without asking and without saying so.
+- **The durable record**, which is the cockpit's own store. A channel chat IS
+  a chat: same `sessions/chats/<id>.json`, same autosave timer, same restore.
+  What it needed was an id that survives a restart, because a bridge mints a
+  new session on every boot and a record nothing can address again is a record
+  nothing reads. It is NOT listed to the generic readers — `chat_store._walk`
+  excludes it unless a caller asks by name — because those feed the cockpit's
+  restore-on-connect and the install-wide recall index, and a chat can carry
+  someone who is not the operator. The bridge reaches its own record by id;
+  what a reader searches is the day log under `logs/channels/`.
+- **The identity stamp**, which is the set of ids a tool needs in order to
+  tell whose conversation it is running in. Three of them, each answering a
+  different question, and a bridge that set two shipped a runtime that could
+  not find a photo the operator had just sent.
+
+Compaction used to live here too. It is one moment in the runtime, not a
+channel rule, so it moved to `mirror/server/after_turn.py` where the cockpit
+reaches the same function. The bridge calls it directly.
 """
 
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable
 
 log = logging.getLogger(__name__)
 
@@ -37,12 +49,180 @@ NEW_DAY_OFFER = (
 )
 
 
-class ChatMemoryLike(Protocol):
-    """The per-chat rolling summary, as this module needs it."""
+#: Namespace for the per-chat durable id. Any fixed uuid works; what matters
+#: is that it never changes, because changing it orphans every record already
+#: written under the old one.
+_CHANNEL_CHAT_NS = uuid.UUID("6f8f4c5e-2c1a-4f9b-9a3d-7b0c5e1d4a20")
 
-    def append_evictions(
-        self, channel: str, chat_id: str, rows: list[dict[str, Any]]
-    ) -> None: ...
+
+def durable_chat_id(channel: str, chat_id: str) -> str:
+    """The one chat record id for this conversation, stable across restarts.
+
+    A bridge builds a fresh `ServerSession` on every boot and on every
+    `/clear`, so a random id would write a new record each time and no restart
+    could ever find the last one. Derived from the channel and the chat, so
+    the same phone reaching the same bot is the same conversation on disk.
+
+    32 lowercase hex, which is what `chat_record.is_valid_chat_id` accepts.
+    """
+    return uuid.uuid5(_CHANNEL_CHAT_NS, f"{channel}:{chat_id}").hex
+
+
+def stamp_identity(
+    chat_session: Any,
+    session: Any,
+    *,
+    channel: str,
+    chat_id: str,
+    durable_id: str,
+) -> None:
+    """Say whose conversation this is, once, for every channel there will be.
+
+    Three ids reach the runtime here and none of them substitutes for another:
+
+    - ``tool_context.chat_id`` is the DURABLE record id. History reads it, and
+      a tool checks its own ``chat_ref`` argument against it.
+    - ``tool_context.channel`` says which door the chat came through, because
+      the id alone cannot. A cockpit chat carries a ``chat_id`` too, so a guard
+      reading only that one fires on the operator's own window.
+    - ``tool_context.channel_chat_id`` is the ADAPTER's id for the chat, and
+      the only one that finds what the bridge filed under it: inbound media
+      lives at ``uploads/channels/<channel>/<chat_id>/``, which the durable id
+      matches no directory in. ``session.channel_chat_id`` is the same value,
+      read by the adapter when it needs a send address.
+
+    Stamping two of the three is not a partial success, it is a runtime where
+    a photo the operator sent a minute ago cannot be found. So all four
+    assignments happen together and no adapter gets to choose.
+    """
+    try:
+        chat_session.tool_context.chat_id = durable_id
+        chat_session.tool_context.channel = channel
+        chat_session.tool_context.channel_chat_id = chat_id
+    except AttributeError:
+        log.debug("channel session: could not stamp tool_context identity")
+    setattr(session, "channel_chat_id", chat_id)
+
+
+def restore_meta(session: Any, durable_id: str, record: Any | None = None) -> None:
+    """Put the record's own title and dates back on the live chat meta.
+
+    `ServerSession.__post_init__` stamps a fresh `ChatMeta` with the current
+    time whenever it mints a chat, which on a channel is every bridge boot.
+    Restoring only the history left that meta in place, and the first save
+    afterwards wrote restart-time values over the record's real ones — so a
+    conversation running for a week reported itself as created minutes ago,
+    every week. The cockpit's own restore rebuilds the meta from the record
+    (`chat_restore._restore_persisted_chats`); this is the same act.
+    """
+    from tesseract.mirror.server import chat_store
+
+    if record is None:
+        try:
+            record = chat_store.load_chat(durable_id, include_channels=True)
+        except Exception:
+            return
+    if record is None:
+        return
+    meta = (getattr(session, "chat_meta", None) or {}).get(durable_id)
+    if meta is None:
+        return
+    if record.title:
+        meta.title = record.title
+    if record.created_at:
+        meta.created_at = record.created_at
+    if record.started_at:
+        meta.started_at = record.started_at
+    meta.turn_count = record.turn_count
+
+
+def restore_history(
+    chat_session: Any, durable_id: str, out: list[Any] | None = None,
+) -> int:
+    """Seed a freshly built channel session from its record. Returns turns.
+
+    This is the half that makes autosave worth having: writing every turn to
+    disk buys nothing if the next boot starts empty anyway. Best-effort — a
+    missing or unreadable record is a new conversation, which is exactly what
+    a fresh session already is.
+    """
+    from tesseract.mirror.server import chat_store
+
+    try:
+        record = chat_store.load_chat(durable_id, include_channels=True)
+    except Exception:
+        log.exception("channel session: could not read record %s", durable_id)
+        return 0
+    if record is None:
+        return 0
+    # Handed back so `restore_meta` does not open the same file again. The two
+    # halves have to describe the same conversation, and reading twice is how
+    # they could come to disagree.
+    if out is not None:
+        out.append(record)
+    if not record.history:
+        return 0
+    chat_session.history = list(record.history)
+    # The observer's watermark is stamped when a session ATTACHES, and a
+    # session attaches while it is being built — before this runs, with an
+    # empty history, so the mark is 0. Left there, the first turn after a
+    # restart hands the observer the entire restored conversation as "new
+    # turns", which is the exact flood `_notify_observer_turn_end` says the
+    # watermark exists to prevent. Restored turns were already lived through.
+    try:
+        chat_session._observer_last_index = len(chat_session.history)
+    except Exception:
+        log.exception("channel session: could not stamp observer watermark")
+    # Same reason `chat_restore` does it: a spawn started under the previous
+    # process has no surviving task here, and left unmarked it is a handle the
+    # assistant will wait on forever.
+    mark = getattr(chat_session, "mark_vanished_spawns", None)
+    if callable(mark):
+        try:
+            mark(record.session_id)
+        except Exception:
+            log.exception("channel session: mark_vanished_spawns failed")
+    # The other half of what `chat_restore` does after marking vanished
+    # spawns. Work that finished while the bridge was down has a durable
+    # completion waiting under this id, and without this it is never handed
+    # over — the operator asked for something, it completed, and the answer
+    # sits on disk unread.
+    replay = getattr(chat_session, "replay_undelivered_completions", None)
+    if callable(replay):
+        try:
+            replay(durable_id)
+        except Exception:
+            log.exception("channel session: completion replay failed")
+    log.info(
+        "channel session: restored %d message(s) from %s",
+        len(record.history), durable_id,
+    )
+    return len(record.history)
+
+
+def drop_record(durable_id: str) -> bool:
+    """Delete this conversation's chat record. Returns whether one went.
+
+    `/clear` has to mean cleared. The durable id is derived from the chat, so
+    a session rebuilt under it would restore exactly the history the operator
+    just asked to be rid of, and the command would silently do nothing.
+
+    Deleted rather than archived aside, because the cockpit already settled
+    what clear means: "the operator saying they want this conversation gone
+    ... not that a copy survives somewhere they cannot see". The day-by-day
+    transcript under `logs/channels/` is untouched and is what `/clear`
+    already promised would still be there.
+    """
+    from tesseract.mirror.server import chat_store
+
+    try:
+        ok, _reason = chat_store.delete_chat(durable_id)
+    except Exception:
+        log.exception("channel session: could not drop record %s", durable_id)
+        return False
+    if ok:
+        log.info("channel session: dropped record %s on clear", durable_id)
+    return ok
 
 
 def is_new_local_day(
@@ -73,55 +253,6 @@ def is_new_local_day(
         last = last.replace(tzinfo=timezone.utc)
     current = now or datetime.now(timezone.utc)
     return last.astimezone().date() < current.astimezone().date()
-
-
-async def compact_after_turn(
-    chat_session: Any,
-    *,
-    chat_memory: ChatMemoryLike | None = None,
-    channel: str | None = None,
-    chat_id: str | None = None,
-) -> None:
-    """Bound the live history the way the cockpit does, and no other way.
-
-    The rows compaction removes are forwarded to the rolling per-chat summary.
-    Compaction leaves its own running summary inside the history, which carries
-    the SESSION; the chat summary is what carries the CHAT across sessions, so
-    it must not starve just because the trimmer left.
-
-    Never raises: the turn has already landed and been sent.
-    """
-    from tesseract.brain.session_ops import auto_compact_if_needed
-
-    prior = list(getattr(chat_session, "history", []) or [])
-    try:
-        result = await auto_compact_if_needed(chat_session)
-    except Exception:
-        log.exception("channel session: compaction failed for %s/%s", channel, chat_id)
-        return
-    if result is None:
-        return
-    before, after = result
-    log.info(
-        "channel session: compacted %s/%s — %d → %d tokens",
-        channel, chat_id, before, after,
-    )
-    if chat_memory is None or channel is None or chat_id is None:
-        return
-    kept = {id(row) for row in getattr(chat_session, "history", []) or []}
-    evicted = [
-        row for row in prior
-        if id(row) not in kept
-        and not (isinstance(row, dict) and row.get("role") == "system")
-    ]
-    if not evicted:
-        return
-    try:
-        chat_memory.append_evictions(channel, str(chat_id), evicted)
-    except Exception:
-        log.exception(
-            "channel session: append_evictions failed for %s/%s", channel, chat_id,
-        )
 
 
 async def offer_a_fresh_session(

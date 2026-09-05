@@ -46,7 +46,7 @@ export class ErrorBoundary extends Component<Props, State> {
     if (!error) return this.props.children;
     return (
       <Note tone="bad">
-        {this.props.what} could not render — {error.message}. The rest of the
+        {this.props.what} could not render. {error.message}. The rest of the
         app is unaffected; if TESSERACT updated recently, restart it so the
         backend and this screen agree.
       </Note>

@@ -8,43 +8,19 @@ what it serves on the next request.
 
 from __future__ import annotations
 
-import ipaddress
 import logging
-import socket
 from dataclasses import dataclass
 from pathlib import Path
 
-from urllib.parse import urlsplit, urlunsplit
-
 import httpx
 
-from tesseract import http_client
+from tesseract import http_client, net_guard
+from tesseract.net_guard import redacted as _redacted
 
 log = logging.getLogger(__name__)
 
 # A redirect chain is walked by hand; this bounds it.
 _MAX_REDIRECTS = 5
-
-
-def _redacted(url: str) -> str:
-    """A URL can carry `user:password@` in its authority, and a probe failure
-    would otherwise write it to the log verbatim."""
-    try:
-        parts = urlsplit(url)
-    except ValueError:
-        return "<unparseable url>"
-    if not parts.netloc:
-        return "<no host>"
-    # Rebuilt from `netloc`, not `hostname` + `port`: the former keeps the
-    # brackets an IPv6 literal needs, so `https://[::1]:8080/` survives instead
-    # of coming back as the unparseable `https://::1:8080/`. It also cannot
-    # raise — `.port` parses lazily and throws on a malformed port, and a
-    # redaction helper must never be the thing that fails while reporting a
-    # failure. Only the last `@` separates userinfo from the host; one may
-    # legally appear inside the userinfo itself.
-    authority = parts.netloc.rsplit("@", 1)[-1]
-    # Query and fragment are dropped, not redacted: either can carry a token.
-    return urlunsplit((parts.scheme, authority, parts.path, "", ""))
 
 
 @dataclass(frozen=True)
@@ -93,57 +69,29 @@ def _frameable(headers: httpx.Headers) -> bool:
     return True
 
 
-def _resolves_into_blocked_network(url: str, blocked: frozenset[str]) -> bool:
-    """Resolve the host and test every address it answers with.
-
-    Checking the hostname string would be trivially defeated by a name that
-    resolves to a blocked address, so the resolved addresses are what matter.
-    A resolution failure is not a block — an unreachable host already ends as
-    `frameable=False` through the normal error path.
-
-    The configured ranges cover link-local (including cloud metadata at
-    169.254.169.254) but deliberately not RFC1918. Opening a router admin page
-    or a NAS by address is an ordinary act on a local-first tool, and the probe
-    is credential-free, cookie-free and reads no body, so what a private-range
-    HEAD exposes is response metadata for a host the operator just named.
-    Revisit when `open` becomes reachable by untrusted input without operator
-    intent — that condition, not the mechanism, is what changes the trade.
-    """
-    if not blocked:
-        return False
-    host = urlsplit(url).hostname
-    if not host:
-        return False
-
-    networks = [ipaddress.ip_network(entry, strict=False) for entry in blocked]
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except (socket.gaierror, UnicodeError, ValueError):
-        return False
-
-    for info in infos:
-        try:
-            address = ipaddress.ip_address(info[4][0])
-        except ValueError:
-            continue
-        if any(address in network for network in networks):
-            return True
-    return False
-
-
 async def probe_url(
     url: str, *, timeout_s: float, blocked_networks: frozenset[str] = frozenset()
 ) -> UrlProbe:
     """A credential-free HEAD. On any failure the caller is told the target is
     not frameable, so a slow or hostile server becomes a browser tab rather
-    than a card that never paints."""
-    # Checked before a client is even constructed, and again for every redirect
-    # hop below — a public URL that 302s into a blocked range would otherwise
-    # walk straight past the check that just passed.
-    if _resolves_into_blocked_network(url, blocked_networks):
-        log.debug("probe refused for %s: blocked network", _redacted(url))
-        return UrlProbe("", False, url, 0, blocked=True)
+    than a card that never paints.
 
+    **The address is what is checked, and the address is what is reached.**
+    `net_guard` is the mechanism, so this and a channel's media fetch cannot
+    drift into two answers about what a name resolves to. What they do NOT
+    share is the list: the ranges `open` blocks cover link-local, including
+    cloud metadata at 169.254.169.254, but deliberately not RFC1918 or
+    loopback. Opening a router admin page or a NAS by address is an ordinary
+    act on a local-first tool, and this probe is credential-free, cookie-free
+    and reads no body, so what a private-range HEAD exposes is response
+    metadata for a host that was named on purpose. Revisit that trade when
+    `open` becomes reachable by untrusted input without operator intent; the
+    condition is what changes it, not the mechanism.
+    """
+    # Every hop is checked in the loop below, the first one included, and the
+    # check and the request are one act there. A second check before the client
+    # is built would resolve the name a second time to answer the same
+    # question, which is the shape this function is being fixed for.
     try:
         async with http_client.async_client(
             # Redirects are walked by hand, NOT followed automatically: a
@@ -158,15 +106,50 @@ async def probe_url(
         ) as client:
             current = url
             for _ in range(_MAX_REDIRECTS + 1):
-                if _resolves_into_blocked_network(current, blocked_networks):
-                    log.debug("probe refused for %s: blocked network", _redacted(current))
-                    return UrlProbe("", False, current, 0, blocked=True)
+                # The request goes to the ADDRESS this hop was checked at.
+                # Checking the name and then handing the same name to the
+                # client leaves it to resolve a second time, and a record with
+                # a short TTL can answer public for the check and link-local
+                # for the request. That gap was raised three times against
+                # this function and closed on the media path only; the check
+                # and the connection are one act here now.
+                #
+                # With nothing declared blocked there is nothing to walk past,
+                # so the hop goes out by name as it always did. Pinning is the
+                # answer to a list being defeated, not a list being absent.
+                target, headers, sni = current, {}, ""
+                if blocked_networks:
+                    try:
+                        target, headers, sni = net_guard.pinned_target(
+                            current, blocked_networks,
+                        )
+                    except net_guard.Blocked as exc:
+                        if exc.kind == "blocked_network":
+                            log.debug(
+                                "probe refused for %s: blocked network",
+                                _redacted(current),
+                            )
+                            return UrlProbe("", False, current, 0, blocked=True)
+                        # Anything else is a URL that cannot be reached rather
+                        # than one that is refused, and the caller's own failure
+                        # path already says so. Reporting it as blocked would
+                        # tell the operator their address was turned away on
+                        # policy when it was never found.
+                        log.debug("probe gave up on %s: %s", _redacted(current), exc)
+                        return UrlProbe("", False, current, 0)
 
-                response = await client.head(current)
+                extensions = {"sni_hostname": sni} if sni else {}
+                response = await client.head(
+                    target, headers=headers, extensions=extensions,
+                )
                 # Some servers refuse HEAD outright. A single-byte ranged GET
                 # gets the same headers without pulling the body.
                 if response.status_code in {405, 501}:
-                    response = await client.get(current, headers={"Range": "bytes=0-0"})
+                    response = await client.get(
+                        target,
+                        headers={**headers, "Range": "bytes=0-0"},
+                        extensions=extensions,
+                    )
 
                 location = response.headers.get("location")
                 if not (response.is_redirect and location):

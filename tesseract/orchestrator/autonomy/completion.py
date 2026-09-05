@@ -22,9 +22,12 @@ from tesseract.orchestrator.workers.record import list_active_records, load_reco
 
 log = logging.getLogger(__name__)
 
-# An item in one of these has stopped waiting on the runtime. `blocked` counts
-# as attempted-and-not-done: the work was dispatched and did not complete.
-_CLOSED = frozenset({"done", "cancelled", "abandoned", "superseded", "blocked"})
+# An item in one of these has stopped waiting on the runtime. `blocked` and
+# `failed` count as attempted-and-not-done: the work was dispatched and did
+# not complete.
+_CLOSED = frozenset(
+    {"done", "cancelled", "abandoned", "superseded", "blocked", "failed"}
+)
 
 # How many `YYYY-MM` archive buckets `lane_outcomes` reads. A year of history
 # answers "what is this lane doing"; the buckets before it answer nothing that
@@ -40,6 +43,7 @@ class SourceCompletion:
     open: int
     done: int
     blocked: int
+    failed: int
     cancelled: int
     unattested: int
     """Of the `done` items, how many were closed by a worker that recorded no
@@ -115,7 +119,7 @@ def source_completion() -> list[SourceCompletion]:
 
     counts: dict[str, dict[str, int]] = defaultdict(
         lambda: {
-            "created": 0, "done": 0, "blocked": 0,
+            "created": 0, "done": 0, "blocked": 0, "failed": 0,
             "cancelled": 0, "open": 0, "unattested": 0,
         }
     )
@@ -130,6 +134,8 @@ def source_completion() -> list[SourceCompletion]:
                 bucket["unattested"] += 1
         elif status == "blocked":
             bucket["blocked"] += 1
+        elif status == "failed":
+            bucket["failed"] += 1
         elif status in _CLOSED:
             bucket["cancelled"] += 1
         else:
@@ -137,7 +143,9 @@ def source_completion() -> list[SourceCompletion]:
 
     rows: list[SourceCompletion] = []
     for source, bucket in counts.items():
-        attempted = bucket["done"] + bucket["blocked"] + bucket["cancelled"]
+        attempted = (
+            bucket["done"] + bucket["blocked"] + bucket["failed"] + bucket["cancelled"]
+        )
         attested = bucket["done"] - bucket["unattested"]
         rows.append(
             SourceCompletion(
@@ -146,6 +154,7 @@ def source_completion() -> list[SourceCompletion]:
                 open=bucket["open"],
                 done=bucket["done"],
                 blocked=bucket["blocked"],
+                failed=bucket["failed"],
                 cancelled=bucket["cancelled"],
                 unattested=bucket["unattested"],
                 completion_rate=(attested / attempted) if attempted else None,

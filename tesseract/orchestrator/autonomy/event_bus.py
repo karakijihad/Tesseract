@@ -1,4 +1,4 @@
-"""Kernel-internal pub/sub for AU-5.
+"""Kernel-internal pub/sub for the agenda mappers.
 
 Lightweight in-process bus that the AutonomyKernel reads on every tick.
 Distinct from the existing ``BackgroundEventBus``: subscribers register

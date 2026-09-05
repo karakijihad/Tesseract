@@ -45,21 +45,26 @@ export async function openActivity(record: ActivityRecord): Promise<void> {
   const id = bareId(record.activity_id);
   if (!id) return;
 
-  if (record.kind === 'delegate') {
+  // A delegation runs one turn on an ephemeral lane, and the lane card is
+  // where that turn's events actually appear, so the delegate row opens it.
+  // Only a spawn with no lane (invoke_agent) falls back to the CLI transcript.
+  const laneId = record.lane_id || (record.kind === 'lane' ? id : '');
+
+  if (record.kind === 'delegate' && !laneId) {
     await openDelegateTranscript(id, record.label);
     return;
   }
 
-  if (record.kind === 'lane') {
+  if (laneId) {
     await postSurface(
       {
         type: 'lane',
         title: record.label || 'lane',
-        props: { lane_id: id },
+        props: { lane_id: laneId },
         position: { x: 200, y: 140 },
         size: { w: 480, h: 460 },
       },
-      (s) => s.type === 'lane' && (s.props as Record<string, unknown> | undefined)?.lane_id === id,
+      (s) => s.type === 'lane' && (s.props as Record<string, unknown> | undefined)?.lane_id === laneId,
     );
     return;
   }

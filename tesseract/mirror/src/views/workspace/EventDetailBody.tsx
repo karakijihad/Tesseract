@@ -3,6 +3,7 @@ import { linkifyText } from '../../lib/linkify';
 import { Markdown } from '../../components/common/Markdown';
 import { DailyBriefBody } from './DailyBriefBody';
 import { PathPill } from './PathPill';
+import { WorkingSetProposalBody } from './WorkingSetProposalBody';
 
 interface Props {
   event: WorkspaceEvent;
@@ -474,7 +475,7 @@ function SkillRefinementBody({ payload }: { payload: Record<string, unknown> }) 
           <pre className="workspace-event-agent-pre">{proposedMarkdown}</pre>
         </>
       ) : (
-        <p className="t-meta">No automated proposal — refine manually.</p>
+        <p className="t-meta">Nothing was proposed automatically. Refine it by hand.</p>
       )}
       {currentMarkdown && (
         <>
@@ -526,6 +527,8 @@ export function EventDetailBody({ event }: Props) {
       return <SkillApprovalBody payload={payload} />;
     case 'skill_refinement':
       return <SkillRefinementBody payload={payload} />;
+    case 'working_set_proposal':
+      return <WorkingSetProposalBody payload={payload} />;
     case 'daily_brief':
       return <DailyBriefBody payload={payload} />;
     default:

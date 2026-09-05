@@ -72,11 +72,19 @@ class ChatSessionWiring:
     session_emit: Any = None  # controller-only
     options: AdapterOptions | None = None
     compact_threshold: float | None = None
+    # The guard's char ceiling from `roles.yaml::compaction`. `None` leaves the
+    # session on `config/loader.py`'s shipped answer, which is what a builder
+    # with no `ChatBrainConfig` to read it off wants.
+    prompt_char_budget: int | None = None
     keep_recent_turns: int | None = None
     cost_ledger: CostLedger | None = None
     overage_ask_fn: Callable[[BudgetExhausted], Awaitable[bool]] | None = None
     session_kind: str = "cockpit"
     channel_display_name: str | None = None
+    # The funnel door, when this session has one. See `ChatSession.turn_entry`:
+    # empty leaves the session's turns unrecorded, which is right for the
+    # controller's sub-agent sessions and for the REPL.
+    turn_entry: str = ""
     spawn_stall_seconds: float | None = None
     spawn_max_concurrent: int | None = None
 
@@ -125,6 +133,7 @@ def build_chat_session(wiring: ChatSessionWiring) -> "ChatSession":
         overage_ask_fn=wiring.overage_ask_fn,
         session_kind=wiring.session_kind,
         channel_display_name=wiring.channel_display_name,
+        turn_entry=wiring.turn_entry,
         spawn_stall_seconds=wiring.spawn_stall_seconds,
         spawn_max_concurrent=wiring.spawn_max_concurrent,
     )
@@ -132,6 +141,8 @@ def build_chat_session(wiring: ChatSessionWiring) -> "ChatSession":
         kwargs["options"] = wiring.options
     if wiring.compact_threshold is not None:
         kwargs["compact_threshold"] = wiring.compact_threshold
+    if wiring.prompt_char_budget is not None:
+        kwargs["prompt_char_budget"] = wiring.prompt_char_budget
     if wiring.keep_recent_turns is not None:
         kwargs["keep_recent_turns"] = wiring.keep_recent_turns
     return ChatSession(**kwargs)

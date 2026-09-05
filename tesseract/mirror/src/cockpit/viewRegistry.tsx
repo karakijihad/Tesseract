@@ -7,18 +7,18 @@
 import type { ReactNode } from 'react';
 
 import type { PanelKind } from './panelStore';
+import { usePanelStore } from './panelStore';
 import { LeftPanel } from '../components/cockpit/left/LeftPanel';
 import { RightPanel } from '../components/cockpit/RightPanel';
 import { AutonomyView } from '../views/AutonomyView';
 import { PulseView } from '../views/PulseView';
 import { ChatView } from '../views/ChatView';
 import { TerminalView } from '../views/TerminalView';
-import { ScheduleView } from '../views/ScheduleView';
-import { AgentsView } from '../views/AgentsView';
 import { ChannelsView } from '../views/ChannelsView';
 import { IdentityView } from '../views/IdentityView';
 import { ConscienceView } from '../views/ConscienceView';
 import { WorkspaceView } from '../views/WorkspaceView';
+import { GraphView } from '../views/GraphView';
 import { SettingsView } from '../views/SettingsView';
 
 export const VIEW_REGISTRY: Record<PanelKind, () => ReactNode> = {
@@ -26,12 +26,18 @@ export const VIEW_REGISTRY: Record<PanelKind, () => ReactNode> = {
   pulse: () => <PulseView />,
   chat: () => <ChatView />,
   terminal: () => <TerminalView />,
-  schedule: () => <ScheduleView />,
-  agents: () => <AgentsView />,
   channels: () => <ChannelsView />,
   identity: () => <IdentityView />,
   conscience: () => <ConscienceView />,
   workspace: () => <WorkspaceView />,
+  // The way back is the map's own, not the panel chrome's. Closing a panel
+  // leaves the operator on the orb, which is not where they came from: the
+  // map's home is the Atlas room and it opens from there.
+  graph: () => (
+    <GraphView
+      onBack={() => usePanelStore.getState().openPanel('autonomy')}
+    />
+  ),
   settings: () => <SettingsView />,
   // SC-3 — the rails are panels too (Kernel left, right rail — id kept as
   // 'lifeline' for panel-store type stability — hosts Breakers/Observer).
@@ -39,18 +45,4 @@ export const VIEW_REGISTRY: Record<PanelKind, () => ReactNode> = {
   lifeline: () => <RightPanel />,
 };
 
-export const VIEW_LABELS: Record<PanelKind, string> = {
-  autonomy: 'Autonomy',
-  pulse: 'Pulse',
-  chat: 'Chat',
-  terminal: 'Terminal',
-  schedule: 'Schedule',
-  agents: 'Agents',
-  channels: 'Channels',
-  identity: 'Identity',
-  conscience: 'Conscience',
-  workspace: 'Workspace',
-  settings: 'Settings',
-  kernel: 'Kernel',
-  lifeline: 'Monitor',
-};
+export { VIEW_LABELS } from './viewLabels';

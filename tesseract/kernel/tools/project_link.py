@@ -23,7 +23,7 @@ class ProjectLinkInput(BaseModel):
     root: str = Field(
         description=(
             "Path to the project directory. Must already exist. Give an "
-            "absolute path — a relative one resolves against the backend's "
+            "absolute path. A relative one resolves against the backend's "
             "working directory, which is not where you are. The directory "
             "itself must be the repository root when it is a git repo; a "
             "subdirectory registers without git identity."
@@ -38,7 +38,7 @@ class ProjectLinkInput(BaseModel):
         description=(
             "Command that runs the project's tests. Overrides detection. "
             "Stored as a string and run through the normal bash policy path "
-            "when the gate invokes it — never executed by this tool."
+            "when the gate invokes it. Never run by this tool."
         ),
     )
     typecheck: str | None = Field(
@@ -46,6 +46,14 @@ class ProjectLinkInput(BaseModel):
     )
     lint: str | None = Field(
         default=None, description="Lint command. Overrides detection."
+    )
+    live: str | None = Field(
+        default=None,
+        description=(
+            "The URL the project is published at, if it is. The gate fetches "
+            "it and expects a 2xx when a task on this project closes. Never "
+            "detected; say it or leave it empty."
+        ),
     )
 
 
@@ -61,9 +69,10 @@ class ProjectLinkTool(Tool):
         "identity and verification commands, and marks it trusted."
     )
     not_when: ClassVar[str] = (
-        "does not switch the active project — use `project_open` for that. "
+        "does not switch the active project; use `project_open` for that. "
         "For a directory that does not exist yet, use `project_new`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -134,11 +143,15 @@ class ProjectLinkTool(Tool):
         if isinstance(conventions, BaseException):
             detect_notes.append(f"conventions detection failed ({conventions})")
             conventions = None
-        verify = VerifyCommands(
-            test=inp.test or detected.test,
-            typecheck=inp.typecheck or detected.typecheck,
-            lint=inp.lint or detected.lint,
-        )
+        try:
+            verify = VerifyCommands(
+                test=inp.test or detected.test,
+                typecheck=inp.typecheck or detected.typecheck,
+                lint=inp.lint or detected.lint,
+                live=inp.live,
+            )
+        except ValueError as exc:
+            return ToolResult(output=f"Not linked: {exc}", is_error=True)
 
         store = ProjectStore()
         try:
@@ -178,8 +191,8 @@ class ProjectLinkTool(Tool):
             lines.append("git: not a repository root")
         if verify.is_empty():
             lines.append(
-                "verify: none detected — the verification gate has nothing to "
-                "run until test/typecheck/lint are set."
+                "verify: none detected. The verification gate has nothing to "
+                "run until test, typecheck, lint or live are set."
             )
         else:
             lines.append("verify:")
@@ -187,6 +200,7 @@ class ProjectLinkTool(Tool):
                 ("test", verify.test, inp.test),
                 ("typecheck", verify.typecheck, inp.typecheck),
                 ("lint", verify.lint, inp.lint),
+                ("live", verify.live, inp.live),
             ):
                 if cmd:
                     # Per command, not per call: a call that overrides only

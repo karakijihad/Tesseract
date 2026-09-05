@@ -2,7 +2,7 @@
 
 The chat brain spawns controller sessions via start_controller_session /
 delegate_agent_controller. Those live in the controller registry (separate
-from brain.session_store). This tool reads them so the brain can poll a
+from the cockpit's chat records). This tool reads them so the brain can poll a
 detached session's status. Read-only — AUTO tier.
 """
 from __future__ import annotations
@@ -35,6 +35,7 @@ class ControllerSessionListTool(Tool):
     summary: ClassVar[str] = "List agent controller sessions on disk, newest first, with status."
     use_when: ClassVar[str] = "Use to check whether a detached session from start_controller_session finished."
     not_when: ClassVar[str] = "lanes or interactive sessions, which are `lane_list`/`session_list`."
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

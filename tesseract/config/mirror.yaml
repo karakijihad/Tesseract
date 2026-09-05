@@ -4,90 +4,29 @@ server:
   host: 127.0.0.1
   port: 8000
 
-identity:
-  # What the agent is called — surfaced in the cockpit header, in everything
-  # it says about itself, and in the wake phrase. First-run setup asks for
-  # this and writes it here; these two values are the fallback for a setup
-  # that was skipped or could not be applied.
+probes:
+  # How long anything in Settings may spend asking whether a project folder is
+  # still there before it gives up.
   #
-  # Deliberately not a name. A shipped stand-in name is indistinguishable
-  # from one the operator chose, so an install whose setup silently failed
-  # would look configured instead of looking unnamed. It matches the noun
-  # the frontend falls back to before `/api/identity` answers
-  # (`useEntityName.ts::ENTITY_FALLBACK`).
-  name: Assistant
-  # Display name used for chat bubbles and greetings. Change this to your
-  # own name.
-  operator_name: Operator
-  # `male`, `female`, or `unspecified`. First-run setup asks this once and
-  # writes it here; it already picked the voice, and this is the same answer
-  # reaching the agent's own sense of itself rather than only its synthesis.
+  # It covers three things, and they answer differently. The Projects list
+  # gives up and says it does not know whether a folder is there, because a
+  # list that guesses is worse than one that admits it. Opening a project and
+  # registering one both REFUSE, because acting on a folder nobody could check
+  # is guessing that it is fine.
   #
-  # Pronouns are derived, never stored beside this: two fields could
-  # disagree, and then nothing downstream knows which one is the operator's
-  # real answer. `unspecified` renders they/them and is the shipped default
-  # for the same reason `name` ships as `Assistant` — a setup that silently
-  # failed must look unconfigured, not look chosen.
-  gender: unspecified
+  # It is a deadline, not a duration: an ordinary local folder answers in
+  # microseconds. What this bounds is a folder on a drive that is no longer
+  # mounted, where the operating system can take minutes to admit it. Raise it
+  # if you keep projects on a network share that is slow but alive; the cost of
+  # raising it is how long Settings can sit waiting on a share that is dead.
+  root_stat_timeout_s: 5.0
 
-  # Wake-word gate for the mic modes that dispatch a turn (`command`,
-  # `speak`). `transcribe` and `terminal` are never gated — those hand
-  # the transcript to the operator, not to the brain. Off = every
-  # utterance dispatches.
-  #
-  # The phrase is `<prefix> <name>`, which is why it lives here: `name`
-  # above is what it is built from, and it is re-read per utterance, so
-  # a rename re-teaches the gate with no restart.
-  #
-  # The gate listens to AUDIO, not to the transcript. The phrase is
-  # spotted by a decoder whose vocabulary is restricted to those exact
-  # words, so ordinary speech decodes to nothing at all and the gate
-  # never depends on how the speech engine chooses to spell a name it
-  # has never seen. Nothing is transcribed before this decides.
-  #
-  # It answers yes or no — there is no similarity score. Sensitivity is
-  # set BEFORE decoding, by two numbers:
-  #   `min_threshold` — the floor the gate will not go below. Settings →
-  #     Voice confirms a threshold for your voice and this room; raise
-  #     this to overrule it upward, and the stricter of the two wins.
-  #   `boost` — how much the decoder favours the phrase over what it
-  #     would otherwise hear. 1.0 is neutral; raising it makes a
-  #     mumbled phrase more likely to land, and false wakes with it.
-  # Neither is a speaker control: anyone who says the phrase wakes it.
-  #
-  # `enabled` is permission, not readiness. The gate arms only once you
-  # have said the phrase in Settings → Voice and watched it fire, so
-  # turning this on can never leave an install unable to hear you — it
-  # keeps dispatching every utterance until that run passes.
-  wake_word:
-    enabled: true
-    prefix: hey
-    min_threshold: 0.15
-    boost: 1.0
-    # The keyword model, fetched once and verified against this digest
-    # before install. Apache-2.0, declared by the publisher in the
-    # archive's own README; the phrase is compiled to tokens from the
-    # model's vocabulary at runtime, so a custom name needs no training
-    # and no second download.
-    #
-    # One archive because the release ships no per-file downloads. The
-    # fetch keeps the five files the gate loads (~5.5 MB) and discards
-    # the fp32 duplicates and test audio.
-    # Fetch: python -m tesseract.scripts.fetch_wake_models
-    download:
-      max_download_mb: 32
-      # Measured from the pinned URL below, not estimated.
-      download_mb: 18
-      base_url: https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models
-      files:
-        sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2: f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a
-
-voice:
-  # The line spoken when a voice is auditioned from the Identity tab.
-  # `{name}` renders the current `identity.name` above, so the sample
-  # follows a rename without an edit here; a template without it is
-  # spoken verbatim. Which voice speaks it is `roles.yaml::voice.tts`.
-  test_sample: "Hello, this is {name}. This is how I sound."
+  # How long Settings waits for `git --version` or `gh auth status` to answer
+  # before giving up and reporting that it does not know. `gh auth status`
+  # opens the system keyring, which is the slow part, and a keyring that never
+  # answers must not hold the panel open. Nothing is retried: the panel offers
+  # to check again, and that is the retry.
+  command_timeout_s: 10.0
 
 cors:
   # EXTRA origins allowed to call the REST/WS API from a browser. The

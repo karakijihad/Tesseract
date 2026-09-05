@@ -8,6 +8,7 @@ from typing import Any, Mapping
 import yaml
 
 from tesseract.config.loader import (
+    DEFAULT_COMPACT_RATIO,
     ConfigBundle,
     PROVIDERS_YAML,
     ROLES_YAML,
@@ -23,6 +24,7 @@ _REPO_ROOT = _TESSERACT_DIR.parent
 _CONFIG_DIR = CONFIG_DIR
 
 MIRROR_YAML = _CONFIG_DIR / "mirror.yaml"
+IDENTITY_YAML = _CONFIG_DIR / "identity.yaml"
 PERMISSIONS_YAML = _CONFIG_DIR / "permissions.yaml"
 
 
@@ -75,18 +77,17 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     return raw
 
 
-def load_identity(mirror: dict[str, Any]) -> tuple[str, str, WakeWordConfig]:
-    """The three things the `identity:` block owns. Split out of
-    `load_server_config` because `config_watcher.reload_mirror` re-reads
-    exactly this much on an external edit — a rename has to reach the
-    wake-word gate without a restart, and duplicating the parse is how
-    the two copies drift."""
-    identity = mirror.get("identity") or {}
+def load_identity(identity: dict[str, Any]) -> tuple[str, str, WakeWordConfig]:
+    """The three things `identity.yaml` owns that the server holds live. Split
+    out of `load_server_config` because `config_watcher.reload_identity`
+    re-reads exactly this much on an external edit — a rename has to reach the
+    wake-word gate without a restart, and duplicating the parse is how the two
+    copies drift."""
     entity_name = str(identity.get("name") or "").strip()
     if not entity_name:
-        raise RuntimeError(f"{MIRROR_YAML} missing required 'identity.name'")
+        raise RuntimeError(f"{IDENTITY_YAML} missing required 'name'")
     operator_name = str(identity.get("operator_name") or "").strip() or "Operator"
-    return entity_name, operator_name, parse_wake_word_config(identity, MIRROR_YAML)
+    return entity_name, operator_name, parse_wake_word_config(identity, IDENTITY_YAML)
 
 
 def load_server_config() -> ServerConfig:
@@ -97,7 +98,7 @@ def load_server_config() -> ServerConfig:
     host = server["host"]
     port = int(server["port"])
 
-    entity_name, operator_name, wake_word = load_identity(mirror)
+    entity_name, operator_name, wake_word = load_identity(_load_yaml(IDENTITY_YAML))
 
     cors = mirror.get("cors") or {}
     origins = tuple(cors.get("origins") or ())
@@ -194,7 +195,7 @@ def _synthesize_voice_cost_block(bundle: ConfigBundle) -> dict[str, Any]:
     tts_chain = bundle.voice.tts.chain() if bundle.voice.tts is not None else ()
     stt_chain = bundle.voice.stt.chain() if bundle.voice.stt is not None else ()
     # A TTS lane prices in one of two units and the KEY is what says
-    # which. Reading only the per-character one used to be safe because
+    # which. Reading only the per-character one is safe only while
     # every TTS lane was local and free; a cloud lane that bills per
     # second of produced speech would be dropped here, and dropping it is
     # not cosmetic — its daily cap counts toward `CostLedger.cap_usd`, so
@@ -235,8 +236,8 @@ def project_voice_cost_view(
     """Flatten the legacy voice cost block into `{rate, rate_unit, cap_usd}`.
 
     `/api/identity` and `/api/system` both hand this shape to the cost
-    panel, and both used to build it inline with the per-character field
-    hard-coded — which is how the same defect came to exist twice. The
+    panel. Building it inline with the per-character field hard-coded is how
+    the same defect comes to exist twice. The
     unit rides along because the two rates differ by five orders of
     magnitude, and a panel that labels a per-audio-hour price as dollars
     per million characters is not merely unhelpful, it reads as free.
@@ -270,6 +271,12 @@ def synthesize_legacy_models_dict(bundle: ConfigBundle) -> dict[str, Any]:
     """
     roles_out: dict[str, Any] = {}
     per_role_caps: dict[str, float] = {}
+    # The compaction trigger is a top-level setting, not a role override, so a
+    # role carries no `compact_threshold` unless someone hand-wrote one. Every
+    # legacy consumer reads it off the role, so answer it here rather than
+    # letting each route invent a fallback.
+    compaction = bundle.roles_raw.get("compaction") or {}
+    compact_ratio = float(compaction.get("compact_ratio", DEFAULT_COMPACT_RATIO))
     for name, role in bundle.roles.items():
         # Inactive roles have no primary — emit a stub so downstream consumers
         # that iterate the dict don't crash. Anything reading the role MUST
@@ -293,6 +300,7 @@ def synthesize_legacy_models_dict(bundle: ConfigBundle) -> dict[str, Any]:
         ):
             if k in role.overrides:
                 primary_entry[k] = role.overrides[k]
+        primary_entry.setdefault("compact_threshold", compact_ratio)
         resolution = [primary_entry] + [_ref_to_legacy_entry(r) for r in role.fallbacks]
         role_dict: dict[str, Any] = {
             "mode": role.mode,
@@ -306,6 +314,7 @@ def synthesize_legacy_models_dict(bundle: ConfigBundle) -> dict[str, Any]:
         ):
             if k in role.overrides:
                 role_dict[k] = role.overrides[k]
+        role_dict.setdefault("compact_threshold", compact_ratio)
         cap = role.overrides.get("daily_budget_usd")
         if cap is not None:
             try:
@@ -329,6 +338,10 @@ def synthesize_legacy_models_dict(bundle: ConfigBundle) -> dict[str, Any]:
 
     return {
         "roles": roles_out,
+        # Carried whole rather than folded into each role: it describes how
+        # compaction works, and the panel that draws it needs the shipped
+        # default and both multipliers, not just the effective ratio.
+        "compaction": dict(compaction),
         "voice": _synthesize_voice_block(bundle),
         "embeddings": embeddings_entry,
         "cost_tracking": cost_tracking,

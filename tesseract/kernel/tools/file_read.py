@@ -11,12 +11,16 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
-from tesseract.kernel.tools._path_anchor import ReadPathRefused, anchor_read_path
+from tesseract.kernel.tools._path_anchor import (
+    ReadPathRefused,
+    anchor_read_path,
+    not_found_message,
+)
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
 
 
 def _log_skill_read(path: Path, session_id: str, *, is_error: bool) -> None:
-    """Phase 4 4a — best-effort skill-usage telemetry when a SKILL.md body is
+    """Best-effort skill-usage telemetry when a SKILL.md body is
     read. Imported lazily so `file_read` carries no telemetry import cost on
     the common (non-skill) path and never fails on a telemetry hiccup."""
     try:
@@ -52,6 +56,7 @@ class FileReadTool(Tool):
         "Use `grep` when you want the matching lines rather than the whole file, "
         "`glob` when you don't know the path yet, and `pdf_read` for a PDF."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:
@@ -78,7 +83,9 @@ class FileReadTool(Tool):
 
         if not path.exists():
             _log_skill_read(path, context.session_id, is_error=True)
-            return ToolResult(output=f"File not found: {path}", is_error=True)
+            return ToolResult(
+                output=not_found_message("File", inp.file_path, path), is_error=True
+            )
         if not path.is_file():
             _log_skill_read(path, context.session_id, is_error=True)
             return ToolResult(output=f"Not a file: {path}", is_error=True)

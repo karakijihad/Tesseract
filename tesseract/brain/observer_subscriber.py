@@ -15,13 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Awaitable, Callable
-
-from tesseract.brain.memory_suggestion import MemorySuggestion
+from typing import Any
 
 logger = logging.getLogger(__name__)
-
-EmitFn = Callable[[MemorySuggestion], Awaitable[None]]
 
 _CANCEL_TIMEOUT_S = 2.0
 

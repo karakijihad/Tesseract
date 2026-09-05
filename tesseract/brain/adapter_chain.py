@@ -55,6 +55,13 @@ from tesseract.kernel.adapters.base import (
     ModelAdapter,
     StreamChunk,
 )
+from tesseract.orchestrator import provider_failure
+from tesseract.orchestrator.provider_failure import (
+    NEEDS_A_PERSON,
+    SELF_CLEARING,
+    ProviderFault,
+    window_class_for_fault,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,25 +79,73 @@ def _extract_request_id(text: str) -> str | None:
     return match.group(0) if match else None
 
 
-@dataclass
+#: How long an entry stays skipped after it opened its breaker, by the kind of
+#: failure that opened it. Two classes, because one number cannot be right for
+#: both: a dropped socket may have cleared by the time you ask again, and an
+#: account with no credits in it has not and will not until a person adds some.
+#:
+#: **This is NOT the retry partition, and the difference is the design.**
+#: `errors.py::_NEVER_RETRY` answers *is this call worth making again now*, and
+#: `schema` belongs in it because the same malformed request stays malformed.
+#: But `schema` is a property of the REQUEST, not of this entry: the next turn
+#: sends a different one. Shutting a working model out of the chain for an
+#: hour because one prompt overflowed its window would be a second outage
+#: caused by the thing that watches for outages.
+#:
+#: Total over `provider_failure.FaultKind`; `window_class_for_fault` raises on
+#: a kind nobody placed, for the reason AR-17 gives: a default is how a new
+#: kind goes quiet.
+
+
+# `eq=False` so identity is identity: a breaker is a live, mutable door and
+# two of them holding the same ref shut are two doors, not one value. It is
+# also what makes it hashable, which is what the weak registry needs.
+@dataclass(eq=False)
 class _EntryBreaker:
     """Per-chain-entry cooldown breaker.
 
     Counts consecutive *advances* (chain walked past this entry — HARD
     error or transient retries exhausted). When the count crosses
-    ``max_failures`` the breaker opens for ``cooldown_seconds``; while
-    open, the chain skips this entry and falls through to the next.
-    Cooldown elapsed → next attempt acts as a half-open probe; success
-    closes, failure restarts the cooldown. Disabled by setting either
-    knob ≤ 0.
+    ``max_failures`` the breaker opens; while open, the chain skips this
+    entry and falls through to the next. The window elapsed → next attempt
+    acts as a half-open probe; success closes, failure restarts the wait on
+    whatever kind failed THAT time.
+
+    Disabled by ``max_failures`` ≤ 0, which is about the BREAKER. A window of
+    ≤ 0 is about one class of failure and leaves the breaker shut for that
+    class alone, still counting the failure — the two are separate questions
+    and answering them in one predicate made failures stop counting when both
+    windows were off and keep counting when only one was.
+
+    Which window a failure takes is `_WINDOW_CLASS` above, keyed on the kind
+    the shared vocabulary read out of the provider's own words.
     """
     max_failures: int
     cooldown_seconds: float
+    cooldown_seconds_until_fixed: float
     failures: int = 0
     open_until: float = 0.0  # monotonic timestamp; 0 == closed
+    #: The entry's ref, which is what a chain entry is called everywhere else
+    #: in this runtime and therefore what the operator is offered when they
+    #: ask what is refusing. Empty for a chain built without one, which is
+    #: only ever a test: an anonymous door is not one anybody can open.
+    ref: str = ""
+    #: The same clock its `FallbackAdapter` reads. A breaker asked from
+    #: outside the turn has no `now` handed to it and must not invent one from
+    #: a different clock than the one `open_until` was written against.
+    time_func: Callable[[], float] = time.monotonic
+    #: What it is holding the door shut FOR, in the shared vocabulary. This is
+    #: the difference between "wait 3521 seconds" and "the account has no
+    #: credits in it", and it is the whole reason the window got long.
+    last_kind: str = ""
 
     def is_disabled(self) -> bool:
-        return self.max_failures <= 0 or self.cooldown_seconds <= 0
+        return self.max_failures <= 0
+
+    def window_for(self, kind: str) -> float:
+        if window_class_for_fault(kind) == NEEDS_A_PERSON:
+            return self.cooldown_seconds_until_fixed
+        return self.cooldown_seconds
 
     def is_open(self, now: float) -> bool:
         return self.open_until > 0.0 and now < self.open_until
@@ -98,16 +153,53 @@ class _EntryBreaker:
     def remaining_cooldown(self, now: float) -> float:
         return max(0.0, self.open_until - now)
 
-    def record_failure(self, now: float) -> None:
+    def record_failure(self, now: float, kind: str) -> None:
         if self.is_disabled():
             return
         self.failures += 1
-        if self.failures >= self.max_failures:
-            self.open_until = now + self.cooldown_seconds
+        if self.failures < self.max_failures:
+            return
+        self.last_kind = kind
+        window = self.window_for(kind)
+        if window <= 0:
+            # The operator turned this window off. Counting the failure still
+            # matters --- it is what a later kind's window is measured from ---
+            # but opening for zero seconds would report an outage that ended
+            # before it was read.
+            return
+        self.open_until = now + window
 
     def record_success(self) -> None:
+        # Outright, not "let the remaining window run". A person adding credits
+        # shows up here as the next probe succeeding, and the hour it was shut
+        # for was a guess about how long they would take.
         self.failures = 0
         self.open_until = 0.0
+        self.last_kind = ""
+
+    # -- what `context/circuit_breaker.py::Closeable` asks ------------------
+    #
+    # A chain entry's cooldown is a door held shut, and the operator asking
+    # "stop waiting and try it now" is asking one question. Answering it here
+    # is what lets `breaker_status` and `breaker_reset` cover both kinds of
+    # breaker instead of the runtime growing a second tool for the second
+    # class.
+
+    def is_open_now(self) -> bool:
+        return self.is_open(self.time_func())
+
+    def remaining_now(self) -> float:
+        return self.remaining_cooldown(self.time_func())
+
+    def says(self) -> str:
+        if not self.last_kind:
+            return "this chain entry has not failed in this process"
+        if window_class_for_fault(self.last_kind) == NEEDS_A_PERSON:
+            return f"{self.last_kind}, which does not clear on its own"
+        return self.last_kind
+
+    def close(self) -> None:
+        self.record_success()
 
 
 # "Committed" = caller has received content that cannot be rewound.
@@ -124,6 +216,20 @@ _COMMITTED_CHUNK_TYPES = frozenset({
     ChunkType.TOOL_CALL_END,
     ChunkType.STOP,
 })
+
+
+def _retry_kind(fault: ProviderFault) -> ErrorKind:
+    """Whether a fault of this kind is worth trying again.
+
+    Used only where the adapter gave no `error_kind` of its own — the adapter
+    has the status code, which is better evidence about the transport than a
+    sentence is, so it wins where it exists. Where it does not, the words are
+    all there is and they are enough: a spent account is `usage` and `usage`
+    is never worth a retry, which is the whole of the 2026-08-29 defect.
+    """
+    from tesseract.kernel.adapters.errors import retry_kind_for_fault
+
+    return retry_kind_for_fault(fault.kind)
 
 
 def _exception_kind(exc: BaseException) -> ErrorKind:
@@ -145,6 +251,7 @@ class FallbackAdapter(ModelAdapter):
         transient_backoff_ms: int,
         cooldown_max_failures: int = 0,
         cooldown_seconds: float = 0.0,
+        cooldown_seconds_until_fixed: float = 0.0,
         time_func: Callable[[], float] = time.monotonic,
     ) -> None:
         if not chain:
@@ -157,11 +264,14 @@ class FallbackAdapter(ModelAdapter):
             raise ValueError("cooldown_max_failures must be >= 0")
         if cooldown_seconds < 0:
             raise ValueError("cooldown_seconds must be >= 0")
+        if cooldown_seconds_until_fixed < 0:
+            raise ValueError("cooldown_seconds_until_fixed must be >= 0")
         self._chain = chain
         self._transient_retries = transient_retries
         self._transient_backoff_ms = transient_backoff_ms
         self._cooldown_max_failures = cooldown_max_failures
         self._cooldown_seconds = cooldown_seconds
+        self._cooldown_seconds_until_fixed = cooldown_seconds_until_fixed
         self._time_func = time_func
         # Tracks which entry's options were used by the most recent stream().
         # Cost ledger reads this so failover spend is billed to the actual
@@ -175,25 +285,72 @@ class FallbackAdapter(ModelAdapter):
             self._build_breaker(opts) for _, opts in chain
         ]
 
+    @staticmethod
+    def _ref_of(options: AdapterOptions) -> str:
+        """The entry's ref, the way every other producer writes it.
+
+        Same shape as `_emit_production_tripwire`'s, deliberately: a name the
+        operator sees in `breaker_status` and a name they see in the drift log
+        have to be the same name or they are two facts about two things.
+        """
+        # `getattr`, not attribute access. This runs in the CONSTRUCTOR, for
+        # every entry, so anything it assumes about the options object is
+        # assumed about every chain ever built. A caller handing in something
+        # that is not a full `AdapterOptions` used to get a chain; it now got
+        # an `AttributeError` from a naming helper, which is a hard failure
+        # introduced by a label. An entry that cannot be named simply is not
+        # named: it gets no ref, so it registers no breaker and the chain is
+        # otherwise exactly as it was.
+        provider = str(getattr(options, "provider", "") or "").strip()
+        model = str(getattr(options, "model", "") or "").strip()
+        if not provider or not model:
+            return ""
+        tier = str(getattr(options, "tier", "") or "api").strip()
+        # Through the catalog, not by joining what is to hand. `options.model`
+        # is the id the PROVIDER answers to (`gpt-5.6-terra`); the ref every
+        # other reader uses is the catalog KEY (`gpt56_terra`). Joining gave
+        # this breaker a name of its own, and the cost was not untidiness: the
+        # refusal sentence the tool funnel shows an operator names a ref and
+        # tells them to type `breaker_reset <ref>`, and for codex that reset
+        # reached the funnel's breaker and not this one, because this one was
+        # registered under a name nothing else in the runtime ever writes.
+        # `catalog_ref` falls back to the id when no entry claims it, so an
+        # entry outside the catalog is named exactly as it was before.
+        from tesseract.kernel.tools.dependency import catalog_ref
+
+        return catalog_ref(tier, provider, model)
+
     def _build_breaker(self, options: AdapterOptions) -> _EntryBreaker:
         extra = getattr(options, "extra", None) or {}
-        return _EntryBreaker(
+        breaker = _EntryBreaker(
             max_failures=int(
                 extra.get("chain_cooldown_max_failures", self._cooldown_max_failures)
             ),
             cooldown_seconds=float(
                 extra.get("chain_cooldown_seconds", self._cooldown_seconds)
             ),
+            # Deliberately NOT overridable per provider. How long an outage
+            # lasts is a property of the provider and worth tuning per entry;
+            # how long a spent balance lasts is a property of the operator's
+            # afternoon and is not.
+            cooldown_seconds_until_fixed=self._cooldown_seconds_until_fixed,
+            ref=self._ref_of(options),
+            time_func=self._time_func,
         )
+        if breaker.ref:
+            from tesseract.context.circuit_breaker import register_foreign_breaker
+
+            register_foreign_breaker(breaker.ref, breaker)
+        return breaker
 
     def fork(self) -> "FallbackAdapter":
         """Return a fresh FallbackAdapter wrapping the SAME underlying chain.
 
-        WP-2: synthetic workspace turns get their own FallbackAdapter
-        instance so their failures don't trip the chat turn's breakers
-        (and vice-versa). The inner primary/fallback adapters are stateless
-        wrappers around HTTP/subprocess and are safe to share — only the
-        per-instance breaker state needs to be fresh. Audit reference:
+        Synthetic workspace turns get their own FallbackAdapter instance so
+        their failures don't trip the chat turn's breakers (and vice-versa).
+        The inner primary/fallback adapters are stateless wrappers around
+        HTTP/subprocess and are safe to share — only the per-instance breaker
+        state needs to be fresh.
         """
         return FallbackAdapter(
             chain=list(self._chain),
@@ -201,6 +358,7 @@ class FallbackAdapter(ModelAdapter):
             transient_backoff_ms=self._transient_backoff_ms,
             cooldown_max_failures=self._cooldown_max_failures,
             cooldown_seconds=self._cooldown_seconds,
+            cooldown_seconds_until_fixed=self._cooldown_seconds_until_fixed,
             time_func=self._time_func,
         )
 
@@ -240,8 +398,11 @@ class FallbackAdapter(ModelAdapter):
         tools: list[dict[str, Any]] | None = None,
         options: AdapterOptions | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
-        last_pre_commit_error: str | None = None
-        last_pre_commit_kind: ErrorKind = ErrorKind.UNKNOWN
+        # A fault, not a string. The chain is the last reader that made its own
+        # sense of a provider's sentence; it asks the shared vocabulary now, so
+        # its headline, its telemetry and the text the operator finally sees
+        # all carry the same word and the provider's own wording beneath it.
+        last_pre_commit_fault: ProviderFault | None = None
         # Cumulative retries burnt across previously-advanced entries — so
         # the MODEL_SELECTED envelope on the entry that finally commits
         # discloses how many primary-side retries were spent before
@@ -271,19 +432,21 @@ class FallbackAdapter(ModelAdapter):
                     "skipping for %.1fs more (failures=%d)",
                     idx, entry_label, remaining, breaker.failures,
                 )
-                if last_pre_commit_error is None:
-                    last_pre_commit_error = (
+                if last_pre_commit_fault is None:
+                    # `ours`: no request was made, so nothing about the
+                    # provider is known and claiming otherwise would be a
+                    # guess. This is the distinction `origin` exists for.
+                    last_pre_commit_fault = provider_failure.ours(
                         f"entry idx={idx} ({entry_label}) in cooldown "
                         f"({remaining:.1f}s remaining)"
                     )
-                    last_pre_commit_kind = ErrorKind.TRANSIENT
                 skipped_in_cooldown += 1
                 continue
 
             # Context-window guard — an entry whose window cannot even hold
             # the prompt is guaranteed a provider-side 400 (NIM/vLLM compute
             # max_tokens = window - prompt server-side; observed 2026-07-12:
-            # a ~253k-token history vs gpt-oss-120b's 131072 window produced
+            # a ~253k-token history vs a 131072-token window produced
             # max_tokens=-122002). Skip up front: no request, no retry burn,
             # and no breaker failure — the provider isn't at fault. The
             # estimate is the adapter's own heuristic (undercounts), so only
@@ -301,12 +464,12 @@ class FallbackAdapter(ModelAdapter):
                         "context_window %d — skipping",
                         idx, entry_label, est_tokens, window,
                     )
-                    if last_pre_commit_error is None:
-                        last_pre_commit_error = (
+                    if last_pre_commit_fault is None:
+                        # `ours` for the same reason: we declined to ask.
+                        last_pre_commit_fault = provider_failure.ours(
                             f"entry idx={idx} ({entry_label}) context overflow "
                             f"(~{est_tokens} tokens >= {window}-token window)"
                         )
-                        last_pre_commit_kind = ErrorKind.HARD
                     continue
 
             self._last_used_options = entry_options
@@ -334,7 +497,7 @@ class FallbackAdapter(ModelAdapter):
             while True:
                 pre_commit_buffer: list[StreamChunk] = []
                 attempt_kind: ErrorKind = ErrorKind.UNKNOWN
-                attempt_error: str | None = None
+                attempt_fault: ProviderFault | None = None
                 attempt_failed = False
                 try:
                     async for chunk in adapter.stream(
@@ -343,8 +506,15 @@ class FallbackAdapter(ModelAdapter):
                         options=entry_options,
                     ):
                         if chunk.type == ChunkType.ERROR and not committed:
-                            attempt_error = chunk.error or "unknown"
-                            attempt_kind = chunk.error_kind or ErrorKind.UNKNOWN
+                            # The adapter reached the provider, so this is
+                            # THEIRS and its own words are the record. Where
+                            # the adapter did not classify, the words decide:
+                            # that is the path a spent account took sixty
+                            # times as `UNKNOWN`, which the chain retries.
+                            attempt_fault = provider_failure.theirs(
+                                chunk.error or "the provider failed without saying why"
+                            )
+                            attempt_kind = chunk.error_kind or _retry_kind(attempt_fault)
                             attempt_failed = True
                             break
                         if chunk.type in _COMMITTED_CHUNK_TYPES:
@@ -372,7 +542,11 @@ class FallbackAdapter(ModelAdapter):
                                             "model": primary_options.model or "",
                                             "reasoning_effort": primary_options.reasoning_effort or "",
                                         },
-                                        "fallback_reason": last_pre_commit_error or "",
+                                        "fallback_reason": (
+                                            last_pre_commit_fault.line
+                                            if last_pre_commit_fault
+                                            else ""
+                                        ),
                                         "transient_retries_exhausted": (
                                             retries_burnt_before_this_entry
                                             if idx > 0
@@ -396,8 +570,11 @@ class FallbackAdapter(ModelAdapter):
                                 # and exit. ChatSession.send() converts
                                 # that into a synthetic system message + a
                                 # bounded retry loop (Layer 2, 2026-05-05).
-                                self._breakers[idx].record_failure(self._time_func())
                                 provider_error = chunk.error or "unknown"
+                                self._breakers[idx].record_failure(
+                                    self._time_func(),
+                                    provider_failure.classify(provider_error),
+                                )
                                 msg = (
                                     f"adapter idx={idx} ({entry_label}) ERROR "
                                     f"chunk after commit: {provider_error}"
@@ -427,13 +604,17 @@ class FallbackAdapter(ModelAdapter):
                             return
                         # An adapter that exits without committing and
                         # without an ERROR chunk is unusual — treat as
-                        # transient (worth a retry). AU-14 14b drops a
-                        # tripwire row so a persistently-empty provider
-                        # surfaces to AU-5's mapper without waiting for
-                        # the next probe tick.
+                        # transient (worth a retry). A tripwire row is
+                        # dropped so a persistently-empty provider surfaces
+                        # to the failure mapper without waiting for the
+                        # next probe tick.
                         attempt_failed = True
                         attempt_kind = ErrorKind.UNKNOWN
-                        attempt_error = "adapter exited without output"
+                        attempt_fault = ProviderFault(
+                            origin="theirs",
+                            kind="no_answer",
+                            detail="the adapter exited without output",
+                        )
                         _emit_production_tripwire(
                             entry_options,
                             drift_kind="empty_output",
@@ -445,8 +626,11 @@ class FallbackAdapter(ModelAdapter):
                         # was already delivered. Count as a breaker
                         # failure so a flaky provider that crashes
                         # mid-turn eventually trips into cooldown.
-                        self._breakers[idx].record_failure(self._time_func())
                         provider_error = f"{type(exc).__name__}: {exc}"
+                        self._breakers[idx].record_failure(
+                            self._time_func(),
+                            provider_failure.from_exception(exc).kind,
+                        )
                         msg = (
                             f"adapter idx={idx} ({entry_label}) raised mid-stream "
                             f"after commit: {provider_error}"
@@ -467,7 +651,7 @@ class FallbackAdapter(ModelAdapter):
                         )
                         return
                     attempt_failed = True
-                    attempt_error = f"{type(exc).__name__}: {exc}"
+                    attempt_fault = provider_failure.from_exception(exc)
                     attempt_kind = _exception_kind(exc)
 
                 if not attempt_failed:
@@ -476,26 +660,35 @@ class FallbackAdapter(ModelAdapter):
                     return
 
                 # Decide: retry same entry, or advance to next.
-                last_pre_commit_error = attempt_error or "unknown"
-                last_pre_commit_kind = attempt_kind
+                last_pre_commit_fault = attempt_fault or ProviderFault(
+                    origin="theirs", kind="unknown", detail="the provider failed"
+                )
 
                 if attempt_kind == ErrorKind.HARD:
                     logger.warning(
-                        "FallbackAdapter: idx=%d (%s) HARD pre-commit error: %s — advancing",
-                        idx, entry_label, last_pre_commit_error,
+                        "FallbackAdapter: idx=%d (%s) HARD pre-commit error (%s): %s — advancing",
+                        idx, entry_label, last_pre_commit_fault.kind,
+                        last_pre_commit_fault.detail,
                     )
-                    # AU-14 14b production tripwire — a HARD pre-commit
-                    # error against the chat chain is the exact signal
-                    # the scheduled probe would have caught. Drop a row
-                    # so AU-5's mapper sees it before the next probe
-                    # tick.
+                    # A HARD pre-commit error against the chat chain is
+                    # the exact signal the scheduled probe would have
+                    # caught. Drop a row so the failure mapper sees it
+                    # before the next probe tick.
+                    #
+                    # `evidence` is the same three fields every probe writes,
+                    # so a reader of `runtime/logs/provider-health/` never has
+                    # to learn which producer wrote a row before knowing
+                    # whether the fault was ours and what the provider said.
+                    from tesseract.orchestrator.provider_health import (
+                        drift_kind_for_fault,
+                    )
+
                     _emit_production_tripwire(
                         entry_options,
-                        drift_kind=_drift_kind_for_hard(last_pre_commit_error),
-                        evidence={
-                            "error": last_pre_commit_error,
-                            "chain_index": idx,
-                        },
+                        drift_kind=drift_kind_for_fault(last_pre_commit_fault.kind),
+                        evidence=provider_failure.evidence(
+                            last_pre_commit_fault, chain_index=idx
+                        ),
                     )
                     advanced = True
                     break
@@ -510,7 +703,7 @@ class FallbackAdapter(ModelAdapter):
                         attempt_kind.value,
                         transient_attempts,
                         entry_retries,
-                        last_pre_commit_error,
+                        last_pre_commit_fault.detail,
                     )
                     await self._sleep_backoff(transient_attempts, entry_backoff_ms)
                     continue
@@ -521,7 +714,7 @@ class FallbackAdapter(ModelAdapter):
                     entry_label,
                     attempt_kind.value,
                     transient_attempts,
-                    last_pre_commit_error,
+                    last_pre_commit_fault.detail,
                 )
                 advanced = True
                 break
@@ -533,8 +726,16 @@ class FallbackAdapter(ModelAdapter):
                 advanced = True
 
             # This entry advanced — record a failure on its breaker so
-            # repeated advances eventually open the cooldown.
-            self._breakers[idx].record_failure(self._time_func())
+            # repeated advances eventually open the cooldown, on the window
+            # its own fault names. `attempt_fault` and not
+            # `last_pre_commit_fault`: the latter can still be carrying an
+            # EARLIER entry's fault when the defensive fall-through above
+            # fires, and shutting this entry for an hour over the previous
+            # one's spent account is a second outage invented by the guard.
+            self._breakers[idx].record_failure(
+                self._time_func(),
+                attempt_fault.kind if attempt_fault else "unknown",
+            )
 
             # Carry this entry's retry burn forward so the entry that
             # finally commits can disclose the total cost of advancing.
@@ -548,16 +749,34 @@ class FallbackAdapter(ModelAdapter):
                 f"chain entries cooling down; retry after cooldown expires"
             )
         else:
+            # The kind, then the provider's own sentence. Both, because the
+            # kind is what a reader routes on and the sentence is what tells
+            # a person what to do: `usage` says which shape of failure this
+            # was, `add credits to continue` says how it ends.
             error_text = (
                 f"no chat_brain model available — "
                 f"all {len(self._chain)} chain entries exhausted; "
-                f"last error ({last_pre_commit_kind.value}): "
-                f"{last_pre_commit_error or 'unknown'}"
+                f"last error ({last_pre_commit_fault.kind if last_pre_commit_fault else 'unknown'}): "
+                f"{last_pre_commit_fault.line if last_pre_commit_fault else 'unknown'}"
             )
         yield StreamChunk(
             type=ChunkType.ERROR,
             error=error_text,
             error_kind=ErrorKind.HARD,
+        )
+
+    @property
+    def defers_tool_loading(self) -> bool:  # type: ignore[override]
+        """Only when EVERY entry defers, not when the primary does.
+
+        One payload is built per turn and reused across failover. If the
+        primary deferred and a fallback did not, the fallback would receive
+        the whole registry as ordinary tools — the schema blow-up the working
+        set exists to prevent, arriving exactly when a turn is already failing.
+        """
+        return bool(self._chain) and all(
+            getattr(adapter, "defers_tool_loading", False)
+            for adapter, _ in self._chain
         )
 
     def count_tokens(self, messages: list[dict[str, Any]]) -> int:
@@ -583,7 +802,7 @@ class FallbackAdapter(ModelAdapter):
         return False
 
 
-# ── AU-14 14b: production tripwire emission ───────────────────────────
+# ── Production tripwire emission ──────────────────────────────────────
 #
 # These helpers live at module bottom so the FallbackAdapter body stays
 # readable. The tripwire never fails the call — every code path is
@@ -615,31 +834,3 @@ def _emit_production_tripwire(
         note_production_tripwire(role, ref, drift_kind, evidence)
     except Exception:  # noqa: BLE001
         logger.debug("FallbackAdapter: tripwire write failed", exc_info=True)
-
-
-def _drift_kind_for_hard(error_text: str | None) -> str:
-    """Bucket a HARD pre-commit error message into a ``DriftKind``.
-
-    Mirrors the schema in :mod:`tesseract.scheduler.tasks._probes.base`.
-    Defaults to ``http_error`` so an unrecognised message still produces
-    actionable telemetry.
-
-    **Tie-break order is deliberate.** ``unavailable`` (auth / not-found
-    / invalid-key) wins over ``shape_mismatch`` because a compound
-    message like "Authentication failed: schema validation rejected
-    request" is operator-actionable as a credential problem first —
-    AU-5's mapper can suggest a credential rotation, but cannot draft a
-    schema fix for a request that never got past auth. ``schema_error``
-    (context-window) wins over ``http_error`` because the surface fix
-    is a config edit, not a retry.
-    """
-    if not error_text:
-        return "http_error"
-    lowered = error_text.lower()
-    if "auth" in lowered or "permission" in lowered or "not found" in lowered or "invalid api key" in lowered:
-        return "unavailable"
-    if "shape" in lowered or "schema" in lowered or "json" in lowered:
-        return "shape_mismatch"
-    if "context" in lowered and "window" in lowered:
-        return "schema_error"
-    return "http_error"

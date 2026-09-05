@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useEntityName } from '../../../hooks/useEntityName';
 import { useStickToBottom } from '../../../hooks/useStickToBottom';
-import { useConversationStore, EMPTY_MESSAGES, EMPTY_APPROVALS } from '../../../stores/conversation';
+import { useConversationStore, EMPTY_MESSAGES, EMPTY_APPROVALS, EMPTY_SEGMENTS } from '../../../stores/conversation';
 import { useUIStore } from '../../../stores/ui';
 import { usePanelStore } from '../../../cockpit/panelStore';
 import { dispatchCommand } from '../../../cockpit/commandDispatch';
@@ -37,6 +37,12 @@ const SCROLLBACK_LIMIT = 12;
 function isRenderable(m: ChatMessage): boolean {
   // Match MessageBubble's `hasBody` so the HUD doesn't silently drop
   // statusText-only or segments-only assistant turns the chat tab shows.
+  // A fold marker carries no content and is still worth drawing: it is the
+  // one thing in the transcript that says the model can no longer see the
+  // messages above it verbatim. A runtime note is here for the same reason
+  // the chat tab draws it: without it the HUD shows a turn nobody started.
+  if (m.role === 'marker') return true;
+  if (m.role === 'runtime') return true;
   if (m.role !== 'user' && m.role !== 'assistant' && m.role !== 'entity' && m.role !== 'error') {
     return false;
   }
@@ -53,8 +59,9 @@ export function HudChatInput() {
   const sendUserMessage = useConversationStore((s) => s.sendUserMessage);
   const sessionId = useWebSocketStore((s) => s.sessionId);
   const messages = useConversationStore((s) => s.getActiveSlice()?.messages ?? EMPTY_MESSAGES);
-  const streamingMessageId = useConversationStore((s) => s.getActiveSlice()?.streamingMessageId ?? null);
-  const streamingText = useConversationStore((s) => s.getActiveSlice()?.streamingText ?? '');
+  // The whole segment list, not just `streamingText`: intent and tool-call
+  // segments are what a turn emits first, and the scroll has to follow them.
+  const streamingSegments = useConversationStore((s) => s.getActiveSlice()?.streamingSegments ?? EMPTY_SEGMENTS);
   const pendingApprovals = useConversationStore((s) => s.getActiveSlice()?.pendingApprovals ?? EMPTY_APPROVALS);
   // Q3 — "redirect now" is only live while a turn is actually streaming.
   const isStreaming = useConversationStore((s) => s.getActiveSlice()?.isStreaming ?? false);
@@ -144,7 +151,7 @@ export function HudChatInput() {
   const { onScroll: handleScroll, stickToLatest } = useStickToBottom(scrollRef, [
     isOpen,
     messages,
-    streamingText,
+    streamingSegments,
     pendingApprovals.length,
   ]);
 
@@ -253,7 +260,11 @@ export function HudChatInput() {
   if (isChatView || chatPanelOpen) return null;
 
   const hasAttachments = pendingAttachments.length > 0;
-  const showStreaming = streamingMessageId !== null && streamingText.length > 0;
+  // Same gate as the chat tab. Keying on `streamingText` instead kept the
+  // widget blank for the whole intent + tool-call stretch of a turn, because
+  // `streamingText` only carries `answer` segments, so the reply appeared to
+  // land all at once when the turn ended.
+  const showStreaming = isStreaming;
 
   const toggleButton = (
     <Hint
@@ -382,7 +393,7 @@ export function HudChatInput() {
         />
         {canSteer(isStreaming, draft) && (
           <Hint
-            label="Redirect now — fold this text into the current turn (Enter/Send would queue it for after)"
+            label="Redirect now: fold this text into the current turn (Enter/Send would queue it for after)"
             position="top"
             maxWidth={220}
           >

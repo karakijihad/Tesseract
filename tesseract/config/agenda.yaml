@@ -21,10 +21,11 @@ risk_score:
 
 # Trust weighting per event source (0.0-1.0 typical range). Higher trust
 # sources rank above lower ones when other scores are equal. One entry per
-# LIVE source — a weight for a source nothing produces is a setting that can
-# never apply, and there were six of them.
+# LIVE source: a weight for a source nothing produces is a setting that can
+# never apply.
 source_trust:
   operator: 1.0
+  task: 1.0                         # a task you accepted at the gate carries your weight
   recovery: 0.95
   provider_watch: 0.6
   follow_up: 0.4
@@ -64,6 +65,15 @@ comment_reply:
 workspace_reply:
   enabled: true
   idle_timeout_seconds: 180
+  # A comment gets one attempt when it is posted. These cover the attempt
+  # failing: how often to look for an unanswered comment, how long one waits
+  # before it counts as stalled, and how many times to try before leaving it
+  # alone. The wait must clear `idle_timeout_seconds`, or a second reply goes
+  # out while the first attempt is still running and one question gets two
+  # answers.
+  retry_interval_seconds: 120
+  retry_after_seconds: 300
+  max_attempts: 3
 
 # Kernel-wide selection caps for the autonomy loop.
 kernel:
@@ -71,8 +81,7 @@ kernel:
   # immediately, and so does a worker finishing — so this number is only what
   # covers the things no event announces: a daily cap lifting at midnight, an
   # item parked by a crash the reconciler has not seen, and a wake lost to a
-  # publisher that failed. It was 30 s when nothing woke the loop at all, which
-  # made it the only wake there was rather than the last resort it reads as.
+  # publisher that failed.
   tick_interval_seconds: 300
   top_k: 3                          # max items selected per tick
   max_concurrent_workers_total: 8   # hard ceiling across all worker lanes
@@ -87,13 +96,6 @@ admission:
   fuzzy_dedupe:
     threshold: 0.9                  # similarity ratio (0-1) above which two goals count as duplicates
     window_hours: 24
-
-# The vetter was a quality gate over sources that no longer emit — every entry
-# in its `vet_required` list is deleted, so it judged an empty queue on 117 of
-# its last 129 runs. `max_unvetted_hours` was its escape valve: the kernel
-# promoted anything the job left sitting. With the job gone the gate's only
-# remaining behaviour would have been to delay every draft by a day and then
-# admit it anyway, so the block, the gate and the valve went together.
 
 # Per-worker-kind wallclock budgets, in seconds (10-1800 enforced
 # elsewhere). A worker that exceeds its budget is parked (BLOCKED), not

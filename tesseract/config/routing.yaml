@@ -1,0 +1,56 @@
+# Where each kind of message the runtime sends on its own is delivered.
+#
+# One line per kind, naming the channels it goes to. Everything the runtime
+# says without being asked is in this list, so there is one place to look
+# and one place to change it.
+#
+# A kind can name two channels, one, or none. An empty list means it is not
+# sent anywhere off this machine. It still appears in the app: every one of
+# these already reaches the Autonomy panel by the thing that produced it,
+# and this table only decides what leaves the machine.
+#
+# Edits take effect on the next message. No restart.
+#
+# Whether a channel is switched on at all, how often it will accept a kind
+# before it starts holding them back, and which kinds you have silenced are
+# in `channels.yaml`, beside the channel they belong to. This file only says
+# where things go.
+
+routes:
+  # The morning summary of what happened while you were away.
+  daily_brief: [telegram]
+
+  # Autonomy is waiting on a decision from you before it can continue.
+  awaiting_operator: [telegram]
+
+  # What was still open when the app restarted, and what it did about it.
+  recovery_summary: [telegram]
+
+  # It paused one of its own sources because that source was misbehaving.
+  governor_pause: [telegram]
+
+  # It crashed repeatedly and has stopped trying to start itself again.
+  crash_storm_latched: [telegram]
+
+  # The hourly check of the runtime found something that needs you.
+  runtime_report: [telegram]
+
+  # Something that runs on a timer failed, and it is one you asked to hear
+  # about. A single row can send its own somewhere else, or nowhere, with a
+  # `delivery:` line in `schedule.yaml`.
+  schedule_failed: [telegram]
+
+  # What one of the tasks you set up on a timer came back with. A single
+  # row can send its own somewhere else, or nowhere, with a `delivery:` line
+  # in `schedule.yaml`. There is no per-hour limit on these: the cadence you
+  # gave the row is the limit.
+  scheduled_task_result: [telegram]
+
+  # It put something right by itself, and this is what. Not a problem: a
+  # problem that needed you would arrive as the runtime check above. Set this
+  # to [] if you would rather read them in the app.
+  runtime_repaired: [telegram]
+
+  # One of the voices it speaks with stopped working. Replies still arrive
+  # as text.
+  voice_lane_down: [telegram]

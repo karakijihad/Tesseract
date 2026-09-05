@@ -114,7 +114,7 @@ export async function loadSlashCommands(): Promise<void> {
         // spamming the console every 5s.
         if (!warned) {
           warned = true;
-          console.warn('[slashCommands] /api/commands unavailable — retrying', err);
+          console.warn('[slashCommands] /api/commands unavailable, retrying', err);
         }
       }
       await _sleep(delay);

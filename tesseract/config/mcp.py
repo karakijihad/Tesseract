@@ -43,6 +43,7 @@ _KNOWN_VERBS: frozenset[str] = frozenset(
         "memory.search",
         "vault.search",
         "vault.query",
+        "atlas.query",
         "memory.save",
         "memory.update",
         "vault.ingest",

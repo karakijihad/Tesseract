@@ -104,6 +104,27 @@ def models_present(target_dir: Path | None = None) -> bool:
     return all((root / name).is_file() for name in MODEL_FILES)
 
 
+def unavailable_reason(target_dir: Path | None = None) -> str | None:
+    """Why the decoder cannot be built on this machine, or None when it can.
+
+    Two faults look identical from the gate and are fixed in completely
+    different places: the model files being absent, and the package that reads
+    them being absent. Reporting both as "the wake model is not installed"
+    sends the operator to look at three files that are all present while the
+    gate passes every utterance through.
+    """
+    import importlib.util
+
+    if not models_present(target_dir or models_dir()):
+        return "the wake model files are not on disk"
+    if importlib.util.find_spec("sherpa_onnx") is None:
+        return (
+            "the wake decoder package, sherpa_onnx, is missing from the "
+            "environment this backend runs in"
+        )
+    return None
+
+
 def keywords_path() -> Path:
     return runtime_dir() / _KEYWORDS_FILENAME
 
@@ -177,11 +198,12 @@ class WakeSpotter:
     """
 
     def __init__(self, key: SpotterKey, target_dir: Path | None = None) -> None:
+        root = target_dir or models_dir()
+        blocked = unavailable_reason(root)
+        if blocked is not None:
+            raise WakeModelsUnavailable(blocked)
         import sherpa_onnx
 
-        root = target_dir or models_dir()
-        if not models_present(root):
-            raise WakeModelsUnavailable("wake model files are not installed")
         keywords = write_keywords(key.phrase, root)
         self.key = key
         self._spotter = sherpa_onnx.KeywordSpotter(

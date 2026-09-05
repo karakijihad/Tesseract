@@ -7,7 +7,7 @@ through a three-state machine:
 * ``initializing`` — aiohttp has bound the listener but ``_init_background``
   is still building substrates (tool registry, voice runtime, telegram
   bridge, etc.). Routes that depend on a substrate may still return 503.
-* ``recovering`` — AU-2 RecoveryManager is reconciling boot-time state.
+* ``recovering`` — RecoveryManager is reconciling boot-time state.
   Set just before ``rm.run()`` and cleared after it completes.
 * ``ready`` — everything is wired. Default when recovery never ran.
 

@@ -39,6 +39,7 @@ class AlarmSetTool(Tool):
     not_when: ClassVar[str] = (
         "backend automation that runs on a cadence, which is `schedule_create`."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(self, alarm_registry: AlarmRegistry) -> None:
         self._registry = alarm_registry

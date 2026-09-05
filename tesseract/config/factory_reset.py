@@ -14,9 +14,13 @@ model each role points at. A pane that restored the file would revert four
 things the operator never asked about, so each scope declares the keys its own
 pane writes and reaches nothing else.
 
-**Restores, never deletes.** A key the operator added that the factory copy has
-no opinion about is left alone. So a role you invented keeps its budget when Cost is
-reset, and a tool you registered keeps its posture when Tools is.
+**Restores, never deletes**, with one named exception per scope. A key the
+operator added that the factory copy has no opinion about is left alone, so a
+role you invented keeps its budget when Cost is reset and a tool you registered
+keeps its posture when Tools is. `SCOPE_REMOVALS` is for the other case: a key
+whose mere presence OUTRANKS something this scope restores. Putting the shipped
+value back while a louder key sits above it changes nothing the operator can
+see, which is a reset that reports success and does nothing.
 
 Nothing here syncs in-memory state: `mirror/server/config_watcher.py` watches
 all four of these files and reloads on the write, exactly as it does for the
@@ -59,7 +63,7 @@ SCOPES: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
             ),
         ),
     ),
-    # `routes/settings.py::set_session_policy` + `_apply_compaction_updates`.
+    # `routes/settings.py::set_session_policy`.
     "session": (
         (
             "mirror.yaml",
@@ -71,10 +75,16 @@ SCOPES: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
                 "ui.show_config_reload_toasts",
             ),
         ),
+    ),
+    # `routes/settings.py::_apply_compaction_updates`. Its own scope rather
+    # than riding on `session`: they are two tabs, and a reset button on the
+    # compaction tab that also reverted autosave would reach further than the
+    # pane it sits on.
+    "compaction": (
         (
             "roles.yaml",
             (
-                "roles.chat_brain.compact_threshold",
+                "compaction.compact_ratio",
                 "roles.chat_brain.keep_recent_turns",
             ),
         ),
@@ -136,6 +146,20 @@ def _walk(doc: Any, parts: tuple[str, ...]) -> Iterator[tuple[tuple[str, ...], A
             yield (name, *sub_path), value
 
 
+#: Keys a scope must REMOVE, not restore. Each one outranks a key the same
+#: scope puts back, so leaving it makes the reset a no-op the operator watches
+#: succeed. Keep this list to that case and say why beside each entry.
+SCOPE_REMOVALS: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
+    # `roles.chat_brain.compact_threshold` beats `compaction.compact_ratio` in
+    # `boot.py::_chat_brain_from_ref`, so restoring the default with a
+    # hand-written override still on the role reverts nothing. The Settings
+    # pane already deletes it when it writes the default; reset has to agree.
+    "compaction": (
+        ("roles.yaml", ("roles", "chat_brain", "compact_threshold")),
+    ),
+}
+
+
 def _held(doc: Any, path: tuple[str, ...]) -> tuple[bool, Any]:
     """`(reachable, current value)` for `path` in the operator's document."""
     for part in path:
@@ -151,6 +175,29 @@ def _place(doc: Any, path: tuple[str, ...], value: Any) -> None:
     doc[path[-1]] = value
 
 
+def _drop(doc: Any, path: tuple[str, ...]) -> None:
+    for part in path[:-1]:
+        if not isinstance(doc, dict) or part not in doc:
+            return
+        doc = doc[part]
+    if isinstance(doc, dict):
+        doc.pop(path[-1], None)
+
+
+class _Remove:
+    """The value a `Change` carries when the change is a deletion.
+
+    A sentinel rather than `None`, because `None` is a value a yaml key can
+    legitimately hold and a reset that confused the two would delete a key the
+    factory copy deliberately blanks."""
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "<removed>"
+
+
+_REMOVE = _Remove()
+
+
 @dataclass(frozen=True)
 class Change:
     """One setting put back, named by where it lives rather than by a label a
@@ -162,6 +209,25 @@ class Change:
 
     def __str__(self) -> str:
         return f"{self.file}::{'.'.join(self.path)}"
+
+
+def has_factory_copy(scope: str) -> bool:
+    """True when this scope has a factory copy distinct from the operator's.
+
+    A dev checkout has one config tree, so there is nothing to restore FROM
+    and `restore` writes nothing. That is not the same answer as "you are
+    already at the defaults", and a button reporting the second when the first
+    is true tells the operator their settings match a file that does not
+    exist.
+    """
+    for filename, _patterns in SCOPES[scope]:
+        factory = TESSERACT_DIR / "config" / filename
+        live = config_dir() / filename
+        if not live.is_file() or not factory.is_file():
+            continue
+        if factory.resolve() != live.resolve():
+            return True
+    return False
 
 
 def restore(scope: str) -> tuple[list[Change], list[str]]:
@@ -193,6 +259,12 @@ def restore(scope: str) -> tuple[list[Change], list[str]]:
                 wanted[path] = value
 
         moved = []
+        for removal_file, path in SCOPE_REMOVALS.get(scope, ()):
+            if removal_file != filename:
+                continue
+            reachable, _ = _held(current, path)
+            if reachable:
+                moved.append(Change(filename, path, _REMOVE))
         for path in sorted(wanted):
             reachable, held = _held(current, path)
             if not reachable:
@@ -209,7 +281,10 @@ def restore(scope: str) -> tuple[list[Change], list[str]]:
 
         def _write(doc: Any, moved: list[Change] = moved) -> None:
             for change in moved:
-                _place(doc, change.path, change.value)
+                if change.value is _REMOVE:
+                    _drop(doc, change.path)
+                else:
+                    _place(doc, change.path, change.value)
 
         round_trip_yaml(live, _write)
 

@@ -226,9 +226,9 @@ class HardwareFacts(BaseModel):
     #: is detectable without reading a second file.
     profile: str | None = None
     #: The profile's speech-synthesis advice (`kokoro-gpu` / `kokoro-cpu`).
-    #: Written to `hardware-profile.json` since P1.5 and read by nobody until
-    #: now, which is why a machine that lost its graphics card went on
-    #: recommending the voice it could no longer keep up with.
+    #: Written to `hardware-profile.json`. While nothing read it, a machine
+    #: that lost its graphics card went on recommending the voice it could
+    #: not keep up with.
     tts_note: str | None = None
 
 

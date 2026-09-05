@@ -53,7 +53,7 @@ export function StatusPane({ channel }: StatusPaneProps) {
 
   const _onRestart = async () => {
     if (!sessionId) {
-      push('Channels: no operator session — open chat first', 'warning');
+      push('Channels: no session yet. Open chat first.', 'warning');
       return;
     }
     try {
@@ -75,7 +75,7 @@ export function StatusPane({ channel }: StatusPaneProps) {
 
   const _onSetOverride = async (next: TelegramOverride) => {
     if (!sessionId) {
-      push('Channels: no operator session — open chat first', 'warning');
+      push('Channels: no session yet. Open chat first.', 'warning');
       return;
     }
     if (next === currentOverride) return;

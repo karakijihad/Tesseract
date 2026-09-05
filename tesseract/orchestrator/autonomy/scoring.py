@@ -42,6 +42,8 @@ _RISK_SCORE: dict[RiskClass, float] = {
 # deleted rather than re-weighted, because no weight makes a guess into evidence.
 _DEFAULT_SOURCE_TRUST: dict[AgendaSource, float] = {
     AgendaSource.OPERATOR: 1.0,
+    # Accepted by the operator at a gate, so it carries their weight.
+    AgendaSource.TASK: 1.0,
     AgendaSource.RECOVERY: 0.95,
     AgendaSource.PROVIDER_WATCH: 0.6,
     AgendaSource.FOLLOW_UP: 0.4,

@@ -14,8 +14,9 @@ Scope (minimum viable):
   `delegate_coder` / `delegate_auditor` instead.
 - Iteration / breaker caps come from the parent's chat_brain config
   (`roles.yaml::roles.chat_brain.{tool_iteration_cap, consecutive_error_cap}`)
-  so the operator-tunable Loop Limits panel applies to sub-agents too. No
-  compaction in the sub-session.
+  so the operator-tunable Loop Limits panel applies to sub-agents too.
+  Compaction settings come from the same place, so a sub-agent folds on
+  the operator's numbers rather than on the code defaults.
 - Output is the concatenated assistant text from the sub-session.
 """
 
@@ -31,10 +32,16 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from pydantic import BaseModel, Field
 
 from tesseract.agents.loader import AgentDefinition, list_agents, load_agent
-from tesseract.brain.agent_factory import AgentBuildError, build_agent_session
+from tesseract.brain.agent_factory import (
+    AgentBuildError,
+    CarriesCompaction,
+    CompactionSettings,
+    build_agent_session,
+)
 from tesseract.brain.chat import ChatSession
 from tesseract.brain.tools import AskFn, ToolRegistry
 from tesseract.kernel.adapters.base import AdapterOptions, ChunkType, ModelAdapter
+from tesseract.kernel.tools._agent_transcript import AgentTranscriptTap
 from tesseract.kernel.tools.base import (
     PermissionResult,
     SpawnCapExceeded,
@@ -153,12 +160,25 @@ class _SteerBox:
         return "\n\n".join(parts) if parts else None
 
 
+def _stream_key(context: ToolContext, steerbox: "_SteerBox | None") -> str:
+    """The id the operator's card is bound to, which is what the transcript
+    has to be filed under.
+
+    A background spawn is opened from the Activity registry, whose record is
+    `delegate:<handle_id>` — so the card asks for the handle, not the call
+    that made it. A foreground run has no handle and no registry row; its id
+    is the tool call itself.
+    """
+    handle_id = getattr(steerbox.handle, "handle_id", "") if steerbox is not None else ""
+    return str(handle_id or context.current_call_id or "")
+
+
 class InvokeAgentInput(BaseModel):
     name: str = Field(description="Slug of a registered sub-agent (see agents/INDEX.md).")
     task: str = Field(
         description=(
             "Self-contained task prompt. The sub-agent has no access to this "
-            "conversation — include every file path, constraint, and goal it needs."
+            "conversation, so include every file path, constraint and goal it needs."
         )
     )
     attachment_ids: list[str] = Field(
@@ -173,7 +193,7 @@ class InvokeAgentInput(BaseModel):
     model_role: str | None = Field(
         default=None,
         description=(
-            "Override the model this agent runs on for THIS call only — a "
+            "Override the model this agent runs on for THIS call only. A "
             "roles.yaml role name or a provider ref like 'api.<provider>."
             "<model>'. Leave unset to use the model the agent card declares. "
             "CLI-subscription roles are refused here; route those through a "
@@ -193,7 +213,7 @@ class InvokeAgentInput(BaseModel):
     )
 
 
-class InvokeAgentTool(Tool):
+class InvokeAgentTool(CarriesCompaction, Tool):
     default_posture = "ask"
 
     risk_class: ClassVar[str] = "propose"
@@ -204,14 +224,15 @@ class InvokeAgentTool(Tool):
         "read-only tool subset."
     )
     use_when: ClassVar[str] = (
-        "Use for a persistent specialist stance — reviewer, planner, "
-        "domain expert — in a scoped context that does not see this "
+        "Use for a persistent specialist stance such as a reviewer, a planner "
+        "or a domain expert, in a scoped context that does not see this "
         "conversation."
     )
     not_when: ClassVar[str] = (
-        "CLI-role agents are rejected — use `delegate_coder` or "
+        "CLI-role agents are rejected: use `delegate_coder` or "
         "`delegate_auditor` for heavy CLI work."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(
         self,
@@ -225,8 +246,9 @@ class InvokeAgentTool(Tool):
         policy: PermissionPolicy | None = None,
         ask_fn: AskFn | None = None,
         cost_ledger: "CostLedger | None" = None,
+        compaction: CompactionSettings | None = None,
     ) -> None:
-        # `None` is the live pair of agent roots (AR-6) — the operator's
+        # `None` is the live pair of agent roots — the operator's
         # cards shadowing the shipped ones. A directory named here is used
         # alone, which only tests want.
         self._agents_dir = agents_dir
@@ -249,6 +271,9 @@ class InvokeAgentTool(Tool):
         self._tool_context = tool_context
         self._policy = policy
         self._ask_fn = ask_fn
+        # The parent's fold settings. `None` is the REPL/test path and
+        # falls back to the dataclass defaults inside the factory.
+        self._compaction = compaction
 
     @property
     def name(self) -> str:
@@ -274,7 +299,7 @@ class InvokeAgentTool(Tool):
             else InvokeAgentInput(**tool_input.model_dump())
         )
 
-        # Phase 4: background spawn. Same pattern as delegate_*.
+        # Background spawn. Same pattern as delegate_*.
         # background is the default; a context without a
         # SpawnRegistry (headless / REPL / autonomy) degrades to foreground
         # instead of erroring so callers keep the pre-P3 semantics.
@@ -353,6 +378,7 @@ class InvokeAgentTool(Tool):
                 ask_fn=sub_ask_fn,
                 cost_ledger=self._cost_ledger,
                 model_role=inp.model_role,
+                compaction=self._compaction,
             )
         except AgentBuildError as exc:
             return ToolResult(output=str(exc), is_error=True)
@@ -405,132 +431,158 @@ class InvokeAgentTool(Tool):
         # cut short to deliver that correction is NOT an error, so the
         # CancelledError it raises is swallowed here and nowhere else.
         turn_input: Any = user_input
-        while True:
-            if steerbox is not None:
-                steerbox.steered_turn = False
-            try:
-                async for chunk in sub_session.send(turn_input):
-                    if chunk.type == ChunkType.TEXT:
-                        collected.append(chunk.text)
-                    elif chunk.type == ChunkType.TOOL_CALL_END:
-                        tool_calls += 1
-                    elif chunk.type == ChunkType.STOP:
-                        stop_reason = chunk.stop_reason
-                        iterations += 1
-                        usage = chunk.raw.get("usage") if isinstance(chunk.raw, dict) else None
-                        if isinstance(usage, dict):
-                            tokens_in += int(usage.get("input_tokens") or 0)
-                            tokens_out += int(usage.get("output_tokens") or 0)
-                    elif chunk.type == ChunkType.ERROR:
-                        error = chunk.error
-                        break
-            except asyncio.CancelledError:
-                # A hard cancel is the operator's and must propagate; a steer
-                # only ends the turn so the correction can be delivered.
-                if steerbox is None or steerbox.hard_cancel.is_set():
-                    raise
-                if not steerbox.steered_turn:
-                    raise
-            except Exception as e:  # surface, don't hide
-                logger.exception("invoke_agent: sub-session failed")
-                error = f"{type(e).__name__}: {e}"
-
-            if error or steerbox is None or steerbox.hard_cancel.is_set():
-                break
-            if steers_applied >= _MAX_STEERS_PER_SPAWN:
-                stop_reason = "max_steers"
-                logger.warning(
-                    "invoke_agent(%s): steer cap %d reached; ending the run",
-                    inp.name, _MAX_STEERS_PER_SPAWN,
-                )
-                break
-            correction = steerbox.drain()
-            if correction is None:
-                if not steerbox.awaiting_answer():
-                    break
-                # The sub-agent asked its parent something. Ending here would
-                # return a half-answer as if it were the result, so wait —
-                # bounded only by spawn_cancel, which sets hard_cancel.
-                waiter = asyncio.ensure_future(steerbox.queue.get())
-                stopper = asyncio.ensure_future(steerbox.hard_cancel.wait())
+        # The operator's view of a run that has no subprocess to watch.
+        # Paired with the `finally` below: every path that opened the card
+        # closes it, or a returned call streams forever.
+        tap = AgentTranscriptTap.for_run(
+            sub_tool_context.cli_sink,
+            _stream_key(sub_tool_context, steerbox),
+            self.name,
+            sub_tool_context.current_call_id,
+        )
+        # -1 is cli_stream's "never got to the end": only a cancellation
+        # leaves the loop without replacing it.
+        exit_code = -1
+        try:
+            # Opening the card is INSIDE the region whose `finally` closes it.
+            # It used to sit above the `try`, so a cancellation delivered
+            # during the opening emit left the card streaming forever for a
+            # call that had already stopped, which is the one thing
+            # `AgentTranscriptTap`'s docstring promises cannot happen.
+            if tap is not None:
+                await tap.start(inp.name)
+            while True:
+                if steerbox is not None:
+                    steerbox.steered_turn = False
                 try:
-                    await asyncio.wait(
-                        {waiter, stopper},
-                        timeout=_question_timeout_s(),
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                finally:
-                    stopper.cancel()
-                if not waiter.done():
-                    waiter.cancel()
-                    if steerbox.hard_cancel.is_set():
-                        break
-                    # Nobody answered. Resuming beats both hanging on a slot
-                    # forever and discarding the work already done.
+                    async for chunk in sub_session.send(turn_input):
+                        if tap is not None:
+                            await tap.on_chunk(chunk)
+                        if chunk.type == ChunkType.TEXT:
+                            collected.append(chunk.text)
+                        elif chunk.type == ChunkType.TOOL_CALL_END:
+                            tool_calls += 1
+                        elif chunk.type == ChunkType.STOP:
+                            stop_reason = chunk.stop_reason
+                            iterations += 1
+                            usage = chunk.raw.get("usage") if isinstance(chunk.raw, dict) else None
+                            if isinstance(usage, dict):
+                                tokens_in += int(usage.get("input_tokens") or 0)
+                                tokens_out += int(usage.get("output_tokens") or 0)
+                        elif chunk.type == ChunkType.ERROR:
+                            error = chunk.error
+                            break
+                except asyncio.CancelledError:
+                    # A hard cancel is the operator's and must propagate; a steer
+                    # only ends the turn so the correction can be delivered.
+                    if steerbox is None or steerbox.hard_cancel.is_set():
+                        raise
+                    if not steerbox.steered_turn:
+                        raise
+                except Exception as e:  # surface, don't hide
+                    logger.exception("invoke_agent: sub-session failed")
+                    error = f"{type(e).__name__}: {e}"
+
+                if error or steerbox is None or steerbox.hard_cancel.is_set():
+                    break
+                if steers_applied >= _MAX_STEERS_PER_SPAWN:
+                    stop_reason = "max_steers"
                     logger.warning(
-                        "invoke_agent(%s): no answer to its question in %.0fs; "
-                        "resuming on assumption", inp.name, _question_timeout_s(),
+                        "invoke_agent(%s): steer cap %d reached; ending the run",
+                        inp.name, _MAX_STEERS_PER_SPAWN,
                     )
-                    correction = (
-                        "No answer came back in time. State the assumption you "
-                        "are proceeding on, explicitly, and finish the task."
-                    )
-                else:
-                    correction = waiter.result()
-            steers_applied += 1
-            # Do NOT swap the Event object. `build_agent_session` hands the
-            # ChatSession a `copy.copy` of this context, so reassigning
-            # `context.cancel_event` here would never reach the object the
-            # sub-session actually reads — the first steer would interrupt and
-            # every later one would not. `ChatSession.send()` clears the event
-            # at the top of each turn, so reusing it is both correct and what
-            # the substrate already expects.
-            turn_input = (
-                "The operator has redirected this task mid-flight. Apply this "
-                f"and continue:\n\n{correction}"
-            )
+                    break
+                correction = steerbox.drain()
+                if correction is None:
+                    if not steerbox.awaiting_answer():
+                        break
+                    # The sub-agent asked its parent something. Ending here would
+                    # return a half-answer as if it were the result, so wait —
+                    # bounded only by spawn_cancel, which sets hard_cancel.
+                    waiter = asyncio.ensure_future(steerbox.queue.get())
+                    stopper = asyncio.ensure_future(steerbox.hard_cancel.wait())
+                    try:
+                        await asyncio.wait(
+                            {waiter, stopper},
+                            timeout=_question_timeout_s(),
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                    finally:
+                        stopper.cancel()
+                    if not waiter.done():
+                        waiter.cancel()
+                        if steerbox.hard_cancel.is_set():
+                            break
+                        # Nobody answered. Resuming beats both hanging on a slot
+                        # forever and discarding the work already done.
+                        logger.warning(
+                            "invoke_agent(%s): no answer to its question in %.0fs; "
+                            "resuming on assumption", inp.name, _question_timeout_s(),
+                        )
+                        correction = (
+                            "No answer came back in time. State the assumption you "
+                            "are proceeding on, explicitly, and finish the task."
+                        )
+                    else:
+                        correction = waiter.result()
+                steers_applied += 1
+                # Do NOT swap the Event object. `build_agent_session` hands the
+                # ChatSession a `copy.copy` of this context, so reassigning
+                # `context.cancel_event` here would never reach the object the
+                # sub-session actually reads — the first steer would interrupt and
+                # every later one would not. `ChatSession.send()` clears the event
+                # at the top of each turn, so reusing it is both correct and what
+                # the substrate already expects.
+                turn_input = (
+                    "The operator has redirected this task mid-flight. Apply this "
+                    f"and continue:\n\n{correction}"
+                )
 
-        final_text = "".join(collected).strip()
+            final_text = "".join(collected).strip()
+            exit_code = 1 if error else 0
 
-        metadata = {
-            "agent": inp.name,
-            "model_role": _model_role,
-            "steers_applied": steers_applied,
-            "iterations": iterations,
-            "tool_calls": tool_calls,
-            "stop_reason": stop_reason,
-            # The two figures a caller needs to judge the run rather than
-            # re-parse the rendered output: did any text come back, and what
-            # did getting it cost. `final_text_chars == 0` is the empty
-            # response that eight autonomy workers recorded as `done`.
-            "final_text_chars": len(final_text),
-            "tokens_in": tokens_in,
-            "tokens_out": tokens_out,
-        }
+            metadata = {
+                "agent": inp.name,
+                "model_role": _model_role,
+                "steers_applied": steers_applied,
+                "iterations": iterations,
+                "tool_calls": tool_calls,
+                "stop_reason": stop_reason,
+                # The two figures a caller needs to judge the run rather than
+                # re-parse the rendered output: did any text come back, and what
+                # did getting it cost. `final_text_chars == 0` is the empty
+                # response that eight autonomy workers recorded as `done`.
+                "final_text_chars": len(final_text),
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+            }
 
-        # Carried on the error path too: a spawn that burned tokens and then
-        # errored spent real money, and a caller that bills from metadata
-        # would otherwise record nothing for exactly the runs that produced
-        # nothing.
-        if error:
+            # Carried on the error path too: a spawn that burned tokens and then
+            # errored spent real money, and a caller that bills from metadata
+            # would otherwise record nothing for exactly the runs that produced
+            # nothing.
+            if error:
+                return ToolResult(
+                    output=(
+                        f"[{inp.name}] sub-session errored: {error}\n"
+                        f"Partial output ({len(final_text)} chars):\n{final_text}"
+                        if final_text
+                        else f"[{inp.name}] sub-session errored: {error}"
+                    ),
+                    is_error=True,
+                    metadata=metadata,
+                )
+
             return ToolResult(
                 output=(
-                    f"[{inp.name}] sub-session errored: {error}\n"
-                    f"Partial output ({len(final_text)} chars):\n{final_text}"
-                    if final_text
-                    else f"[{inp.name}] sub-session errored: {error}"
+                    f"[{inp.name} · {iterations} iter · {tool_calls} tool call(s) · {stop_reason or 'end'}]\n\n"
+                    f"{final_text or '(empty response)'}"
                 ),
-                is_error=True,
                 metadata=metadata,
             )
-
-        return ToolResult(
-            output=(
-                f"[{inp.name} · {iterations} iter · {tool_calls} tool call(s) · {stop_reason or 'end'}]\n\n"
-                f"{final_text or '(empty response)'}"
-            ),
-            metadata=metadata,
-        )
+        finally:
+            if tap is not None:
+                await tap.close(exit_code)
 
 
 async def _build_multipart_user_input(
@@ -663,20 +715,21 @@ def _sub_agent_options(parent: AdapterOptions, agent: AgentDefinition) -> Adapte
 
     Kept for backward-compat; new code should use ``_resolve_sub_adapter``
     which returns the adapter alongside options (and honors ``model_role``).
+
+    `replace` and not a field list. This used to name six fields and rebuild
+    the rest from `AdapterOptions`' own defaults, so an agent with a token
+    override silently lost `use_responses_api` and `prompt_cache_explicit`,
+    both of which `providers.yaml` sets true on the entry `chat_brain` points
+    at. The first sent the sub-agent down the legacy Chat Completions path,
+    the second dropped its prompt-cache breakpoints, and neither said so.
+    `memory-classifier.md` declares `model_role: chat_brain` and
+    `max_tokens_override: 128`, so it was reachable in a shipped agent. The
+    sibling path below already used `replace` and never had the defect.
     """
     override = agent.max_tokens_override
     if override is None or override <= 0:
         return parent
-    # AdapterOptions is a frozen-ish dataclass — use a simple reconstruction.
-    fields: dict[str, Any] = {
-        "model": parent.model,
-        "provider": parent.provider,
-        "temperature": parent.temperature,
-        "max_output_tokens": override,
-        "context_window": parent.context_window,
-        "reasoning_effort": parent.reasoning_effort,
-    }
-    return AdapterOptions(**fields)
+    return dataclasses.replace(parent, max_output_tokens=override)
 
 
 def _resolve_sub_adapter(
@@ -721,11 +774,10 @@ def _resolve_sub_adapter(
         resolve_role_runtime,
     )
 
-    # Provider refs (api.openai.gpt54_mini) — codex audit-2 P2: the
-    # agent-writer doc accepts these as a model_role value, so honor
-    # them by building a single-entry adapter from the catalog. No
-    # fallback chain (the operator pinned an exact model — falling
-    # back would silently change the pin).
+    # A card may pin a catalog entry (api.openai.gpt54_mini) instead of a
+    # role, so honour it by building a single-entry adapter. No fallback
+    # chain: the pin names an exact model, and falling back would silently
+    # change it.
     if _is_provider_ref(role_name):
         try:
             ref_resolved = resolve_provider_ref_runtime(role_name)
@@ -736,9 +788,19 @@ def _resolve_sub_adapter(
             )
             return parent_adapter, _sub_agent_options(parent_options, agent)
         if ref_resolved is None:
-            logger.warning(
-                "invoke_agent: agent=%r declares model_role=%r (provider ref) "
-                "but it's unresolvable/unbuildable — falling back to parent adapter",
+            # ERROR, not WARNING, and the level is the point: the Mirror's log
+            # forwarder carries ERROR from every logger and WARNING only from
+            # a short allowlist this module is not on, so at WARNING nobody
+            # was ever told. The card asked for one model and got another,
+            # which is a wrong answer rather than a slow one. The boot guard
+            # and `agent_create` both refuse a ref the catalog does not hold,
+            # so what reaches here is a catalog that changed under a card, or
+            # an adapter that could not be built (a missing key, usually).
+            logger.error(
+                "invoke_agent: agent=%r pins model_role=%r, which did not "
+                "resolve, so it ran on the calling model instead. Check that "
+                "providers.yaml still carries that entry and that its "
+                "provider has a key.",
                 agent.name, role_name,
             )
             return parent_adapter, _sub_agent_options(parent_options, agent)

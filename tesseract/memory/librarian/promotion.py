@@ -22,7 +22,7 @@ from tesseract.memory.librarian.utils import (
     _parse_daily_sections,
 )
 from tesseract.memory.store import MemoryStore
-from tesseract.memory.types import MemoryFrontmatter, MemoryType
+from tesseract.memory.types import MemoryFrontmatter, MemoryType, lead_paragraph
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +157,7 @@ class PromotionMixin:
             id=MemoryFrontmatter.generate_id(),
             type=mem_type,
             title=title or f"daily-{daily_path.stem}",
-            summary=_clip_words(body, 100),
+            summary=lead_paragraph(body),
             created_at=now,
             updated_at=now,
             importance=5,

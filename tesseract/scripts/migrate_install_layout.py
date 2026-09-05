@@ -100,7 +100,7 @@ LOGS_TO_RUNTIME = (
     "agent-controller-console.log", "agent-controller.log",
 )
 
-# Template trees seeded into home/, used to pre-populate the phase-5 manifest.
+# Template trees seeded into home/, used to pre-populate the manifest.
 _TEMPLATE_TREES = ("config", "workspace", "memory-store", "vault", "workshop")
 
 
@@ -123,10 +123,9 @@ def relocate_cost_ledger(root: Path, *, apply: bool) -> str | None:
     """Bring a cost ledger stranded under `runtime/logs/` back to `home/logs/`.
 
     Separate from `plan_migration` because it repairs a tree that has ALREADY
-    split: the classification above used to send this file to the machine half,
-    so an install that migrated before the correction has its pre-split spend
-    history sitting where nothing reads it. `plan_migration` walks the flat
-    layout and would never see it.
+    split: an install whose classification sent this file to the machine half
+    has its pre-split spend history sitting where nothing reads it.
+    `plan_migration` walks the flat layout and would never see it.
 
     Idempotent, and safe to run on a tree that was never wrong — it returns
     `None` when there is nothing stranded.

@@ -153,7 +153,7 @@ class SessionRegistry:
             owner_principal=owner_principal,
         )
         self._write_session(record)
-        # AS-1 — project the controller session into the activity registry.
+        # Project the controller session into the activity registry.
         register_session(
             record.session_id,
             label=record.title or record.mode,
@@ -201,7 +201,7 @@ class SessionRegistry:
             return record
         updated = record.model_copy(update=updates)
         self._write_session(updated)
-        # AS-1 — reflect a status transition (active/idle/detached/closed).
+        # Reflect a status transition (active/idle/detached/closed).
         if status is not None:
             update_session_state(session_id, status)
         return updated

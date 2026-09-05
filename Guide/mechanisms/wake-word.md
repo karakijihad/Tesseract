@@ -15,7 +15,7 @@ came out right. It is obvious, and it is what this used to do, and it does not
 work.
 
 A speech engine has to guess at a name it has never seen. Ask it to hear
-*Tara* and it may write Tara, or Terra, or Tarah, or "ta ra". None of those
+*Jane* and it may write Jane, or Jayne, or Jain, or "jay n". None of those
 are mistakes exactly — they are reasonable spellings of a sound — but a
 matcher comparing letters sees three different words. You can loosen the
 comparison until the variants pass, and then unrelated speech starts passing

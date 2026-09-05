@@ -31,8 +31,9 @@ class OsOpenUrlTool(Tool):
         "Called by `open` after it resolves a target to a URL destination. Not for direct use."
     )
     not_when: ClassVar[str] = (
-        "Model callers use `open` — it resolves the target and dispatches here itself."
+        "Model callers use `open`, which resolves the target and dispatches here itself."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

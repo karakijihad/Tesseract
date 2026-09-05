@@ -19,10 +19,17 @@ class BaseJob(ABC):
     uses_llm: ClassVar[bool] = False
     default_model_role: ClassVar[str | None] = None
     # The chain this job rides when it names no role. Roles are pillars, and a
-    # job that is not one of them used to get a role invented for it purely to
+    # job that is not one of them would otherwise get a role invented for it
     # hold a budget line — this is what removes the need. A job declares one or
     # the other; an operator's `model_role` override still wins over both.
     default_model_chain: ClassVar[str | None] = None
+    # The manifest entry this job's spend belongs to, when that is not the row
+    # name. A row named after its entry needs nothing here and bills to itself.
+    # A handler armed under many operator-chosen names does: without it every
+    # armed row spends under a name no ceiling is declared for, so the ceiling
+    # that names the entry refuses nothing while still raising the global cap.
+    # Checked against `scheduler/manifest/registry.py` by the AR-7b suite.
+    billing_entry: ClassVar[str] = ""
 
     @abstractmethod
     async def run(self, ctx: JobContext) -> JobResult:

@@ -108,19 +108,11 @@ def anchor_read_path(raw: str, workspace_root: str) -> Path:
     return real if real.exists() else candidate
 
 
-def _refuse_if_secret(name: str) -> None:
-    from tesseract.paths import is_secret_filename
-
-    if is_secret_filename(name):
-        raise ReadPathRefused(
-            f"{name} holds credentials and is not readable through the file "
-            f"tools. Key PRESENCE is reported by Settings → API keys; key "
-            f"VALUES are not readable by design."
-        )
-
-
 def refuse_if_secret_path(path: Path) -> None:
     """Refuse if ANY component of `path` is credential-bearing.
+
+    The walk itself is `paths.py::secret_path_component`, shared with the
+    permission gate so the two cannot come to refuse different sets.
 
     Component-wise rather than leaf-only, because `.env/keys.txt` reduces to
     `keys.txt` and a directory is as good a hiding place as a name.
@@ -132,8 +124,51 @@ def refuse_if_secret_path(path: Path) -> None:
     hands out credentials, and this is an AUTO-posture tool with no prompt
     between it and the caller.
     """
-    for part in path.parts:
-        _refuse_if_secret(part)
+    from tesseract.paths import secret_path_component
+
+    offender = secret_path_component(path)
+    if offender is not None:
+        raise ReadPathRefused(
+            f"{offender} holds credentials and is not readable through the "
+            f"file tools. Key PRESENCE is reported by Settings; key VALUES are "
+            f"not readable by design."
+        )
+
+
+def not_found_message(label: str, raw: str, attempted: Path) -> str:
+    """A miss that names every root the search actually covered.
+
+    `_anchor` tries the code tree first and falls back to the state root for
+    the prefixes a written artifact can land in, but only the first candidate
+    is in the caller's hand afterwards. A message naming one root therefore
+    describes half the search, and the two roots are different directories in
+    an install (`<install>/app` vs `<install>/home`) — so the reader concludes
+    the path was wrong and goes hunting for a second location that was already
+    checked. That cost four tool calls the one time it was watched.
+    """
+    other = _state_candidate(raw, attempted)
+    if other is None:
+        return f"{label} not found: {attempted}"
+    return f"{label} not found. Checked {attempted} and {other}."
+
+
+def _state_candidate(raw: str, attempted: Path) -> Path | None:
+    """The state-root candidate `_anchor` also considered, when it differs."""
+    path = Path(raw)
+    if path.is_absolute():
+        return None
+
+    from tesseract.paths import home_dir, readable_state_prefix
+
+    if readable_state_prefix(path.as_posix()) is None:
+        return None
+    candidate = home_dir() / path
+    try:
+        if candidate.resolve() == attempted.resolve():
+            return None
+    except (OSError, RuntimeError):
+        return None
+    return candidate
 
 
 def _anchor(raw: str, workspace_root: str) -> Path:
@@ -188,4 +223,10 @@ def _anchor(raw: str, workspace_root: str) -> Path:
     return resolved if resolved.exists() else primary
 
 
-__all__ = ["ReadPathRefused", "anchor_read_path", "refuse_if_secret_path", "within_root"]
+__all__ = [
+    "ReadPathRefused",
+    "anchor_read_path",
+    "not_found_message",
+    "refuse_if_secret_path",
+    "within_root",
+]

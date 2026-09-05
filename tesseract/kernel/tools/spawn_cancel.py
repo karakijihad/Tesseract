@@ -1,7 +1,7 @@
 """spawn_cancel — terminate a background spawn.
 
-Phase 4 of the assistant reboot CLI-parity plan. For subprocess delegates
-this fires asyncio.Task.cancel() which propagates SIGTERM to the
+For subprocess delegates this fires asyncio.Task.cancel(), which
+propagates SIGTERM to the
 child via cli_stream's cleanup. For future in-process spawns
 (invoke_agent) the inner ChatSession's cancel_event is set.
 """
@@ -38,9 +38,10 @@ class SpawnCancelTool(Tool):
         "off track, before re-dispatching it with a corrected instruction."
     )
     not_when: ClassVar[str] = (
-        "Course-correcting a spawn that is still useful — steer it in place "
+        "Course-correcting a spawn that is still useful. Steer it in place "
         "with `work_send` instead of cancelling and restarting it."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

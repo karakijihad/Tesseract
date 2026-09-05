@@ -1,7 +1,7 @@
 """Cross-process WS notify for worker record mutations.
 
-Phase 3 of the realtime-visibility rework. The autonomy kernel + governor
-+ cancel/recovery paths each mutate worker records via module-level
+The autonomy kernel, the governor and the cancel/recovery paths each
+mutate worker records via module-level
 ``write_record`` + ``archive_record`` (no shared class instance to hook).
 This module exposes a process-wide broadcaster:
 
@@ -18,8 +18,8 @@ Valid event types:
   - ``worker_record_transitioned``— status change followed by write_record
   - ``worker_record_archived``    — terminal record moved to ``archive/``
 
-The frontend ``stores/autonomy.ts`` already has switch branches for these
-three types ready (AU-7 S1 — they were declared but never published).
+The frontend ``stores/autonomy.ts`` carries switch branches for these
+three types.
 """
 
 from __future__ import annotations

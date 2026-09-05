@@ -4,7 +4,7 @@ Pure functions, no I/O. Maps ``(prior_status, signals)`` →
 ``(recovered_status, reason)`` per the table in
 ``_shared/recovery-state-machine.md §State transitions emitted``.
 
-Recovery never emits ``abandoned`` — that belongs to the AU-6 Governor.
+Recovery never emits ``abandoned`` — that belongs to the Governor.
 """
 
 from __future__ import annotations
@@ -48,9 +48,8 @@ def map_worker_transition(
 ) -> StatusTransition:
     """Worker-record subset of the transition map.
 
-    AU-2 S1 worker scan is partial — the durable worker substrate lands
-    in AU-3. This helper is exported now so AU-3 can plug in without
-    redefining the transition rules.
+    This helper is exported so the durable worker substrate can plug in
+    without redefining the transition rules.
     """
     p = prior_status
     if p == "running":

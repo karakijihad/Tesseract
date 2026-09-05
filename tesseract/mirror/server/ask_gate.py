@@ -182,6 +182,14 @@ def _make_ask_fn(
         pending_asks[call_id] = fut
 
         raw_input = validated.model_dump()
+        # What the LEDGER may keep. `approvals.jsonl` records every ask,
+        # allowed or refused, and is rolled to an archive rather than deleted,
+        # so a password typed into a page lived there for the life of the
+        # install. The envelope below keeps `raw_input` on purpose: the
+        # operator is being asked to approve exactly this call and cannot
+        # judge it from a character count, and the event log is an in-memory
+        # deque rather than a file.
+        safe_input = approval_log.redacted_summary(tool, raw_input)
         ask_env = make_envelope(
             "tool_ask",
             "execution",
@@ -227,7 +235,7 @@ def _make_ask_fn(
                 call_id=call_id,
                 session_id=session_id,
                 tool_name=tool.name,
-                input_summary=approval_log.summarize_input(raw_input),
+                input_summary=safe_input,
                 spawn_handle_id=spawn_handle_id,
                 parked_at=datetime.now(timezone.utc).isoformat(),
                 future=fut,
@@ -265,7 +273,7 @@ def _make_ask_fn(
                 session_id=session_id,
                 call_id=call_id,
                 tool_name=tool.name,
-                input_summary=approval_log.summarize_input(raw_input),
+                input_summary=safe_input,
                 posture_source=context.posture_source or "default",
                 result="parked",
                 actor="timeout",
@@ -389,7 +397,7 @@ def _make_ask_fn(
                     session_id=session_id,
                     call_id=call_id,
                     tool_name=tool.name,
-                    input_summary=approval_log.summarize_input(raw_input),
+                    input_summary=safe_input,
                     posture_source=context.posture_source or "default",
                     result="cancelled",
                     actor="system",
@@ -442,7 +450,7 @@ def _make_ask_fn(
             session_id=session_id,
             call_id=call_id,
             tool_name=tool.name,
-            input_summary=approval_log.summarize_input(raw_input),
+            input_summary=safe_input,
             posture_source=context.posture_source or "default",
             result=final_result,
             actor="timeout" if timed_out else "operator",

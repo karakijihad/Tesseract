@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 import re
 from collections import Counter
@@ -18,6 +17,7 @@ from pathlib import Path
 
 import yaml
 
+from tesseract.lib.atomic_replace import replace_with_retry
 from tesseract.memory.types import MemoryFrontmatter, MemoryType
 
 logger = logging.getLogger(__name__)
@@ -29,6 +29,37 @@ _RECENCY_WEIGHT = 0.35
 _FREQUENCY_WEIGHT = 0.25
 _RECENCY_DECAY_DAYS = 30.0
 _MAX_FREQUENCY_CAP = 10.0
+
+# MEMORY.md has two writers on two cadences, and both are wanted: `MemoryIndex`
+# writes on every save/update/promote so the file is current within the turn,
+# and the librarian rewrites it nightly with counts and sections. They must not
+# have two answers to how a row looks, so the row renderer lives here and the
+# librarian calls it.
+#
+# A row is title, link and a hook — enough to decide whether to open the record
+# without opening it. Nothing here is cut and no row carries an ellipsis: the
+# hook is the summary, which is the memory's lead paragraph and therefore
+# already the length its writer chose.
+def resolve_link_path(store_dir: Path, fm: MemoryFrontmatter) -> str:
+    """Store-relative POSIX path to `fm`'s real file.
+
+    Curated sub-buckets (`user/people/`, `feedback/playbooks/`) make the
+    canonical `{type}/{id}.md` guess wrong, so the file is located rather than
+    assumed. Falls back to that guess only when it is genuinely absent, which
+    keeps the index renderable on a half-deleted store.
+    """
+    hits = list(store_dir.rglob(f"{fm.id}.md"))
+    if not hits:
+        return f"{fm.type.value}/{fm.id}.md"
+    return hits[0].relative_to(store_dir).as_posix()
+
+
+def render_index_row(store_dir: Path, fm: MemoryFrontmatter, *, prefix: str = "") -> str:
+    """One MEMORY.md row. The single answer to what a row looks like."""
+    hook = " ".join((fm.summary or "").split())
+    tail = " · ".join(part for part in (prefix, hook) if part)
+    row = f"- [{fm.title}]({resolve_link_path(store_dir, fm)})"
+    return f"{row} — {tail}" if tail else row
 
 
 class MemoryIndex:
@@ -52,9 +83,6 @@ class MemoryIndex:
         self._last_access: dict[str, datetime] = {}
         self._load_existing()
         self._load_access_counts()
-
-    def _type_to_subdir(self, mem_type: MemoryType) -> str:
-        return mem_type.value
 
     def _load_existing(self) -> None:
         if not self._path.exists():
@@ -93,10 +121,7 @@ class MemoryIndex:
             logger.warning("Failed to load access counts")
 
     def add(self, fm: MemoryFrontmatter) -> None:
-        subdir = self._type_to_subdir(fm.type)
-        rel_path = f"{subdir}/{fm.id}.md"
-        summary = fm.summary or fm.title
-        line = f"- [{fm.title}]({rel_path}) — {summary}"
+        line = render_index_row(self._store_dir, fm)
         with self._lock:
             self._entries[fm.id] = (fm, line)
             self._evict_if_needed()
@@ -135,7 +160,9 @@ class MemoryIndex:
             subdir_path = self._store_dir / subdir
             if not subdir_path.exists():
                 continue
-            for md_file in subdir_path.glob("*.md"):
+            # rglob, not glob: a memory in a curated sub-bucket is still a
+            # memory, and a non-recursive walk cannot see one.
+            for md_file in subdir_path.rglob("*.md"):
                 try:
                     text = md_file.read_text(encoding="utf-8")
                     if not text.startswith("---\n"):
@@ -155,10 +182,7 @@ class MemoryIndex:
 
         max_entries = self._line_cap - 2
         for fm in all_fms[:max_entries]:
-            subdir = self._type_to_subdir(fm.type)
-            rel_path = f"{subdir}/{fm.id}.md"
-            summary = fm.summary or fm.title
-            line = f"- [{fm.title}]({rel_path}) — {summary}"
+            line = render_index_row(self._store_dir, fm)
             self._entries[fm.id] = (fm, line)
 
         self._write()
@@ -217,7 +241,7 @@ class MemoryIndex:
                 lines.append(line)
             text = "\n".join(lines) + "\n"
             # Sibling + replace, so a reader never sees a half-written file:
-            # `os.replace` is atomic on both POSIX and Windows.
+            # the rename is atomic on both POSIX and Windows.
             tmp = self._path.with_suffix(self._path.suffix + ".tmp")
             tmp.write_text(text, encoding="utf-8")
-            os.replace(tmp, self._path)
+            replace_with_retry(tmp, self._path)

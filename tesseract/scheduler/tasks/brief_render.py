@@ -24,18 +24,13 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from tesseract.config.cost_caps import load_loop_cost_caps, require_cap
 from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
-from tesseract.kernel.tools.brief_render import (
-    _make_digester_invoker,
-    _make_tavily_fetcher,
-)
-from tesseract.orchestrator.brief.pillars import DEFAULT_PILLARS
-from tesseract.orchestrator.brief.renderer import BriefRenderer, CostCaps
+from tesseract.kernel.tools.brief_render import _make_digester_invoker
+from tesseract.orchestrator.brief.renderer import BriefRenderer
 from tesseract.paths import TESSERACT_HOME
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.brain.cost.metered_adapter import meter_chain
-from tesseract.scheduler.role_chain import build_chain_for_role, resolve_role_name
+from tesseract.scheduler.role_chain import build_chain_for_job
 from tesseract.scheduler.types import JobContext, JobResult
 
 log = logging.getLogger(__name__)
@@ -51,15 +46,28 @@ def brief_date_for(anchor: datetime) -> date:
     whole of D, and keeps the label the operator has always read on the
     morning they read it.
 
+    **The day is the operator's, so it is read in their time.** The row fires
+    on a cron matched against local time, but the engine hands the job a UTC
+    instant, and converting that back to UTC gave the wrong day either side of
+    the date line. At UTC-05 a 23:00 local run is already 04:00 UTC the next
+    day, so this returned D+2 — a brief labelled two local days after the run
+    that wrote it. `.astimezone()` with no argument converts to the system's
+    own zone, which is the same clock the cron was matched against.
+
     A named rule rather than an expression inside `run()` because it is the
     one thing about this stage that is easy to get quietly wrong.
     """
-    return (anchor.astimezone(timezone.utc) + timedelta(days=1)).date()
+    return (anchor.astimezone() + timedelta(days=1)).date()
 
 
 class BriefRenderJob(BaseJob):
     uses_llm = True
-    default_model_role = "agents_default"
+    # A CHAIN, not a role. `agents_default` and `subagents_default` are seats
+    # that also serve `invoke_agent`, so sharing one meant this job's model and
+    # its spend moved whenever an agent was re-pointed. Naming the chain
+    # directly severs that: what it spends bills to the entry, whose ceiling is
+    # on its manifest entry.
+    default_model_chain = "chain_1"
 
     async def run(self, ctx: JobContext) -> JobResult:
         t0 = time.monotonic()
@@ -68,27 +76,17 @@ class BriefRenderJob(BaseJob):
             chain = meter_chain(_resolve_adapter_chain(ctx), ctx.cost_ledger)
             adapter, options = (chain[0] if chain else (None, AdapterOptions()))
             briefs_dir = _resolve_briefs_dir(ctx)
-            interests_path = _resolve_interests_path(ctx)
             agents_dir = _resolve_agents_dir(ctx)
             memory_store = _resolve_memory_store(ctx)
             event_store = _resolve_event_store(ctx)
-            caps = _resolve_cost_caps()
 
-            vault_paths = _resolve_vault_paths(ctx)
-            ecosystem_home = _resolve_ecosystem_home(ctx)
             renderer = BriefRenderer(
                 briefs_dir=briefs_dir,
-                pillars=DEFAULT_PILLARS,
-                interests_path=interests_path,
                 invoke_digester=_make_digester_invoker(adapter, options, agents_dir),
-                tavily_search=_make_tavily_fetcher(None),  # no ToolContext in cron
                 memory_store=memory_store,
-                cost_caps=caps,
                 event_store=event_store,
-                vault_wiki_dir=vault_paths["wiki"],
-                vault_raw_dir=vault_paths["raw"],
-                librarian_compile=_resolve_librarian_compile(ctx),
-                ecosystem_home=ecosystem_home,
+                vault_wiki_dir=_resolve_vault_wiki_dir(ctx),
+                home=_resolve_home(ctx),
             )
             # `overwrite=False` — an operator who ran `/brief` for that date
             # already has the one they asked for, and re-rendering would both
@@ -120,8 +118,6 @@ class BriefRenderJob(BaseJob):
                     "target_date": target_date.isoformat(),
                     "path": str(result.path),
                     "sections_rendered": result.sections_rendered,
-                    "tavily_calls": result.tavily_calls,
-                    "cost_cap_hit": result.cost_cap_hit,
                     "memory_id": result.memory_id,
                     "workspace_event_id": result.workspace_event_id,
                 },
@@ -142,7 +138,7 @@ def _resolve_briefs_dir(ctx: JobContext) -> Path:
     override = ctx.config.get("briefs_dir")
     if override:
         return Path(override)
-    # MO-9-9 review fix: must anchor on TESSERACT_HOME (user-state root),
+    # Must anchor on TESSERACT_HOME (user-state root),
     # not ``app["tesseract_dir"]`` (source-package root). The Mirror Brief
     # tab reads from TESSERACT_HOME via the REST routes; a divergence
     # would land cron-written briefs under the source checkout where the
@@ -153,72 +149,37 @@ def _resolve_briefs_dir(ctx: JobContext) -> Path:
     return home / "memory-store" / "daily" / "briefs"
 
 
-def _resolve_interests_path(ctx: JobContext) -> Path:
-    override = ctx.config.get("interests_path")
-    if override:
-        return Path(override)
-    # Same TESSERACT_HOME late-binding pattern as _resolve_briefs_dir —
-    # an operator's profile.yaml lives under their user-state root, not
-    # the source tree.
-    import os
-
-    home = Path(os.environ.get("TESSERACT_HOME") or TESSERACT_HOME).resolve()
-    return home / "memory-store" / "interests" / "profile.yaml"
-
-
 def _resolve_agents_dir(ctx: JobContext) -> Path | None:
-    """`None` means both agent roots (AR-6) — the brief's digester cards are
+    """`None` means both agent roots — the brief's digester cards are
     shipped, so they resolve out of the app tree unless the operator shadows
     one. A configured override restricts the load to that directory."""
     override = ctx.config.get("agents_dir")
     return Path(override) if override else None
 
 
-def _resolve_vault_paths(ctx: JobContext) -> dict[str, Path]:
-    """Both vault/wiki and vault/raw under TESSERACT_HOME. Wiki feeds the
-    grounded vault-digest payload; raw receives auto-promoted world
-    cards before the librarian compiles them to wiki pages.
-    """
+def _resolve_vault_wiki_dir(ctx: JobContext) -> Path:
+    """``vault/wiki`` under TESSERACT_HOME. It grounds the vault-digest
+    payload with the ingest-log rows inside the window."""
     import os
 
+    override = ctx.config.get("vault_wiki_dir")
+    if override:
+        return Path(override)
     home = Path(os.environ.get("TESSERACT_HOME") or TESSERACT_HOME).resolve()
-    wiki_override = ctx.config.get("vault_wiki_dir")
-    raw_override = ctx.config.get("vault_raw_dir")
-    return {
-        "wiki": Path(wiki_override) if wiki_override else home / "vault" / "wiki",
-        "raw": Path(raw_override) if raw_override else home / "vault" / "raw",
-    }
+    return home / "vault" / "wiki"
 
 
-def _resolve_ecosystem_home(ctx: JobContext) -> Path:
-    """TESSERACT_HOME root the AU-24 ecosystem pre-fetcher walks for
-    memory leaves, agenda items, docs-watch snapshots, and provider
-    digests. Late-binds the env var like the brief/interests resolvers
-    so test fixtures monkeypatching ``TESSERACT_HOME`` reach the data
-    that fixture wrote into ``tmp_path``."""
+def _resolve_home(ctx: JobContext) -> Path:
+    """TESSERACT_HOME root the agenda store is read under. Late-binds the
+    env var like the briefs-dir resolver so test fixtures monkeypatching
+    ``TESSERACT_HOME`` reach the data that fixture wrote into
+    ``tmp_path``."""
     import os
 
-    override = ctx.config.get("ecosystem_home")
+    override = ctx.config.get("home")
     if override:
         return Path(override)
     return Path(os.environ.get("TESSERACT_HOME") or TESSERACT_HOME).resolve()
-
-
-def _resolve_librarian_compile(ctx: JobContext):
-    """Bound ``vault_librarian.compile_source`` from the Mirror app, or
-    None when the scheduler ran without an app context (REPL bootstrap,
-    test harness). Without it the renderer writes raw files but no
-    auto-compile fires — the operator can still ingest manually."""
-    app = ctx.app
-    if app is None or not hasattr(app, "get"):
-        return None
-    librarian = app.get("vault_librarian")
-    if librarian is None:
-        return None
-    compile_fn = getattr(librarian, "compile_source", None)
-    if compile_fn is None:
-        return None
-    return compile_fn
 
 
 def _resolve_memory_store(ctx: JobContext):
@@ -232,8 +193,8 @@ def _resolve_memory_store(ctx: JobContext):
 def _resolve_event_store(ctx: JobContext):
     """Workspace EventStore for the daily_brief newsletter card.
 
-    Wired in MO-9-14 — the cron path emits a `daily_brief` workspace
-    event so the operator sees yesterday's brief in the workspace
+    The cron path emits a `daily_brief` workspace event so the operator
+    sees yesterday's brief in the workspace
     stream every morning. Returns None when the Mirror app hasn't
     booted (REPL / cold scheduler invocation); the markdown write is
     still canonical.
@@ -244,41 +205,21 @@ def _resolve_event_store(ctx: JobContext):
     return app.get("workspace_event_store")
 
 
-def _resolve_cost_caps() -> CostCaps:
-    """Read the ceilings from ``permissions.yaml::loop_cost_caps``.
-
-    The job used to read its own mirrored copy out of ``schedule.yaml``, so
-    editing the policy file — which every comment in the tree names as the
-    authority — changed nothing. The mirror is gone; this is the one source.
-    """
-    caps = load_loop_cost_caps()
-    return CostCaps(
-        max_usd=require_cap(caps, "daily_brief_max_usd"),
-        max_tavily_calls=int(require_cap(caps, "daily_brief_max_tavily_calls")),
-    )
-
-
 def _resolve_adapter_chain(ctx: JobContext) -> list[tuple[ModelAdapter, AdapterOptions]]:
-    """Same precedence as ``provider_watch._resolve_adapter_chain``."""
-    role_name = resolve_role_name(ctx, BriefRenderJob.default_model_role)
-    app = ctx.app
-    override_set = bool((ctx.model_role or "").strip())
-    if override_set and role_name is not None:
-        return build_chain_for_role(role_name, log_label="brief_render")
-    if app is not None and hasattr(app, "get"):
-        live = app.get("adapter_chain") or []
-        if live:
-            return [(a, o or AdapterOptions()) for a, o in live if a is not None]
-    if role_name is not None:
-        built = build_chain_for_role(role_name, log_label="brief_render")
-        if built:
-            return built
-    if app is None or not hasattr(app, "get"):
-        return []
-    adapter = app.get("adapter")
-    if adapter is None:
-        return []
-    return [(adapter, app.get("adapter_options") or AdapterOptions())]
+    """The chain this row rides, billed to the row.
+
+    It used to prefer the app's LIVE adapter chain over its own, and that
+    chain is chat_brain's: the brief was rendered on the conversational
+    model and its spend was charged to the conversational cap. The
+    optimisation the branch existed for is gone anyway, because a built chain
+    is `LazyAdapter`s and costs a dict lookup until something generates.
+    """
+    return build_chain_for_job(
+        ctx,
+        default_role=None,
+        default_chain=BriefRenderJob.default_model_chain,
+        log_label="brief_render",
+    )
 
 
 __all__ = ["BriefRenderJob", "brief_date_for"]

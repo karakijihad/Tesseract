@@ -1,10 +1,10 @@
-"""Mirror Channels tab REST routes — MO-9-11 (Status + Logs) + MO-9-12 (Users + Conversations).
+"""Mirror Channels tab REST routes — Status, Logs, Users, Conversations.
 
 Endpoint surface:
     GET  /api/channels                                       — list channels + status snapshot
     GET  /api/channels/{name}/users                          — allowlist + pending + blocked
     GET  /api/channels/{name}/users/{user_id}/conversation   — JSONL tail for a chat
-    POST /api/channels/{name}/restart                        — ASK-gated bridge bounce
+    POST /api/channels/{name}/restart                        — un-gated bridge bounce
     POST /api/channels/{name}/approve                        — ASK-gated; writes person record
     POST /api/channels/{name}/revoke                         — ASK-gated allowlist removal
     POST /api/channels/{name}/block                          — ASK-gated block (no-reply)
@@ -221,16 +221,15 @@ async def list_channels_handler(request: web.Request) -> web.Response:
 async def restart_channel_handler(request: web.Request) -> web.Response:
     """``POST /api/channels/{name}/restart`` — un-gated bridge bounce.
 
-    2026-05-16: dropped the ASK gate. A bridge restart is a recovery
-    action (idempotent ``stop()`` + ``start()`` with no config change),
-    not a state mutation that needs operator approval. The pre-fix gate
-    failed whenever the cockpit WS wasn't attached at the moment the
-    operator clicked Restart — exactly when recovery was most needed.
+    No ASK gate. A bridge restart is a recovery action (idempotent
+    ``stop()`` + ``start()`` with no config change), not a state mutation
+    that needs operator approval. A gate here fails whenever the cockpit
+    WS is not attached at the moment the operator clicks Restart —
+    exactly when recovery is most needed.
     Allowlist / status / approve / revoke / block remain ASK-gated
     because those *do* alter operator-visible state.
 
-    Body: ``{session_id?: str}`` (kept optional so existing UIs that
-    send it don't break, but no longer validated). Calls
+    Body: ``{session_id?: str}``, accepted and not validated. Calls
     ``adapter.stop()`` then ``adapter.start()``; surfaces the
     post-restart snapshot so the UI does not need a follow-up GET. A
     ``stop()`` failure short-circuits before ``start()`` to avoid
@@ -373,7 +372,7 @@ async def set_telegram_status_handler(request: web.Request) -> web.Response:
     )
 
 
-# ── MO-9-12: Users + Conversations panes ───────────────────────────────────
+# ── Users + Conversations panes ────────────────────────────────────────────
 
 
 def _user_payload(adapter: ChannelAdapter) -> dict[str, Any]:

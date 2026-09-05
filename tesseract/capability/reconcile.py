@@ -39,13 +39,12 @@ from tesseract.capability.state import (
 logger = logging.getLogger(__name__)
 
 
-"""Consent no longer travels in the artifact at all.
+"""Consent does not travel in the artifact.
 
-It used to be carried from the previous pass's record, which worked and was
-fragile in two ways worth naming: a pass that failed to write lost every
-answer with it, and a consent write racing a pass write meant the loser's
-answer was silently dropped — and a dropped answer is a question the operator
-gets asked a second time.
+Carrying it from the previous pass's record is fragile in two ways: a pass
+that fails to write loses every answer with it, and a consent write racing
+a pass write drops the loser's answer silently — and a dropped answer is a
+question the operator gets asked a second time.
 
 `capability/consent.py` owns it now, in its own small file, and the pass reads
 it. A `CONFIG`-derived answer is still computed here every pass, because it is
@@ -206,9 +205,9 @@ def _remove_legacy_snapshot() -> bool:
 
 
 #: What each profile's `tts_note` means, in words a person would use. The note
-#: itself has been written to `hardware-profile.json` since P1.5 and read by
-#: nobody — so a machine that lost its graphics card went on recommending the
-#: voice it could no longer keep up with, silently.
+#: itself is written to `hardware-profile.json`, and while nothing read it a
+#: machine that lost its graphics card went on recommending the voice it
+#: could not keep up with, silently.
 _TTS_ADVICE = {
     "kokoro-gpu": "This machine can now run the local voice comfortably.",
     "kokoro-cpu": (

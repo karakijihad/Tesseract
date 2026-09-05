@@ -1,6 +1,6 @@
 """lane_attach — re-establish visibility on a lane.
 
-X-4 Session B. AUTO posture — read-only attach. This is the
+AUTO posture — read-only attach. This is the
 brain-restart recovery primitive: after a brain restart the brain
 reads `<TESSERACT_HOME>/controller/lanes/*/lane.json` to find live
 lanes, then calls `lane_attach(lane_id)` per lane to load the snapshot
@@ -33,6 +33,7 @@ class LaneAttachTool(Tool):
         "opening a new lane, which is `lane_open`; probing status without needing a cursor, "
         "which is `lane_status`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

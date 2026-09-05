@@ -4,6 +4,10 @@
 // restrictive CSP will refuse to frame — by design the operator opens those
 // in `mode: external` instead (phase open-question §5, accepted).
 
+import { useEffect, useRef } from 'react';
+
+import { dialectFor, prepareFrameUrl } from '../dialects';
+import { useFrameCommands } from '../useFrameCommands';
 import type { RendererProps } from './index';
 
 // Chat models routinely supply the shareable watch/short-link YouTube form
@@ -26,7 +30,11 @@ function normalizeYouTubeUrl(u: URL): URL {
 function safeFrameUrl(raw: string): string {
   try {
     const u = normalizeYouTubeUrl(new URL(raw));
-    return u.protocol === 'http:' || u.protocol === 'https:' ? u.toString() : '';
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+    // Whatever the page's dialect needs before it will listen at all, added
+    // AFTER the scheme check and the embed rewrite, so it only ever decorates
+    // a URL those two already accepted.
+    return prepareFrameUrl(u.toString());
   } catch {
     return '';
   }
@@ -69,8 +77,30 @@ const MEDIA_SANDBOX =
 const STRICT_SANDBOX = 'allow-scripts allow-forms allow-popups';
 const MEDIA_ALLOW = 'autoplay; encrypted-media; fullscreen; picture-in-picture; clipboard-write';
 
-export function WebViewRenderer({ descriptor }: RendererProps) {
+/** The verbs a page with a player API answers to. */
+const PLAYER_CONTROLS = ['play', 'pause', 'mute', 'unmute', 'volume', 'seek', 'read'];
+
+export function WebViewRenderer({ descriptor, report }: RendererProps) {
   const url = safeFrameUrl(String(descriptor.props?.url ?? ''));
+  const frame = useRef<HTMLIFrameElement>(null);
+  const dialect = dialectFor(url);
+
+  // This is the card kind where "what can it be asked" is a property of the
+  // PAGE and not of the type: two webview cards differ by what they framed.
+  // So the card says which, and `surface_list` reads it back, rather than the
+  // model carrying a map of which sites publish an API.
+  useEffect(() => {
+    if (!report) return;
+    if (!url) report('errored', 'no url: props.url is missing or not framable');
+    else if (dialect) report('mounted', `${dialect.name} player`, PLAYER_CONTROLS);
+    else report('mounted', 'this page publishes no way in', []);
+  }, [report, url, dialect]);
+
+  // The card obeys `surface_control` when the page publishes a way in. Note
+  // this is NOT gated on the media sandbox: `postMessage` reaches a frame
+  // whatever its sandbox says, and `allow-same-origin` is about whether a
+  // player can boot, not about whether it can be spoken to.
+  useFrameCommands(descriptor.id, descriptor.view, url, frame);
   if (!url) {
     return <div className="surface-webview surface-webview--empty t-meta">no url</div>;
   }
@@ -78,6 +108,7 @@ export function WebViewRenderer({ descriptor }: RendererProps) {
   return (
     <div className="surface-webview">
       <iframe
+        ref={frame}
         className="surface-webview__frame"
         src={url}
         title={descriptor.title ?? url}

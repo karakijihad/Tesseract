@@ -26,12 +26,12 @@ const TAG_HINTS: Record<PulseTag, string> = {
   tool:    'tool calls: stream_tool_call_end, tool_auto, sandbox',
   memory:  'memory_save / memory_update / memory_forget / memory_search, memory_suggestion',
   agent:   'cli_start / cli_output / cli_end (delegate_*), invoke_agent',
-  model:   'model_selected — chat_brain and observer_agent model resolution',
+  model:   'model_selected: which model each role resolved to',
   system:  'session_created / saved / loaded / reset / compact, soul_updated',
   chat:    'stream_text + generic loop traffic not otherwise tagged',
   perm:    'tool_ask, tool_approved, tool_denied, tool_denied_hard',
   route:   'mode_changed (security mode flips)',
-  loop:    'loop_start, loop_end, stream_stop — turn lifecycle',
+  loop:    'loop_start, loop_end, stream_stop: a turn beginning and ending',
   bg:      'background category: observer_result / observer_unavailable / compaction_trigger',
   other:   'uncategorized: entity signals (filtered at push), terminal bypass, planning, unmapped',
 };
@@ -167,7 +167,7 @@ export function PulseView() {
               />
               {cap === 'all' && (
                 <Note tone="warn">
-                  No cap — a long session keeps every event, which the panel
+                  No cap. A long session keeps every event, which the panel
                   eventually feels.
                 </Note>
               )}
@@ -192,5 +192,5 @@ export function PulseView() {
     },
   ];
 
-  return <RailView groups={groups} label="Pulse sections" />;
+  return <RailView view="pulse" groups={groups} label="Pulse sections" />;
 }

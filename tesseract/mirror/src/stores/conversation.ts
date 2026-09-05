@@ -26,6 +26,10 @@ export interface ChatSlice {
   // P3 — operator-facing tab label. Date-stamp by default (D2), set from the
   // backend via chat_created / session_created hydration; renamable.
   title: string;
+  // When the conversation was created, as the backend stamped it. What the
+  // line above the transcript shows. Empty until the backend says, which for
+  // a chat this connection seeded is on `chat_created`.
+  createdAt: string;
   messages: ChatMessage[];
   streamingMessageId: string | null;
   streamingText: string;
@@ -60,6 +64,9 @@ interface ChatState {
   initChat: (chatId: string) => void;
   // P3 — set a chat's tab label (rename, or seed from backend title).
   setChatTitle: (chatId: string, title: string) => void;
+  // The creation stamp the backend made, for a chat this connection created
+  // and the list of records has therefore never seen.
+  setChatCreatedAt: (chatId: string, createdAt: string) => void;
   // P3 — drop a chat from the open set (soft-archive, D1). Removes its slice +
   // orderedIds entry; if it was active, switches to the newest remaining (or
   // null when none remain).
@@ -67,7 +74,7 @@ interface ChatState {
   // P3 — reseed the open-chat set from the backend on (re)connect so the tab
   // strip survives a page reload. `list` is in display order (newest-first);
   // an existing slice's messages are preserved, only the title is refreshed.
-  hydrateChats: (list: { chatId: string; title: string }[], activeChatId: string | null) => void;
+  hydrateChats: (list: { chatId: string; title: string; createdAt?: string }[], activeChatId: string | null) => void;
   markInterrupted: (chatId: string | null) => void;
   // inc.C2: interrupt EVERY streaming slice (not just the active one). The WS
   // disconnect handler calls this — with parallel background streaming, an
@@ -100,6 +107,7 @@ interface ChatState {
   clearApproval: (chatId: string | null, callId: string) => void;
   resolveApproval: (chatId: string | null, callId: string, approved: boolean) => void;
   addEntityMessage: (chatId: string | null, message: string) => void;
+  addFoldMarker: (chatId: string | null, tailTurns?: number) => void;
   addError: (chatId: string | null, message: string) => void;
   addStreamNote: (chatId: string | null, text: string) => void;
   setToolStatus: (chatId: string | null, callId: string, status: ToolCallStatus, reason?: string) => void;
@@ -147,6 +155,7 @@ export const EMPTY_BACKGROUND_CALLS: Set<string> = new Set();
 function _makeSlice(): ChatSlice {
   return {
     title: '',
+    createdAt: '',
     messages: [],
     streamingMessageId: null,
     streamingText: '',
@@ -474,11 +483,26 @@ export const useConversationStore = create<ChatState>((set, get) => ({
   hydrateChats: (list, activeChatId) => {
     set(state => {
       const chats = new Map(state.chats);
-      for (const { chatId, title } of list) {
+      for (const { chatId, title, createdAt } of list) {
         const existing = chats.get(chatId);
-        chats.set(chatId, existing ? { ...existing, title } : { ..._makeSlice(), title });
+        // A stamp the payload omits leaves the one already held: a reconnect
+        // must not blank what the connection before it was told.
+        const stamp = createdAt ?? existing?.createdAt ?? '';
+        chats.set(chatId, existing
+          ? { ...existing, title, createdAt: stamp }
+          : { ..._makeSlice(), title, createdAt: stamp });
       }
       return { chats, orderedIds: list.map(c => c.chatId), activeChatId };
+    });
+  },
+
+  setChatCreatedAt: (chatId, createdAt) => {
+    set(state => {
+      const slice = state.chats.get(chatId);
+      if (!slice) return {};
+      const chats = new Map(state.chats);
+      chats.set(chatId, { ...slice, createdAt });
+      return { chats };
     });
   },
 
@@ -832,6 +856,50 @@ export const useConversationStore = create<ChatState>((set, get) => ({
     }));
   },
 
+  addFoldMarker: (chatId, tailTurns = 0) => {
+    const id = _resolveId(get(), chatId);
+    if (!id) return;
+    // The live half. A reloaded conversation gets its divider back from the
+    // summary message the fold left in history (`lib/chatHistory.ts`), so this
+    // is only the one drawn the moment it happens, on a transcript that is
+    // already on screen and has no reason to be rebuilt. Both must land in the
+    // same place, which is in front of the turns the fold kept word for word.
+    _patchSlice(set, id, s => {
+      // One divider, because there is one summary. The runtime replaces its
+      // running-summary record on every fold rather than keeping the old ones,
+      // and a reload draws exactly one line from it. A second live fold used
+      // to leave the first line stranded above, so the transcript on screen
+      // disagreed with the same transcript after a reload.
+      const messages = s.messages.filter(m => m.role !== 'marker');
+      const marker = {
+        id: `fold-${Date.now()}`,
+        role: 'marker' as const,
+        content: '',
+        timestamp: Date.now(),
+        status: 'complete' as const,
+      };
+      // `tailTurns` is counted on the backend over settled history, so the
+      // walk has to skip what the backend has not seen: a queued bubble is
+      // waiting to be sent and was never part of the fold.
+      let at = messages.length;
+      let kept = 0;
+      for (let i = messages.length - 1; i >= 0 && kept < tailTurns; i--) {
+        const m = messages[i];
+        if (m.status === 'queued') continue;
+        // A runtime note counts. The backend's tail is counted over messages
+        // that OPEN a turn (`brain/chat.py::_starts_a_turn`), and a wake turn
+        // opens one, so skipping it here would put the marker N turns off.
+        if (m.role === 'user' || m.role === 'runtime') {
+          kept += 1;
+          at = i;
+        }
+      }
+      return {
+        messages: [...messages.slice(0, at), marker, ...messages.slice(at)],
+      };
+    });
+  },
+
   addError: (chatId, message: string) => {
     const id = _resolveId(get(), chatId);
     if (!id) return;
@@ -872,7 +940,7 @@ export const useConversationStore = create<ChatState>((set, get) => ({
       // for diagnostics and drop the note rather than render a half-
       // formed standalone bubble (which would carry assistant chrome
       // — speaker, copy, regenerate — without the recovery context).
-      console.warn('[chat] addStreamNote dropped — no active stream:', text);
+      console.warn('[chat] addStreamNote dropped, no active stream:', text);
       return;
     }
     // Active stream — flush any pending text deltas first so the note

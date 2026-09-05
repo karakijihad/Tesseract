@@ -23,12 +23,13 @@ class MemoryForgetTool(Tool):
     summary: ClassVar[str] = "Permanently delete a memory: its file, index entry, and embedding."
     use_when: ClassVar[str] = (
         "Use sparingly and only on operator request to remove a memory by id. "
-        "Deletion is irreversible — the file is removed from disk."
+        "Deletion is irreversible. The file is removed from disk."
     )
     not_when: ClassVar[str] = (
         "use `memory_promote` action=archive to retire a memory while keeping "
         "it for forensics."
     )
+    depends_on: ClassVar[str] = ""
 
     def __init__(
         self,

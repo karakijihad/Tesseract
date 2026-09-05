@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import logging
+from typing import Any
 from dataclasses import dataclass
 
 from tesseract.brain.boot import (
@@ -141,6 +142,16 @@ async def describe_image(
         except BudgetExhausted as exc:
             raise ImageHandlerError(f"vision budget exhausted: {exc}") from exc
 
+    ref = _entry_ref(chosen)
+    from tesseract.brain import tool_availability as availability
+
+    shut = availability.refusal(ref, "reading an image") if ref else None
+    if shut is not None:
+        raise ImageHandlerError(
+            f"the vision model is not being tried right now: {shut[0]} "
+            f"{shut[1]} If it is fixed, clear it with breaker_reset {shut[0]}."
+        )
+
     messages = _build_messages(image_bytes, mime=mime, caption=caption, prompt=prompt)
     text_parts: list[str] = []
     usage_dict: dict | None = None
@@ -155,14 +166,20 @@ async def describe_image(
                     usage_dict = maybe_usage
             elif chunk.type == ChunkType.ERROR:
                 raise ImageHandlerError(f"vision adapter error: {chunk.error}")
-    except ImageHandlerError:
+    except ImageHandlerError as exc:
+        availability.note_provider_failure(ref, str(exc))
         raise
     except Exception as exc:
+        availability.note_provider_failure(ref, f"vision call failed: {exc}")
         raise ImageHandlerError(f"vision call failed: {exc}") from exc
 
     description = "".join(text_parts).strip()
     if not description:
+        availability.note_provider_failure(
+            ref, "the model returned nothing", kind="empty_answer"
+        )
         raise ImageHandlerError("vision adapter returned empty description")
+    availability.note_success(ref)
     if max_chars > 0 and len(description) > max_chars:
         description = description[: max_chars - 1].rstrip() + "…"
 
@@ -171,11 +188,8 @@ async def describe_image(
             cost_ledger.record(
                 role=_VISION_ROLE,
                 model=chosen.cfg.model,
-                usage=CostUsage(
-                    input_tokens=int(usage_dict.get("input_tokens", 0) or 0),
-                    output_tokens=int(usage_dict.get("output_tokens", 0) or 0),
-                    cached_tokens=int(usage_dict.get("cached_tokens", 0) or 0),
-                ),
+                usage=CostUsage.from_raw(usage_dict),
+                tier=chosen.options.tier or "",
             )
         except Exception:
             log.exception(
@@ -183,6 +197,24 @@ async def describe_image(
                 _VISION_ROLE, chosen.cfg.model,
             )
     return description
+
+
+def _entry_ref(chosen: Any) -> str:
+    """The catalog ref of the entry `find_vision_entry` picked.
+
+    Not the role's primary: the chain is walked for the first entry that can
+    take an image, so gating on `chat_brain`'s primary would shut an entry
+    this call never used.
+    """
+    try:
+        from tesseract.kernel.tools.dependency import catalog_ref
+
+        options = chosen.options
+        return catalog_ref(
+            options.tier or "api", options.provider or "", options.model or ""
+        )
+    except Exception:  # noqa: BLE001 — a name is not worth failing a caption
+        return ""
 
 
 __all__ = ["ImageHandlerError", "describe_image", "find_vision_entry"]

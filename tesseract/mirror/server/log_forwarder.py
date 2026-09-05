@@ -58,6 +58,10 @@ _ELEVATED_LOGGERS: frozenset[str] = frozenset({
     # merged config is what the tracker renders, so it is not even visible
     # there as a gap.
     "tesseract.scheduler.config_loader",
+    # One warning, and it is the safety net going down: when the shared wake
+    # breaker trips, every chat simply stops being woken about work that is
+    # still running, which looks exactly like having nothing to report.
+    "tesseract.mirror.server.spawn_heartbeat",
 })
 
 
@@ -117,12 +121,28 @@ class MirrorLogHandler(logging.Handler):
             exc_type = record.exc_info[0].__name__
             exc_message = str(record.exc_info[1]) if record.exc_info[1] else None
 
+        # Scrubbed HERE rather than left to the redaction filter, and the
+        # exception message is why. That filter can only mutate the record,
+        # and nothing it writes touches `record.exc_info` — it rewrites the
+        # message and parks a redacted traceback on `exc_text`. This handler
+        # reads the raw exception object instead, so a credential inside an
+        # exception reached the pulse feed and the persisted session event log
+        # whatever the filter did. Attaching the filter to this handler would
+        # not have helped.
+        #
+        # `message` is scrubbed too. It usually arrives already rewritten,
+        # because the filter mutates the shared record in place and the
+        # handlers armed before this one run first — but that is an accident
+        # of ordering and of those handlers' levels, not a guarantee, and this
+        # payload goes to a surface and to disk.
+        from tesseract.logsetup import scrub_log_text
+
         payload = {
             "level": record.levelname,
             "logger_name": record.name,
-            "message": message,
+            "message": scrub_log_text(message),
             "exc_type": exc_type,
-            "exc_message": exc_message,
+            "exc_message": scrub_log_text(exc_message) if exc_message else None,
         }
         loop = self._loop
         if loop is None or not loop.is_running():

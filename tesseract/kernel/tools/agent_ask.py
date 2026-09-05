@@ -35,7 +35,7 @@ class AgentAskInput(BaseModel):
         max_length=4000,
         description=(
             "What you need from whoever dispatched you. Be specific and "
-            "self-contained — they cannot see your reasoning, only this. "
+            "self-contained, because they cannot see your reasoning, only this. "
             "Ask when a wrong assumption would waste the rest of the run; "
             "otherwise state your assumption and keep going."
         ),
@@ -75,8 +75,9 @@ class AgentAskTool(Tool):
     )
     not_when: ClassVar[str] = (
         "A foreground call has no parent to ask and is refused. Sending an "
-        "instruction downward instead — use `work_send`."
+        "instruction downward instead: use `work_send`."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

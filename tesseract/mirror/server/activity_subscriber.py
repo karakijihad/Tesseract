@@ -1,4 +1,4 @@
-"""AS-1 — controller→Mirror activity push subscriber.
+"""Controller→Mirror activity push subscriber.
 
 The Mirror reflects everything running, but lanes + controller sessions live
 in the controller daemon (a separate OS process with its own event bus). This
@@ -190,6 +190,7 @@ class ActivitySubscriber:
             transcript_ref=data.get("transcript_ref"),
             goal=data.get("goal"),
             result=data.get("result"),
+            lane_id=data.get("lane_id"),
             started_at=data.get("started_at", ""),
             updated_at=data.get("updated_at", ""),
         )

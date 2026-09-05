@@ -4,7 +4,7 @@ Per ``phase-Y-2-surface-protocol.md §5`` the default (vs. a standalone
 ``surface_event_bus``) is to extend the existing ``BackgroundEventBus`` with
 a namespaced channel, keeping one event substrate. Envelope shape:
 ``{kind, channel, view, ts, data}``. The Mirror WS pump
-(``mirror/server/ws_connection.py::_surface_events_pump``) forwards ``channel ==
+(``mirror/server/ws_connection.py::_channel_forward_pump``) forwards ``channel ==
 "surface"`` to every connected operator; the frontend re-keys to the
 standard ``{type, category: "canvas", …}`` Envelope.
 """

@@ -1,7 +1,7 @@
-"""Durable worker substrate for the AutonomyKernel (AU-3).
+"""Durable worker substrate for the AutonomyKernel.
 
 Parallels the per-session ``SpawnRegistry`` used for synchronous in-chat
-helpers. Anything dispatched by AU-5's AutonomyKernel runs as a durable
+helpers. Anything the AutonomyKernel dispatches runs as a durable
 worker — record on disk before work starts, heartbeat every 30s, lane-cap
 admission, kind-specific cancellation, recovery handler registered with
 RecoveryManager.

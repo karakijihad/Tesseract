@@ -1,4 +1,4 @@
-"""AU-16 S1 — leaf stream + five-state machine + atomic IO.
+"""Leaf stream + five-state machine + atomic IO.
 
 A ``MemoryLeaf`` is the raw input to the memory pipeline — one chat turn,
 one agent observation, one channel inbound, one observer hint. Leaves
@@ -8,7 +8,7 @@ flow through a five-state machine driven by three ``BaseJob`` subclasses
     pending_extraction ──┬─→ admitted ─→ buffered ─→ sealed (terminal)
                          └─→ dropped (terminal)
 
-Storage layout, mirroring the AU-3 worker + AU-4 agenda substrate:
+Storage layout, mirroring the worker + agenda substrate:
 
     <TESSERACT_HOME>/memory-store/leaves/
         active/<leaf_id>.json          # non-terminal
@@ -35,6 +35,8 @@ from pathlib import Path
 from typing import Iterator
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from tesseract.lib.atomic_replace import replace_with_retry
 
 log = logging.getLogger(__name__)
 
@@ -188,7 +190,7 @@ _LEAF_ID_RE = re.compile(r"^leaf_[a-f0-9]{8}$")
 
 # Shared by `ExtractChunkJob`, `AppendBufferJob`, and `SealJob`
 # (`tesseract/scheduler/tasks/leaf_*.py`). Their fully synchronous
-# bodies used to be accidentally mutually exclusive: the scheduler
+# bodies must not become mutually exclusive: the scheduler
 # spawns each as its own task, but a coroutine with no `await` inside
 # it cannot be preempted, so only one ever ran at a time. Wrapping a
 # body in `asyncio.to_thread` removes that accident and opens a real
@@ -215,7 +217,7 @@ LEAF_PIPELINE_LOCK = threading.RLock()
 class LeafStore:
     """Per-leaf JSON CRUD with atomic writes and terminal-state archive.
 
-    Mirrors the AU-4 ``AgendaStore`` pattern: active records live in
+    Mirrors the ``AgendaStore`` pattern: active records live in
     ``active/<id>.json``; on transition to a terminal state, the file
     moves to ``archive/<YYYY-MM>/<id>.json`` (``YYYY-MM`` is the
     ``updated_at`` month, not the id-encoded creation date — leaves
@@ -239,7 +241,7 @@ class LeafStore:
         tmp.write_text(
             json.dumps(payload, indent=2, sort_keys=False), encoding="utf-8"
         )
-        os.replace(tmp, path)
+        replace_with_retry(tmp, path)
 
     def _read_path(self, path: Path) -> MemoryLeaf | None:
         try:

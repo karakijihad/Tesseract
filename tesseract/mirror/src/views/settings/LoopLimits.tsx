@@ -3,110 +3,14 @@ import { useCachedFetch } from "../../lib/useCachedFetch";
 import { useState } from "react";
 
 import { Hint } from "../../components/ui/Hint";
-import { Block } from "../../components/common/Block";
 import { Input } from "../../components/common/Input";
 import { ResetDefaults } from "../../components/common/ResetDefaults";
 import {
   fetchSessionCaps,
   postResetDefaults,
   postSessionCaps,
-  type DenyRule,
   type SessionCapsResponse,
 } from "../../lib/api";
-
-/** The bash DENY/ASK floor, as the runtime holds it.
- *
- * This row said "Locked. The 24-check bash_security DENY list" and the module
- * had 26 checks — a hand-written count beside a list that grows. It is read
- * from the code that owns the rules now, and it renders them rather than
- * asserting they exist, because "you cannot change this" is a claim an
- * operator is entitled to see the substance of.
- */
-function DenyRules({
-  rules,
-  locked,
-}: {
-  rules: DenyRule[] | undefined;
-  locked: boolean | undefined;
-}) {
-  if (!rules) {
-    return (
-      <Block title="Command DENY rules">
-        <Note tone="warn">
-          This backend did not report its rule list. It is still enforcing one —
-          the checks run in the runtime, not here — but nothing on this screen
-          can show you which, so treat the list as unknown rather than empty.
-        </Note>
-      </Block>
-    );
-  }
-  const blocked = rules.filter((r) => r.posture === "blocked");
-  const ask = rules.filter((r) => r.posture === "ask");
-  const mixed = rules.filter((r) => r.posture === "mixed");
-  return (
-    <Block
-      title="Command DENY rules"
-      titleHint={
-        "Every bash command the assistant runs is checked against these before any " +
-        "permission in permissions.yaml is consulted. They are the floor the rest of " +
-        "the permission system sits on."
-      }
-      meta={
-        `${rules.length} checks · ${blocked.length} refuse · ${ask.length} ask` +
-        (mixed.length > 0 ? ` · ${mixed.length} both` : "")
-      }
-    >
-      <Note tone="warn">
-        <strong>You cannot change these, and neither can the assistant.</strong>{" "}
-        There is no setting here, in <code>permissions.yaml</code>, or in any
-        hook, plugin, skill or agent that relaxes them — a mode that switches
-        every tool to AUTO does not reach them either.
-        {locked === false && " This backend reports them as unlocked, which it should not — that is a defect worth reporting."}
-      </Note>
-      <Note>
-        Editing <code>tesseract/permissions/bash_security.py</code> by hand is
-        the only way to move one, and what happens if you do is exactly what it
-        sounds like: the check stops running, for every caller, with nothing
-        else standing behind it. The audit log records a refusal by NUMBER, so
-        the numbers below are what you will see there. An update replaces that
-        file, so a hand-edit is also silently reverted on the next one.
-      </Note>
-      <div className="deny-rules">
-        {rules.map((r) => (
-          <div key={r.check} className="deny-rules__row">
-            <span className="deny-rules__num t-meta">
-              {String(r.check).padStart(2, "0")}
-            </span>
-            <span
-              className={`deny-rules__posture deny-rules__posture--${r.posture}`}
-            >
-              {r.posture === "blocked"
-                ? "REFUSED"
-                : r.posture === "mixed"
-                  ? "BOTH"
-                  : "ASKS YOU"}
-            </span>
-            <span className="deny-rules__what">{r.refuses}</span>
-          </div>
-        ))}
-      </div>
-      <Note>
-        <strong>ASKS YOU</strong> means the command stops and waits for you —
-        it is never auto-allowed, and with no operator attached it fails
-        closed. <strong>REFUSED</strong> does not ask at all; there is no
-        answer that lets it through.
-        {mixed.length > 0 && (
-          <>
-            {" "}
-            <strong>BOTH</strong> is a check with more than one pattern, where
-            some ask and some refuse — read the description for which is which,
-            and assume the refusing half applies to you.
-          </>
-        )}
-      </Note>
-    </Block>
-  );
-}
 
 export function LoopLimitsSection() {
   const {
@@ -235,8 +139,6 @@ export function LoopLimitsSection() {
         mirrors the file. Live ChatSessions pick up new caps on the next turn.
       </Note>
       {error && <Note tone="bad">{error}</Note>}
-
-      <DenyRules rules={server?.deny_rules} locked={server?.deny_rules_locked} />
     </section>
   );
 }

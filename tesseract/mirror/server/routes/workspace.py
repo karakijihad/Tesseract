@@ -1,4 +1,4 @@
-"""Workspace REST routes — Phase 1 (Inbox + comment threads).
+"""Workspace REST routes — Inbox + comment threads.
 
 Endpoints:
 
@@ -9,8 +9,8 @@ Endpoints:
 - ``GET  /api/workspace/seen``                 — last-seen markers
 - ``POST /api/workspace/seen``                 — update last-seen marker
 
-Phase 2 (deferred) adds ``/api/workspace/stream`` reading the same
-events.jsonl with a ``kind=stream`` filter.
+A future ``/api/workspace/stream`` would read the same events.jsonl
+with a ``kind=stream`` filter.
 
 Approve dispatcher
 ==================
@@ -51,6 +51,7 @@ from tesseract.kernel.workspace_changes import (
     compute_diff,
     hash_text,
     resolve_proposable_path,
+    validate_growth_section,
 )
 from tesseract.paths import ROOT, workspace_dir
 from tesseract.permissions.approval_log import record_ask
@@ -78,10 +79,10 @@ _RESOLVABLE_KINDS = {
     "agent_post",
     "nudge",
     "reflection_proposal",  # session reflection — informational
-    "daily_brief",          # MO-9-14 — newsletter card; reactions feed the interests profile, Resolve dismisses the row
-    "clarification",        # AU-19 — operator answers in the comment thread; resolve marks the question handled
-    "recovery_summary",     # AU-2 — boot reconciliation report; nothing to gate, Resolve dismisses
-    "strategist_summary",   # AU-23 — weekly initiative curator one-shot; informational
+    "daily_brief",          # Newsletter card; informational, Resolve dismisses the row
+    "clarification",        # Operator answers in the comment thread; resolve marks the question handled
+    "recovery_summary",     # Boot reconciliation report; nothing to gate, Resolve dismisses
+    "strategist_summary",   # Weekly initiative curator one-shot; informational
     "runtime_lock_deny",    # SU-1/SU-5 — audit surface for lock-deny attempts; informational
 }
 
@@ -105,8 +106,8 @@ def _decision_lock(event_id: str) -> asyncio.Lock:
 
 
 
-def _store(request: web.Request) -> EventStore:
-    store = request.app.get("workspace_event_store")
+def _store(app: web.Application) -> EventStore:
+    store = app.get("workspace_event_store")
     if store is None:
         raise web.HTTPInternalServerError(reason="workspace_event_store not initialised")
     return store
@@ -132,7 +133,7 @@ async def _broadcast_envelope(app: web.Application, type_: str, data: dict[str, 
 
 
 async def _commit_change_proposal(
-    request: web.Request,
+    app: web.Application,
     ev: WorkspaceEvent,
 ) -> tuple[dict[str, Any], int] | None:
     """Perform the file commit for a `change_proposal` event. Returns
@@ -176,9 +177,36 @@ async def _commit_change_proposal(
                 current, new_after, target_label=str(payload.get("label") or "file"),
             )
             new_hash = hash_text(current)
+            fresh_bytes = (
+                len(current.encode("utf-8")),
+                len(new_after.encode("utf-8")),
+            )
         except Exception:  # noqa: BLE001 — diagnostics only
             fresh_diff = ""
             new_hash = ""
+            fresh_bytes = None
+        # Write the recomputed snapshot back onto the card, which is what makes
+        # "Approve again" true. Without it the payload keeps the hash it was
+        # born with, so every later Approve loses the same race and the event
+        # is pending forever with no way out but Reject.
+        #
+        # The whole snapshot moves together — hash, diff and the two sizes the
+        # card renders — because half of it would describe the file as it was
+        # and half as it is.
+        #
+        # Only when the recompute produced a hash: merging an empty one would
+        # leave `expected_hash_before` falsy, and the next Approve would skip
+        # the drift check entirely and commit against bytes nobody reviewed.
+        if new_hash and fresh_bytes is not None:
+            _store(app).merge_event_payload(
+                ev.event_id,
+                {
+                    "expected_hash_before": new_hash,
+                    "diff": fresh_diff,
+                    "bytes_before": fresh_bytes[0],
+                    "bytes_after": fresh_bytes[1],
+                },
+            )
         return {
             "error": "concurrent_modification",
             "detail": str(exc),
@@ -193,7 +221,7 @@ async def _commit_change_proposal(
         return {"error": "commit_failed", "detail": str(exc)}, 500
 
     await _broadcast_envelope(
-        request.app,
+        app,
         "soul_updated" if target_path == "tesseract/workspace/SOUL.md" else "workspace_file_updated",
         {
             "path": target_path,
@@ -212,7 +240,7 @@ async def _commit_change_proposal(
 
 
 async def _commit_yaml_change_proposal(
-    request: web.Request,
+    app: web.Application,
     ev: WorkspaceEvent,
 ) -> tuple[dict[str, Any] | None, tuple[dict[str, Any], int] | None]:
     """Apply a ``yaml_change_proposal`` event via :func:`apply_yaml_change`.
@@ -306,7 +334,7 @@ def _archive_rejected_agent(agents_dir: Path, name: str, reason: str | None) -> 
 
 
 async def _commit_agent_approval(
-    request: web.Request,
+    app: web.Application,
     ev: WorkspaceEvent,
     decision: str,
     reason: str | None,
@@ -339,7 +367,7 @@ async def _commit_agent_approval(
     if err is not None:
         return None, ({"error": "reject_failed", "detail": err}, 409)
 
-    store = _store(request)
+    store = _store(app)
     comment_body = f"Rejected: {reason}" if reason else "Rejected (no reason given)."
     comment = WorkspaceComment.new(
         event_id=ev.event_id, author="operator", body=comment_body,
@@ -362,9 +390,9 @@ async def _commit_agent_approval(
         cfg = load_workspace_reply_config()
         if cfg.enabled:
             _spawn_tracked(
-                request.app,
+                app,
                 dispatch_workspace_reply(
-                    request.app,
+                    app,
                     event_id=ev.event_id,
                     comment_id=comment.comment_id,
                     event=ev,
@@ -381,17 +409,17 @@ async def _commit_agent_approval(
 
 
 def _skills_dir() -> Path:
-    """Skills tree resolved at call time (Phase 4) via `workspace_dir()`."""
+    """Skills tree resolved at call time via `workspace_dir()`."""
     return workspace_dir() / "skills"
 
 
 async def _commit_skill_approval(
-    request: web.Request,
+    app: web.Application,
     ev: WorkspaceEvent,
     decision: str,
     reason: str | None,
 ) -> tuple[dict[str, Any] | None, tuple[dict[str, Any], int] | None]:
-    """Phase 4 — settle a `skill_approval` proposal card (mirror of
+    """Settle a `skill_approval` proposal card (mirror of
     `_commit_agent_approval`). Approve runs the promotion core shared with the
     `skill_promote` chat tool (validate → pending→active dir move). Reject
     archives the draft to `skills/rejected/` with the operator's reason
@@ -416,7 +444,7 @@ async def _commit_skill_approval(
     if err is not None:
         return None, ({"error": "reject_failed", "detail": err}, 409)
 
-    store = _store(request)
+    store = _store(app)
     comment_body = f"Rejected: {reason}" if reason else "Rejected (no reason given)."
     comment = WorkspaceComment.new(event_id=ev.event_id, author="operator", body=comment_body)
     try:
@@ -425,17 +453,17 @@ async def _commit_skill_approval(
         log.exception("skill_approval reject: comment append failed")
         return {"rejected": name}, None
 
-    _spawn_reject_reply(request, ev, comment, comment_body)
+    _spawn_reject_reply(app, ev, comment, comment_body)
     return {"rejected": name}, None
 
 
 async def _commit_skill_refinement(
-    request: web.Request,
+    app: web.Application,
     ev: WorkspaceEvent,
     decision: str,
     reason: str | None,
 ) -> tuple[dict[str, Any] | None, tuple[dict[str, Any], int] | None]:
-    """Phase 4 4b — settle a `skill_refinement` card. Approve applies the
+    """Settle a `skill_refinement` card. Approve applies the
     proposed SKILL.md body to the LIVE active skill (atomic, validated).
     Reject leaves the skill untouched and records the operator's reason as a
     comment. A refinement carries `{name, proposed_markdown}` in payload."""
@@ -448,13 +476,15 @@ async def _commit_skill_refinement(
         if not proposed.strip():
             return None, ({"error": "skill_refinement_no_proposal"}, 409)
         skills_dir = _skills_dir()
-        err = await asyncio.to_thread(_apply_skill_refinement, skills_dir, name, proposed)
+        registry = app.get("tool_registry")
+        names = frozenset(registry.names()) if registry is not None else None
+        err = await asyncio.to_thread(_apply_skill_refinement, skills_dir, name, proposed, names)
         if err is not None:
             return None, ({"error": "refine_failed", "detail": err}, 409)
         return {"refined": name}, None
 
     # Reject — skill untouched; record the reason for the assistant.
-    store = _store(request)
+    store = _store(app)
     comment_body = f"Refinement rejected: {reason}" if reason else "Refinement rejected (no reason given)."
     comment = WorkspaceComment.new(event_id=ev.event_id, author="operator", body=comment_body)
     try:
@@ -463,50 +493,23 @@ async def _commit_skill_refinement(
         log.exception("skill_refinement reject: comment append failed")
         return {"rejected": name}, None
 
-    _spawn_reject_reply(request, ev, comment, comment_body)
+    _spawn_reject_reply(app, ev, comment, comment_body)
     return {"rejected": name}, None
 
 
-def _apply_skill_refinement(skills_dir: Path, name: str, proposed_markdown: str) -> str | None:
-    """Validate + atomically overwrite the live `skills/<name>/SKILL.md`.
-    Returns an error string or None. Refuses to write if the proposed body
-    fails the loader round-trip (frontmatter/name/size)."""
-    import tempfile
+def _apply_skill_refinement(
+    skills_dir: Path, name: str, proposed_markdown: str, tool_names: frozenset[str] | None = None,
+) -> str | None:
+    """The approve route's half of a refinement: `brain/skills.py::
+    replace_skill_body`, which `skill_refine` also calls once its gate is
+    answered, so a live skill changes on one path whichever surface asked."""
+    from tesseract.brain.skills import replace_skill_body
 
-    from tesseract.brain.skills import SKILL_FILENAME, load_skill_folder
-
-    target = skills_dir / name / SKILL_FILENAME
-    if not target.exists():
-        return f"no active skill {name!r} to refine at {target}"
-
-    # Round-trip the proposal in a temp folder before touching the live file.
-    tmp_root = Path(tempfile.mkdtemp())
-    tmp_folder = tmp_root / name
-    tmp_folder.mkdir(parents=True, exist_ok=True)
-    try:
-        (tmp_folder / SKILL_FILENAME).write_text(proposed_markdown, encoding="utf-8")
-        entry = load_skill_folder(tmp_folder)
-        if entry is None or entry.name != name:
-            return "proposed SKILL.md failed loader validation (frontmatter/name/size)"
-    finally:
-        try:
-            (tmp_folder / SKILL_FILENAME).unlink(missing_ok=True)
-            tmp_folder.rmdir()
-            tmp_root.rmdir()
-        except OSError:
-            pass
-
-    tmp = target.with_suffix(".md.tmp")
-    try:
-        tmp.write_text(proposed_markdown, encoding="utf-8")
-        os.replace(str(tmp), str(target))
-    except OSError as exc:
-        return f"skill refinement write failed: {exc}"
-    return None
+    return replace_skill_body(skills_dir, name, proposed_markdown, tool_names=tool_names)
 
 
 def _spawn_reject_reply(
-    request: web.Request,
+    app: web.Application,
     ev: WorkspaceEvent,
     comment: WorkspaceComment,
     comment_body: str,
@@ -523,9 +526,9 @@ def _spawn_reject_reply(
         cfg = load_workspace_reply_config()
         if cfg.enabled:
             _spawn_tracked(
-                request.app,
+                app,
                 dispatch_workspace_reply(
-                    request.app,
+                    app,
                     event_id=ev.event_id,
                     comment_id=comment.comment_id,
                     event=ev,
@@ -542,8 +545,342 @@ def _spawn_reject_reply(
 _SOUL_REL = "tesseract/workspace/SOUL.md"
 
 
+async def _commit_working_set_proposal(
+    app: web.Application,
+    ev: WorkspaceEvent,
+) -> tuple[dict[str, Any] | None, tuple[dict[str, Any], int] | None]:
+    """Apply a ``working_set_proposal`` by moving names on and off the dial.
+
+    **The job that filed this card never touched either file**, and that is the
+    whole boundary: the names under ``core:`` are the operator's half of a file
+    whose other half is generated, so the change happens here, on the approval,
+    and nowhere else.
+
+    Two files, because the two halves have different privacy. Tools go to
+    ``working_set.yaml``, which ships; playbooks go to
+    ``workspace/skills/carried.txt``, which never leaves the machine. Both are
+    written through their own generator so the annotations beside every name
+    are rebuilt rather than carried forward from whatever a previous release
+    wrote.
+
+    Applied live rather than at the next restart, for the reason the tool
+    switch in Conscience is: an operator who approved a change and then watched
+    the next turn ignore it has no way to tell a slow write from a broken one.
+    """
+    from tesseract.brain.playbook_set import (
+        load_carried_names,
+        skills_dir,
+        write_carried,
+    )
+    from tesseract.brain.skills import load_skills
+    from tesseract.config.working_set import (
+        UNDROPPABLE,
+        config_path,
+        load_core_tool_names,
+    )
+    from tesseract.scripts.generate_working_set import _registry_facts, render
+
+    payload = ev.payload or {}
+    def _names(key: str, field: str) -> list[str]:
+        return [n for n in (str(r.get(field) or "") for r in payload.get(key) or []) if n]
+
+    carry = _names("carry", "tool")
+    drop = _names("drop", "tool")
+    drop_playbooks = _names("drop_playbooks", "playbook")
+    carry_playbooks = _names("carry_playbooks", "playbook")
+    if not (carry or drop or drop_playbooks or carry_playbooks):
+        return None, ({"error": "invalid_proposal", "detail": "nothing to apply"}, 400)
+
+    registry = app.get("tool_registry")
+    if (carry or drop) and registry is None:
+        return None, ({"error": "the tool registry is not up yet"}, 503)
+
+    changed: dict[str, Any] = {
+        "carried": [], "dropped": [], "dropped_playbooks": [],
+        "carried_playbooks": [], "refused_custom": [],
+    }
+    tiers_error: tuple[dict[str, Any], int] | None = None
+
+    if carry or drop:
+        try:
+            chosen = set(load_core_tool_names())
+        except (OSError, ValueError, KeyError) as exc:
+            return None, ({"error": "invalid_proposal", "detail": str(exc)}, 500)
+        for name in carry:
+            # A tool the card named that has since been removed is skipped
+            # rather than written: `working_set.yaml` naming a tool nothing
+            # answers to stops the app at boot, and a card can outlive a
+            # release that deleted one.
+            tool = registry.tools.get(name)
+            if tool is None or name in chosen:
+                continue
+            # And a tool the OPERATOR wrote never goes in this file, whatever
+            # a card says. It is regenerated and it ships, so a machine-local
+            # name here is destroyed by the next generator run or handed to
+            # strangers as a tool they do not have. The proposing stage filters
+            # these out only when it had a registry to ask; this is the check
+            # that does not depend on that. `conscience.py::set_working_set`
+            # makes the same split, to `write_promoted`.
+            if getattr(tool, "origin", "shipped") == "custom":
+                changed["refused_custom"].append(name)
+                continue
+            chosen.add(name)
+            changed["carried"].append(name)
+        for name in drop:
+            # Both doors stay, whatever a card says. `tool_search` reaches
+            # every tool not carried and `playbook_search` every playbook, so
+            # dropping either is a capability cut rather than a saving. Read
+            # from the one constant both this and the proposing stage use: a
+            # card can outlive the release that added a lock, and this layer
+            # is the one that re-derives its guards rather than trusting the
+            # stage that filed the card.
+            if name in UNDROPPABLE or name not in chosen:
+                continue
+            chosen.discard(name)
+            changed["dropped"].append(name)
+
+        def _write_tools() -> None:
+            config_path().write_text(
+                render(sorted(chosen), _registry_facts()), encoding="utf-8"
+            )
+
+        try:
+            await asyncio.to_thread(_write_tools)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("working_set_proposal: could not write the working set")
+            return None, ({"error": "saved nothing", "detail": str(exc)}, 500)
+
+        # Live NOW, beside the write that earned it, not at the end of the
+        # function. Two things had to be true at once and were not: the
+        # playbook half below can return early, which skipped this entirely,
+        # and on the retry the names are already on the list so `changed` comes
+        # back empty and a guard keyed on it never fires again in this
+        # process. Meanwhile `_partly_saved` was telling the operator the tool
+        # changes were "saved and are live". `conscience.py::set_working_set`
+        # reloads unconditionally after its write, which is the shape this
+        # should have copied.
+        tiers_error = _reload_tiers(registry)
+
+    if drop_playbooks or carry_playbooks:
+        kept = set(load_carried_names())
+        live = {e.name for e in load_skills(skills_dir())}
+        for name in drop_playbooks:
+            if name in kept:
+                kept.discard(name)
+                changed["dropped_playbooks"].append(name)
+        for name in carry_playbooks:
+            # Only one that is still there. A card can outlive the playbook it
+            # named, and `carried.txt` keeps an unknown name visibly rather
+            # than quietly, so writing one would leave a marked line nobody
+            # asked for.
+            if name in live and name not in kept:
+                kept.add(name)
+                changed["carried_playbooks"].append(name)
+        # 089d0784: only when something actually came off. A card naming a
+        # playbook the operator had already removed by hand would otherwise
+        # rewrite the file to identical bytes and move its mtime, which is what
+        # `generate_playbook_set --check` keys on.
+        if changed["dropped_playbooks"] or changed["carried_playbooks"]:
+            try:
+                await asyncio.to_thread(write_carried, sorted(kept))
+            except Exception as exc:  # noqa: BLE001
+                log.exception("working_set_proposal: could not write the carried list")
+                changed["dropped_playbooks"] = []
+                changed["carried_playbooks"] = []
+                # **Two files, and the first one may already have landed.**
+                # Reporting "saved nothing" here was a lie about a working set
+                # that had just changed on disk, and it returned before the
+                # card could record the half that worked. So the record is
+                # written first and the error names what survived.
+                # The card stays pending, which is the recovery: approving it
+                # again re-runs both halves, and the tool half is idempotent
+                # because every name it wrote is already on the list. Nothing
+                # said so, and a `What changed` block above a live Approve
+                # button is not a thing an operator should have to infer.
+                _record(
+                    app, ev, changed,
+                    outstanding=(
+                        "The playbook half did not run. This card is still "
+                        "open: approving it again finishes the job and repeats "
+                        "nothing. Rejecting it leaves the tool changes above "
+                        "in place, and you can undo them in Conscience."
+                    ),
+                )
+                return changed, (
+                    {
+                        "error": _partly_saved(_accumulated(ev, changed)),
+                        "detail": str(exc),
+                    },
+                    500,
+                )
+
+    # Separate from the write, which already landed. `_apply_tool_tiers` raises
+    # when the file names a tool that is not registered, and reporting "saved
+    # nothing" for a file that just changed on disk is a lie.
+    # What actually landed, written back onto the card. A card can propose a
+    # name a later release removed, or the floor, and both are skipped above:
+    # a card that still reads as its original proposal after being applied
+    # would be telling the operator something that did not happen. This is
+    # locked decision 21's other half, said about one card rather than about a
+    # filter.
+    _record(app, ev, changed)
+
+    if tiers_error is not None:
+        return changed, tiers_error
+    return changed, None
+
+
+def _reload_tiers(registry: Any) -> tuple[dict[str, Any], int] | None:
+    """Make the file that just changed take effect on the next turn.
+
+    Separate from the write, which already landed: `_apply_tool_tiers` raises
+    when the file names a tool that is not registered, and reporting "saved
+    nothing" for a file that just changed on disk is a lie. Returns the error
+    the caller should surface, or None.
+    """
+    from tesseract.brain.boot import _apply_tool_tiers, core_tool_names
+
+    try:
+        core_tool_names(refresh=True)
+        _apply_tool_tiers(registry)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("working_set_proposal: applied but could not take effect")
+        return (
+            {
+                "error": (
+                    "Saved, but it does not take effect until the next "
+                    f"restart: {exc}"
+                )
+            },
+            500,
+        )
+    return None
+
+
+def _record(
+    app: web.Application,
+    ev: WorkspaceEvent,
+    changed: dict[str, Any],
+    *,
+    outstanding: str = "",
+) -> None:
+    """Write what actually landed back onto the card, ACCUMULATING.
+
+    A card can name a tool a later release removed, the floor, or one the
+    operator wrote, and every one of those is skipped above. A card still
+    reading as its original proposal after being applied would be telling the
+    operator something that did not happen. Called on the success path AND on
+    the partial-failure path, because the half that landed is exactly what the
+    operator needs to see when the other half did not.
+
+    **Merged into whatever the card already recorded, not written over it.**
+    A partial apply leaves the card pending, so the operator can approve it
+    again to finish the job. On that second pass `changed` is rebuilt from
+    scratch and the names written the first time are skipped as already
+    applied, so a plain overwrite would replace a true record of a live change
+    with an empty one. `merge_event_payload` is a shallow merge over top-level
+    keys, so `applied` has to be unioned here or not at all.
+    """
+    union = _accumulated(ev, changed)
+    lines = _applied_lines(union)
+    if outstanding:
+        lines.append(outstanding)
+    try:
+        _store(app).merge_event_payload(
+            ev.event_id, {"applied": union, "applied_lines": lines}
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("working_set_proposal: could not record what was applied", exc_info=True)
+
+
+def _accumulated(ev: WorkspaceEvent, changed: dict[str, Any]) -> dict[str, Any]:
+    """Everything this card has applied, across every attempt at it.
+
+    Seeded from what the card already holds and overlaid with this call, so a
+    key the card carries and this call does not is kept rather than dropped.
+    That is not hypothetical tidiness: a direction added to one code path and
+    not the other is exactly how the change count fell behind, and this is the
+    same shape one level down.
+    """
+    previous = (ev.payload or {}).get("applied") or {}
+    if not isinstance(previous, dict):
+        previous = {}
+    union: dict[str, Any] = {
+        key: sorted(set(value or []))
+        for key, value in previous.items()
+        if isinstance(value, list)
+    }
+    for key, value in changed.items():
+        union[key] = sorted(set(union.get(key) or []) | set(value))
+    return union
+
+
+def _partly_saved(changed: dict[str, Any]) -> str:
+    """The error for a two-file apply where the first file landed.
+
+    Takes the ACCUMULATED record, not this call's. On a retry the tool names
+    written the first time are already on the list and are skipped, so this
+    call's dict is empty while the change is live on disk. Telling the
+    operator `Nothing was saved` at that moment is the same defect `_record`
+    was fixed for, one function over, and the second message is the one they
+    would act on.
+    """
+    tools = len(changed["carried"]) + len(changed["dropped"])
+    if not tools:
+        return "Nothing was saved."
+    return (
+        f"{tools} tool changes were saved and are live. The playbook list "
+        "could not be written, so nothing changed there."
+    )
+
+
+def _applied_lines(changed: dict[str, Any]) -> list[str]:
+    """What happened, in the sentences the card renders.
+
+    Written here rather than in the pane, per AR-21's rule that no explanatory
+    copy about a proposal lives in TSX: a second wording in a component is a
+    second account of what the runtime did.
+    """
+    lines: list[str] = []
+    if changed["carried"]:
+        lines.append(
+            "Now carried on every turn: " + ", ".join(sorted(changed["carried"])) + "."
+        )
+    if changed["dropped"]:
+        lines.append(
+            "No longer carried, and one tool_search away: "
+            + ", ".join(sorted(changed["dropped"]))
+            + "."
+        )
+    if changed["carried_playbooks"]:
+        lines.append(
+            "Playbooks now carried on every turn: "
+            + ", ".join(sorted(changed["carried_playbooks"]))
+            + "."
+        )
+    if changed["dropped_playbooks"]:
+        lines.append(
+            "No longer carried, and one playbook_search away: "
+            + ", ".join(sorted(changed["dropped_playbooks"]))
+            + "."
+        )
+    if changed.get("refused_custom"):
+        lines.append(
+            "Left alone, because these are tools you wrote and that list is "
+            "yours to set in Conscience: "
+            + ", ".join(sorted(changed["refused_custom"]))
+            + "."
+        )
+    if not lines:
+        lines.append(
+            "Nothing changed. Every name on the card was already where it "
+            "asked for, or is no longer here."
+        )
+    return lines
+
+
 async def _commit_soul_proposal(
-    request: web.Request,
+    app: web.Application,
     ev: WorkspaceEvent,
 ) -> tuple[dict[str, Any] | None, tuple[dict[str, Any], int] | None]:
     """Apply a ``soul_proposal`` event by appending the bullet to SOUL.md.
@@ -561,6 +898,14 @@ async def _commit_soul_proposal(
     if not bullet:
         return None, ({"error": "invalid_proposal", "detail": "missing bullet"}, 400)
 
+    # The section the proposal named, not a fixed one: SOUL holds a section per
+    # kind of growth, and committing every approved bullet to one heading would
+    # undo that at the last step.
+    try:
+        section = validate_growth_section(str(payload.get("section") or "").strip())
+    except ProposeError as exc:
+        return None, ({"error": "invalid_proposal", "detail": str(exc)}, 400)
+
     bullet_line = f"- {bullet}\n"
     try:
         applied = await asyncio.to_thread(
@@ -569,7 +914,7 @@ async def _commit_soul_proposal(
             target_path=_SOUL_REL,
             action="append_to_section",
             content=bullet_line,
-            section="Growth",
+            section=section,
         )
     except ProposeError as exc:
         return None, ({"error": "invalid_proposal", "detail": str(exc)}, 400)
@@ -582,7 +927,7 @@ async def _commit_soul_proposal(
     except OSError:
         content_after = ""
     await _broadcast_envelope(
-        request.app,
+        app,
         "soul_updated",
         {
             "path": _SOUL_REL,
@@ -601,7 +946,7 @@ async def _commit_soul_proposal(
 
 
 async def _commit_feedback_proposal(
-    request: web.Request,
+    app: web.Application,
     ev: WorkspaceEvent,
 ) -> tuple[dict[str, Any] | None, tuple[dict[str, Any], int] | None]:
     """Apply a ``feedback_proposal`` (merge_into / archive) via ``memory_promote``.
@@ -623,7 +968,7 @@ async def _commit_feedback_proposal(
             400,
         )
 
-    registry = request.app.get("tool_registry") if hasattr(request.app, "get") else None
+    registry = app.get("tool_registry") if hasattr(app, "get") else None
     tool = registry.get("memory_promote") if registry is not None and hasattr(registry, "get") else None
     if tool is None:
         return None, (
@@ -689,10 +1034,11 @@ async def _commit_feedback_proposal(
 
 
 async def _commit_vault_raw_ingest_batch(
-    request: web.Request,
+    app: web.Application | None,
     ev: WorkspaceEvent,
     *,
     deny_all: bool,
+    per_file: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any] | None, tuple[dict[str, Any], int] | None]:
     """Apply (or deny) a ``vault_raw_ingest_batch`` event.
 
@@ -712,16 +1058,12 @@ async def _commit_vault_raw_ingest_batch(
     if not isinstance(files, list):
         return None, ({"error": "invalid_batch", "detail": "files must be a list"}, 400)
 
-    body: dict[str, Any] = {}
-    if request is not None:
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-    decisions_in = body.get("decisions") if isinstance(body, dict) else None
+    # Handed in rather than read off a request. The cockpit sends a verdict
+    # per file in its decision body; a caller with no request (a tool, a
+    # channel) sends none and every file follows the batch verdict.
     decisions: dict[str, str] = {
         relpath: verdict.strip().lower()
-        for relpath, verdict in (decisions_in.items() if isinstance(decisions_in, dict) else [])
+        for relpath, verdict in (per_file or {}).items()
         if isinstance(relpath, str) and isinstance(verdict, str)
         and verdict.strip().lower() in {"approved", "denied"}
     }
@@ -731,9 +1073,8 @@ async def _commit_vault_raw_ingest_batch(
             if isinstance(relpath, str):
                 decisions[relpath] = "denied"
 
-    app = request.app if request is not None else None
     vault_manager, indexer, librarian = _resolve_vault_dependencies(app)
-    home_override = os.environ.get("TESSERACT_HOME") if request is not None else None
+    home_override = os.environ.get("TESSERACT_HOME") if app is not None else None
     home = Path(home_override).resolve() if home_override else TESSERACT_HOME
     cursor_path = home / "autonomy" / "vault-raw-cursors.jsonl"
 
@@ -789,7 +1130,8 @@ def _event_dict(ev: WorkspaceEvent, comments: list[WorkspaceComment]) -> dict[st
 
 
 async def list_inbox(request: web.Request) -> web.Response:
-    store = _store(request)
+    app = request.app
+    store = _store(app)
     status_filter = request.query.get("status", "pending")
     status: Any = status_filter if status_filter != "all" else None
     events = store.list_events(status=status, limit=200)
@@ -801,7 +1143,8 @@ async def list_inbox(request: web.Request) -> web.Response:
 
 
 async def get_event(request: web.Request) -> web.Response:
-    store = _store(request)
+    app = request.app
+    store = _store(app)
     event_id = request.match_info["event_id"]
     ev = store.get_event(event_id)
     if ev is None:
@@ -810,34 +1153,57 @@ async def get_event(request: web.Request) -> web.Response:
     return web.json_response(_event_dict(ev, comments))
 
 
-async def post_decision(request: web.Request) -> web.Response:
-    store = _store(request)
-    event_id = request.match_info["event_id"]
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid_json"}, status=400)
+class DecisionError(Exception):
+    """A decision that could not be made, with the reason a caller can render.
 
-    decision = (body.get("decision") or "").strip().lower()
+    Carries the same payload and status the route used to return inline, so the
+    HTTP handler is a translation and every other caller gets the words rather
+    than a status code it has no use for.
+    """
+
+    def __init__(self, payload: dict[str, Any], status: int) -> None:
+        self.payload = payload
+        self.status = status
+        super().__init__(str(payload.get("detail") or payload.get("error") or "refused"))
+
+
+async def apply_decision(
+    app: web.Application,
+    event_id: str,
+    decision: str,
+    *,
+    reason: str | None = None,
+    per_file: dict[str, str] | None = None,
+) -> tuple[WorkspaceEvent, list[WorkspaceComment]]:
+    """Approve, reject, resolve or delete one workspace event.
+
+    **The one place a decision happens, and it is no longer behind HTTP.**
+    Everything the operator is asked in the cockpit lands in this inbox, and
+    until this was liftable out of `post_decision` the only way to answer any
+    of it was a `POST` from a browser on the same machine. Ruling 22 says every
+    approval has to be answerable from a phone; measured, two of fourteen were,
+    and the twelve that were not are all this one call. So it moved, unchanged,
+    and the route below is now the HTTP shape around it rather than the thing
+    itself.
+
+    Raises `DecisionError` with the payload and status the route used to return.
+    """
+    store = _store(app)
     if decision not in {"approve", "reject", "resolve", "delete"}:
-        return web.json_response(
+        raise DecisionError(
             {"error": "decision must be 'approve', 'reject', 'resolve', or 'delete'"},
-            status=400,
+            400,
         )
-    reason = (body.get("reason") or "").strip() or None
 
     ev = store.get_event(event_id)
     if ev is None:
-        return web.json_response({"error": "not_found"}, status=404)
+        raise DecisionError({"error": "not_found"}, 404)
     # `resolve` is restricted to informational kinds. A pending
     # `change_proposal` / `mission_reflection_proposal` / feedback_* /
     # agent_approval MUST go through approve/reject so the decision is
-    # recorded; a blanket `resolve` on those would silently bypass the
-    # gate. Session `reflection_proposal` is informational (writes
-    # already committed during the reflect turn) and is in the
-    # resolvable set.
+    # recorded; a blanket `resolve` on those would silently bypass the gate.
     if decision == "resolve" and ev.kind not in _RESOLVABLE_KINDS:
-        return web.json_response(
+        raise DecisionError(
             {
                 "error": "resolve_not_permitted_for_kind",
                 "detail": (
@@ -846,91 +1212,73 @@ async def post_decision(request: web.Request) -> web.Response:
                 ),
                 "kind": ev.kind,
             },
-            status=400,
+            400,
         )
+
     async with _decision_lock(event_id):
-        # Re-read the event under the lock. A concurrent decision on the same
-        # event may have settled it while we waited for the lock; acting on the
-        # stale pre-lock copy is exactly the race this guards against.
+        # Re-read under the lock. A concurrent decision may have settled it
+        # while we waited; acting on the stale copy is the race this guards.
         ev = store.get_event(event_id)
         if ev is None:
-            return web.json_response({"error": "not_found"}, status=404)
+            raise DecisionError({"error": "not_found"}, 404)
         # `delete` is the universal escape hatch — works on any status so the
         # operator can soft-delete from history too. Other verbs stay
         # pending-only and idempotently return the settled event.
         if decision != "delete" and ev.status not in {"pending"}:
-            comments = store.list_comments(event_id)
-            return web.json_response(_event_dict(ev, comments))
+            return ev, store.list_comments(event_id)
 
         if decision == "approve" and ev.kind == "change_proposal":
-            err = await _commit_change_proposal(request, ev)
+            err = await _commit_change_proposal(app, ev)
             if err is not None:
-                payload, status = err
-                return web.json_response(payload, status=status)
+                raise DecisionError(*err)
 
-        yaml_apply_meta: dict[str, Any] | None = None
         if decision == "approve" and ev.kind == "yaml_change_proposal":
-            result, err = await _commit_yaml_change_proposal(request, ev)
+            _result, err = await _commit_yaml_change_proposal(app, ev)
             if err is not None:
-                payload, status = err
-                return web.json_response(payload, status=status)
-            yaml_apply_meta = result
+                raise DecisionError(*err)
 
-        soul_apply_meta: dict[str, Any] | None = None
         if decision == "approve" and ev.kind == "soul_proposal":
-            result, err = await _commit_soul_proposal(request, ev)
+            _result, err = await _commit_soul_proposal(app, ev)
             if err is not None:
-                payload, status = err
-                return web.json_response(payload, status=status)
-            soul_apply_meta = result
+                raise DecisionError(*err)
 
-        feedback_apply_meta: dict[str, Any] | None = None
-        if decision == "approve" and ev.kind == "feedback_proposal":
-            result, err = await _commit_feedback_proposal(request, ev)
+        if decision == "approve" and ev.kind == "working_set_proposal":
+            _result, err = await _commit_working_set_proposal(app, ev)
             if err is not None:
-                payload, status = err
-                return web.json_response(payload, status=status)
-            feedback_apply_meta = result
+                raise DecisionError(*err)
+
+        if decision == "approve" and ev.kind == "feedback_proposal":
+            _result, err = await _commit_feedback_proposal(app, ev)
+            if err is not None:
+                raise DecisionError(*err)
 
         if decision in {"approve", "reject"} and ev.kind == "agent_approval":
-            _agent_meta, err = await _commit_agent_approval(request, ev, decision, reason)
+            _agent_meta, err = await _commit_agent_approval(app, ev, decision, reason)
             if err is not None:
-                payload, status = err
-                return web.json_response(payload, status=status)
+                raise DecisionError(*err)
 
         if decision in {"approve", "reject"} and ev.kind == "skill_approval":
-            _skill_meta, err = await _commit_skill_approval(request, ev, decision, reason)
+            _skill_meta, err = await _commit_skill_approval(app, ev, decision, reason)
             if err is not None:
-                payload, status = err
-                return web.json_response(payload, status=status)
+                raise DecisionError(*err)
 
         if decision in {"approve", "reject"} and ev.kind == "skill_refinement":
-            _refine_meta, err = await _commit_skill_refinement(request, ev, decision, reason)
+            _refine_meta, err = await _commit_skill_refinement(app, ev, decision, reason)
             if err is not None:
-                payload, status = err
-                return web.json_response(payload, status=status)
+                raise DecisionError(*err)
 
-        raw_batch_meta: dict[str, Any] | None = None
         if decision in {"approve", "reject"} and ev.kind == "vault_raw_ingest_batch":
-            result, err = await _commit_vault_raw_ingest_batch(request, ev, deny_all=(decision == "reject"))
+            _result, err = await _commit_vault_raw_ingest_batch(
+                app, ev, deny_all=(decision == "reject"), per_file=per_file
+            )
             if err is not None:
-                payload, status = err
-                return web.json_response(payload, status=status)
-            raw_batch_meta = result
+                raise DecisionError(*err)
 
-        # Codex audit 2026-05-06 m2: `resolve` flips status to `resolved`
-        # without firing approval side-effects — the verb operator_post
-        # threads need to leave the inbox once the conversation has played
-        # out (approve/reject would mis-record an open thread as a gated
-        # decision). `delete` is the soft-delete verb — row leaves the
-        # active inbox and surfaces in History with the deleted pill.
-        # yaml_change_proposal uses `applied` to distinguish "operator approved AND
-        # the YAML file was successfully mutated" from the generic approval state.
-        # vault_raw_ingest_batch (AU-22) follows the same `applied` convention on
-        # approve so the inbox UI can render "ingested" vs "approved without action".
-        # agent_approval joins the `applied` convention (Stage 10): approve
-        # means the promotion side-effect ran, not just that the operator
-        # nodded.
+        # `resolve` flips status without firing approval side-effects — the
+        # verb operator_post threads need to leave the inbox once the
+        # conversation has played out. `delete` is the soft-delete verb.
+        # `applied` distinguishes "the operator approved AND the side-effect
+        # ran" from the generic approval state.
         if decision == "approve" and ev.kind in {
             "yaml_change_proposal",
             "vault_raw_ingest_batch",
@@ -939,6 +1287,7 @@ async def post_decision(request: web.Request) -> web.Response:
             "agent_approval",
             "skill_approval",
             "skill_refinement",
+            "working_set_proposal",
         }:
             new_status = "applied"
         else:
@@ -950,7 +1299,7 @@ async def post_decision(request: web.Request) -> web.Response:
             )
         updated = store.update_event_status(event_id, new_status, reason=reason)
         if updated is None:
-            return web.json_response({"error": "not_found"}, status=404)
+            raise DecisionError({"error": "not_found"}, 404)
 
     try:
         await record_ask(
@@ -974,12 +1323,34 @@ async def post_decision(request: web.Request) -> web.Response:
     except Exception:
         log.exception("workspace: approval ledger record failed")
 
-    comments = store.list_comments(event_id)
+    return updated, store.list_comments(event_id)
+
+
+async def post_decision(request: web.Request) -> web.Response:
+    """The HTTP shape around `apply_decision`, and nothing else."""
+    event_id = request.match_info["event_id"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_json"}, status=400)
+
+    raw = body.get("decisions") if isinstance(body, dict) else None
+    try:
+        updated, comments = await apply_decision(
+            request.app,
+            event_id,
+            (body.get("decision") or "").strip().lower(),
+            reason=(body.get("reason") or "").strip() or None,
+            per_file=raw if isinstance(raw, dict) else None,
+        )
+    except DecisionError as exc:
+        return web.json_response(exc.payload, status=exc.status)
     return web.json_response(_event_dict(updated, comments))
 
 
 async def post_comment(request: web.Request) -> web.Response:
-    store = _store(request)
+    app = request.app
+    store = _store(app)
     event_id = request.match_info["event_id"]
     try:
         body = await request.json()
@@ -1005,7 +1376,7 @@ async def post_comment(request: web.Request) -> web.Response:
     # comment is durable on disk regardless.
     try:
         from tesseract.workspace_events.broadcast import broadcast_comment_appended
-        await broadcast_comment_appended(request.app, comment)
+        await broadcast_comment_appended(app, comment)
     except Exception:
         log.exception("workspace: broadcast_comment_appended failed")
 
@@ -1024,9 +1395,9 @@ async def post_comment(request: web.Request) -> web.Response:
         cfg = load_workspace_reply_config()
         if cfg.enabled and ev is not None:
             _spawn_tracked(
-                request.app,
+                app,
                 dispatch_workspace_reply(
-                    request.app,
+                    app,
                     event_id=event_id,
                     comment_id=comment.comment_id,
                     event=ev,
@@ -1054,7 +1425,8 @@ async def post_operator_post(request: web.Request) -> web.Response:
     suppresses the synthetic turn (default fires it so the operator gets
     an assistant reply within seconds without manually leaving a comment).
     """
-    store = _store(request)
+    app = request.app
+    store = _store(app)
     try:
         body = await request.json()
     except Exception:
@@ -1091,7 +1463,7 @@ async def post_operator_post(request: web.Request) -> web.Response:
 
     try:
         from tesseract.workspace_events.broadcast import broadcast_workspace_event
-        await broadcast_workspace_event(request.app, event)
+        await broadcast_workspace_event(app, event)
     except Exception:
         log.exception("workspace: broadcast_workspace_event (operator_post) failed")
 
@@ -1106,9 +1478,9 @@ async def post_operator_post(request: web.Request) -> web.Response:
             cfg = load_workspace_reply_config()
             if cfg.enabled:
                 _spawn_tracked(
-                    request.app,
+                    app,
                     dispatch_workspace_reply(
-                        request.app,
+                        app,
                         event_id=event.event_id,
                         comment_id=event.event_id,
                         event=event,
@@ -1125,12 +1497,14 @@ async def post_operator_post(request: web.Request) -> web.Response:
 
 
 async def get_seen(request: web.Request) -> web.Response:
-    store = _store(request)
+    app = request.app
+    store = _store(app)
     return web.json_response(store.get_seen())
 
 
 async def post_seen(request: web.Request) -> web.Response:
-    store = _store(request)
+    app = request.app
+    store = _store(app)
     try:
         body = await request.json()
     except Exception:
@@ -1147,7 +1521,7 @@ async def post_seen(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "panel": panel, "last_seen_at": ts})
 
 
-# ── Operator direct editing of the workspace documents (AS-5) ────────
+# ── Operator direct editing of the workspace documents ────────
 #
 # The assistant proposes; the operator writes. Both land through the same
 # `apply_change` — the operator path skips only the proposal card, not the
@@ -1237,6 +1611,7 @@ async def save_doc(request: web.Request) -> web.Response:
     an external editor saved) and returns 409 with the current bytes so
     they re-review rather than clobber.
     """
+    app = request.app
     try:
         body = await request.json()
     except Exception:
@@ -1293,7 +1668,7 @@ async def save_doc(request: web.Request) -> web.Response:
 
     label = str(PROPOSABLE_PATHS[target_path].get("label") or "")
     await _broadcast_envelope(
-        request.app,
+        app,
         "soul_updated" if target_path == _SOUL_REL else "workspace_file_updated",
         {
             "path": target_path,

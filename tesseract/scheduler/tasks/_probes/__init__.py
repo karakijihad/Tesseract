@@ -1,16 +1,16 @@
-"""AU-14 probe substrate.
+"""Probe substrate.
 
-A probe is a known-good single-shot call against an active role from
-``roles.yaml`` whose ``ProbeResult`` says either "the model came back
-with what you'd expect" or "something drifted." The orchestrator
+A probe is a known-good single-shot check of a ref that some active role
+in ``roles.yaml`` names, whose ``ProbeResult`` says either "the model came
+back with what you'd expect" or "something drifted." The orchestrator
 (:mod:`tesseract.scheduler.tasks.provider_probe`) dispatches one probe
-per active role per tick and writes a row to the per-role JSONL log at
-``runtime/logs/provider-health/<role>.jsonl``.
+per distinct ref per tick and writes a row to the per-ref JSONL log at
+``runtime/logs/provider-health/<ref>.jsonl``.
 
-Drift-event drafting + apply is **not** here. AU-5's ``provider_watch``
-mapper consumes the JSONL; AU-8's ``hot_config`` class handles
-``providers.yaml`` patches drafted from this telemetry. AU-14 ships
-the signal only.
+Drift-event drafting and apply are **not** here. The ``provider_watch``
+mapper consumes the JSONL and the ``hot_config`` class handles
+``providers.yaml`` patches drafted from this telemetry. This package
+ships the signal only.
 """
 
 from tesseract.scheduler.tasks._probes.base import ProbeResult, RoleProbe

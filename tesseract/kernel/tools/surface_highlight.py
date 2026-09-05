@@ -31,9 +31,10 @@ class SurfaceHighlightTool(Tool):
         "there without sending a message. Auto-fades unless `persistent=true`."
     )
     not_when: ClassVar[str] = (
-        "`surface_focus` to actually raise/scroll the card into view — a "
+        "`surface_focus` to actually raise the card and scroll it into view. A "
         "highlight alone does not move it."
     )
+    depends_on: ClassVar[str] = ""
 
     @property
     def name(self) -> str:

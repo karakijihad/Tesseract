@@ -6,7 +6,7 @@ description: How the gate decides, who has the last word, and what no setting ca
 The thing the whole system is arranged around.
 
 This page explains the mechanism. It deliberately states no figures and lists
-no tools — **[what it asks before doing](../reference/permissions.md)** is
+no tools — **[what it asks before doing](/reference/permissions/)** is
 generated from the configuration itself and is the place to look for those.
 The split is not tidiness: the hand-written version of those facts was wrong
 four times running, always claiming the gate covered more than it did.
@@ -48,7 +48,7 @@ same command.
 
 Anything that would have prompted is refused rather than assumed — the system
 does not guess on your behalf. Tools already set to `AUTO` still run, which is
-how [autonomy](../anatomy/autonomy.md) gets anything done at all, and a narrow
+how [autonomy](/anatomy/autonomy/) gets anything done at all, and a narrow
 carve-out lets a few writes land in a quarantined area for you to review.
 
 So the honest summary is not "nothing happens unattended". It is that the set
