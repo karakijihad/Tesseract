@@ -295,54 +295,6 @@ class SeriesSpec:
     read: Callable[[Reading], tuple[list[Any], datetime | None]]
 
 
-def _document_change_stamps(
-    days: list[date],
-) -> tuple[list[datetime | None], datetime | None]:
-    """When each change to one of the operator's own documents landed.
-
-    Only the ones that CHANGED something: a pending card is a question, not a
-    change, and a rejected one is a change that did not happen. So the count
-    reads as "times my files moved" rather than "times I was asked".
-
-    The record already exists and this is a reader over it. Every change to a
-    workspace document goes through one door now, whether the operator
-    approved it or the mode applied it, and both file the same event carrying
-    the same diff. Nothing new is written for this chart.
-    """
-    from tesseract.kernel.workspace_changes import workspace_events_dir
-    from tesseract.workspace_events.events import EventStore
-
-    try:
-        rows = EventStore(workspace_events_dir()).list_events(
-            kinds=("change_proposal",), limit=2000
-        )
-    except Exception:  # noqa: BLE001 — a chart must not take the panel down
-        log.debug("autonomy history: workspace change events unreadable", exc_info=True)
-        return [], None
-
-    found: list[datetime | None] = []
-    oldest: datetime | None = None
-    for event in rows:
-        if event.status not in ("approved", "applied"):
-            continue
-        # `decided_at` is when it landed; `ts` is when it was proposed. For an
-        # applied change they are the same instant, and for an approved one the
-        # gap is however long the operator took, which is not what this counts.
-        try:
-            stamp = datetime.fromisoformat(str(event.decided_at or event.ts))
-        except (TypeError, ValueError):
-            continue
-        if oldest is None or stamp < oldest:
-            oldest = stamp
-        found.append(stamp)
-    return found, oldest
-
-
-def _read_document_changes(reading: Reading) -> tuple[list[Any], datetime | None]:
-    found, oldest = _document_change_stamps(reading.days)
-    return _bucket(reading.days, found), oldest
-
-
 def _read_errors(reading: Reading) -> tuple[list[Any], datetime | None]:
     found, oldest = _error_stamps(reading.days)
     return _bucket(reading.days, found), oldest
@@ -406,21 +358,6 @@ SERIES: tuple[SeriesSpec, ...] = (
         "rather than something it now does.",
         "calm",
         _read_night,
-    ),
-    SeriesSpec(
-        "document_changes",
-        "health",
-        "Your own files",
-        "Changes to your own files a day",
-        "",
-        "Every change that landed in your soul, your notes, the operating "
-        "rules, the workshop guide, the diary or the channel contract. Both "
-        "kinds are counted: one you approved in your workspace, and one the "
-        "assistant applied on its own because you left it unattended. A day "
-        "that stands up is worth opening the workspace for, where the same "
-        "changes are listed with what each one did.",
-        "calm",
-        _read_document_changes,
     ),
     SeriesSpec(
         "crashes",
