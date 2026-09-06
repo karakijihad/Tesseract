@@ -672,92 +672,55 @@ async def set_cost(request: web.Request) -> web.Response:
     per_role_in = body.get("per_role")
     if per_role_in is not None and not isinstance(per_role_in, dict):
         return web.json_response({"error": "per_role must be an object"}, status=400)
-    # The baseline is what is ON DISK, not the in-memory snapshot. Those two
-    # differ the moment anything else changes a ceiling, and this route used to
-    # write its whole merged map back, so a partial update to one role reverted
-    # every other role to whatever the snapshot held. The entry card makes
-    # partial updates the common case: it sends one key.
+    # **The WHOLE request is checked before either file is touched.** This
+    # route writes two of them, and for one commit it wrote the warning
+    # percentage first and validated the role names second, so a request
+    # answered with a 400 had already changed the threshold on disk. A
+    # rejected request changes nothing.
     #
-    # `submitted` is what actually gets written, so the round trip touches only
-    # the keys the caller named and leaves the rest of the file alone.
-    submitted: dict[str, float] = {}
-    new_per_role = dict(current_per_role)
-    if isinstance(per_role_in, dict):
-        # Against the live file, the way the role route already does it. A
-        # frozen list of four names stood here, so seven of the eleven blocks in
-        # `roles.yaml` could not be changed from any surface at all, and the
-        # ceiling on a thing the app runs on its own was among them. A name
-        # added to the file works now without a code change.
+    # The baseline for the roles half is what is ON DISK, not the in-memory
+    # snapshot. Those two differ the moment anything else changes a ceiling,
+    # and this route used to write its whole merged map back, so a partial
+    # update to one role reverted every other role to whatever the snapshot
+    # held. The entry card makes partial updates the common case: it sends one
+    # key. `apply_role_ceilings` holds that rule, and the tuning card's
+    # approve is its second caller.
+    if per_role_in is not None:
         try:
-            known = _live_roles(request.app)
+            validated_ceilings(_live_roles(request.app), per_role_in)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
         except Exception as exc:  # noqa: BLE001 — surface to UI
             return web.json_response({"error": f"config load failed: {exc}"}, status=500)
-        for role_name, cap_raw in per_role_in.items():
-            if role_name not in known:
-                return web.json_response(
-                    {"error": f"unknown role '{role_name}'"}, status=400
-                )
-            try:
-                cap = float(cap_raw)
-            except (TypeError, ValueError):
-                return web.json_response(
-                    {"error": f"per_role.{role_name} must be a number"}, status=400
-                )
-            # Finite, and positive. `float()` accepts `"nan"` and `"inf"`, and
-            # neither is caught by a comparison: `nan <= 0` and `inf <= 0` are
-            # both False, so a cap of NaN would persist and make every
-            # comparison against it indeterminate, including the derived global
-            # ceiling that sums them.
-            #
-            # Positive, not merely non-negative. A cap of zero does not mean
-            # uncapped: `budget_state` blocks once spend reaches the cap, and
-            # zero spend already reaches zero, so it refuses the role before
-            # its first call of the day. `roles.yaml` documents the trap above
-            # the cli seats, and the manifest used to raise on it for the
-            # entries that have moved into that file. Every door says it here.
-            if not math.isfinite(cap) or cap <= 0:
-                return web.json_response(
-                    {
-                        "error": (
-                            f"per_role.{role_name} has to be more than 0. A "
-                            "ceiling of nothing stops it on its next call "
-                            "rather than leaving it uncapped, so turn it off "
-                            "instead if that is what you want"
-                        )
-                    },
-                    status=400,
-                )
-            submitted[role_name] = cap
 
     try:
         _round_trip_yaml(
             _providers_yaml_path(request.app),
             lambda d: _apply_cost_update_providers(d, new_pct),
         )
-        if submitted:
-            _round_trip_yaml(
-                _roles_yaml_path(request.app),
-                lambda d: _apply_cost_update_roles(d, submitted),
-            )
     except KeyError as exc:
         return web.json_response({"error": f"config missing key: {exc}"}, status=500)
 
-    # Re-read rather than assume. What the file now holds is the answer, and
-    # composing one here from the snapshot plus what was sent is the second
-    # reading that caused the problem above.
-    try:
-        new_per_role = _caps_of(_live_roles(request.app))
-    except Exception:  # noqa: BLE001 — the write already landed
-        log.exception("cost route: could not re-read roles.yaml after the write")
-        new_per_role = {**current_per_role, **submitted}
-    _sync_in_memory_cost(request.app, new_pct, new_per_role)
-
-    ledger = request.app.get("cost_ledger")
-    if ledger is not None:
+    if per_role_in is None:
+        # A request that changed only the warning percentage. It never read
+        # roles.yaml before and does not start now: a caller who named no role
+        # should not be answered with a 500 because that file is unreadable.
+        # The ledger still has to be told, because it holds the fraction.
+        _sync_in_memory_cost(request.app, new_pct, current_per_role)
+        _reload_ledger(request.app)
+    else:
         try:
-            ledger.reload()
-        except Exception:
-            log.exception("CostLedger.reload() failed after settings write")
+            apply_role_ceilings(request.app, per_role_in, warning_at_pct=new_pct)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except KeyError as exc:
+            return web.json_response(
+                {"error": f"config missing key: {exc}"}, status=500
+            )
+        except Exception as exc:  # noqa: BLE001 — surface to UI
+            return web.json_response(
+                {"error": f"config load failed: {exc}"}, status=500
+            )
 
     return web.json_response(_identity_cost_tracking(request.app))
 
@@ -1126,6 +1089,113 @@ def _apply_cost_update_roles(doc: Any, per_role: dict[str, float]) -> None:
         if role not in roles:
             raise KeyError(f"roles.{role}")
         roles[role]["daily_budget_usd"] = cap
+
+
+def validated_ceilings(known: Any, per_role_in: dict[str, Any]) -> dict[str, float]:
+    """Every submitted cap, checked, or the sentence saying which one is wrong.
+
+    Apart from the write, because `set_cost` changes two files and has to know
+    the whole request is good BEFORE it touches either. It wrote the warning
+    percentage first and validated the roles second for one commit, so a
+    request rejected with a 400 had already changed the threshold on disk.
+    """
+    out: dict[str, float] = {}
+    for role_name, cap_raw in per_role_in.items():
+        if role_name not in known:
+            raise ValueError(f"unknown role '{role_name}'")
+        try:
+            cap = float(cap_raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"per_role.{role_name} must be a number") from None
+        # Finite, and positive. `float()` accepts `"nan"` and `"inf"`, and
+        # neither is caught by a comparison: `nan <= 0` and `inf <= 0` are
+        # both False, so a cap of NaN would persist and make every comparison
+        # against it indeterminate, including the derived global ceiling that
+        # sums them.
+        #
+        # Positive, not merely non-negative. A cap of zero does not mean
+        # uncapped: `budget_state` blocks once spend reaches the cap, and zero
+        # spend already reaches zero, so it refuses the role before its first
+        # call of the day. `roles.yaml` documents the trap above the cli seats.
+        if not math.isfinite(cap) or cap <= 0:
+            raise ValueError(
+                f"per_role.{role_name} has to be more than 0. A ceiling of "
+                "nothing stops it on its next call rather than leaving it "
+                "uncapped, so turn it off instead if that is what you want"
+            )
+        out[role_name] = cap
+    return out
+
+
+def apply_role_ceilings(
+    app: web.Application,
+    per_role_in: dict[str, Any],
+    *,
+    warning_at_pct: float,
+    expected: dict[str, Any] | None = None,
+) -> dict[str, float]:
+    """Validate, write and make live a set of per-role daily ceilings.
+
+    **The one write path, because a ceiling has two doors.** This route is the
+    cockpit's, and the tuning card's approve is the phone's: a cap the
+    operator raises from a channel has to land exactly the way it lands from
+    the chair, or what a role may spend has two answers that differ by which
+    surface was used. Every refusal below is a sentence the operator reads,
+    on either surface, so it is raised rather than returned as a status code.
+
+    `expected` is the caps the CALLER last saw, per role. Given, every one of
+    them has to still be what the file holds or nothing is written: a tuning
+    card filed on Monday and approved on Friday would otherwise put Monday's
+    reading back over a cap the operator moved by hand in between, and a card
+    that says "raise" would lower it. Checked against the same read the names
+    are validated against, so there is no second look for the file to change
+    under.
+
+    Returns what the file holds afterwards, re-read rather than composed.
+    """
+    known = _live_roles(app)
+    submitted = validated_ceilings(known, per_role_in)
+    if expected:
+        live = _caps_of(known)
+        for role_name, was in expected.items():
+            now = live.get(role_name)
+            if now is None or not math.isclose(float(was), now, rel_tol=1e-9):
+                raise ValueError(
+                    f"the daily limit for {role_name} is {now} now, not the "
+                    f"{was} this was worked out from. Nothing has been "
+                    "changed. Decline this and let a fresh reading be taken"
+                )
+
+    if submitted:
+        _round_trip_yaml(
+            _roles_yaml_path(app),
+            lambda d: _apply_cost_update_roles(d, submitted),
+        )
+
+    # Re-read rather than assume. What the file now holds is the answer, and
+    # composing one here from the snapshot plus what was sent is the second
+    # reading that made a partial update to one role revert another.
+    try:
+        caps = _caps_of(_live_roles(app))
+    except Exception:  # noqa: BLE001 — the write already landed
+        log.exception("cost: could not re-read roles.yaml after the write")
+        caps = {**_caps_of(known), **submitted}
+    _sync_in_memory_cost(app, warning_at_pct, caps)
+    _reload_ledger(app)
+    return caps
+
+
+def _reload_ledger(app: web.Application) -> None:
+    """The ledger holds the caps and the warning fraction it was built with,
+    so anything that moves either has to tell it. Both are reachable from this
+    file and from the tuning card's approve, which is why it is one call."""
+    ledger = app.get("cost_ledger")
+    if ledger is None:
+        return
+    try:
+        ledger.reload()
+    except Exception:
+        log.exception("CostLedger.reload() failed after a cost setting changed")
 
 
 def _sync_in_memory_cost(

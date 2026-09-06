@@ -541,6 +541,24 @@ TRIGGERS: tuple[Entry, ...] = (
         owner=Owner.HOME,
     ),
     Entry(
+        name="runtime_tuning",
+        runs=Runs.TRIGGER,
+        summary=(
+            "Reads what each part of the app actually spends and offers to "
+            "change a daily spending limit that is stopping work, or one set "
+            "so high it is not a limit."
+        ),
+        why=(
+            "A limit is set once, on a guess, and then nothing ever looks at "
+            "it again. Without this, work is turned away all week and the "
+            "only sign is that something did not happen. It never changes a "
+            "limit. It shows the change and the spending it was read from, "
+            "and you decide."
+        ),
+        kind=Kind.DETERMINISTIC,
+        owner=Owner.HOME,
+    ),
+    Entry(
         name="skill_suggest",
         runs=Runs.TRIGGER,
         summary=(

@@ -531,6 +531,29 @@ def _ledger_rows(ledger_path: Path | None) -> list[spent.Row]:
     return spent.attributed(spent.parse(_tail(ledger_path)))
 
 
+def role_days(
+    ledger_path: Path | None, *, since: date
+) -> dict[str, dict[date, float]]:
+    """What each role spent, a day at a time, from `since` onwards.
+
+    **Here rather than in the caller, because there is one reader of this
+    ledger.** The series above answer what the machine spent; this answers
+    what each role spent, which is the question a ceiling is judged against.
+    Both come off `_ledger_rows`, so a change to how a row is read or how far
+    back the file is tailed reaches both, and `runtime_tuning` never opens the
+    ledger itself.
+    """
+    out: dict[str, dict[date, float]] = {}
+    for row in _ledger_rows(ledger_path):
+        if row.local_date < since or not row.role:
+            continue
+        out.setdefault(row.role, {})
+        out[row.role][row.local_date] = (
+            out[row.role].get(row.local_date, 0.0) + row.cost_usd
+        )
+    return out
+
+
 def series(
     now: datetime | None = None,
     ledger_path: Path | None = None,

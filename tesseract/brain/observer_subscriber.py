@@ -22,6 +22,37 @@ logger = logging.getLogger(__name__)
 _CANCEL_TIMEOUT_S = 2.0
 
 
+def _generation_of(chat_session: Any) -> int | None:
+    """Which conversation the session is holding, or `None` if it cannot say.
+
+    A test double or an older session without the counter is not a session
+    that has been wiped, so an unknown generation never discards an
+    observation. Failing closed here would silently stop the observer on
+    anything that did not implement it.
+    """
+    return getattr(chat_session, "conversation_generation", None)
+
+
+def _room_of(chat_session: Any) -> Any:
+    """How full the conversation is, handed to the observer by its caller.
+
+    Same shape as the transcript: the conversation owns it and the observer is
+    given it, rather than the observer reaching into a session for state that
+    is not its own. Same publisher the agent's own reading comes from, so the
+    two cannot disagree about the number.
+
+    Best effort. An observer that does not know the room still has a
+    conversation to read, and a missing figure must never cost an observation.
+    """
+    try:
+        from tesseract.brain import context_signal
+
+        return context_signal.read(getattr(chat_session, "_failures_scope_id", ""))
+    except Exception:
+        logger.exception("could not read the room for the observer")
+        return None
+
+
 class ObserverSubscriber:
     def __init__(self, observer: Any) -> None:
         self._observer = observer
@@ -70,21 +101,56 @@ class ObserverSubscriber:
     def on_loop_end(self, new_turns: list[dict[str, Any]], chat_session: Any) -> None:
         if not self._active or not new_turns:
             return
-        task = asyncio.create_task(self._run(new_turns, chat_session))
+        # Which conversation this observation is about, captured before the
+        # model call rather than assumed after it.
+        task = asyncio.create_task(
+            self._run(new_turns, chat_session, _generation_of(chat_session))
+        )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    async def _run(self, new_turns: list[dict[str, Any]], chat_session: Any) -> None:
+    async def _run(
+        self,
+        new_turns: list[dict[str, Any]],
+        chat_session: Any,
+        generation: int | None = None,
+    ) -> None:
         try:
-            suggestion = await self._observer.observe_incremental(
-                new_turns, chat_session.observer_transcript
+            reading = await self._observer.observe_incremental(
+                new_turns,
+                chat_session.observer_transcript,
+                room=_room_of(chat_session),
             )
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("observer.observe_incremental failed in subscriber")
             return
-        if suggestion is None or not self._active:
+        if not self._active:
+            return
+        # A boundary clears the conversation in place, on the same object, and
+        # this call outlived the turn that started it. What came back describes
+        # a conversation that is gone: its suggestion names turns nobody can
+        # read any more, and its nudge argues about whether work that has
+        # already been handed over should stop. Neither belongs to whoever is
+        # speaking now. Nothing awaits between here and the ingests below, so
+        # the check cannot go stale on its way to being used.
+        if generation is not None and _generation_of(chat_session) != generation:
+            logger.info(
+                "observation dropped: the conversation was cleared while it ran"
+            )
+            return
+        # The two halves are independent: a nudge is delivered even when the
+        # same call had nothing worth remembering, and a failure to record one
+        # never costs the other. Neither goes to `observer_emit`, which carries
+        # the suggestion chip alone; where a nudge is read is the journal.
+        if reading.nudge is not None:
+            try:
+                chat_session.ingest_boundary_nudge(reading.nudge)
+            except Exception:
+                logger.exception("ingest_boundary_nudge failed")
+        suggestion = reading.suggestion
+        if suggestion is None:
             return
         # Gate UI emit on ingest dedupe: if ingest_memory_suggestion returns
         # False, the same observation_id was already queued — emitting again

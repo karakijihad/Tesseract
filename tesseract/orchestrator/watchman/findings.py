@@ -21,6 +21,45 @@ from tesseract.lib.log_envelope import BAD, INFO, SEVERITIES, WARN
 MAX_EVIDENCE_LINES = 10
 MAX_EVIDENCE_CHARS = 400
 
+# Whether a window may account for this finding, and where it may not, why.
+#
+# The judge's third stage drops a fault that began and ended while the machine
+# was away, or while the runtime was still coming up. Which findings it may do
+# that to used to be two hardcoded sets of kind strings inside that stage, and
+# that could not work for two reasons measured rather than supposed:
+#
+#   - The list is CLOSED and the vocabulary is OPEN. `read_supervisor` passes
+#     an incident's own `event` string through as its kind, so the set of
+#     kinds is not enumerable anywhere. A list keyed on it cannot be complete
+#     even in principle, and any kind added later is silently not explained.
+#   - The reasons a finding is not explainable are not one reason. Three
+#     different ones were already in the stage's own comment, and a single
+#     list flattened them into "absent", so nothing could say WHY.
+#
+# So each producer declares it, because the producer is the only thing that
+# knows what its own vocabulary means. Every value but `EXPLAINABLE` behaves
+# identically, leaving the finding in the report; they differ in what the
+# verdict can say about it.
+EXPLAINABLE = "explainable"
+# True NOW rather than something that happened in a window, so no window can
+# account for it however long the machine was away. A provider that is still
+# refusing and an interpreter that is still the wrong one are both this.
+CURRENT_STATE = "current state"
+# Another stage already applied the same window, and applying it twice would
+# excuse the finding on evidence that has been spent.
+ALREADY_ACCOUNTED = "already accounted"
+# It happened anyway and is its own evidence. A breaker that tripped recorded
+# a real trip whether or not the machine went away around it.
+INDEPENDENT_EVENT = "independent event"
+# This finding IS the explaining circumstance. A machine absence cannot be
+# excused by a machine absence.
+IS_THE_EXPLANATION = "is the explanation"
+# Nobody said. Behaves as not explainable, which is the safe direction: an
+# unexplained fault still reaches the operator, while a wrongly explained one
+# is gone. `test_every_shipped_finding_declares_itself` is what stops this
+# being the quiet default forever.
+UNDECLARED = "undeclared"
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -113,6 +152,17 @@ class Finding:
     # exist because the operator's copy and the model's copy of a finding are
     # not the same artifact and must not be forced to be.
     model_summary: str = ""
+    # Whether the judge may drop this because the runtime was still starting
+    # up, or because the machine was away, and where it may not, why.
+    #
+    # Two fields rather than one because the two windows do not reach the same
+    # findings: start-up is where this runtime blocks its own loop, so a stall
+    # inside a boot is ordering rather than a fault, while a worker that died
+    # is never start-up ordering and is plainly explained by the machine
+    # having been off. Anything a producer leaves undeclared stays in the
+    # report.
+    by_boot: str = UNDECLARED
+    by_outage: str = UNDECLARED
 
     @property
     def summary_for_model(self) -> str:

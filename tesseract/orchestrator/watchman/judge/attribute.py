@@ -42,6 +42,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
+from tesseract.orchestrator.watchman.findings import EXPLAINABLE
+
 if TYPE_CHECKING:
     from tesseract.orchestrator.watchman.findings import Finding
     from tesseract.orchestrator.watchman.judge import Verdict
@@ -58,31 +60,16 @@ STAGE = "attribute"
 BOOT_WINDOW = timedelta(minutes=3)
 
 
-# Kinds this stage can explain. A boot cannot account for a row that stopped
-# firing or a provider that refused, so those are left alone rather than
-# swept into the same excuse.
+# WHICH findings each window may account for is no longer decided here. Every
+# producer declares it on the finding, as `by_boot` and `by_outage`, and this
+# stage only applies the two windows.
 #
-# `loop_stalled` is here because start-up is where this runtime blocks its own
-# loop and always has: parsing config, importing, walking the memory tree.
-# Both ends are checked below, so a run of stalls that began at boot and is
-# still going an hour later stays a finding; only the ones that began and
-# ended inside the window are start-up ordering. The record on disk keeps them
-# either way, which is what lets Health show a boot stall the report drops.
-_BOOT_EXPLAINABLE = frozenset({"logged_error", "stack_dump", "loop_stalled"})
-
-# An outage reaches further than a boot does, because a machine that goes away
-# takes everything with it rather than just the components still coming up.
-# What it still may NOT explain: the rows, which `rows.py::_stalls` already
-# settles and would otherwise be excused twice; a provider's health, which is
-# a current state rather than something that happened in a window; a breaker,
-# which recorded a real trip; and the outage itself. A stall belongs here for
-# the plainest reason of all: a machine that suspends leaves the loop blocked
-# for as long as it was away, and that is the outage being measured a second
-# time rather than a second fault.
-_OUTAGE_EXPLAINABLE = frozenset({
-    "logged_error", "stack_dump", "worker_failed", "worker_stalled",
-    "sweep_errors", "loop_stalled",
-})
+# It used to be two frozen sets of kind strings, and they could not be right.
+# The kinds are not enumerable: `read_supervisor` passes an incident's own
+# `event` string through as the kind, so no list written here can be complete.
+# And "not in the list" flattened three different reasons into one absence, so
+# a verdict could never say why something was left alone. `findings.py` holds
+# the vocabulary and the reasoning behind each value.
 
 
 def apply(verdicts: list["Verdict"], *, now: datetime) -> list["Verdict"]:
@@ -142,7 +129,7 @@ def _boot_that_explains(finding: "Finding", boots: list[datetime]) -> datetime |
     and is still happening an hour later is not start-up ordering, and reading
     the last timestamp would say it was.
     """
-    if finding.kind not in _BOOT_EXPLAINABLE:
+    if finding.by_boot != EXPLAINABLE:
         return None
     started = finding.first_at or finding.last_at
     if started is None:
@@ -167,7 +154,7 @@ def _outage_that_explains(
     the machine was away and is still going now is a fault the outage merely
     happens to precede.
     """
-    if finding.kind not in _OUTAGE_EXPLAINABLE:
+    if finding.by_outage != EXPLAINABLE:
         return None
     started = finding.first_at or finding.last_at
     if started is None:

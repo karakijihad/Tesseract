@@ -1,10 +1,11 @@
-// What the runtime proposed to change about what every turn carries, and once
-// it has been approved, what actually landed.
+// What the runtime proposed to change about itself, and once it has been
+// approved, what actually landed. One body for every proposal card: the
+// working set, and the tuning kinds beside it.
 //
 // **This component authors no sentence about a proposal.** Every title and
 // every line comes from the job that did the arithmetic
-// (`scheduler/tasks/working_set_review.py::_explain`) or from the route that
-// applied it (`routes/workspace.py::_applied_lines`). A threshold lives in
+// (`working_set_review.py::_explain`, `runtime_tuning.py::_explain`) or from
+// the route that applied it (`routes/workspace.py::_applied_lines`). A threshold lives in
 // config, so a wording here describing one would be describing whatever it
 // used to be. The only strings this file owns are the two headings for the
 // applied block, which are about the decision rather than about the proposal.
@@ -16,7 +17,7 @@ interface ExplainSection {
   lines: string[];
 }
 
-export function WorkingSetProposalBody({ payload }: { payload: Record<string, unknown> }) {
+export function ProposalBody({ payload }: { payload: Record<string, unknown> }) {
   const explain = Array.isArray(payload.explain)
     ? (payload.explain as ExplainSection[])
     : [];

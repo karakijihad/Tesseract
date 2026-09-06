@@ -37,7 +37,11 @@ from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from tesseract.orchestrator.watchman.findings import Finding
+from tesseract.orchestrator.watchman.findings import (
+    INDEPENDENT_EVENT,
+    UNDECLARED,
+    Finding,
+)
 from tesseract.orchestrator.watchman.judge import standing
 
 if TYPE_CHECKING:
@@ -180,6 +184,11 @@ def _recoveries(
                 finding=Finding(
                     source=source,
                     kind="recovered",
+                    # News that something cleared. There is nothing here to
+                    # excuse, and a window that swallowed it would delete the
+                    # one good line in the report.
+                    by_boot=UNDECLARED,
+                    by_outage=INDEPENDENT_EVENT,
                     subject=subject,
                     summary=(
                         f"{subject or source} has recovered. It was failing for "

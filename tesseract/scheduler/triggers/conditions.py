@@ -135,6 +135,34 @@ async def _skill_usage_volume(ctx: TriggerContext) -> Verdict:
     return Verdict(True, f"{fresh} new skill uses since the last pass")
 
 
+# ── volume: new billed model calls ────────────────────────
+
+
+async def _spend_volume(ctx: TriggerContext) -> Verdict:
+    """Enough model calls have been billed to say anything about a ceiling.
+
+    The judgement reads the ledger, so how much of the ledger is new since the
+    last look is exactly what decides when to look again. A fortnight of
+    silence and a fortnight of heavy use are the same number of days and a
+    very different amount of evidence.
+    """
+    from tesseract.brain.cost.ledger import configured_log_path
+
+    minimum = _threshold(ctx, "min_new_rows")
+    path = await asyncio.to_thread(configured_log_path)
+    if path is None:
+        # Not a failure. Nothing is known about where the spend is written, so
+        # nothing can be said about how much of it is new, and firing on that
+        # would be judging a ceiling against an empty reading.
+        return Verdict(False, "the ledger's location could not be read")
+    fresh = await asyncio.to_thread(_count_calls_newer, path, ctx.watermark, stamp="ts")
+    if fresh < minimum:
+        return Verdict(
+            False, f"{fresh} of {minimum} new model calls since the last pass"
+        )
+    return Verdict(True, f"{fresh} new model calls since the last pass")
+
+
 # ── volume: new tool-call rows ────────────────────────────
 
 
@@ -152,12 +180,16 @@ async def _tool_usage_volume(ctx: TriggerContext) -> Verdict:
     return Verdict(True, f"{fresh} new tool calls since the last pass")
 
 
-def _count_calls_newer(path: Any, watermark: datetime | None) -> int:
-    """Rows in the tool ledger stamped after the row's position.
+def _count_calls_newer(
+    path: Any, watermark: datetime | None, *, stamp: str = "at_utc"
+) -> int:
+    """Rows in a ledger stamped after the row's position.
 
     Its own counter rather than `_count_newer`, because that one takes rows
-    already in memory under a `ts` key and this ledger writes `at_utc` and is
-    long enough to be worth streaming rather than parsing whole into a list.
+    already in memory and these ledgers are long enough to be worth streaming
+    rather than parsing whole into a list. `stamp` names the key the ledger
+    writes its moment under: the tool ledger says `at_utc` and the cost ledger
+    says `ts`, and the counting is otherwise identical.
     """
     import json
     from pathlib import Path
@@ -176,7 +208,7 @@ def _count_calls_newer(path: Any, watermark: datetime | None) -> int:
                     row = json.loads(line)
                 except ValueError:
                     continue
-                if _is_newer(row.get("at_utc"), watermark):
+                if _is_newer(row.get(stamp), watermark):
                     count += 1
     except OSError:
         return 0
@@ -344,6 +376,12 @@ CONDITIONS: dict[str, Condition] = {
             summary="enough tool calls have been logged to judge what is carried",
             required_config=("min_new_calls",),
             evaluate=_tool_usage_volume,
+        ),
+        Condition(
+            name="spend_volume",
+            summary="enough model calls have been billed to judge a ceiling",
+            required_config=("min_new_rows",),
+            evaluate=_spend_volume,
         ),
         Condition(
             name="tasks_done_volume",

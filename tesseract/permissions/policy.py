@@ -61,7 +61,14 @@ _VALID_POSTURES = {"auto", "ask", "deny"}
 #: The security modes this runtime knows. One list, imported by every caller
 #: that has to name them (the `/mode` command, its registry entry) so a third
 #: mode cannot exist in one place and not another.
-VALID_MODES = {"max", "free"}
+#: The mode that keeps an operator in the loop, and the one that runs without
+#: one. Named rather than spelled, because `decide.evaluate` has to tell them
+#: apart to decide what may run with nobody watching, and a bare "free" in a
+#: second module is how a third mode comes to exist in one place and not
+#: another.
+ATTENDED_MODE = "max"
+UNATTENDED_MODE = "free"
+VALID_MODES = {ATTENDED_MODE, UNATTENDED_MODE}
 
 # Which of a tool's inputs are WRITE targets. One definition, read by two
 # layers that were each about to grow their own: `decide.evaluate` bounds

@@ -109,6 +109,26 @@ jobs:
     min_loads_to_carry: 4
     min_calls_to_judge: 50
     max_proposals: 8
+- name: runtime_tuning
+  when: spend_volume
+  when_config:
+    min_new_rows: 6000
+  handler: tesseract.scheduler.tasks.runtime_tuning.RuntimeTuningJob
+  enabled: true
+  on_failure: log
+  retry_policy:
+    max_retries: 0
+    backoff_seconds: 0
+  config:
+    window_days: 14
+    min_days_to_judge: 7
+    at_cap_fraction: 0.9
+    days_at_cap_to_raise: 3
+    raise_factor: 2.0
+    idle_fraction: 0.1
+    lower_headroom: 2.0
+    kinds:
+      ceiling: true
 - name: playbook_extract
   when: tasks_done_volume
   when_config:

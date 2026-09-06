@@ -248,13 +248,20 @@ def _build_manifest_block(root: Path) -> str:
         ("autonomy/WHAT-RUNS.md",             "what runs on this machine on its own and whether it actually ran — the app's schedules and the operator's, each with what it does, how it fires, when it last ran and how that went; re-derived every hour from the schedule, the run manifest and the run log, so it is never out of date", "read when the operator asks what is running, whether something fired, or why something did not"),
         ("tesseract/workspace/WORKSHOP.md",   "workshop/ layout and naming conventions", "read before writing any task artifact — every project gets its own stable folder under projects/"),
         ("tesseract/workspace/DIARY.md",      "first-person reflection log — write via diary_append; librarian distills into SOUL Growth", "read before deciding whether to log a self-observation, or when reviewing your own pattern of behaviour"),
+        # Both are opened with `workspace_read`, not `file_read`, and the line
+        # below says so. They live in the STATE tree, which is where these
+        # pointers are checked against, while `file_read` anchors a relative
+        # path at the CODE tree. The two are the same directory in a dev
+        # checkout and never in an install, which is how this went unseen.
     ]
     present = [(p, d, w) for (p, d, w) in pointers if _pointer_exists(root, p)]
     if not present:
         return ""
 
     lines = [
-        f"You have {len(present)} reference files beyond what's inlined here. Read them with `file_read` when relevant; don't guess from memory.",
+        f"You have {len(present)} reference files beyond what's inlined here. "
+        f"Read them when relevant rather than guessing from memory: "
+        f"`workspace_read` for anything under workspace/, `file_read` for the rest.",
         "",
     ]
     for rel, desc, when in present:
@@ -390,26 +397,25 @@ def _build_skills_block(root: Path) -> str:
         # rather than at the top of the loop because a deferred playbook
         # returns above without one.
         #
-        # **It does not resolve in a packaged install, and that is a known
-        # open defect rather than an oversight.** `file_read` anchors a
-        # relative path against the CODE tree, and `workspace` is deliberately
-        # not in `paths.READABLE_STATE_PREFIXES`: every operator document in
-        # that tree is DENY for write, and a read allowlist entry would reach
-        # all five. So the read half of this pointer needs an owner the way
-        # `memory_get` owns memory-store, not a widened allowlist. Measured
-        # 2026-09-04: with `TESSERACT_HOME` off the code tree, both
-        # `tesseract/workspace/...` and `workspace/...` resolve to a file that
-        # is not there. Every pointer in `_build_manifest_block` has the same
-        # shape and the same defect, which is older than this block.
+        # Workspace-relative, and opened with `workspace_read`. It used to be
+        # `tesseract/workspace/...` for `file_read`, which anchors a relative
+        # path at the CODE tree while these pointers are checked against the
+        # STATE tree. The two are one directory in a dev checkout and never in
+        # an install, so the runtime spent prompt telling the assistant to read
+        # files it could not open, and no test saw it.
+        #
+        # The fix is an owner rather than an entry in
+        # `paths.READABLE_STATE_PREFIXES`: that list is a prefix match, and the
+        # shortest prefix covering these also reaches `_shipping/`, which
+        # decides what every user receives.
         #
         # An absolute path resolves everywhere and was tried. It puts the
         # operator's home directory, and their username with it, into a prompt
         # that reaches whichever provider `roles.yaml` names, on every turn.
-        # The repo scans shipped SOURCE for exactly that string and has
-        # nothing watching what the runtime composes at call time, so it went
-        # unnoticed until a security review. A broken pointer is the cheaper
-        # of the two.
-        path = f"tesseract/workspace/skills/{skill.dirname}/SKILL.md"
+        # `prompt.py::scrub_state_root` now catches that class at the one seam
+        # every section passes, but a relative path is still the right answer
+        # rather than one that needs scrubbing.
+        path = f"skills/{skill.dirname}/SKILL.md"
         lines.append(f"{line} *(`{path}`)*")
     return _section("Skills", "\n".join(lines))
 

@@ -26,6 +26,7 @@
 - [Prompts](mechanisms/prompts.md)
 - [Workspace](mechanisms/workspace.md)
 - [Connecting a CLI](mechanisms/connecting-a-cli.md)
+- [Was it the app, or the computer?](mechanisms/was-it-the-app.md)
 - [Updates and your settings](mechanisms/updates.md)
 
 ## Reference

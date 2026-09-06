@@ -21,7 +21,8 @@ There is one consolidation and it always reflects. Two things can start it and
 they are recorded, never branched on:
 
     SOFT   the turn judged, through `session_continue`
-    HARD   the window filled, through `should_compact()`
+    HARD   the window filled, through `should_compact()`, or one tool failed
+           its way past `roles.yaml::boundary.tool_failure_limit`
 
 and it ends in one of two answers, both of which the AGENT gives:
 
@@ -67,7 +68,9 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
+from tesseract.brain import failures_signal
 from tesseract.brain.chat import Continuation
+from tesseract.orchestrator.autonomy import journal
 from tesseract.memory.log_notes import append_log_entry
 from tesseract.paths import log_dir
 
@@ -167,6 +170,7 @@ async def after_turn(
     announce: Callable[[str], Awaitable[None]] | None = None,
     report: Callable[[int, int], Awaitable[None]] | None = None,
     ending: Callable[[Callable[[], bool]], Awaitable[bool]] | None = None,
+    mid_turn: bool = False,
 ) -> None:
     """Run the consolidation boundary for a turn that has just landed, if one
     is due, and tell the person whatever their surface can carry.
@@ -226,19 +230,49 @@ async def after_turn(
     is allowed to turn a delivered answer into a failed one.
     """
     label = _label(session, channel, chat_id)
+    if mid_turn or _still_speaking(chat_session):
+        # A turn that outgrew the ceiling while it was still speaking. The only
+        # safe answer is to make room; the boundary's act is to CLEAR the
+        # conversation, and the conversation is the one currently being spoken.
+        #
+        # `consolidate_in_place` calls `reset()` on the live `ChatSession`,
+        # which empties `self.history` while `send()` is mid-iteration. The
+        # user message and every tool_use/tool_result pair this turn has
+        # already appended go with it, and the next `_messages_for_turn()`
+        # builds from nothing. Safe while a boundary opened a NEW session and
+        # left the running one alone; unsafe from the moment it started
+        # clearing in place.
+        #
+        # So a mid-turn call folds and returns, and never asks whether a
+        # boundary is due. The turn's own end asks that, a few seconds later,
+        # with the turn finished and its messages safe.
+        # `mid_turn` is what the one caller that can reach this says about
+        # itself, and `_still_speaking` is what the conversation says. The
+        # second is why this is a guard rather than a convention: a future
+        # caller wiring a fold hook without the keyword is protected anyway,
+        # and the defect this closes came from exactly that kind of change.
+        log.info("%s grew past the ceiling mid-turn, so it folds", label)
+        await _fold(chat_session, app=app, session=session, label=label,
+                    report=report, announce=announce)
+        return
+
     answer = _requested(chat_session, label)
     soft = answer is not None
-    if not soft and not _threshold_reached(chat_session, label):
+    nudge = _take_nudge(chat_session, label)
+    if not soft and not _boundary_forced(chat_session, label):
         # Carrying on. Not a mode, not a decision the runtime made: nobody
         # asked for a boundary and the window has room, so there is nothing to
-        # do and nothing to record.
+        # do. There is something to record only if the observer had asked for
+        # one: a recommendation read and not acted on is the evidence
+        # that says whether these are worth making.
+        _journal_nudge(nudge, answered=None, label=label)
         return
 
     if answer is None:
         # A hard boundary the turn did not answer for. CONTINUE, never RESET:
         # the work carrying on is recoverable and ending a conversation the
-        # operator was in the middle of is not. CC-11 is what lets her answer
-        # before this, by telling her how much room is left every turn.
+        # operator was in the middle of is not. CC-11 is what allows an answer
+        # before this, by reporting how much room is left every turn.
         answer = Continuation.CONTINUE
 
     trigger = "soft" if soft else "hard"
@@ -253,6 +287,8 @@ async def after_turn(
             log.info("%s may not carry on: %s", label, refused)
             answer = Continuation.RESET
 
+    _journal_nudge(nudge, answered=answer, label=label)
+
     if await _consolidate(
         app,
         session,
@@ -264,6 +300,7 @@ async def after_turn(
         announce=announce,
         ending=ending,
     ):
+        _forget_failure_streak(chat_session, label)
         return
 
     # The surface cannot end a conversation, or its ending refused. The room is
@@ -283,6 +320,37 @@ async def after_turn(
         announce=announce,
     )
 
+    # The fold is the boundary this conversation actually got, so the streak
+    # goes here too — but only if it folded something. A summariser that came
+    # back empty made no room, so the conversation is still failing with the
+    # same context behind it, and forgetting the streak would leave nothing
+    # counting that.
+    if await _fold(chat_session, app=app, session=session, label=label,
+                   report=report, announce=announce):
+        _forget_failure_streak(chat_session, label)
+
+
+async def _fold(
+    chat_session: Any,
+    *,
+    app: Any,
+    session: Any,
+    label: str,
+    report: Callable[[int, int], Awaitable[None]] | None,
+    announce: Callable[[str], Awaitable[None]] | None,
+) -> bool:
+    """Make room without ending anything. Never raises.
+
+    Returns whether it actually folded, which is not the same as whether it
+    ran: a summariser that comes back empty leaves the conversation exactly as
+    it was, and a caller treating that as a boundary would be recording one
+    that did not happen.
+
+    The only thing that is safe to do to a conversation that is still being
+    spoken: `compact()` rewrites the history in place and leaves the turn its
+    own messages. Clearing is the boundary's act and belongs at the end of a
+    turn, never inside one.
+    """
     try:
         # `should_compact()` is the rule and `compact()` is the act. Asking the
         # rule again here would be a second answer to the question that decided
@@ -290,16 +358,16 @@ async def after_turn(
         result = await chat_session.compact()
     except Exception:
         log.exception("fold failed for %s", label)
-        return
+        return False
     if result is None:
-        return
+        return False
     before, after = result
     if after == before:
         # Worth a line: a threshold that keeps being crossed while the
         # summarizer keeps coming back empty is a real fault, and silence here
         # is what would hide it.
         log.info("compaction folded nothing for %s (%d tokens)", label, before)
-        return
+        return False
     log.info("compacted %s: %d to %d tokens", label, before, after)
 
     _record_compaction(session, label, before, after)
@@ -314,28 +382,144 @@ async def after_turn(
             await announce(COMPACTED_NOTICE)
         except Exception:
             log.exception("compaction notice failed for %s", label)
+    return True
 
 
-def _threshold_reached(chat_session: Any, label: str) -> bool:
-    """Whether the window is full enough that a boundary is mandatory.
+def _still_speaking(chat_session: Any) -> bool:
+    """Whether a turn is running on this conversation right now.
+
+    `ChatSession` clears the flag in `send()`'s `finally`, which runs before
+    the caller reaches its own end-of-turn hook, so this is False at the true
+    boundary and True from anywhere inside the loop.
+
+    A session that cannot say is not speaking. Sub-agent sessions and test
+    doubles are the ordinary case, exactly as in `_requested`.
+    """
+    return bool(getattr(chat_session, "_turn_active", False))
+
+
+def _boundary_forced(chat_session: Any, label: str) -> bool:
+    """Whether the runtime requires a boundary here, whatever the turn thinks.
+
+    Two reasons, and they are the runtime's own: the window is full, or the
+    same tool has failed enough times in a row that the conversation is not
+    going anywhere. The owner's document §25 allows exactly one pathological
+    pattern to be promoted from a nudge to a hard rule, and that is this one.
 
     Asked before reflection so the snapshot the reflection reads is the
     conversation about to be folded, rather than what is left of it. That
-    ordering is why this is the only place the threshold is read: a helper that
-    checked it again on its way to folding would be answering a question this
+    ordering is why this is the only place either is read: a helper that
+    checked again on its way to folding would be answering a question this
     boundary has already answered.
 
     A session that cannot answer has no threshold to cross. Sub-agent sessions
     and test doubles are the ordinary case for that, exactly as in `_requested`.
     """
     should = getattr(chat_session, "should_compact", None)
-    if should is None:
+    if should is not None:
+        try:
+            if bool(should()):
+                return True
+        except Exception:
+            log.exception("reading the compaction threshold failed for %s", label)
+    return _failing_in_place(chat_session, label)
+
+
+def _failing_in_place(chat_session: Any, label: str) -> bool:
+    """Whether one tool has failed its way past the limit in this session.
+
+    Presence of a streak IS the limit being reached: `chat.py` records one only
+    at `roles.yaml::boundary.tool_failure_limit`, so the number lives at the
+    one site that counts and is not read a second time here to be compared
+    against itself.
+
+    Fails closed on a bad read, like everything else on this path. A boundary
+    forced by a disk error would end a conversation for the wrong reason.
+    """
+    scope = getattr(chat_session, "_failures_scope_id", "")
+    if not scope:
         return False
     try:
-        return bool(should())
+        streak = failures_signal.tool_error_streak(scope)
     except Exception:
-        log.exception("reading the compaction threshold failed for %s", label)
+        log.exception("reading the tool failure streak failed for %s", label)
         return False
+    if streak is None:
+        return False
+    name, count = streak
+    log.info("%s: %s has failed %d times in a row, so the boundary is forced", label, name, count)
+    return True
+
+
+def _forget_failure_streak(chat_session: Any, label: str) -> None:
+    """Drop the tool failure streak when the conversation it belongs to ends.
+
+    A streak clears on its own only when the flagged tool succeeds, which is
+    right while the conversation is running and wrong the moment it is
+    consolidated: the streak describes the conversation being left behind, and
+    carrying it across the boundary would force the next one immediately, and
+    the one after that, with no tool call in between to break it.
+
+    Both answers, and a soft boundary too. The room is emptied either way.
+    """
+    scope = getattr(chat_session, "_failures_scope_id", "")
+    if not scope:
+        return
+    try:
+        failures_signal.clear_tool_error_streak(scope)
+    except Exception:
+        log.exception("clearing the tool failure streak failed for %s", label)
+
+
+def _take_nudge(chat_session: Any, label: str) -> Any | None:
+    """The observer's recommendation shown this turn, or `None`.
+
+    Read once per turn whether or not a boundary follows, because the row this
+    writes is about the recommendation and not about the boundary: leaving it
+    unread on a turn that carried on would keep a stale nudge queued into the
+    next one.
+    """
+    take = getattr(chat_session, "take_delivered_nudge", None)
+    if take is None:
+        return None
+    try:
+        return take()
+    except Exception:
+        log.exception("reading the delivered nudge failed for %s", label)
+        return None
+
+
+def _journal_nudge(nudge: Any | None, *, answered: Continuation | None, label: str) -> None:
+    """One journal row saying what was recommended and what came of it.
+
+    `answered is None` means it was read and no boundary was taken. That is
+    the row worth having: a recommendation nobody acts on is either wrong or
+    unread, and both are things the operator can only see if the misses are
+    written down beside the hits.
+
+    Never raises. This is bookkeeping at the end of a turn that has already
+    been delivered.
+    """
+    if nudge is None:
+        return
+    try:
+        followed = answered is not None and answered.value == nudge.recommendation
+        journal.append(
+            "observer_nudge",
+            {
+                "summary": (
+                    f"observer recommended {nudge.recommendation}: {nudge.reason}"
+                ),
+                "recommendation": nudge.recommendation,
+                "reason": nudge.reason,
+                "observation_id": nudge.observation_id,
+                "answered": answered.value if answered is not None else None,
+                "followed": followed,
+                "conversation": label,
+            },
+        )
+    except Exception:
+        log.exception("journalling the observer nudge failed for %s", label)
 
 
 def _requested(chat_session: Any, label: str) -> Continuation | None:

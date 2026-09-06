@@ -21,7 +21,8 @@ Schema (per line)::
                         "mode" | "default" | "tool" |
                         "workspace_decision" |
                         "tool_tier_promotion" | "pty_delegate" |
-                        "channel_mutation" | "installed_tree",
+                        "channel_mutation" | "installed_tree" |
+                        "agenda_decision" | "security_relaxed",
       "result": "allow_once" | "deny" | "timeout" | "cancelled" |
                 "resolved" | "deleted" | "auto",
       "actor": "operator" | "timeout" | "system"
@@ -76,6 +77,13 @@ PostureSource = Literal[
     #: own value because it is not a tool call and never was: nothing ran,
     #: a piece of work the runtime had parked was released or ended.
     "agenda_decision",
+    #: A call that would have prompted the operator and ran instead, because
+    #: the security mode they chose runs unattended and the check it tripped
+    #: is one `bash_security.RELAXED_UNATTENDED` permits there. It reaches the
+    #: `result: auto` row, so "what ran without me that would otherwise have
+    #: asked" is one grep. In that mode this is the operator's only visibility
+    #: into it.
+    "security_relaxed",
 ]
 #: `auto` is deliberately its own value rather than a second meaning for
 #: `allow_once`, and the distinction is the whole reason the ledger stays

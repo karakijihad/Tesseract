@@ -23,7 +23,12 @@ import logging
 from datetime import datetime
 
 from tesseract.lib.log_envelope import BAD, WARN
-from tesseract.orchestrator.watchman.findings import Finding, SourceRead
+from tesseract.orchestrator.watchman.findings import (
+    CURRENT_STATE,
+    UNDECLARED,
+    Finding,
+    SourceRead,
+)
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +69,10 @@ async def read_diagnostics(now: datetime) -> SourceRead:
         Finding(
             source="diagnostics",
             kind=f"check_{check.status}",
+            # A check reports its condition as of now, so there is no
+            # beginning for a window to contain.
+            by_boot=UNDECLARED,
+            by_outage=CURRENT_STATE,
             summary=f"{check.name} is {check.status}: {check.detail}",
             # A check's `detail` is free runtime text — absolute paths, an
             # exception's own words, a provider's reply. The operator's copy

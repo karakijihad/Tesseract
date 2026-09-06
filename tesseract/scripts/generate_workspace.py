@@ -167,14 +167,26 @@ def render_bash_classes() -> str:
     turn, and one bullet per check reads as the document's subject rather than
     as a footnote to the one paragraph it belongs to.
     """
-    from tesseract.permissions.bash_security import rules
+    from tesseract.permissions.bash_security import RELAXED_UNATTENDED, rules
+    from tesseract.permissions.policy import UNATTENDED_MODE
 
     rows = rules()
     # `mixed` sits under ASK and nowhere else. Its own sentence carries the
     # half that is refused outright, so the reader is not told less than the
     # truth — and repeating the row in both lists made each list say something
     # the other contradicted.
-    asks = [str(r["refuses"]) for r in rows if r["posture"] in ("ask", "mixed")]
+    #
+    # The ASK group splits again, because in the unattended mode its two
+    # halves do opposite things: one runs without asking, the other is refused
+    # outright. A single list saying "these reach the operator as a prompt"
+    # would be wrong about both of them there, and this rides every turn.
+    askish = [r for r in rows if r["posture"] in ("ask", "mixed")]
+    relaxed = [
+        str(r["refuses"]) for r in askish if int(r["check"]) in RELAXED_UNATTENDED
+    ]
+    strict = [
+        str(r["refuses"]) for r in askish if int(r["check"]) not in RELAXED_UNATTENDED
+    ]
     blocked = [str(r["refuses"]) for r in rows if r["posture"] == "blocked"]
     # Bulleted, not run together with a separator: several descriptions carry
     # a dash or a semicolon of their own, so any inline separator lands in the
@@ -185,7 +197,17 @@ def render_bash_classes() -> str:
 
     return (
         "**These reach the operator as a prompt.** Say what you are about to "
-        f"run before you run it.\n\n{_list(asks)}\n\n"
+        # The mode name goes in unformatted. Backticks in this document mean
+        # "a thing the runtime has", and `test_tool_claims_reconcile` reads a
+        # backticked word as a claimed tool or sub-agent name.
+        "run before you run it. In the "
+        f"{UNATTENDED_MODE} security mode there is nobody to answer, so they "
+        "are refused at once with a reason rather than left waiting on a "
+        f"prompt. Take a different route there instead of retrying."
+        f"\n\n{_list(strict)}\n\n"
+        "**These ask when the operator is watching and run unasked when they "
+        "are not.** Say what you are about to run before you run it, wherever "
+        f"you are.\n\n{_list(relaxed)}\n\n"
         "**These are refused outright**, in every security mode, and no "
         f"approval relaxes one — never offer to retry.\n\n{_list(blocked)}"
     )

@@ -180,8 +180,9 @@ def package_for(
 
 @dataclass(frozen=True)
 class BoundaryBounds:
-    max_consecutive_continues: int
     repeat_limit: int
+    cycle_window: int
+    tool_failure_limit: int
 
 
 def _require(d: dict, key: str, where: str):
@@ -200,27 +201,37 @@ def load_boundary_bounds() -> BoundaryBounds:
     raw = yaml.safe_load((config_dir() / "roles.yaml").read_text(encoding="utf-8"))
     section = _require(raw, "boundary", "roles.yaml")
     return BoundaryBounds(
-        max_consecutive_continues=int(
-            _require(section, "max_consecutive_continues", "roles.yaml boundary")
-        ),
         repeat_limit=int(_require(section, "repeat_limit", "roles.yaml boundary")),
+        cycle_window=int(_require(section, "cycle_window", "roles.yaml boundary")),
+        tool_failure_limit=int(
+            _require(section, "tool_failure_limit", "roles.yaml boundary")
+        ),
     )
 
 
 def why_not_continue(chat_id: str) -> str:
     """Why this conversation may not answer `continue` again, or `""`.
 
-    Three refusals, all read off the record and none of them an opinion about
-    the work:
+    Two refusals, both read off the record and neither an opinion about the
+    work:
 
     1. **Nothing was owed last time.** The previous boundary answered
        `continue` and reported neither a next action nor anything remaining.
        Continuing again after that is continuing because continuing is
        possible.
-    2. **The same next action, repeatedly.** The work is not moving, whatever
-       the answer says it is doing.
-    3. **A budget the agent cannot argue with.** Consecutive continues on one
-       conversation are bounded, and the bound is config.
+    2. **The work is not moving.** Either the same next action came back
+       `repeat_limit` times in a row, or the last `repeat_limit` boundaries
+       introduced no next action this conversation had not already reported.
+       The second is what catches a cycle: two steps alternating forever look
+       like a fresh answer at every boundary and are not.
+
+    **There is deliberately no bound on how many times a conversation may
+    carry on.** There was one, a count, and it was the only refusal here that
+    fired without evidence: real multi-phase work reaches five boundaries and
+    was stopped for arriving, while a two-step cycle sailed past every other
+    check. A count cannot tell those apart and the two rules above can, so the
+    count is gone rather than tuned. What bounds an endless conversation is
+    what bounds anything else that runs: the budget.
 
     A refusal is a sentence, because it is written onto the record and read by
     a person. Empty means the continue stands.
@@ -230,9 +241,12 @@ def why_not_continue(chat_id: str) -> str:
     """
     try:
         bounds = load_boundary_bounds()
-        recent = checkpoints.recent_for_chat(
-            chat_id, limit=max(bounds.max_consecutive_continues, bounds.repeat_limit)
-        )
+        # Enough history to see a cycle: the window plus what came before it,
+        # which is what "new to this conversation" is judged against. Declared
+        # rather than multiplied out of `repeat_limit`, because how far back a
+        # cycle counts as a cycle is its own question and a conversation whose
+        # run outgrows this reads a repeated action as new.
+        recent = checkpoints.recent_for_chat(chat_id, limit=bounds.cycle_window)
     except Exception:  # noqa: BLE001
         log.exception("continuity: could not read the boundaries %s has crossed", chat_id)
         return ""
@@ -266,12 +280,49 @@ def why_not_continue(chat_id: str) -> str:
             f"{previous.next_action!r}, so the work is not moving"
         )
 
-    if run >= bounds.max_consecutive_continues:
-        return (
-            f"this conversation has carried the work on {run} times in a row, "
-            f"which is the bound in roles.yaml"
-        )
+    # The cycle check. A step recurring is normal — building, testing, then
+    # building again is work. A WINDOW of boundaries in which nothing is
+    # reported that was not reported before is not: it is the same ground
+    # being walked over. Needs history behind the window to judge against, so
+    # it cannot fire on a short run, which is where the rule above is the one
+    # that answers.
+    window = [c.next_action for c in recent[: bounds.repeat_limit] if c.next_action]
+    earlier = {c.next_action for c in recent[bounds.repeat_limit : run] if c.next_action}
+    if earlier and window and all(action in earlier for action in window):
+        # Unless the work is getting smaller. Revisiting steps while the list
+        # of what is left shrinks every time is convergence, and it is what
+        # finishing something actually looks like: the same two files edited
+        # again and again, one fewer thing wrong each pass. Refusing that would
+        # be the deleted count all over again in a narrower disguise, so the
+        # names going round are not enough on their own.
+        if not _still_shrinking(recent[: run], window_size=bounds.repeat_limit):
+            return (
+                f"the last {len(window)} boundaries reported nothing this "
+                f"conversation had not already reported, and nothing was "
+                f"finished either, so the work is going round rather than "
+                f"forward"
+            )
     return ""
+
+
+def _still_shrinking(run: list[Checkpoint], *, window_size: int) -> bool:
+    """Whether there is less left to do than there was before the window.
+
+    `run` is newest first. Compares what the newest boundary says remains
+    against what was owed just before the window opened, so a conversation
+    closing items while it revisits steps reads as converging.
+
+    A boundary that reported nothing remaining is not evidence of progress
+    here: it is the case the first refusal already answers, and treating an
+    empty list as "smallest" would let a conversation that stopped reporting
+    look like one that finished.
+    """
+    if len(run) <= window_size:
+        return False
+    newest, before = run[0], run[window_size]
+    if not newest.remaining or not before.remaining:
+        return False
+    return len(newest.remaining) < len(before.remaining)
 
 
 __all__ = [

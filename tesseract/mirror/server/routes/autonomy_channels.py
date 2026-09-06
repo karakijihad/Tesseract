@@ -62,6 +62,7 @@ def _said(
     exempt: bool,
     used: int,
     cap: int | None,
+    routing_unreadable: bool,
 ) -> str:
     """What is true of this kind, said as a consequence rather than a setting.
 
@@ -70,6 +71,15 @@ def _said(
     get.
     """
     where = ", ".join(sorted(destinations))
+    # Before everything else, because every branch below reads `destinations`
+    # and an unreadable routing table means we do not have any. Saying "not
+    # sent off this machine" there is the room reporting a decision nobody
+    # made.
+    if routing_unreadable:
+        return (
+            "where this goes could not be read, so whether it reaches you is "
+            "not known here"
+        )
     # Exempt first, because that is the order `OutboundNotifier._deliver` uses:
     # a kind that must be seen is sent whatever the mute file says. Saying
     # "muted by you, so it is not sent" over a kind the runtime still delivers
@@ -125,7 +135,11 @@ def kinds(app: Any, now: datetime) -> list[dict[str, Any]]:
         muted = category in muted_runtime
         cap = _cap(app, category)
         used = ledger.count(CHANNEL, category, now=now)
-        if not destinations:
+        if routing is None:
+            # An empty `destinations` is what a read failure and a deliberate
+            # blank both leave behind, and they are not the same claim.
+            state = OperationalState.UNKNOWN
+        elif not destinations:
             state = OperationalState.IDLE
         elif exempt:
             # Before the mute check, matching `_deliver`'s own precedence.
@@ -138,11 +152,21 @@ def kinds(app: Any, now: datetime) -> list[dict[str, Any]]:
             # print, and it reads as a cap the operator set.
             state = OperationalState.UNKNOWN
         elif cap > 0 and used >= cap:
-            state = OperationalState.DEGRADED
+            # Not `degraded`. A kind at its cap is doing exactly what the
+            # operator's own number in `channels.yaml` says, and the next hour
+            # starts it again. `degraded` means working below what it promised,
+            # which is the one thing this is not, and it was the reason the
+            # rail could not look at these rows at all.
+            state = OperationalState.IDLE
         else:
             state = OperationalState.RUNNING
         said = _said(
-            destinations, muted=muted, exempt=exempt, used=used, cap=cap,
+            destinations,
+            muted=muted,
+            exempt=exempt,
+            used=used,
+            cap=cap,
+            routing_unreadable=routing is None,
         )
         out.append(
             {
@@ -151,8 +175,10 @@ def kinds(app: Any, now: datetime) -> list[dict[str, Any]]:
                 "label": label_of(state),
                 # A kind the operator muted is off because they said so, and a
                 # rail that went amber for it would be amber for as long as
-                # they meant it to be quiet.
-                **wants(state, by_choice=muted),
+                # they meant it to be quiet. Not when the routing table could
+                # not be read: `off, because you turned it off` outranks
+                # `unknown`, and it would paint the read failure away.
+                **wants(state, by_choice=muted and routing is not None),
                 "said": said,
                 "at": _iso(last_at.get(category)),
                 # What may be done to it, on the rule Managed system follows:
@@ -247,6 +273,28 @@ def door() -> list[dict[str, Any]]:
             status = adapter.status_snapshot()
         except Exception:  # noqa: BLE001 — one adapter, not the room
             log.exception("channels route: %s could not say how it is", adapter)
+            # Never dropped. A row that is not drawn is a bridge the room says
+            # nothing about, and the rail reads an empty band as fine, so the
+            # one adapter that cannot report is the one the panel would hide.
+            unknown = OperationalState.UNKNOWN
+            out.append(
+                {
+                    # The registry key, which `register_channel` guarantees is
+                    # a non-empty string, because the adapter's own account of
+                    # itself is the thing that just failed.
+                    "name": str(getattr(adapter, "name", "") or "channel"),
+                    "state": unknown.value,
+                    "label": label_of(unknown),
+                    **wants(unknown),
+                    "said": (
+                        "it did not say how it is, so whether anything reaches "
+                        "you is unknown"
+                    ),
+                    "at": None,
+                    "value": "",
+                    "acts": ["restart"],
+                }
+            )
             continue
         bridge = str(getattr(status, "bridge_state", "") or "")
         state = _BRIDGE_STATE.get(bridge, OperationalState.UNKNOWN)
@@ -258,7 +306,12 @@ def door() -> list[dict[str, Any]]:
             state = OperationalState.DEGRADED
         out.append(
             {
-                "name": str(getattr(status, "name", "") or "channel"),
+                # The registry key, not `status.name`. `restart` resolves
+                # through `get_channel`, which is keyed by `adapter.name`, and
+                # nothing makes an adapter's account of its own name match it.
+                # The one shipped bridge sets them to the same string, which is
+                # the only reason the button worked.
+                "name": str(getattr(adapter, "name", "") or "channel"),
                 "state": state.value,
                 "label": label_of(state),
                 **wants(state),

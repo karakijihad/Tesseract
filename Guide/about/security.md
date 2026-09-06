@@ -120,6 +120,13 @@ wherever you are standing: in the app, or in the conversation you were having
 on a channel. Silence is a no, so a prompt nobody answers never spends
 anything.
 
+The ceiling itself is yours to move, and only yours. The app watches what each
+part of it actually spends and may put a change to a limit in front of you as
+something waiting for your answer, saying which days it read and what it read
+them from. It never applies one. The limit moves when you say yes and not
+before, and it moves the same way whether you answer in the app or from your
+phone.
+
 ### A chat reads its own history, not anyone else's
 
 A conversation held over a channel is kept the way a conversation in the app is
@@ -234,9 +241,9 @@ cost you the tool that reads files.
 
 **The things waiting for your approval can be answered wherever you are, and
 the assistant cannot answer them for you.** Drafted agents and skills, proposed
-changes to the assistant's own instructions, memory merges, catalog edits and
-files waiting to be filed all wait in one place, and answering one is itself a
-tool call at **ask**. So the assistant can bring one to you and say what it
+changes to the assistant's own instructions, memory merges, catalog edits,
+proposed changes to a daily spending limit and files waiting to be filed all
+wait in one place, and answering one is itself a tool call at **ask**. So the assistant can bring one to you and say what it
 would do, on your phone as readily as in the app, and the confirmation is
 always a prompt you answer. It cannot approve its own proposal, because making
 the decision and being asked for it are the same step.
@@ -246,10 +253,11 @@ the decision and being asked for it are the same step.
 execution all prompt. One other mode exists: `free`, for unattended operation,
 under which the assistant acts without asking. `free` is written as its
 exceptions rather than as a list of what it relaxes, so a tool added by a later
-update is auto-allowed there without anyone editing the file. Four things it
-cannot reach: a tool set to `deny`, the path rules below, the shell check list,
-and any tool you wrote yourself. `free` hands over materially more than `max`;
-the config says so at the point where you would switch it.
+update is auto-allowed there without anyone editing the file. Three things it
+cannot reach: a tool set to `deny`, the path rules below, and any tool you
+wrote yourself. It reaches exactly one entry in the shell check list, and the
+section on that list says which one and why. `free` hands over materially more
+than `max`; the config says so at the point where you would switch it.
 
 ## Your own documents
 
@@ -263,6 +271,15 @@ next time.
 `file_move` are all refused, on both ends of a move. The assistant changes one
 by proposing the change instead, which is a different verb with a different
 answer.
+
+**It can read them, and that is deliberate.** `workspace_read` opens these six
+and the playbooks under `workspace/skills/`, and nothing else in that folder.
+Four of the six are already built into the prompt on every turn, so the tool is
+not new access so much as the rest of a file the prompt shows only the start
+of. What it will not open is `_shipping/`, which decides what every user
+receives rather than saying anything about your install. It reads markdown, it
+reads your state folder and never the program folder, and a path that tries to
+climb out of the workspace is refused.
 
 **What happens to a proposal is the one thing a mode decides here.** Under the
 shipped default it waits for you: the change is filed in the workspace inbox
@@ -346,6 +363,28 @@ These rules sit underneath the policy and are not reachable from it:
   you, or does both depending on which pattern matched. Checks are identified
   by number rather than by name, in the app and in the audit log, so a refusal
   record does not describe the pattern that produced it.
+
+  **The unattended mode changes what happens to the prompting ones, and only
+  those.** In `free` nobody is there by definition, so a prompt is a refusal on
+  a timer: it waits out the channel's decision timeout, nobody answers, and the
+  work carries on without the call, silently. So in that mode one of those
+  checks runs unasked, and the other five are refused at once with a reason.
+  The one that runs is the one about scripting-language one-liners that reach
+  the operating system, which is what an agent hits while deploying and which
+  accounted for 27 of the 28 prompts this machine had ever raised. The five
+  that are refused are the ones that conceal what is being run, that fetch an
+  installer from the network, that schedule work, and that delete or force. In
+  `max` all six still prompt, exactly as before, and the absolute denials are
+  untouched in both modes. Every relaxed call is recorded in the approval
+  ledger as `security_relaxed`, so what ran without you is one search.
+
+  **In `free` those five are friction, not a boundary, and this document will
+  not pretend otherwise.** `find build -type f -delete` is a recursive delete
+  that trips no check at all, in any mode, and anything the assistant can write
+  into a script and then run is unscanned. The checks read the command text
+  they are given. Making them a real boundary means not giving the shell an
+  automatic posture in that mode at all, which is a larger decision than this
+  one and has not been taken.
 
   **The assistant is told what the list refuses, in classes.** Its operating
   document carries the same descriptions the app shows you — which classes
@@ -604,11 +643,10 @@ an hour left no trace in it.
 
 **And the prompt says why it is asking.** Most prompts are explained by what
 they carry, and a command is its own explanation. Some are not: `bash` and
-`command_run` can be asked about in a mode you have already relaxed, because a
-few security checks ask in every mode and no setting moves them. Those prompts
-now name the check, say what it is about, and say plainly that the mode does
-not change it, so the answer to an unexpected question is not a hunt through
-Settings. Both surfaces show the same sentence.
+`command_run` are asked about by the shell check list rather than by your
+settings. Those prompts name the check, say what it is about, and say what your
+security mode does about it, so the answer to an unexpected question is not a
+hunt through Settings. Both surfaces show the same sentence.
 
 **And the decisions that are not tool calls.** When autonomy parks a piece of
 work because it declared it needs you, and you release it or drop it from a

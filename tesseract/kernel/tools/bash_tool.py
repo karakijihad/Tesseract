@@ -16,7 +16,11 @@ execution. The 20 absolute-DENY checks block hard at
 The 6 forced-ASK checks (8, 10, 15, 17, 18, 24) surface as
 ``PermissionResult.ASK`` and route through ``decide.evaluate``'s
 ``ask_fn`` for operator approval — once approved, ``run``'s
-defense-in-depth gate lets the command proceed.
+defense-in-depth gate lets the command proceed. ``check_permissions``
+also records which of the six fired on ``ToolContext.security_checks``,
+because in the unattended mode ``decide.evaluate`` answers for them
+itself rather than reaching ``ask_fn``: one runs, five are refused. That
+classification is ``bash_security``'s, not this tool's.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
 from tesseract.permissions.bash_security import ask_reason as security_ask_reason
+from tesseract.permissions.bash_security import asks as security_asks
 from tesseract.permissions.bash_security import check as security_check
 
 logger = logging.getLogger(__name__)
@@ -205,6 +210,10 @@ class BashTool(Tool):
             check_num, posture = result
             if posture == "ask":
                 logger.info("Bash security check #%d forced ASK posture", check_num)
+                # Every check that fired, not just the reported one. What may
+                # run unattended is decided against all of them
+                # (`bash_security.asks`).
+                context.security_checks = security_asks(inp.command)
                 return PermissionResult.ASK
             logger.warning("Bash security check #%d blocked command", check_num)
             if check_num == 25:

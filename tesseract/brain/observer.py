@@ -22,14 +22,16 @@ from pathlib import Path
 from typing import Any, Literal
 
 from tesseract.agents.loader import AgentDefinition
+from tesseract.brain.context_signal import Fullness
 from tesseract.brain.cost import BudgetExhausted, CostLedger, CostUsage
-from tesseract.brain.memory_suggestion import (
-    SCHEMA_FOR_PROMPT,
-    MemorySuggestion,
-    next_observation_id,
-    parse_suggestion,
-)
+from tesseract.brain.memory_suggestion import next_observation_id
 from tesseract.brain.observation_transcript import ObservationTranscript, PtyBuffer, PtyLine
+from tesseract.brain.observer_reading import (
+    EMPTY_READING,
+    READING_SCHEMA_FOR_PROMPT,
+    ObserverReading,
+    parse_reading,
+)
 from tesseract.brain.observer_budget import CircuitBreaker
 from tesseract.kernel.adapters.base import AdapterOptions, ChunkType, ModelAdapter
 from tesseract.paths import home_dir, log_dir
@@ -280,9 +282,15 @@ class Observer:
         new_turns: list[dict[str, Any]],
         transcript: ObservationTranscript,
         mode: ObserverMode = "meta",
-    ) -> MemorySuggestion | None:
-        """Stateful over the CALLER's transcript; returns a typed suggestion
-        or `None` (breaker open / nothing new / parse failure).
+        room: Fullness | None = None,
+    ) -> ObserverReading:
+        """Stateful over the CALLER's transcript; returns what one call read.
+
+        Both halves are empty when the breaker is open, when nothing is new,
+        or when the reply could not be decoded, and either half may be empty
+        on its own. The reading is never `None`: a caller that has to ask
+        whether it got an object before asking what is in it gets the emptiness
+        check wrong eventually, and this one runs on every turn.
 
         `transcript` is the conversation's own rolling window, handed in by
         whoever owns the conversation, so a cockpit chat and a Telegram
@@ -291,11 +299,11 @@ class Observer:
         """
         async with self._lock:
             if self._circuit_breaker.is_open():
-                return None
+                return EMPTY_READING
 
             added = transcript.append_chat_turns(new_turns)
             if added == 0:
-                return None
+                return EMPTY_READING
 
             start = max(0, len(transcript.chat_turns) - DEFAULT_CONTEXT_TURNS)
             window = list(transcript.chat_turns)[start:]
@@ -305,10 +313,11 @@ class Observer:
                 window,
                 section=_SUGGESTION_PROMPT,
                 extra_placeholders={
-                    "{schema}": SCHEMA_FOR_PROMPT,
+                    "{schema}": READING_SCHEMA_FOR_PROMPT,
                     "{observation_id}": observation_id,
+                    "{room_left}": _describe_room(room),
                 },
-                user_nudge="Emit your one JSON suggestion now, or NONE.",
+                user_nudge="Emit your one JSON object now, or NONE.",
             )
             try:
                 # Hard ceiling around the whole stream: a provider that
@@ -326,7 +335,7 @@ class Observer:
                 # wake up again once the ledger crosses midnight (local-tz)
                 # or the operator raises the cap in roles.yaml.
                 logger.info("observer skipped — %s", exc)
-                return None
+                return EMPTY_READING
             except asyncio.TimeoutError:
                 logger.warning(
                     "observer call exceeded %ss (provider %s/%s hung) — counting as failure",
@@ -335,21 +344,21 @@ class Observer:
                     self._config.model,
                 )
                 self._circuit_breaker.record_failure()
-                return None
+                return EMPTY_READING
             self._fires_total += 1
             self._tokens_used_total += tokens
             self._last_fired_at = datetime.now(timezone.utc).isoformat()
 
             if text is None:
                 self._circuit_breaker.record_failure()
-                return None
+                return EMPTY_READING
 
             self._circuit_breaker.record_success()
-            suggestion = parse_suggestion(text, fallback_observation_id=observation_id)
+            reading = parse_reading(text, fallback_observation_id=observation_id)
             self._last_suggestion_observation_id = (
-                suggestion.observation_id if suggestion else None
+                reading.suggestion.observation_id if reading.suggestion else None
             )
-            return suggestion
+            return reading
 
     def _compose_messages(
         self,
@@ -471,6 +480,29 @@ class Observer:
             logger.info("observer banlist hit — dropping %r", text[:80])
             return "", output_tokens
         return text, output_tokens
+
+
+def _describe_room(room: Fullness | None) -> str:
+    """How full the conversation was, for the observer's prompt.
+
+    The observer is asked whether a boundary looks due and used to be told
+    nothing about the room, which made it the one reader judging that question
+    blind. It gets the same reading the agent gets, from the same publisher,
+    so the two can never disagree about the number.
+
+    One turn behind, and said so. `context_signal` explains why it cannot be
+    fresher: every route to the figure assembles the payload, which assembles
+    the prompt. A number presented as current when it is not is worse than a
+    number labelled as what it is.
+    """
+    if room is None or room.trigger_tokens <= 0:
+        return "not measured yet for this conversation."
+    return (
+        f"about {round(room.ratio * 100)}% used as of the end of the last "
+        f"turn ({room.foldable_tokens} of {room.trigger_tokens} tokens before "
+        f"the runtime consolidates on its own). This turn's own words are not "
+        f"in that figure yet."
+    )
 
 
 def build_observer_from_config(

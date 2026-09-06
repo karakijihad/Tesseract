@@ -46,8 +46,8 @@ from pathlib import Path
 from typing import Any
 
 from tesseract.orchestrator.outcome import RunOutcome
-from tesseract.paths import home_logs_root
 from tesseract.scheduler.base_job import BaseJob
+from tesseract.scheduler.tasks import _card
 from tesseract.scheduler.types import JobContext, JobResult
 
 log = logging.getLogger(__name__)
@@ -452,6 +452,29 @@ def _summary(proposal: Proposal, window_days: int, calls: int) -> str:
     )
 
 
+def _declared_kinds(proposal: Proposal) -> list[str]:
+    """Which of the runtime's declared proposal kinds this card carries.
+
+    The four lists are two questions asked of two subjects: carrying more, and
+    carrying less, of a tool or of a playbook. `scheduler/proposals.py` is
+    where what may be proposed at all is declared, and this job is one of two
+    producers drawing from it, so the keys go ON the card rather than being
+    inferred from the payload's shape by whoever reads it next.
+
+    `filed` raises rather than returning a flag. A card is the wrong place to
+    discover that a producer invented a kind: the run is over by then and the
+    operator is looking at it.
+    """
+    from tesseract.scheduler import proposals
+
+    keys: list[str] = []
+    if proposal.carry or proposal.carry_playbooks:
+        keys.append(proposals.filed("carry_more").key)
+    if proposal.drop or proposal.drop_playbooks:
+        keys.append(proposals.filed("carry_less").key)
+    return keys
+
+
 async def _file_card(
     ctx: JobContext,
     store: Any,
@@ -476,6 +499,7 @@ async def _file_card(
         summary=_summary(proposal, window_days, reading.calls),
         payload={
             **proposal.as_json(),
+            "kinds": _declared_kinds(proposal),
             "explain": _explain(proposal, window_days, reading.calls, declined),
             "window_days": window_days,
             "calls": reading.calls,
@@ -492,13 +516,7 @@ async def _file_card(
 
 
 def _card_already_waiting(store: Any) -> bool:
-    """One at a time. A second card computed over an overlapping window would
-    propose most of the same names and the operator would be deciding the same
-    thing twice."""
-    try:
-        return bool(store.list_events(kinds=(CARD_KIND,), status="pending"))
-    except Exception:
-        return False
+    return _card.one_waiting(store, CARD_KIND)
 
 
 #: How long a `no` holds. A rejection has to outlive the card it was said on,
@@ -567,35 +585,15 @@ def _moment(raw: Any) -> datetime | None:
 
 
 def _resolve_logs_dir(ctx: JobContext) -> Path:
-    """The home log tree, or whatever the row overrode it with.
-
-    `home_logs_root()` resolves `TESSERACT_HOME` at call time, which is the
-    whole of the env handling. `skill_refinement` carries a resolved-then-
-    discarded local here that reads as though it were doing that work; this
-    does not copy it.
-    """
-    override = (ctx.config or {}).get("logs_dir")
-    if override:
-        return Path(override)
-    return home_logs_root()
+    return _card.logs_dir(ctx)
 
 
 def _resolve_store(ctx: JobContext) -> Any:
-    from tesseract.workspace_events import EventStore
-
-    return EventStore(_resolve_logs_dir(ctx))
+    return _card.store(ctx)
 
 
 async def _broadcast(ctx: JobContext, event: Any) -> None:
-    """Push the card to any open cockpit, best effort. A card that only
-    appears on the next reload is still a card."""
-    try:
-        from tesseract.workspace_events.broadcast import broadcast_workspace_event
-
-        if ctx.app is not None:
-            await broadcast_workspace_event(ctx.app, event)
-    except Exception:
-        log.warning("working_set_review: broadcast failed", exc_info=True)
+    await _card.announce(ctx, event, who="working_set_review")
 
 
 __all__ = ["WorkingSetReviewJob", "CARD_KIND"]

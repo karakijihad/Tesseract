@@ -133,6 +133,7 @@ core:
 #   Remembering
 #   - memory_forget  # Permanently delete a memory: its file, index entry, and embedding.
 #   - memory_promote  # Run an operator-approved memory lifecycle action: archive, merge, or bump.
+#   - workspace_read  # Read one of your own workspace documents, or a playbook's SKILL.md.
 #   Research library
 #   - vault_ingest  # Files a local document or URL into the immutable vault and indexes it.
 #   - vault_lint  # Runs lint passes over the compiled vault wiki and flags issues found.

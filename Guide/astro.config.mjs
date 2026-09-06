@@ -68,6 +68,7 @@ export default defineConfig({
             { slug: 'mechanisms/memory-and-vault' },
             { slug: 'mechanisms/prompts' },
             { slug: 'mechanisms/workspace' },
+            { slug: 'mechanisms/was-it-the-app' },
             { slug: 'mechanisms/updates' },
             { slug: 'mechanisms/connecting-a-cli' },
           ],

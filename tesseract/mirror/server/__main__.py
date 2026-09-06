@@ -179,10 +179,26 @@ def _watch_stack_dump_requests() -> None:
     log_dir = log_dir.resolve()
     log = logging.getLogger(__name__)
     pid = os.getpid()
-    log.info("mirror: stack-dump watcher armed at %s", request_dir)
+    # Answered on either pid, the same rule and the same reason as
+    # `supervisor/intent.py`'s `backend_pid`/`backend_ppid`. The supervisor
+    # names the request after the pid its own Popen returned, and on a
+    # packaged install the venv `python.exe` is a launcher shim: that pid is
+    # the SHIM and this interpreter is its child. A watcher that only knows
+    # its own pid never matches the request, and the supervisor then records
+    # that the backend did not answer a request it never saw. Nothing else
+    # writes these files, and the only ppid that can appear in one is this
+    # process's own launcher, so accepting it widens nothing.
+    pids = (pid, os.getppid())
+    log.info("mirror: stack-dump watcher armed at %s for pid %s (or %s)",
+             request_dir, pid, pids[1])
     while True:
         try:
-            for path in sorted(request_dir.glob(f"stack-dump-{pid}-*.json")):
+            requests = sorted(
+                path
+                for own in dict.fromkeys(pids)
+                for path in request_dir.glob(f"stack-dump-{own}-*.json")
+            )
+            for path in requests:
                 try:
                     payload = json.loads(path.read_text(encoding="utf-8"))
                     output_raw = payload.get("output_path")
@@ -205,7 +221,7 @@ def _watch_stack_dump_requests() -> None:
                         # it always names this directory, so nothing legitimate
                         # is turned away; what changes is what a writer who
                         # should not be there could reach.
-                        if not output_path.is_relative_to(log_dir.resolve()):
+                        if not output_path.is_relative_to(log_dir):
                             log.warning(
                                 "stack dump output %s is not in %s — writing "
                                 "there instead", output_path, log_dir,

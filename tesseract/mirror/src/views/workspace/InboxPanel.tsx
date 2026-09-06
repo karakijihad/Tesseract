@@ -26,6 +26,7 @@ export const KIND_LABEL: Record<EventKind, string> = {
   skill_approval: 'Skill',
   skill_refinement: 'Skill fix',
   working_set_proposal: 'What it carries',
+  tuning_proposal: 'What it spends',
   soul_proposal: 'Soul',
   change_proposal: 'Change',
   mission_reflection_proposal: 'Mission Reflection',
@@ -45,6 +46,7 @@ export const KIND_LABEL: Record<EventKind, string> = {
 const ACTIONABLE_KINDS = new Set<EventKind>([
   'change_proposal',
   'working_set_proposal',
+  'tuning_proposal',
   'feedback_proposal',
   'feedback_sweep',
   'soul_proposal',

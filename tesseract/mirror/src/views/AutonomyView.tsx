@@ -13,9 +13,10 @@
 // written line, so Health is readable without opening Health. The line is the
 // backend's: `GET /api/autonomy/rooms` counts the facts and a model on the
 // declared chain phrases them, dropping any figure nobody observed. Nothing
-// here writes a word about the machine. `rooms.ts` owns the two things that
-// are a reading rather than a description: the state mark, and the record
-// lines in the bottom band.
+// here writes a word about the machine. The MARK is the backend's too, from
+// `routes/autonomy_rooms.py::marks_for`, over one vocabulary: it was eight
+// functions in `rooms.ts` that disagreed with each other about what red meant.
+// What `rooms.ts` still owns is the record lines in the bottom band.
 //
 // **Every room renders inside `RoomShell`** — a band at the top saying where
 // you are and what is in this room, the room in the middle, a band at the

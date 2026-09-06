@@ -208,9 +208,12 @@ def department(
     )
     return {
         "name": name,
-        # Whether the operator has already answered this row. False here and
-        # set by `_left_alone`, which is the one place that reads the store.
-        "acknowledged": False,
+        # Whether the operator has already answered this row. `from_sweep`
+        # knows it for a watchman finding and passes it here; `_left_alone`
+        # sets it for everything else. It was hardcoded False, which meant a
+        # re-acknowledged finding never offered picking it back up: the row
+        # was already `fine`, so the pass that sets this skipped it.
+        "acknowledged": acknowledged,
         # What an acknowledgement is keyed by. A watchman finding passes the
         # judge's own key, so the two stores cannot drift the first time a
         # subject is renamed; everything else is a collector row, which has no
@@ -242,11 +245,14 @@ def department(
 
 #: The cadence, keyed on the schedule file it was read from. Measured: reading
 #: and validating the schedule is 18ms warm, and `from_sweep` runs on the loop
-#: that carries the socket and every inbound turn. The key is the file's own
-#: mtime and size, which is the pattern the Atlas room already uses, so an
-#: operator editing their cadence is picked up on the next read and nothing has
-#: to be invalidated by hand.
-_CADENCE: tuple[tuple[float, int] | None, timedelta | None] = (None, None)
+#: that carries the socket and every inbound turn. The key is the resolved
+#: path plus the file's own mtime and size, which is the pattern the Atlas room
+#: already uses, so an operator editing their cadence is picked up on the next
+#: read and nothing has to be invalidated by hand. The PATH belongs in it
+#: because `paths.config_dir()` is read at call time: two homes whose schedule
+#: happens to share a size and a timestamp would otherwise be served each
+#: other's number, and a module global outlives a test as easily as a home.
+_CADENCE: tuple[tuple[str, float, int] | None, timedelta | None] = (None, None)
 
 
 def sweep_cadence(now: datetime) -> timedelta | None:
@@ -265,7 +271,7 @@ def sweep_cadence(now: datetime) -> timedelta | None:
     try:
         stamp = paths.config_dir() / "schedule.yaml"
         stat = stamp.stat()
-        key = (stat.st_mtime, stat.st_size)
+        key = (str(stamp), stat.st_mtime, stat.st_size)
     except OSError:
         key = None
     if key is not None and _CADENCE[0] == key:
@@ -299,6 +305,23 @@ def sweep_window(now: datetime) -> timedelta:
     if cadence is None:
         return SWEEP_WINDOW_UNKNOWN
     return cadence * SWEEP_MISSED_TURNS
+
+
+def unheard_payload() -> dict[str, str]:
+    """What a row asks for once nothing is reaching the panel.
+
+    Something is watching and cannot report, which is the room's own reading
+    of `unknown` and is not the same as nothing watching. Derived here so the
+    surface renders the backend's answer rather than inventing one.
+    """
+    wants = obligation_of(OperationalState.UNKNOWN)
+    return {
+        "state": OperationalState.UNKNOWN.value,
+        "label": label_of(OperationalState.UNKNOWN),
+        "obligation": wants.value,
+        "obligationLabel": obligation_label(wants),
+        "band": _band_of(OperationalState.UNKNOWN, wants),
+    }
 
 
 def collector_key(name: str) -> str:
@@ -1264,18 +1287,28 @@ def _left_alone(departments: list[dict[str, Any]]) -> list[dict[str, Any]]:
         answered = held is not None and held.covers(
             _SEVERITY_OF_STATE.get(str(row.get("state")), INFO)
         )
-        if not answered or held is None or row.get("obligation") == Obligation.FINE.value:
+        if not answered or held is None:
             out.append(row)
             continue
         state = OperationalState(row["state"])
         wants = obligation_of(state, acknowledged=True)
+        already = row.get("obligation") == wants.value
         out.append(
             {
                 **row,
                 "obligation": wants.value,
                 "obligationLabel": obligation_label(wants),
                 "band": _band_of(state, wants),
-                "said": _left_alone_said(str(row.get("said") or ""), held),
+                # The sentence is added once. A row that is ALREADY what
+                # acknowledging would make it — a collector row that has since
+                # gone quiet on its own, or a finding `from_sweep` has already
+                # applied this to — still has to carry the flag, or the room
+                # offers no way to pick it back up while the store holds one.
+                "said": (
+                    str(row.get("said") or "")
+                    if already
+                    else _left_alone_said(str(row.get("said") or ""), held)
+                ),
                 # Said as a field rather than left in the sentence. The room
                 # offers "pick it back up" on exactly these rows, and reading
                 # that off the prose would tie a control to the wording of a
@@ -1375,6 +1408,13 @@ async def get_health(request: web.Request) -> web.Response:
             # Every state's word, for the panel to render one the runtime is
             # not there to send. Same table the map ships, same reason.
             "labels": labels_payload(),
+            # And what a row WANTS once nothing is reaching it. The panel
+            # renders `unknown` itself when the runtime goes quiet, and the
+            # colour and the band that go with it are this file's answer, not
+            # a second derivation in TSX. Without it a row went `unknown` and
+            # stayed green under Operating, which is the same defect as a
+            # pushed state wearing the colour of the state before it.
+            "whenUnheard": unheard_payload(),
             "sweptAt": _iso(
                 _parse(latest.get("observed_at")) if isinstance(latest, dict) else None
             ),

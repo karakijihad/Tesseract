@@ -201,9 +201,12 @@ async def _run_turn(
             # outgrows the ceiling on its own folds and continues instead of
             # being held under it by the emergency guard. Not for synthetic
             # turns: their forked session is dropped when the turn ends.
+            # Mid-turn: fold only. The boundary clears the conversation in
+            # place, and the conversation being cleared would be the one this
+            # very loop is speaking.
             fold_when_needed=(
                 None if workspace_origin is not None
-                else lambda: _maybe_auto_compact(app, session, cs)
+                else lambda: _maybe_auto_compact(app, session, cs, mid_turn=True)
             ),
         ):
             await _handle_chunk(app, session, chunk)
@@ -530,7 +533,8 @@ def _chat_id_of(session: ServerSession, cs: Any) -> str | None:
 
 
 async def _maybe_auto_compact(
-    app: web.Application, session: ServerSession, cs: Any = None
+    app: web.Application, session: ServerSession, cs: Any = None,
+    *, mid_turn: bool = False,
 ) -> None:
     """The cockpit's delivery, bound to the shared after-turn hook.
 
@@ -600,6 +604,7 @@ async def _maybe_auto_compact(
     await after_turn(
         target, app=app, session=session,
         report=report, ending=ending, announce=announce,
+        mid_turn=mid_turn,
     )
 
 

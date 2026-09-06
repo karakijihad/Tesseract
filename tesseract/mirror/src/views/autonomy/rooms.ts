@@ -37,6 +37,7 @@ import type {
   PrunedResponse,
   RetentionResponse,
 } from '../../lib/api';
+import { clock } from '../../lib/time';
 import type { RoomTail, TailLine } from './RoomShell';
 
 /** How many lines the bottom band carries. It is evidence under the room, not
@@ -57,15 +58,6 @@ const NO_RECORD = 'Nothing records this room yet.';
 
 function unwired(label: string): RoomLine {
   return { tail: { label, lines: [], unwired: NO_RECORD } };
-}
-
-function clock(iso: string | null | undefined): string {
-  if (!iso) return '';
-  const at = new Date(iso);
-  if (Number.isNaN(at.getTime())) return '';
-  const now = new Date();
-  if (at.toDateString() === now.toDateString()) return at.toTimeString().slice(0, 8);
-  return at.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
 }
 
 /** How a record line is toned.

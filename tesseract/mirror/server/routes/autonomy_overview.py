@@ -118,6 +118,7 @@ def line(
     acts_on: str | None = None,
     by_choice: bool = False,
     ended: bool = False,
+    awaiting_operator: bool = False,
 ) -> dict[str, Any]:
     """One row in a band.
 
@@ -141,7 +142,12 @@ def line(
         # colour on this panel encodes. Derived once, in
         # `orchestrator/obligation.py`, so a room cannot decide for itself what
         # red means: eight of them each decided, and the panel was amber anyway.
-        **wants(state, by_choice=by_choice, ended=ended),
+        **wants(
+            state,
+            by_choice=by_choice,
+            ended=ended,
+            awaiting_operator=awaiting_operator,
+        ),
         "said": said,
         "at": _iso(at),
         "value": value,
@@ -175,6 +181,7 @@ def held_items(items: list[Any]) -> list[dict[str, Any]]:
     """
     out: list[dict[str, Any]] = []
     for item in items:
+        waiting = False
         if item.status == HELD_ON_SOMETHING:
             said = getattr(item, "blocked_reason", "") or item.rationale
             acts: tuple[str, ...] = ("resume", "cancel")
@@ -182,6 +189,7 @@ def held_items(items: list[Any]) -> list[dict[str, Any]]:
         elif item.status == WAITING_ON_YOU:
             said, acts = item.rationale, ("approve", "cancel")
             state = OperationalState.PENDING
+            waiting = True
         else:
             continue
         # The GOAL is the sentence, so it goes where a sentence fits. A row's
@@ -196,6 +204,13 @@ def held_items(items: list[Any]) -> list[dict[str, Any]]:
             line(
                 name=str(getattr(item.source, "value", item.source)),
                 state=state,
+                # `pending` asks for nothing when it is a stage inside an open
+                # run, and is the whole of what THIS row asks: it is waiting
+                # on a yes or a no that only the operator can give. The row
+                # knows which of the two it is; the state does not, and the
+                # band that exists to say what wants them read this one as
+                # fine until it was told.
+                awaiting_operator=waiting,
                 said=item.goal,
                 at=_parse(item.updated_at),
                 value=said,
@@ -278,7 +293,7 @@ def _source_name(source: Any) -> str:
     return raw.replace("_", " ")
 
 
-def paused_rows(pauses: list[Any]) -> list[dict[str, Any]]:
+def paused_rows(pauses: list[Any], kernel: Any = None) -> list[dict[str, Any]]:
     """Every source the governor stopped, as a row.
 
     **A verb names its effect.** A pause on a source whose producer was
@@ -293,7 +308,7 @@ def paused_rows(pauses: list[Any]) -> list[dict[str, Any]]:
 
     out: list[dict[str, Any]] = []
     for pause in pauses:
-        alive = can_still_fire(pause.source)
+        alive = can_still_fire(pause.source, kernel)
         said = _WHY_PAUSED.get(
             pause.reason,
             # An unmapped code still beats no sentence, but it is framed
@@ -329,6 +344,7 @@ def wants_you(
     pauses: list[Any],
     workers: list[Any],
     now: datetime,
+    kernel: Any = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Everything that came back below succeeded, from every producer with one.
 
@@ -370,7 +386,7 @@ def wants_you(
     for row in held_items(items):
         rows.append((row, True))
 
-    for row in paused_rows(pauses):
+    for row in paused_rows(pauses, kernel):
         rows.append((row, True))
 
     for worker in workers:
@@ -704,7 +720,8 @@ async def get_overview(request: web.Request) -> web.Response:
     rows = _band(rows, [])
 
     pauses = paused_sources(request.app)
-    waiting, aged = wants_you(pipeline, items, pauses, workers, now)
+    kernel = request.app.get("autonomy_kernel")
+    waiting, aged = wants_you(pipeline, items, pauses, workers, now, kernel)
     running = working_now(now)
     away = ran_while_away(rows, now)
     # Blocked and paused lists exactly these, and it lists ALL of them: a room
@@ -734,7 +751,7 @@ async def get_overview(request: web.Request) -> web.Response:
             "ranWhileAwayTotal": len(away),
             "held": held,
             "owed": owed,
-            "paused": paused_rows(pauses),
+            "paused": paused_rows(pauses, kernel),
             "observedAt": _iso(now),
         }
     )

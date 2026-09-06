@@ -10,8 +10,14 @@ check returns (check_number, posture) on failure, None on pass. The
   - ``"ask"`` — forced ASK posture, for commands with real uses that
     must not run unwatched: candidate-tool KPI runs, ``crontab``
     self-scheduling, and check 10, whose pattern false-positives on
-    quoted regex literals. Requires an operator-attended approval
-    channel; cannot auto-allow. Hits checks 8, 10, 15, 17, 18, 24.
+    quoted regex literals. Hits checks 8, 10, 15, 17, 18, 24. In the
+    attended mode it requires an operator-attended approval channel and
+    cannot auto-allow. **The unattended mode moves these six and only
+    these six**, because a prompt nobody is there to answer is a refusal
+    on a timer: ``RELAXED_UNATTENDED`` names the one that then
+    auto-allows and ``STRICT_UNATTENDED`` the five that are refused
+    outright rather than asked. Both are defined below, beside ``RULES``,
+    with the reasoning for the split.
 
 Posture, not position, decides which result is returned: any ``blocked``
 beats any ``ask``, whatever order the two checkers sit in. Order within
@@ -20,9 +26,16 @@ beats any ``ask``, whatever order the two checkers sit in. Order within
 reported as the seal violation it is.
 
 Call sites must branch on the second tuple element. The 20 DENY checks
-remain the canonical hard floor; the 6 ASK checks are surfaced through
-``decide.evaluate``'s ``ask_fn`` flow when an operator is attached, and
-hard-fail (mission BLOCKED) when no approval channel is wired.
+remain the canonical hard floor, in every mode. The 6 ASK checks are
+surfaced through ``decide.evaluate``'s ``ask_fn`` flow when an operator is
+attached, and hard-fail (mission BLOCKED) when no approval channel is
+wired — except in the unattended mode, where ``decide.evaluate`` answers
+for them before ``ask_fn`` is consulted at all, on the classification
+below.
+
+A caller deciding what may run unattended reads ``asks()``, never
+``check()``: ``check()`` reports ONE result and the decision is against
+every check the command tripped.
 """
 
 from __future__ import annotations
@@ -62,6 +75,38 @@ def check(command: str) -> tuple[int, str] | None:
         if first_ask is None:
             first_ask = result
     return first_ask
+
+
+def asks(command: str) -> tuple[int, ...]:
+    """Every ask-check this command trips, in check order.
+
+    `check()` answers ONE question and returns ONE result, which is the right
+    answer for an approval prompt and the wrong one for a caller deciding
+    whether a command may run with nobody watching. That caller has to answer
+    for all of them at once:
+
+        rm -rf build && python -c "import os"   ->  check() says 17, not 24
+        crontab -e   && python -c "import os"   ->  check() says 17, not 18
+
+    A relaxation keyed off the reported number would therefore walk past the
+    checks it means to keep, by accident, on any command that trips a relaxed
+    one first.
+
+    Empty when any check refuses the command outright, because a blocked
+    result is not an ask and there is nothing to relax: `check()` returns the
+    denial and the call never reaches an approval at all. So check 8's
+    `printf`-decoded-into-a-shell half never appears here while its `eval`
+    half does.
+    """
+    fired: list[int] = []
+    for checker in _CHECKS:
+        result = checker(command)
+        if result is None:
+            continue
+        if result[1] == "blocked":
+            return ()
+        fired.append(result[0])
+    return tuple(fired)
 
 
 def _check_01(cmd: str) -> tuple[int, str] | None:
@@ -919,6 +964,54 @@ RULES: dict[int, tuple[str, str]] = {
     26: ("blocked", "Writes into the sealed app/ or runtime/ trees, or into the runtime's own records (agenda, usage and skill logs, workspace events, the ledger, the project registry), including after a cd into one"),
 }
 
+#: Which forced-ASK checks may run with nobody watching, when the operator has
+#: chosen the relaxed security mode.
+#:
+#: An ASK in that mode is a refusal on a timer. The mode is the one documented
+#: for unattended and scheduled work, so by definition nobody is there: the
+#: prompt waits out `channels.yaml::decision_timeout_s`, then gives up, and
+#: the turn carries on without the call. The deploy silently does not happen.
+#:
+#: Here rather than in `permissions.yaml`, deliberately. A config surface for
+#: this would be a second way to grant the capability, and the operator's
+#: ruling was that the grant must arrive through a control they set, never
+#: through anything the assistant can read or write.
+#:
+#: Check 17 is relaxed and the other five are not, and that split is measured
+#: rather than argued:
+#:
+#:   - 17 is 27 of the 28 forced asks this machine has ever raised, and it is
+#:     the one an agent hits while deploying: a cloud API called through
+#:     `python -c`.
+#:   - 8 stays strict even though `eval` adds no capability over the raw shell,
+#:     because `check()` reads the SUBMITTED STRING: `eval "$CMD"` is check 8
+#:     and check 24 never sees what it expands to. Relaxing the one construct
+#:     that conceals the checks being kept would defeat keeping them.
+#:   - 10 conceals the same way, through process substitution.
+#:   - 15, 18 and 24 are the ones whose consequences an operator would want to
+#:     have seen: an installer from the network, self-scheduling, and a
+#:     recursive delete or a force push.
+#:
+#: What is NOT claimed: that the strict five are a boundary in the relaxed
+#: mode. They are friction there. `find build -type f -delete` is a recursive
+#: delete that trips no check at all, in any mode, and anything the assistant
+#: writes into a script and runs is unscanned. Making them a boundary means
+#: not giving raw `bash` an auto posture, which is a different decision.
+RELAXED_UNATTENDED: frozenset[int] = frozenset({17})
+#: The forced-ASK checks that never run unattended. In the relaxed mode they
+#: are refused with a reason rather than left to time out, so the assistant is
+#: told at once and can say something else instead of stalling for half an
+#: hour. In `max` they ask, exactly as before.
+#:
+#: Every check `RULES` marks `ask` or `mixed` belongs to exactly one of these
+#: two sets, and a test says so, so a check added later cannot be
+#: unclassified. Check 8 is `mixed` and only its ASK half is classified here:
+#: its decode-to-exec half is `blocked`, and `asks()` never reports a blocked
+#: check, so naming 8 here says nothing about the half that is refused
+#: outright in every mode.
+STRICT_UNATTENDED: frozenset[int] = frozenset({8, 10, 15, 18, 24})
+
+
 def declared_checks() -> set[int]:
     """The check numbers `_CHECKS` actually runs, read off the functions."""
     return {int(fn.__name__.rsplit("_", 1)[-1]) for fn in _CHECKS}
@@ -952,6 +1045,37 @@ def rules() -> list[dict[str, object]]:
 _EXCERPT_CHARS = 220
 
 
+def refusal(check_num: int) -> str:
+    """What a check refuses, in the sentence `RULES` states it in.
+
+    The dashes are rewritten on the way out: those rows are read on a screen
+    where a dash is a house tic, and a prompt is copy.
+    """
+    return str(RULES.get(check_num, ("", ""))[1]).replace(" — ", ". ").replace("—", ",")
+
+
+def _asked_about(check_num: int) -> str:
+    """One check, and what the operator's security mode does about it.
+
+    Two sentences rather than one, because the second is the answer to the
+    question an unexpected prompt actually raises: can I change this. For the
+    five strict checks the honest answer is no, and in the relaxed mode they
+    are refused outright rather than asked, which the operator should hear
+    from the prompt and not from a call that never happened.
+    """
+    if check_num in RELAXED_UNATTENDED:
+        return (
+            f"Security check {check_num} asks about this: {refusal(check_num)}. "
+            f"In the relaxed security mode it runs without asking."
+        )
+    return (
+        f"Security check {check_num} asks about this in every security mode, "
+        f"including the relaxed one, so nothing in Settings changes it: "
+        f"{refusal(check_num)}. In the relaxed mode it is refused rather than "
+        f"asked, because there is nobody there to answer."
+    )
+
+
 def ask_reason(command: str) -> str:
     """Why this command is being asked about, in words the operator can act on.
 
@@ -982,15 +1106,10 @@ def ask_reason(command: str) -> str:
     if hit is None:
         return excerpt
     check_num, posture = hit
-    what = str(RULES.get(check_num, ("", ""))[1]).replace(" — ", ". ").replace("—", ",")
     if posture == "blocked":
-        head = f"Security check {check_num} refuses this outright: {what}."
+        head = f"Security check {check_num} refuses this outright: {refusal(check_num)}."
     else:
-        head = (
-            f"Security check {check_num} asks about this in every security "
-            f"mode, including the relaxed one, so nothing in Settings changes "
-            f"it: {what}."
-        )
+        head = " ".join(_asked_about(n) for n in (asks(command) or (check_num,)))
     # Why first, command second. A surface with a length limit cuts the tail,
     # and the tail must not be the half that answers "why am I being asked".
     return f"{head}\n\n{excerpt}"

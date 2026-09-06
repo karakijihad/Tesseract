@@ -30,7 +30,11 @@
 // room's own read takes over the moment it is the fresher of the two.
 
 import { create } from 'zustand';
-import type { MapLiveness, OperationalState } from '../lib/api';
+import type {
+  MapLiveness,
+  OperationalState,
+  UnheardPresentation,
+} from '../lib/api';
 
 /** The half of a row that IS a state. A department row also carries a
  *  sentence, a number and the band it is grouped under; those are the row and
@@ -169,6 +173,12 @@ export interface LiveContext {
   staleSince: number | null;
   /** Every state's word, from the payload the room already holds. */
   labels: Record<string, string>;
+  /** What a row asks for once nothing is reaching us, derived by the backend
+   *  and shipped with the payload. Without it a row flipped to `unknown` and
+   *  kept the colour and the band of the state before it, which is the same
+   *  defect as a pushed state wearing the wrong colour: the two halves of one
+   *  answer moving apart. */
+  unheard?: UnheardPresentation;
 }
 
 /** Nothing pushed, and nothing missed. What a view renders against when it is
@@ -206,6 +216,11 @@ export function live<T extends LiveState>(
       ...rest,
       state,
       label: ctx.labels[state] ?? rest.label,
+      // Everything the backend says goes with not knowing: the word, what the
+      // row now asks for, and the band it belongs under. A row that changed
+      // its state and kept its colour is two answers to one question, which
+      // is the panel's twelfth invariant.
+      ...(ctx.unheard ?? {}),
       // `observedAt` is kept, because when it was last seen is still true and
       // is the thing that says how much not knowing matters. The reason is
       // not: it explained a state this no longer is.
@@ -227,8 +242,11 @@ export function live<T extends LiveState>(
  * carries the whole table for exactly this: the panel has to be able to say
  * "not known" at the moment it has stopped being able to ask.
  */
-export function useLiveContext(labels?: Record<string, string>): LiveContext {
+export function useLiveContext(
+  labels?: Record<string, string>,
+  unheard?: UnheardPresentation,
+): LiveContext {
   const states = useLivenessStore((s) => s.states);
   const staleSince = useLivenessStore((s) => s.staleSince);
-  return { states, staleSince, labels: labels ?? {} };
+  return { states, staleSince, labels: labels ?? {}, unheard };
 }

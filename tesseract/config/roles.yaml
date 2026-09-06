@@ -75,29 +75,56 @@ reranker:
 # answers yes cheaply, and a loop that continues successfully and achieves
 # nothing never trips the failure breaker.
 boundary:
-  max_consecutive_continues: 5  # how many boundaries in a row one conversation
-                                # may answer `continue` before the runtime
-                                # stops it and leaves the work behind instead.
-                                # Reached by real multi-phase work, so it is
-                                # not a low number; research then implementation
-                                # then review is three.
-  repeat_limit: 2               # the same next action, reported at this many
-                                # consecutive boundaries, is the work not
-                                # moving. Two, because the second time is
-                                # already the first repeat.
+  # There is deliberately NO bound on how many times a conversation may carry
+  # on. There was one, a count of five, and it was the only refusal that fired
+  # without evidence: real multi-phase work reaches five boundaries and was
+  # stopped for arriving, while two steps alternating forever sailed past
+  # every other check. A count cannot tell those apart. What bounds an endless
+  # conversation is what bounds anything else that runs: the budget.
+  repeat_limit: 2               # how much repetition is still work rather than
+                                # a loop, and it is read twice. The same next
+                                # action reported at this many consecutive
+                                # boundaries is the work not moving; and this
+                                # many boundaries in a row that report nothing
+                                # the conversation had not already reported is
+                                # the work going round. Two, because the second
+                                # time is already the first repeat.
+  cycle_window: 8               # how many of this conversation's boundaries
+                                # are read when asking whether it is going
+                                # round. It has to be more than `repeat_limit`,
+                                # because the boundaries BEFORE the window are
+                                # what "already reported" is judged against. A
+                                # conversation whose run of continues is longer
+                                # than this reads an action it repeated further
+                                # back as a new one, so raising it makes the
+                                # check see further rather than fire sooner.
+  tool_failure_limit: 2         # the same tool failing this many times in a
+                                # row is the one pathological pattern promoted
+                                # from a hint to a hard boundary: the runtime
+                                # stops the conversation rather than nudging
+                                # about it. Two matches repeat_limit for the
+                                # same reason, and it was the constant buried
+                                # in the tool loop before it was config.
 
 # ─── Compaction ─────────────────────────────────────────────
 # One block for every role, because it describes how compaction works rather
 # than who is using it. A fold always leaves the head anchor and the verbatim
 # tail behind, whichever model is answering.
 compaction:
-  compact_ratio: 0.40         # compact once the payload passes this share of the
-                              # window, and 0.40 is what ships. THE dial: it is
-                              # what decides when a conversation folds, and
-                              # nothing else competes with it. A role may still
-                              # name its own `compact_threshold` and it wins;
-                              # none ships one, and the Settings pane writes
-                              # here.
+  compact_ratio: 0.25         # compact once the payload passes this share of the
+                              # window. THE dial: it is what decides when a
+                              # conversation folds, and nothing else competes
+                              # with it. A role may still name its own
+                              # `compact_threshold` and it wins; none ships
+                              # one, and the Settings pane writes here.
+                              #
+                              # The threshold is read once, when a turn ends.
+                              # Usage inside a turn is not watched and cannot
+                              # be, so the real figure at the boundary is
+                              # always somewhat past this one. That overshoot
+                              # is expected: this is a floor that says a
+                              # boundary can no longer be put off, not a
+                              # ceiling anything is held under.
                               #
                               # How high it can go depends on the chain: see
                               # `max_prompt_chars` in providers.yaml, which is

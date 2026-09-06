@@ -34,8 +34,14 @@ from typing import Any, Callable, Iterable
 from tesseract.lib.log_envelope import BAD, INFO, SEVERITIES, WARN, parse_ts, read_when
 from tesseract.orchestrator.outcome import HEALTHY_OUTCOMES, RunOutcome
 from tesseract.orchestrator.watchman.findings import (
+    ALREADY_ACCOUNTED,
+    CURRENT_STATE,
+    EXPLAINABLE,
+    INDEPENDENT_EVENT,
+    IS_THE_EXPLANATION,
     MAX_EVIDENCE_CHARS,
     MAX_EVIDENCE_LINES,
+    UNDECLARED,
     Finding,
     SourceRead,
     Sweep,
@@ -215,6 +221,10 @@ def read_breakers(start: datetime | None, end: datetime) -> SourceRead:
         findings.append(Finding(
             source="circuit-breakers",
             kind="breaker_tripped",
+            # a trip is a real record. The machine being away around it does not
+            # un-trip it, and the breaker is the evidence rather than a symptom.
+            by_boot=UNDECLARED,
+            by_outage=INDEPENDENT_EVENT,
             subject=path.stem,
             summary=(
                 f"the {path.stem} breaker tripped {_many(len(trips), 'time')} and is {state}"
@@ -300,6 +310,12 @@ def read_supervisor(start: datetime | None, end: datetime) -> SourceRead:
             findings.append(Finding(
                 source="supervisor",
                 kind=event,
+                # The supervisor passes an incident's own `event` through as the kind,
+                # so this one site can emit names this file has never seen. Undeclared
+                # is the honest answer for a vocabulary nobody here owns, and it keeps
+                # them in the report rather than excusing them on a guess.
+                by_boot=UNDECLARED,
+                by_outage=UNDECLARED,
                 subject="supervisor",
                 summary=f"the supervisor recorded {len(rows)} × {event.replace('_', ' ')}",
                 count=len(rows),
@@ -323,6 +339,11 @@ def read_supervisor(start: datetime | None, end: datetime) -> SourceRead:
         findings.append(Finding(
             source="supervisor",
             kind="stack_dump",
+            # A dumped stack is a moment, and both windows can account for one:
+            # start-up blocks this runtime's own loop, and a machine that suspends
+            # blocks it for as long as it was away.
+            by_boot=EXPLAINABLE,
+            by_outage=EXPLAINABLE,
             subject="backend",
             summary=f"{_many(len(dumps), 'backend stack dump')} were written",
             count=len(dumps),
@@ -419,6 +440,11 @@ def read_janitor(start: datetime | None, end: datetime) -> SourceRead:
         findings=(Finding(
             source="janitor",
             kind="sweep_errors",
+            # A sweep that failed while the machine was off is the machine, not
+            # the janitor. It is never start-up ordering: the sweep runs long
+            # after boot.
+            by_boot=UNDECLARED,
+            by_outage=EXPLAINABLE,
             subject="janitor",
             summary=f"{_many(len(failed), 'janitor sweep')} reported errors",
             count=len(failed),
@@ -457,6 +483,12 @@ def read_loop_stalls(start: datetime | None, end: datetime) -> SourceRead:
         findings=(Finding(
             source="loop-stalls",
             kind=loop_stalls.KIND,
+            # Start-up is where this runtime blocks its own loop and always has:
+            # parsing config, importing, walking the memory tree. Both ends are
+            # checked, so a run of stalls that began at boot and is still going an
+            # hour later stays a finding.
+            by_boot=EXPLAINABLE,
+            by_outage=EXPLAINABLE,
             subject="event loop",
             summary=(
                 f"the app was blocked {_many(len(rows), 'time')}, "
@@ -528,6 +560,11 @@ def read_interpreter(start: datetime | None, end: datetime) -> SourceRead:
         findings=(Finding(
             source="interpreter",
             kind="wrong_interpreter",
+            # Which interpreter is running is true now or it is not. This
+            # collector does not even read the window's start, so there is no
+            # beginning for a window to contain.
+            by_boot=UNDECLARED,
+            by_outage=CURRENT_STATE,
             subject="the interpreter",
             summary=(
                 "this checkout is running a Python that is not its own .venv, "
@@ -622,6 +659,10 @@ def read_machine(start: datetime | None, end: datetime) -> SourceRead:
         findings.append(Finding(
             source="machine",
             kind=f"machine_{kind.replace(' ', '_')}",
+            # The absence itself. Excusing it with an absence would be the record
+            # explaining itself away.
+            by_boot=UNDECLARED,
+            by_outage=IS_THE_EXPLANATION,
             subject="the machine",
             summary=(
                 f"the machine was {kind} {_many(len(of_kind), 'time')}, "
@@ -699,6 +740,10 @@ def read_repairs(attempts: "Iterable[Any]") -> SourceRead:
         findings.append(Finding(
             source="repairs",
             kind=f"repair_{outcome.replace(' ', '_')}",
+            # A repair that ran is a fact about this pass rather than about the
+            # window, and one that failed is broken now.
+            by_boot=UNDECLARED,
+            by_outage=INDEPENDENT_EVENT,
             # The repair's own key, so the judge matches the same thing tick
             # to tick rather than parsing it back out of a sentence.
             subject=key,
@@ -750,6 +795,10 @@ def read_governor(start: datetime | None, end: datetime) -> SourceRead:
         findings.append(Finding(
             source="governor",
             kind="paused",
+            # The governor chose this. A deliberate act is not a fault an outage
+            # can absorb.
+            by_boot=UNDECLARED,
+            by_outage=INDEPENDENT_EVENT,
             subject=reason,
             summary=f"the governor paused {reason} {_many(count, 'time')}",
             # The governor doing its job is not a fault.
@@ -855,6 +904,10 @@ def read_backend(start: datetime | None, end: datetime) -> SourceRead:
         findings.append(Finding(
             source="backend",
             kind="boots",
+            # A restart count is an observation, not a fault, and nothing is
+            # asking for it to be explained away.
+            by_boot=UNDECLARED,
+            by_outage=UNDECLARED,
             subject=process,
             summary=f"{process} started {len(booted)} times in this window",
             count=len(booted),
@@ -880,6 +933,11 @@ def read_backend(start: datetime | None, end: datetime) -> SourceRead:
         findings.append(Finding(
             source="backend",
             kind="logged_error",
+            # The case both windows were built for: the error two minutes after a
+            # boot line from a component that then came up, and the error logged
+            # as the network went away with the machine.
+            by_boot=EXPLAINABLE,
+            by_outage=EXPLAINABLE,
             subject=_log_origin(samples[key]),
             summary=f"{_many(count, 'log line')} of: {_readable_summary(samples[key])}{since}",
             # What the MODEL is given instead. The operator keeps the whole
@@ -1058,6 +1116,11 @@ def read_workers(start: datetime | None, end: datetime) -> SourceRead:
         findings.append(Finding(
             source="workers",
             kind="worker_failed",
+            # A worker that died while the machine was suspended is not a dead
+            # worker. It is never start-up ordering, which is why only one of the
+            # two windows reaches it.
+            by_boot=UNDECLARED,
+            by_outage=EXPLAINABLE,
             subject=label,
             summary=f"{_many(len(group), f'{label} worker')} did not complete cleanly",
             count=len(group),
@@ -1070,6 +1133,13 @@ def read_workers(start: datetime | None, end: datetime) -> SourceRead:
         findings.append(Finding(
             source="workers",
             kind="worker_stalled",
+            # Open workers with no heartbeat RIGHT NOW. It carries `last_at` and
+            # no `first_at` for that reason, so an outage could only ever have
+            # matched one still in progress. It sat in the old list and was kept
+            # out by the fallback rather than by intent, which is the sort of
+            # accident a declaration is supposed to end.
+            by_boot=UNDECLARED,
+            by_outage=CURRENT_STATE,
             # Not a class name: this finding is about the open set, not about
             # one error class, and the loop above that binds `label` does not
             # necessarily run.
@@ -1141,6 +1211,9 @@ def read_conscience(start: datetime | None, end: datetime) -> SourceRead:
         findings.append(Finding(
             source="conscience",
             kind=f"drift_{status}",
+            # The latest assessed condition, taken from the newest row alone.
+            by_boot=UNDECLARED,
+            by_outage=CURRENT_STATE,
             subject=str(signal.get("name") or ""),
             summary=(
                 f"the drift check rates {signal.get('name')} as {status} "
@@ -1213,6 +1286,10 @@ def read_provider_health(start: datetime | None, end: datetime) -> SourceRead:
         findings.append(Finding(
             source="provider-health",
             kind="provider_drift",
+            # Each ref's condition as of its newest row. Quota resets and servers
+            # come back, so this says what is true now.
+            by_boot=UNDECLARED,
+            by_outage=CURRENT_STATE,
             subject=path.stem,
             summary=(
                 f"{path.stem}{wearing} is failing as of its last check: "
@@ -1281,6 +1358,10 @@ def read_schedule(start: datetime | None, end: datetime) -> SourceRead:
         findings.append(Finding(
             source="schedule",
             kind="runtime_stalled",
+            # This is the inferred outage that the judge's own windows are built
+            # from. Explaining it with itself would excuse it twice.
+            by_boot=UNDECLARED,
+            by_outage=ALREADY_ACCOUNTED,
             subject="",
             summary=(
                 f"nothing was scheduled to run for {hours:.1f}h. The runtime "
@@ -1302,6 +1383,11 @@ def read_schedule(start: datetime | None, end: datetime) -> SourceRead:
             findings.append(Finding(
                 source="schedule",
                 kind="row_not_firing",
+                # `rows.py::_stalls` already replays a machine that slept as one
+                # outage with zero late rows, so the window has been applied and
+                # spent.
+                by_boot=UNDECLARED,
+                by_outage=ALREADY_ACCOUNTED,
                 subject=row.name,
                 summary=(
                     f"the {row.name} row has never fired, and it runs "
@@ -1323,6 +1409,9 @@ def read_schedule(start: datetime | None, end: datetime) -> SourceRead:
         findings.append(Finding(
             source="schedule",
             kind="row_unhealthy",
+            # Same as the row above: the scheduler settled it first.
+            by_boot=UNDECLARED,
+            by_outage=ALREADY_ACCOUNTED,
             subject=row.name,
             summary=(
                 f"the {row.name} row ended {len(row.unhealthy)} of "

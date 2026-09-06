@@ -886,6 +886,16 @@ class AutonomyKernel:
 
     # -- Mapper dispatch ---------------------------------------------
 
+    def is_source_enabled(self, source: AgendaSource) -> bool:
+        """The reading this kernel will actually make, for anyone asking.
+
+        `agenda-mappers.yaml` is read once, here, at construction, and no
+        watcher reloads it. A reader that re-read the file instead would be
+        current with disk and wrong about the process: it would offer to
+        resume a source this kernel still refuses, until the next restart.
+        """
+        return self._is_enabled(source)
+
     def _is_enabled(self, source: AgendaSource) -> bool:
         cfg = self._mapper_configs.get(source)
         if cfg is None:

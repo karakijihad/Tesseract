@@ -203,6 +203,20 @@ class ToolContext:
     # "cancelled", "park_timeout". Empty means the asker made no claim, and
     # a caller must then name both possibilities rather than pick one.
     ask_outcome: str = ""
+    # Which forced-ASK security checks this call tripped, written by
+    # `bash_tool` and `command_run` on their way to returning ASK and read by
+    # `decide.evaluate` to decide whether the call may run with nobody
+    # watching. Empty for every other tool and for a command that tripped
+    # nothing.
+    #
+    # A context field rather than a richer `check_permissions` return, because
+    # that signature is implemented by every tool and exactly two of them have
+    # anything to say here. `decide.evaluate` reads it and clears it in the
+    # same breath, so a value written by one call can never be read as a claim
+    # about the next: contexts are built with `dataclasses.replace` off a
+    # session-lifetime object, and a stale tuple would relax an unrelated
+    # tool's approval.
+    security_checks: tuple[int, ...] = ()
     # Shared CostLedger singleton, threaded so a tool that makes a PAID
     # call of its own can bill it. `JobContext` has carried this since the
     # 2026-06-28 cost-ledger gap; tools had no equivalent, so `screen_look`

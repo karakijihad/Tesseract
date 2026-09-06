@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -543,6 +544,125 @@ def _spawn_reject_reply(
 
 
 _SOUL_REL = "tesseract/workspace/SOUL.md"
+
+
+async def _commit_tuning_proposal(
+    app: web.Application,
+    ev: WorkspaceEvent,
+) -> tuple[dict[str, Any] | None, tuple[dict[str, Any], int] | None]:
+    """Apply a ``tuning_proposal`` by moving the one seam the card named.
+
+    **The job that filed this card wrote nothing.** It read the runtime's own
+    gauges and said what it would change; the change happens here, on the
+    approval, through the seam that already owns the field. That is the same
+    boundary ``_commit_working_set_proposal`` draws, and the reason both exist
+    rather than the job editing config directly.
+
+    The kind is checked against ``scheduler/proposals.py`` before anything is
+    moved. A card carrying a kind this runtime does not declare is a card from
+    a producer that is ahead of, or behind, the list, and applying it would be
+    guessing which.
+    """
+    from tesseract.mirror.server.routes.settings import apply_role_ceilings
+    from tesseract.scheduler import proposals
+
+    payload = ev.payload or {}
+    key = str(payload.get("kind") or "")
+    try:
+        declared = proposals.filed(key)
+    except proposals.UnknownProposalKind as exc:
+        return None, ({"error": "unknown_proposal_kind", "detail": str(exc)}, 400)
+
+    if declared.key != "ceiling":
+        # Every other declared kind is filed by a producer whose apply half is
+        # not built yet. Refusing here is the difference between a card that
+        # cannot be applied and one that reports success and moves nothing.
+        return None, (
+            {
+                "error": "not_applicable_yet",
+                "detail": (
+                    f"'{declared.key}' proposals can be read and declined, but "
+                    "approving one does not move anything yet"
+                ),
+            },
+            400,
+        )
+
+    # **The card carries a LIST**, because one run can find two roles at their
+    # cap and the operator should answer that once. Applying only the first
+    # and reporting success is the shape this whole function exists to refuse,
+    # so the whole list goes to the seam in ONE call: `apply_role_ceilings`
+    # validates every name before it writes any of them, which is what makes
+    # a partly applied card impossible rather than merely unlikely.
+    wanted: dict[str, Any] = {}
+    # **What the card was worked out FROM travels with it.** A card filed on
+    # Monday and approved on Friday would otherwise put Monday's reading back
+    # over a cap the operator moved by hand in between, and a card that says
+    # "raise" would lower it. `_commit_change_proposal` in this file already
+    # carries `expected_hash_before` for the same reason; this is that rule
+    # for a number rather than a file.
+    expected: dict[str, Any] = {}
+    for row in payload.get("changes") or []:
+        if not isinstance(row, dict):
+            continue
+        role = str(row.get("role") or "")
+        proposed = row.get("proposed_usd")
+        if role and proposed is not None:
+            wanted[role] = proposed
+            was = row.get("current_usd")
+            if was is not None:
+                expected[role] = was
+    if not wanted:
+        return None, (
+            {"error": "invalid_proposal", "detail": "no role and cap to apply"},
+            400,
+        )
+
+    cost_cfg = app["config"].models.get("cost_tracking") or {}
+    try:
+        caps = await asyncio.to_thread(
+            partial(
+                apply_role_ceilings,
+                app,
+                wanted,
+                warning_at_pct=float(cost_cfg.get("warning_at_pct", 0.75)),
+                expected=expected,
+            )
+        )
+    except ValueError as exc:
+        return None, ({"error": "refused", "detail": str(exc)}, 400)
+    except Exception as exc:  # noqa: BLE001 — the operator is waiting on it
+        log.exception("tuning proposal: applying a ceiling failed")
+        return None, ({"error": "apply_failed", "detail": str(exc)}, 500)
+
+    applied = {role: caps.get(role) for role in wanted}
+    _record_tuning_applied(app, ev, applied)
+    return {"applied": applied}, None
+
+
+def _record_tuning_applied(
+    app: web.Application, ev: WorkspaceEvent, applied: dict[str, Any]
+) -> None:
+    """Write what landed back onto the card, so the pane says what changed.
+
+    The same two keys the working set proposal writes, read by the same
+    component. Without it the card goes on describing what it WOULD do after
+    the operator has already agreed to it, which is the one moment they want
+    to see the number that is now in the file.
+    """
+    lines = [
+        f"{role} is now capped at {float(value):.2f} dollars a day."
+        for role, value in sorted(applied.items())
+        if value is not None
+    ]
+    try:
+        _store(app).merge_event_payload(
+            ev.event_id, {"applied": applied, "applied_lines": lines}
+        )
+    except Exception:  # noqa: BLE001
+        log.warning(
+            "tuning_proposal: could not record what was applied", exc_info=True
+        )
 
 
 async def _commit_working_set_proposal(
@@ -1247,6 +1367,11 @@ async def apply_decision(
             if err is not None:
                 raise DecisionError(*err)
 
+        if decision == "approve" and ev.kind == "tuning_proposal":
+            _result, err = await _commit_tuning_proposal(app, ev)
+            if err is not None:
+                raise DecisionError(*err)
+
         if decision == "approve" and ev.kind == "feedback_proposal":
             _result, err = await _commit_feedback_proposal(app, ev)
             if err is not None:
@@ -1288,6 +1413,7 @@ async def apply_decision(
             "skill_approval",
             "skill_refinement",
             "working_set_proposal",
+            "tuning_proposal",
         }:
             new_status = "applied"
         else:

@@ -1,22 +1,17 @@
 """Typed `memory_suggestion` payload produced by the stateful observer.
 
-The observer parses its LLM output into a `MemorySuggestion`; the server
-serialises it via `to_envelope_data()` and streams it as the `data` field
-of a `memory_suggestion` WS envelope. `ChatSession` re-uses
-`format_for_injection()` to render the same payload as a synthetic
-user-message at the top of the next turn.
+`observer_reading` decodes the observer's reply, hands the suggestion half here
+to be validated, and renders it for injection. The server serialises the result
+via `to_envelope_data()` and streams it as the `data` field of a
+`memory_suggestion` WS envelope.
 """
 
 from __future__ import annotations
 
-import json
-import logging
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal, Union, get_args
-
-logger = logging.getLogger(__name__)
 
 SuggestionKind = Literal["remember", "consolidate", "reread"]
 _VALID_KINDS: frozenset[str] = frozenset(get_args(SuggestionKind))
@@ -77,61 +72,38 @@ def to_envelope_data(s: MemorySuggestion) -> dict[str, Any]:
     }
 
 
-def format_for_injection(s: MemorySuggestion) -> str:
-    """Render a suggestion as the `[observer_suggestion]` text block
-    ChatSession injects as a synthetic user message. Format is the one
-    fixed in `_shared/memory-suggestion-envelope.md` § "Injection into
-    The assistant turn loop"."""
-    target_line = _format_target(s.target)
-    return (
-        "[observer_suggestion]\n"
-        f"kind: {s.kind}\n"
-        f"target: {target_line}\n"
-        f"reason: {s.reason}\n"
-        f"confidence: {s.confidence:.2f}\n"
-        f"observation_id: {s.observation_id}"
-    )
+def collapse_to_one_line(raw: Any) -> str:
+    """A model-written reason, flattened to one line and bounded.
 
-
-def parse_suggestion(raw: str, fallback_observation_id: str) -> MemorySuggestion | None:
-    """Parse adapter output into a `MemorySuggestion`.
-
-    `NONE` (with optional trailing punctuation) yields `None`. JSON parse
-    or schema-validation failure yields `None` and logs at WARNING.
+    Every observer reason is rendered into a message that carries other
+    objects beside it. Line breaks left in it are how model text stops being
+    a value and starts looking like structure, so they are removed here, at
+    the one point both roles pass through, rather than trusted to whatever
+    renders them later.
     """
-    text = raw.strip()
-    if not text:
-        return None
-    if text.upper().rstrip(".!") == "NONE":
-        return None
-    text = _strip_code_fence(text)
+    return " ".join(str(raw).split())[:_REASON_MAX_CHARS].rstrip()
 
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as exc:
-        logger.warning("memory_suggestion JSON parse failed: %s | raw=%r", exc, raw[:200])
-        return None
+
+def suggestion_from_payload(payload: Any, fallback_observation_id: str) -> MemorySuggestion:
+    """Validate one already-decoded suggestion object.
+
+    Raises `KeyError`/`TypeError`/`ValueError` on anything malformed. The
+    caller decides what a malformed one costs; `observer_reading` drops it
+    and logs, which is the only policy in the runtime.
+    """
     if not isinstance(payload, dict):
-        logger.warning("memory_suggestion payload not a dict: %r", payload)
-        return None
-
-    try:
-        kind = payload["kind"]
-        if kind not in _VALID_KINDS:
-            raise ValueError(f"kind must be one of {sorted(_VALID_KINDS)}, got {kind!r}")
-        target = _parse_target(payload["target"])
-        reason = str(payload["reason"]).strip()
-        if not reason:
-            raise ValueError("reason is empty")
-        if len(reason) > _REASON_MAX_CHARS:
-            reason = reason[:_REASON_MAX_CHARS].rstrip()
-        confidence = float(payload["confidence"])
-        if not 0.0 <= confidence <= 1.0:
-            raise ValueError(f"confidence out of range: {confidence}")
-        observation_id = str(payload.get("observation_id") or fallback_observation_id).strip() or fallback_observation_id
-    except (KeyError, TypeError, ValueError) as exc:
-        logger.warning("memory_suggestion schema invalid: %s | payload=%r", exc, payload)
-        return None
+        raise TypeError(f"suggestion must be an object, got {type(payload).__name__}")
+    kind = payload["kind"]
+    if kind not in _VALID_KINDS:
+        raise ValueError(f"kind must be one of {sorted(_VALID_KINDS)}, got {kind!r}")
+    target = _parse_target(payload["target"])
+    reason = collapse_to_one_line(payload["reason"])
+    if not reason:
+        raise ValueError("reason is empty")
+    confidence = float(payload["confidence"])
+    if not 0.0 <= confidence <= 1.0:
+        raise ValueError(f"confidence out of range: {confidence}")
+    observation_id = str(payload.get("observation_id") or fallback_observation_id).strip() or fallback_observation_id
 
     return MemorySuggestion(
         kind=kind,
@@ -176,7 +148,7 @@ def _parse_target(raw: Any) -> MemoryTarget:
     raise ValueError(f"unknown target.kind: {kind!r}")
 
 
-def _format_target(t: MemoryTarget) -> str:
+def format_target(t: MemoryTarget) -> str:
     if isinstance(t, MemoryPath):
         return f'memory_path = "{t.path}"'
     if isinstance(t, TopicSlug):
@@ -187,7 +159,7 @@ def _format_target(t: MemoryTarget) -> str:
     raise TypeError(f"unknown MemoryTarget: {type(t).__name__}")
 
 
-def _strip_code_fence(text: str) -> str:
+def strip_code_fence(text: str) -> str:
     if not text.startswith("```"):
         return text
     lines = text.splitlines()[1:]

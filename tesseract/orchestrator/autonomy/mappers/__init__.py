@@ -20,6 +20,8 @@ probe measured it. Recovery items are written by the recovery pass directly
 rather than through the bus.
 """
 
+from typing import Any
+
 from tesseract.orchestrator.autonomy.mappers.operator import map as map_operator
 from tesseract.orchestrator.autonomy.mappers.provider_watch import (
     map as map_provider_watch,
@@ -48,7 +50,17 @@ SOURCE_PRODUCERS: dict[AgendaSource, tuple[str, ...]] = {
 }
 
 
-def can_still_fire(source: AgendaSource) -> bool:
+#: Live sources that write straight to the store. They have no mapper and no
+#: entry above, deliberately: the boot check fails a source given neither, and
+#: `models.py` says why for each. Named here because "can anything file under
+#: this again" is not answerable from the mapper table alone, and reading a
+#: live source as dead offers the operator `remove` on something still running.
+WRITES_ITS_OWN = frozenset(
+    {AgendaSource.RECOVERY, AgendaSource.FOLLOW_UP, AgendaSource.TASK}
+)
+
+
+def can_still_fire(source: AgendaSource, kernel: Any = None) -> bool:
     """Whether anything can file work under this source again.
 
     Asked by the panel, because a pause on a source whose producer was deleted
@@ -56,13 +68,68 @@ def can_still_fire(source: AgendaSource) -> bool:
     that names a mechanism and does nothing, and the panel held exactly that
     for three weeks. `TASK` is live and deliberately has no mapper, which is
     why this is a function rather than a membership test on the table above.
+
+    **Two questions, and the operator answers the second.** A source can have
+    a producer in the code and still be switched off in
+    `config/agenda-mappers.yaml`, whose own header says setting `enabled:
+    false` is how you stop a source generating items. A panel that read only
+    the table above would offer `unpause` on a source the operator has turned
+    off, which restarts nothing.
+
+    **Ask the kernel, because the kernel is what decides.** It reads that file
+    once, at construction, and nothing reloads it, so a reader that re-read the
+    file would be current with disk and wrong about the running process: it
+    would offer to resume a source the kernel still refuses, right up until the
+    next restart. `kernel` is optional only because a reader can run with no
+    kernel at all, and then the file is the only answer there is and there is
+    nothing for it to disagree with.
     """
-    return source in SOURCE_PRODUCERS or source is AgendaSource.TASK
+    if source in WRITES_ITS_OWN:
+        return True
+    if source not in SOURCE_PRODUCERS:
+        return False
+    if kernel is not None:
+        try:
+            return bool(kernel.is_source_enabled(source))
+        except Exception:  # noqa: BLE001 — a reading that failed decides nothing
+            return True
+    return _is_switched_on(source)
+
+
+def _is_switched_on(source: AgendaSource) -> bool:
+    """What the file says, for a caller with no kernel to ask.
+
+    The same reading `kernel.py::_is_enabled` makes, including its answer for a
+    source with no entry at all: only the operator's own items fire without
+    one, because those are typed by a person and are never noise.
+    """
+    from tesseract import paths
+    from tesseract.orchestrator.autonomy.kernel import load_mapper_configs
+
+    try:
+        path = paths.config_dir() / "agenda-mappers.yaml"
+        if not path.exists():
+            # No file is not an answer. It means this process is looking
+            # somewhere that has no config yet, not that the operator has
+            # switched everything off, and reading it as the second would
+            # replace every resume button on the panel with a remove button.
+            return True
+        configs = load_mapper_configs(path)
+    except Exception:  # noqa: BLE001 — a read that failed decides nothing
+        return True
+    cfg = configs.get(source)
+    if cfg is None:
+        # The file exists and says nothing about this source, which is the
+        # reading `kernel.py::_is_enabled` makes: only the operator's own
+        # items fire without an entry, because those are typed by a person.
+        return source is AgendaSource.OPERATOR
+    return bool(cfg.enabled)
 
 
 __all__ = [
     "DEFAULT_MAPPERS",
     "SOURCE_PRODUCERS",
+    "WRITES_ITS_OWN",
     "can_still_fire",
     "map_operator",
     "map_provider_watch",

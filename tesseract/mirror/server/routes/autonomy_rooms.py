@@ -181,14 +181,20 @@ ROOM_PURPOSE: dict[str, str] = {
 #:   the four producers behind it. Two readings of one list are two answers.
 #: - **blocked** is every held item and every paused source; that IS the room.
 #: - **health** is every department, which is what the room draws.
-#: - **managed** is the rows and the agents. An alarm is `pending` because that
-#:   is what an alarm IS, so counting one turned the rail amber for as long as
-#:   it existed.
+#: - **managed** is the rows, the agents and the playbooks. An alarm is
+#:   `pending` because that is what an alarm IS, so counting one turned the
+#:   rail amber for as long as it existed; a playbook that cannot run is
+#:   missing something it declared, which is a thing to fix and was invisible
+#:   on the rail until it was counted.
 #: - **memory** is retrieval only. How much is in the library is not a state,
 #:   and a nightly step that found nothing to do is the commonest quiet night.
-#: - **channels** is the door. A muted kind is a choice and a capped one is a
-#:   pause; a bridge that is down is the only thing here that means the
-#:   operator is not being told anything at all.
+#: - **channels** is the door and the kinds. A bridge that is down means the
+#:   operator is not being told anything at all, and so does a routing table
+#:   or a cap the room could not read: a kind that says it does not know
+#:   whether it reaches you is not a rail that says fine. The kinds band was
+#:   excluded while a capped kind claimed `degraded`, which would have turned
+#:   the rail amber for as long as an hour lasted. It says `idle` now, because
+#:   a cap is the operator's own number and being at it is not a fault.
 #: - **atlas** is the map's own rows. The band saying what the map does not
 #:   cover is `not_instrumented` by construction and would leave the rail
 #:   permanently unwired on a machine where nothing is wrong.
@@ -201,9 +207,9 @@ GRADED: dict[str, tuple[str, ...]] = {
     "overview": ("wantsYou",),
     "blocked": ("held", "paused"),
     "health": ("departments",),
-    "managed": ("schedules", "agents"),
+    "managed": ("schedules", "agents", "playbooks"),
     "memory": ("retrieval",),
-    "channels": ("adapters",),
+    "channels": ("adapters", "kinds"),
     "atlas": ("graph",),
     "retention": ("ages",),
     "outcomes": (),
@@ -793,7 +799,10 @@ async def read_rooms(app: web.Application, now: datetime) -> PanelRead:
     swept = (latest or {}).get("observed_at") if latest else None
 
     pauses = overview_route.paused_sources(app)
-    waiting, aged = overview_route.wants_you(pipeline, items, pauses, workers, now)
+    kernel = app.get("autonomy_kernel")
+    waiting, aged = overview_route.wants_you(
+        pipeline, items, pauses, workers, now, kernel
+    )
     running = overview_route.working_now(now)
     away = overview_route.ran_while_away(rows, now)
     held = overview_route.held_items(items)
@@ -820,7 +829,7 @@ async def read_rooms(app: web.Application, now: datetime) -> PanelRead:
         },
         "blocked": {
             "held": held,
-            "paused": overview_route.paused_rows(pauses),
+            "paused": overview_route.paused_rows(pauses, kernel),
         },
         "health": {"departments": departments, "sweptAt": swept},
         "managed": {"schedules": rows, "agents": roster, "playbooks": plays},

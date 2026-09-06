@@ -8,6 +8,7 @@ export type EventKind =
   | 'skill_approval'
   | 'skill_refinement'
   | 'working_set_proposal'
+  | 'tuning_proposal'
   | 'soul_proposal'
   | 'change_proposal'
   | 'mission_reflection_proposal'

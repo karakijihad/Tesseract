@@ -61,6 +61,7 @@ EventKind = Literal[
     "skill_approval",            # skill_create drafted a skill into quarantine; approve promotes, reject archives (mirror agent_approval)
     "skill_refinement",          # refinement job flags an underperforming skill + proposes a revised body; approve applies the diff to the live SKILL.md
     "working_set_proposal",      # working_set_review proposes which tools and playbooks the turn carries; approve moves the names through each file's own generator
+    "tuning_proposal",           # runtime_tuning proposes a change to what the runtime spends or how often it runs; approve moves the seam the card names
 ]
 
 
@@ -76,6 +77,7 @@ DECIDABLE_KINDS: tuple[str, ...] = (
     "skill_approval",
     "skill_refinement",
     "working_set_proposal",
+    "tuning_proposal",
     "change_proposal",
     "soul_proposal",
     "feedback_proposal",

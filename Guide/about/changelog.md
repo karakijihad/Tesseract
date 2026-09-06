@@ -69,6 +69,17 @@ and the panel that shows you what it is doing was rebuilt.
 - **Notifications say what they are and why in plain words.** Four kinds that
   nothing ever sent were removed, and what remains reaches every channel it
   names at once.
+- **The mode meant to run without you now runs without you.** A handful of
+  shell commands asked your permission whatever mode you had chosen, and away
+  from the machine an unanswered question is not a pause, it is a refusal on a
+  timer: the work carried on without the command and nothing said so. In that
+  mode the one about short scripting one-liners now runs, and the other five
+  are refused straight away with a reason instead of waiting half an hour for
+  an answer that is not coming. The default mode is unchanged, and everything
+  the app refuses outright is still refused in both. Every command that ran
+  this way is in the approval record, marked as such.
+- **A permission prompt for a command names every rule that stopped it**, not
+  only the first, and says what your security mode does about each one.
 
 Security fixes in this release: a crafted date could reach another chat's
 transcript or a log elsewhere on the machine when looking up a past day; a

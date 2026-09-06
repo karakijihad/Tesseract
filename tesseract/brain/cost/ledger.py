@@ -463,6 +463,34 @@ def _require(d: dict, key: str, where: str) -> Any:
     return d[key]
 
 
+def configured_log_path(providers_yaml: Path | None = None) -> Path | None:
+    """Where the ledger is, off `providers.yaml::cost_tracking.log_file`.
+
+    For a reader with no ledger object in front of it. The scheduler's spend
+    trigger is evaluated on the engine's tick, before any app is in scope, and
+    composing a path from a filename written in a second place would be a
+    second answer to where the spend is recorded. `None` when the file or the
+    key is unreadable, which every caller treats as "nothing known yet".
+
+    `config_dir()` and `home_dir()` are called HERE rather than captured at
+    import, for the reason `from_bundle` gives: a module constant freezes
+    whatever the environment said when this module first loaded.
+    """
+    from tesseract.paths import config_dir
+
+    target = providers_yaml or (config_dir() / "providers.yaml")
+    try:
+        raw = yaml.safe_load(Path(target).read_text(encoding="utf-8")) or {}
+        log_file = (raw.get("cost_tracking") or {})["log_file"]
+    except (OSError, KeyError, TypeError, ValueError, yaml.YAMLError):
+        # `ValueError` for `UnicodeDecodeError`, which `read_text` raises on a
+        # file that is not valid UTF-8 and which none of the others catch. The
+        # docstring promises `None` when this is unreadable, and a caller on
+        # the scheduler's tick would otherwise log a traceback every minute.
+        return None
+    return _home_dir() / str(log_file)
+
+
 def _local_today_iso() -> str:
     return date.today().isoformat()
 

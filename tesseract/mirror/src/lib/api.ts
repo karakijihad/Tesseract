@@ -2165,6 +2165,14 @@ export async function fetchPipeline(): Promise<PipelineResponse> {
 
 export interface MapLiveness {
   state: OperationalState;
+  /** What the row asks for, where the producer sends one. A department's
+   *  pushed state carries its obligation and its band, because the three are
+   *  one answer and applying the state alone paints a row in the colour of
+   *  what it wanted a minute ago. A map node sends none: the map paints
+   *  states. */
+  obligation?: Obligation;
+  obligationLabel?: string;
+  band?: string;
   /** What to call this state on screen. The backend's word, never one written
    *  here: `not_instrumented` is unreadable to anybody who has not read the
    *  code, and the translation belongs where the state is defined. */
@@ -2282,6 +2290,19 @@ export interface HealthReport {
   narrated?: boolean;
 }
 
+/** The whole of what a row wears once nothing is reaching the panel.
+ *
+ *  Declared rather than left as loose strings: it is spread over a typed row,
+ *  so a value outside these unions would reach the paint unchecked, which is
+ *  what the dispatcher's own state filter exists to stop on the pushed path. */
+export interface UnheardPresentation {
+  state: OperationalState;
+  label: string;
+  obligation: Obligation;
+  obligationLabel: string;
+  band: HealthBand;
+}
+
 export interface HealthResponse {
   departments: HealthDepartment[];
   /** The judge's steps as counts. A judge nobody can inspect is a filter. */
@@ -2293,6 +2314,10 @@ export interface HealthResponse {
    *  the map ships it: the room says "not known" itself when the runtime stops
    *  reaching it, and it cannot ask for the word at that point. */
   labels: Record<string, string>;
+  /** And what a row asks for once nothing is reaching the panel: the state,
+   *  its word, the obligation and the band, all the backend's. A row that
+   *  changes its state and keeps its colour is two answers to one question. */
+  whenUnheard?: UnheardPresentation;
   /** When the watchman last looked. Null when it never has here. */
   sweptAt: string | null;
   observedAt: string;

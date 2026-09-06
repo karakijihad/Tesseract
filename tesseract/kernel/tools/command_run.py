@@ -48,6 +48,7 @@ from tesseract.kernel.tools.base import (
     ToolResult,
 )
 from tesseract.permissions.bash_security import ask_reason as security_ask_reason
+from tesseract.permissions.bash_security import asks as security_asks
 from tesseract.permissions.bash_security import check as security_check
 
 logger = logging.getLogger(__name__)
@@ -262,6 +263,10 @@ class CommandRunTool(Tool):
         check_num, posture = result
         if posture == "ask":
             logger.info("command_run: security check #%d forced ASK", check_num)
+            # Every check that fired, over the same joined argv the checks
+            # read, so one command asked about through two tools is judged
+            # unattended the same way.
+            context.security_checks = security_asks(" ".join(inp.command))
             return PermissionResult.ASK
         logger.warning("command_run: security check #%d blocked the command", check_num)
         return PermissionResult.DENY

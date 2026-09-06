@@ -3,7 +3,7 @@ import { linkifyText } from '../../lib/linkify';
 import { Markdown } from '../../components/common/Markdown';
 import { DailyBriefBody } from './DailyBriefBody';
 import { PathPill } from './PathPill';
-import { WorkingSetProposalBody } from './WorkingSetProposalBody';
+import { ProposalBody } from './ProposalBody';
 
 interface Props {
   event: WorkspaceEvent;
@@ -528,7 +528,8 @@ export function EventDetailBody({ event }: Props) {
     case 'skill_refinement':
       return <SkillRefinementBody payload={payload} />;
     case 'working_set_proposal':
-      return <WorkingSetProposalBody payload={payload} />;
+    case 'tuning_proposal':
+      return <ProposalBody payload={payload} />;
     case 'daily_brief':
       return <DailyBriefBody payload={payload} />;
     default:

@@ -128,6 +128,7 @@ from tesseract.kernel.tools.alarm_list import AlarmListTool
 from tesseract.kernel.tools.alarm_set import AlarmSetTool
 from tesseract.kernel.tools.alarm_snooze import AlarmSnoozeTool
 from tesseract.kernel.tools.memory_get import MemoryGetTool
+from tesseract.kernel.tools.workspace_read import WorkspaceReadTool
 from tesseract.kernel.tools.atlas_query import AtlasQueryTool
 from tesseract.kernel.tools.brief_read import BriefReadTool
 from tesseract.kernel.tools.brief_render import BriefRenderTool
@@ -2331,6 +2332,7 @@ def build_tool_registry(
     )
 
     registry.register(MemoryGetTool())
+    registry.register(WorkspaceReadTool())
 
     # atlas_query — the one surface for asking the derived graph how records
     # connect. Read-only: it opens `atlas.json` and returns text. The same

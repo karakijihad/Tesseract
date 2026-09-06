@@ -53,6 +53,23 @@ _UNCLEAN_IDS = {6008, 41}
 
 _ALL_IDS = _SLEEP_IDS | _WAKE_IDS | _UNCLEAN_IDS | {_ASKED_TO_STOP, _LOG_STOPPED, _LOG_STARTED}
 
+# How near a boot an unclean-restart row has to be to belong to THAT boot.
+#
+# Measured, not chosen: 180 days of this machine's System log, every 6005,
+# 6008 and 41 row in it.
+#
+#   Within one unclean boot the rows span 16.8s at the widest. Both
+#   occurrences look the same: 41, then 6008 about 16.5s later, then 6005 one
+#   millisecond after 6008.
+#   Between two DISTINCT boots the closest measured separation is 58.5s, on a
+#   night with three restarts inside four minutes.
+#
+# So the bound has to sit above 16.8 and below 58.5, and thirty seconds is the
+# middle of that. Sixty would merge that pair of restarts into one boot and
+# hand the second one's power failure to the first, which is the same class of
+# error as the one this whole binding exists to stop.
+_SAME_BOOT = timedelta(seconds=30)
+
 # What a gap is called, in words a person reads rather than an event id.
 ASLEEP = "asleep"
 SHUT_DOWN = "shut down"
@@ -143,8 +160,15 @@ def _rows(since: datetime, now: datetime):
             handles = win32evtlog.EvtNext(query, 64, _READ_TIMEOUT_MS, 0)
             if not handles:
                 return
-            for handle in handles:
-                try:
+            # The WHOLE BATCH is released, not just the row being read. Each
+            # row is a handle, up to 64 of them, and a per-row `finally` alone
+            # closes only the one in hand: a single row this cannot render
+            # takes the generator down and the other 63 are already out of
+            # `EvtNext` and never closed. That is the same leak the per-row
+            # close was added for, reached from the failure side, and this
+            # read runs on the watchman's tick.
+            try:
+                for handle in handles:
                     values = win32evtlog.EvtRender(
                         handle, win32evtlog.EvtRenderEventValues, Context=context,
                     )
@@ -154,11 +178,8 @@ def _rows(since: datetime, now: datetime):
                         _as_utc(values[win32evtlog.EvtSystemTimeCreated][0]),
                         _who_asked(handle) if event_id == _ASKED_TO_STOP else "",
                     )
-                finally:
-                    # EACH ROW is a handle too, up to 64 per batch, and closing
-                    # only the query and the context leaked every one of them.
-                    # A seven day read on a busy machine is many multiples of
-                    # that, on the watchman's tick.
+            finally:
+                for handle in handles:
                     _close(handle)
     finally:
         # Both are Windows handles this function opened. They would be released
@@ -264,14 +285,34 @@ def gaps(since: datetime, *, now: datetime | None = None) -> list[Gap] | None:
     away_kind = ASLEEP
     asked_by = ""
     asked_at: datetime | None = None
-    # Whether the event just handled is the one that closed a gap. Only
-    # then does an unclean-restart row have a gap it may speak for.
-    just_closed = False
+    # Every unclean-restart row up front, so nothing downstream depends on
+    # WHEN one was read relative to the boot it describes.
+    #
+    # This is the fourth design of this binding and the first that is
+    # order-independent by construction rather than tolerant of the orders
+    # anyone thought to test. The five properties are here rather than in a
+    # commit message because three previous versions each satisfied the ones
+    # in front of them and broke one of the others:
+    #
+    #   1. An unclean row speaks only for the boot it belongs to.
+    #   2. An outage nothing bracketed is not invented. Explaining less is the
+    #      safe direction, the same ruling as the unmatched wake below.
+    #   3. The answer does not depend on which of a boot's rows was read
+    #      first. On this machine 41 precedes 6005 by about 16.5 SECONDS of
+    #      wall clock on every unclean boot in 180 days, so this is the normal
+    #      ordering rather than a tie-break artefact.
+    #   4. 6008 and 41 both arriving says the same as either one alone.
+    #   5. A gap closed long ago is never reachable, however few rows follow.
+    #
+    # Every stateful version failed 5, and the last one failed it in a way its
+    # own tests could not see. Carrying "the row before this closed a gap"
+    # cannot work, because in the history that breaks it there are NO rows
+    # between the two: a clean shutdown closed by a boot on Monday, then an
+    # unbracketed power loss on Wednesday whose 41 is the very next row. No
+    # sequence rule can separate those. Only the clock can, which is what
+    # `_SAME_BOOT` is for and why it had to be measured.
+    unclean_at = [when for event_id, when, _said in rows if event_id in _UNCLEAN_IDS]
     for event_id, when, said_by in rows:
-        if event_id not in _UNCLEAN_IDS:
-            closed_now, just_closed = False, False
-        else:
-            closed_now = False
         if event_id in _SLEEP_IDS:
             away_since, away_kind = when, ASLEEP
         elif event_id == _ASKED_TO_STOP:
@@ -304,37 +345,31 @@ def gaps(since: datetime, *, now: datetime | None = None) -> list[Gap] | None:
             # is still a fault and still reaches the operator; a wrongly
             # explained one is gone.
             if away_since is not None and when > away_since:
+                # The kind is settled HERE, where the gap is closed, rather
+                # than edited afterwards by whichever row happened to follow.
+                #
+                # Only a boot can be reclassified. A wake closes a gap just as
+                # well and says nothing about whether the machine STARTED,
+                # which is the only thing 6008 and 41 report on, so a resume
+                # is never eligible however near an unclean row falls.
+                kind = away_kind
+                if event_id == _LOG_STARTED and any(
+                    abs(u - when) <= _SAME_BOOT for u in unclean_at
+                ):
+                    kind = LOST_POWER
                 out.append(Gap(
-                    began=away_since, ended=when, kind=away_kind,
-                    asked_by=asked_by if away_kind == SHUT_DOWN else "",
+                    began=away_since, ended=when, kind=kind,
+                    # No requester survives this. Losing power is the one kind
+                    # nobody asked for, and carrying a name onto it would say a
+                    # person or an update did what the power did.
+                    asked_by=asked_by if kind == SHUT_DOWN else "",
                 ))
-                closed_now = True
             away_since, asked_by, asked_at = None, "", None
-            just_closed = closed_now
-        elif event_id in _UNCLEAN_IDS:
-            # The stop that preceded this was not clean, so the gap THIS
-            # restart just closed belongs to the power rather than to anyone's
-            # intent. It arrives after the restart, which is why it edits a gap
-            # instead of opening one.
-            #
-            # `just_closed` is what binds it to the right one. Without it this
-            # rewrote `out[-1]` unconditionally, and `out[-1]` is only the
-            # relevant gap when this restart is what closed it: a machine that
-            # slept cleanly on Monday and lost power on Wednesday, with
-            # Wednesday's outage unbracketed and therefore never appended, had
-            # MONDAY'S SLEEP relabelled as the power failing. One fact was
-            # destroyed and the other was still not reported.
-            if just_closed and out:
-                last = out[-1]
-                # No requester survives this. Losing power is the one kind
-                # nobody asked for, and carrying a name onto it would say a
-                # person or an update did what the power did.
-                out[-1] = Gap(last.began, last.ended, LOST_POWER)
-            elif away_since is not None:
-                away_kind = LOST_POWER
-            # Otherwise the outage it describes was never bracketed, so there
-            # is nothing to relabel and nothing is invented. Explaining less is
-            # the safe direction, the same ruling as the unmatched wake above.
+        # An unclean row needs no branch of its own any more. It opens no gap
+        # and closes none: it only says that a boot near it was not a clean
+        # one, and `unclean_at` above carries that to the boot that reads it.
+        # An unclean row with no boot within `_SAME_BOOT` describes an outage
+        # nothing bracketed, and nothing is invented for it.
 
     # Still away at the end of the window: the machine is asleep right now, or
     # the log stops mid-gap. Neither can be true of a process that is running

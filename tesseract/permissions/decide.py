@@ -45,9 +45,14 @@ from tesseract.kernel.tools.base import (
     ToolResult,
 )
 from tesseract.paths import home_dir, install_root, secret_path_component
-from tesseract.permissions import approval_log
+from tesseract.permissions import approval_log, bash_security
 from tesseract.permissions.path_validator import validate_path
-from tesseract.permissions.policy import WRITE_PATH_FIELDS, PermissionPolicy
+from tesseract.permissions.policy import (
+    ATTENDED_MODE,
+    UNATTENDED_MODE,
+    WRITE_PATH_FIELDS,
+    PermissionPolicy,
+)
 
 AskFn = Callable[[Tool, Any, ToolContext], Awaitable[bool]]
 
@@ -229,6 +234,12 @@ async def evaluate(
     summary = approval_log.redacted_summary(tool, raw_input)
 
     decision = tool.check_permissions(validated, context)
+    # Read and cleared in one breath. `bash_tool` and `command_run` write this
+    # on their way to ASK; every other tool leaves whatever the last call put
+    # there, and contexts are reused across calls, so a tuple that outlived
+    # its own call would relax an unrelated tool's approval.
+    security_checks = context.security_checks
+    context.security_checks = ()
     if decision == PermissionResult.DENY:
         await approval_log.record_ask(
             session_id=context.session_id,
@@ -355,6 +366,65 @@ async def evaluate(
     if decision == PermissionResult.ASK:
         # tool.check_permissions returned ASK directly — rare today.
         posture_source = "tool"
+
+    # What may run with nobody watching, in the relaxed security mode.
+    #
+    # Six of `bash_security`'s checks force ASK regardless of the mode, and
+    # they fire HERE, ahead of the policy. In `free` — the mode documented for
+    # unattended and scheduled work — an ASK is a refusal on a timer: the
+    # prompt waits out the channel's decision timeout, nobody answers, and the
+    # turn carries on without the call.
+    #
+    # Placed before the policy block, not after it. Converting to PASSTHROUGH
+    # afterwards would skip the policy entirely, so a
+    # `modes.free.overrides: {bash: deny}` would be silently ignored. First
+    # means the relaxation hands the call TO the policy rather than around it.
+    #
+    # Decided against EVERY check that fired, never the reported one:
+    # `check()` returns the first ask, so `rm -rf build && python -c
+    # "import os"` reports 17 and a relaxation keyed off that number would
+    # walk past check 24 by accident.
+    #
+    # Untouched when there is no policy (headless), which fails closed the way
+    # it does today, and untouched in `max`.
+    relaxed = False
+    if (
+        decision == PermissionResult.ASK
+        and security_checks
+        and policy is not None
+        and policy.mode == UNATTENDED_MODE
+    ):
+        strict = tuple(
+            n for n in security_checks if n not in bash_security.RELAXED_UNATTENDED
+        )
+        if strict:
+            await approval_log.record_ask(
+                session_id=context.session_id,
+                call_id=context.current_call_id,
+                tool_name=tool.name,
+                input_summary=summary,
+                posture_source="security",
+                result="deny",
+                actor="system",
+            )
+            named = ", ".join(str(n) for n in strict)
+            return ToolResult(
+                output=(
+                    f"{DENIED_PREFIX}: {tool.name} needs an operator to answer "
+                    f"for it, and the {UNATTENDED_MODE} security mode has "
+                    f"nobody watching. Security "
+                    f"{'checks' if len(strict) > 1 else 'check'} {named} "
+                    f"refused it. "
+                    + " ".join(f"{bash_security.refusal(n)}." for n in strict)
+                    + f" Switch the security mode to {ATTENDED_MODE} to be "
+                    f"asked about it instead, or do it another way."
+                ),
+                is_error=True,
+                denied_hard=True,
+                deny_reason=f"security checks not permitted unattended: {named}",
+            )
+        decision = PermissionResult.PASSTHROUGH
+        relaxed = True
     if policy is not None and decision in (PermissionResult.PASSTHROUGH, PermissionResult.ALLOW):
         posture_source = _resolve_posture_source(policy, tool.name, raw_input)
         decision = policy.get_posture(tool.name, validated)
@@ -374,6 +444,14 @@ async def evaluate(
                 denied_hard=True,
                 deny_reason="policy default deny",
             )
+
+    # Stamped only when the call actually proceeds unasked. This is the
+    # operator's one piece of visibility into what ran unattended that would
+    # otherwise have prompted them, and it has to be one grep of
+    # `approvals.jsonl`. A relaxation the policy then sent to an ask is not
+    # one of those.
+    if relaxed and decision != PermissionResult.ASK:
+        posture_source = "security_relaxed"
 
     if decision == PermissionResult.ASK:
         # Plumb posture_source onto context so the ask_fn implementation

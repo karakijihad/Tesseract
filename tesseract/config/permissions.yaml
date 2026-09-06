@@ -95,7 +95,9 @@ tools:
   agent_create: ask            # the file decides; auto under free
   agent_promote: ask           # moves an agent .md from draft to active; the file decides
   invoke_agent: auto           # spawns an in-process sub-agent — cheap, operator-visible
-  bash: ask                    # read-only self-verification AUTOs via bash_readonly_allowlist below; `free` relaxes the rest. 20 absolute-DENY + 6 forced-ASK checks in bash_security.py still gate destructive commands regardless.
+  bash: ask                    # read-only checks run without asking, via the allowlist below. `free` acts without asking for the rest.
+                               # The shell check list still refuses destructive commands in every mode. In `free` it also runs one of
+                               # its prompting checks unasked and refuses the other five outright, because nobody is there to answer.
   delegate_coder: ask          # spawns a coding agent on your machine, with its own permissions
   delegate_auditor: ask        # the same, for review work
   vault_ingest: auto           # writes vault/raw/ and vault/wiki/ — operator-visible vault surface
@@ -112,6 +114,7 @@ tools:
                                # at both call sites. Class floor is ASK.
   brief_read: auto             # read-only return of today's brief body for the voice "read brief" lane
   memory_get: auto             # read-only path-scoped read of memory-store/ markdown files
+  workspace_read: auto         # read-only read of the assistant's own workspace documents and playbooks
   file_read: auto
   glob: auto
   grep: auto

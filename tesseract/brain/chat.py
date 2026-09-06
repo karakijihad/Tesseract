@@ -49,7 +49,8 @@ from tesseract.brain.compaction import (
 )
 from tesseract.brain.completion_store import CompletionRecord, record_from_handle
 from tesseract.brain.cost import BudgetExhausted, CostLedger, CostUsage
-from tesseract.brain.memory_suggestion import MemorySuggestion, format_for_injection
+from tesseract.brain.memory_suggestion import MemorySuggestion
+from tesseract.brain.observer_reading import BoundaryNudge, format_for_injection
 from tesseract.brain.observation_transcript import ObservationTranscript
 from tesseract.brain.spawns import SpawnRegistry
 from tesseract.kernel.adapters._estimate import tokens_from_chars
@@ -1571,6 +1572,23 @@ class ChatSession:
         default_factory=lambda: deque(maxlen=PENDING_SUGGESTION_CAP),
         repr=False,
     )
+    # One slot, not a queue. A nudge says how this conversation stands right
+    # now, so an undelivered one is worthless the moment a newer reading
+    # replaces it — a backlog of them would report on a turn already left
+    # behind.
+    # Bumped every time this object starts holding a different conversation.
+    # Work that was launched against the old one and lands after the wipe can
+    # compare what it captured against what is current and stand down. The
+    # observer runs as a detached task, so this is not a theoretical race: its
+    # model call outlives the turn that started it by design.
+    _conversation_generation: int = field(default=0, repr=False)
+    _tool_failure_limit_cache: int | None = field(default=None, repr=False)
+    _pending_nudge: BoundaryNudge | None = field(default=None, repr=False)
+    _last_nudge_observation_id: str | None = field(default=None, repr=False)
+    # What was actually shown, held until the end of that turn so the boundary
+    # can record what came of it. A nudge nobody can score is a nudge nobody
+    # can tell is being ignored.
+    _delivered_nudge: BoundaryNudge | None = field(default=None, repr=False)
     _pending_conscience: deque[str] = field(
         default_factory=lambda: deque(maxlen=PENDING_CONSCIENCE_CAP),
         repr=False,
@@ -2073,6 +2091,16 @@ class ChatSession:
         return self._observer_transcript
 
     @property
+    def conversation_generation(self) -> int:
+        """Which conversation this object is holding right now.
+
+        Read it before starting slow work against a session and again before
+        acting on the result. A different number means the conversation the
+        work was about has been cleared and the result describes nothing.
+        """
+        return self._conversation_generation
+
+    @property
     def observer_emit(self) -> Any | None:
         return self._observer_emit
 
@@ -2087,6 +2115,53 @@ class ChatSession:
         self._observed_ids.append(suggestion.observation_id)
         self._pending_suggestions.append(suggestion)
         return True
+
+    def _tool_failure_limit(self) -> int:
+        """How many consecutive failures of one tool is a boundary.
+
+        Cached for the life of the turn. The config watcher rebuilds adapters
+        on an edit, so a change lands on the next turn rather than mid-way
+        through this one, which is the right granularity for a rule about a
+        whole turn.
+
+        Falls back to refusing to promote, never to a guessed number: an
+        unreadable bound is not evidence that a tool is failing, and stopping
+        a conversation on a parse error would be the worst of both.
+        """
+        if self._tool_failure_limit_cache is None:
+            from tesseract.brain.continuity import load_boundary_bounds
+
+            try:
+                self._tool_failure_limit_cache = load_boundary_bounds().tool_failure_limit
+            except Exception:
+                logger.exception("could not read the tool failure limit; not promoting")
+                self._tool_failure_limit_cache = 0
+        return self._tool_failure_limit_cache or (1 << 30)
+
+    def ingest_boundary_nudge(self, nudge: BoundaryNudge) -> bool:
+        """Hold the observer's boundary recommendation for the next turn.
+
+        Returns `False` for a repeat of the observation already held, which is
+        what stops one re-fired observation being announced twice. Deduped on
+        its own id rather than `_observed_ids`, because the suggestion from the
+        same call carries the same `observation_id` and would otherwise swallow
+        the nudge whenever both halves arrived together.
+        """
+        if nudge.observation_id == self._last_nudge_observation_id:
+            return False
+        self._last_nudge_observation_id = nudge.observation_id
+        self._pending_nudge = nudge
+        return True
+
+    def take_delivered_nudge(self) -> BoundaryNudge | None:
+        """The nudge shown this turn, cleared as it is read.
+
+        One reader, at the end of the turn, which is the only moment both the
+        recommendation and the answer to it are known.
+        """
+        nudge = self._delivered_nudge
+        self._delivered_nudge = None
+        return nudge
 
     def ingest_conscience_transition(self, transition: dict[str, Any]) -> None:
         """Queue a synthetic `[conscience_drift]` note for next-turn injection.
@@ -2766,6 +2841,7 @@ class ChatSession:
                 self._pending_workspace_event_ids.extend(event_ids)
         if (
             not self._pending_suggestions
+            and self._pending_nudge is None
             and not self._pending_conscience
             and not self._pending_spawn_completions
             and not self._pending_card_presses
@@ -2774,6 +2850,12 @@ class ChatSession:
         ):
             return ""
         blocks: list[str] = []
+        # First, because a boundary outranks housekeeping: it is the one
+        # signal that might end the conversation the rest of them are about.
+        if self._pending_nudge is not None:
+            blocks.append(format_for_injection(self._pending_nudge))
+            self._delivered_nudge = self._pending_nudge
+            self._pending_nudge = None
         while self._pending_suggestions:
             blocks.append(format_for_injection(self._pending_suggestions.popleft()))
         while self._pending_conscience:
@@ -2980,6 +3062,7 @@ class ChatSession:
             # the flagged tool actually succeeds.
             self._tool_error_streak_name = ""
             self._tool_error_streak_count = 0
+            self._tool_failure_limit_cache = None
             self._guard_firings_this_turn = 0
             # A turn that died before the boundary must not hand its decision
             # to the next one: the conversation it wanted to leave behind is
@@ -4083,11 +4166,14 @@ class ChatSession:
                     "timestamp": _now_iso(),
                 })
                 history_written.add(i)
-                # P6 Task 5 — escalate-on-failure reflex, signal side.
+                # Escalate-on-failure reflex, signal side.
                 # Consecutive-in-order failures of the SAME tool name
-                # within this turn: at >=2, surface `(name, count)` via
+                # within this turn: at `roles.yaml::boundary
+                # .tool_failure_limit`, surface `(name, count)` via
                 # failures_signal so the digest carries an "escalate now"
-                # line (rule 11-error-recovery.md reads it). A success
+                # line (rule 11-error-recovery.md reads it), and so
+                # `after_turn` takes a boundary rather than letting the
+                # conversation keep trying. A success
                 # clears the streak ONLY when it's the tool actually
                 # RECORDED in failures_signal — gating on the local tracker
                 # instead let an unrelated tool's later-turn recovery wipe
@@ -4111,7 +4197,17 @@ class ChatSession:
                     else:
                         self._tool_error_streak_name = tc.name
                         self._tool_error_streak_count = 1
-                    if self._tool_error_streak_count >= 2:
+                    # One number, from roles.yaml, for both halves of what a
+                    # streak means: at the limit it stops being a line in the
+                    # digest and becomes a boundary `after_turn` must take.
+                    # A hint and a hard stop that disagreed about when the
+                    # pattern started would be two answers to one question.
+                    #
+                    # Read once for the turn, off the hot path. Reading it here
+                    # re-parsed roles.yaml on every errored tool result, and a
+                    # bad key raised inside the block whose exception fails an
+                    # answer that has otherwise already been produced.
+                    if self._tool_error_streak_count >= self._tool_failure_limit():
                         from tesseract.brain import failures_signal
                         failures_signal.record_tool_error_streak(
                             tc.name, self._tool_error_streak_count, scope,
@@ -4234,6 +4330,23 @@ class ChatSession:
 
             completion_store.discard(self.spawns.chat_id)
         self._observed_ids.clear()
+        # Every nudge on this object was about the conversation being wiped.
+        # The observer's call runs as a detached task and can land AFTER the
+        # boundary that cleared the room, so a pending one here is not merely
+        # stale, it is about a conversation the next turn has never seen. The
+        # id goes too: dedupe is per conversation, and holding it would silence
+        # a genuine repeat in the fresh one.
+        self._pending_nudge = None
+        self._delivered_nudge = None
+        self._last_nudge_observation_id = None
+        # The observer's rolling window is per conversation and was the one
+        # piece of its state that survived the wipe: the next observation
+        # would have read the cleared conversation's turns alongside the new
+        # one's, in the same prompt.
+        self._observer_transcript.reset()
+        # Anything still in flight against the conversation that just ended
+        # now describes nothing. It checks this on the way back.
+        self._conversation_generation += 1
         self._turn_injection = ""
         self._turn_active = False
         self._turn_prompt = None
@@ -4340,7 +4453,7 @@ One question, in tokens, and it is `compact_ratio`'s. It used to be
         foldable_tokens = self.adapter.count_tokens(foldable)
         trigger = self._fold_trigger_tokens(ctx, self._system_tokens)
         # Published on the way past, from the numbers the decision already
-        # compared. The next turn's prompt renders it, so she reaches a
+        # compared. The next turn's prompt renders it, so the model reaches a
         # boundary knowing how close it is instead of having to ask.
         context_signal.record(
             self._failures_scope_id,

@@ -107,7 +107,12 @@ function line(dept: HealthDepartment, index: number): StateLine {
             onClick={() =>
               sendCommand(
                 '/health_leave',
-                ` subject=${dept.name}${left ? ' action=restore' : ''}`,
+                // Quoted. The command line is split with `shlex`, so a
+                // two-word name like `event loop` or `stack dumps` arrived as
+                // `subject=event` plus a stray positional and was refused for
+                // mixing the two, which is most of the rows this control
+                // exists for.
+                ` subject=${JSON.stringify(dept.name)}${left ? ' action=restore' : ''}`,
               )
             }
             ariaLabel={
@@ -314,7 +319,7 @@ export function HealthRoomView({
 
 export function HealthRoom(): React.ReactElement {
   const health = useAutonomyStore((s) => s.health);
-  const liveness = useLiveContext(health.data?.labels);
+  const liveness = useLiveContext(health.data?.labels, health.data?.whenUnheard);
   const fetchHealth = useAutonomyStore((s) => s.fetchHealth);
   const history = useAutonomyStore((s) => s.history);
   const fetchHistory = useAutonomyStore((s) => s.fetchHistory);

@@ -136,6 +136,47 @@ class VoiceBlock(_Permissive):
     tts: VoiceLane | None = None
 
 
+class Boundary(BaseModel):
+    """What bounds a conversation that keeps deciding to carry the work on.
+
+    Top level beside `compaction:` and for the same reason: it describes the
+    mechanism rather than who is using it. Compaction is what happens when a
+    surface cannot clear a conversation at all; this is what stops the work
+    going round inside one.
+
+    There is deliberately no bound on HOW MANY times a conversation may carry
+    on. There was one and it was the only refusal that fired without evidence,
+    stopping real multi-phase work for arriving at a count while two steps
+    alternating forever sailed past every other check.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: How much repetition is still work rather than a loop. Read twice: the
+    #: same next action at this many consecutive boundaries, and this many
+    #: boundaries reporting nothing the conversation had not already reported.
+    repeat_limit: int = Field(gt=0)
+    #: How far back a cycle counts as a cycle. Must exceed `repeat_limit`,
+    #: because the boundaries BEFORE the window are what "already reported" is
+    #: judged against; at or below it there is no history to judge with and the
+    #: check can never fire.
+    cycle_window: int = Field(gt=0)
+    #: The same tool failing this many times in a row, which is the one
+    #: pathological pattern promoted from a hint to a hard boundary.
+    tool_failure_limit: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _window_has_history_behind_it(self) -> "Boundary":
+        if self.cycle_window <= self.repeat_limit:
+            raise ValueError(
+                f"cycle_window ({self.cycle_window}) must exceed repeat_limit "
+                f"({self.repeat_limit}), or the cycle check has nothing behind "
+                f"its window to judge 'already reported' against and can never "
+                f"fire"
+            )
+        return self
+
+
 class Compaction(BaseModel):
     """How compaction bounds a conversation, for every role at once.
 
@@ -176,6 +217,12 @@ class RolesConfig(BaseModel):
 
     embeddings: Embeddings
     reranker: Reranker | None = None
+    # Optional here and required by the LOADER. This gate validates proposed
+    # edits, which are routinely partial documents, and a gate that refuses
+    # what the runtime accepts is its own defect. `load_boundary_bounds` raises
+    # loudly on a missing key at boot; what this adds is that a boundary block
+    # which IS present cannot be written in a shape that would never fire.
+    boundary: Boundary | None = None
     compaction: Compaction = Field(default_factory=Compaction)
     chains: dict[str, list[str]] = Field(default_factory=dict)
     roles: dict[str, RoleBody] = Field(default_factory=dict)

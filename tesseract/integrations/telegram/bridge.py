@@ -3134,9 +3134,16 @@ class TelegramBridge:
         session.current_turn_task = None
         error_out: list[str] = []
 
-        async def _fold() -> None:
+        async def _fold(*, mid_turn: bool = False) -> None:
             """Same shape as an inbound turn's: one definition, used inside the
-            tool loop and again at the turn boundary."""
+            tool loop and again at the turn boundary.
+
+            Which of the two it is has to be said, because the answers differ:
+            a boundary clears the conversation, and inside the tool loop the
+            conversation being cleared is the one still speaking. `after_turn`
+            reads the session's own state as well, so this is the belt beside
+            those braces rather than the only thing holding it.
+            """
             await after_turn(
                 session.chat_session,
                 app=self._app,
@@ -3146,6 +3153,7 @@ class TelegramBridge:
                 ending=lambda reflect: self._start_fresh_thread(
                     session, tg_chat_id, reflect,
                 ),
+                mid_turn=mid_turn,
             )
 
         try:
@@ -3158,7 +3166,7 @@ class TelegramBridge:
                 on_progress=on_progress,
                 error_out=error_out,
                 refused_out=refused_out,
-                fold_when_needed=_fold,
+                fold_when_needed=lambda: _fold(mid_turn=True),
             )
         finally:
             await throttler.stop()

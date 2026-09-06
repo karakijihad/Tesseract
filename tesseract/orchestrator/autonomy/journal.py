@@ -28,6 +28,11 @@ JOURNAL_EVENT_TYPES = (
     "outcome",
     "advice_only",
     "follow_up_draft",
+    # The observer recommended a boundary and the assistant answered it or did
+    # not. One row, written when both halves are known, because a room that
+    # says "what was decided without you, and what came back" is the room this
+    # belongs in and a recommendation with no outcome is only half a line.
+    "observer_nudge",
 )
 
 
