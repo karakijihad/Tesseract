@@ -10,12 +10,15 @@ gates per-turn parallel execution in ``_run_pending_calls``.
 from __future__ import annotations
 
 import asyncio
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, ClassVar, Optional
 
 from pydantic import BaseModel
+
+_log = logging.getLogger(__name__)
 
 CliSink = Callable[[str, str, dict[str, Any]], Awaitable[None]]
 PtyDispatcher = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -452,6 +455,22 @@ class Tool(ABC):
     def check_permissions(self, tool_input: BaseModel, context: ToolContext) -> PermissionResult:
         return PermissionResult.PASSTHROUGH
 
+    def ask_reason(self, validated: BaseModel) -> str:
+        """One sentence saying what is being approved, and why it was asked.
+
+        Empty by default: most tools are explained by their own arguments,
+        which every approval surface already shows. A tool overrides this when
+        the arguments do not explain the prompt, and the two that most needed
+        it are `bash` and `command_run`, where a security check can force the
+        question in a mode the operator has already relaxed.
+
+        Declared here rather than looked for with `getattr`, because two
+        surfaces read it and a contract that exists only where somebody
+        remembered to duck-type it is how one of them goes quiet.
+        """
+        del validated
+        return ""
+
     @abstractmethod
     async def run(self, tool_input: BaseModel, context: ToolContext) -> ToolResult: ...
 
@@ -461,6 +480,22 @@ class Tool(ABC):
             "description": self.description,
             "input_schema": self.input_schema.model_json_schema(),
         }
+
+
+def ask_reason_for(tool: "Tool", validated: BaseModel) -> str:
+    """The tool's own explanation of a prompt, or nothing, never a raise.
+
+    Both approval surfaces call this: the cockpit's `ask_gate` and the channel
+    gate a phone answers. One implementation, because the operator has to be
+    told the same thing wherever the question reaches them, and because a
+    tool whose explanation raises must cost a sentence rather than the
+    approval.
+    """
+    try:
+        return str(tool.ask_reason(validated) or "").strip()
+    except Exception:
+        _log.exception("ask_reason raised for %s; leaving it blank", tool.name)
+        return ""
 
 
 #: The risk classes a concrete tool may declare. Lives here, beside the

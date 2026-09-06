@@ -323,12 +323,18 @@ def preview_change(
     raise ProposeError(f"unknown action: {action}")
 
 
-def document_posture(context: Any) -> str:
-    """What a proposed change to an operator-owned document does right now.
+def document_posture(context: Any, target_path: str) -> str:
+    """What a proposed change to THIS operator-owned document does right now.
 
     One reader, called by every tool that proposes one. Both propose tools
     needed the same answer about the same file and deriving it twice is how a
     document ends up auto for one caller and gated for the other.
+
+    It takes the document because the answer is per document: the mode states
+    a baseline and the operator names the ones held back from it. Every caller
+    already knows which file it is about, so this is a parameter rather than a
+    lookup, and there is no call site that could ask the general question and
+    walk past a hold.
 
     It asks the LIVE policy rather than re-reading `permissions.yaml`, because
     `/mode` changes the mode in memory and leaves the file alone: a call-time
@@ -341,14 +347,15 @@ def document_posture(context: Any) -> str:
     if policy is None:
         return "ask"
     try:
-        return policy.workspace_document_posture()
-    except AttributeError:
-        # A stub policy with no such method: unit fixtures, and nothing else.
-        # `ValueError` is deliberately NOT caught. It means the block does not
-        # name the running mode, which the loader refuses at boot and `reload`
-        # refuses before it mutates anything, so a policy that can raise it
-        # cannot be built here. Swallowing it would turn a condition that
-        # cannot happen into an approval card nobody could explain.
+        return policy.workspace_document_posture(target_path)
+    except (AttributeError, TypeError):
+        # A stub policy with no such method, or one written against the older
+        # per-mode signature: unit fixtures, and nothing else. `ValueError` is
+        # deliberately NOT caught. It means the block does not name the
+        # running mode, which the loader refuses at boot and `reload` refuses
+        # before it mutates anything, so a policy that can raise it cannot be
+        # built here. Swallowing it would turn a condition that cannot happen
+        # into an approval card nobody could explain.
         return "ask"
 
 

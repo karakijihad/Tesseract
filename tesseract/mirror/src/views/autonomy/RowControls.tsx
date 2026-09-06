@@ -63,6 +63,19 @@ export function RowControls({
           unpause
         </Button>
       )}
+      {line.acts.includes('remove') && (
+        // The same call as `unpause`, and a different word, because the word
+        // has to name what pressing it does. Nothing files under a deleted
+        // source any more, so what this clears is the row: there is nothing
+        // to resume and a button saying so would be the panel offering a
+        // repair it cannot make.
+        <Button
+          onClick={() => acts.unpause(line.actsOn ?? line.name)}
+          ariaLabel={`Remove the record of ${line.name}`}
+        >
+          remove
+        </Button>
+      )}
       {line.acts.includes('cancel') && (
         <Button tone="danger" onClick={() => acts.cancel(id)} ariaLabel={`Cancel ${line.name}`}>
           cancel

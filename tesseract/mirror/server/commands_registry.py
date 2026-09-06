@@ -391,6 +391,19 @@ def _make_kernel_tool_handler(tool_name: str) -> CommandHandler:
             return
         name, kv, positional = parsed
         tool_context = session.chat_session.tool_context
+        # The live policy, before the first model turn of the session has put
+        # it there. `brain.tools.execute_tool` syncs it onto the context as a
+        # backstop, which covers every call the MODEL makes and nothing the
+        # operator types: a slash command in a fresh chat reached the tool with
+        # `policy=None`. A tool that reads it could not answer at all, and a
+        # tool that dispatched to another tool had that nested call resolve at
+        # PASSTHROUGH, skipping the ASK or DENY configured for it.
+        #
+        # `app["config"].permissions` is the same object `/mode` mutates and
+        # the config watcher reloads in place, so this is the live answer and
+        # not a second reading of the file.
+        if tool_context.policy is None:
+            tool_context.policy = app["config"].permissions
         try:
             output = await run_slash(
                 registry, name, kv, positional, tool_context,

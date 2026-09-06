@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Awaitable, Callable
 
-from tesseract.brain import context_report
+from tesseract.brain import context_report, context_signal
 from tesseract.brain.auto_recall import (
     auto_recall,
     format_recall_block,
@@ -251,6 +251,15 @@ class Continuation(str, Enum):
 
 _RUNTIME_LATE_PROMPT = "late_prompt"
 _RUNTIME_RUNNING_SUMMARY = "running_summary"
+# What the last consolidation carried over, written into the conversation it
+# cleared. Marked rather than plain for the reason the running summary is: the
+# transcript must not draw it wearing the operator's name, and it must not
+# open a turn, because nobody said anything.
+#
+# NOT in `RUNTIME_ORIGINS`. Those name a turn the runtime STARTED; this is
+# context placed in front of the next turn, which is the running summary's
+# kind and not theirs.
+RUNTIME_CONTINUITY = "continuity"
 # The origins a caller may claim on `send(runtime_origin=...)`. A turn nobody
 # typed carries one, so the transcript can draw it as the runtime speaking and
 # a chat's name cannot be taken from it. Anything not in this set is refused
@@ -328,6 +337,7 @@ def _starts_a_turn(msg: dict[str, Any]) -> bool:
     return (
         msg.get("role") == "user"
         and not _is_running_summary_message(msg)
+        and msg.get(_RUNTIME_KEY) != RUNTIME_CONTINUITY
         and not msg.get("_mid_turn")
     )
 
@@ -2450,15 +2460,51 @@ class ChatSession:
             self._last_head = head
         return head
 
+    def note_continuity(self, text: str) -> bool:
+        """Put the continuity package in front of this conversation.
+
+        Written as a `user` message because that is the only role a provider
+        lets a caller place mid-conversation, and marked so the transcript
+        draws it as the runtime rather than putting the operator's name on
+        sentences they never typed. It does not open a turn: nobody said
+        anything, and counting it would make a cleared conversation report a
+        turn it never took.
+
+        Appended, not prepended. A boundary clears the history and this runs
+        moments later, so in the ordinary case it IS the first message; if the
+        operator got there first it sits after their question, which is late
+        rather than wrong, and putting it in front of a message already
+        answered would rewrite what the turn saw.
+        """
+        body = (text or "").strip()
+        if not body:
+            return False
+        self.history.append({
+            "role": "user",
+            "content": body,
+            "timestamp": _now_iso(),
+            _RUNTIME_KEY: RUNTIME_CONTINUITY,
+        })
+        return True
+
     def refresh_head(self) -> None:
-        """Drop the held sections so the next turn reads them fresh.
+        """Drop what this session carried for a conversation that has been
+        rewritten: the held sections, and the last fullness reading.
 
         Called where the cached prefix is gone anyway, which is the only
-        moment a fresh capsule costs nothing.
+        moment a fresh capsule costs nothing. Both things it drops answer the
+        same question — this session's copy of a conversation was replaced —
+        and they are dropped together because the four sites that replace one
+        are the four sites that replace the other. Kept apart, `/compact_file`
+        on a chat not in focus rewrote that chat's history through
+        `commands.py` rather than through `compact()`, so the head was
+        refreshed and the reading was not, and the next turn on it reported
+        a room the fold had just made back.
         """
         self._held_sections = None
         self._held_for = None
         self._held_revision = None
+        context_signal.forget(self._failures_scope_id)
 
     @property
     def head_hold(self) -> tuple[dict[str, str] | None, str | None, int | None]:
@@ -4291,9 +4337,17 @@ One question, in tokens, and it is `compact_ratio`'s. It used to be
         foldable, self._system_tokens = self._foldable_split(
             self._assemble_for_turn()[0]
         )
-        if self.adapter.count_tokens(foldable) < self._fold_trigger_tokens(
-            ctx, self._system_tokens,
-        ):
+        foldable_tokens = self.adapter.count_tokens(foldable)
+        trigger = self._fold_trigger_tokens(ctx, self._system_tokens)
+        # Published on the way past, from the numbers the decision already
+        # compared. The next turn's prompt renders it, so she reaches a
+        # boundary knowing how close it is instead of having to ask.
+        context_signal.record(
+            self._failures_scope_id,
+            foldable_tokens=foldable_tokens,
+            trigger_tokens=trigger,
+        )
+        if foldable_tokens < trigger:
             return False
         # An arm said yes. Whether that is worth a model call depends on there
         # being something between the anchor and the tail, and finding out
@@ -4631,6 +4685,8 @@ One question, in tokens, and it is `compact_ratio`'s. It used to be
         # both of which return with the history untouched and the prefix still
         # live. Then a background write would move the head for a fold that
         # never happened, and re-read the whole conversation to pay for it.
+        # Drops the held sections and the last fullness reading together: both
+        # described the conversation this line has just rewritten.
         self.refresh_head()
         # How many turns the fold left word for word. The transcript draws its
         # divider in front of them, because everything ABOVE the divider is

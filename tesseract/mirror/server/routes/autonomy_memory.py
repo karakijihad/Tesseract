@@ -40,6 +40,7 @@ from tesseract import paths
 from tesseract.mirror.server.routes._isotime import iso as _iso
 from tesseract.mirror.server.routes.autonomy_entry import stage_summaries, stages_of
 from tesseract.orchestrator.liveness import OperationalState, label_of
+from tesseract.orchestrator.obligation import as_payload as wants
 from tesseract.scheduler.log import iter_runs, runs_path
 
 log = logging.getLogger(__name__)
@@ -86,6 +87,7 @@ def _tree(name: str, root: Path, what: str) -> dict[str, Any]:
             "name": name,
             "state": OperationalState.NOT_INSTRUMENTED.value,
             "label": label_of(OperationalState.NOT_INSTRUMENTED),
+            **wants(OperationalState.NOT_INSTRUMENTED),
             "said": f"nothing has written {what} on this machine yet",
             "at": None,
             "value": "",
@@ -134,6 +136,7 @@ def _tree(name: str, root: Path, what: str) -> dict[str, Any]:
         # it there is, is the fact.
         "state": OperationalState.IDLE.value,
         "label": label_of(OperationalState.IDLE),
+        **wants(OperationalState.IDLE),
         "said": f"{counted} of {what}",
         "at": _iso(datetime.fromtimestamp(newest, tz=timezone.utc)) if newest else None,
         "value": size,
@@ -268,6 +271,7 @@ def retrieval(app: Any) -> list[dict[str, Any]]:
                 "name": "retrieval",
                 "state": OperationalState.NOT_INSTRUMENTED.value,
                 "label": label_of(OperationalState.NOT_INSTRUMENTED),
+                **wants(OperationalState.NOT_INSTRUMENTED),
                 "said": "nothing in this process holds the indexes, so it cannot be asked",
                 "at": None,
                 "value": "",
@@ -286,6 +290,10 @@ def retrieval(app: Any) -> list[dict[str, Any]]:
                 "name": "vector search",
                 "state": OperationalState.NOT_INSTRUMENTED.value,
                 "label": label_of(OperationalState.NOT_INSTRUMENTED),
+                # Somebody chose this in the model settings. The state is
+                # right, and asking about it every time the panel is opened
+                # would be asking about a decision already made.
+                **wants(OperationalState.NOT_INSTRUMENTED, by_choice=True),
                 "said": (
                     "switched off in the model settings, so every question is "
                     "answered by keywords alone and a memory worded "
@@ -320,6 +328,7 @@ def retrieval(app: Any) -> list[dict[str, Any]]:
                     "name": "vector search",
                     "state": OperationalState.DEGRADED.value,
                     "label": label_of(OperationalState.DEGRADED),
+                    **wants(OperationalState.DEGRADED),
                     # No cause named on purpose. A timeout here can mean a busy
                     # model rather than a stopped one, and this line said
                     # "Ollama may be down" 190 times in one evening against an
@@ -339,6 +348,7 @@ def retrieval(app: Any) -> list[dict[str, Any]]:
                     "name": "vector search",
                     "state": OperationalState.IDLE.value,
                     "label": label_of(OperationalState.IDLE),
+                    **wants(OperationalState.IDLE),
                     "said": (
                         "answering, so a memory worded differently is still found"
                         if answered
@@ -356,6 +366,7 @@ def retrieval(app: Any) -> list[dict[str, Any]]:
                 "name": "keyword search",
                 "state": OperationalState.NOT_INSTRUMENTED.value,
                 "label": label_of(OperationalState.NOT_INSTRUMENTED),
+                **wants(OperationalState.NOT_INSTRUMENTED),
                 "said": "nothing in this process holds it",
                 "at": None,
                 "value": "",
@@ -372,6 +383,7 @@ def retrieval(app: Any) -> list[dict[str, Any]]:
                 "name": "keyword search",
                 "state": OperationalState.IDLE.value,
                 "label": label_of(OperationalState.IDLE),
+                **wants(OperationalState.IDLE),
                 "said": "answering",
                 "at": None,
                 "value": f"{rows:,} indexed",

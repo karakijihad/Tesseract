@@ -68,6 +68,14 @@ _LOOP_LAG_WARN_S = 2.0
 # samples it keeps. 0.25s over 240 samples is a minute of history for a few
 # hundred KB — enough to cover any stall worth chasing.
 _LAG_SAMPLE_INTERVAL_S = 0.25
+
+# How long the interpreter gets to close the loop after the drain has finished
+# before the process leaves on its own. Well inside the supervisor's heartbeat
+# budget (twelve probes at ten seconds), so a stop it asked for never reads as
+# an outage, and long enough that a close which is merely slow is left alone:
+# what still runs after this point is cancelling the last tasks, shutting down
+# async generators and draining the default executor.
+_LOOP_CLOSE_GRACE_S = 10.0
 _LAG_SAMPLE_HISTORY = 240
 # (monotonic, formatted top frames) for the event-loop thread only.
 _lag_samples: deque[tuple[float, str]] = deque(maxlen=_LAG_SAMPLE_HISTORY)
@@ -184,10 +192,12 @@ def create_app(config: ServerConfig) -> web.Application:
     app["brief_delivery_task"] = None  # Task | None — brief delivery service; started in _init_background
     app["spawn_heartbeat_task"] = None  # Task | None — long-running-spawn heartbeat; started in _init_background
     app["workspace_reply_retry_task"] = None  # Task | None — unanswered workspace comments; started in _init_background
+    app["liveness_feed_task"] = None  # Task | None — pushes state changes to an open Autonomy panel; started in _init_background
 
     _register_routes(app)
     app.on_startup.append(_on_startup)
     app.on_shutdown.append(_on_shutdown)
+    app.on_cleanup.append(_name_what_still_holds_the_loop)
     return app
 
 
@@ -443,6 +453,9 @@ def _register_routes(app: web.Application) -> None:
     app.router.add_post("/api/settings/voice", settings_route.set_voice)
     app.router.add_post("/api/settings/voice/preset", settings_route.set_voice_preset)
     app.router.add_get("/api/settings/system", settings_route.get_system)
+    app.router.add_get(
+        "/api/settings/workspace-documents", settings_route.get_workspace_documents
+    )
     app.router.add_get("/api/settings/session-policy", settings_route.get_session_policy)
     app.router.add_post("/api/settings/session-policy", settings_route.set_session_policy)
     app.router.add_get("/api/settings/git", settings_git_route.get_git)
@@ -570,6 +583,20 @@ def _start_lag_sampler() -> None:
             time.sleep(_LAG_SAMPLE_INTERVAL_S)
 
     threading.Thread(target=_run, name="mirror-lag-sampler", daemon=True).start()
+
+
+def loop_stall_report(window_s: float) -> str:
+    """What the loop thread has been doing over the last `window_s` seconds.
+
+    Public, and read from a plain thread on purpose. `_watch_stack_dump_requests`
+    calls it while answering the supervisor, which is the one moment the loop
+    may be blocked and unable to report on itself: the monitor below is a
+    coroutine and cannot run until the block ends, so a loop that never
+    recovers writes no stall record at all. The sampler is a plain thread and
+    keeps filling the ring regardless, so this is the only account of a hang
+    that exists while it is still happening.
+    """
+    return _lag_window_report(window_s)
 
 
 def _lag_window_report(lag: float) -> str:
@@ -887,6 +914,13 @@ async def _start_spawn_heartbeat(app: web.Application) -> None:
     app["spawn_heartbeat_task"] = asyncio.create_task(heartbeat_loop(app))
 
 
+async def _start_liveness_feed(app: web.Application) -> None:
+    """What tells an open panel a state changed, instead of it asking again."""
+    from tesseract.mirror.server.liveness_feed import feed_loop
+
+    app["liveness_feed_task"] = asyncio.create_task(feed_loop(app))
+
+
 async def _start_workspace_reply_retry(app: web.Application) -> None:
     """A comment gets one dispatch when it is posted. This is what happens
     when that one fails: the operator asked something in a thread and would
@@ -1103,6 +1137,14 @@ def build_substrate_registry(app: web.Application):
         ),
     )
     reg.add(
+        "liveness_feed", lambda: _start_liveness_feed(app),
+        holds_gil=False,
+        degrade=(
+            "the Autonomy panel still reads every state when a room is opened; "
+            "it just does not hear about one changing while it is open"
+        ),
+    )
+    reg.add(
         "operator_panes", lambda: _prepare_operator_panes(app),
         holds_gil=False,
         degrade=(
@@ -1181,6 +1223,96 @@ async def _init_background(app: web.Application) -> None:
         _mark_warm(app)
 
 
+async def _name_what_still_holds_the_loop(_app: web.Application) -> None:
+    """The last point this process controls, and it is a measurement.
+
+    `web.run_app` calls `loop.close()` immediately after this returns. On
+    Windows that reaches `IocpProactor.close()`, which cancels every
+    outstanding overlapped operation and then loops on `while self._cache:`
+    until they all complete. An operation nobody completes hangs the exit
+    there, in a thread with no timeout, and the supervisor eventually calls it
+    a missed heartbeat and kills the process it asked to restart.
+
+    The teardown above it has already finished by then and every log line it
+    writes is silent on success, so the last thing in the backend log is
+    whatever `_on_shutdown` said last, and nothing at all says why the process
+    is still here. This says which handles are left.
+
+    It is deliberately a reading and not a fix. Reaching into `_proactor._cache`
+    is reaching into CPython's private state, so everything here is guarded and
+    nothing here decides anything: a hang has to be ranked before it is fixed,
+    which is the lesson the three loop-stall causes already taught.
+    """
+    held = ""
+    try:
+        loop = asyncio.get_running_loop()
+        cache = getattr(getattr(loop, "_proactor", None), "_cache", None)
+        if cache:
+            counts: dict[str, int] = {}
+            for entry in list(cache.values()):
+                fields = entry if isinstance(entry, tuple) else (entry,)
+                waiting = fields[0]
+                on = fields[2] if len(fields) > 2 else None
+                shape = f"{type(waiting).__name__} on {type(on).__name__} {str(on)[:120]}"
+                counts[shape] = counts.get(shape, 0) + 1
+            ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+            held = " | ".join(f"{n}x {shape}" for shape, n in ranked)
+            log.warning(
+                "mirror: %d overlapped operation(s) are still outstanding, so "
+                "closing the loop will wait for them: %s", len(cache), held,
+            )
+    except Exception:  # noqa: BLE001 — a reading never delays a stop
+        log.debug("mirror: could not read what still holds the loop", exc_info=True)
+    _leave_anyway(held)
+
+
+def _leave_anyway(held: str) -> threading.Thread:
+    """Stop being here, whatever the loop is still waiting on.
+
+    Everything that had to be written is written by this point: the intent
+    file, the autosaves, the scheduler's records. What is left is the
+    interpreter's own teardown, and on Windows that can wait forever on an
+    overlapped operation nobody will complete.
+
+    Measured on this machine three times in two days, and twice more while
+    this was being written: `POST /api/runtime/restart` drains cleanly in half
+    a second and the process is still there two minutes later, at which point
+    the supervisor calls it a missed heartbeat and tree-kills the stop it
+    asked for. The whole cost of that is the operator waiting six minutes for
+    a restart.
+
+    So this leaves on its own terms instead of being killed on somebody
+    else's. `os._exit` skips the rest of interpreter teardown by design, which
+    is exactly what is hanging; `_watch_stop_request` already uses it as the
+    fallback on the other stop path. Zero, because a drain that finished is a
+    clean stop however the interpreter felt about it, and an exit code the
+    supervisor reads as a crash is the defect this is fixing.
+
+    A daemon thread, so it cannot itself hold the process open, and a plain
+    one, so a blocked loop does not stop it running. If the close finishes
+    normally inside the window, the process is gone and this never fires.
+    """
+    grace = _LOOP_CLOSE_GRACE_S
+
+    def _wait_then_go() -> None:
+        time.sleep(grace)
+        log.error(
+            "mirror: the loop did not close %.0fs after the drain finished, so "
+            "leaving now rather than waiting to be killed. Still outstanding: %s",
+            grace, held or "nothing this could read",
+        )
+        logging.shutdown()
+        os._exit(0)
+
+    thread = threading.Thread(target=_wait_then_go, name="mirror-leave-anyway", daemon=True)
+    thread.start()
+    # Returned so a caller can wait for it. Nothing in the runtime does; a test
+    # must, because a thread still sleeping when its patched `os._exit` is
+    # restored would go on to call the real one and take the runner down with
+    # it. That is not hypothetical, it happened while this was being written.
+    return thread
+
+
 async def _on_shutdown(app: web.Application) -> None:
     """Tear down everything Mirror owns: WS sessions, scheduler tasks,
     observer subscriber, in-flight warmups, PTY processes, and any
@@ -1238,6 +1370,13 @@ async def _on_shutdown(app: web.Application) -> None:
         reply_retry_task.cancel()
         try:
             await reply_retry_task
+        except (asyncio.CancelledError, Exception):
+            pass
+    liveness_task = app.get("liveness_feed_task")
+    if liveness_task is not None:
+        liveness_task.cancel()
+        try:
+            await liveness_task
         except (asyncio.CancelledError, Exception):
             pass
     # mcp-control-plane P2 — signal open MCP SSE streams to close.

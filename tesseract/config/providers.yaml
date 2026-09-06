@@ -297,6 +297,16 @@ api:
         cost_per_mtok_cache_write: 0.25      # 1.25x base
         cache_write_from: uncached_input
         cache_write_min_prompt_tokens: 1024
+        # A prompt over this size bills the WHOLE request at the rates below.
+        # Measured 2026-09-05 against a full day's invoice: 55% of the day's
+        # input tokens were over the line and the runtime, which had no tier at
+        # all, under-billed by 32%. Note output is 1.5x where the three input
+        # classes are 2x, so these are stated and not multiplied.
+        long_context_threshold_tokens: 272000
+        cost_per_mtok_in_long: 0.4
+        cost_per_mtok_out_long: 1.8
+        cost_per_mtok_cached_in_long: 0.04
+        cost_per_mtok_cache_write_long: 0.5
         capabilities:
           vision_input: true
           audio_input: false

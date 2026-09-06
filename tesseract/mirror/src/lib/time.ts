@@ -35,3 +35,42 @@ export function clock(iso: string | null | undefined): string {
   if (at.toDateString() === now.toDateString()) return at.toTimeString().slice(0, 5);
   return at.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
 }
+
+
+/** When a reading was taken, and whether it still stands.
+ *
+ * A number with no age reads as a number about now. `expectedWithin` is the
+ * producer's own cadence in seconds, from the row's own declaration, so this
+ * says how old a reading is against what it promised rather than against a
+ * threshold written here. Past its own cadence it says so; past twice it says
+ * the reading is no longer current, which is what the room's `unknown` means.
+ *
+ * The words are deliberately about the READING and not about the machine: a
+ * sweep being late says nothing about whether anything is wrong, and this
+ * surface has been reprimanded for confusing the two.
+ */
+export function freshness(
+  iso: string | null | undefined,
+  expectedWithin: number | null | undefined,
+): string {
+  if (!iso) return '';
+  const at = new Date(iso).getTime();
+  if (Number.isNaN(at)) return '';
+  const taken = clock(iso);
+  if (!expectedWithin || expectedWithin <= 0) return taken;
+  const late = Math.floor((Date.now() - at) / 1000) - expectedWithin;
+  if (late <= 0) return `${taken}, every ${inWords(expectedWithin)}`;
+  return `${taken}, ${inWords(late)} late`;
+}
+
+/** A span of seconds as a person says it. Whole units only: a row is 31 pixels
+ *  tall and "1h 4m 12s" is not what anybody reads off one. */
+export function inWords(seconds: number): string {
+  const whole = Math.max(0, Math.round(seconds));
+  if (whole < 60) return `${whole}s`;
+  const min = Math.round(whole / 60);
+  if (min < 60) return `${min}m`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr}h`;
+  return `${Math.round(hr / 24)}d`;
+}

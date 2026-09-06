@@ -465,36 +465,13 @@ async def cmd_reset(
     model = getattr(app.get("adapter_options"), "model", "") or ""
 
     if arg_norm == "clear":
-        session.chat_session.reset()
-        session.started_at = datetime.now(timezone.utc).isoformat()
-        session.turn_count = 0
-        def _persist_and_index() -> None:
-            chat_store.persist_session_chats(session, model=model)
-            # And the recall chunks go with the transcript, here rather than at
-            # teardown: until this runs the cleared conversation is still
-            # searchable by its own content, which is the thing the operator
-            # just asked to be gone.
-            chat_store.index_chat(session.active_chat_id)
-
-        try:
-            # A thread, for the reason the autosave path takes one: this writes
-            # files and SQLite, and on the loop it stops everything including
-            # the health probe the supervisor kills the backend for missing.
-            await asyncio.to_thread(_persist_and_index)
-        except Exception:
-            log.exception("reset clear: persist failed for %s", session.session_id)
-        await send_envelope(session, make_envelope(
-            "session_reset", "session", session.session_id,
-            {
-                "autosaved": False,
-                "chat_id": session.active_chat_id,
-                "title": None,
-                "path": None,
-                "reflected": False,
-                "reflect_saves": 0,
-                "mode": "clear",
-            },
-        ))
+        # The wipe itself is shared with the agent's own boundary, which ends
+        # in exactly this state. What is NOT shared is everything before it:
+        # a clear is the operator asking for the conversation to be gone, so
+        # nothing is archived and nothing reflects.
+        await _wipe_in_place(
+            session, model=model, mode="clear", chat_id=session.active_chat_id
+        )
         return
 
     await start_fresh_chat(
@@ -504,6 +481,111 @@ async def cmd_reset(
             app, session, session.chat_session, reason="ws_reset", label="reset"
         ),
     )
+
+
+async def _wipe_in_place(
+    session: ServerSession, *, model: str, mode: str, chat_id: str
+) -> None:
+    """Clear the conversation on screen, keep its id, and make disk agree.
+
+    Shared by the operator's `/reset clear` and by the agent's own boundary,
+    because they end in exactly the same state and the difference between them
+    is entirely in what happens BEFORE this: a boundary reflects and archives
+    first, and a clear does neither.
+
+    Re-indexing is the half that is easy to leave out. Until it runs, the
+    cleared conversation is still searchable by its own content, which is what
+    was just taken off the screen.
+    """
+    session.chat_session.reset()
+    session.started_at = datetime.now(timezone.utc).isoformat()
+    session.turn_count = 0
+
+    def _persist_and_index() -> None:
+        chat_store.persist_session_chats(session, model=model)
+        chat_store.index_chat(chat_id)
+
+    try:
+        # A thread, for the reason the autosave path takes one: this writes
+        # files and SQLite, and on the loop it stops everything including the
+        # health probe the supervisor kills the backend for missing.
+        await asyncio.to_thread(_persist_and_index)
+    except Exception:
+        log.exception("%s: persist failed for %s", mode, session.session_id)
+    await send_envelope(session, make_envelope(
+        "session_reset", "session", session.session_id,
+        {
+            "autosaved": False,
+            "chat_id": chat_id,
+            "title": None,
+            "path": None,
+            "reflected": False,
+            "reflect_saves": 0,
+            "mode": mode,
+        },
+    ))
+
+
+async def consolidate_in_place(
+    app: web.Application,
+    session: ServerSession,
+    *,
+    chat_id: str | None = None,
+    on_persisted: Callable[[], bool] | None = None,
+) -> bool:
+    """The cockpit's ending: archive what was said, then clear the same thread.
+
+    Not `start_fresh_chat`. That archives the record and opens a NEW chat, and
+    it is still what the operator's own `/reset` does. A boundary the agent
+    reached is a different act: the work goes on, or it does not, and either
+    way the person stays in the conversation they were in. So the content is
+    copied into its own archived record, this one is cleared, and the id and
+    the place in the rail never move.
+
+    Ordered persist, archive, reflect, clear. Reflection is fired after the
+    transcript is safely written, so a failed write cannot cost a model turn,
+    and before the clear, because it reads a snapshot taken when it is called
+    and a cleared conversation has nothing in it.
+
+    Returns whether the conversation was actually cleared. `False` leaves it
+    standing and the caller falls back to a fold.
+    """
+    outgoing_id = session.active_chat_id
+    if chat_id is not None and chat_id != outgoing_id:
+        log.warning(
+            "not consolidating: the turn ran in chat %s and the operator is "
+            "looking at %s, so nothing was touched",
+            chat_id, outgoing_id,
+        )
+        return False
+    model = getattr(app.get("adapter_options"), "model", "") or ""
+    history = list(session.chat_session.history)
+    if not history:
+        # Nothing was said, so there is nothing to archive, nothing to clear
+        # and nothing to reflect on. The boundary is satisfied.
+        return True
+
+    try:
+        await asyncio.to_thread(
+            chat_store.persist_session_chats, session, model=model
+        )
+    except Exception:
+        log.exception("consolidation: persist failed for %s", outgoing_id)
+        return False
+
+    record = chat_store.load_chat(outgoing_id, include_channels=True)
+    if chat_store.archive_copy(record, history) is None:
+        # The copy is what makes the clear safe. Without it the clear is a
+        # delete, so it does not happen and the caller folds instead.
+        return False
+
+    if on_persisted is not None:
+        on_persisted()
+
+    await _wipe_in_place(
+        session, model=model, mode="consolidate", chat_id=outgoing_id
+    )
+    return True
 
 
 async def start_fresh_chat(

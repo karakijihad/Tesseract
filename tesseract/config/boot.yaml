@@ -82,7 +82,7 @@ layers:
     blocks_window: false
     carries: [autonomy_kernel, config_watcher, activity_subscriber,
               mcp_clients, workspace_watch, brief_delivery, spawn_heartbeat,
-              workspace_reply_retry, operator_panes]
+              workspace_reply_retry, liveness_feed, operator_panes]
 
   # Work whose absence costs a first-use latency and nothing else.
   - id: opportunistic

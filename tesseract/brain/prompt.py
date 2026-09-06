@@ -147,6 +147,7 @@ from typing import Any, Callable
 from tesseract.lib.atomic_replace import replace_with_retry
 from tesseract.paths import home_dir
 
+from tesseract.brain import context_signal
 from tesseract.brain.prompt_autonomy import (
     AUTONOMY_DIGEST_LEAD,
     OPEN_AGENDA_STATUSES,
@@ -292,6 +293,35 @@ def _core_schema_chars(registry: Any) -> int:
     except Exception:
         logger.exception("prompt: could not size the tool schemas; budgeting prose alone")
         return 0
+
+
+def _build_context_fullness_section(scope: str | None) -> str:
+    """How much room this conversation has left, from the last measurement.
+
+    Empty until the fold decision has measured once, and empty for a
+    measurement taken outside any conversation. That is the honest answer in
+    both cases: a short conversation has no boundary in sight, and a rendering
+    with no session behind it is not describing anyone's room. A percentage
+    invented for either would be read as a fact.
+
+    `scope` is the per-session id `PromptInputs` already carries for the
+    failures streak. What publishes the numbers, and why they cannot be
+    measured here, is in `context_signal`.
+    """
+    reading = context_signal.read(scope)
+    if reading is None:
+        return ""
+    if reading.ratio >= 1.0:
+        body = (
+            "This conversation has used all the room it gets before the "
+            "runtime consolidates it on its own."
+        )
+    else:
+        body = (
+            f"This conversation has used about {round(reading.ratio * 100)}% "
+            "of the room it gets before the runtime consolidates it on its own."
+        )
+    return _section("Room left", body)
 
 
 def _build_now_section() -> str:
@@ -785,6 +815,24 @@ SECTIONS: tuple[Section, ...] = (
         # reach the next turn, not the next restart — and the failures half
         # tracks a streak that moves inside a single turn. Nothing about it
         # holds still long enough for the head.
+        changes="every_turn",
+    ),
+    # How full she is. Beside the agenda because the two are what a boundary
+    # decision rests on: what is owed, and whether there is room left to do it
+    # in. OPERATING.md says what the three answers are; this says only where
+    # the conversation stands, which is the half that changes.
+    Section(
+        "fullness", lambda ctx: _build_context_fullness_section(ctx.failures_scope),
+        group="memory", label="room left",
+        description="How much of the room this conversation gets has been "
+                    "used, as the fold decision last measured it.",
+        # No panel draws it. `context_read` answers the same question as a
+        # tool result, which is not a view to send someone to.
+        origin=None,
+        # A number that moves with every turn, and the one section here whose
+        # whole point is that it is current. In the head it would re-read the
+        # conversation behind it every turn to report how long that
+        # conversation is.
         changes="every_turn",
     ),
     Section(

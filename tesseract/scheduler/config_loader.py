@@ -497,6 +497,15 @@ def shipped_job_names(config_dir: Path | None = None) -> set[str]:
     if declared is not None:
         return declared
     user_dir, system_dir = _config_roots(target)
+    # The declaration again, against the SYSTEM tree. A real install has no
+    # `_shipping/` there — the build folds it away — so this is None and the
+    # branch below is unchanged. It is not None when the system tree is this
+    # checkout and only the user dir moved, which is every test that points
+    # `TESSERACT_HOME` at a tmp dir: without this the install branch reads the
+    # live file and reports a row only this checkout has as one the app ships.
+    declared = _declared_shipping_rows(system_dir)
+    if declared is not None:
+        return declared
     if user_dir is not None:
         # An install. The two trees separate cleanly and the shipped one is
         # already the answer; the operator's own rows are correctly absent.

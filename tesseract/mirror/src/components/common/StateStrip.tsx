@@ -17,12 +17,22 @@
 
 import type { ReactNode } from 'react';
 import { Row } from '../../components/common/Row';
-import type { OperationalState } from '../../lib/api';
+import type { Obligation, OperationalState } from '../../lib/api';
 
 export interface StateLine {
   key: string;
   /** The state the backend wrote. Never one decided here. */
   state: OperationalState;
+  /** What the row asks of whoever reads it, which is what its colour says.
+   *
+   *  A row in a ROOM is a claim about now and carries one. A row in a record
+   *  list is not: an entry card's ten past runs are outcomes, and colouring
+   *  them by what they want would flatten every one of them to the same
+   *  neutral. Those pass none, and the edge falls back to the state, which is
+   *  their subject. The distinction is declared rather than accidental, and it
+   *  is the panel's own rule: a row is actionable or it is explicitly a
+   *  record. */
+  obligation?: Obligation;
   /** What to call that state on screen. The backend's word. */
   label?: string;
   name: string;
@@ -127,7 +137,7 @@ export function StateStrip({
           <Row
             key={line.key}
             onClick={line.onOpen}
-            className={`state-line state-line--${line.state}`}
+            className={`state-line state-line--${line.obligation ?? line.state}`}
             ariaLabel={`${line.name}, ${line.label ?? line.state}${
               line.tag ? `, ${line.tag}` : ''
             }`}
@@ -136,7 +146,10 @@ export function StateStrip({
           </Row>
         ) : (
           // Not a Row: nothing opens, so nothing about it may suggest it does.
-          <div key={line.key} className={`state-line state-line--${line.state}`}>
+          <div
+            key={line.key}
+            className={`state-line state-line--${line.obligation ?? line.state}`}
+          >
             <Body line={line} />
           </div>
         ),

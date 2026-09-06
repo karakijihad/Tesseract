@@ -222,3 +222,4 @@ core:
 #   - context_set  # Change when a conversation folds, and how much of it survives.
 #   - pipeline_run_stage  # Runs one step of the scheduled maintenance work now, off its schedule.
 #   - retention_set_window  # Sets how many days one of this machine's own logs is kept for.
+#   - workspace_hold  # Says which of the operator's own documents a change must be asked about, and changes that.

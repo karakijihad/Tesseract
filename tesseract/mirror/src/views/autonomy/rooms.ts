@@ -1,22 +1,31 @@
-// How each room is doing, and what it just did.
+// What each room just did, in its own record lines.
 //
 // **The SENTENCE is not here.** `GET /api/autonomy/rooms` writes it, from the
 // numbers the backend counts, under the rule the watchman already follows: a
 // figure that was not observed is dropped and the counts are published
 // instead. This file never writes a word about the machine.
 //
-// What it does own is the two things that are a reading of data already on
-// screen rather than a description of it: the MARK, which is the worst state
-// in the room, and the TAIL, which is that room's own record lines in the
-// order they happened. Neither is prose.
+// **The MARK is not here either, any more.** It was, in eight functions, one
+// per room, and they disagreed: `failed` rendered red in six of them and amber
+// in two, `refused` amber in one and red in another, and the room that counted
+// `not_instrumented` as bad drew a red rail dot over a neutral dashed row on
+// the same screen. Each author had solved their own case, and each had left a
+// comment warning about exactly that hazard. It is one function on the backend
+// now, `routes/autonomy_rooms.py::marks_for`, over one vocabulary,
+// `orchestrator/obligation.py`, and it arrives beside the room's sentence.
 //
-// A room whose producer does not exist is drawn unwired rather than quiet. A
-// rail that goes silent when nothing is watching tells the operator nothing is
-// wrong.
+// What is left here is the TAIL: that room's own record lines, in the order
+// they happened. Not prose, and not a severity.
+//
+// **The invariant list this panel is built against** is in
+// `routes/autonomy_health.py`. The three that bind this file: colour encodes
+// obligation and never internal state; severity is decided once, in one
+// function, from one vocabulary; and never two answers to one question on one
+// screen.
 
-import type { NavRailMark } from '../../components/common/NavRail';
 import type {
   AgendaItem,
+  OperationalState,
   AtlasResponse,
   ChannelsResponse,
   MemoryResponse,
@@ -38,16 +47,16 @@ const TAIL_LINES = 4;
 const HELD: ReadonlySet<string> = new Set(['blocked', 'awaiting_operator']);
 
 export interface RoomLine {
-  mark: NavRailMark;
   tail: RoomTail;
 }
 
-/** What a room with no producer says, in both places, so the rail row and the
- *  band agree about what is missing. */
+/** What a room whose feed could not be read says under it. The rail's own mark
+ *  comes from the backend and is simply absent when this is: a rail that
+ *  invented a colour for a room it could not read would be the ninth roll-up. */
 const NO_RECORD = 'Nothing records this room yet.';
 
 function unwired(label: string): RoomLine {
-  return { mark: 'unwired', tail: { label, lines: [], unwired: NO_RECORD } };
+  return { tail: { label, lines: [], unwired: NO_RECORD } };
 }
 
 function clock(iso: string | null | undefined): string {
@@ -57,6 +66,21 @@ function clock(iso: string | null | undefined): string {
   const now = new Date();
   if (at.toDateString() === now.toDateString()) return at.toTimeString().slice(0, 8);
   return at.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+}
+
+/** How a record line is toned.
+ *
+ * ONE function for every room's tail, over one vocabulary, which is what the
+ * eight roll-ups were not. It reads the STATE rather than the obligation, and
+ * that is the distinction the two axes exist for: the band above says what
+ * wants the operator, and this band says what happened. A step that failed
+ * last night asks for nothing and is still the line worth finding on a list of
+ * twenty.
+ */
+function tone(state: OperationalState): TailLine['severity'] {
+  if (state === 'failed') return 'bad';
+  if (state === 'degraded' || state === 'refused') return 'warn';
+  return 'info';
 }
 
 function newestFirst(lines: TailLine[]): TailLine[] {
@@ -81,38 +105,23 @@ interface RoomInputs {
 
 /** Overview: what wants the operator, and what the machine just did.
  *
- * The mark reads the room's OWN first band rather than re-joining the four
- * producers behind it. Two readings of one list are two answers to one
- * question, and the room is the half the operator can check.
- *
- * The tail is deliberately NOT that band restated. The band is what needs you;
+ * The tail is deliberately NOT the first band restated. The band is what needs you;
  * the line under it is what happened, whether or not anything went wrong. */
 function overviewRoom({ overview }: RoomInputs): RoomLine {
   const label = 'What just ran';
   if (overview === null) {
-    return { mark: 'unwired', tail: { label, lines: [], unwired: NO_RECORD } };
+    return { tail: { label, lines: [], unwired: NO_RECORD } };
   }
-  const wanting = overview.wantsYou;
-  const mark: NavRailMark = wanting.some((e) => e.state === 'failed')
-    ? 'bad'
-    : overview.wantsYouTotal > 0
-      ? 'warn'
-      : 'ok';
   const lines: TailLine[] = overview.ranWhileAway.map((run) => ({
     key: `ran:${run.name}:${run.at ?? ''}`,
     sortKey: run.at ?? '',
     at: clock(run.at),
     source: run.name,
     text: run.said,
-    severity:
-      run.state === 'failed'
-        ? 'bad'
-        : run.state === 'degraded' || run.state === 'refused'
-          ? 'warn'
-          : 'info',
+    severity: tone(run.state),
   }));
 
-  return { mark, tail: { label, lines: newestFirst(lines) } };
+  return { tail: { label, lines: newestFirst(lines) } };
 }
 
 /** Blocked and paused: what is waiting on something outside it. */
@@ -137,16 +146,12 @@ function blocked({ items, pauses }: RoomInputs): RoomLine {
     })),
   ];
   return {
-    mark: held.length > 0 || pauses.length > 0 ? 'warn' : 'quiet',
     tail: { label: 'What is holding them', lines: newestFirst(lines) },
   };
 }
 
 /** Recent outcomes: what finished, and what the kernel decided on its own. */
 function outcomes({ items }: RoomInputs): RoomLine {
-  const badly = items.filter(
-    (i) => i.status === 'cancelled' || i.status === 'abandoned' || i.status === 'failed',
-  ).length;
   const lines: TailLine[] = items
     .map((i): TailLine | null => {
       const last = i.status_history[i.status_history.length - 1];
@@ -163,7 +168,6 @@ function outcomes({ items }: RoomInputs): RoomLine {
     })
     .filter((l): l is TailLine => l !== null);
   return {
-    mark: badly > 0 ? 'warn' : 'quiet',
     tail: { label: 'What it decided', lines: newestFirst(lines) },
   };
 }
@@ -178,10 +182,7 @@ function journalRoom({ journal }: RoomInputs): RoomLine {
     text: row.summary ?? '',
     severity: 'info' as const,
   }));
-  return {
-    mark: 'quiet',
-    tail: { label: 'Latest', lines: newestFirst(lines) },
-  };
+  return { tail: { label: 'Latest', lines: newestFirst(lines) } };
 }
 
 /** Health: is the runtime itself well.
@@ -192,23 +193,14 @@ function journalRoom({ journal }: RoomInputs): RoomLine {
 function health({ health: feed }: RoomInputs): RoomLine {
   const label = 'The runtime, as it happens';
   if (feed === null) {
-    return { mark: 'unwired', tail: { label, lines: [], unwired: NO_RECORD } };
+    return { tail: { label, lines: [], unwired: NO_RECORD } };
   }
-  const wanting = feed.departments.filter((d) => d.band === 'needs_action');
   // A gap and a stated absence are different things, and only one of them is
   // an alarm. `unknown` means something is watching and could not report, so
   // the room is not well; `not_instrumented` means nothing produces this at
   // all, which is a fact the room states and not a fault it has. Counting the
   // second as a warning would leave this rail permanently amber on a machine
   // that has simply never tripped a breaker.
-  const gaps = feed.departments.filter((d) => d.state === 'unknown');
-  const mark: NavRailMark = feed.sweptAt === null
-    ? 'unwired'
-    : wanting.some((d) => d.state === 'failed')
-      ? 'bad'
-      : wanting.length > 0 || gaps.length > 0
-        ? 'warn'
-        : 'ok';
   const lines: TailLine[] = feed.tail.map((row, i) => ({
     key: `${row.sortKey}:${i}`,
     sortKey: row.sortKey,
@@ -218,7 +210,6 @@ function health({ health: feed }: RoomInputs): RoomLine {
     severity: row.severity,
   }));
   return {
-    mark,
     tail: { label, lines: newestFirst(lines) },
   };
 }
@@ -233,18 +224,12 @@ function health({ health: feed }: RoomInputs): RoomLine {
 function managed({ managed: roster }: RoomInputs): RoomLine {
   const label = 'What fired recently';
   if (roster === null) {
-    return { mark: 'unwired', tail: { label, lines: [], unwired: NO_RECORD } };
+    return { tail: { label, lines: [], unwired: NO_RECORD } };
   }
   // Deliberately not the alarms: every pending alarm is `pending`, which is
   // what an alarm IS, so counting them here turned the rail amber for as long
   // as one existed. An agent waiting to be approved is the pending that wants
   // somebody.
-  const all = [...roster.schedules, ...roster.agents];
-  const mark: NavRailMark = all.some((l) => l.state === 'failed')
-    ? 'bad'
-    : all.some((l) => l.state === 'refused' || l.state === 'pending')
-      ? 'warn'
-      : 'ok';
   const lines: TailLine[] = roster.schedules
     .filter((l) => l.at)
     .map((l) => ({
@@ -253,17 +238,16 @@ function managed({ managed: roster }: RoomInputs): RoomLine {
       at: clock(l.at),
       source: l.name,
       text: l.said,
-      severity:
-        l.state === 'failed' ? 'bad' : l.state === 'degraded' || l.state === 'refused' ? 'warn' : 'info',
+      severity: tone(l.state),
     }));
-  return { mark, tail: { label, lines: newestFirst(lines) } };
+  return { tail: { label, lines: newestFirst(lines) } };
 }
 
 /** What was dropped at the door, and why. */
 function pruned({ pruned: ledger }: RoomInputs): RoomLine {
   const label = 'Dropped at the door';
   if (ledger === null) {
-    return { mark: 'unwired', tail: { label, lines: [], unwired: NO_RECORD } };
+    return { tail: { label, lines: [], unwired: NO_RECORD } };
   }
   const lines: TailLine[] = ledger.records.map((row, i) => ({
     key: `${row.ts}:${i}`,
@@ -277,7 +261,7 @@ function pruned({ pruned: ledger }: RoomInputs): RoomLine {
   // is the admission gate working, not a fault, and a rail that went amber
   // every time it worked would teach the operator to stop reading the colour.
   // The written line says the count for anyone who wants it.
-  return { mark: 'quiet', tail: { label, lines: newestFirst(lines) } };
+  return { tail: { label, lines: newestFirst(lines) } };
 }
 
 /** Channels: whether the operator is reachable, and what last reached them.
@@ -289,9 +273,6 @@ function pruned({ pruned: ledger }: RoomInputs): RoomLine {
 function channels({ channels: payload }: RoomInputs): RoomLine {
   const label = 'What it sent you';
   if (payload === null) return unwired(label);
-  const down = payload.adapters.filter(
-    (door) => door.state !== 'running' && door.state !== 'degraded',
-  );
   const lines: TailLine[] = payload.lastMessage
     ? [
         {
@@ -305,7 +286,6 @@ function channels({ channels: payload }: RoomInputs): RoomLine {
       ]
     : [];
   return {
-    mark: down.length > 0 ? 'bad' : 'quiet',
     tail: { label, lines },
   };
 }
@@ -320,35 +300,20 @@ function channels({ channels: payload }: RoomInputs): RoomLine {
 function memory({ memory: payload }: RoomInputs): RoomLine {
   const label = 'What the last pass did to it';
   if (payload === null) return unwired(label);
-  const impaired = payload.retrieval.filter(
-    (row) => row.state === 'degraded' || row.state === 'failed',
-  );
-  const blind = payload.retrieval.filter((row) => row.state === 'not_instrumented');
   const lines: TailLine[] = payload.lastNight.map((step) => ({
     key: step.stage,
     sortKey: step.stage,
     at: step.took,
     source: step.stage,
     text: step.reason || step.label,
-    severity:
-      step.state === 'failed' ? ('bad' as const)
-      : step.state === 'degraded' ? ('warn' as const)
-      : ('info' as const),
+    severity: tone(step.state),
   }));
   return {
-    mark: impaired.length > 0 ? 'warn' : blind.length > 0 ? 'unwired' : 'quiet',
     tail: { label, lines },
   };
 }
 
 /** What it throws away: what ages, and what nothing has decided about.
- *
- * The mark is the SWEEP's. A tree nothing has decided about is a standing
- * question and not a fault, and the band will hold rows for as long as it
- * takes somebody to answer them: a rail amber the whole time would teach the
- * operator to stop reading the colour, which is the argument Pruned already
- * settled. The written line carries the count, and the number worth acting on
- * is in it.
  *
  * What IS a fault is a tree the sweep could not touch. Nothing swept at all is
  * unwired rather than calm: no window has been applied here, which is not the
@@ -357,31 +322,15 @@ function memory({ memory: payload }: RoomInputs): RoomLine {
 function retention({ retention: payload }: RoomInputs): RoomLine {
   const label = 'What the last sweep did';
   if (payload === null) return unwired(label);
-  const failed = payload.ages.filter((row) => row.state === 'failed');
-  const impaired = payload.ages.filter((row) => row.state === 'degraded');
-  const swept = payload.ages.filter((row) => row.state !== 'not_instrumented');
   const lines: TailLine[] = payload.ages.map((row) => ({
     key: `ages:${row.name}`,
     sortKey: row.name,
     at: clock(row.at),
     source: row.name,
     text: row.said,
-    severity:
-      row.state === 'failed'
-        ? ('bad' as const)
-        : row.state === 'degraded'
-          ? ('warn' as const)
-          : ('info' as const),
+    severity: tone(row.state),
   }));
   return {
-    mark:
-      failed.length > 0
-        ? 'bad'
-        : impaired.length > 0
-          ? 'warn'
-          : swept.length === 0
-            ? 'unwired'
-            : 'quiet',
     tail: { label, lines: newestFirst(lines) },
   };
 }
@@ -401,27 +350,15 @@ function atlas({ atlas: payload }: RoomInputs): RoomLine {
   // `graph` only: the band saying what the map does not cover is every row
   // `not_instrumented` by construction, and reading it here would leave the
   // rail permanently unwired on a machine where nothing is wrong.
-  const neverDrawn = payload.graph.some(
-    (row) => row.state === 'not_instrumented',
-  );
-  const wrong = payload.graph.filter(
-    (row) => row.state === 'degraded' || row.state === 'failed',
-  );
   const lines: TailLine[] = payload.lastPass.map((step) => ({
     key: step.stage,
     sortKey: step.stage,
     at: step.took,
     source: step.stage,
     text: step.reason || step.label,
-    severity:
-      step.state === 'failed'
-        ? ('bad' as const)
-        : step.state === 'degraded'
-          ? ('warn' as const)
-          : ('info' as const),
+    severity: tone(step.state),
   }));
   return {
-    mark: neverDrawn ? 'unwired' : wrong.length > 0 ? 'warn' : 'quiet',
     tail: { label, lines },
   };
 }

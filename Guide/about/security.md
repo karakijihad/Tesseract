@@ -167,6 +167,36 @@ deleted rather than emptied. The day by day log that channel keeps is not
 removed, so the assistant can still be asked to read those days back. If you
 want a channel conversation gone from that log too, delete the log.
 
+### The assistant can clear a conversation too, and it never loses one
+
+A long conversation costs money on every turn whether or not the work has moved
+on, so the assistant can decide it is finished with the one it is in. When it
+does, the conversation you are looking at is emptied and the work carries on in
+the same thread, under the same name, in the same place in the list.
+
+**What was said is copied out before anything is emptied.** It lands as its own
+conversation in the archive, and it stays searchable there, so the assistant can
+still be asked what was said and you can still read it. The copy is written
+first and the emptying only happens if it succeeded: a copy that could not be
+written means the conversation is left exactly as it was.
+
+This is not the same act as you clearing one. Clearing is you saying you want a
+conversation gone, so nothing is kept. This is the assistant saying the room is
+full or the subject has changed, so everything is kept and only the room is made
+back.
+
+You are told each time, in the conversation itself, and it says what carried
+over: what the work was, what is done, what is left, and what it wrote to memory
+on the way past. Nothing is summarised into that note. The transcript it came
+from is whole, in the archive, and the note holds references to it rather than a
+retelling of it.
+
+The assistant can also be refused. If it asks to carry work on when the last
+boundary reported nothing left to do, or reports the same next step over and
+over, or has done it more times in a row than `roles.yaml` allows, the runtime
+stops it and says which of those it was. That is written down too, so a
+conversation the runtime stopped can be told apart later from one that finished.
+
 ## Tool authority
 
 Every tool call resolves to one of three postures before it runs:
@@ -180,6 +210,15 @@ Every tool call resolves to one of three postures before it runs:
 That holds for work the runtime starts on your behalf as well, not only for
 calls the assistant composes: a link you send over Telegram is fetched under the
 same posture as if it had asked to read that page itself.
+
+**A command you type is not asked about, and what it goes on to do still is.**
+Typing `/something` is you making the call, so the runtime does not turn round
+and ask you to approve it. Until 2026-09-06 that carried further than it should
+have: a typed command reached the tool without the permission policy attached
+at all, so if that tool called a second tool, the second call was not measured
+against your settings either and simply ran. The hard security layer always
+applied, and your own call is still not asked about, but anything downstream of
+it is now judged the way it would be if the assistant had made the call itself.
 
 **A tool can also be refused because the thing behind it is not answering, and
 that happens before you are asked anything.** A tool says what it cannot work
@@ -231,6 +270,25 @@ with the full difference, and nothing is written until you approve it. Under
 `free`, the mode for unattended operation, it is applied straight away and the
 same card is filed already decided.
 
+**And you can hold some of them back from that.** One answer for all six was
+too blunt: `OPERATING.md` is the rules the assistant works by, and rewriting it
+unattended is not the same act as adding a line to a diary. Any document you
+name always waits for you, whatever the mode says. A fresh install names
+`OPERATING.md`, `WORKSHOP.md` and `CHANNEL.md`, the three whose contents decide
+what the assistant may do next: the rules it works by, the place it authors
+tools, and the file that is put in front of it on every message that arrives
+over a channel. A change to that last one is in force on the very next
+message, on a surface you may not be watching. Change the list in Settings
+under About, or ask for it on any channel: both send the same
+`workspace_hold`, so the choice is one you can make from your phone.
+
+The list can only hold a document back. Letting one go means it follows the
+mode again, and the mode's own answer still applies, so nothing here hands out
+more than the mode already does. Direct writes take no exceptions at all: they
+are refused on every one of these files in every mode, which is what makes a
+proposal the only way in, and the runtime refuses to start on a config that
+tries to except one.
+
 **Flipping to `free` costs speed, not visibility.** An applied change goes
 through exactly the path an approved one does: the same lock on the file, the
 same check that it has not changed underneath, the same record afterwards
@@ -240,10 +298,10 @@ a line to the journal on the Autonomy panel, which is where every decision made
 without you is listed, so "what did it change while I was away" is answerable
 from your phone and not only at the desk.
 
-Both facts are stated in one place, `workspace_documents` in
+All of it is stated in one place, `workspace_documents` in
 `tesseract/config/permissions.yaml`: which files are on the list, that direct
-writes are refused, and what a proposal does in each mode. There is no second
-list to fall out of step with it.
+writes are refused, what a proposal does in each mode, and which documents you
+hold back from that. There is no second list to fall out of step with it.
 
 ## Tools you write yourself
 
@@ -536,6 +594,21 @@ Every tool call that passes the gate is appended to
 `runtime/logs/approvals.jsonl` — one JSON line carrying the time, the tool, a
 truncated summary of its input, which policy layer decided, and the outcome.
 The file is append-only and survives restarts.
+
+**Wherever you answered.** A prompt you answered on a channel writes the same
+row as one you answered at the desk. Until 2026-09-05 it did not: the channel
+gate filed a card in the workspace and nothing in the ledger, so the one record
+meant to answer "what was approved, and by whom" was blind to every decision
+taken away from the machine. Fifteen tool calls approved from a phone in half
+an hour left no trace in it.
+
+**And the prompt says why it is asking.** Most prompts are explained by what
+they carry, and a command is its own explanation. Some are not: `bash` and
+`command_run` can be asked about in a mode you have already relaxed, because a
+few security checks ask in every mode and no setting moves them. Those prompts
+now name the check, say what it is about, and say plainly that the mode does
+not change it, so the answer to an unexpected question is not a hunt through
+Settings. Both surfaces show the same sentence.
 
 **And the decisions that are not tool calls.** When autonomy parks a piece of
 work because it declared it needs you, and you release it or drop it from a

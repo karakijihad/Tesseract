@@ -48,6 +48,7 @@ from tesseract.mirror.server.routes._isotime import took as _took
 from tesseract.orchestrator.autonomy.agenda_store import AgendaStore
 from tesseract.orchestrator.autonomy.models import AgendaSource
 from tesseract.orchestrator.liveness import OperationalState, label_of
+from tesseract.orchestrator.obligation import as_payload as wants
 from tesseract.scheduler.cadence import next_fire
 
 log = logging.getLogger(__name__)
@@ -115,6 +116,8 @@ def line(
     opens: dict[str, str] | None = None,
     acts: tuple[str, ...] = (),
     acts_on: str | None = None,
+    by_choice: bool = False,
+    ended: bool = False,
 ) -> dict[str, Any]:
     """One row in a band.
 
@@ -134,6 +137,11 @@ def line(
         "name": name,
         "state": state.value,
         "label": label_of(state),
+        # What the row asks of whoever reads it, which is the only thing a
+        # colour on this panel encodes. Derived once, in
+        # `orchestrator/obligation.py`, so a room cannot decide for itself what
+        # red means: eight of them each decided, and the panel was amber anyway.
+        **wants(state, by_choice=by_choice, ended=ended),
         "said": said,
         "at": _iso(at),
         "value": value,
@@ -271,25 +279,48 @@ def _source_name(source: Any) -> str:
 
 
 def paused_rows(pauses: list[Any]) -> list[dict[str, Any]]:
-    """Every source the governor stopped, as a row."""
-    return [
-        line(
-            name=_source_name(pause.source),
-            state=OperationalState.REFUSED,
-            said=_WHY_PAUSED.get(
-                pause.reason,
-                # An unmapped code still beats no sentence, but it is framed
-                # so the reader can tell it is a cause and not an instruction.
-                f"the runtime stopped taking work from it, and recorded the "
-                f"cause as {pause.reason}",
-            ),
-            at=_parse(pause.paused_at),
-            value="paused",
-            acts=("unpause",),
-            acts_on=str(getattr(pause.source, "value", pause.source)),
+    """Every source the governor stopped, as a row.
+
+    **A verb names its effect.** A pause on a source whose producer was
+    deleted cannot be resumed into anything: nothing will file under it again,
+    so `unpause` would be a button that runs and changes nothing anyone can
+    see. Measured 2026-09-04, when the band that says what wants the operator
+    held exactly one row and it was a pause on `operator_view`, a source
+    deleted in AR-7a, offering the one verb that restarts nothing. Those rows
+    offer `remove`, which is what pressing it actually does.
+    """
+    from tesseract.orchestrator.autonomy.mappers import can_still_fire
+
+    out: list[dict[str, Any]] = []
+    for pause in pauses:
+        alive = can_still_fire(pause.source)
+        said = _WHY_PAUSED.get(
+            pause.reason,
+            # An unmapped code still beats no sentence, but it is framed
+            # so the reader can tell it is a cause and not an instruction.
+            f"the runtime stopped taking work from it, and recorded the "
+            f"cause as {pause.reason}",
         )
-        for pause in pauses
-    ]
+        if not alive:
+            said = (
+                f"{said}. Nothing files under it any more, so this is a record "
+                "of what happened rather than something to start again"
+            )
+        out.append(
+            line(
+                name=_source_name(pause.source),
+                state=OperationalState.REFUSED,
+                said=said,
+                at=_parse(pause.paused_at),
+                value="paused",
+                acts=("unpause",) if alive else ("remove",),
+                acts_on=str(getattr(pause.source, "value", pause.source)),
+                # It is over: nothing can file under it, so the row is the
+                # record of a pause rather than a thing holding work back.
+                ended=not alive,
+            )
+        )
+    return out
 
 
 def wants_you(

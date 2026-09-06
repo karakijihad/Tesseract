@@ -619,6 +619,36 @@
 .state-line--degraded > .state-line__said { color: var(--warn); }
 .state-line--failed   > .state-line__said { color: var(--bad); }
 
+/* What a row WANTS, which is what a colour on this panel means. The eight
+   above are the other axis and stay for record lists, where an outcome is the
+   subject: an entry card's ten past runs are not asking for anything, and
+   toning them all alike would lose the one that failed.
+
+   A room's rows wear these instead. Three of them have a colour, because three
+   of them are a demand: something broken, something below what it promised,
+   and something the runtime is already working on. The rest are facts, and a
+   fact painted as a fault is what left the panel amber on a machine where
+   nothing was wrong. */
+.state-line--standing_fault > .state-line__edge { background: var(--bad); }
+.state-line--needs_you      > .state-line__edge { background: var(--warn); }
+.state-line--being_healed   > .state-line__edge { background: var(--warn-edge); }
+.state-line--fine           > .state-line__edge { background: var(--ok-edge); }
+.state-line--happened_over  > .state-line__edge { background: var(--wash-md); }
+.state-line--off_by_choice  > .state-line__edge { background: var(--wash-lg); }
+.state-line--never_set_up   > .state-line__edge { background: var(--wash-lg); }
+
+/* Nothing produces this. Same broken bar as the state of the same meaning,
+   because it is the same claim: not a health state, and never a quiet one. */
+.state-line--nothing_watches > .state-line__edge {
+  background: repeating-linear-gradient(
+    var(--border-visible) 0 var(--space-4),
+    transparent var(--space-4) var(--space-8)
+  );
+}
+
+.state-line--standing_fault > .state-line__said { color: var(--bad); }
+.state-line--needs_you      > .state-line__said { color: var(--warn); }
+
 /* ── one entry, opened ────────────────────────────────────────────
    The manifest's own prose at the top, the facts around it under, then how it
    has been going. Nothing here is a card in a card: the shell already frames

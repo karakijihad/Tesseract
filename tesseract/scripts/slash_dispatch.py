@@ -208,7 +208,21 @@ def _format_result(result: ToolResult) -> str:
 
 
 def _slash_context(parent: ToolContext, tool_name: str) -> ToolContext:
-    """Fork a child context for a slash invocation: fresh cancel_event, audit hint."""
+    """Fork a child context for a slash invocation: fresh cancel_event, audit hint.
+
+    `policy` is carried for the reason `ToolContext.policy` states next to
+    itself: a tool that dispatches to another tool must forward it, because
+    `decide.evaluate` reaches the operator's `permissions.yaml` only when a
+    policy is present and a nested call made without one proceeds at
+    PASSTHROUGH, skipping every ASK and DENY configured for it. Dropping it
+    here did NOT relax the operator's own call — `_security_gate` skips that
+    posture on purpose, because they are the approval — it relaxed whatever
+    the tool went on to call, and it left a tool that READS the policy unable
+    to answer at all. Measured: `workspace_hold` typed as a slash command, and
+    the Settings switch that sends the same string, both came back with "no
+    permission policy is loaded here" while the cockpit panel beside them was
+    reading it fine over HTTP.
+    """
     return ToolContext(
         workspace_root=parent.workspace_root,
         session_id=parent.session_id,
@@ -218,6 +232,7 @@ def _slash_context(parent: ToolContext, tool_name: str) -> ToolContext:
         pty_dispatcher=parent.pty_dispatcher,
         scheduler_provider=parent.scheduler_provider,
         ask_fn=parent.ask_fn,
+        policy=parent.policy,
     )
 
 

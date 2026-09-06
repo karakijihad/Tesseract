@@ -20,6 +20,7 @@ import { useConscienceStore } from "./conscience";
 import { useAutonomyStore } from "./autonomy";
 import { useActivityStore } from "./activity";
 import { useToolsStore } from "./tools";
+import { useLivenessStore } from "./liveness";
 import {
   describeResumeCutoff,
   isWithinResumeCutoff,
@@ -64,6 +65,30 @@ const REKEYED_CHANNELS: Record<string, EnvelopeCategory> = {
   activity: "activity",
   panel: "panel",
 };
+
+/** One backend record, as the standard Envelope, or unchanged.
+ *
+ * Some backend channels ship a `{kind, channel, session_id, ts, data}` shape
+ * (`events.py`) instead of an Envelope, so they are re-keyed here and flow
+ * through the same handler chain as everything else.
+ *
+ * Exported because it is the wire itself: a socket message reaching the panel
+ * passes through this and through nothing else that can be tested, and a
+ * regression in it would leave every store test green and the panel silently
+ * back on its polls.
+ */
+export function rekeyed(raw: unknown): unknown {
+  const rec = raw as Record<string, unknown> | null;
+  const category = rec ? REKEYED_CHANNELS[String(rec.channel)] : undefined;
+  if (!rec || !category || typeof rec.kind !== "string") return raw;
+  return {
+    type: rec.kind,
+    category,
+    session_id: typeof rec.session_id === "string" ? rec.session_id : "",
+    timestamp: typeof rec.ts === "string" ? rec.ts : new Date().toISOString(),
+    data: (rec.data ?? {}) as Record<string, unknown>,
+  };
+}
 
 export const useWebSocketStore = create<WebSocketState>((set, get) => {
   let _socket: WebSocket | null = null;
@@ -282,23 +307,7 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => {
           return;
         }
 
-        // Some backend channels ship a `{kind, channel, session_id, ts, data}`
-        // shape (events.py) instead of the standard Envelope. Re-key to the
-        // standard `{type, category, ..., timestamp}` Envelope before dispatch
-        // so they flow through the same handler chain.
-        const rec = raw as Record<string, unknown>;
-        const category = rec ? REKEYED_CHANNELS[String(rec.channel)] : undefined;
-        if (category && typeof rec.kind === "string") {
-          raw = {
-            type: rec.kind,
-            category,
-            session_id:
-              typeof rec.session_id === "string" ? rec.session_id : "",
-            timestamp:
-              typeof rec.ts === "string" ? rec.ts : new Date().toISOString(),
-            data: (rec.data ?? {}) as Record<string, unknown>,
-          };
-        }
+        raw = rekeyed(raw);
 
         if (!isEnvelope(raw)) {
           console.warn("[ws] non-envelope message received");
@@ -311,6 +320,11 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => {
       ws.onclose = (event) => {
         if (!_isCurrentSocket(ws)) return;
         _socket = null;
+        // AR-31 — nothing the runtime pushed about a state is current once it
+        // has stopped pushing. Dropped rather than kept and marked, because a
+        // panel that is not being told anything must not be able to draw the
+        // last thing it was told.
+        useLivenessStore.getState().clear();
         if (_intentionalClose) {
           _intentionalClose = false;
           return;
@@ -359,6 +373,13 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => {
         _socket = null;
         current.close();
       }
+      // Here as well as in `onclose`, because this path never reaches it: the
+      // socket is cleared before it is closed, so the close handler's
+      // "is this still the current socket" guard returns first. StrictMode
+      // mounts, unmounts and mounts again on every development load, which is
+      // exactly this path, and held state surviving it would be drawn as
+      // current after the next connect.
+      useLivenessStore.getState().clear();
       set({ status: "disconnected", reconnectAttempt: 0 });
     },
 

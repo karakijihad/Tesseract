@@ -33,7 +33,7 @@ one call. A gate here would ask permission to stop being alarmed.
 from __future__ import annotations
 
 import logging
-from typing import ClassVar, Literal
+from typing import Any, Callable, ClassVar, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -74,6 +74,13 @@ class HealthLeaveInput(BaseModel):
 class HealthLeaveTool(Tool):
     default_posture = "auto"
 
+    def __init__(self, app_provider: Optional[Callable[[], Any]] = None) -> None:
+        # The room's rows, from the room's own reader. Without the backend
+        # this still answers for everything the watchman found, because that
+        # is a file on disk; what it cannot see is the collector rows, and it
+        # says so rather than refusing a name it simply could not check.
+        self._app_provider = app_provider
+
     risk_class: ClassVar[str] = "autonomous"
 
     group: ClassVar[str] = "checking-your-state"
@@ -113,19 +120,19 @@ class HealthLeaveTool(Tool):
         if not subject:
             return ToolResult(output="Name what to leave alone.", is_error=True)
 
-        found = _findings_for(subject)
-        if not found:
-            known = _subjects()
+        keys = [standing.key_for(f) for f in _findings_for(subject)]
+        rows = await self._rows_for(subject)
+        keys += [str(row["key"]) for row in rows]
+        if not keys:
+            known = _subjects() | {str(r["name"]) for r in await self._rows()}
             listed = ", ".join(sorted(known)[:SUGGEST_ROWS]) or "nothing"
             return ToolResult(
                 output=(
-                    f"The last sweep found nothing about {subject!r}, so there "
-                    f"is nothing to leave alone. What it did find: {listed}."
+                    f"The room says nothing about {subject!r}, so there is "
+                    f"nothing to leave alone. What it does say: {listed}."
                 ),
                 is_error=True,
             )
-
-        keys = [standing.key_for(f) for f in found]
         if inp.action == "restore":
             undone = [key for key in keys if acknowledged.forget(key)]
             if not undone:
@@ -140,8 +147,14 @@ class HealthLeaveTool(Tool):
                 metadata={"subject": subject, "restored": undone},
             )
 
-        for finding, key in zip(found, keys):
-            acknowledged.acknowledge(key, severity=finding.severity, note=inp.note)
+        for finding in _findings_for(subject):
+            acknowledged.acknowledge(
+                standing.key_for(finding), severity=finding.severity, note=inp.note
+            )
+        for row in rows:
+            acknowledged.acknowledge(
+                str(row["key"]), severity=_severity_of(row), note=inp.note
+            )
         return ToolResult(
             output=(
                 f"{subject} will stop asking for attention. It stays on the "
@@ -150,6 +163,58 @@ class HealthLeaveTool(Tool):
             ),
             metadata={"subject": subject, "left": keys},
         )
+
+
+    async def _rows(self) -> list[dict[str, Any]]:
+        """Every row the Health room draws, from the room's own reader.
+
+        The panel and this tool read one thing, so a row the operator can see
+        is a row they can leave alone from anywhere, which is the whole of
+        ruling 22. Without a backend it answers with the rows that come off
+        disk and none of the ones that need the running app.
+        """
+        from datetime import datetime, timezone
+
+        from tesseract.mirror.server.routes.autonomy_health import read_departments
+
+        app = self._app_provider() if self._app_provider is not None else None
+        if app is None:
+            return []
+        try:
+            departments, _latest, _tail = await read_departments(
+                app, datetime.now(timezone.utc), with_tail=False
+            )
+        except Exception:  # noqa: BLE001 — the sweep's findings still answer
+            logger.exception("health_leave: the room's rows could not be read")
+            return []
+        return departments
+
+    async def _rows_for(self, subject: str) -> list[dict[str, Any]]:
+        """The collector rows this subject names.
+
+        Findings are matched separately and by the judge's own key, so they
+        are skipped here: a row that has one would otherwise be acknowledged
+        under two keys and restored under one.
+        """
+        wanted = subject.casefold()
+        return [
+            row
+            for row in await self._rows()
+            if str(row.get("name", "")).casefold() == wanted
+            and str(row.get("key", "")).startswith("collector//")
+        ]
+
+
+def _severity_of(row: dict[str, Any]) -> str:
+    """What the store records a row as having been rated when it was left.
+
+    The room's own reading, so "has it got worse" is asked in one vocabulary
+    whether the row came from a finding or from a collector.
+    """
+    from tesseract.mirror.server.routes.autonomy_health import _SEVERITY_OF_STATE
+    from tesseract.lib.log_envelope import INFO
+
+    return _SEVERITY_OF_STATE.get(str(row.get("state")), INFO)
 
 
 def _sweep() -> dict:

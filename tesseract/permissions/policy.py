@@ -401,8 +401,8 @@ class PermissionPolicy:
             return None
         return min(answers, key=lambda p: _STRICTNESS.get(p, 0))
 
-    def workspace_document_posture(self) -> str:
-        """What a proposed change to an operator-owned document does now.
+    def workspace_document_posture(self, document: str) -> str:
+        """What a proposed change to ONE operator-owned document does now.
 
         `ask` files it in the workspace inbox and waits. `auto` applies it and
         files the same card already decided, so unattended operation costs
@@ -410,6 +410,21 @@ class PermissionPolicy:
         allowed to move, which is why it is read here rather than through
         `path_overrides`: those are evaluated before the mode by design, and
         that is what keeps the sealed trees sealed in every mode.
+
+        The mode states a baseline and the operator names the exceptions, the
+        shape `modes:` already uses. Four properties hold together, and the
+        resolver is written against all four rather than against whichever one
+        a later change is about:
+
+        1. A document the operator named asks, whatever the mode says.
+        2. The map can only tighten. The answer is the STRICTER of the mode's
+           baseline and the override, so a document cannot be moved to `auto`
+           under a mode that says `ask` — an exception list that holds
+           documents back must not double as a way to let one through.
+        3. A document nobody named follows the baseline.
+        4. `document` is required. A caller that did not know which file it
+           was about would resolve the baseline and walk past the hold; both
+           callers know, so there is no such call to serve.
         """
         block = self._workspace_documents.get("proposal") or {}
         value = block.get(self._mode)
@@ -419,12 +434,65 @@ class PermissionPolicy:
                 f"posture for security mode {self._mode!r}. Every mode states "
                 f"its own answer here rather than inheriting one"
             )
-        return str(value).strip().lower()
+        baseline = str(value).strip().lower()
+        held = self.workspace_document_holds.get(_document_name(document))
+        if held is None:
+            return baseline
+        return min((baseline, held), key=lambda p: _STRICTNESS.get(p, 0))
 
     @property
     def workspace_documents(self) -> tuple[str, ...]:
         """The operator-owned documents, in file order. The one list."""
         return tuple(self._workspace_documents.get("documents") or ())
+
+    @property
+    def workspace_document_holds(self) -> dict[str, str]:
+        """The documents the operator keeps a hand on, name to posture.
+
+        Exceptions only: a document that follows the mode is absent rather
+        than restated, so the map cannot grow back into a per-document list
+        that drifts from the baseline beside it.
+        """
+        return dict(self._workspace_documents.get("proposal_overrides") or {})
+
+    def workspace_document_postures(self) -> dict[str, str]:
+        """Every operator-owned document and what a proposal to it does now.
+
+        One resolver for both surfaces. The Settings panel and the tool a
+        phone calls read this rather than each joining the baseline to the
+        override map, which is how two screens end up disagreeing about one
+        file.
+        """
+        return {
+            name: self.workspace_document_posture(name)
+            for name in self.workspace_documents
+        }
+
+    def set_workspace_document_hold(self, document: str, must_ask: bool) -> None:
+        """Hold one document back, or let it follow the mode again.
+
+        The in-memory half of the change. The file is written by
+        `permissions/workspace_holds.py::set_document_hold`, and the config
+        watcher would reload it a moment later; this is here so the answer the
+        operator just gave is in force for the next turn rather than for the
+        one after the watcher fires.
+
+        Letting a document go REMOVES its entry rather than writing the
+        baseline into it, for the reason the tool overrides map does the same:
+        an exception that restates the rule stops being an exception the next
+        time the rule moves.
+        """
+        name = _document_name(document)
+        if name not in self.workspace_documents:
+            raise ValueError(
+                f"{name} is not one of the operator's documents "
+                f"({', '.join(self.workspace_documents)})"
+            )
+        holds = self._workspace_documents.setdefault("proposal_overrides", {})
+        if must_ask:
+            holds[name] = "ask"
+        else:
+            holds.pop(name, None)
 
     def _normalize_for_prefix_match(self, raw_path: str) -> str:
         """Normalize a tool input path for prefix-matching against `path_overrides`.
@@ -728,6 +796,18 @@ def _load_workspace_documents(raw: dict[str, Any]) -> dict[str, Any]:
             "permissions.yaml 'workspace_documents.documents' must be a "
             "non-empty list of bare file names (no directory part)"
         )
+    # One posture, for every document, in every mode. A map here would be a
+    # per-document exception to the closed door, and the closed door is the
+    # reason a proposal is the only way in. Refused by shape rather than left
+    # to the posture check below, whose message would say `expected one of
+    # ['ask', 'auto', 'deny']` about something that is not a posture at all.
+    if isinstance(block.get("direct_write"), dict):
+        raise ValueError(
+            "permissions.yaml 'workspace_documents.direct_write' is a map. It "
+            "takes one posture and no exceptions: the raw write verbs are "
+            "closed on every one of these files so that a proposal is the "
+            "only door, and a per-document exception here would reopen it"
+        )
     direct = str(block.get("direct_write", "")).strip().lower()
     if direct not in _STRICTNESS:
         raise ValueError(
@@ -741,14 +821,15 @@ def _load_workspace_documents(raw: dict[str, Any]) -> dict[str, Any]:
             "permissions.yaml 'workspace_documents.proposal' must be a map of "
             "security mode to posture"
         )
-    missing = sorted(VALID_MODES - set(proposal))
+    by_mode = {k: v for k, v in proposal.items() if k != _OVERRIDES_KEY}
+    missing = sorted(VALID_MODES - set(by_mode))
     if missing:
         raise ValueError(
             f"permissions.yaml 'workspace_documents.proposal' names no posture "
             f"for {missing}. Every mode states its own answer here rather than "
             f"inheriting one, so adding a mode is a decision about these files"
         )
-    for mode_name, value in proposal.items():
+    for mode_name, value in by_mode.items():
         if str(value).strip().lower() not in _STRICTNESS:
             raise ValueError(
                 f"permissions.yaml 'workspace_documents.proposal.{mode_name}' "
@@ -757,8 +838,65 @@ def _load_workspace_documents(raw: dict[str, Any]) -> dict[str, Any]:
     return {
         "documents": list(documents),
         "direct_write": direct,
-        "proposal": {str(k): str(v).strip().lower() for k, v in proposal.items()},
+        "proposal": {str(k): str(v).strip().lower() for k, v in by_mode.items()},
+        "proposal_overrides": _load_proposal_overrides(proposal, documents),
     }
+
+
+#: Where the operator's per-document exceptions sit inside `proposal`, and the
+#: one name the mode loop above must not read as a mode.
+_OVERRIDES_KEY = "overrides"
+
+
+def _document_name(path: str) -> str:
+    """The bare file name of a workspace document, from any way of writing it.
+
+    Callers hand this `workspace/OPERATING.md`, an absolute path on Windows,
+    or the bare name. The block is keyed by bare names, so every one of those
+    has to arrive at the same key or a hold is silently missed for one caller
+    and honoured for another.
+    """
+    return str(path).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+
+
+def _load_proposal_overrides(
+    proposal: dict[str, Any], documents: list[str]
+) -> dict[str, str]:
+    """The documents the operator keeps a hand on, validated.
+
+    Loud about a name that is not one of the documents. An override on a file
+    the block does not list holds nothing back, and it reads exactly like one
+    that does: a typo in a file name is the difference between `OPERATING.md`
+    being gated and it being written unattended, and nothing downstream can
+    tell the two apart.
+    """
+    raw = proposal.get(_OVERRIDES_KEY)
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "permissions.yaml 'workspace_documents.proposal.overrides' must "
+            "be a map of document name to posture, naming only the documents "
+            "the operator keeps a hand on"
+        )
+    out: dict[str, str] = {}
+    for name, value in raw.items():
+        doc = str(name).strip()
+        if doc not in documents:
+            raise ValueError(
+                f"permissions.yaml 'workspace_documents.proposal.overrides' "
+                f"names {doc!r}, which is not one of the documents "
+                f"({', '.join(documents)}). An exception on a file that is "
+                f"not listed holds nothing back"
+            )
+        posture = str(value).strip().lower()
+        if posture not in _STRICTNESS:
+            raise ValueError(
+                f"permissions.yaml 'workspace_documents.proposal.overrides."
+                f"{doc}' is {value!r}; expected one of {sorted(_STRICTNESS)}"
+            )
+        out[doc] = posture
+    return out
 
 
 def _expand_workspace_documents(

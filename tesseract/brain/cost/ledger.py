@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
@@ -254,6 +254,11 @@ class VoiceCostEvent:
     provider_total_usd: float
 
 
+def _opt_float(fields: Mapping[str, Any], key: str) -> float | None:
+    value = fields.get(key)
+    return None if value is None else float(value)
+
+
 @dataclass(frozen=True)
 class ModelPrice:
     """What one model charges, exactly as its catalog entry declares it.
@@ -279,6 +284,16 @@ class ModelPrice:
 
     Getting that distinction wrong is not a rounding error: `reported` adds a
     term, `uncached_input` replaces one.
+
+    `long_context_threshold_tokens` is the OTHER thing a usage payload cannot
+    tell you: some models charge a second, higher set of rates once the prompt
+    passes a size, and bill the WHOLE request at them. The payload reports the
+    same token classes either way, so a tier that is not declared here is
+    invisible and every large prompt bills short. Absent, which is most models,
+    means one set of rates at every size. Present means all four long rates are
+    required: the multipliers are not a family property and not derivable from
+    the short ones (the model this was first measured on doubles input, cached
+    input and cache write, and multiplies output by 1.5).
     """
 
     input_per_mtok: float
@@ -287,8 +302,40 @@ class ModelPrice:
     cache_write_per_mtok: float | None = None
     cache_write_from: str = ""
     cache_write_min_prompt_tokens: int = 0
+    long_context_threshold_tokens: int = 0
+    input_per_mtok_long: float | None = None
+    output_per_mtok_long: float | None = None
+    cache_read_per_mtok_long: float | None = None
+    cache_write_per_mtok_long: float | None = None
 
     _SOURCES: ClassVar[tuple[str, ...]] = ("", "reported", "uncached_input")
+    _LONG_FIELDS: ClassVar[tuple[str, ...]] = (
+        "cost_per_mtok_in_long",
+        "cost_per_mtok_out_long",
+        "cost_per_mtok_cached_in_long",
+        "cost_per_mtok_cache_write_long",
+    )
+
+    def for_prompt(self, input_tokens: int) -> "ModelPrice":
+        """The rates that apply to a prompt this size.
+
+        Returns a ModelPrice whose ordinary fields ARE the applicable rates, so
+        every billing rule downstream reads one set and none of them learns
+        that tiers exist. Adding the tier as a branch in `_compute_usd` instead
+        would have meant four rules each asking the question again, which is
+        how the cache-write rule came to be spelled differently in two places.
+        """
+        if not self.long_context_threshold_tokens:
+            return self
+        if input_tokens <= self.long_context_threshold_tokens:
+            return self
+        return replace(
+            self,
+            input_per_mtok=self.input_per_mtok_long,
+            output_per_mtok=self.output_per_mtok_long,
+            cache_read_per_mtok=self.cache_read_per_mtok_long,
+            cache_write_per_mtok=self.cache_write_per_mtok_long,
+        )
 
     @classmethod
     def from_fields(cls, fields: Mapping[str, Any], model: str) -> "ModelPrice | None":
@@ -309,6 +356,25 @@ class ModelPrice:
             )
         read = fields.get("cost_per_mtok_cached_in")
         write = fields.get("cost_per_mtok_cache_write")
+        threshold = int(fields.get("long_context_threshold_tokens") or 0)
+        declared = [f for f in cls._LONG_FIELDS if fields.get(f) is not None]
+        # All or nothing, both ways. A threshold with a rate missing would bill
+        # a large prompt at `None`; a rate with no threshold would never be
+        # reached and reads as a tier that is switched on. Neither is something
+        # to discover from an invoice.
+        if threshold and len(declared) != len(cls._LONG_FIELDS):
+            missing = [f for f in cls._LONG_FIELDS if fields.get(f) is None]
+            raise RuntimeError(
+                f"{model}: long_context_threshold_tokens is {threshold} but "
+                f"{missing} are not declared. A long-context tier bills the "
+                "whole request, so every rate it uses has to be stated"
+            )
+        if declared and not threshold:
+            raise RuntimeError(
+                f"{model}: {declared} are declared with no "
+                "long_context_threshold_tokens, so nothing would ever bill at "
+                "them. State the prompt size the tier begins at"
+            )
         return cls(
             input_per_mtok=float(p_in),
             output_per_mtok=float(p_out),
@@ -317,6 +383,13 @@ class ModelPrice:
             cache_write_from=source,
             cache_write_min_prompt_tokens=int(
                 fields.get("cache_write_min_prompt_tokens") or 0
+            ),
+            long_context_threshold_tokens=threshold,
+            input_per_mtok_long=_opt_float(fields, "cost_per_mtok_in_long"),
+            output_per_mtok_long=_opt_float(fields, "cost_per_mtok_out_long"),
+            cache_read_per_mtok_long=_opt_float(fields, "cost_per_mtok_cached_in_long"),
+            cache_write_per_mtok_long=_opt_float(
+                fields, "cost_per_mtok_cache_write_long"
             ),
         )
 
@@ -1428,7 +1501,9 @@ class CostLedger:
                 f"no pricing for model={model} (role={role}) in providers.yaml — "
                 "add cost_per_mtok_in / cost_per_mtok_out to the catalog entry"
             )
-        price = ModelPrice.coerce(pricing)
+        # The tier is chosen once, here, from the prompt this request actually
+        # sent. Everything below reads one set of rates.
+        price = ModelPrice.coerce(pricing).for_prompt(usage.input_tokens)
 
         # Four rules, and they have to hold together. Held apart, each of them
         # has already been the way to get this wrong:

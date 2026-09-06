@@ -63,7 +63,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from tesseract.integrations._conversation_store import ConversationStore
-from tesseract.kernel.tools.base import Tool, ToolContext
+from tesseract.kernel.tools.base import Tool, ToolContext, ask_reason_for
+from tesseract.permissions import approval_log
 from tesseract.mirror.server.session import ServerSession
 from tesseract.workspace_events.events import EventStore, WorkspaceEvent
 
@@ -272,16 +273,12 @@ def build_channel_ask_fn(
             return False
 
 
-        ask_reason = ""
-        getter = getattr(tool, "ask_reason", None)
-        if callable(getter):
-            try:
-                ask_reason = str(getter(validated) or "")
-            except Exception:
-                log.exception(
-                    "channel gate: tool.ask_reason raised for %s — leaving blank",
-                    tool.name,
-                )
+        # The same explanation the cockpit shows, from the same helper. This
+        # surface is the one with the least room, so it is the one where a
+        # prompt saying only the tool name left the operator with nowhere to
+        # look: an unexpected ask sent them to a security mode that could not
+        # have caused it.
+        ask_reason = ask_reason_for(tool, validated)
 
         transcript_tail = _recent_messages(
             conversation_store, channel, chat_id, transcript_tail_n
@@ -327,6 +324,7 @@ def build_channel_ask_fn(
             prompt_id, channel, chat_id, tool.name, decision_timeout_s,
         )
 
+        timed_out = False
         try:
             # `shield` for the reason `ask_gate.py` documents at length: bare
             # `wait_for` cancels the future it is waiting on, so a decision
@@ -337,6 +335,7 @@ def build_channel_ask_fn(
             )
         except asyncio.TimeoutError:
             approved = False
+            timed_out = True
             log.info(
                 "channel gate: no decision on %s within %ss — refusing",
                 prompt_id, decision_timeout_s,
@@ -355,6 +354,32 @@ def build_channel_ask_fn(
             # call that the model repeats is a new question and gets asked
             # again — the operator is answering in real time now.
             per_turn.add(h)
+
+        # The durable ledger, which this gate did not write. `decide.evaluate`
+        # hands the ASK row to whichever asker owns the decline-versus-timeout
+        # distinction, and the cockpit's asker writes one while this one wrote
+        # only a workspace card. Measured: fifteen tool calls approved from a
+        # phone on 2026-08-31 and not one row in `approvals.jsonl`, so the one
+        # record that is meant to answer "what was approved, and by whom" was
+        # blind to every decision taken away from the desk. Best effort, after
+        # the fact: the operator has answered and the turn is moving, so a
+        # ledger that cannot be written must not turn a completed decision
+        # into a failure.
+        try:
+            await approval_log.record_ask(
+                session_id=context.session_id or session.session_id,
+                call_id=context.current_call_id or prompt_id,
+                tool_name=tool.name,
+                input_summary=approval_log.redacted_summary(tool, args_dict),
+                posture_source=context.posture_source or "default",
+                result="timeout" if timed_out else ("allow_once" if approved else "deny"),
+                actor="timeout" if timed_out else "operator",
+            )
+        except Exception:
+            log.exception(
+                "channel gate: could not write the approval ledger row for %s",
+                prompt_id,
+            )
 
         _record_outcome(
             event_store,

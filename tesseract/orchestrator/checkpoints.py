@@ -66,9 +66,33 @@ class Checkpoint:
 
     checkpoint_id: str
     ts: str
+    #: Which connection wrote it. Evidence, never a key: see `chat_id`.
     session_id: str
     trigger: str
     outcome: str
+    #: Which CONVERSATION this was, and the only field a later reader can find
+    #: one by. `session_id` is a connection: every cockpit chat open on one
+    #: WebSocket carries the same value and it changes on reload, so looking a
+    #: boundary up by it returns whichever chat reflected most recently.
+    #: `tool_context.chat_id` is the durable id both surfaces stamp
+    #: (`session_model.stamp_chat_id`, `_channel_session`) and it survives a
+    #: restart. Empty for a conversation with no durable id, which is a
+    #: sub-agent or a synthetic turn, and one of those has nothing to come back
+    #: to.
+    #:
+    #: Defaulted rather than required so a record written before this field
+    #: existed still loads. An old line reads as a boundary nothing can be
+    #: rebuilt from, which is what it is.
+    chat_id: str = ""
+    #: Why a `continue` was refused and turned into a `reset`, in one sentence,
+    #: or empty when nothing was refused.
+    #:
+    #: The outcome alone cannot say this. A refused continue and a conversation
+    #: that finished its work both end as `reset`, and reading the record back
+    #: they would be the same event: "the runtime stopped this because it was
+    #: going round" and "the work was done" are the two things a later reader
+    #: most needs to tell apart.
+    refused: str = ""
     objective: str = ""
     phase: str = ""
     completed: list[str] = field(default_factory=list)
@@ -145,8 +169,10 @@ def _clean_list(value: Any) -> list[str]:
 def build(
     *,
     session_id: str,
+    chat_id: str = "",
     trigger: str,
     outcome: str,
+    refused: str = "",
     state: dict[str, Any] | None,
 ) -> Checkpoint:
     """Make a checkpoint out of whatever the boundary reported.
@@ -161,8 +187,10 @@ def build(
         checkpoint_id=uuid.uuid4().hex,
         ts=datetime.now(timezone.utc).isoformat(),
         session_id=str(session_id or ""),
+        chat_id=str(chat_id or ""),
         trigger=str(trigger or ""),
         outcome=str(outcome or ""),
+        refused=_clean_text(refused),
         objective=_clean_text(src.get("objective")),
         phase=_clean_text(src.get("phase")),
         completed=_clean_list(src.get("completed")),
@@ -224,19 +252,40 @@ def read_recent(limit: int = 20, *, days: int = 7) -> list[Checkpoint]:
     return out
 
 
-def latest_for_session(session_id: str, *, days: int = 7) -> Checkpoint | None:
+def recent_for_chat(chat_id: str, *, limit: int = 5, days: int = 7) -> list[Checkpoint]:
+    """This conversation's own boundaries, newest first.
+
+    What "continuing needs a reason" is decided from: one checkpoint says what
+    a boundary reported, and a few in a row say whether anything is actually
+    moving.
+    """
+    if not chat_id:
+        return []
+    out: list[Checkpoint] = []
+    for checkpoint in read_recent(limit=1000, days=days):
+        if checkpoint.chat_id != chat_id:
+            continue
+        out.append(checkpoint)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def latest_for_chat(chat_id: str, *, days: int = 7) -> Checkpoint | None:
     """The newest checkpoint this conversation wrote, if it wrote one.
 
-    What CC-8's continuity tail is rebuilt from. Scans rather than indexes: a
-    week of boundaries is a small file, and an index is a second truth to keep
-    in step with the first.
+    What the continuity tail is rebuilt from. Scans rather than indexes: a week
+    of boundaries is a small file, and an index is a second truth to keep in
+    step with the first.
+
+    Keyed on the conversation and not on the connection. It was written the
+    other way and was wrong on the surface it was written for: every cockpit
+    chat open on one WebSocket shares `session_id`, so a fresh chat asking what
+    it was doing was handed whichever chat on that connection had reflected
+    most recently, and a page reload made every earlier boundary unfindable.
     """
-    if not session_id:
-        return None
-    for checkpoint in read_recent(limit=1000, days=days):
-        if checkpoint.session_id == session_id:
-            return checkpoint
-    return None
+    found = recent_for_chat(chat_id, limit=1, days=days)
+    return found[0] if found else None
 
 
 __all__ = [
@@ -246,7 +295,8 @@ __all__ = [
     "build",
     "write",
     "read_recent",
-    "latest_for_session",
+    "latest_for_chat",
+    "recent_for_chat",
     "checkpoint_dir",
     "checkpoint_path",
 ]

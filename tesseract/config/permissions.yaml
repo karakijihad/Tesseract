@@ -221,6 +221,7 @@ tools:
   task_work: auto             # takes up a task you already accepted and ties the turn to it; nothing new is decided
   task_close: ask             # the gate is you reading the evidence before a task closes. A project's own checks decide first: a task on a project with verify steps is done only when they pass
   workspace_pending: auto     # reading what is waiting on you decides nothing
+  workspace_hold: ask         # decides which of your own documents a change must be asked about. You pressing the switch, or saying so on a channel, is the approval
   credential_list: auto      # names, usernames and purposes of the assistant's own accounts; no tool returns a value
   credential_request: auto   # writes a row asking the operator for an account. The row in Settings IS the gate, like propose_change
   credential_setup: ask      # the agent knows how a service authenticates; the HOSTS it proposes are the one thing an injected instruction must not widen quietly
@@ -397,6 +398,13 @@ workspace_documents:
   proposal:
     max: ask
     free: auto
+    # The documents you keep a hand on, whatever the mode says. A change to
+    # one of these always waits for you. Everything not listed follows the
+    # mode above. Set them in Settings under About, or say so on any channel.
+    overrides:
+      OPERATING.md: ask
+      WORKSHOP.md: ask
+      CHANNEL.md: ask
 
 # ─────────────────────────────────────────────────────────────────────────
 # Read-only self-verification allowlist. `PermissionPolicy._bash_readonly_posture`

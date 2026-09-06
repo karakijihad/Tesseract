@@ -64,6 +64,28 @@ reranker:
 # Selecting a model in Settings edits ONE role, so the first such edit
 # rewrites that role's refs in place and drops its `chain:` key. The other
 # roles on the chain do not move.
+# ─── The boundary ───────────────────────────────────────────
+# What bounds a conversation that keeps deciding to carry the work on.
+# Compaction below is what happens when a surface cannot clear a conversation
+# at all; this is what stops the work going round inside one.
+#
+# The agent decides whether meaningful work remains and the runtime does not
+# argue with it. What the runtime does is refuse a continue that nothing is
+# owed for, which is a different claim: a model asked "is there work left"
+# answers yes cheaply, and a loop that continues successfully and achieves
+# nothing never trips the failure breaker.
+boundary:
+  max_consecutive_continues: 5  # how many boundaries in a row one conversation
+                                # may answer `continue` before the runtime
+                                # stops it and leaves the work behind instead.
+                                # Reached by real multi-phase work, so it is
+                                # not a low number; research then implementation
+                                # then review is three.
+  repeat_limit: 2               # the same next action, reported at this many
+                                # consecutive boundaries, is the work not
+                                # moving. Two, because the second time is
+                                # already the first repeat.
+
 # ─── Compaction ─────────────────────────────────────────────
 # One block for every role, because it describes how compaction works rather
 # than who is using it. A fold always leaves the head anchor and the verbatim

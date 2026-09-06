@@ -567,19 +567,40 @@ async def _maybe_auto_compact(
         ))
 
     async def ending(reflect) -> bool:
-        # The cockpit's answer to a turn that has finished with a conversation:
-        # archive it into the drawer and open a new one. `/reset` reaches the
-        # same function, so neither the operator nor the assistant is looking at
-        # a second implementation of starting fresh. `stamp` is the chat that
-        # actually ran, which a background turn's is not the one on screen, and
-        # `reflect` fires inside once the transcript is safely written.
-        from tesseract.mirror.server.commands import start_fresh_chat
+        # The cockpit's answer to a boundary the agent reached: copy what was
+        # said into its own archived record, then clear this conversation and
+        # keep the thread. NOT `start_fresh_chat`, which archives the record
+        # and opens a new chat and is still what the operator's own `/reset`
+        # does: a boundary is not the operator asking to move on, and a new
+        # chat appearing mid-work is a surprise the work did not ask for.
+        # `stamp` is the chat that actually ran, which for a background turn is
+        # not the one on screen, and `reflect` fires inside once the transcript
+        # is safely written.
+        from tesseract.mirror.server.commands import consolidate_in_place
 
-        return await start_fresh_chat(
+        return await consolidate_in_place(
             app, session, chat_id=stamp, on_persisted=reflect
         )
 
-    await after_turn(target, app=app, session=session, report=report, ending=ending)
+    async def announce(text: str) -> None:
+        # The cockpit had no `announce` at all, so every sentence the boundary
+        # produces — the reset notice, and the continuity package, which IS
+        # what the person is told — reached a phone and never a screen. That is
+        # the fork the one-funnel rule is written against, and it was not a
+        # transport limit: this surface carries a line of text more easily than
+        # any other. `note` is a message the transcript draws as the runtime
+        # rather than as the operator, the way a reloaded conversation already
+        # draws one out of history.
+        await send_envelope(session, make_envelope(
+            "session_note", "session", session.session_id,
+            {"text": text, "mark": "boundary"},
+            chat_id=stamp,
+        ))
+
+    await after_turn(
+        target, app=app, session=session,
+        report=report, ending=ending, announce=announce,
+    )
 
 
 async def emit_stats(

@@ -28,6 +28,7 @@ import pathlib
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
+from tesseract.permissions.bash_security import ask_reason as security_ask_reason
 from tesseract.permissions.bash_security import check as security_check
 
 logger = logging.getLogger(__name__)
@@ -179,6 +180,23 @@ class BashTool(Tool):
 
     def is_read_only(self) -> bool:
         return False
+
+    def ask_reason(self, validated: BaseModel) -> str:
+        """What the operator is being asked to approve, and why they are asked.
+
+        Read by the channel gate, which is the surface with the least room:
+        away from the desk the prompt was the tool name and nothing else, so
+        an unexpected one sent the operator looking at a security mode that
+        could not have caused it. `bash_security` composes the sentence,
+        because the checks are its and a second wording here would drift from
+        them.
+        """
+        inp = (
+            validated
+            if isinstance(validated, BashInput)
+            else BashInput(**validated.model_dump())
+        )
+        return security_ask_reason(inp.command)
 
     def check_permissions(self, tool_input: BaseModel, context: ToolContext) -> PermissionResult:
         inp = tool_input if isinstance(tool_input, BashInput) else BashInput(**tool_input.model_dump())

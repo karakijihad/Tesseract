@@ -46,7 +46,12 @@ from tesseract.mirror.server.routes.pipeline import (
     run_payload,
 )
 from tesseract.orchestrator.funnel import BAND_LABELS, EDGES, NODES, Band
-from tesseract.orchestrator.liveness import OperationalState, label_of, state_of
+from tesseract.orchestrator.liveness import (
+    OperationalState,
+    label_of,
+    labels_payload,
+    state_of,
+)
 from tesseract.scheduler.log import last_run_rows, outcome_of_row
 from tesseract.scheduler.manifest.entry import Entry, Runs
 from tesseract.scheduler.manifest.registry import ENTRIES
@@ -153,13 +158,36 @@ def _newest_by_entry(now: datetime) -> tuple[dict[str, dict[str, Any]], bool]:
     return {name: run_payload(m, now) for name, m in found.items()}, truncated
 
 
+# What did not happen this run by design. `run_payload` leaves these out of
+# how the run reads, so the sentence for how it reads cannot come from one of
+# them either.
+_EXCUSED = frozenset({"not_due", "disabled"})
+
+
+def _decided_by(run: dict[str, Any], state: OperationalState) -> dict[str, str] | None:
+    """The step whose state the run took, in that step's own words.
+
+    A run reads as its worst graded step, and until this the node said so
+    without saying which step or why. It matters most in the one case this
+    node is watched in: a run open past the budget its step declared reads
+    `degraded`, and "working, below what it promised" with nothing beside it
+    is the half of that an operator cannot act on.
+    """
+    for stage in run["stages"]:
+        if (stage["reason"] or {}).get("code") in _EXCUSED:
+            continue
+        if stage["state"] == state.value and stage["reason"]:
+            return stage["reason"]
+    return None
+
+
 def _from_manifest(run: dict[str, Any]) -> dict[str, Any]:
     state = OperationalState(run["state"])
     return {
         "state": state.value,
         "label": label_of(state),
         "observedAt": run["completedAt"] or run["startedAt"],
-        "reason": None,
+        "reason": _decided_by(run, state),
         "source": "scheduler-run-record",
     }
 
@@ -188,13 +216,19 @@ def _when(liveness: dict[str, Any]) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def _entry_node(
-    entry: Entry,
+def _liveness_of(
     run: dict[str, Any] | None,
     logged: dict[str, Any] | None,
     *,
     truncated: bool,
 ) -> dict[str, Any]:
+    """How an entry reads, from whichever of its two records is newer.
+
+    Named rather than inlined because the live feed publishes exactly this and
+    must not derive it a second way: a node's colour on the map and the state
+    pushed over the socket are one answer or they are two answers that
+    disagree while nobody is looking.
+    """
     # The newer record wins. A row that writes both leaves one of them behind
     # the moment it is run any other way, and the older one is not what
     # happened last.
@@ -204,9 +238,21 @@ def _entry_node(
             _from_log(logged) if logged else None,
         ) if c is not None
     ]
-    liveness = max(
+    if not candidates:
+        return _no_record(truncated)
+    return max(
         candidates, key=lambda c: _when(c) or datetime.min.replace(tzinfo=timezone.utc)
-    ) if candidates else _no_record(truncated)
+    )
+
+
+def _entry_node(
+    entry: Entry,
+    run: dict[str, Any] | None,
+    logged: dict[str, Any] | None,
+    *,
+    truncated: bool,
+) -> dict[str, Any]:
+    liveness = _liveness_of(run, logged, truncated=truncated)
     return {
         "name": entry.name,
         "band": Band.RUNS.value,
@@ -223,6 +269,54 @@ def _entry_node(
         "opens": {"kind": "entry", "id": entry.name},
         "lastRunId": run["runId"] if run else None,
     }
+
+
+def _fires_work() -> list[Entry]:
+    return [e for e in ENTRIES if e.runs in _FIRES_WORK]
+
+
+def entry_states(now: datetime) -> dict[str, dict[str, Any]]:
+    """Every entry that fires work, and how it reads at ``now``.
+
+    What the map paints, without the prose around it. The live feed publishes
+    this and the route draws it, so a node's colour and the state pushed over
+    the socket cannot disagree.
+    """
+    runs, truncated = _newest_by_entry(now)
+    logged = last_run_rows()
+    return {
+        entry.name: _liveness_of(
+            runs.get(entry.name), logged.get(entry.name), truncated=truncated
+        )
+        for entry in _fires_work()
+    }
+
+
+def in_flight_states(now: datetime) -> dict[str, dict[str, Any]]:
+    """The entry whose run is open right now, and how it reads at ``now``.
+
+    The cheap half of the same derivation, for the feed to look at often. It
+    reads ONE file, and it is the half that changes while somebody is
+    watching: a step taking its turn, and a step going quiet for longer than
+    it declared, both of which the run takes as its own state. An entry with
+    an open run has no newer record than that run by definition, which is why
+    this can answer without the scheduler's log.
+
+    Empty when nothing is running, which is the honest answer and not a claim
+    that anything is quiet.
+    """
+    store = ManifestStore()
+    try:
+        manifest = store.load_open()
+    except OSError:
+        log.exception("liveness: the open run manifest could not be read")
+        return {}
+    if manifest is None:
+        return {}
+    name = _entry_of(manifest)
+    if not name:
+        return {}
+    return {name: _from_manifest(run_payload(manifest, now))}
 
 
 def _funnel_nodes() -> list[dict[str, Any]]:
@@ -248,8 +342,7 @@ async def get_map(request: web.Request) -> web.Response:
     logged = last_run_rows()
     nodes = _funnel_nodes() + [
         _entry_node(e, runs.get(e.name), logged.get(e.name), truncated=truncated)
-        for e in ENTRIES
-        if e.runs in _FIRES_WORK
+        for e in _fires_work()
     ]
     return web.json_response(
         {
@@ -261,6 +354,10 @@ async def get_map(request: web.Request) -> web.Response:
                 {"source": e.source, "target": e.target, "carries": e.carries}
                 for e in EDGES
             ],
+            # Every state's word, not only the ones on this payload: the panel
+            # renders `unknown` itself when the runtime stops reaching it, and
+            # a word typed into TSX would be a second place a state is named.
+            "labels": labels_payload(),
             "observedAt": now.isoformat(),
         }
     )
@@ -270,4 +367,4 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/autonomy/map", get_map)
 
 
-__all__ = ["get_map", "register"]
+__all__ = ["entry_states", "get_map", "in_flight_states", "register"]

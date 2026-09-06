@@ -84,6 +84,17 @@ export function handleSession(env: Envelope): void {
       );
       break;
     }
+    case "session_note": {
+      // A sentence the boundary produced, drawn where it happened rather than
+      // as a toast that is gone in five seconds. A reloaded conversation gets
+      // the same thing back out of history (`lib/chatHistory.ts`), so this is
+      // only the live half.
+      const data = env.data as { text?: string; mark?: string } | undefined;
+      if (data?.text) {
+        chat.addRuntimeNote(env.chat_id ?? null, data.text, data.mark ?? "boundary");
+      }
+      break;
+    }
     case "session_compact": {
       const data = env.data as unknown as SessionCompactData;
       const tag = data.trigger === "auto" ? "Auto-compacted" : "Compacted";

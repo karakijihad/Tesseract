@@ -48,6 +48,12 @@ CREDENTIALS_KEY = "settings.credentials"
 #: something to find out about a minute and a half later.
 RETENTION_KEY = "autonomy.retention"
 
+#: Settings, the operator's own documents and which of them are held back
+#: from unattended editing. The switch there sends `workspace_hold`, and the
+#: tool is gated, so the row must be repainted from what is in force after the
+#: gate is answered rather than from what the switch asked for.
+WORKSPACE_DOCUMENTS_KEY = "settings.workspace-documents"
+
 #: The Autonomy panel's Atlas room, for the same reason and with one
 #: difference: what makes it stale is not a setting somebody typed but a step
 #: somebody ran. So the mapping below is what a caller consults, rather than

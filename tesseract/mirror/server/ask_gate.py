@@ -12,7 +12,12 @@ from aiohttp import web
 from pydantic import BaseModel
 
 from tesseract.brain.tools import AskFn
-from tesseract.kernel.tools.base import CliSink, Tool, ToolContext
+from tesseract.kernel.tools.base import (
+    CliSink,
+    Tool,
+    ToolContext,
+    ask_reason_for,
+)
 from tesseract.mirror.server.envelope import make_envelope
 from tesseract.mirror.server.event_log import EventLog
 from tesseract.mirror.server.session_model import ParkedAsk
@@ -198,7 +203,14 @@ def _make_ask_fn(
                 "call_id": call_id,
                 "name": tool.name,
                 "input": raw_input,
-                "reason": "",
+                # What the TOOL says about being asked, which the arguments do
+                # not always carry. A `bash` call under a mode the operator
+                # relaxed still asks when a security check fires, and the
+                # command alone does not say which check or that no setting
+                # moves it. The same sentence the channel gate sends, so a
+                # decision offered at the desk and one offered on a phone are
+                # explained the same way.
+                "reason": ask_reason_for(tool, validated),
             },
         )
         event_log.append(ask_env)

@@ -1,9 +1,11 @@
+import type { MapLiveness } from "../lib/api";
 import type { Envelope, EnvelopeCategory } from "../lib/types";
 import { isSyntheticTurn } from "../lib/types";
 import { getController } from "../lib/entity/registry";
 import { useActivityStore } from "./activity";
 import { useAutonomyStore } from "./autonomy";
 import { usePulseStore } from "./pulse";
+import { useLivenessStore } from "./liveness";
 import { useStaleStore } from "./stale";
 import { useSurfacesStore } from "./surfaces";
 import { handleBackground } from "./dispatch/background";
@@ -46,7 +48,10 @@ let _pulseRafHandle: number | null = null;
 // 2026-09-02, where the payload carried a running turn and the panel said
 // "Nothing is running" four seconds later.
 //
-// Coalesced to one read a second. The liveness contract's 4 Hz is a CEILING on
+// Coalesced to one read a second, and the same window serves the Health room's
+// own re-read below: both are "something changed, go and read the row again",
+// and a person cannot tell 4 Hz from 1 Hz on either. The liveness contract's
+// 4 Hz is a CEILING on
 // visual updates, not a target, and this route is not free: the event-loop-lag
 // sampler catches it doing its own file reads inside the request
 // (`list_active_records`, `_config_roots`, under `cors_middleware`). A turn
@@ -54,7 +59,7 @@ let _pulseRafHandle: number | null = null;
 // so the window is what bounds this to one request per second while a turn
 // runs and to nothing at all while none does. A person waiting on an answer
 // cannot tell 4 Hz from 1 Hz; the loop can.
-const _OVERVIEW_COALESCE_MS = 1_000;
+const _ROOM_REREAD_COALESCE_MS = 1_000;
 let _overviewRereadHandle: ReturnType<typeof setTimeout> | null = null;
 
 function rereadOverviewSoon(): void {
@@ -66,7 +71,80 @@ function rereadOverviewSoon(): void {
   _overviewRereadHandle = setTimeout(() => {
     _overviewRereadHandle = null;
     void useAutonomyStore.getState().fetchOverview();
-  }, _OVERVIEW_COALESCE_MS);
+  }, _ROOM_REREAD_COALESCE_MS);
+}
+
+// The rooms whose rows carry more than a state, and what tells them to read
+// the rest of the row. A department's state arrives on the socket; its
+// sentence, its number and the band it is grouped under do not, because those
+// are the row rather than the liveness.
+const _HEALTH_KEY = "department:";
+
+/** The states a surface has a rendering for. The backend's own vocabulary,
+ *  held here because a pushed value is the one thing on this panel that does
+ *  not arrive through a typed fetch. */
+const RENDERABLE: ReadonlySet<string> = new Set([
+  "running",
+  "idle",
+  "pending",
+  "degraded",
+  "failed",
+  "refused",
+  "not_instrumented",
+  "unknown",
+]);
+let _healthRereadHandle: ReturnType<typeof setTimeout> | null = null;
+
+function rereadHealthSoon(): void {
+  // Only once the room has read it, for the reason the overview re-read gives:
+  // a re-read of nothing is a request from every session that never opened the
+  // panel.
+  if (useAutonomyStore.getState().health.lastFetched === null) return;
+  if (_healthRereadHandle !== null) return;
+  _healthRereadHandle = setTimeout(() => {
+    _healthRereadHandle = null;
+    void useAutonomyStore.getState().fetchHealth();
+  }, _ROOM_REREAD_COALESCE_MS);
+}
+
+function applyLiveness(env: Envelope): void {
+  const data = env.data as {
+    seq?: unknown;
+    full?: unknown;
+    sweepSeconds?: unknown;
+    states?: Record<string, unknown>;
+  };
+  if (typeof data.seq !== "number" || typeof data.states !== "object") return;
+  // Only what a surface can actually paint. A value carrying a `state` this
+  // app has no rendering for would be spread onto a row and drawn as a class
+  // nothing styles, which reads as nothing being wrong.
+  const held = useLivenessStore.getState().states;
+  const states: Record<string, MapLiveness> = {};
+  let changedDepartment = false;
+  for (const [key, value] of Object.entries(data.states ?? {})) {
+    const state = (value as { state?: unknown } | null)?.state;
+    if (typeof state !== "string" || !RENDERABLE.has(state)) continue;
+    states[key] = value as MapLiveness;
+    if (key.startsWith(_HEALTH_KEY) && held[key]?.liveness.state !== state) {
+      changedDepartment = true;
+    }
+  }
+  const full = data.full === true;
+  useLivenessStore
+    .getState()
+    .apply(
+      data.seq,
+      full,
+      states,
+      typeof data.sweepSeconds === "number" ? data.sweepSeconds : undefined,
+    );
+  // The state arrives on the socket; the sentence, the number and the band a
+  // row is grouped under arrive with the room's own read. Asked for only when
+  // a department's state actually MOVED, compared against what was held: the
+  // sweep says everything every time, so re-reading on every message with a
+  // department in it made the room poll at the sweep's cadence, which is what
+  // this feed exists to stop.
+  if (changedDepartment) rereadHealthSoon();
 }
 
 function _bufferPulseStreamText(env: Envelope): void {
@@ -244,6 +322,14 @@ export function handleEnvelope(env: Envelope, opts: DispatchOpts = {}): void {
       // panel that is, which is why one envelope covers all of them.
       if (typeof env.data?.key === "string") {
         useStaleStore.getState().markStale(env.data.key);
+      }
+      // AR-31 — the runtime says a thing the Autonomy panel draws is in a
+      // different state (mirror/server/liveness_feed.py). The state is
+      // applied without a fetch; a department also has a sentence, a number
+      // and a band, and those come with the room's own next read, which this
+      // asks for at once rather than at the end of its poll.
+      if (env.type === "liveness_changed") {
+        applyLiveness(env);
       }
       break;
     default:

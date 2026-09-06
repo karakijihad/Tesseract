@@ -48,9 +48,22 @@ SOURCE_PRODUCERS: dict[AgendaSource, tuple[str, ...]] = {
 }
 
 
+def can_still_fire(source: AgendaSource) -> bool:
+    """Whether anything can file work under this source again.
+
+    Asked by the panel, because a pause on a source whose producer was deleted
+    is a record and not a thing to resume: offering `unpause` on one is a verb
+    that names a mechanism and does nothing, and the panel held exactly that
+    for three weeks. `TASK` is live and deliberately has no mapper, which is
+    why this is a function rather than a membership test on the table above.
+    """
+    return source in SOURCE_PRODUCERS or source is AgendaSource.TASK
+
+
 __all__ = [
     "DEFAULT_MAPPERS",
     "SOURCE_PRODUCERS",
+    "can_still_fire",
     "map_operator",
     "map_provider_watch",
 ]

@@ -31,7 +31,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from tesseract.lib.log_envelope import BAD, INFO, WARN, parse_ts, read_when
+from tesseract.lib.log_envelope import BAD, INFO, SEVERITIES, WARN, parse_ts, read_when
 from tesseract.orchestrator.outcome import HEALTHY_OUTCOMES, RunOutcome
 from tesseract.orchestrator.watchman.findings import (
     MAX_EVIDENCE_CHARS,
@@ -46,6 +46,7 @@ log = logging.getLogger(__name__)
 # How far back a first run looks. After that the cursor decides, so this is
 # only ever the width of the very first sweep on a machine.
 DEFAULT_LOOKBACK_HOURS = 24
+
 
 # A per-boot backend log is plain text, and a boot loop can produce a lot of
 # it. Read the tail rather than the file: an error that appears only in the
@@ -242,6 +243,38 @@ def read_breakers(start: datetime | None, end: datetime) -> SourceRead:
                       findings=tuple(findings))
 
 
+def _incident_line(row: dict[str, Any]) -> str:
+    """One heartbeat incident as a line the operator reads.
+
+    `loop was doing` is the part that matters and the part that was missing:
+    without it a heartbeat record says the process went and not what it was
+    doing when it went. The BACKEND composes that phrase from its own sampler
+    while the loop is blocked, and the supervisor only relays it.
+    """
+    doing = str(row.get("loop_was_doing") or "").strip()
+    parts = (
+        f"{row.get('ts')} pid={row.get('backend_pid')}",
+        f"failures={row.get('consecutive_failures')}",
+        str((row.get("last_probe") or {}).get("error", "")).strip(),
+        f"loop was doing: {doing}" if doing else "",
+    )
+    return " ".join(part for part in parts if part)
+
+
+def _declared_severity(rows: list[dict[str, Any]]) -> str | None:
+    """The worst severity the WRITER put on this group of records.
+
+    `None` where no row declared one, which is what a file written before the
+    envelope existed looks like. Reading the writer's word rather than
+    re-deciding from the record's name is the rule everywhere else here; the
+    caller keeps its own fallback for exactly the rows this cannot answer for.
+    """
+    declared = {str(r.get("severity")) for r in rows} & set(SEVERITIES)
+    if not declared:
+        return None
+    return BAD if BAD in declared else (WARN if WARN in declared else INFO)
+
+
 def read_supervisor(start: datetime | None, end: datetime) -> SourceRead:
     """Health-probe failures and the stacks the supervisor dumped over them."""
     from tesseract.paths import log_dir
@@ -263,12 +296,7 @@ def read_supervisor(start: datetime | None, end: datetime) -> SourceRead:
         for event, rows in sorted(by_event.items()):
             times = [t for r in rows if (t := read_when(r))]
             first, last = _span(times)
-            evidence = [
-                f"{r.get('ts')} pid={r.get('backend_pid')} "
-                f"failures={r.get('consecutive_failures')} "
-                f"{(r.get('last_probe') or {}).get('error', '')}".strip()
-                for r in rows[-MAX_EVIDENCE_LINES:]
-            ]
+            evidence = [_incident_line(r) for r in rows[-MAX_EVIDENCE_LINES:]]
             findings.append(Finding(
                 source="supervisor",
                 kind=event,
@@ -278,10 +306,12 @@ def read_supervisor(start: datetime | None, end: datetime) -> SourceRead:
                 first_at=first,
                 last_at=last,
                 evidence=tuple(evidence),
-                # A soft failure is the supervisor doing its job; a hard one
-                # means it killed and respawned the backend, which is a defect
-                # whether or not the restart worked.
-                severity=(
+                # The writer's own word where it declared one. A soft failure is
+                # the supervisor doing its job; a hard one means it killed and
+                # respawned the backend, which is a defect whether or not the
+                # restart worked. The name rule is the fallback, for rows
+                # written before these records carried a severity at all.
+                severity=_declared_severity(rows) or (
                     BAD if ("hard" in event or "restart" in event) else WARN
                 ),
             ))
@@ -451,6 +481,163 @@ def read_loop_stalls(start: datetime | None, end: datetime) -> SourceRead:
             ) else WARN,
         ),),
     )
+
+
+def read_interpreter(start: datetime | None, end: datetime) -> SourceRead:
+    """Which Python is running this, and whether it is the one that should be.
+
+    An install has one app and one interpreter beside it, so there is nothing
+    to get wrong. A dev checkout has two: the `.venv` everything is installed
+    into, and whatever Python happens to be on PATH. `supervisor/daemon.py`
+    spawns with `sys.executable`, so whichever one started the supervisor
+    decides what the whole runtime imports.
+
+    On 2026-08-18 that crossed between them with no code change and voice was
+    gone for a day. Both work today because `.venv` is reconciled, and the
+    thing that was never fixed is the silence: a runtime on the wrong
+    interpreter boots fine and quietly lacks whatever that interpreter is
+    missing, and no source could say so because nothing looked.
+
+    A collector, not a guard. The operator declined a boot guard, and refusing
+    to start is a different act from saying which one is running.
+
+    **It reports a STATE, not something that happened in a window**, which is
+    why `start` goes unread while every other collector here uses it. Which
+    interpreter is running has no beginning to fall inside a sweep: it is true
+    now or it is not, so the finding recurs every tick until it is fixed and
+    the judge's suppress stage is what stops it being said twice.
+    """
+    import sys
+
+    from tesseract.paths import is_installed_tree
+
+    running = Path(sys.executable)
+    if is_installed_tree():
+        # One app, one interpreter, nothing to compare against. Reported as
+        # present and quiet rather than skipped, so the panel can tell an
+        # install apart from a source that failed to look.
+        return SourceRead(name="interpreter", present=True, scanned=1)
+
+    expected = _venv_python()
+    if expected is None:
+        return SourceRead(name="interpreter", present=True, scanned=1)
+    if _same_file(running, expected):
+        return SourceRead(name="interpreter", present=True, scanned=1)
+    return SourceRead(
+        name="interpreter", present=True, scanned=1,
+        findings=(Finding(
+            source="interpreter",
+            kind="wrong_interpreter",
+            subject="the interpreter",
+            summary=(
+                "this checkout is running a Python that is not its own .venv, "
+                "so what it can import is whatever that one has"
+            ),
+            count=1,
+            last_at=end,
+            evidence=(f"running: {running}", f"expected: {expected}"),
+            severity=BAD,
+        ),),
+    )
+
+
+def _venv_python() -> Path | None:
+    """The interpreter this checkout is meant to run, or None if it has none."""
+    from tesseract.paths import TESSERACT_DIR
+
+    for relative in ("Scripts/python.exe", "bin/python"):
+        candidate = TESSERACT_DIR.parent / ".venv" / relative
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _same_file(one: Path, two: Path) -> bool:
+    """Whether two paths are the same interpreter, symlinks and case included.
+
+    `samefile` is the real answer and it raises when either side is gone, so
+    the resolved-path comparison is the fallback rather than the rule.
+    """
+    try:
+        return one.samefile(two)
+    except OSError:
+        return one.resolve() == two.resolve()
+
+
+def read_machine(start: datetime | None, end: datetime) -> SourceRead:
+    """Whether the computer was there, from the computer's own record.
+
+    Two findings and they answer different questions. A stretch the machine
+    was ASLEEP or shut down is `info`: it is the runtime describing why it was
+    quiet, and it is what stops every silence in the window reading as a fault.
+    A stretch it LOST POWER is `bad`, because that is the one the operator can
+    act on and the one nothing else on this machine reports at all.
+
+    This is the source that lets a report say the app broke rather than
+    implying it. Before it, a night asleep and a runtime that died looked the
+    same from every log the watchman reads.
+
+    **It reads wider than the sweep and reports narrower.** A gap is only known
+    once both its ends are in what was read, so an absence that began last
+    night and ended in this morning's window needs the read to reach back past
+    the window. The consequence, which no other collector here has: a finding's
+    `first_at` can predate the sweep's own start, and that is the real
+    beginning rather than a bug.
+    """
+    from tesseract.orchestrator import machine_state
+
+    # Read WIDER than the sweep, then filter to it. `gaps` opens no gap for a
+    # wake whose sleep is not in what it read, on purpose, so reading from the
+    # sweep's own start loses exactly the absence a morning report is written
+    # inside: the machine went to sleep last night, before the window, and woke
+    # in it. `judge/attribute.py` already reads a week for this reason.
+    since = min(start or end, end - machine_state.LOOKBACK)
+    found = machine_state.gaps(since, now=end)
+    if found is None:
+        # NOT `present=False`. The power record exists on every Windows
+        # machine; failing to read it is a permissions refusal, a corrupted
+        # log, or a stopped Event Log service. `present=False` renders as
+        # "nothing on this machine writes this yet", which would be this
+        # source telling the operator the opposite of what happened, in the
+        # one room built to tell a thing that is not there from a thing that
+        # could not be read.
+        return SourceRead(
+            name="machine", present=True,
+            error="the machine's own power record could not be read",
+        )
+    # Filtered on the sweep's own window, and `start` is used rather than
+    # `since`: what was READ is deliberately wider, what is REPORTED is what
+    # the sweep asked about.
+    inside = [g for g in found if _in_window(g.ended, start, end)]
+    if not inside:
+        return SourceRead(name="machine", present=True)
+
+    findings: list[Finding] = []
+    for kind, severity in ((machine_state.LOST_POWER, BAD), (machine_state.ASLEEP, INFO),
+                           (machine_state.SHUT_DOWN, INFO)):
+        of_kind = [g for g in inside if g.kind == kind]
+        if not of_kind:
+            continue
+        longest = max(g.seconds for g in of_kind)
+        findings.append(Finding(
+            source="machine",
+            kind=f"machine_{kind.replace(' ', '_')}",
+            subject="the machine",
+            summary=(
+                f"the machine was {kind} {_many(len(of_kind), 'time')}, "
+                f"the longest for {longest / 3600:.1f} hours"
+                if longest >= 3600 else
+                f"the machine was {kind} {_many(len(of_kind), 'time')}, "
+                f"the longest for {longest / 60:.0f} minutes"
+            ),
+            count=len(of_kind),
+            first_at=min(g.began for g in of_kind),
+            last_at=max(g.ended for g in of_kind),
+            evidence=tuple(g.said() for g in of_kind[-MAX_EVIDENCE_LINES:]),
+            severity=severity,
+        ))
+    return SourceRead(name="machine", present=True, scanned=len(found),
+                      findings=tuple(findings))
 
 
 def read_repairs(attempts: "Iterable[Any]") -> SourceRead:
@@ -1165,6 +1352,8 @@ COLLECTORS: tuple[tuple[str, Callable[[datetime | None, datetime], SourceRead]],
     ("conscience", read_conscience),
     ("schedule", read_schedule),
     ("loop-stalls", read_loop_stalls),
+    ("machine", read_machine),
+    ("interpreter", read_interpreter),
 )
 
 
@@ -1189,8 +1378,10 @@ __all__ = [
     "read_breakers",
     "read_conscience",
     "read_governor",
+    "read_interpreter",
     "read_janitor",
     "read_loop_stalls",
+    "read_machine",
     "read_provider_health",
     "read_repairs",
     "read_schedule",

@@ -23,6 +23,8 @@ const LABELS: Record<string, string> = {
   spawn_stalled: 'A background task is still running',
   card_press: 'You used a control on a card',
   reflection: 'End of session reflection',
+  continuity: 'What the last consolidation carried over',
+  boundary: 'What happened when this conversation was consolidated',
 };
 
 const FALLBACK = 'The app started this on its own';

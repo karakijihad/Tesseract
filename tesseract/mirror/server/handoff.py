@@ -25,6 +25,7 @@ can.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -38,7 +39,70 @@ _BULLET_CAP = 6
 _SUMMARY_CHARS = 1200
 
 
-def reflect_callbacks(app: Any, session: Any, label: str) -> tuple:
+def _deliver_package(
+    chat_session: Any,
+    outcome: str,
+    label: str,
+    saves: list[dict[str, Any]],
+) -> str:
+    """The continuity package, put in front of the conversation that carries on.
+
+    Only for a CONTINUE, and only once this reflection has written its
+    checkpoint, which is why it lives here rather than at the boundary: the
+    boundary returned before the model turn that produces the record even
+    started.
+
+    Read back from the record rather than handed a copy of it, which is the
+    rule the record itself is built on. Returns the text so a caller can send
+    it; empty means there was nothing to say, which is what a conversation
+    that was never about a piece of work leaves behind.
+    """
+    if outcome != "continue":
+        return ""
+    from tesseract.brain import continuity
+    from tesseract.orchestrator import checkpoints
+
+    chat_id = str(getattr(getattr(chat_session, "tool_context", None), "chat_id", "") or "")
+    if not chat_id:
+        log.info("continuity: %s has no durable id, so nothing carries over", label)
+        return ""
+    text = continuity.package_for(checkpoints.latest_for_chat(chat_id), saves)
+    if not text:
+        log.info("continuity: the boundary at %s said nothing about the work", label)
+        return ""
+    try:
+        chat_session.note_continuity(text)
+    except Exception:
+        log.exception("continuity: could not put the package in front of %s", label)
+        return ""
+    return text
+
+
+def _persist(session: Any, label: str) -> None:
+    """Write the package to disk with the conversation it was put in front of.
+
+    The boundary persisted an EMPTY history on its way past, because at that
+    moment the package did not exist. Left to the periodic autosave, a reload
+    inside its interval shows a thread the boundary cleared and nothing saying
+    why. It is one write and it lands with the record already open.
+    """
+    try:
+        from tesseract.mirror.server import chat_store
+
+        chat_store.persist_session_chats(session)
+    except Exception:
+        log.exception("continuity: the package was not written to disk for %s", label)
+
+
+def reflect_callbacks(
+    app: Any,
+    session: Any,
+    label: str,
+    *,
+    chat_session: Any = None,
+    outcome: str = "",
+    deliver: Any = None,
+) -> tuple:
     """Build `(on_complete, on_error)` for `reflect_in_background`.
 
     `on_complete` writes a `reflection_proposal` event carrying the actual save
@@ -103,6 +167,19 @@ def reflect_callbacks(app: Any, session: Any, label: str) -> tuple:
             log.exception(
                 "reflect_in_background on_complete: emit proposal failed (%s)", label
             )
+        # Outside the try above on purpose. The package is what the person is
+        # left with, and an inbox that would not take the proposal must not
+        # also cost them the only thing telling them what happened to their
+        # conversation.
+        if chat_session is not None:
+            text = _deliver_package(chat_session, outcome, label, saves)
+            if text:
+                await asyncio.to_thread(_persist, session, label)
+                if deliver is not None:
+                    try:
+                        await deliver(text)
+                    except Exception:
+                        log.exception("continuity: could not tell %s about it", label)
 
     async def on_error(exc: BaseException, reason: str) -> None:
         try:
@@ -151,6 +228,8 @@ def hand_off(
     label: str,
     trigger: str = "",
     outcome: str = "",
+    refused: str = "",
+    deliver: Any = None,
 ) -> bool:
     """Reflect on a snapshot of `chat_session`, in the background.
 
@@ -171,7 +250,10 @@ def hand_off(
     can be wiped or switched away from in parallel; the clone owns its own copy
     of the history.
     """
-    on_complete, on_error = reflect_callbacks(app, session, label)
+    on_complete, on_error = reflect_callbacks(
+        app, session, label,
+        chat_session=chat_session, outcome=outcome, deliver=deliver,
+    )
     return (
         reflect_in_background(
             chat_session,
@@ -180,6 +262,7 @@ def hand_off(
             on_error=on_error,
             trigger=trigger,
             outcome=outcome,
+            refused=refused,
         )
         is not None
     )

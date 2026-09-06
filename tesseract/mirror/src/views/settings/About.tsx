@@ -5,6 +5,7 @@ import { isTauri } from "../../lib/endpoints";
 import { appInfo, type AppInfo, type Divergence } from "../../lib/update";
 import { useUpdateStore } from "../../stores/update";
 import { Block } from "../../components/common/Block";
+import { DocumentsSection } from "./Documents";
 import { ModeSection } from "./Mode";
 import { RuntimeSection } from "./Runtime";
 import { Button } from "../../components/common/Button";
@@ -254,6 +255,7 @@ export function AboutSection() {
       </Block>
       <LicenceBlock />
       <ModeSection />
+      <DocumentsSection />
       <RuntimeSection />
       {confirmingDiscard && divergence && (
         <Modal

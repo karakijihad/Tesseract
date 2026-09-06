@@ -27,6 +27,7 @@ whole day, with nothing in the record able to settle it.
 from __future__ import annotations
 
 import asyncio
+import subprocess
 import time
 from pathlib import Path
 from datetime import datetime, timezone
@@ -139,35 +140,39 @@ async def _ask(live: CliLiveCheck) -> ProviderFault | None:
     from tesseract.orchestrator.seal_guard import safe_cwd
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        # A THREAD, and `subprocess.run` rather than the asyncio spawn, for the
+        # reason `brain/cli_auth.py` gives at its own call: on Windows the
+        # proactor loop builds its subprocess transport by calling `Popen`
+        # inline, so `CreateProcess` runs ON the event loop. Measured on this
+        # machine, eight spawns each way: worst single block 47 ms and 60 ms
+        # on the loop against 14 ms and 12 ms through a thread. This probe
+        # runs a real CLI turn for every role on a schedule, so the blocks
+        # serialise, on a backend whose supervisor kills it for not answering
+        # a health check.
+        completed = await asyncio.to_thread(
+            subprocess.run,
+            argv,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=live.timeout_seconds,
             env=probe_env(live.command[0]),
             cwd=str(safe_cwd(Path.cwd())),
         )
     except FileNotFoundError:
         return provider_failure.ours(f"{live.command[0]} is not on PATH")
+    except subprocess.TimeoutExpired:
+        # THEIRS. The spawn succeeded, so the provider was reached and said
+        # nothing in time — the contract on `ProviderFault` draws the line at
+        # dispatch, and `chat_role.py` already draws it there. `run` has
+        # already killed the child and waited for it.
+        return provider_failure.unanswered(live.timeout_seconds)
     except OSError as exc:
         return provider_failure.ours(f"the call would not start ({type(exc).__name__})")
 
-    try:
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            proc.communicate(), timeout=live.timeout_seconds
-        )
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        # THEIRS. The spawn succeeded, so the provider was reached and said
-        # nothing in time — the contract on `ProviderFault` draws the line at
-        # dispatch, and `chat_role.py` already draws it there.
-        return provider_failure.unanswered(live.timeout_seconds)
+    stdout = (completed.stdout or b"").decode("utf-8", errors="replace")
+    stderr = (completed.stderr or b"").decode("utf-8", errors="replace")
 
-    stdout = stdout_bytes.decode("utf-8", errors="replace")
-    stderr = stderr_bytes.decode("utf-8", errors="replace")
-
-    if proc.returncode == 0:
+    if completed.returncode == 0:
         # A clean exit is not an answer, and neither is any old text. The whole
         # reason this check exists is that a spent subscription looks healthy;
         # the prompt asks for one specific word so the reply can be CHECKED
@@ -194,7 +199,7 @@ async def _ask(live: CliLiveCheck) -> ProviderFault | None:
         # provider response that was never received, which is the whole defect
         # this module exists to stop.
         return provider_failure.ours(
-            f"{live.command[0]} exited {proc.returncode} before reaching the "
+            f"{live.command[0]} exited {completed.returncode} before reaching the "
             f"provider{_stderr_tail(stderr)}"
         )
     return fault

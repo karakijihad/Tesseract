@@ -604,6 +604,30 @@ def loop_stalls(keep_days: int, action: Action) -> Swept:
     return total
 
 
+def checkpoints_roots() -> tuple[Path, ...]:
+    from tesseract.orchestrator.checkpoints import checkpoint_dir
+
+    return (checkpoint_dir(),)
+
+
+def checkpoints(keep_days: int, action: Action) -> Swept:
+    """`<home>/checkpoints/YYYY-MM-DD.jsonl` — what each boundary wrote down.
+
+    Aged on the name, like every other dated artifact here: an mtime makes a
+    file a backup touched look young forever.
+    """
+    (root,) = checkpoints_roots()
+    if not root.is_dir():
+        return Swept()
+    cutoff = date.today() - timedelta(days=keep_days)
+    total = Swept()
+    for path in sorted(root.glob("*.jsonl")):
+        stamped = _stamp_date(path.stem)
+        if stamped is not None and stamped < cutoff:
+            total += _retire(path, action, root / "archive")
+    return total
+
+
 def _drop_empty_months(root: Path) -> None:
     for month in root.glob("*"):
         try:
@@ -620,6 +644,8 @@ __all__ = [
     "approvals_ledger_roots",
     "backend_logs",
     "backend_logs_roots",
+    "checkpoints",
+    "checkpoints_roots",
     "conscience",
     "conscience_roots",
     "lane_archives",

@@ -422,6 +422,20 @@ def _registry() -> dict[str, Tree]:
             sweep=sweeps.loop_stalls,
             where=sweeps.loop_stalls_roots,
         ),
+        Tree(
+            key="checkpoints",
+            title="What each boundary wrote down",
+            summary="One record per consolidation: the work, and what happens next.",
+            why=(
+                "One short line per boundary, holding references and never "
+                "copies, so the conversation and the files it names outlive it. "
+                "What it is for is picking the work back up, which is answered "
+                "within days; after that the memories reflection wrote are the "
+                "durable part."
+            ),
+            sweep=sweeps.checkpoints,
+            where=sweeps.checkpoints_roots,
+        ),
     )
     return {t.key: t for t in trees}
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import uuid
 from collections.abc import Iterator
 from dataclasses import replace
 from datetime import date, datetime, timedelta
@@ -142,6 +143,46 @@ def save_chat(record: ChatRecord) -> Path:
         if record.surface != "channel":
             chat_index.upsert(record, path)
     return path
+
+
+def archive_copy(record: ChatRecord | None, history: list[dict[str, Any]]) -> str | None:
+    """Write what a conversation is leaving behind as its own archived record.
+
+    The one place a boundary copies a transcript aside, called by both
+    surfaces. It was two functions for a day, one reading the history from
+    disk and one taking it in hand, and the disk one could archive a record up
+    to a full autosave interval stale — missing exactly the exchange whose
+    boundary this is.
+
+    So the HISTORY is the argument and `record` only supplies the metadata. A
+    missing record is not a reason to lose the conversation: the copy is
+    written with whatever is known and an empty title, which is a conversation
+    the operator can still read.
+
+    Returns the new id, or `None` when there was nothing to copy or the copy
+    could not be written. `None` means the caller must NOT wipe: without the
+    copy, wiping in place is deleting.
+    """
+    if not history:
+        return None
+    copy_id = uuid.uuid4().hex
+    try:
+        save_chat(ChatRecord(
+            chat_id=copy_id,
+            session_id=getattr(record, "session_id", "") or "",
+            title=getattr(record, "title", "") or "",
+            created_at=getattr(record, "created_at", "") or now_iso(),
+            started_at=getattr(record, "started_at", "") or now_iso(),
+            history=list(history),
+            archived=True,
+            model=getattr(record, "model", "") or "",
+            surface=getattr(record, "surface", "cockpit") or "cockpit",
+        ))
+        index_chat(copy_id)
+    except Exception:
+        logger.exception("archive_copy: could not write what %s is leaving", copy_id)
+        return None
+    return copy_id
 
 
 def load_chat(chat_id: str, *, include_channels: bool = False) -> ChatRecord | None:

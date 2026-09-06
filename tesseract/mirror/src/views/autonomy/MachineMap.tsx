@@ -13,16 +13,25 @@
 //
 // **Nothing moves.** No transition, no pulse, no dash offset animating along
 // an edge. Motion on this surface is reserved for an event that actually
-// arrived, and nothing broadcasts one yet, so drawing motion now would be a
-// claim about liveness with nothing behind it.
+// arrived. Events arrive now, and a colour changing when one does is the
+// honest amount of movement: a node repaints because the runtime said it
+// changed. Anything driven by elapsed time is decorative, and decorative
+// motion on an operational surface is a lie about liveness.
 
 import { useEffect } from 'react';
 import { useAutonomyStore, type AutonomyLevel } from '../../stores/autonomy';
+import {
+  live,
+  NOTHING_PUSHED,
+  useLiveContext,
+  type LiveContext,
+} from '../../stores/liveness';
 import type { MachineMapResponse, MapEdge, MapNode } from '../../lib/api';
 
-// The map is REST-fed, like the strip, and reconciles at the slow end of the
-// liveness contract's window: a declared shape does not change, and the state
-// on it comes from run records written once a night.
+// The map reconciles at the slow end of the liveness contract's window. It is
+// no longer how a state gets here — `stores/liveness.ts` holds what the runtime
+// pushed — but a read is what the declared shape comes from, and what the
+// panel falls back to when nothing is being pushed.
 const POLL_MS = 60_000;
 
 // The level kinds a room on this panel can draw. The payload names what a node
@@ -183,6 +192,14 @@ export interface MachineMapViewProps {
   onOpen?: (opens: { kind: string; id: string }) => void;
   /** The node the thing beside this map IS, drawn as where you are. */
   marked?: string;
+  /** When this payload was read. What the runtime pushed wins only while it is
+   *  newer than this, so a feed that stopped cannot outrank a room that is
+   *  still reading. */
+  readAt?: number | null;
+  /** What the runtime has pushed since. Passed in rather than read here: this
+   *  view is rendered to static markup in its tests, where a store subscription
+   *  answers with the state it was created holding rather than the one it has. */
+  liveness?: LiveContext;
 }
 
 export function MachineMapView({
@@ -191,6 +208,8 @@ export function MachineMapView({
   error,
   onOpen,
   marked,
+  readAt = null,
+  liveness = NOTHING_PUSHED,
 }: MachineMapViewProps): React.ReactElement | null {
   if (status === 'error') {
     return (
@@ -201,7 +220,16 @@ export function MachineMapView({
   }
   if (!data) return null;
 
-  const { placed, edges, bands, divider, height } = _layout(data);
+  // Every node reads through the one reader, so what a state means when the
+  // runtime goes quiet is answered in one place for the whole panel.
+  const drawn: MachineMapResponse = {
+    ...data,
+    nodes: data.nodes.map((node) => ({
+      ...node,
+      liveness: live(liveness, `node:${node.name}`, node.liveness, readAt),
+    })),
+  };
+  const { placed, edges, bands, divider, height } = _layout(drawn);
   const states = [...new Map(placed.map((p) => [p.node.liveness.state, p.node])).values()];
 
   return (
@@ -288,6 +316,7 @@ export function MachineMapView({
 
 export function MachineMap({ marked }: { marked?: string } = {}): React.ReactElement | null {
   const section = useAutonomyStore((s) => s.map);
+  const liveness = useLiveContext(section.data?.labels);
   const fetchMap = useAutonomyStore((s) => s.fetchMap);
   const pushLevel = useAutonomyStore((s) => s.pushLevel);
 
@@ -306,6 +335,8 @@ export function MachineMap({ marked }: { marked?: string } = {}): React.ReactEle
       status={section.status}
       error={section.error}
       marked={marked}
+      readAt={section.lastFetched}
+      liveness={liveness}
       // A node opens the thing it stands for, one level down IN THE PANE.
       // Which nodes can be opened is the payload's answer: everything with an
       // `opens`, and nothing else.

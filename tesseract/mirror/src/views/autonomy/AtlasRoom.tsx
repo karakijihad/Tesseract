@@ -79,6 +79,7 @@ export function AtlasRoomView({
     lines.map((line) => ({
       key: line.name,
       state: line.state,
+      obligation: line.obligation,
       label: line.label,
       name: line.name,
       said: line.said,

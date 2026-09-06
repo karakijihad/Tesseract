@@ -180,7 +180,7 @@ class ProposeChangeTool(Tool):
         # One door. The posture decides whether this waits for the operator or
         # is applied now and filed as history; the tool does not branch on the
         # mode itself, and neither does the other propose tool.
-        posture = document_posture(context)
+        posture = document_posture(context, inp.target_path)
         event, applied, error = settle_proposal(
             event=event,
             target_path=inp.target_path,

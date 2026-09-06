@@ -41,6 +41,7 @@ from tesseract.orchestrator.autonomy.outbound import (
 )
 from tesseract.orchestrator.autonomy.outbound_routing import load_outbound_routing
 from tesseract.orchestrator.liveness import OperationalState, label_of
+from tesseract.orchestrator.obligation import as_payload as wants
 
 log = logging.getLogger(__name__)
 
@@ -148,6 +149,10 @@ def kinds(app: Any, now: datetime) -> list[dict[str, Any]]:
                 "name": category,
                 "state": state.value,
                 "label": label_of(state),
+                # A kind the operator muted is off because they said so, and a
+                # rail that went amber for it would be amber for as long as
+                # they meant it to be quiet.
+                **wants(state, by_choice=muted),
                 "said": said,
                 "at": _iso(last_at.get(category)),
                 # What may be done to it, on the rule Managed system follows:
@@ -226,6 +231,7 @@ def door() -> list[dict[str, Any]]:
                 "name": "no channel",
                 "state": OperationalState.NOT_INSTRUMENTED.value,
                 "label": label_of(OperationalState.NOT_INSTRUMENTED),
+                **wants(OperationalState.NOT_INSTRUMENTED),
                 "said": (
                     "nothing is wired into this app, so nothing it writes can "
                     "reach you anywhere but here"
@@ -255,6 +261,7 @@ def door() -> list[dict[str, Any]]:
                 "name": str(getattr(status, "name", "") or "channel"),
                 "state": state.value,
                 "label": label_of(state),
+                **wants(state),
                 "said": _door_said(status, state, errors),
                 "at": _iso(_parse(getattr(status, "last_poll_at", None))),
                 "value": f"{int(getattr(status, 'allowed_count', 0) or 0)} approved",

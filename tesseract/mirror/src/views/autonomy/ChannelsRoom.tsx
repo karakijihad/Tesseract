@@ -54,6 +54,7 @@ export function ChannelsRoomView({
   const doors: StateLine[] = data.adapters.map((door) => ({
     key: `door:${door.name}`,
     state: door.state,
+    obligation: door.obligation,
     label: door.label,
     name: door.name,
     said: door.said,
@@ -77,6 +78,7 @@ export function ChannelsRoomView({
   const kinds: StateLine[] = data.kinds.map((kind) => ({
     key: kind.name,
     state: kind.state,
+    obligation: kind.obligation,
     label: kind.label,
     name: kind.name,
     said: kind.said,

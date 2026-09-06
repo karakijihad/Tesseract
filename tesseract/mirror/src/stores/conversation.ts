@@ -108,6 +108,7 @@ interface ChatState {
   resolveApproval: (chatId: string | null, callId: string, approved: boolean) => void;
   addEntityMessage: (chatId: string | null, message: string) => void;
   addFoldMarker: (chatId: string | null, tailTurns?: number) => void;
+  addRuntimeNote: (chatId: string | null, text: string, mark: string) => void;
   addError: (chatId: string | null, message: string) => void;
   addStreamNote: (chatId: string | null, text: string) => void;
   setToolStatus: (chatId: string | null, callId: string, status: ToolCallStatus, reason?: string) => void;
@@ -849,6 +850,28 @@ export const useConversationStore = create<ChatState>((set, get) => ({
           id: `entity-${Date.now()}`,
           role: 'entity' as const,
           content: message,
+          timestamp: Date.now(),
+          status: 'complete' as const,
+        },
+      ],
+    }));
+  },
+
+  addRuntimeNote: (chatId, text, mark) => {
+    const id = _resolveId(get(), chatId);
+    if (!id) return;
+    // Appended, not inserted. The boundary has just cleared this conversation,
+    // so in the ordinary case there is nothing above it; if the operator got
+    // there first it sits after their question, which is where the backend
+    // put it in history too.
+    _patchSlice(set, id, s => ({
+      messages: [
+        ...s.messages,
+        {
+          id: `runtime-${Date.now()}`,
+          role: 'runtime' as const,
+          runtimeOrigin: mark,
+          content: text,
           timestamp: Date.now(),
           status: 'complete' as const,
         },

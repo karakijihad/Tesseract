@@ -135,6 +135,16 @@ trees:
     keep_days: 30
     action: delete
 
+  # One record per consolidation: what the work was, and what happens next.
+  # It holds references rather than copies, so nothing here is the only copy
+  # of anything — the conversation keeps what was said and the memory store
+  # keeps what it taught. Deleted rather than archived because the record is
+  # read to pick work back up, and a boundary from last month describes work
+  # that has either moved on or been forgotten.
+  checkpoints:
+    keep_days: 30
+    action: delete
+
 # What is deliberately NOT swept is declared in tesseract/retention/policy.py
 # as `KEPT`, not as a comment here: from a directory listing a decision and an
 # oversight look identical, so the app subtracts both lists from what it finds

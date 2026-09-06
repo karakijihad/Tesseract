@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import subprocess
 import sys
 from typing import Any, ClassVar
 
@@ -46,6 +47,7 @@ from tesseract.kernel.tools.base import (
     ToolContext,
     ToolResult,
 )
+from tesseract.permissions.bash_security import ask_reason as security_ask_reason
 from tesseract.permissions.bash_security import check as security_check
 
 logger = logging.getLogger(__name__)
@@ -211,6 +213,25 @@ class CommandRunTool(Tool):
     def is_read_only(self) -> bool:
         return False
 
+    def ask_reason(self, validated: BaseModel) -> str:
+        """What the operator is being asked to approve, and why they are asked.
+
+        The same sentence `bash` gives, over the same joined argv the checks
+        read, so one command asked about through two tools is explained one
+        way. The account this would run with is named too: that is the part of
+        this tool a prompt cannot leave out.
+        """
+        inp = (
+            validated
+            if isinstance(validated, CommandRunInput)
+            else CommandRunInput(**validated.model_dump())
+        )
+        said = security_ask_reason(" ".join(inp.command))
+        return (
+            f"{said}\n\nIt runs with the {inp.credential_id} account in its "
+            f"environment."
+        )
+
     def check_permissions(
         self, tool_input: BaseModel, context: ToolContext
     ) -> PermissionResult:
@@ -339,6 +360,14 @@ class CommandRunTool(Tool):
         job = containment.open_job()
         process: asyncio.subprocess.Process | None = None
         try:
+            # ON the loop, and it stays there. The proactor's inline `Popen`
+            # costs one block of about 50 ms measured on this machine, once per
+            # command a person asked for. What a thread would cost is the two
+            # things this call is built around: the output is READ as it
+            # arrives, under a timeout that can still report what was produced
+            # before it expired, and the pid is handed to the job object the
+            # line above opened, which is what stops a script's own children
+            # outliving it. `subprocess.run` gives neither.
             process = await asyncio.create_subprocess_exec(
                 *argv,
                 stdout=asyncio.subprocess.PIPE,
@@ -474,19 +503,23 @@ async def _reap(process: asyncio.subprocess.Process) -> None:
         return
     try:
         if sys.platform == "win32":
-            killer = await asyncio.create_subprocess_exec(
-                "taskkill",
-                "/F",
-                "/T",
-                "/PID",
-                str(process.pid),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
+            # A THREAD, for the reason `brain/cli_auth.py` gives at its own
+            # call: the proactor loop builds a subprocess transport by calling
+            # `Popen` inline, so spawning here would run `CreateProcess` ON the
+            # loop. Measured on this machine, worst single block 47 ms and
+            # 60 ms that way against 14 ms and 12 ms through a thread. This one
+            # runs in a `finally`, so it blocks the loop on the way out of
+            # every command that had to be stopped.
+            await asyncio.to_thread(
+                subprocess.run,
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=_REAP_TIMEOUT_S,
             )
-            await asyncio.wait_for(killer.wait(), timeout=_REAP_TIMEOUT_S)
         else:
             process.kill()
-    except (OSError, ProcessLookupError, asyncio.TimeoutError):
+    except (OSError, ProcessLookupError, asyncio.TimeoutError, subprocess.TimeoutExpired):
         # Best effort by construction: the process may already be gone, and
         # `taskkill` may be missing on a stripped image. Logged rather than
         # raised, because the caller is on its way out with something to say.

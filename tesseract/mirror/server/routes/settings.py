@@ -1988,6 +1988,29 @@ def identity_yaml_path(app: web.Application) -> Path:
     return app["tesseract_dir"] / "config" / "identity.yaml"
 
 
+async def get_workspace_documents(request: web.Request) -> web.Response:
+    """GET /api/settings/workspace-documents — the operator's own six files.
+
+    A read only. The switch beside each row sends `workspace_hold`, the same
+    tool a phone sends, so there is one writer and one gate however the
+    decision is taken. A route that also wrote would be a second door to a
+    setting whose whole point is that it is answerable from anywhere.
+
+    Every posture comes from the policy's own resolver rather than being
+    joined here out of the baseline and the hold map, so this panel and the
+    sentence said on a channel cannot describe one file two ways.
+    """
+    policy = request.app["config"].permissions
+    holds = policy.workspace_document_holds
+    return web.json_response({
+        "mode": policy.mode,
+        "documents": [
+            {"name": name, "posture": posture, "heldBack": name in holds}
+            for name, posture in policy.workspace_document_postures().items()
+        ],
+    })
+
+
 async def get_session_policy(request: web.Request) -> web.Response:
     """GET /api/settings/session-policy — current resume policy."""
     import yaml

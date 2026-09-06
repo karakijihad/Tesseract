@@ -122,6 +122,7 @@ function toLine(line: ManagedLine, kind: Tab, acts: Acts, read: string): StateLi
   return {
     key: `${kind}:${line.origin}:${line.name}`,
     state: line.state,
+    obligation: line.obligation,
     label: line.label,
     name: line.name,
     said: line.said,
@@ -158,6 +159,7 @@ function toPlaybookLine(playbook: ManagedPlaybook): StateLine {
     key: `playbooks:${playbook.name}`,
     // The state is the backend's, said with the row, like every other roster.
     state: playbook.state,
+    obligation: playbook.obligation,
     name: playbook.name,
     said: playbook.cannotRun || playbook.description,
     value,

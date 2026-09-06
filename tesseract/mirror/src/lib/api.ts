@@ -1492,6 +1492,27 @@ export type SessionResumePolicy =
   | "n_days"
   | "always";
 
+/** One of the operator's own workspace documents, and what a proposed change
+ *  to it does now. `posture` is the resolver's answer, not the mode's: a
+ *  document held back reads `ask` under a mode that says `auto`. */
+export interface WorkspaceDocumentLine {
+  name: string;
+  posture: "auto" | "ask" | "deny";
+  heldBack: boolean;
+}
+
+export interface WorkspaceDocumentsResponse {
+  mode: string;
+  documents: WorkspaceDocumentLine[];
+}
+
+/** Read only. The switch beside a row sends the `workspace_hold` tool, which
+ *  is the same thing a sentence said on a phone sends, so there is one writer
+ *  however the decision is taken. */
+export async function fetchWorkspaceDocuments(): Promise<WorkspaceDocumentsResponse> {
+  return apiFetch<WorkspaceDocumentsResponse>("/api/settings/workspace-documents");
+}
+
 export interface SessionPolicyResponse {
   policy: SessionResumePolicy;
   days: number;
@@ -2058,6 +2079,24 @@ export async function fetchPruned(
 // for, because an explanation written here goes stale the first time the step
 // changes.
 
+export interface Wants {
+  /** What this row asks of whoever reads it. The only input to its colour. */
+  obligation: Obligation;
+  /** What to call that on screen. The backend's word, like every other one on
+   *  this panel. */
+  obligationLabel: string;
+}
+
+export type Obligation =
+  | 'standing_fault'
+  | 'needs_you'
+  | 'being_healed'
+  | 'happened_over'
+  | 'off_by_choice'
+  | 'never_set_up'
+  | 'nothing_watches'
+  | 'fine';
+
 export type OperationalState =
   | 'running'
   | 'idle'
@@ -2167,6 +2206,11 @@ export interface MachineMapResponse {
   bands: MapBand[];
   nodes: MapNode[];
   edges: MapEdge[];
+  /** Every state's word, keyed by the state. The whole table rather than the
+   *  ones on this payload: the panel renders `unknown` itself when the runtime
+   *  stops reaching it, and it needs the word at the moment it can no longer
+   *  ask for one. */
+  labels: Record<string, string>;
   observedAt: string;
 }
 
@@ -2183,7 +2227,16 @@ export async function fetchMachineMap(): Promise<MachineMapResponse> {
 
 export type HealthBand = 'needs_action' | 'blind' | 'operating';
 
-export interface HealthDepartment {
+export interface HealthDepartment extends Wants {
+  /** How long this reading stands for, in seconds, from its producer's own
+   *  cadence. Null where the producer has no cadence and the row is as current
+   *  as the request. A number with no age reads as a number about now. */
+  expectedWithin?: number | null;
+  /** Whether the operator has already answered this row. A field rather than
+   *  a phrase in the sentence: the room offers "pick it back up" on exactly
+   *  these, and reading that off the prose would tie a control to the wording
+   *  of a sentence somebody will improve one day. */
+  acknowledged?: boolean;
   name: string;
   band: HealthBand;
   state: OperationalState;
@@ -2236,6 +2289,10 @@ export interface HealthResponse {
   /** What the last sweep wrote down, in full. */
   report: HealthReport;
   tail: RuntimeLine[];
+  /** Every state's word, keyed by the state. Shipped whole for the same reason
+   *  the map ships it: the room says "not known" itself when the runtime stops
+   *  reaching it, and it cannot ask for the word at that point. */
+  labels: Record<string, string>;
   /** When the watchman last looked. Null when it never has here. */
   sweptAt: string | null;
   observedAt: string;
@@ -2350,7 +2407,7 @@ export async function fetchEntryCard(name: string): Promise<EntryCardResponse> {
 // backend's: a view that decided what `last_result.ok` looks like would be a
 // second definition of a run's outcome, and the first one to drift.
 
-export interface ManagedLine {
+export interface ManagedLine extends Wants {
   name: string;
   /** Who wrote it: the app, or the operator. */
   origin: 'system' | 'user';
@@ -2381,7 +2438,7 @@ export interface ManagedLine {
  *  shape rather than a `ManagedLine`, because what it carries (a version, a
  *  lifecycle status, the steps it counts, the sentence for why it cannot run)
  *  is not what a schedule, an agent or an alarm carries. */
-export interface ManagedPlaybook {
+export interface ManagedPlaybook extends Wants {
   name: string;
   /** Always the operator's own: nothing ships a playbook. */
   origin: 'system' | 'user';
@@ -2422,7 +2479,7 @@ export async function fetchManaged(): Promise<ManagedResponse> {
 // at all, so the door leads and the kinds follow it. Every state, every word
 // and every answer to "may this be muted" is the backend's.
 
-export interface ChannelKind {
+export interface ChannelKind extends Wants {
   name: string;
   state: OperationalState;
   label: string;
@@ -2436,7 +2493,7 @@ export interface ChannelKind {
   muted: boolean;
 }
 
-export interface ChannelDoor {
+export interface ChannelDoor extends Wants {
   name: string;
   state: OperationalState;
   label: string;
@@ -2467,7 +2524,7 @@ export interface ChannelsResponse {
 // that run recorded them, and whether a question asked NOW can be answered.
 // Nothing here is derived in the view.
 
-export interface MemoryLine {
+export interface MemoryLine extends Wants {
   name: string;
   state: OperationalState;
   label: string;
@@ -2800,10 +2857,22 @@ export async function fetchAutonomyRetention(): Promise<RetentionResponse> {
 // the rule the watchman follows, so a figure that was not observed is dropped
 // and the counts are published instead. Nothing here writes a word of it.
 
+/** What a row on the panel asks of the operator, as against what it IS.
+ *
+ * The only input to a colour on this panel. `OperationalState` says what a
+ * thing is doing and stays exactly as it was; this says whether anything is
+ * wanted, and it is derived once, on the backend, in
+ * `orchestrator/obligation.py`. Eight rooms deciding for themselves what red
+ * meant is why the panel was amber on a machine where nothing was wrong.
+ */
+
 export interface RoomLinePayload {
   key: string;
   /** The sentence, or the counted facts when no model could be reached. */
   said: string;
+  /** What the room wants, which is the worst thing in it. The rail draws its
+   *  colour from this and decides nothing. */
+  mark: Obligation;
   /** What the room is FOR, which is a different question from what is in it
    *  now. It does not change, and no model writes it. */
   purpose: string;
@@ -2827,7 +2896,7 @@ export async function fetchRoomLines(): Promise<RoomLinesResponse> {
 // assembled by the one layer with no access to what a state means. It is the
 // backend's now, and this file describes the shape it arrives in.
 
-export interface OverviewLine {
+export interface OverviewLine extends Wants {
   name: string;
   state: OperationalState;
   /** What to call that state. The backend's word. */

@@ -45,6 +45,7 @@ from tesseract.mirror.server.routes._bands import band_for
 from tesseract.mirror.server.routes._isotime import iso as _iso
 from tesseract.mirror.server.routes._isotime import parse as _parse
 from tesseract.orchestrator.liveness import OperationalState, label_of
+from tesseract.orchestrator.obligation import as_payload as wants
 from tesseract.retention import record
 from tesseract.retention.policy import KEPT, RetentionError, load_live
 
@@ -91,6 +92,9 @@ def _row(
         "name": name,
         "state": state.value,
         "label": label_of(state),
+        # What this row asks of whoever reads it, decided once in
+        # `orchestrator/obligation.py` and the only input to its colour.
+        **wants(state),
         "said": said,
         # The second line under the sentence: what would be lost if this
         # stopped being kept. It is the tree's own `why`, never composed here.

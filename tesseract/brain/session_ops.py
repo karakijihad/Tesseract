@@ -143,6 +143,7 @@ async def reflect_on_session(
     *,
     trigger: str = "",
     outcome: str = "",
+    refused: str = "",
 ) -> list[dict[str, Any]]:
     """Run one bounded reflection turn. Returns a list of summaries — one
     per reflection-related tool call observed (``memory_save`` /
@@ -159,6 +160,10 @@ async def reflect_on_session(
     reflection is reachable from places that are NOT a boundary — the operator
     typing `/reflect` is the live one — and a checkpoint from one of those
     should say so rather than claim a trigger it never had.
+
+    ``refused`` is why a `continue` was turned into a `reset`, and it is
+    recorded for the same reason: the outcome alone cannot tell a conversation
+    the runtime stopped from one that finished its work.
     """
     if len(session.history) < MIN_HISTORY_FOR_REFLECTION:
         return []
@@ -167,7 +172,9 @@ async def reflect_on_session(
     said: list[str] = []
     try:
         result = await _reflect(session, reason, calls, by_call_id, said)
-        _write_checkpoint(session, said, trigger=trigger, outcome=outcome)
+        _write_checkpoint(
+            session, said, trigger=trigger, outcome=outcome, refused=refused,
+        )
         return result
     finally:
         # Reflection is a summarisation pass, not a turn the operator reads.
@@ -204,8 +211,16 @@ async def _reflect(
     try:
         async for chunk in session.send(REFLECTION_PROMPT, runtime_origin="reflection"):
             if chunk.type == ChunkType.TEXT:
-                if said is not None and chunk.content:
-                    said.append(chunk.content)
+                # `.text`. A `StreamChunk` has never had `.content`, so this
+                # raised on the FIRST text chunk of every reflection from the
+                # day the text started being collected, and the `except
+                # Exception` below turned it into a warning nobody read: the
+                # saves came back, the checkpoint was written from nothing, and
+                # every boundary reported that it had nothing to say about the
+                # work. Found by running one live, which is why the phase asks
+                # for that and not for another test.
+                if said is not None and chunk.text:
+                    said.append(chunk.text)
             elif chunk.type == ChunkType.TOOL_CALL_START:
                 summary = _summarize_reflection_call(chunk.tool_call)
                 if summary is not None:
@@ -261,7 +276,12 @@ def _parse_state(said: list[str]) -> dict[str, Any] | None:
 
 
 def _write_checkpoint(
-    session: ChatSession, said: list[str], *, trigger: str = "", outcome: str = ""
+    session: ChatSession,
+    said: list[str],
+    *,
+    trigger: str = "",
+    outcome: str = "",
+    refused: str = "",
 ) -> None:
     """Record what this conversation was doing. Never raises.
 
@@ -273,12 +293,14 @@ def _write_checkpoint(
     try:
         from tesseract.orchestrator import checkpoints
 
-        session_id = str(getattr(session.tool_context, "session_id", "") or "")
+        context = session.tool_context
         checkpoints.write(
             checkpoints.build(
-                session_id=session_id,
+                session_id=str(getattr(context, "session_id", "") or ""),
+                chat_id=str(getattr(context, "chat_id", "") or ""),
                 trigger=trigger,
                 outcome=outcome,
+                refused=refused,
                 state=_parse_state(said),
             )
         )
@@ -397,6 +419,7 @@ def reflect_in_background(
     on_error: ReflectErrorCb | None = None,
     trigger: str = "",
     outcome: str = "",
+    refused: str = "",
 ) -> "asyncio.Task[list[dict[str, Any]]] | None":
     """Spawn reflection on a snapshot of `session`. Returns the Task, or
     `None` if history is too short to reflect, or if a previous reflect
@@ -421,7 +444,7 @@ def reflect_in_background(
         saves: list[dict[str, Any]] = []
         try:
             saves = await reflect_on_session(
-                clone, reason, trigger=trigger, outcome=outcome
+                clone, reason, trigger=trigger, outcome=outcome, refused=refused,
             )
             if on_complete is not None:
                 try:

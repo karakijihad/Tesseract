@@ -2,7 +2,7 @@
 
 ``GET /api/autonomy/health`` answers the question the Autonomy panel's Health
 room is for, and it answers it from what the machine has already written down
-rather than by asking the machine again. The watchman looks at ten sources and
+rather than by asking the machine again. The watchman looks at twelve sources and
 the machine itself every quarter of an hour and leaves
 ``autonomy/watchman/latest.json`` behind; that file already carries every
 source's PRESENCE and not only its findings, for exactly this reason, and its
@@ -11,13 +11,17 @@ own docstring says so.
 So this route reads a small JSON file, the recovery summary the app is already
 holding, and two directories. It is cheap enough to poll.
 
-**Three bands, and which one a department lands in is derived from its state,
-never declared twice.** Something that failed or is working below what it
-promised needs the operator. Something nothing reports on is blind. Everything
-else is operating. The one rule that governs all of it is the phase's: a
-department whose producer does not exist renders as `not_instrumented` and
-never as quiet, because a room that goes silent when its camera is unplugged
-says nothing is wrong.
+**Three bands, and which one a department lands in is derived, never declared
+twice.** Something this room cannot see is blind, whether nothing produces it
+or something produces it and could not be read. Of the rest, what asks
+something of the operator needs action and everything else is operating. What
+decides the second half is `orchestrator/obligation.py`, not the state: a
+finished incident and a contract being missed now are both `degraded`, and
+banding on that is how this room came to hold four rows that were one restart
+with two of them already over. The one rule that governs all of it is the
+phase's: a department whose producer does not exist renders as
+`not_instrumented` and never as quiet, because a room that goes silent when
+its camera is unplugged says nothing is wrong.
 
 Anonymous-readable, like the other dashboard feeds.
 """
@@ -38,7 +42,13 @@ from tesseract import paths
 from tesseract.lib.log_envelope import BAD, INFO, WARN
 from tesseract.mirror.server.routes._isotime import iso as _iso
 from tesseract.mirror.server.routes._isotime import parse as _parse
-from tesseract.orchestrator.liveness import OperationalState, label_of
+from tesseract.orchestrator.liveness import (
+    OperationalState,
+    label_of,
+    labels_payload,
+)
+from tesseract.orchestrator.obligation import Obligation, obligation_of
+from tesseract.orchestrator.obligation import label_of as obligation_label
 
 log = logging.getLogger(__name__)
 
@@ -59,10 +69,23 @@ TAIL_BYTES = 32 * 1024
 # whichever booted last rather than wherever the error is.
 LOG_FILES = 6
 
-# A sweep older than this is not a reading of now. The watchman fires every
-# quarter of an hour, so an hour is four missed turns: past that the panel says
-# it does not know rather than showing a stale green.
-SWEEP_STALE_AFTER = timedelta(hours=1)
+# How many of the watchman's own turns a sweep may miss before it stops
+# standing for now. Two: one is a run that was late or is still going, and two
+# is nothing having happened when something should have, twice.
+#
+# The window itself is NOT written here. It is the row's own cadence, read from
+# the schedule, because a threshold written beside a producer is a second copy
+# of how often it runs: the constant this replaces was an hour with a comment
+# saying the watchman fires every quarter of an hour, and the row has been
+# hourly for long enough that a normal sweep went `unknown` in the minutes
+# before its successor.
+SWEEP_MISSED_TURNS = 2
+
+# What the room says when it cannot read the cadence at all. A window has to
+# exist or a sweep from last year would stand as the current reading, and this
+# is deliberately generous: the failure it guards is an unreadable schedule,
+# which is not the sweep's fault and should not make the room shout.
+SWEEP_WINDOW_UNKNOWN = timedelta(hours=6)
 
 # How far back the event-loop row looks. A stall is an event, not a state, so
 # the room needs a window or the newest one on file stands as the answer
@@ -75,16 +98,33 @@ NEEDS_ACTION = "needs_action"
 BLIND = "blind"
 OPERATING = "operating"
 
-_BAND_OF: dict[OperationalState, str] = {
-    OperationalState.FAILED: NEEDS_ACTION,
-    OperationalState.DEGRADED: NEEDS_ACTION,
-    OperationalState.REFUSED: NEEDS_ACTION,
-    OperationalState.NOT_INSTRUMENTED: BLIND,
-    OperationalState.UNKNOWN: BLIND,
-    OperationalState.RUNNING: OPERATING,
-    OperationalState.IDLE: OPERATING,
-    OperationalState.PENDING: OPERATING,
-}
+# The two obligations that mean somebody has to do something.
+_WANTS_YOU = frozenset({Obligation.STANDING_FAULT, Obligation.NEEDS_YOU})
+
+# The two states that mean this room cannot see. Not the same question as what
+# a row wants, which is why the band reads both: nothing produces this at all,
+# against something produces it and could not be read. Either way the room is
+# reporting an absence rather than a reading, and that is what Blind is for.
+_CANNOT_SEE = frozenset({OperationalState.NOT_INSTRUMENTED, OperationalState.UNKNOWN})
+
+
+def _band_of(state: OperationalState, wants: Obligation) -> str:
+    """Which of the three bands this row belongs under.
+
+    Blind is a claim about the SOURCE and the other two are claims about the
+    reader, so this is the one place the room reads both axes. It used to read
+    the state alone, and that is how it came to hold four rows that were one
+    restart with two of them already over: `degraded` does two unrelated jobs,
+    a contract being missed now and an event that happened once and is over,
+    and no state vocabulary can tell those apart.
+
+    An acknowledged fault leaves Needs action and keeps its true state, which
+    is `acknowledged.py`'s own first rule: the row stays, and only the demand
+    goes.
+    """
+    if state in _CANNOT_SEE:
+        return BLIND
+    return NEEDS_ACTION if wants in _WANTS_YOU else OPERATING
 
 _STATE_OF_SEVERITY: dict[str, OperationalState] = {
     BAD: OperationalState.FAILED,
@@ -108,6 +148,8 @@ _SOURCE_NAMES: dict[str, str] = {
     # the screen. This map is total over the collectors by test, and a name
     # that is here is a name the room has the day that set is emptied.
     "loop-stalls": "how long the app was blocked",
+    "machine": "whether the computer was on",
+    "interpreter": "which Python is running",
     "diagnostics": "the machine itself",
     "repairs": "what it fixed itself",
 }
@@ -132,8 +174,21 @@ def department(
     at: datetime | None = None,
     value: str = "",
     for_model: str | None = None,
+    key: str = "",
+    expected_within: float | None = None,
+    acknowledged: bool = False,
+    ended: bool = False,
+    by_choice: bool = False,
+    unconfigured: bool = False,
 ) -> dict[str, Any]:
     """One line in a Health band.
+
+    The four facts past `for_model` are what this row knows about itself that
+    its state cannot say: that the operator has already looked at it, that it
+    is an event rather than a condition, that somebody turned it off, that
+    nobody has ever set it up. They decide what it WANTS, which decides its
+    colour and its band, and they are passed by the reader that knows them
+    rather than guessed at here.
 
     `label` travels with the state because `not_instrumented` is unreadable to
     anybody who has not read the code, and the translation belongs where the
@@ -144,11 +199,29 @@ def department(
     field naming a contract nothing can honour is worse than the absence of
     one. When Health rows do navigate, they will publish a real target.
     """
+    wants = obligation_of(
+        state,
+        acknowledged=acknowledged,
+        ended=ended,
+        by_choice=by_choice,
+        unconfigured=unconfigured,
+    )
     return {
         "name": name,
-        "band": _BAND_OF[state],
+        # Whether the operator has already answered this row. False here and
+        # set by `_left_alone`, which is the one place that reads the store.
+        "acknowledged": False,
+        # What an acknowledgement is keyed by. A watchman finding passes the
+        # judge's own key, so the two stores cannot drift the first time a
+        # subject is renamed; everything else is a collector row, which has no
+        # finding behind it and is named by what the room calls it.
+        "key": key or collector_key(name),
+        "band": _band_of(state, wants),
         "state": state.value,
         "label": label_of(state),
+        # What it asks of whoever reads it, and the only input to its colour.
+        "obligation": wants.value,
+        "obligationLabel": obligation_label(wants),
         "said": said,
         # The same department in the words that may leave this machine, for
         # the room line a model writes. `said` is the operator's copy and may
@@ -157,8 +230,84 @@ def department(
         # to forward, and the caller says less rather than guessing.
         "saidToModel": said if for_model is None else for_model,
         "at": _iso(at),
+        # How long this reading stands for, in seconds, from its producer's own
+        # cadence. A number with no age reads as a number about now, and a
+        # surface cannot say "expected every hour, overdue by eight minutes"
+        # from a timestamp alone. `None` where the producer has no cadence:
+        # the row is read live and is as current as the request.
+        "expectedWithin": expected_within,
         "value": value,
     }
+
+
+#: The cadence, keyed on the schedule file it was read from. Measured: reading
+#: and validating the schedule is 18ms warm, and `from_sweep` runs on the loop
+#: that carries the socket and every inbound turn. The key is the file's own
+#: mtime and size, which is the pattern the Atlas room already uses, so an
+#: operator editing their cadence is picked up on the next read and nothing has
+#: to be invalidated by hand.
+_CADENCE: tuple[tuple[float, int] | None, timedelta | None] = (None, None)
+
+
+def sweep_cadence(now: datetime) -> timedelta | None:
+    """How often the watchman comes round, from the row that declares it.
+
+    Read rather than restated. `config/schedule.yaml` is where the cadence
+    lives, `scheduler/cadence.py` is what reads one, and the room asks both
+    rather than keeping a number that can be right on the day it is written
+    and wrong for a year afterwards.
+    """
+    global _CADENCE
+    from tesseract import paths
+    from tesseract.scheduler.cadence import next_fire
+    from tesseract.scheduler.config_loader import load_schedule_config
+
+    try:
+        stamp = paths.config_dir() / "schedule.yaml"
+        stat = stamp.stat()
+        key = (stat.st_mtime, stat.st_size)
+    except OSError:
+        key = None
+    if key is not None and _CADENCE[0] == key:
+        return _CADENCE[1]
+
+    try:
+        config = load_schedule_config(paths.config_dir())
+        row = next(job for job in config.jobs if job.name == "watchman")
+        # TWO fires, not the time until the next one. A cron is a clock rather
+        # than an interval: asked at five past, `15 * * * *` is ten minutes
+        # away and asked at twenty past it is fifty, and neither is how often
+        # it runs. The gap between two consecutive fires is.
+        first = next_fire(row.cadence, now)
+        second = next_fire(row.cadence, first) if first else None
+    except Exception:  # noqa: BLE001 — a room says less rather than failing
+        log.warning("health route: the watchman's cadence could not be read")
+        _CADENCE = (key, None)
+        return None
+    if first is None or second is None:
+        _CADENCE = (key, None)
+        return None
+    span = second - first
+    cadence = span if span > timedelta(0) else None
+    _CADENCE = (key, cadence)
+    return cadence
+
+
+def sweep_window(now: datetime) -> timedelta:
+    """How long a sweep stands for now, before the room says it does not know."""
+    cadence = sweep_cadence(now)
+    if cadence is None:
+        return SWEEP_WINDOW_UNKNOWN
+    return cadence * SWEEP_MISSED_TURNS
+
+
+def collector_key(name: str) -> str:
+    """The acknowledgement key for a row no watchman finding produced.
+
+    Same three-part shape `standing.key_for` uses, so one store holds both and
+    nothing has to know which kind a key came from to prune it.
+    """
+    return f"collector//{name}"
 
 
 def latest_path() -> Path:
@@ -223,7 +372,14 @@ def from_sweep(latest: Sweep, now: datetime) -> list[dict[str, Any]]:
         ]
 
     observed = _parse(latest.get("observed_at"))
-    stale = observed is None or now - observed > SWEEP_STALE_AFTER
+    cadence = sweep_cadence(now)
+    window = cadence * SWEEP_MISSED_TURNS if cadence else SWEEP_WINDOW_UNKNOWN
+    stale = observed is None or now - observed > window
+    # How long the row is entitled to stand for now, in seconds, so a surface
+    # can say when a number was taken AND when it stops being current. A fact
+    # with no age reads as a fact about now, which for a quarter-hourly sweep
+    # was already wrong and for an hourly one is wronger.
+    expected = cadence.total_seconds() if cadence else None
 
     out: list[dict[str, Any]] = []
 
@@ -251,15 +407,19 @@ def from_sweep(latest: Sweep, now: datetime) -> list[dict[str, Any]]:
         answered = held is not None and held.covers(severity)
         said = str(finding.get("summary") or "")
         if answered and held is not None:
-            said = _left_alone(said, held)
+            said = _left_alone_said(said, held)
         out.append(
             department(
                 name=str(finding.get("subject") or _SOURCE_NAMES.get(source, source)),
-                state=(
-                    OperationalState.IDLE
-                    if answered
-                    else _STATE_OF_SEVERITY.get(severity, OperationalState.DEGRADED)
-                ),
+                key=_key_of(finding),
+                expected_within=expected,
+                # The state stays what the sweep found, acknowledged or not.
+                # It used to be rewritten to `idle`, which moved the row to
+                # Operating by making the room say something untrue about it;
+                # what the operator asked for was to stop being alarmed, not to
+                # stop being told. The demand is the axis that moves.
+                state=_STATE_OF_SEVERITY.get(severity, OperationalState.DEGRADED),
+                acknowledged=answered,
                 said=said,
                 # The watchman's own gate, read rather than re-derived: a
                 # finding whose summary carries text the runtime was handed
@@ -298,6 +458,7 @@ def from_sweep(latest: Sweep, now: datetime) -> list[dict[str, Any]]:
                     # parser said. The count is the part that travels.
                     for_model="",
                     at=observed,
+                    expected_within=expected,
                 )
             )
             continue
@@ -315,6 +476,7 @@ def from_sweep(latest: Sweep, now: datetime) -> list[dict[str, Any]]:
                     else "read, nothing to report"
                 ),
                 at=observed,
+                expected_within=expected,
                 value=str(scanned) if scanned else "",
             )
         )
@@ -325,6 +487,7 @@ def from_sweep(latest: Sweep, now: datetime) -> list[dict[str, Any]]:
         out.append(
             department(
                 name=str(spot),
+                expected_within=expected,
                 state=OperationalState.NOT_INSTRUMENTED,
                 said="the judge could not read what it needed to decide this",
             )
@@ -347,7 +510,7 @@ def _key_of(finding: dict[str, Any]) -> str:
     )
 
 
-def _left_alone(said: str, held: Any) -> str:
+def _left_alone_said(said: str, held: Any) -> str:
     """The finding's own sentence, plus who left it and when.
 
     Never instead of it. What is true stays on the row; this adds why it is
@@ -361,19 +524,19 @@ def _left_alone(said: str, held: Any) -> str:
 
 
 def _acknowledged(latest: Sweep) -> dict[str, Any]:
-    """What the operator has left alone, narrowed to this sweep's findings.
+    """What the operator has left alone.
 
-    Pruning here rather than on a schedule keeps the store honest without a
-    job to run: the room reads the sweep every minute, and the sweep is the
-    only thing that knows which faults are still live.
+    Read only. Pruning used to happen here, against this sweep's findings
+    alone, which was right while a finding was the only kind of row that could
+    be left: it would now throw away an acknowledgement on a collector row the
+    moment the room was read. The prune moved to `read_departments`, which is
+    the only place that sees every row.
     """
     from tesseract.orchestrator.watchman import acknowledged
 
     if not isinstance(latest, dict):
         return {}
-    live = {_key_of(f) for f in (latest.get("findings") or []) if isinstance(f, dict)}
     try:
-        acknowledged.prune(live)
         return acknowledged.load()
     except Exception:  # noqa: BLE001 — a room says more rather than failing
         log.exception("health route: the acknowledged store could not be read")
@@ -469,8 +632,39 @@ def from_recovery(app: web.Application) -> list[dict[str, Any]]:
 # 6. A reader that raises is one department, never a dead room. Every reader
 #    in `get_health`'s gather goes through `_departments` or `_or_empty`, so
 #    nothing in it can raise and take the room with it.
-# 7. Which band a department lands in is derived from its state by `_BAND_OF`
-#    and never declared a second time.
+# 7. Which band a department lands in is derived by `_band_of` and never
+#    declared a second time. It reads BOTH axes, because Blind is a claim
+#    about the source and the other two are claims about the reader.
+
+# ── What the whole panel is built against ────────────────────────────────
+#
+# Fourteen properties, held AT ONCE. The operator said three times that this
+# panel is confusing, delayed and unactionable, and each time the mechanism
+# built was correct and landed somewhere they were not looking. The rule for
+# a second finding on the same code is to stop patching and design against
+# every property together, so the list is here, in the file that produces most
+# of the rows, and `views/autonomy/rooms.ts` points at it. A later change is
+# checked against all of it and not against whatever prompted the change.
+#
+#  1. Every row states a consequence and a remedy, or it is not drawn.
+#  2. Every row carries a verb, or is explicitly a record. No row is both
+#     actionable-looking and inert.
+#  3. The verb is on the surface where the row is read, and reaches every
+#     surface. A control that exists at the desk and nowhere else is a control
+#     that does not exist when the operator is away from it.
+#  4. A verb names its effect, not its mechanism.
+#  5. Colour encodes obligation, never internal state.
+#  6. An incident that ended is a fact with a time, never a band.
+#  7. "Off by choice" and "never configured" are never painted as faults.
+#  8. A room that is fine can say so. Green is reachable.
+#  9. Severity is decided once, in one function, from one vocabulary.
+# 10. Every number carries when it was taken, and says so once older than its
+#     producer's cadence.
+# 11. Opening a room costs at most one round trip; re-opening a fresh one
+#     costs none.
+# 12. Never two answers to one question on one screen.
+# 13. Never an internal identifier in front of a reader.
+# 14. Never a claim of a repair that was not made.
 
 
 def from_capabilities() -> list[dict[str, Any]]:
@@ -542,6 +736,8 @@ def from_capabilities() -> list[dict[str, Any]]:
     # is off the board and the rest of the app is still running. Grading one
     # above the other would be a severity this room invented, and the record
     # does not carry one.
+    from tesseract.capability.state import Consent, DependencyState
+
     return [
         department(
             name=record.id,
@@ -549,6 +745,13 @@ def from_capabilities() -> list[dict[str, Any]]:
             said=record.reason or f"it is {record.state.value} and the app expects it",
             at=checked,
             value=f"{record.size_mb} MB" if record.size_mb else "",
+            # Not here and never asked for is a choice nobody has made yet, not
+            # a fault. `Capabilities.tsx` already draws those in ordinary text,
+            # and this room does not get to paint them as faults either.
+            unconfigured=(
+                record.state is DependencyState.ABSENT
+                and record.consent is Consent.NEVER_ASKED
+            ),
         )
         for record in wanted
     ]
@@ -752,6 +955,13 @@ def from_loop_lag(now: datetime | None = None) -> list[dict[str, Any]]:
             for_model=plain,
             at=_parse(worst.get("ts")),
             value=f"{seconds:.1f}s",
+            # A stall is an event, not a state, and the window is what makes
+            # this row honest at all: inside it, these are blocks that happened
+            # and ended. Not when one of them was graded BAD. The writer's own
+            # word for that is a block long enough to cost the supervisor a
+            # heartbeat, which is the thing that gets the app killed and
+            # restarted, and a day with one in it is asking for something.
+            ended=not any(r.get("severity") == BAD for r in recent),
         )
     ]
 
@@ -875,6 +1085,11 @@ def from_stack_dumps(now: datetime) -> list[dict[str, Any]]:
             ),
             at=last,
             value=str(len(recent) or len(dumps)),
+            # Things that HAPPENED, in a window, and the row says so itself:
+            # "there is nothing to do unless it keeps happening". A count of
+            # past events banded as a demand is what put four rows in Needs
+            # action on a machine where nothing was wrong.
+            ended=bool(recent),
         )
     ]
 
@@ -1004,28 +1219,152 @@ async def _or_empty(name: str, read: Callable[[], Any], fallback: Any) -> Any:
         return fallback
 
 
-async def get_health(request: web.Request) -> web.Response:
-    """Every department, banded, with the runtime's own errors under them."""
-    now = datetime.now(timezone.utc)
+#: What a row's state is worth, in the words the acknowledgement store already
+#: uses to decide whether a fault has got worse. The inverse of
+#: `_STATE_OF_SEVERITY`, written out rather than inverted at runtime because
+#: three states share one severity and an inversion would pick one at random.
+_SEVERITY_OF_STATE: dict[str, str] = {
+    OperationalState.FAILED.value: BAD,
+    OperationalState.DEGRADED.value: WARN,
+    OperationalState.REFUSED.value: WARN,
+    OperationalState.UNKNOWN.value: WARN,
+    OperationalState.RUNNING.value: INFO,
+    OperationalState.IDLE.value: INFO,
+    OperationalState.PENDING.value: INFO,
+    OperationalState.NOT_INSTRUMENTED.value: INFO,
+}
+
+
+def _left_alone(departments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apply what the operator has already looked at, to every kind of row.
+
+    It was applied to watchman findings alone, and the four rows that lit this
+    panel on the day the phase was written came from collectors, which had no
+    way to be left at all. One pass over the finished list is what makes the
+    control reach every row without each collector learning about the store.
+
+    The three rules are `acknowledged.py`'s and are not restated here: the row
+    stays drawn and says who left it and when, it returns on its own if the
+    same fault gets worse than it was, and the acknowledgement is spent when
+    the fault stops being found. The last of those is the prune below, and it
+    is here rather than in `from_sweep` because this is the only place that
+    knows every live key.
+    """
+    from tesseract.orchestrator.watchman import acknowledged
+
+    try:
+        seen = acknowledged.load()
+    except Exception:  # noqa: BLE001 — a room says more rather than failing
+        log.exception("health route: the acknowledged store could not be read")
+        return departments
+
+    out: list[dict[str, Any]] = []
+    for row in departments:
+        held = seen.get(str(row.get("key") or ""))
+        answered = held is not None and held.covers(
+            _SEVERITY_OF_STATE.get(str(row.get("state")), INFO)
+        )
+        if not answered or held is None or row.get("obligation") == Obligation.FINE.value:
+            out.append(row)
+            continue
+        state = OperationalState(row["state"])
+        wants = obligation_of(state, acknowledged=True)
+        out.append(
+            {
+                **row,
+                "obligation": wants.value,
+                "obligationLabel": obligation_label(wants),
+                "band": _band_of(state, wants),
+                "said": _left_alone_said(str(row.get("said") or ""), held),
+                # Said as a field rather than left in the sentence. The room
+                # offers "pick it back up" on exactly these rows, and reading
+                # that off the prose would tie a control to the wording of a
+                # sentence somebody will improve one day.
+                "acknowledged": True,
+            }
+        )
+    try:
+        acknowledged.prune({str(row.get("key") or "") for row in departments})
+    except Exception:  # noqa: BLE001 — the room is drawn either way
+        log.exception("health route: the acknowledged store could not be pruned")
+    return out
+
+
+async def read_departments(
+    app: web.Application, now: datetime, *, with_tail: bool = True
+) -> tuple[list[dict[str, Any]], Sweep, list[dict[str, Any]]]:
+    """Every department, the sweep behind some of them, and the runtime's tail.
+
+    One assembly, called by the route that draws the room and by the feed that
+    pushes a state change into it. Two of them would be two answers to what is
+    wrong with this machine, and the second would drift first.
+
+    `with_tail` is off for the feed: the tail is evidence under the room and
+    not a state, and reading six log files to find out whether a department
+    changed would be work nobody asked for.
+    """
+    read_tail: Callable[[], list[dict[str, Any]]] = (
+        (lambda: runtime_tail(now)) if with_tail else list
+    )
     # File reads on the loop that carries health, the socket and inbound turns.
     latest, dumps, tail, capabilities, storm, swept, stalls = await asyncio.gather(
         _or_empty("the last sweep", read_latest, "the last sweep could not be read"),
         _departments("stack dumps", lambda: from_stack_dumps(now)),
-        _or_empty("the runtime log", lambda: runtime_tail(now), []),
+        _or_empty("the runtime log", read_tail, []),
         _departments("capabilities", from_capabilities),
         _departments("crash storm", from_crash_storm),
         _departments("retention", from_retention),
         _departments("event loop", lambda: from_loop_lag(now)),
     )
-    departments = [
-        *from_sweep(latest, now),
-        *from_recovery(request.app),
-        *dumps,
-        *capabilities,
-        *storm,
-        *swept,
-        *stalls,
-    ]
+    departments = _left_alone(
+        [
+            *from_sweep(latest, now),
+            *from_recovery(app),
+            *dumps,
+            *capabilities,
+            *storm,
+            *swept,
+            *stalls,
+        ]
+    )
+    return departments, latest, tail
+
+
+def department_states(
+    departments: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Each department as a liveness, for the feed to publish.
+
+    The state, its word, and the two things that MOVE WITH IT: what the row
+    now asks for, and which band it is grouped under. Not the sentence and not
+    the number, which are the rest of a row and arrive with the room's own
+    read.
+
+    The three travel together because they are one answer. A pushed state
+    applied over a row's old obligation would paint a department `failed` in
+    the colour of what it wanted a minute ago, and file it under a band it has
+    left: the state and the colour disagreeing on one screen is the defect this
+    panel's twelfth invariant is about.
+    """
+    return {
+        row["name"]: {
+            "state": row["state"],
+            "label": row["label"],
+            "observedAt": row["at"],
+            "reason": None,
+            "source": "runtime",
+            "obligation": row["obligation"],
+            "obligationLabel": row["obligationLabel"],
+            "band": row["band"],
+        }
+        for row in departments
+    }
+
+
+async def get_health(request: web.Request) -> web.Response:
+    """Every department, banded, with the runtime's own errors under them."""
+    now = datetime.now(timezone.utc)
+    departments, latest, tail = await read_departments(request.app, now)
     report = await asyncio.to_thread(read_report, latest)
     return web.json_response(
         {
@@ -1033,6 +1372,9 @@ async def get_health(request: web.Request) -> web.Response:
             "judge": judge_stages(latest),
             "report": report,
             "tail": tail,
+            # Every state's word, for the panel to render one the runtime is
+            # not there to send. Same table the map ships, same reason.
+            "labels": labels_payload(),
             "sweptAt": _iso(
                 _parse(latest.get("observed_at")) if isinstance(latest, dict) else None
             ),
@@ -1050,6 +1392,7 @@ __all__ = [
     "NEEDS_ACTION",
     "OPERATING",
     "department",
+    "department_states",
     "from_capabilities",
     "from_crash_storm",
     "from_loop_lag",
@@ -1061,6 +1404,7 @@ __all__ = [
     "judge_stages",
     "REPORT_BYTES",
     "Sweep",
+    "read_departments",
     "read_latest",
     "read_report",
     "register",

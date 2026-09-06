@@ -207,6 +207,26 @@ SERVICES: tuple[Entry, ...] = (
         substrate="workspace_reply_retry",
     ),
     Entry(
+        name="liveness_feed",
+        runs=Runs.SERVICE,
+        summary=(
+            "Tells an open Autonomy panel when something it is drawing has "
+            "changed state, instead of the panel asking again."
+        ),
+        why=(
+            "Every room on that panel polled, so a step taking its turn, or "
+            "going quiet for longer than it declared, showed up whenever the "
+            "room next asked. It also left the panel unable to tell nothing "
+            "happening from not being told."
+        ),
+        # It reads files the routes already read and publishes what changed.
+        # Nothing it does calls a model.
+        kind=Kind.DETERMINISTIC,
+        owner=Owner.RUNTIME,
+        site="tesseract/mirror/server/liveness_feed.py:feed_loop",
+        substrate="liveness_feed",
+    ),
+    Entry(
         name="loop_lag_monitor",
         runs=Runs.SERVICE,
         summary="Samples the event loop and reports what blocked it when it stalls.",
@@ -425,7 +445,7 @@ ON_DEMAND: tuple[Entry, ...] = (
     ),
     Entry(
         name="provider_watch",
-        runs=Runs.ON_DEMAND,
+        runs=Runs.ROW,
         summary=(
             "Searches for what the model providers have changed lately and "
             "writes you a digest of it."

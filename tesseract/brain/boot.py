@@ -2268,6 +2268,7 @@ def build_tool_registry(
         WorkspaceDecideTool,
         WorkspacePendingTool,
     )
+    from tesseract.kernel.tools.workspace_hold import WorkspaceHoldTool
     registry.register(AutonomyReadTool(app_provider=app_provider))
     registry.register(WorkspacePendingTool(app_provider=app_provider))
     registry.register(WorkspaceDecideTool(app_provider=app_provider))
@@ -2276,11 +2277,12 @@ def build_tool_registry(
     registry.register(CockpitShowTool(app_provider=app_provider))
     registry.register(ContextReadTool())
     registry.register(ContextSetTool(app_provider=app_provider))
-    registry.register(HealthLeaveTool())
+    registry.register(HealthLeaveTool(app_provider=app_provider))
     registry.register(OrbVisibilityTool(app_provider=app_provider))
     registry.register(PipelineRunStageTool(app_provider=app_provider))
     registry.register(RetentionSetWindowTool())
     registry.register(SessionContinueTool())
+    registry.register(WorkspaceHoldTool())
 
     if alarm_registry is None:
         # Call-time resolved (never the frozen import-time constant this used

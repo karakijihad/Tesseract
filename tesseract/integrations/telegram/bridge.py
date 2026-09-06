@@ -59,6 +59,7 @@ from tesseract.integrations._handlers.voice import (
     transcribe_voice_audio,
 )
 from tesseract.integrations._channel_session import (
+    archive_record,
     drop_record,
     durable_chat_id,
     is_new_local_day,
@@ -131,6 +132,13 @@ CALLBACK_DATA_MAX_BYTES = 64
 # telling somebody and holding a restart open on a network call. The next
 # boot's recovery summary is the backstop when it expires.
 _SHUTDOWN_TELL_TIMEOUT_S = 5.0
+
+#: How much of a tool's own explanation an approval prompt carries. A Telegram
+#: message holds far more than this; the cap is here so one prompt stays
+#: readable on a phone, not to save room. It was 200, which is shorter than a
+#: build command, so the sentence saying why the prompt existed was the first
+#: thing cut.
+_APPROVAL_REASON_CHARS = 700
 
 
 class _NullWebSocket:
@@ -2198,7 +2206,12 @@ class TelegramBridge:
         reason = (reason or "").strip()
         body = f"the assistant asks to call {tool_name}."
         if reason:
-            body += f"\nWhy: {reason[:200]}"
+            # Long enough to carry the reason AND the command it is about. It
+            # was 200, which is shorter than a build command, so the sentence
+            # saying WHY the prompt exists was the first thing cut. The tool
+            # writes the why first for the same reason; this is the other half
+            # of not truncating an explanation into a shrug.
+            body += f"\nWhy: {reason[:_APPROVAL_REASON_CHARS]}"
         # PLAIN, like the budget question. This body carries a tool name and
         # then whatever the tool wrote about itself: a bash command, a path, a
         # branch. Any of those can hold an underscore, an asterisk or a lone
@@ -2764,9 +2777,43 @@ class TelegramBridge:
         that write is in flight lets it land afterwards and recreate the file.
         Stop, delete, wipe, then start the timer again for the thread that
         carries on here.
+
+        **`reflect` is called, and it has to be called before the wipe.** It
+        was accepted and ignored, so the agent's own reset on a channel wrote
+        no memory deltas and no checkpoint while the same answer in the cockpit
+        wrote both, and the operator's `/clear` on this same surface wrote them
+        too. Reflection reads a snapshot taken when it is called
+        (`session_ops.clone_for_reflection`), so calling it after `reset()`
+        would reflect on an empty conversation. It returns at once and runs in
+        the background, so it costs this teardown nothing.
         """
         await self._stop_autosave(chat_id)
-        drop_record(durable_chat_id(self.name, str(chat_id)))
+        durable = durable_chat_id(self.name, str(chat_id))
+        # The copy first, and its answer is believed. The wipe below is a
+        # delete: one record per conversation, and `index_chat` drops every
+        # recall chunk for a record that lost its content. A boundary the agent
+        # reached is not the operator saying they want the thread gone, and the
+        # work carrying on is exactly when being able to look up what was
+        # already said matters. So a copy that did not land means no wipe, and
+        # the caller folds instead. `history` is handed over rather than read
+        # off disk, because this session is written by a periodic autosave and
+        # the record can be a whole interval stale, which is long enough to be
+        # missing the exchange whose boundary this is.
+        history = list(getattr(session.chat_session, "history", ()) or ())
+        if history and archive_record(durable, history) is None:
+            log.warning(
+                "channel handoff: nothing was archived for %s, so the thread "
+                "stands rather than being deleted",
+                durable,
+            )
+            self._start_autosave(chat_id, session)
+            return False
+        if reflect is not None:
+            try:
+                reflect()
+            except Exception:
+                log.exception("channel handoff: the reflection could not be started")
+        drop_record(durable)
         session.chat_session.reset()
         session.started_at = datetime.now(timezone.utc).isoformat()
         session.turn_count = 0

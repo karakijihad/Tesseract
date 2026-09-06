@@ -49,6 +49,7 @@ from tesseract.orchestrator.atlas import report as atlas_report
 from tesseract.orchestrator.atlas import store as atlas_store
 from tesseract.orchestrator.atlas.build import BUILDER_VERSION
 from tesseract.orchestrator.liveness import OperationalState, label_of
+from tesseract.orchestrator.obligation import as_payload as wants
 from tesseract.scheduler.log import iter_runs, runs_path
 
 log = logging.getLogger(__name__)
@@ -79,6 +80,9 @@ def _row(
         "name": name,
         "state": state.value,
         "label": label_of(state),
+        # What this row asks of whoever reads it, decided once in
+        # `orchestrator/obligation.py` and the only input to its colour.
+        **wants(state),
         "said": said,
         "at": _iso(at) if at else None,
         "value": value,

@@ -54,7 +54,7 @@ import { OverviewRoom } from './autonomy/OverviewRoom';
 import { PrunedPane } from './autonomy/PrunedPane';
 import { RecoveryPane, type RecoverySummaryPayload } from './autonomy/RecoveryPane';
 import { RoomShell } from './autonomy/RoomShell';
-import { roomLines as roomMarks } from './autonomy/rooms';
+import { roomLines as roomTails } from './autonomy/rooms';
 import { WorkerDetail } from './autonomy/WorkerDetail';
 
 // `workers/active/` retains terminal records (done/failed/cancelled/…)
@@ -102,9 +102,9 @@ export function AutonomyView(): React.ReactElement {
     LIVE_WORKER_STATUSES.has(w.status),
   ).length;
 
-  const marks = useMemo(
+  const tails = useMemo(
     () =>
-      roomMarks({
+      roomTails({
         overview: overview.data,
         items: agenda.data,
         pauses: governor.data?.pauses ?? [],
@@ -155,6 +155,11 @@ export function AutonomyView(): React.ReactElement {
   // backend's, and shown only at level 0: the operator opened the Journal and
   // had to ask in a chat what it was.
   const purpose = (key: string) => lines.get(key)?.purpose ?? '';
+  // What the room wants, from the one function that decides it
+  // (`routes/autonomy_rooms.py::marks_for`). Undefined until that feed lands,
+  // and the rail then draws no mark at all: a colour invented while the answer
+  // is unread would be the ninth roll-up.
+  const mark = (key: string) => lines.get(key)?.mark;
 
   const groups: RailGroup[] = [
     {
@@ -164,13 +169,13 @@ export function AutonomyView(): React.ReactElement {
           key: 'overview',
           label: 'Overview',
           said: said('overview'), // the backend's sentence
-          mark: marks.overview.mark,
+          mark: mark('overview'),
           render: () => (
             <RoomShell
               room="Overview"
               said={said('overview')}
               purpose={purpose('overview')}
-              tail={marks.overview.tail}
+              tail={tails.overview.tail}
               root={() => <OverviewRoom />}
               level={(lvl) => {
                 if (lvl.kind === 'agenda') {
@@ -196,13 +201,13 @@ export function AutonomyView(): React.ReactElement {
           key: 'blocked',
           label: 'Blocked & paused',
           said: said('blocked'), // the backend's sentence
-          mark: marks.blocked.mark,
+          mark: mark('blocked'),
           render: () => (
             <RoomShell
               room="Blocked & paused"
               said={said('blocked')}
               purpose={purpose('blocked')}
-              tail={marks.blocked.tail}
+              tail={tails.blocked.tail}
               root={() => <BlockedPane />}
               level={(lvl) => {
                 if (lvl.kind !== 'agenda') return null;
@@ -221,13 +226,13 @@ export function AutonomyView(): React.ReactElement {
           key: 'health',
           label: 'Health',
           said: said('health'), // the backend's sentence
-          mark: marks.health.mark,
+          mark: mark('health'),
           render: () => (
             <RoomShell
               room="Health"
               said={said('health')}
               purpose={purpose('health')}
-              tail={marks.health.tail}
+              tail={tails.health.tail}
               root={() => <HealthRoom />}
               level={(lvl) => (lvl.kind === 'entry' ? <EntryCard name={lvl.id} /> : null)}
               beside={(lvl) =>
@@ -240,13 +245,13 @@ export function AutonomyView(): React.ReactElement {
           key: 'managed',
           label: 'Managed system',
           said: said('managed'), // the backend's sentence
-          mark: marks.managed.mark,
+          mark: mark('managed'),
           render: () => (
             <RoomShell
               room="Managed system"
               said={said('managed')}
               purpose={purpose('managed')}
-              tail={marks.managed.tail}
+              tail={tails.managed.tail}
               root={() => <ManagedRoom />}
               level={(lvl) => {
                 if (lvl.kind === 'entry') return <EntryCard name={lvl.id} />;
@@ -266,13 +271,13 @@ export function AutonomyView(): React.ReactElement {
           key: 'memory',
           label: 'Memory',
           said: said('memory'), // the backend's sentence
-          mark: marks.memory.mark,
+          mark: mark('memory'),
           render: () => (
             <RoomShell
               room="Memory"
               said={said('memory')}
               purpose={purpose('memory')}
-              tail={marks.memory.tail}
+              tail={tails.memory.tail}
               root={() => <MemoryRoom />}
             />
           ),
@@ -281,13 +286,13 @@ export function AutonomyView(): React.ReactElement {
           key: 'channels',
           label: 'Channels',
           said: said('channels'), // the backend's sentence
-          mark: marks.channels.mark,
+          mark: mark('channels'),
           render: () => (
             <RoomShell
               room="Channels"
               said={said('channels')}
               purpose={purpose('channels')}
-              tail={marks.channels.tail}
+              tail={tails.channels.tail}
               root={() => <ChannelsRoom />}
             />
           ),
@@ -296,13 +301,13 @@ export function AutonomyView(): React.ReactElement {
           key: 'atlas',
           label: 'Atlas',
           said: said('atlas'), // the backend's sentence
-          mark: marks.atlas.mark,
+          mark: mark('atlas'),
           render: () => (
             <RoomShell
               room="Atlas"
               said={said('atlas')}
               purpose={purpose('atlas')}
-              tail={marks.atlas.tail}
+              tail={tails.atlas.tail}
               root={() => <AtlasRoom />}
             />
           ),
@@ -319,13 +324,13 @@ export function AutonomyView(): React.ReactElement {
           key: 'outcomes',
           label: 'Recent outcomes',
           said: said('outcomes'), // the backend's sentence
-          mark: marks.outcomes.mark,
+          mark: mark('outcomes'),
           render: () => (
             <RoomShell
               room="Recent outcomes"
               said={said('outcomes')}
               purpose={purpose('outcomes')}
-              tail={marks.outcomes.tail}
+              tail={tails.outcomes.tail}
               root={() => (
                 <>
                   <RecoveryPane
@@ -345,13 +350,13 @@ export function AutonomyView(): React.ReactElement {
           key: 'journal',
           label: 'Journal',
           said: said('journal'), // the backend's sentence
-          mark: marks.journal.mark,
+          mark: mark('journal'),
           render: () => (
             <RoomShell
               room="Journal"
               said={said('journal')}
               purpose={purpose('journal')}
-              tail={marks.journal.tail}
+              tail={tails.journal.tail}
               root={() => (
                 <JournalPane
                   rows={journal.data}
@@ -366,13 +371,13 @@ export function AutonomyView(): React.ReactElement {
           key: 'pruned',
           label: 'Pruned',
           said: said('pruned'), // the backend's sentence
-          mark: marks.pruned.mark,
+          mark: mark('pruned'),
           render: () => (
             <RoomShell
               room="Pruned"
               said={said('pruned')}
               purpose={purpose('pruned')}
-              tail={marks.pruned.tail}
+              tail={tails.pruned.tail}
               root={() => <PrunedPane />}
             />
           ),
@@ -384,13 +389,13 @@ export function AutonomyView(): React.ReactElement {
           key: 'retention',
           label: 'Thrown away',
           said: said('retention'), // the backend's sentence
-          mark: marks.retention.mark,
+          mark: mark('retention'),
           render: () => (
             <RoomShell
               room="Thrown away"
               said={said('retention')}
               purpose={purpose('retention')}
-              tail={marks.retention.tail}
+              tail={tails.retention.tail}
               root={() => <ThrownAwayRoom />}
             />
           ),

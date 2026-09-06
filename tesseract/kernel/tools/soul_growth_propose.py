@@ -176,7 +176,7 @@ class SoulGrowthProposeTool(Tool):
         # The same door `propose_change` goes through, and the same reader for
         # the posture. Two callers deriving the same answer separately is how
         # one file ends up auto for one tool and gated for the other.
-        posture = document_posture(context)
+        posture = document_posture(context, _SOUL_REL)
         event, applied, error = settle_proposal(
             event=event,
             target_path=_SOUL_REL,

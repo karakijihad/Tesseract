@@ -59,6 +59,7 @@ function lines(
   return rows.map((row) => ({
     key: row.name,
     state: row.state,
+    obligation: row.obligation,
     label: row.label,
     name: row.name,
     said: (

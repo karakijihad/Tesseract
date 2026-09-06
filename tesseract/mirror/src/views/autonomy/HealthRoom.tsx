@@ -13,10 +13,18 @@
 // The runtime's own errors are the room's bottom band, which the shell draws.
 
 import { useEffect, useState } from 'react';
+import { Button } from '../../components/common/Button';
+import { RowActions } from '../../components/common/Row';
 import { Disclosure } from '../../components/common/Disclosure';
 import { Markdown } from '../../components/common/Markdown';
 import { Note } from '../../components/common/Note';
 import { useAutonomyStore } from '../../stores/autonomy';
+import {
+  live,
+  NOTHING_PUSHED,
+  useLiveContext,
+  type LiveContext,
+} from '../../stores/liveness';
 import type {
   HealthBand,
   HealthDepartment,
@@ -26,11 +34,14 @@ import type {
 } from '../../lib/api';
 import { Band, StateStrip, type StateLine } from '../../components/common/StateStrip';
 import { HistoryPlots } from './HistoryPlots';
-import { clock } from '../../lib/time';
+import { freshness } from '../../lib/time';
+import { sendCommand } from '../../lib/commands';
 
-// The watchman writes its sweep every quarter of an hour and nothing
-// broadcasts one, so this reconciles at the slow end of the liveness
-// contract's window rather than polling a file into the ground.
+// The watchman writes its sweep every quarter of an hour, so this reconciles
+// at the slow end of the liveness contract's window rather than polling a file
+// into the ground. A department's STATE no longer waits for it:
+// `stores/liveness.ts` holds what the runtime pushed, and a change on the
+// socket asks this room to read the rest of the row at once.
 const POLL_MS = 60_000;
 
 // How long the fortnight answer is worth re-asking for. Mirrors `HELD_FOR` in
@@ -53,15 +64,62 @@ const BANDS: { key: HealthBand; label: string }[] = [
   { key: 'operating', label: 'Operating' },
 ];
 
+/** One row, and the one thing that may be done to it.
+ *
+ * The control is `health_leave`, sent as the slash command every tool already
+ * has. Not a route of its own: ruling 26 says a control every surface can
+ * reach is a tool, and its own text names the shape this takes, that the
+ * operator pressing the room's button IS the approval. So the button, a
+ * sentence on a channel and the assistant deciding all reach one
+ * implementation, and there is no second path to keep in step.
+ *
+ * A row that asks for nothing carries no button. Offering "leave it alone" on
+ * something already quiet is a control with no effect, and a row that looks
+ * actionable and is inert is what the panel's own second invariant forbids.
+ *
+ * A row that IS asking shows its control without being hovered. The
+ * reveal-on-hover is right for a long list where acting is occasional and
+ * wrong here, for the reason `RowControls` already gives: the operator read
+ * every held item, saw a reason and no next step, and said so. A remedy you
+ * have to find with the pointer has not been offered.
+ */
 function line(dept: HealthDepartment, index: number): StateLine {
+  const asking = dept.obligation === 'needs_you' || dept.obligation === 'standing_fault';
+  const left = dept.acknowledged === true;
   return {
     key: `${dept.band}:${dept.name}:${index}`,
     state: dept.state,
+    obligation: dept.obligation,
     label: dept.label,
     name: dept.name,
     said: dept.said,
-    when: clock(dept.at),
+    // When it was taken, and what it promised. A reading past its own cadence
+    // says how late it is: the operator asked to know whether the panel is
+    // showing now or showing this morning, and a bare clock cannot answer that.
+    when: freshness(dept.at, dept.expectedWithin),
     value: dept.value,
+    actions:
+      asking || left ? (
+        <RowActions
+          className={`state-acts${asking ? ' state-acts--waiting' : ''}`}
+        >
+          <Button
+            onClick={() =>
+              sendCommand(
+                '/health_leave',
+                ` subject=${dept.name}${left ? ' action=restore' : ''}`,
+              )
+            }
+            ariaLabel={
+              left
+                ? `Have ${dept.name} count again`
+                : `Leave ${dept.name} alone`
+            }
+          >
+            {left ? 'pick it back up' : 'leave it alone'}
+          </Button>
+        </RowActions>
+      ) : undefined,
   };
 }
 
@@ -142,6 +200,8 @@ export function HealthRoomView({
   history,
   status,
   error,
+  readAt = null,
+  liveness = NOTHING_PUSHED,
 }: {
   departments: HealthDepartment[];
   judge: { stage: string; kept: number; dropped: number }[];
@@ -154,6 +214,12 @@ export function HealthRoomView({
   history: HistoryResponse | null;
   status: 'idle' | 'loading' | 'ready' | 'error';
   error: string | null;
+  /** When this payload was read. What the runtime pushed wins only while it is
+   *  newer than this. */
+  readAt?: number | null;
+  /** What the runtime has pushed since. Passed in rather than read here, for
+   *  the reason the map's own view gives. */
+  liveness?: LiveContext;
 }): React.ReactElement {
   if (status === 'error') {
     return <Note tone="bad">The health feed could not be read. {error}</Note>;
@@ -173,13 +239,47 @@ export function HealthRoomView({
     />
   );
 
+  // Every row reads through the one reader, so what a state means when the
+  // runtime goes quiet is answered in one place for the whole panel. The band
+  // a row is grouped under is left where the payload put it: a band is the
+  // rest of a row and arrives with the read this asks for.
+  const rows = departments.map((dept) => {
+    // What the runtime pushed, over what the room read. The four move
+    // together on purpose: a pushed state applied over the row's old
+    // obligation would paint a department `failed` in the colour of what it
+    // wanted a minute ago and file it under a band it has left.
+    const now = live(
+      liveness,
+      `department:${dept.name}`,
+      {
+        state: dept.state,
+        label: dept.label,
+        observedAt: dept.at,
+        reason: null,
+        obligation: dept.obligation,
+        obligationLabel: dept.obligationLabel,
+        band: dept.band,
+      },
+      readAt,
+    );
+    return {
+      ...dept,
+      state: now.state,
+      label: now.label,
+      at: now.observedAt,
+      obligation: now.obligation,
+      obligationLabel: now.obligationLabel,
+      band: now.band,
+    };
+  });
+
   return (
     <>
       {/* First, because "is this getting worse" is the question the bands
           underneath cannot answer, and a fortnight is what answers it. */}
       {groups.slice(0, 1).map(plotsFor)}
       {BANDS.map(({ key, label }) => {
-        const inBand = departments.filter((d) => d.band === key);
+        const inBand = rows.filter((d) => d.band === key);
         // An empty band is nothing, not a heading over a space. Blind with
         // nothing in it is the answer everybody wants and it says itself by
         // not being there.
@@ -214,6 +314,7 @@ export function HealthRoomView({
 
 export function HealthRoom(): React.ReactElement {
   const health = useAutonomyStore((s) => s.health);
+  const liveness = useLiveContext(health.data?.labels);
   const fetchHealth = useAutonomyStore((s) => s.fetchHealth);
   const history = useAutonomyStore((s) => s.history);
   const fetchHistory = useAutonomyStore((s) => s.fetchHistory);
@@ -270,6 +371,8 @@ export function HealthRoom(): React.ReactElement {
   return (
     <HealthRoomView
       departments={health.data?.departments ?? []}
+      readAt={health.lastFetched}
+      liveness={liveness}
       judge={health.data?.judge ?? []}
       report={health.data?.report ?? { state: 'none', said: NO_REPORT }}
       history={history.data ?? null}

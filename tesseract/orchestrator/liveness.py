@@ -109,4 +109,17 @@ def state_of(outcome: RunOutcome) -> OperationalState:
         ) from None
 
 
-__all__ = ["LABELS", "OperationalState", "label_of", "state_of"]
+def labels_payload() -> dict[str, str]:
+    """Every state's word, for a surface that has to render one nothing sent it.
+
+    A panel that has stopped hearing from the runtime draws what it is still
+    entitled to claim, which is `unknown`, and it has to have the word for it
+    without the backend being reachable to supply it. Shipping the whole table
+    with the payload keeps that surface on the same vocabulary as every other:
+    a word typed into TSX would be the second place a state is named, and the
+    first one to drift.
+    """
+    return {state.value: LABELS[state] for state in OperationalState}
+
+
+__all__ = ["LABELS", "OperationalState", "label_of", "labels_payload", "state_of"]

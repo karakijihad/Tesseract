@@ -42,6 +42,7 @@ from tesseract.mirror.server.routes import autonomy_memory as memory_route
 from tesseract.mirror.server.routes import autonomy_overview as overview_route
 from tesseract.mirror.server.routes import autonomy_retention as retention_route
 from tesseract.orchestrator.autonomy import journal as operator_journal
+from tesseract.orchestrator.obligation import Obligation, worst
 from tesseract.orchestrator.autonomy import prune_ledger
 from tesseract.orchestrator.autonomy.outbound import (
     CATEGORIES,
@@ -167,6 +168,78 @@ ROOM_PURPOSE: dict[str, str] = {
         "what it could not make sense of, and what it does not cover at all."
     ),
 }
+
+
+#: Which of a room's own rows decide its mark, and why each answer is not
+#: simply "all of them". Declared once, here, because it used to be decided in
+#: eight separate functions in `views/autonomy/rooms.ts`: `failed` rendered red
+#: in six of them and amber in two, `refused` amber in one and red in another,
+#: and each author had solved their own case correctly. The reasons below are
+#: theirs, kept.
+#:
+#: - **overview** grades the band that says what wants the operator, and not
+#:   the four producers behind it. Two readings of one list are two answers.
+#: - **blocked** is every held item and every paused source; that IS the room.
+#: - **health** is every department, which is what the room draws.
+#: - **managed** is the rows and the agents. An alarm is `pending` because that
+#:   is what an alarm IS, so counting one turned the rail amber for as long as
+#:   it existed.
+#: - **memory** is retrieval only. How much is in the library is not a state,
+#:   and a nightly step that found nothing to do is the commonest quiet night.
+#: - **channels** is the door. A muted kind is a choice and a capped one is a
+#:   pause; a bridge that is down is the only thing here that means the
+#:   operator is not being told anything at all.
+#: - **atlas** is the map's own rows. The band saying what the map does not
+#:   cover is `not_instrumented` by construction and would leave the rail
+#:   permanently unwired on a machine where nothing is wrong.
+#: - **retention** is the trees with a window. A tree nothing has decided about
+#:   is a standing question, and the written line carries the count.
+#: - **outcomes**, **journal** and **pruned** grade nothing. They are records:
+#:   a finished item, a note, a draft turned away at the door. A room of
+#:   records has nothing to demand, and the count is in its written line.
+GRADED: dict[str, tuple[str, ...]] = {
+    "overview": ("wantsYou",),
+    "blocked": ("held", "paused"),
+    "health": ("departments",),
+    "managed": ("schedules", "agents"),
+    "memory": ("retrieval",),
+    "channels": ("adapters",),
+    "atlas": ("graph",),
+    "retention": ("ages",),
+    "outcomes": (),
+    "journal": (),
+    "pruned": (),
+}
+
+
+def marks_for(rows: dict[str, dict[str, Any]]) -> dict[str, str]:
+    """What each room wants, from the rows in it. The one roll-up.
+
+    A room with nothing graded, or with no rows to grade, is `fine`: it has
+    nothing wrong with it, which is a different claim from having no producer.
+    A room whose producer is missing says so on its own rows, and the worst of
+    those is what it wears.
+    """
+    out: dict[str, str] = {}
+    for room, bands in GRADED.items():
+        wanted: list[Obligation] = []
+        for band in bands:
+            for row in (rows.get(room) or {}).get(band) or ():
+                if not isinstance(row, dict):
+                    continue
+                value = row.get("obligation")
+                if not isinstance(value, str):
+                    continue
+                try:
+                    wanted.append(Obligation(value))
+                except ValueError:
+                    # A row wearing something this vocabulary does not have.
+                    # Skipped rather than raised: the rail exists to say what
+                    # is wrong, and one unreadable row must not be what takes
+                    # the whole panel down.
+                    log.warning("rooms: %s carries an unknown obligation %r", room, value)
+        out[room] = worst(wanted).value
+    return out
 
 
 def _plural(n: int, one: str, many: str) -> str:
@@ -620,6 +693,9 @@ class PanelRead:
 
     facts: dict[str, list[str]]
     rows: dict[str, dict[str, Any]]
+    #: What each room wants, worst first, from the rows in it. The rail's
+    #: colour and the rows under it are then one reading rather than two.
+    marks: dict[str, str]
 
 
 async def gather_facts(app: web.Application, now: datetime) -> dict[str, list[str]]:
@@ -706,7 +782,14 @@ async def read_rooms(app: web.Application, now: datetime) -> PanelRead:
     thrown = _band(thrown, {"ages": [], "kept": [], "undecided": [], "lastSweepSaid": ""})
     plays = _band(plays, [])
 
-    departments = health_route.from_sweep(latest, now)
+    # Every department, not the sweep's alone. The rail's line and the Health
+    # room's own rows have to be one reading: the room draws recovery, the
+    # capabilities record, the crash storm, retention and the event loop
+    # beside the watchman's findings, and a rail counting only the sweep was
+    # a second answer to the same question on the same screen.
+    departments, _latest, _tail = await health_route.read_departments(
+        app, now, with_tail=False
+    )
     swept = (latest or {}).get("observed_at") if latest else None
 
     pauses = overview_route.paused_sources(app)
@@ -715,52 +798,53 @@ async def read_rooms(app: web.Application, now: datetime) -> PanelRead:
     away = overview_route.ran_while_away(rows, now)
     held = overview_route.held_items(items)
 
+    facts = {
+        "overview": overview_facts(waiting, running, away, aged),
+        "blocked": blocked_facts(items, pauses),
+        "health": health_facts(departments, swept),
+        "managed": managed_facts(rows, roster, plays),
+        "outcomes": outcomes_facts(items, now),
+        "journal": journal_facts(journal),
+        "pruned": pruned_facts(pruned),
+        "channels": channel_facts(muted, doors, last_sent),
+        "memory": memory_facts(library, night, reach),
+        "atlas": atlas_facts(drawn, drawing),
+        "retention": thrown_away_facts(thrown),
+    }
+    contents = {
+        "overview": {
+            "wantsYou": waiting,
+            "workingNow": running,
+            "ranWhileAway": away,
+            "aged": aged,
+        },
+        "blocked": {
+            "held": held,
+            "paused": overview_route.paused_rows(pauses),
+        },
+        "health": {"departments": departments, "sweptAt": swept},
+        "managed": {"schedules": rows, "agents": roster, "playbooks": plays},
+        "outcomes": {"recent": outcome_rows(items, now)},
+        "journal": {"notes": journal},
+        "pruned": {"counts": pruned},
+        "memory": {
+            "trees": library,
+            "lastNight": night,
+            "retrieval": reach,
+        },
+        "channels": {
+            "kinds": channel_kinds,
+            "lastMessage": last_sent,
+            "adapters": doors,
+        },
+        "atlas": {
+            "graph": drawn,
+            "lastPass": drawing,
+        },
+        "retention": thrown,
+    }
     return PanelRead(
-        facts={
-            "overview": overview_facts(waiting, running, away, aged),
-            "blocked": blocked_facts(items, pauses),
-            "health": health_facts(departments, swept),
-            "managed": managed_facts(rows, roster, plays),
-            "outcomes": outcomes_facts(items, now),
-            "journal": journal_facts(journal),
-            "pruned": pruned_facts(pruned),
-            "channels": channel_facts(muted, doors, last_sent),
-            "memory": memory_facts(library, night, reach),
-            "atlas": atlas_facts(drawn, drawing),
-            "retention": thrown_away_facts(thrown),
-        },
-        rows={
-            "overview": {
-                "wantsYou": waiting,
-                "workingNow": running,
-                "ranWhileAway": away,
-                "aged": aged,
-            },
-            "blocked": {
-                "held": held,
-                "paused": overview_route.paused_rows(pauses),
-            },
-            "health": {"departments": departments, "sweptAt": swept},
-            "managed": {"schedules": rows, "agents": roster, "playbooks": plays},
-            "outcomes": {"recent": outcome_rows(items, now)},
-            "journal": {"notes": journal},
-            "pruned": {"counts": pruned},
-            "memory": {
-                "trees": library,
-                "lastNight": night,
-                "retrieval": reach,
-            },
-            "channels": {
-                "kinds": channel_kinds,
-                "lastMessage": last_sent,
-                "adapters": doors,
-            },
-            "atlas": {
-                "graph": drawn,
-                "lastPass": drawing,
-            },
-            "retention": thrown,
-        },
+        facts=facts, rows=contents, marks=marks_for(contents)
     )
 
 
@@ -776,7 +860,8 @@ async def get_rooms(request: web.Request) -> web.Response:
     socket and every inbound turn ride that loop.
     """
     now = datetime.now(timezone.utc)
-    facts = await gather_facts(request.app, now)
+    read = await read_rooms(request.app, now)
+    facts = read.facts
     rooms = [Room(key=key, facts=tuple(facts.get(key, ()))) for key in ROOM_KEYS]
     said = await lines_for(rooms, now=now)
     if may_write(request):
@@ -787,6 +872,11 @@ async def get_rooms(request: web.Request) -> web.Response:
                 {
                     "key": room.key,
                     "said": said.get(room.key, ""),
+                    # What the room wants, worst first, from the rows in it.
+                    # The rail draws its colour from this and decides nothing:
+                    # a mark computed in the view is a second answer to what is
+                    # wrong, and there were eight of them.
+                    "mark": read.marks.get(room.key, Obligation.FINE.value),
                     # What the room is for, which does not change and is not
                     # written by a model. `said` is about tonight.
                     "purpose": ROOM_PURPOSE.get(room.key, ""),

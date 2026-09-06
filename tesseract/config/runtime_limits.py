@@ -172,6 +172,26 @@ def load_spawn_heartbeat_interval_s(path: Path) -> float:
     return _load_positive_float(path, "spawn_heartbeat_interval_s")
 
 
+def load_liveness_tick_seconds(path: Path) -> float:
+    """Return `liveness_tick_seconds` from runtime.yaml.
+
+    How often the runtime looks at the run that is open and tells any panel
+    what changed. This is the cadence a step taking its turn, or going quiet
+    for longer than it declared, reaches a screen at.
+    """
+    return _load_positive_float(path, "liveness_tick_seconds")
+
+
+def load_liveness_sweep_seconds(path: Path) -> float:
+    """Return `liveness_sweep_seconds` from runtime.yaml.
+
+    How often the runtime says everything rather than what changed. It is what
+    a panel reads as "still here, and this is the whole of it", so it is also
+    the longest a dropped message can leave one saying it does not know.
+    """
+    return _load_positive_float(path, "liveness_sweep_seconds")
+
+
 def load_max_concurrent_spawns_per_session(path: Path) -> int:
     """Return `max_concurrent_spawns_per_session` from runtime.yaml.
 

@@ -200,6 +200,29 @@ def restore_history(
     return len(record.history)
 
 
+def archive_record(durable_id: str, history: list[dict[str, Any]]) -> str | None:
+    """Copy this conversation into its own archived record, before it is wiped.
+
+    A boundary the agent reached is not the operator saying they want the
+    conversation gone. `drop_record` is right for `/clear`, which is that; it
+    is wrong for a consolidation, where the work carries on and being able to
+    look up what was already said is the point.
+
+    The HISTORY is passed in rather than read back off disk. A channel session
+    is written by a periodic autosave, so the record on disk can be up to a
+    full interval stale, which is exactly long enough to be missing the
+    exchange whose boundary this is. The record is read only for its metadata,
+    and a missing one is not a reason to lose the conversation.
+
+    Returns the new id, or `None` when there was nothing to copy or the copy
+    could not be written, in which case the caller must not wipe.
+    """
+    from tesseract.mirror.server import chat_store
+
+    record = chat_store.load_chat(durable_id, include_channels=True)
+    return chat_store.archive_copy(record, history)
+
+
 def drop_record(durable_id: str) -> bool:
     """Delete this conversation's chat record. Returns whether one went.
 

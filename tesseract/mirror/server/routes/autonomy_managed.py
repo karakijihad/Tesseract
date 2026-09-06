@@ -34,6 +34,7 @@ from aiohttp import web
 from tesseract.mirror.server.routes._isotime import iso as _iso
 from tesseract.mirror.server.routes._isotime import parse as _parse
 from tesseract.orchestrator.liveness import OperationalState, label_of, state_of
+from tesseract.orchestrator.obligation import as_payload as wants
 from tesseract.orchestrator.watchman.tracker import TAG_BUILT_IN, TAG_CUSTOM
 from tesseract.scheduler.cadence import due_after_last, in_words, when_words
 from tesseract.scheduler.log import last_run_rows, outcome_of_row
@@ -77,6 +78,8 @@ def line(
     can_run: bool = False,
     can_toggle: bool = False,
     can_delete: bool = False,
+    ended: bool = False,
+    awaiting_operator: bool = False,
 ) -> dict[str, Any]:
     """One row in the room.
 
@@ -103,6 +106,16 @@ def line(
         "tag": tag,
         "state": state.value,
         "label": label_of(state),
+        # What the row asks of whoever reads it, and the only input to its
+        # colour. A row somebody turned off is expected to be doing nothing:
+        # `enabled` is read here rather than by the view, so a rail cannot go
+        # amber because the operator switched something off.
+        **wants(
+            state,
+            by_choice=not enabled,
+            ended=ended,
+            awaiting_operator=awaiting_operator,
+        ),
         "said": said,
         "at": _iso(at),
         "value": value,
@@ -177,6 +190,7 @@ def schedule_line(
     )
     fires = when_it_fires(job, runtime, now, fired_at)
 
+    aged_out = False
     if running:
         state, said = OperationalState.RUNNING, "running now"
     elif not enabled:
@@ -195,8 +209,12 @@ def schedule_line(
         # It ran, and the log no longer has the record. A retention sweep aged
         # it out, or it fired before this install kept one. Either way the room
         # cannot say how it went, and saying it never ran would be a claim.
+        # It ran and the record aged out, which is a fact with a time and not
+        # something to act on. Without `ended` every machine that ever swept
+        # its run log would carry an amber row for ever.
         state = OperationalState.UNKNOWN
         said = "it has run, and the run log no longer carries the record"
+        aged_out = True
     else:
         state, said = OperationalState.IDLE, fires
 
@@ -218,6 +236,7 @@ def schedule_line(
         # thing on this panel that cannot say what it is for.
         opens={"kind": "entry", "id": name},
         enabled=enabled,
+        ended=aged_out,
         # Not while it is already going. The engine would happily start a
         # second run of the same job, and offering the control is what makes
         # that the operator's accident rather than their decision.
@@ -424,6 +443,11 @@ def agents() -> list[dict[str, Any]]:
                 value=agent.model_role,
                 opens={"kind": "agent", "id": name},
                 enabled=not agent.disabled,
+                # `pending` asks for nothing when it is a stage inside an open
+                # run, and is the whole of what this row asks: the card cannot
+                # be used by anything until the operator has looked at it. The
+                # row knows which of the two it is and the state does not.
+                awaiting_operator=waiting,
                 can_toggle=not waiting,
             )
         )
@@ -475,6 +499,9 @@ def playbooks(app: web.Application) -> list[dict[str, Any]]:
                 "origin": USER,
                 "state": state.value,
                 "label": label_of(state),
+                # A playbook that cannot run is missing something it declared,
+                # which is a thing to fix rather than a choice somebody made.
+                **wants(state),
                 "version": entry.version,
                 "status": entry.status,
                 "description": entry.description,

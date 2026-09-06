@@ -57,6 +57,7 @@ STAGE = "attribute"
 # healthy process is still a fault.
 BOOT_WINDOW = timedelta(minutes=3)
 
+
 # Kinds this stage can explain. A boot cannot account for a row that stopped
 # firing or a provider that refused, so those are left alone rather than
 # swept into the same excuse.
@@ -179,20 +180,42 @@ def _outage_that_explains(
 
 
 def _outage_windows(now: datetime) -> list[tuple[datetime, datetime]]:
-    """Every window the scheduler fired nothing in, across the whole log.
+    """Every window the runtime was not there for.
 
-    `read_rows` with no window start is what makes an outage that began before
-    the sweep window usable here — a machine off overnight has one window and
-    the report is written the morning after, inside it.
+    Two readings, and the machine's own comes first. Windows records when it
+    went to standby, when a shutdown was asked for and by whom, and whether the
+    last one was clean, so *was the computer even on* is a fact to look up
+    rather than a shape to infer. Before this the only answer came from the
+    scheduler's own log, where a machine asleep and a scheduler that stopped
+    firing are the same silence.
+
+    The inferred windows are kept underneath rather than replaced. They cover
+    what the power record cannot: a runtime that was down while the machine
+    stayed up. The two halves do not reach equally far back, and the docstring used to
+    claim they did. THIS call's machine read is bounded to
+    `machine_state.LOOKBACK`; the inferred half reads the whole run log.
+    The collector in `sources.py` reads the same record on its own terms
+    and can go further back than this one does, so the bound is a fact
+    about this call rather than about the record. `read_rows` with no window start is what makes an outage that
+    began before the sweep window usable here, since a machine off overnight
+    has one window and the report is written the morning after, inside it.
     """
+    windows: list[tuple[datetime, datetime]] = []
+    try:
+        from tesseract.orchestrator import machine_state
+
+        found = machine_state.gaps(now - machine_state.LOOKBACK, now=now)
+        windows.extend((gap.began, gap.ended) for gap in (found or ()))
+    except Exception:  # noqa: BLE001 — the log's own answer still stands below
+        log.debug("judge: the machine's power record could not be read", exc_info=True)
     try:
         from tesseract.orchestrator.watchman.rows import read_rows
 
-        return list(read_rows(now=now, window_start=None).stalls)
+        windows.extend(read_rows(now=now, window_start=None).stalls)
     except Exception:  # noqa: BLE001 — a stage that cannot read explains nothing
         log.warning("judge: the run log could not be read; explaining no outages",
                     exc_info=True)
-        return []
+    return windows
 
 
 def blind_spots(sweep, *, now: datetime) -> list[str]:

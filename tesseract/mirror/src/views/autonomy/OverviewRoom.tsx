@@ -56,6 +56,7 @@ function toLine(line: OverviewLine, band: string, acts: OverviewActs): StateLine
   return {
     key: `${band}:${line.name}:${line.at ?? ''}`,
     state: line.state,
+    obligation: line.obligation,
     label: line.label,
     name: line.name,
     said: line.said,

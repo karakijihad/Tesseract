@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tesseract.lib.log_envelope import WARN, envelope
+from tesseract.lib.log_envelope import BAD, WARN, envelope
 from tesseract.supervisor.breaker import CrashStormBreaker
 from tesseract.supervisor.console_capture import (
     ConsoleWriter,
@@ -46,6 +46,7 @@ from tesseract.supervisor.intent import (
     read_with_staleness_check,
     runtime_dir,
 )
+from tesseract.supervisor.stack_dump import read_loop_report
 from tesseract.supervisor.stop_watcher import StopRequestWatcher
 
 log = logging.getLogger(__name__)
@@ -74,6 +75,14 @@ _HEARTBEAT_MAX_FAILURES = 12
 # correctly. The grace expires the moment the listener answers
 # once, so "came up then went silent" still counts immediately.
 _HEARTBEAT_BOOT_GRACE_S = 120.0
+
+# How long the supervisor waits for the backend to answer a stack-dump request
+# before it kills it. The backend's watcher polls once a second, so this is
+# several attempts, and it is spent on a path already two minutes into an
+# outage. Not answering within it is itself the finding: it means the
+# interpreter could not schedule a plain thread, so nothing Python-level was
+# holding the loop.
+_STACK_DUMP_WAIT_S = 5.0
 
 # Bound on the taskkill shell-out. It is the escalation path of a shutdown
 # already past its grace window; a taskkill that hangs must not hold the
@@ -892,6 +901,10 @@ class Supervisor:
                         # ``_classify`` reads this flag to override the
                         # backend's ``operator_quit`` self-label.
                         backend.heartbeat_killed = True
+                        # Before the kill, not after: the record asks the
+                        # backend what its loop was doing, and a process that
+                        # has been terminated cannot answer.
+                        self._record_heartbeat_kill(backend)
                         self._terminate_backend(backend)
                         return
             # Sleep in small slices so stop_event cancels promptly.
@@ -994,9 +1007,79 @@ class Supervisor:
         except Exception:  # noqa: BLE001
             log.exception("supervisor: heartbeat incident write failed")
 
+    def _record_heartbeat_kill(self, backend: BackendProcess) -> None:
+        """The hard kill, written down where a reader can find it.
+
+        Until now only the SOFT threshold left a record, so the moment the
+        supervisor actually killed and respawned the backend produced a log
+        line and nothing else: `watchman/sources.py::read_supervisor` has
+        always graded an event carrying `hard` as bad and no such event has
+        ever been written.
+
+        It waits for a fresh stack dump before returning, and the caller
+        terminates only after that. The wait is what makes the record worth
+        having: a dump requested and then raced by a kill names nothing, and
+        the whole complaint this answers is a report that says the process
+        went without saying what it was doing.
+        """
+        probe = backend.last_probe
+        stack_request = self._request_backend_stack_dump(
+            backend, reason="heartbeat_hard_failure",
+        )
+        doing = self._loop_was_doing(stack_request)
+        payload = {
+            **envelope(
+                stream="supervisor",
+                severity=BAD,
+                subject="backend heartbeat",
+                summary=(
+                    f"the backend missed {backend.health_failures} heartbeats "
+                    f"and was killed and restarted"
+                ),
+                detail={"backend_pid": backend.proc.pid},
+            ),
+            "event": "heartbeat_hard_failure",
+            "backend_pid": backend.proc.pid,
+            "health_url": self.health_url,
+            "consecutive_failures": backend.health_failures,
+            "hard_limit": _HEARTBEAT_MAX_FAILURES,
+            "loop_was_doing": doing,
+        }
+        if probe is not None:
+            payload["last_probe"] = probe.to_payload()
+        if stack_request is not None:
+            payload["stack_dump"] = stack_request
+        try:
+            log_dir = self.tesseract_home.parent / "runtime" / "logs" / "supervisor"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            with (log_dir / "heartbeat-incidents.jsonl").open(
+                "a", encoding="utf-8",
+            ) as f:
+                f.write(json.dumps(payload, sort_keys=True) + "\n")
+        except Exception:  # noqa: BLE001 — a kill must happen whatever this does
+            log.exception("supervisor: heartbeat kill record failed")
+
+    def _loop_was_doing(self, stack_request: dict[str, str] | None) -> str:
+        """The backend's own account of what its loop thread was in.
+
+        Read out of the dump the backend writes, by its declared line rather
+        than by position. The BACKEND composes this: its sampler is a plain
+        thread and keeps running while the loop is blocked, which is the one
+        vantage point that exists during a hang. The supervisor only relays
+        it, and reads the file by path rather than importing anything from the
+        backend's runtime, which this module deliberately does not depend on.
+        """
+        if stack_request is None:
+            return "no stack dump was requested, so nothing recorded it"
+        return read_loop_report(
+            Path(stack_request["output_path"]), wait_s=_STACK_DUMP_WAIT_S,
+        )
+
     def _request_backend_stack_dump(
         self,
         backend: BackendProcess,
+        *,
+        reason: str = "heartbeat_soft_failure",
     ) -> dict[str, str] | None:
         """Ask the backend watchdog to dump all Python thread stacks."""
         try:
@@ -1011,7 +1094,7 @@ class Supervisor:
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "backend_pid": backend.proc.pid,
                 "output_path": str(output_path),
-                "reason": "heartbeat_soft_failure",
+                "reason": reason,
             }
             tmp_path = request_path.with_suffix(".tmp")
             tmp_path.write_text(json.dumps(request, sort_keys=True), encoding="utf-8")

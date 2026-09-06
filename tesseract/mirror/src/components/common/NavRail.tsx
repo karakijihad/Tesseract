@@ -1,15 +1,19 @@
 import { useMemo, useState, type ReactNode } from "react";
+import type { Obligation } from "../../lib/api";
 import { Hint } from "../ui/Hint";
 import { IconButton } from "./IconButton";
 
 /** How the section behind a rail row is doing.
  *
- * `ok`, `warn` and `bad` are the app's own severities. `quiet` is a section
- * with nothing to report. `unwired` is not a health state at all: it says
- * nothing produces this yet, and it exists because a row that renders quiet
- * when its producer is missing answers a question it cannot answer.
+ * The app's one vocabulary for what a thing WANTS, decided on the backend in
+ * `orchestrator/obligation.py` and never here. It replaced five severities of
+ * this rail's own, of which `quiet` had no rule at all and `ok` was
+ * unreachable for seven of the eight Autonomy rows: a section that is checked
+ * and fine can say so now, and a section nothing produces still says that
+ * instead, because a row that renders quiet when its producer is missing
+ * answers a question it cannot answer.
  */
-export type NavRailMark = "ok" | "warn" | "bad" | "quiet" | "unwired";
+export type NavRailMark = Obligation;
 
 export interface NavRailItem<K extends string = string> {
   key: K;

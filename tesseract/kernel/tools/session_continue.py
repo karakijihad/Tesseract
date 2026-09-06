@@ -18,6 +18,14 @@ conversation that still fits the work needs no boundary, and a model that
 believes it must pick one of two at every turn will consolidate something that
 was fine.
 
+**What the three answers mean is stated in `OPERATING.md`, once.** It used to
+be here as well, in `use_when` and on the `mode` field, which put the criteria
+in front of the model twice in slightly different words and left carrying on
+described only by the tool that does not do it. The document is in the head of
+every prompt on every surface, so the model reads it whether or not it is
+looking at this schema. What belongs here is when to reach for THIS tool rather
+than a neighbouring one, and nothing about how to judge the work.
+
 **It takes effect at the END of the turn, not inside it.** `compact()` and
 `reset()` rewrite the history in place, and doing that mid-turn folds away the
 assistant message carrying the pending `tool_use` block before its
@@ -61,10 +69,9 @@ _CONFIRMED = {
 class SessionContinueInput(BaseModel):
     mode: Continuation = Field(
         description=(
-            "continue: the work goes on, but this conversation no longer "
-            "serves it, so keep the thread and get the room back. reset: the "
-            "work is finished, so leave this conversation behind and keep what "
-            "it taught you."
+            "Which of the two answers this is. What each one means for the "
+            "work, and the third answer that needs no call, are in "
+            "OPERATING.md."
         ),
     )
 
@@ -79,19 +86,17 @@ class SessionContinueTool(Tool):
         "Carry the work into a fresh start, or finish with this conversation."
     )
     use_when: ClassVar[str] = (
-        "Use when the conversation no longer fits the work. Continue when the "
-        "work goes on and this conversation has stopped helping it: a phase "
-        "finished, the subject changed, or most of what is behind you is "
-        "settled. Reset when the work itself is finished, because carrying a "
-        "conversation you are done with costs money on every turn after it."
+        "Use when you have decided this conversation should end, on the "
+        "grounds OPERATING.md gives for each answer. The call records what "
+        "you decided; the runtime carries it out once the turn is over, so "
+        "finish what you are saying first."
     )
     not_when: ClassVar[str] = (
-        "when the conversation still fits the work, which needs no call at "
-        "all and is the ordinary case; to find out how full it is, which is "
-        "`context_read`; to change when conversations fold from now on, which "
-        "is `context_set` and is a lasting setting rather than a decision "
-        "about this one; to save a single fact, which is `memory_save` and "
-        "costs nothing."
+        "for a conversation you have not decided to end, which needs no call "
+        "at all; to find out how full it is, which is `context_read`; to "
+        "change when conversations fold from now on, which is `context_set` "
+        "and is a lasting setting rather than a decision about this one; to "
+        "save a single fact, which is `memory_save` and costs nothing."
     )
     depends_on: ClassVar[str] = ""
 

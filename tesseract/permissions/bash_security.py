@@ -944,3 +944,53 @@ def rules() -> list[dict[str, object]]:
         {"check": n, "posture": RULES[n][0], "refuses": RULES[n][1]}
         for n in sorted(RULES)
     ]
+
+
+#: How much of a command to put in front of an operator who is holding a
+#: phone. Long enough to recognise what was asked for, short enough that the
+#: prompt is still one glance.
+_EXCERPT_CHARS = 220
+
+
+def ask_reason(command: str) -> str:
+    """Why this command is being asked about, in words the operator can act on.
+
+    The prompt used to say only "the assistant asks to call bash." An operator
+    away from the desk could not tell whether the mode was asking, whether a
+    rule had fired, or which rule, and the mode they had already relaxed was
+    the obvious suspect. That is the copy rule exactly: a message whose reader
+    cannot tell what is happening has not been written yet.
+
+    Two answers, and the second is the one that was missing:
+
+    - No check fired. The command is the whole explanation, so it is the whole
+      reason, and the posture that asked is the one the mode or the file
+      states.
+    - A check fired. Name it, say what it is about, and say plainly that it
+      outranks the mode. Six checks force ASK in every mode including the
+      relaxed one, and until this said so, the operator's next move after an
+      unexpected prompt was to go looking at a setting that could not have
+      changed it.
+
+    The description comes from `RULES`, the table the settings pane reads, so
+    there is no second wording to fall out of step with the check. The dashes
+    in it are rewritten on the way out: those rows are read on a screen where
+    a dash is a house tic, and a prompt is copy.
+    """
+    hit = check(command)
+    excerpt = " ".join(command.split())[:_EXCERPT_CHARS]
+    if hit is None:
+        return excerpt
+    check_num, posture = hit
+    what = str(RULES.get(check_num, ("", ""))[1]).replace(" — ", ". ").replace("—", ",")
+    if posture == "blocked":
+        head = f"Security check {check_num} refuses this outright: {what}."
+    else:
+        head = (
+            f"Security check {check_num} asks about this in every security "
+            f"mode, including the relaxed one, so nothing in Settings changes "
+            f"it: {what}."
+        )
+    # Why first, command second. A surface with a length limit cuts the tail,
+    # and the tail must not be the half that answers "why am I being asked".
+    return f"{head}\n\n{excerpt}"

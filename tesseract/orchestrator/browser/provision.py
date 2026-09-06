@@ -27,6 +27,15 @@ async def ensure_browsers() -> bool:
     legitimate, and Mirror shutdown cancels the task via the warmup
     drain (the subprocess is killed on cancellation).
     """
+    # This spawn stays ON the loop, deliberately, and it is the one place in
+    # this tree where that is the right answer. The proactor builds its
+    # transport by calling `Popen` inline, which costs one block of about 50 ms
+    # measured on this machine, once, at boot. A thread would cut that to about
+    # 12 ms and take the cancellation with it: `asyncio.to_thread` cannot stop
+    # the thread it started, so the shutdown drain would no longer be able to
+    # kill a chromium download that runs for minutes, and the executor thread
+    # would hold the interpreter open at exit. Fifty milliseconds once against
+    # a stop that cannot stop is not a trade worth making.
     proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
