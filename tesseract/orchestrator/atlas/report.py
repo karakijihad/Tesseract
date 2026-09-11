@@ -83,8 +83,9 @@ NOT_INDEXED: tuple[tuple[str, str], ...] = (
     (
         "the runtime's own logs, ledgers and archives",
         "what the observer wrote, what the backend wrote, what the drift check "
-        "wrote, what was approved, what it cost, and the copies a finished lane "
-        "or worker left behind. Each is a stream or a running account rather "
+        "wrote, what was approved, what it cost, what each tool left behind, "
+        "and the copies a finished lane or worker left behind. Each is a "
+        "stream or a running account rather "
         "than a thing to look up, and the map reaches one through the record "
         "that cites it. Drawing them is how a map that fits on a screen becomes "
         "a log viewer",
@@ -121,6 +122,7 @@ DECLARED_AS: dict[str, str] = {
     "loop_stalls": "the runtime's own logs, ledgers and archives",
     "checkpoints": "the runtime's own logs, ledgers and archives",
     "workspace_events": "the runtime's own logs, ledgers and archives",
+    "receipts": "the runtime's own logs, ledgers and archives",
 }
 
 

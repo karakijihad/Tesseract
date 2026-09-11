@@ -82,6 +82,7 @@ export default defineConfig({
           items: [
             { slug: 'reference/permissions' },
             { slug: 'reference/tools' },
+            { slug: 'reference/reaching-a-tool' },
             { slug: 'reference/models-and-roles' },
             { slug: 'reference/config' },
             { slug: 'reference/costs' },

@@ -36,6 +36,7 @@
 
 - [What it asks before doing](reference/permissions.md)
 - [Tools](reference/tools.md)
+- [Reaching a tool](reference/reaching-a-tool.md)
 - [Models and roles](reference/models-and-roles.md)
 - [Configuration](reference/config.md)
 - [Costs](reference/costs.md)

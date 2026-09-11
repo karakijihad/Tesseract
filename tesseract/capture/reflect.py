@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from tesseract.capture.sources import Conversation, Turn
-from tesseract.memory.types import MemoryFrontmatter, MemoryType
+from tesseract.memory.types import MemoryFrontmatter, MemoryType, SourceTier
 
 log = logging.getLogger(__name__)
 
@@ -211,6 +211,22 @@ def reflection_record(
         # the scoping tag for every source rather than becoming a second one.
         tags=[REFLECTION_TAG, f"source:{conv.source}", f"chat:{conv.conversation_id}"],
         source_type=conv.source,
+        # Stated, not derived, and this is the one writer that has to.
+        # `tier_for` reads the tier off `source_type`, which works because
+        # every other writer's source_type means one thing. Here it means the
+        # DOOR, and the cockpit's door is spelled `chat` (`MIRROR_SOURCE`) —
+        # the same string `memory_save` gives the operator to mean "I am
+        # telling you this myself", which is rightly SOURCE. So the identical
+        # conversation tiered as SOURCE from the cockpit and RECALLED from
+        # Telegram, and `retrieval.py` weights ranking by tier, so the phone
+        # lost. Adding `chat` to the transcript prefixes would have fixed the
+        # door and demoted every memory the operator saves by hand.
+        #
+        # A recap is a transcript whichever door it came through. This writer
+        # knows that about the record it is building, where the string does
+        # not, so it says so and `tier_for` stays the fallback for records
+        # that cannot.
+        source_tier=SourceTier.RECALLED,
     )
     return frontmatter, body
 
@@ -236,7 +252,18 @@ def amended_record(
     appended = body.rstrip("\n") + "\n" + "\n".join(added) + "\n"
     return (
         frontmatter.model_copy(
-            update={"updated_at": now, "summary": _summarise(rows)}
+            update={
+                "updated_at": now,
+                "summary": _summarise(rows),
+                # Re-stated on every amend, so the records already on disk
+                # heal as they are touched. A cockpit recap written before
+                # this resolved its tier from `source_type="chat"` and is
+                # sitting at SOURCE; carrying that forward would leave the
+                # two doors disagreeing for as long as the conversation
+                # lives. This is the lazy migration the field was designed
+                # for, and an amend is the next write.
+                "source_tier": SourceTier.RECALLED,
+            }
         ),
         appended,
     )

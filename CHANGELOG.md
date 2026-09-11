@@ -9,6 +9,33 @@ installed, you do not need it: the app offers you the update itself.
 
 ## Unreleased
 
+- **Forgetting a memory can only remove a memory.** The name you give it is
+  now treated as a name and never as a location, and the file that comes back
+  is checked to be inside your memory store before anything reads or deletes
+  it. Deleting a memory runs without asking you, so this is the check that
+  stood between that convenience and a badly formed name reaching a file
+  somewhere else. The folders you make yourself inside the store keep working.
+- **Where a piece of text came from is the app's account of it, not the
+  text's.** Anything fetched or read is fenced before the model sees it, with
+  a label saying which tool brought it. A page written to look exactly like
+  one of those fences used to keep its own label. It is fenced again now, so
+  the record you would read after something went wrong names the tool that
+  really ran.
+- **A conversation is remembered the same wherever you had it.** The record of
+  a chat at the desk and the same conversation on your phone were filed at
+  different strengths, and the phone's lost to the desk's when the app went
+  looking for something you had said. They are the same record now, and the
+  ones already saved correct themselves as they are added to.
+- **The Day room can be asked for from anywhere.** It is on the rail and the
+  app could open it, but asking for it by name from a channel found nothing.
+- **A playbook the app offers to rewrite now shows you what you actually
+  said.** For playbooks without numbered steps it quoted nothing at all, and
+  said nothing about the corrections it had counted. It also stops offering to
+  rewrite one you have already retired, and tells you how to bring it back if
+  that is what you meant.
+- **A retired playbook says so on its own notice.** The card announcing a
+  retirement carried an Apply button that could only ever fail, because there
+  was nothing to apply. It reports what happened and asks nothing.
 - **The map tells you which records it means.** Where it said how many records
   disagree, or how many links point at something that is not there, it now
   names them and lets you ask about one. A broken link is asked about from the

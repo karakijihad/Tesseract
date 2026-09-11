@@ -87,7 +87,7 @@ def _namespace_entries(deferred: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     Measured 2026-09-11 (M1 in the probe): grouping deferred tools under a
     `namespace` whose description names its members matches today's flat
-    selection accuracy (3/5) at 10,653 tokens against 26,659 — bare
+    selection accuracy (3/5) at 10,005 tokens against 26,659 — bare
     namespaces (no member names) drop accuracy to 1/5, so the names are
     load-bearing and stay in the description, never trimmed as a saving.
 

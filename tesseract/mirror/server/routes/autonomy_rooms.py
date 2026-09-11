@@ -206,9 +206,10 @@ ROOM_PURPOSE: dict[str, str] = {
 #:   permanently unwired on a machine where nothing is wrong.
 #: - **retention** is the trees with a window. A tree nothing has decided about
 #:   is a standing question, and the written line carries the count.
-#: - **outcomes**, **journal** and **pruned** grade nothing. They are records:
-#:   a finished item, a note, a draft turned away at the door. A room of
-#:   records has nothing to demand, and the count is in its written line.
+#: - **outcomes**, **journal**, **pruned** and **day** grade nothing. They are
+#:   records: a finished item, a note, a draft turned away at the door, an
+#:   account of what the day did. A room of records has nothing to demand, and
+#:   the count is in its written line.
 GRADED: dict[str, tuple[str, ...]] = {
     "overview": ("wantsYou",),
     "blocked": ("held", "paused"),
@@ -221,6 +222,15 @@ GRADED: dict[str, tuple[str, ...]] = {
     "outcomes": (),
     "journal": (),
     "pruned": (),
+    # Same answer, and it is worth saying why rather than leaving it in the
+    # list above. A day row is a wake, a step or a figure of spend, and none
+    # of them carries an `obligation`: the wakes carry the sentence the
+    # morning or the workday wrote for themselves, which is an account of
+    # what happened and not a demand on anybody. Naming a band here would
+    # read as grading and grade nothing, because `marks_for` has no key to
+    # look at. If a failed wake should one day pull the rail, the row has to
+    # start carrying an obligation first, and this entry changes with it.
+    "day": (),
 }
 
 

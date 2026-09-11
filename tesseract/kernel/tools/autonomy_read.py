@@ -71,6 +71,7 @@ logger = logging.getLogger(__name__)
 #: threw during render.
 RoomKey = Literal[
     "overview",
+    "day",
     "blocked",
     "health",
     "managed",
