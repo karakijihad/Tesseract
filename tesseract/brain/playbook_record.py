@@ -101,7 +101,7 @@ def records(skills_dir: Path, *, window_days: int) -> list[dict[str, Any]]:
 
 
 _NO_COMPARISON: dict[str, Any] = {
-    "previous_version": "", "improved": None, "previous_trouble": None,
+    "previous_version": "", "comparison": "unknown", "previous_trouble": None,
 }
 
 
@@ -132,10 +132,20 @@ def _did_the_last_revision_help(
         return dict(_NO_COMPARISON)
     live, before = reuses[-1], reuses[-2]
     worse = worse_than(live, before)
+    # Four answers, not three, because `worse_than` is a strict comparison and
+    # equal trouble returns False from it. Read as "not worse" that became
+    # "better than", so a revision that changed nothing measurable was
+    # reported as an improvement.
+    if worse is None:
+        comparison = "unknown"
+    elif live.trouble == before.trouble:
+        comparison = "same"
+    else:
+        comparison = "worse" if worse else "better"
     return {
         "previous_version": before.version,
         "previous_trouble": before.trouble,
-        "improved": None if worse is None else not worse,
+        "comparison": comparison,
     }
 
 
@@ -222,6 +232,9 @@ def _against_the_last_one(row: dict[str, Any]) -> str:
     measurement. Undecided is stated, never rounded to "no change".
     """
     was = f"v{row['previous_version']}"
-    if row["improved"] is None:
-        return f"too early to say whether it is better than {was}"
-    return f"better than {was}" if row["improved"] else f"worse than {was}"
+    return {
+        "unknown": f"too early to say whether it is better than {was}",
+        "same": f"measuring the same as {was}",
+        "better": f"better than {was}",
+        "worse": f"worse than {was}",
+    }[row["comparison"]]

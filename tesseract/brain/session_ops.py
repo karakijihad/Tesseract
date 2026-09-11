@@ -343,7 +343,7 @@ async def _attribute_skill_corrections(session: ChatSession, calls: list[dict[st
         await asyncio.to_thread(
             attribute_session_corrections,
             session.tool_context.session_id,
-            memory_id,
+            memory_id=memory_id,
         )
     except Exception:  # noqa: BLE001
         log.warning("reflection: skill-correction attribution failed", exc_info=True)

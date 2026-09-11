@@ -90,11 +90,12 @@ export function PlaybookUsageChart({
                     one: a fresh revision has barely been read. */}
                 {r.previous_version ? (
                   <span className="playbook-usage__figures t-meta">
-                    {r.improved === null
-                      ? `too early to say whether it is better than v${r.previous_version}`
-                      : r.improved
-                        ? `better than v${r.previous_version}`
-                        : `worse than v${r.previous_version}`}
+                    {{
+                      unknown: `too early to say whether it is better than v${r.previous_version}`,
+                      same: `measuring the same as v${r.previous_version}`,
+                      better: `better than v${r.previous_version}`,
+                      worse: `worse than v${r.previous_version}`,
+                    }[r.comparison]}
                   </span>
                 ) : null}
                 {/* The turn's cost, not the playbook's, which is what the

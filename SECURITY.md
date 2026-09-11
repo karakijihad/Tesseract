@@ -927,6 +927,25 @@ floor, and refusing the repair would strand exactly the records most in need of
 it. No caller can ask for an exception beyond that. Whether a write is an
 admission is decided from whether the record already exists.
 
+### What a memory id can reach
+
+Deleting a memory, reading one back, updating one and promoting one all start
+the same way: an id goes to the store and the store hands back a file. That id
+is an ordinary argument, so it is whatever the assistant was persuaded to pass,
+and forgetting a memory runs without asking you.
+
+So the store treats an id as a name and never as a path. An id is one segment
+of a name, the shape the ids on disk already have. Anything carrying a
+separator, in either slash, is refused before a file is looked for, and the
+file that comes back is checked to be inside the memory store after the system
+has followed any link, which is what the spelling of a name cannot tell you.
+An id that fails either check reads as a memory that does not exist: nothing is
+read, nothing is deleted, and the tool says it could not find it.
+
+The sub-folders you make yourself, such as a folder of people under
+`reference/`, keep working. They are folders the store searches, and were never
+part of an id.
+
 ### What stopping a command stops
 
 Stopping a turn ends the commands that turn started, and it ends what they
@@ -1138,6 +1157,21 @@ it does instead is make a successful injection *insufficient on its own*:
   a username and password in it, and a token in its query, and the line saying
   a send worked or failed is read back by the assistant and shown to you. What
   survives is the scheme, the host and the path.
+
+### What your own notes can reach
+
+Memory is stored on your machine and nothing sweeps it off. But a background
+job that asks a model a question can put some of it in that question, and if
+the role it runs under names a hosted model, that text goes to that provider.
+
+The one doing it today is the job that offers to rewrite a skill. When the work
+that followed a skill kept being corrected, it sends the model the skill's own
+text and what you said when you corrected it, because a rewrite proposed
+without the reason is a guess. That is deliberate and it is the whole value of
+the feature. It is worth knowing anyway: **a correction you typed can leave the
+machine, inside the question that asks for a better procedure.** How much of it
+is capped in `schedule.yaml`, and which model sees it is whichever your
+`roles.yaml` chain names. Point that chain at a local model and it stays here.
 
 ### What it reads when it picks its own work
 

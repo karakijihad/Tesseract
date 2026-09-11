@@ -48,7 +48,14 @@ SKILL_MD_MAX_BYTES = 262_144
 # skipped by the live scan so a quarantined draft can't rejoin the active set.
 SKILL_PENDING_DIRNAME = "pending"
 SKILL_REJECTED_DIRNAME = "rejected"
-_SKIP_DIRNAMES = frozenset({SKILL_PENDING_DIRNAME, SKILL_REJECTED_DIRNAME, "__pycache__"})
+#: Directories under `workspace/skills/` that are not skills. The quarantine
+#: trees hold skill FOLDERS, and a draft in one is inert until promoted, so
+#: anything walking this directory has to exclude them by name rather than by
+#: guessing from whether a SKILL.md sits at the top. Public because the
+#: refinement job walks the same directory and must reach the same answer.
+SKIP_DIRNAMES = frozenset({SKILL_PENDING_DIRNAME, SKILL_REJECTED_DIRNAME, "__pycache__"})
+#: Kept as the old private name for in-module readers.
+_SKIP_DIRNAMES = SKIP_DIRNAMES
 
 
 #: The lifecycle a playbook may declare. A revision is `draft` until it has

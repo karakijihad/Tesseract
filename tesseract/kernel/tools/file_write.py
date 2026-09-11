@@ -245,14 +245,106 @@ class FileWriteTool(Tool):
         # `..`-traversed targets.
         _maybe_index_workshop_write(path, state_root)
 
+        note = await _maybe_register_tool_write(path, state_root, context)
+
         return ToolResult(
-            output=f"Written {len(inp.content)} bytes to {path}",
+            output=f"Written {len(inp.content)} bytes to {path}{note}",
             receipt=Receipt(
                 kind="file",
                 id="sha256:" + sha256(inp.content.encode("utf-8")).hexdigest(),
                 locator=str(path),
             ),
         )
+
+
+async def _maybe_register_tool_write(
+    path: Path, state_root: Path, context: ToolContext
+) -> str:
+    """Register a tool file the moment it is written, and say what happened.
+
+    Writing the file IS the act that should make the tool callable, so the
+    scan belongs here. It used to belong to `tool_search`, whose `run()` calls
+    `sync_home_tools` before searching — and that was the only mid-conversation
+    trigger in the runtime. A provider that discovers deferred tools
+    server-side never receives our `tool_search` at all
+    (`adapters/base.py::project_tools` drops it), so on that path the scan
+    stopped running, a tool written mid-conversation could not become callable
+    until the next restart, and the "did not load" error never reached anyone.
+    Both callers are kept: this one fires on every provider, `tool_search`
+    still fires for the providers that carry it, and `sync_home_tools` is
+    idempotent, so a second scan on the same unchanged directory costs one
+    `scandir` and one `stat` per file.
+
+    Returns a note to append to the write's own result, which is the only
+    place the model is looking, and "" when the write was not a tool file.
+
+    **Every property this note has to hold at once**, because getting one of
+    them alone is how the first version of it was wrong:
+
+    - It reports on THIS file and no other. `sync_home_tools` scans the whole
+      directory and `LoadReport` answers for the whole scan, so a second file
+      written in the same turn, or one already sitting there broken, would
+      otherwise have its failure read as this write's.
+    - A file can load some of what it defines and fail on the rest.
+      `_load_one` returns loaded and failed separately for exactly that case,
+      so both halves are said. Reporting only the failure told the model
+      nothing had registered when something had.
+    - Silence is never the answer for a file that defines no tool. That
+      silence is what let a plain module sit in `tools/` looking like a tool.
+    - A failure to scan is not a failed write. The write already succeeded,
+      and an error here would make the model write the file again.
+    - Off the loop: loading imports the file, and an import runs operator code
+      of unknown duration.
+    """
+    if path.suffix.lower() != ".py":
+        return ""
+    try:
+        relative = path.relative_to(state_root).as_posix()
+    except (ValueError, OSError):
+        return ""
+    if readable_state_prefix(relative) != "tools":
+        return ""
+    provider = context.tool_registry_provider
+    if provider is None:
+        return ""
+    try:
+        import asyncio
+
+        from tesseract.kernel.home_tools import sync_home_tools, tools_from_file
+
+        registry = provider()
+        if registry is None:
+            return ""
+        report = await asyncio.to_thread(sync_home_tools, registry)
+        mine = tools_from_file(path)
+    except Exception:
+        return ""
+
+    # `errors` and `refused` are written `"<filename>: <problem>"`, so the
+    # prefix is what scopes them to this write. `loaded` carries tool names
+    # and cannot be filtered that way, which is what `tools_from_file` is for.
+    stem = f"{path.name}: "
+    failures = [m[len(stem):] for m in report.errors if m.startswith(stem)]
+    refused = [m[len(stem):] for m in report.refused if m.startswith(stem)]
+
+    parts: list[str] = []
+    if mine:
+        parts.append(f"Registered and callable now: {', '.join(sorted(mine))}.")
+    if failures:
+        # The contract errors say precisely what is missing and what to write
+        # instead, so they are passed through rather than summarised. A generic
+        # "must subclass Tool" suffix appended here contradicted them whenever
+        # the real problem was a later check.
+        parts.append(
+            ("The rest of this file did not load" if mine else
+             "This file did not load, so nothing it defines is callable")
+            + ": " + "; ".join(failures) + "."
+        )
+    if refused:
+        parts.append(f"Refused: {', '.join(refused)}.")
+    if not parts:
+        return ""
+    return ". " + " ".join(parts)
 
 
 def _maybe_index_workshop_write(path: Path, state_root: Path) -> None:

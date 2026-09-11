@@ -365,7 +365,8 @@ class MemorySaveTool(Tool):
                 # correction, and the refinement job's evidence is a step
                 # number without it.
                 await asyncio.to_thread(
-                    attribute_session_corrections, context.session_id, fm.id
+                    attribute_session_corrections, context.session_id,
+                    memory_id=fm.id,
                 )
             except Exception:  # noqa: BLE001 — telemetry must never break the save
                 logger.warning("memory_save: skill-correction attribution failed", exc_info=True)

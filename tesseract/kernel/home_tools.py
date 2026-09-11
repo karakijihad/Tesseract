@@ -560,6 +560,25 @@ def _sync_locked(registry: Any, policy: Any, tools_dir: Path | None) -> LoadRepo
     return report
 
 
+def tools_from_file(path: Path) -> tuple[str, ...]:
+    """The tools ONE file currently owns, empty when it owns none.
+
+    `LoadReport` answers for the whole scan, which is right for a caller that
+    scanned the whole directory and wrong for one that wrote a single file:
+    a report naming another file's failure would be read as this file's, and
+    `loaded` carries tool names rather than file names so it cannot be
+    filtered by filename the way `errors` and `refused` can. This reads the
+    per-file record the scan already keeps.
+
+    Held under the scan lock: `_loaded` is rebuilt by a scan that may be
+    running on another thread, and a caller reading it mid-rebuild would see
+    a file's old names beside its new ones.
+    """
+    with _scan_lock:
+        record = _loaded.get(path.resolve())
+        return tuple(record.names) if record else ()
+
+
 def reset_load_cache() -> None:  # noqa: D401
     """Forget what has been loaded. For tests, which point `TESSERACT_HOME` at
     a fresh tmp dir per case and would otherwise inherit the previous one's

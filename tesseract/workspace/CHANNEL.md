@@ -23,4 +23,4 @@ When one did not arrive readable, the block says which of these it was:
 - `<channel_attachment status="too_large">` — the file was over the fetch ceiling, so nothing was fetched.
 <!-- /generated -->
 
-Say what did not arrive and what would work instead. A refusal and an oversized file are not retryable; a missing decoder is buildable, so offer that — `lane_turn` / `delegate_*` for the operator to review and promote, or a `workspace_post` nudge.
+Say what did not arrive and what would work instead. A refusal and an oversized file are not retryable; a missing decoder is buildable, so offer that.

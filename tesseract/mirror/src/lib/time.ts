@@ -34,18 +34,32 @@ export function formatRelative(iso: string | null | undefined, fallback: string 
  *  so this says one.
  *
  *  Past moments and unparseable input both return the empty string, so a
- *  caller can fall back to whatever it says when there is nothing to say. */
+ *  caller can fall back to whatever it says when there is nothing to say. The
+ *  under-a-second case is one of those: it is not in the past, but a wait that
+ *  short is over by the time the words are read.
+ *
+ *  Each unit is rounded to the nearest, not floored. Flooring is right for an
+ *  age and wrong for a wait: it told a reader 29 hours for a wait of 29 hours
+ *  and 59 minutes, which is the one reading that makes them plan for the wrong
+ *  day. It also put the only correct answer for a whole-numbered wait on a
+ *  boundary that one elapsed millisecond falls off, which a test measured at
+ *  one run in six hundred.
+ *
+ *  Choosing the unit from the ROUNDED count and not the raw one is what keeps
+ *  the scale continuous: 59 minutes and 40 seconds rounds to 60 minutes, which
+ *  is not a thing this says, so it falls through and is answered in hours. */
 export function until(iso: string | null | undefined): string {
   if (!iso) return '';
   const at = new Date(iso).getTime();
   if (Number.isNaN(at)) return '';
-  const seconds = Math.floor((at - Date.now()) / 1000);
-  if (seconds <= 0) return '';
-  const min = Math.floor(seconds / 60);
-  if (min < 60) return `in ${Math.max(min, 1)} minutes`;
-  const hr = Math.floor(min / 60);
-  if (hr < 48) return `in ${hr} hour${hr === 1 ? '' : 's'}`;
-  return `in ${Math.floor(hr / 24)} days`;
+  const ms = at - Date.now();
+  if (ms < 1000) return '';
+  const said = (n: number, unit: string) => `in ${n} ${unit}${n === 1 ? '' : 's'}`;
+  const min = Math.round(ms / 60_000);
+  if (min < 60) return said(Math.max(min, 1), 'minute');
+  const hr = Math.round(ms / 3_600_000);
+  if (hr < 48) return said(hr, 'hour');
+  return said(Math.round(ms / 86_400_000), 'day');
 }
 
 

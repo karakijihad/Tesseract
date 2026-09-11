@@ -72,7 +72,15 @@ export function ChatInput({ variant }: Props) {
   // finishes — Codex/Claude-Code "type ahead" behaviour. Only the WS gate
   // disables input now; isStreaming is kept on the variable solely to
   // toggle the Stop/Send button below.
-  const disabled = wsStatus !== 'connected';
+  // Connected is not the same as ready to be typed into. The socket comes up
+  // before the chat list has loaded, and for those seconds there is no
+  // conversation for a message to go into: `sendUserMessage` resolves the
+  // active chat and returns without sending when there is none. The composer
+  // was enabled through that window and cleared itself afterwards, so the
+  // message looked sent and was never anywhere. Measured: `activeChatId` null,
+  // `orderedIds` empty, nothing in the store and nothing on the wire.
+  const hasAConversation = useConversationStore(s => Boolean(s.activeChatId));
+  const disabled = wsStatus !== 'connected' || !hasAConversation;
   // Hint stays mounted as long as the input starts with '/' — the
   // component itself decides whether to render the picker list (no space
   // yet) or the help row for the active command (after the space). The
@@ -253,9 +261,14 @@ export function ChatInput({ variant }: Props) {
       void getTtsPlayer().arm();
       useWebSocketStore.getState().sendMessage('voice_mode_set', { mode: 'speak' });
     }
+    // Whether the words actually left. The box is cleared on the strength of
+    // this and not on having reached the end of the function: an early return
+    // anywhere below used to take the operator's message with it, silently,
+    // because clearing looks exactly like sending.
+    let sent = true;
     const escaped = stripQuoteEscape(trimmed);
     if (escaped !== trimmed) {
-      useConversationStore.getState().sendUserMessage(null, escaped, pendingAttachments);
+      sent = useConversationStore.getState().sendUserMessage(null, escaped, pendingAttachments);
     } else {
       const parsed = parseSlashInput(trimmed);
       if (pendingAttachments.length === 0 && parsed.kind === 'command' && parsed.cmd) {
@@ -276,8 +289,15 @@ export function ChatInput({ variant }: Props) {
         useToastStore.getState().push(hint);
         return;
       } else {
-        useConversationStore.getState().sendUserMessage(null, trimmed, pendingAttachments);
+        sent = useConversationStore.getState().sendUserMessage(null, trimmed, pendingAttachments);
       }
+    }
+    if (!sent) {
+      useToastStore.getState().push(
+        'Nothing to send that to yet. Your message is still here.',
+        'warning',
+      );
+      return;
     }
     setValue('');
     setPendingAttachments([]);

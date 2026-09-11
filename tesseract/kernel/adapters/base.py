@@ -43,7 +43,11 @@ CACHE_BOUNDARY = "_cache_boundary"
 #: which every projection strips before the payload reaches a provider.
 #: `defer_loading` is the one exception: a deferring adapter puts it back,
 #: because there it is the provider's own vocabulary rather than ours.
-_PAYLOAD_KEYS = frozenset({"defer_loading", "_runtime_search"})
+#: `group` is the same kind of key as `defer_loading` — it rides along on a
+#: deferred entry only so a deferring adapter can bucket it into a
+#: `namespace` (`OpenAIAdapter._namespace_entries`), and is never copied into
+#: the wire entry that names it.
+_PAYLOAD_KEYS = frozenset({"defer_loading", "_runtime_search", "group"})
 
 
 class ChunkType(str, Enum):

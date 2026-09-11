@@ -255,6 +255,32 @@ def list_frontmatter(
     return results
 
 
+#: The subdirectories a memory of a declared `MemoryType` can live in, and
+#: the only ones a lookup by id searches. `daily`, `derived` and `events` are
+#: staging and are deliberately NOT here: the librarian promotes out of them,
+#: and an id resolved from one would be a record the store does not consider
+#: filed yet. Exported because a reader outside this module that needs to find
+#: a memory by id must search the same set, and three copies of a list like
+#: this is how one of them comes to be missing a type.
+MEMORY_SUBDIRS: tuple[str, ...] = (
+    "user", "feedback", "project", "reference", "conscience",
+)
+
+
+def _inside(path: Path, root: Path) -> bool:
+    """Whether `path` really lands inside `root`, symlinks followed.
+
+    `resolve()` before comparing, because the question is where the file IS
+    and not how it was spelled. Missing parents are fine: `resolve` on a
+    non-existent path still normalises it, and a path that cannot be resolved
+    at all is not one to hand back.
+    """
+    try:
+        return path.resolve().is_relative_to(root)
+    except (OSError, ValueError):
+        return False
+
+
 class MemoryStore:
     def __init__(self, store_dir: Path) -> None:
         self._store_dir = store_dir
@@ -289,30 +315,51 @@ class MemoryStore:
         # canonical subdirs on heartbeat. Phase-1 identity/ and memory/
         # (retired 2026-04-17) are left alone; MemoryType enum has no
         # entries for them.
-        for subdir in [
-            "user", "feedback", "project", "reference", "conscience",
-            "daily", "derived", "events",
-        ]:
+        for subdir in (*MEMORY_SUBDIRS, "daily", "derived", "events"):
             (self._store_dir / subdir).mkdir(parents=True, exist_ok=True)
 
     def _type_to_subdir(self, mem_type: MemoryType) -> str:
         return mem_type.value
 
     def find_file(self, memory_id: str) -> Path | None:
-        # Recursive lookup so operator-curated sub-buckets (e.g.
-        # `reference/people/`, `project/sprints/`) are discoverable
-        # without code changes — drop a folder in, files inside become
-        # readable/searchable on the next call.
+        """The file a memory id names, or None.
+
+        **This is the chokepoint, so every property is held here at once.**
+        `read`, `delete`, `update` and `promote` all act on what this returns
+        and none of them re-checks it, and `delete` unlinks it. The id is a
+        plain tool argument, so it is whatever the model was persuaded to
+        pass. The same escape was already closed once in this subsystem, in
+        `memory_get._resolve_memory_path`; it was open here.
+
+        1. The result is inside the store or there is no result. Checked on
+           the RESOLVED path, not the spelling, so a symlink inside a bucket
+           pointing out of the tree is caught as well as a `..` segment.
+        2. An id is ONE path segment. Ids on disk are `mem_3adcf2b8`; the
+           sub-buckets an operator curates (`reference/people/`) are
+           DIRECTORIES the walk finds, never part of an id. A separator in
+           one is not a curated bucket, it is a way out of the store.
+        3. Those sub-buckets keep working: the recursive walk stays.
+        4. It fails closed and never raises. Every caller reads None as "no
+           such memory", which is the answer a refused id deserves.
+        5. It costs what it cost: the containment check is per candidate, not
+           a second walk.
+        """
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", memory_id or ""):
+            return None
+        try:
+            root = self._store_dir.resolve()
+        except OSError:
+            return None
         target = f"{memory_id}.md"
-        for subdir in ["user", "feedback", "project", "reference", "conscience"]:
+        for subdir in MEMORY_SUBDIRS:
             base = self._store_dir / subdir
             if not base.exists():
                 continue
             direct = base / target
-            if direct.exists():
+            if direct.exists() and _inside(direct, root):
                 return direct
             for path in base.rglob(target):
-                if path.is_file():
+                if path.is_file() and _inside(path, root):
                     return path
         return None
 

@@ -38,10 +38,12 @@ _BANNER = """\
 #
 # Every tool it has is always callable by name. This file decides only which
 # ones are described to it on every turn, so it reaches for them directly.
-# Everything else it finds with `tool_search`, which costs one extra step and
-# nothing else. Taking a tool off this list makes it slower to reach, never
-# forbidden — what the assistant is ALLOWED to do is `permissions.yaml`, and
-# that is a separate question with a separate answer.
+# Everything else it still finds, and how depends on the model you are using:
+# some providers search the full set themselves at no extra step, others cost
+# one lookup first. Taking a tool off this list makes it slower to reach on
+# some models and no slower on others, and forbidden on none — what the
+# assistant is ALLOWED to do is `permissions.yaml`, and that is a separate
+# question with a separate answer.
 #
 # So this is a spending dial. Tool descriptions are roughly half of what a turn
 # costs before you have typed anything. Conscience -> Usage shows you the
@@ -55,9 +57,10 @@ _BANNER = """\
 # what the tools actually do. Regenerate after a hand-edit with
 #   python -m tesseract.scripts.generate_working_set --write
 #
-# `tool_search` is added back if you remove it. It is the door to everything
-# not on this list, and without it the assistant can only reach what is
-# written here.
+# `tool_search` is added back if you remove it. On a model that does not
+# search for itself it is the door to everything not on this list, and without
+# it the assistant can only reach what is written here. On a model that does,
+# it is not sent at all and costs you nothing to keep.
 #
 # A name nothing answers to stops the app at startup and says which one it was,
 # because a typo that quietly did nothing is how a tool goes missing for weeks.

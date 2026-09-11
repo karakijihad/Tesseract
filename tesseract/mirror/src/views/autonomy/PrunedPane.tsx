@@ -9,21 +9,26 @@
 // room of state lines, so a source is a row now and its stages are the
 // sentence beside it.
 //
-// **A rejected record carries no button to overturn the rejection.**
-// `task_propose` is the one door onto tracked work, and it requires
-// `success_criteria`: an observable measure of done. A pruned draft never had
-// one, so any value put here would be this room's invention rather than the
-// record's own words. There is also no tool that restores a pruned record as
-// the item it would have been; `task_propose` only mints a new one with a new
-// id, which is a different claim than "no, actually do that one." Each
-// record's own `reason` is shown instead, which is the whole of what this
-// room can honestly offer toward "why was this turned away."
+// **Nothing here overturns a rejection, and nothing can.** A `PruneRecord`
+// (`orchestrator/autonomy/prune_ledger.py`) is a ledger line holding the goal,
+// the source, the stage and the reason. The draft itself was never kept, so
+// there is nothing to reinstate as the item it would have been, and
+// `task_propose` requires `success_criteria`: an observable measure of done
+// that a pruned draft never carried. A field here would be filling that in
+// with this room's invention.
+//
+// What a row CAN do is hand the goal to the assistant, which is the one party
+// able to work out a measure of done and then propose it through the same
+// door and the same gate as anything else. So the control sends words, not a
+// tool call: the reply arrives in the chat, and it is as free to agree with
+// the gate as to overturn it.
 
 import { useEffect } from 'react';
 import { Button } from '../../components/common/Button';
 import { Note } from '../../components/common/Note';
 import { RowActions } from '../../components/common/Row';
-import type { PrunedResponse } from '../../lib/api';
+import type { PruneRecord, PrunedResponse } from '../../lib/api';
+import { askAssistant } from '../../lib/commands';
 import { useAutonomyStore } from '../../stores/autonomy';
 import { Band, StateStrip, type StateLine } from '../../components/common/StateStrip';
 import { Hint } from '../../components/ui/Hint';
@@ -49,6 +54,28 @@ const STAGE_LABEL: Record<string, string> = {
 
 function total(stages: Record<string, number>): number {
   return Object.values(stages).reduce((sum, n) => sum + n, 0);
+}
+
+/** The words that go to the assistant when a turned-away draft is questioned.
+ *
+ * Everything in it is the record's own: the goal as it was written, the source
+ * that sent it, what the gate decided and why. The last sentence is the only
+ * part this room supplies, and it asks for a ruling rather than for a task, so
+ * agreeing with the gate is an answer.
+ */
+export function askedAbout(rec: PruneRecord): string {
+  return [
+    'A draft was turned away at the admission gate and I want it looked at again.',
+    `It came from ${rec.source}, and the gate called it`,
+    `${STAGE_LABEL[rec.stage] ?? rec.stage}.`,
+    rec.reason ? `Its reason: ${rec.reason}` : '',
+    `What the draft asked for: ${rec.goal}`,
+    'Decide whether it is worth doing. If it is, work out an observable measure',
+    'of done and propose it as a task. If the gate was right, say why and',
+    'propose nothing.',
+  ]
+    .filter(Boolean)
+    .join(' ');
 }
 
 /** What the gate did to this source, in its own terms. */
@@ -162,11 +189,22 @@ export function PrunedPaneView({
               said: rec.goal,
               when: clock(rec.ts),
               value: STAGE_LABEL[rec.stage] ?? rec.stage,
-              // Why the gate turned this one away, in its own words. The
-              // whole of what "inspect a rejected item" can mean here: the
-              // gate never kept anything else about it, and nothing turns
-              // this into the tracked item it never became.
+              // Why the gate turned this one away, in its own words. The gate
+              // never kept anything else about it, so this and the goal are
+              // the whole of the record.
               more: rec.reason ? <p className="t-meta">{rec.reason}</p> : undefined,
+              actions: (
+                <RowActions className="state-acts">
+                  <Hint label="Puts this draft to the assistant in the chat, with what the gate decided and why. It can propose the work properly or agree that it was right to turn it away. Nothing is added to the agenda by pressing this.">
+                    <Button
+                      onClick={() => askAssistant(askedAbout(rec))}
+                      ariaLabel={`Ask about the draft from ${rec.source}`}
+                    >
+                      look at it again
+                    </Button>
+                  </Hint>
+                </RowActions>
+              ),
             }))}
           />
         </div>

@@ -294,10 +294,19 @@ def retrieval(app: Any) -> list[dict[str, Any]]:
                 # right, and asking about it every time the panel is opened
                 # would be asking about a decision already made.
                 **wants(OperationalState.NOT_INSTRUMENTED, by_choice=True),
+                # Which setting, named. The row said "the model settings" and
+                # stopped there, which tells a reader that something is off
+                # and not where the switch is. There is no tool for this on
+                # purpose: turning it back on is choosing a model for a role,
+                # and the surface that already does that is the one to send
+                # someone to. The role name is `roles.yaml`'s own, and roles
+                # are read from that file rather than listed here, so it
+                # stays right if the wiring moves.
                 "said": (
                     "switched off in the model settings, so every question is "
                     "answered by keywords alone and a memory worded "
-                    "differently will not be found"
+                    "differently will not be found. Give the embeddings role a "
+                    "model under Settings, Model roles to turn it back on"
                 ),
                 "at": None,
                 "value": "",

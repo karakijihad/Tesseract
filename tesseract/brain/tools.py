@@ -314,6 +314,10 @@ class ToolRegistry:
                 schema["_runtime_search"] = True
             elif t.name not in loaded:
                 schema["defer_loading"] = True
+                # A deferring adapter buckets deferred tools by taxonomy
+                # group (`OpenAIAdapter._namespace_entries`); a loaded tool
+                # stays flat and never needs to say which group it is in.
+                schema["group"] = t.group
             schemas.append(schema)
         return schemas
 

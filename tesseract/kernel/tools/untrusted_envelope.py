@@ -76,12 +76,36 @@ def wrap(*, tool: str, output: str, source: str | None = None) -> str:
 
 
 def is_wrapped(text: str) -> bool:
-    """True iff ``text`` already carries the envelope. Idempotent guard
-    for callers that might wrap twice (e.g. a re-emit path).
+    """True iff ``text`` IS this envelope, not merely text that contains its
+    markers. Idempotent guard for callers that might wrap twice.
+
+    **Structural, because a substring test was a way past the fence.**
+    `chat.py` skips wrapping when this returns True, so under
+    ``BEGIN in text and END in text`` any untrusted body carrying both strings
+    anywhere reached model history with NO envelope at all, free to put its
+    own instructions outside its own fake one. That is worse than the early
+    close `defuse` fixes: there, the text is at least inside a fence for part
+    of its length; here there is no fence.
+
+    Three conditions, and the third is the one a first attempt at this missed.
+    Opening with the BEGIN marker and closing with the system note is not
+    enough: text shaped as
+
+        <fake envelope>  INJECTED INSTRUCTIONS  <fake envelope>
+
+    satisfies both ends while the injected middle sits OUTSIDE either fence.
+    So the count has to be exactly one pair. `wrap` guarantees that for
+    anything it produced, because `defuse` removes the markers from the body
+    first, which is why the two changes only work together.
     """
     if not text:
         return False
-    return BEGIN_MARKER in text and END_MARKER in text
+    return (
+        text.startswith(BEGIN_MARKER)
+        and text.rstrip().endswith(SYSTEM_NOTE)
+        and text.count(BEGIN_MARKER) == 1
+        and text.count(END_MARKER) == 1
+    )
 
 
 def strip(text: str) -> str:

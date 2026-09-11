@@ -86,7 +86,11 @@ interface ChatState {
     messages: ChatMessage[],
     seedMeta?: { modelById?: Map<string, ModelSelectedData>; statsById?: Map<string, MessageStats> },
   ) => void;
-  sendUserMessage: (chatId: string | null, content: string, attachments?: ChatAttachment[]) => void;
+  /** Whether it actually went. False when there is no conversation to put it
+   *  in, which is true for the first seconds after the cockpit opens: the
+   *  socket connects and the composer enables before the chat list has
+   *  loaded, and a caller that assumed it sent used to clear the box. */
+  sendUserMessage: (chatId: string | null, content: string, attachments?: ChatAttachment[]) => boolean;
   appendUserMessage: (chatId: string | null, content: string) => void;
   // Q3 frontend — "redirect now": WS `steer` (distinct from the FIFO queue
   // default). Renders a `steered` bubble immediately (optimistic, same
@@ -561,7 +565,7 @@ export const useConversationStore = create<ChatState>((set, get) => ({
 
   sendUserMessage: (chatId, content: string, attachments: ChatAttachment[] = []) => {
     const id = _resolveId(get(), chatId);
-    if (!id) return;
+    if (!id) return false;
     // If the assistant is mid-turn, the backend now queues this message FIFO (per
     // chat) and drains the front of the queue when the active turn ends.
     // Mark the bubble as `queued` so the UI shows a pending pill, and
@@ -596,6 +600,7 @@ export const useConversationStore = create<ChatState>((set, get) => ({
       attachments: attachments.map(a => ({ id: a.id })),
       view_snapshot: buildViewSnapshot(),
     });
+    return true;
   },
 
   /** Voice path — backend already dispatched the turn server-side; we

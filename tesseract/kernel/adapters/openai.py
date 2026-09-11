@@ -36,6 +36,7 @@ from tesseract.kernel.adapters.base import (
 )
 from tesseract.kernel.adapters.errors import classify_exception
 from tesseract.kernel.state import ToolCall
+from tesseract.kernel.tools.taxonomy import heading_for
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,52 @@ _RESPONSES_HARD_CODES = frozenset({
 # constant like the `{"type": "function"}` envelope below; which models a role
 # reaches stays `roles.yaml`'s business.
 _TOOL_SEARCH_TOOL = {"type": "tool_search", "execution": "server"}
+
+
+def _function_entry(t: dict[str, Any], *, defer: bool) -> dict[str, Any]:
+    """One tool's wire shape, loaded or deferred. The one place both the flat
+    working set and a namespace's members are built, so the two never drift
+    into describing a tool differently."""
+    entry: dict[str, Any] = {
+        "type": "function",
+        "name": t["name"],
+        "description": t.get("description", ""),
+        "parameters": t.get("input_schema", {}),
+    }
+    if defer:
+        entry["defer_loading"] = True
+    return entry
+
+
+def _namespace_entries(deferred: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Deferred tools, bucketed by `Tool.group` into `namespace` entries.
+
+    Measured 2026-09-11 (M1 in the probe): grouping deferred tools under a
+    `namespace` whose description names its members matches today's flat
+    selection accuracy (3/5) at 10,653 tokens against 26,659 — bare
+    namespaces (no member names) drop accuracy to 1/5, so the names are
+    load-bearing and stay in the description, never trimmed as a saving.
+
+    One namespace per taxonomy group, sorted by slug for a stable payload;
+    each namespace's members are sorted by name in both the description and
+    the `tools` array, for the same reason.
+    """
+    by_group: dict[str, list[dict[str, Any]]] = {}
+    for t in deferred:
+        by_group.setdefault(t.get("group", ""), []).append(t)
+
+    namespaces: list[dict[str, Any]] = []
+    for slug in sorted(by_group):
+        members = sorted(by_group[slug], key=lambda t: t["name"])
+        names = ", ".join(t["name"] for t in members)
+        namespaces.append({
+            "type": "namespace",
+            "name": slug.replace("-", "_"),
+            "description": f"{heading_for(slug)}. Contains: {names}.",
+            "tools": [_function_entry(t, defer=True) for t in members],
+        })
+    return namespaces
+
 
 _RESPONSES_TRANSIENT_CODES = frozenset({
     "rate_limit_exceeded",
@@ -811,20 +858,24 @@ class OpenAIAdapter(ModelAdapter):
         projected = self.project_tools(tools)
         if projected:
             translated: list[dict[str, Any]] = []
+            deferred: list[dict[str, Any]] = []
             for t in projected:
-                entry: dict[str, Any] = {
-                    "type": "function",
-                    "name": t["name"],
-                    "description": t.get("description", ""),
-                    "parameters": t.get("input_schema", {}),
-                }
                 if t.get("defer_loading"):
-                    entry["defer_loading"] = True
-                translated.append(entry)
+                    deferred.append(t)
+                else:
+                    translated.append(_function_entry(t, defer=False))
+            # Deferred tools travel namespaced by taxonomy group, not as flat
+            # entries wearing `defer_loading` — seeing every name up front
+            # costs 26,659 tokens for 158 tools, and namespacing without
+            # naming the members inside gets the model to the right tool on
+            # 1 of 5 tasks. Naming them in the namespace description is what
+            # gets back to today's accuracy at a third of the cost. See
+            # `_namespace_entries`.
+            translated.extend(_namespace_entries(deferred))
             # The provider's search rides along only when there is something
             # to search for. `project_tools` has already guaranteed that a
             # payload which would defer everything defers nothing instead.
-            if any(t.get("defer_loading") for t in translated):
+            if deferred:
                 translated.append(dict(_TOOL_SEARCH_TOOL))
             kwargs["tools"] = translated
         if opts.reasoning_effort:

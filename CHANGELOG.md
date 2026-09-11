@@ -43,6 +43,11 @@ installed, you do not need it: the app offers you the update itself.
   now either way.
 - **A stop reports one turn as one turn.** From a phone it said it had stopped
   two, every time, because one turn is carried by two pieces of work inside.
+- **A message typed the moment the app opens is no longer lost.** The window
+  opens before the conversation list has loaded, and for those seconds there
+  was nowhere for a message to go. It was accepted, the box cleared, and
+  nothing was sent. The box now waits until there is somewhere to put it, and
+  anything that does not send stays where you typed it.
 
 ## 1.1.2
 

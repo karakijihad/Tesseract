@@ -54,6 +54,7 @@ from tesseract.brain.playbook_reuse import Reuse, measure, worse_than
 from tesseract.brain.skill_usage import read_usage
 from tesseract.brain.skills import (
     SKILL_FILENAME,
+    SKIP_DIRNAMES,
     SkillEntry,
     list_history,
     load_skills,
@@ -140,11 +141,14 @@ class SkillRefinementJob(BaseJob):
                     continue
                 # Already said no to this exact text. Skipped rather than
                 # re-asked, and counted so the run says why it did nothing.
-                if (cand["skill"], _sha256(_read_skill_md(skills_dir, cand["skill"]))) in refused:
+                current = await asyncio.to_thread(
+                    _read_skill_md, skills_dir, cand["skill"]
+                )
+                if (cand["skill"], _sha256(current)) in refused:
                     refused_again += 1
                     continue
                 proposed = await self._file_card(
-                    ctx, store, skills_dir, cand, window_days,
+                    ctx, store, cand, current, window_days,
                     max_evidence_rows, max_correction_chars,
                 )
                 if proposed is None:
@@ -194,8 +198,8 @@ class SkillRefinementJob(BaseJob):
         self,
         ctx: JobContext,
         store: Any,
-        skills_dir: Path,
         cand: dict[str, Any],
+        current: str,
         window_days: int,
         max_evidence_rows: int,
         max_correction_chars: int,
@@ -209,8 +213,15 @@ class SkillRefinementJob(BaseJob):
         from tesseract.workspace_events import WorkspaceEvent
 
         name = cand["skill"]
-        current = _read_skill_md(skills_dir, name)
-        unreadable = cand["reason"] == "unreadable"
+        version = cand["version"]
+        at = f" v{version}" if version else ""
+        # Unreadable first: it spends no model call and wants no evidence, so
+        # building the block above this branch walked the memory store for
+        # something thrown away.
+        if cand["reason"] == "unreadable":
+            return await self._file_unreadable(
+                ctx, store, name, at, cand, current,
+            )
         # Off the loop: it walks the memory store once per shown failure,
         # and this job shares the backend's loop with WS heartbeats and
         # inbound turns. Every other file read here is threaded for that
@@ -219,16 +230,7 @@ class SkillRefinementJob(BaseJob):
             _evidence_block, cand, window_days, max_evidence_rows,
             max_correction_chars,
         )
-        proposed = (
-            "" if unreadable
-            else await self._propose_revision(ctx, current, evidence)
-        )
-        version = cand["version"]
-        at = f" v{version}" if version else ""
-        if unreadable:
-            return await self._file_unreadable(
-                ctx, store, name, at, cand, current,
-            )
+        proposed = await self._propose_revision(ctx, current, evidence)
         ratio_pct = round(cand["neg"] / cand["total"] * 100)
         # What was NOT counted is said on the card, not just in the log. An
         # error is a read that failed and no rewrite of the prose fixes it;
@@ -494,23 +496,67 @@ def _correction_text(memory_id: str, cap: int) -> str:
     memory, and a retrieval-frequency signal that this job feeds would be
     measuring itself.
     """
-    # The id becomes a glob pattern, so it is checked before it is one. It
-    # comes off a log line the assistant cannot write, but a pattern built
-    # from data is a pattern whichever way the data arrived, and `*` or a
-    # separator in it would walk the store rather than name one file.
+    # The id becomes a path segment, so it is checked before it is one. It
+    # comes off a log line the assistant cannot write, but a name built from
+    # data is a name whichever way the data arrived, and a separator in it
+    # would reach outside the store.
     if not memory_id or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", memory_id):
         return ""
     from tesseract.paths import home_dir
 
     store = home_dir() / "memory-store"
-    for found in store.rglob(f"{memory_id}.md"):
-        try:
-            raw = found.read_text(encoding="utf-8")
-        except OSError:
-            return ""
-        body = raw.split("---", 2)[-1] if raw.startswith("---") else raw
-        return " ".join(body.split())[:cap]
-    return ""
+    # The store's own layout rather than a walk of it: `MemoryStore.find_file`
+    # checks these buckets, and a whole-tree `rglob` per quoted row scaled the
+    # cost with the operator's library instead of with the evidence.
+    # The store's own list, not a second copy of it: a new memory type added
+    # there would otherwise be a type this reader silently cannot quote.
+    from tesseract.memory.store import MEMORY_SUBDIRS
+
+    buckets = MEMORY_SUBDIRS
+    found: Path | None = None
+    for bucket in buckets:
+        flat = store / bucket / f"{memory_id}.md"
+        if flat.is_file():
+            found = flat
+            break
+    if found is None:
+        # The operator may curate sub-buckets (`reference/people/`), which
+        # `find_file` supports, so a miss above is not an absence. Bounded to
+        # the five buckets rather than the whole store.
+        for bucket in buckets:
+            found = next((store / bucket).rglob(f"{memory_id}.md"), None)
+            if found is not None:
+                break
+    if found is None:
+        return ""
+    try:
+        raw = found.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    if _expired(raw):
+        return ""
+    body = raw.split("---", 2)[-1] if raw.startswith("---") else raw
+    return " ".join(body.split())[:cap]
+
+
+def _expired(raw: str) -> bool:
+    """Whether a memory has passed its own `expiry_at`.
+
+    Retrieval drops an expired record from the prefilter, and a quote carries
+    the authority of something the operator still stands behind. Without this
+    a correction they deliberately gave a shelf life could be read back into a
+    rewrite prompt weeks after it lapsed.
+    """
+    match = re.search(r"^expiry_at:\s*(\S+)", raw, re.MULTILINE)
+    if not match:
+        return False
+    try:
+        when = datetime.fromisoformat(match.group(1).strip("'\"").replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when <= datetime.now(timezone.utc)
 
 
 def _evidence_block(
@@ -558,10 +604,16 @@ def _evidence_block(
         lines.append(f"  and {held_back} more not shown.")
     lines.append("")
     unquoted = sum(1 for _, said in quoted if not said)
+    ambiguous = sum(1 for f, said in quoted if not said and f.get("unattributed"))
     if unquoted:
+        why = (
+            " Of those, "
+            f"{ambiguous} were recorded but could not be tied to this skill, "
+            "because the session corrected more than one."
+        ) if ambiguous else ""
         lines.append(
             f"{unquoted} of the corrections above carry no record of what was "
-            "said, so their cause is unknown. Do not invent one."
+            f"said, so their cause is unknown.{why} Do not invent one."
         )
     lines.append(
         "A correction means the work was put right afterwards. It does not "
@@ -579,15 +631,46 @@ def _sha256(text: str) -> str:
 
 
 def _live_revisions(skills_dir: Path) -> dict[str, str]:
-    """Every ACTIVE skill, and the revision a usage row must carry to count.
+    """Every skill FOLDER on disk, and the revision a usage row must carry.
 
     A playbook's is its whole-number `version`; a plain skill's is `""`,
     meaning its rows are counted by name because it has no revision to count
-    against.
+    against. A folder whose `SKILL.md` will not parse is also `""`, and that
+    is the point of walking the folders rather than `load_skills`.
+
+    **`load_skills` returns "every well-formed skill", and a skill that will
+    not parse is exactly the one the unreadable card exists for.** Building
+    this map from it dropped such a folder, so `_aggregate` skipped its rows
+    before reaching the error counter and the card could never fire for a
+    malformed file. That is the second time that path was closed: the first
+    was the error branch sitting below the revision gates. A usage row is
+    written from the folder path (`skill_usage.skill_name_for_path`) and does
+    not care whether the file parses, so the reader must not either.
     """
+    parsed = {e.name: e for e in load_skills(skills_dir)}
     out: dict[str, str] = {}
-    for entry in load_skills(skills_dir):
-        out[entry.name] = entry.version if entry.is_playbook else ""
+    try:
+        folders = [p for p in skills_dir.iterdir() if p.is_dir()]
+    except OSError:
+        folders = []
+    for folder in folders:
+        # The quarantine trees hold skill folders, not skills. Excluded by
+        # NAME, the way the loader excludes them, rather than inferred from
+        # a SKILL.md happening not to sit at the top of one: a draft that is
+        # inert until promoted must never be measured or offered a rewrite.
+        if folder.name in SKIP_DIRNAMES:
+            continue
+        if not (folder / SKILL_FILENAME).exists():
+            continue
+        entry = parsed.get(folder.name)
+        # A retired revision is a record, not an offer. `playbook_record`
+        # leaves it out for the same reason, and refining something already
+        # withdrawn puts a rewrite of it back in front of the operator.
+        if entry is not None and entry.status == "retired":
+            continue
+        out[folder.name] = (
+            entry.version if entry is not None and entry.is_playbook else ""
+        )
     return out
 
 
@@ -662,6 +745,7 @@ def _aggregate(
                 "step": r.get("step"),
                 "turn_id": r.get("turn_id") or "",
                 "memory_id": r.get("memory_id") or "",
+                "unattributed": bool(r.get("unattributed")),
             })
             continue
         bucket["reads"] += 1
@@ -753,8 +837,8 @@ def _resolve_logs_dir(ctx: JobContext) -> Path:
     override = (ctx.config or {}).get("logs_dir")
     if override:
         return Path(override)
-    env = os.environ.get("TESSERACT_HOME")
-    home = Path(env).resolve() if env else TESSERACT_HOME
+    # `home_logs_root` reads the environment itself on every call. Resolving
+    # it again here was dead and read as though the override applied here.
     return home_logs_root()
 
 

@@ -3,8 +3,9 @@
 When the assistant `file_read`s a `workspace/skills/<name>/SKILL.md` body, that
 consultation is logged to `<TESSERACT_HOME>/logs/skills/usage.jsonl` so the
 refinement job (`scheduler/tasks/skill_refinement.py`) can flag skills that keep
-failing. The volume of this file is also what fires that job — its row waits on
-`skill_usage_volume` rather than on an hour.
+failing. That job runs on a cadence: it waited on the volume of this file until
+that trigger was measured never to fire, and `config/schedule.yaml` carries the
+reasoning beside its row.
 
 Outcome vocabulary (Agent-Skills-agnostic):
 - ``ok``          — the skill body read cleanly (the common case).
@@ -30,12 +31,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from tesseract.paths import TESSERACT_HOME, log_dir
+from tesseract.paths import log_dir
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +49,12 @@ _SKILL_FILE = "SKILL.md"
 
 
 def usage_log_path() -> Path:
-    """`<TESSERACT_HOME>/logs/skills/usage.jsonl`, resolved at call time."""
-    override = os.environ.get("TESSERACT_HOME")
-    home = Path(override).resolve() if override else TESSERACT_HOME
+    """`<TESSERACT_HOME>/logs/skills/usage.jsonl`, resolved at call time.
+
+    `log_dir` reaches `home_dir()` on every call and reads the environment
+    itself, so resolving it a second time here was dead and read as though
+    the override were applied in this function.
+    """
     return log_dir("skills") / _USAGE_FILENAME
 
 
@@ -88,6 +91,7 @@ def log_skill_load(
     turn_id: str = "",
     step: int | None = None,
     memory_id: str = "",
+    unattributed: bool = False,
 ) -> None:
     """Append one usage line. Best-effort — never raises past this call.
 
@@ -116,6 +120,8 @@ def log_skill_load(
         row["step"] = step
     if memory_id:
         row["memory_id"] = memory_id
+    if unattributed:
+        row["unattributed"] = True
     try:
         path = usage_log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -151,7 +157,7 @@ def _version_at(path: str | Path) -> str:
     return entry.version if entry is not None and entry.is_playbook else ""
 
 
-def attribute_session_corrections(session_id: str, memory_id: str = "") -> int:
+def attribute_session_corrections(session_id: str, *, memory_id: str = "") -> int:
     """Mark every skill loaded in ``session_id`` with a ``correction`` outcome.
 
     Called when a `feedback` memory is saved in the session. A plain skill is
@@ -203,9 +209,23 @@ def attribute_session_corrections(session_id: str, memory_id: str = "") -> int:
             # to be judged by and is marked as read.
             if step is not None and total and matched * 2 <= total:
                 continue
+        # The memory is recorded only when ONE skill is being corrected. A
+        # session that consulted two playbooks and then saved a correction
+        # about one of them cannot say which, and stamping both with the same
+        # memory puts the operator's words against work they were not about.
+        # A quote that may be wrong is worse than no quote: it invites a
+        # confident rewrite aimed at the wrong thing, which is the failure
+        # this whole evidence path exists to end.
         log_skill_load(
             skill, session_id, "correction", version=version, turn_id=turn_id,
-            step=step, memory_id=memory_id,
+            step=step,
+            memory_id=memory_id if len(targets) == 1 else "",
+            # Why there is no memory, when there is one to be had. Without
+            # this the row is indistinguishable from one written before the
+            # field existed, and a card would say the words were never
+            # recorded when in fact they were and could not be tied to this
+            # skill. The two are different things to tell an operator.
+            unattributed=bool(memory_id) and len(targets) > 1,
         )
         added += 1
     return added

@@ -107,9 +107,12 @@ export interface PlaybookUsageRow {
    *  what says whether the rewrite worked. */
   previous_version: string;
   previous_trouble: number | null;
-  /** null means undecided, NOT unchanged: a fresh revision has barely been
-   *  read, and the comparison is refused rather than rounded to no change. */
-  improved: boolean | null;
+  /** Four answers, because a strict comparison has three outcomes and "no
+   *  data" is a fourth. "unknown" means undecided, NOT unchanged: a fresh
+   *  revision has barely been read. "same" is a rewrite that measured
+   *  identically, which was reported as an improvement while this was a
+   *  boolean. */
+  comparison: 'better' | 'worse' | 'same' | 'unknown';
 }
 
 export interface PlaybookUsageResponse {

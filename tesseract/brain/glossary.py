@@ -95,10 +95,11 @@ def render(registry) -> str:
         _PREAMBLE,
         "",
         f"You have {total} of them. Not all of them arrive with a schema on a "
-        f"given turn. If a tool on this map is not among the schemas you were "
-        f"handed, call `tool_search` with its name and the schema arrives, "
-        f"then you can use it. Missing from your schemas does not mean "
-        f"unavailable, it means one step away.",
+        f"given turn, and how you reach one that did not depends on the model "
+        f"answering. If `tool_search` is among your tools, call it with the "
+        f"name and the schema arrives. If it is not, the provider finds the "
+        f"tool for you and you can simply call it by name. Either way, missing "
+        f"from your schemas does not mean unavailable.",
         "",
     ]
 
