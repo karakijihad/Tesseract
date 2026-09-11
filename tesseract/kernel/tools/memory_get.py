@@ -6,9 +6,11 @@ the memory store. ``memory_get`` enforces three rules:
 
 1. The resolved path must live under ``TESSERACT_HOME/memory-store/``.
 2. The path must end in ``.md`` (memory store is markdown-only).
-3. Identity files (``MEMORY.md``, ``WHAT_NOT_TO_SAVE.md``) are off-
-   limits — they encode the assistant's promoted memory and exclusion policy
-   respectively; reflection-driven workflows must not introspect them.
+3. ``MEMORY.md`` is off-limits: it encodes the assistant's promoted memory,
+   and reflection-driven workflows must not introspect it. The exclusion
+   policy used to sit beside it as a markdown file and is now declared in
+   ``memory/capture_policy.py``, where it is read by a surface rather than
+   by whatever happens to open the store.
 
 Returns the requested line slice (1-based, inclusive) with a header
 echoing the resolved path and total line count.
@@ -24,7 +26,7 @@ from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
 from tesseract.paths import TESSERACT_HOME
 
 MEMORY_STORE_DIRNAME = "memory-store"
-_IDENTITY_FILES: frozenset[str] = frozenset({"MEMORY.md", "WHAT_NOT_TO_SAVE.md"})
+_IDENTITY_FILES: frozenset[str] = frozenset({"MEMORY.md"})
 
 
 class MemoryGetInput(BaseModel):
@@ -79,10 +81,11 @@ class MemoryGetTool(Tool):
     )
     not_when: ClassVar[str] = (
         "use `memory_search` when you do not already have the path: this "
-        "reads one file and finds nothing. Refuses identity files (MEMORY.md, "
-        "WHAT_NOT_TO_SAVE.md)."
+        "reads one file and finds nothing. Refuses MEMORY.md."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     def __init__(self, *, memory_root: Path | None = None) -> None:
         self._memory_root = memory_root if memory_root is not None else TESSERACT_HOME / MEMORY_STORE_DIRNAME
@@ -106,9 +109,17 @@ class MemoryGetTool(Tool):
         try:
             path = _resolve_memory_path(inp.path, memory_root=self._memory_root)
         except ValueError as exc:
-            return ToolResult(output=f"memory_get rejected: {exc}", is_error=True)
+            return ToolResult(
+                output=f"memory_get rejected: {exc}",
+                is_error=True,
+                caller_error=True,
+            )
         if not path.is_file():
-            return ToolResult(output=f"memory_get: not found: {inp.path}", is_error=True)
+            return ToolResult(
+                output=f"memory_get: not found: {inp.path}",
+                is_error=True,
+                caller_error=True,
+            )
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:

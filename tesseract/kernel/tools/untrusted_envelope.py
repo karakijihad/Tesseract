@@ -40,6 +40,24 @@ SYSTEM_NOTE: Final[str] = (
 )
 
 
+#: What a marker inside the body becomes. The module's argument above is that
+#: the boundary is the defence rather than in-band sanitisation, and that
+#: argument holds only while the boundary itself cannot be forged. A fetched
+#: page or a read file carrying the END marker verbatim closes the envelope
+#: early, and everything after it lands in history as trusted text. Two more
+#: follow from the same string: `is_wrapped` reports such a body as already
+#: wrapped, so a re-emit path skips wrapping it at all, and `strip` slices at
+#: the wrong marker. These two strings are neutralised because they are OURS
+#: and structural, not because they look dangerous, which is the distinction
+#: the docstring above is drawing.
+_NEUTERED: Final[str] = "[marker removed]"
+
+
+def defuse(output: str) -> str:
+    """Body text with our own boundary markers neutralised."""
+    return output.replace(BEGIN_MARKER, _NEUTERED).replace(END_MARKER, _NEUTERED)
+
+
 def wrap(*, tool: str, output: str, source: str | None = None) -> str:
     """Wrap untrusted text with the envelope. Empty / whitespace-only
     output bypasses wrapping so we don't add markers around nothing.
@@ -51,7 +69,7 @@ def wrap(*, tool: str, output: str, source: str | None = None) -> str:
         header += f" source={source}"
     return (
         f"{header}\n"
-        f"{output.rstrip()}\n"
+        f"{defuse(output).rstrip()}\n"
         f"{END_MARKER}\n"
         f"{SYSTEM_NOTE}"
     )
@@ -84,6 +102,7 @@ __all__ = [
     "BEGIN_MARKER",
     "END_MARKER",
     "SYSTEM_NOTE",
+    "defuse",
     "is_wrapped",
     "strip",
     "wrap",

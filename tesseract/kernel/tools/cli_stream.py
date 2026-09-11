@@ -18,6 +18,7 @@ import logging
 import re
 from typing import Any, Mapping, Sequence, TypedDict
 
+from tesseract.kernel.tools import _process_containment as containment
 from tesseract.kernel.tools.base import CliSink, ToolResult
 
 log = logging.getLogger(__name__)
@@ -185,10 +186,10 @@ async def race_communicate(
             waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
         )
     except asyncio.CancelledError:
-        try:
-            process.kill()
-        except ProcessLookupError:
-            pass
+        # Shielded for the reason the awaits below are: a second cancellation
+        # arriving here cuts an unshielded await short, and the tree would
+        # outlive the call it belongs to.
+        await asyncio.shield(containment.reap(process))
         # `wait_task` is already `process.wait()`, so this reaps the zombie
         # without starting a second wait for `_reap` to cancel a line later.
         await asyncio.shield(wait_task)
@@ -197,19 +198,13 @@ async def race_communicate(
 
     if watch_task is not None and watch_task in done and wait_task not in done:
         # Cancel fired before the process exited — kill and drain everything.
-        try:
-            process.kill()
-        except ProcessLookupError:
-            pass
+        await containment.reap(process)
         await process.wait()
         await _reap(out_task, err_task, wait_task, watch_task)
         return None  # caller should return a "cancelled" ToolResult
     if wait_task not in done:
         # Timeout — process never exited. Kill and reap before raising.
-        try:
-            process.kill()
-        except ProcessLookupError:
-            pass
+        await containment.reap(process)
         await process.wait()
         await _reap(out_task, err_task, wait_task, watch_task)
         raise asyncio.TimeoutError
@@ -341,10 +336,10 @@ async def run_subprocess_with_sink(
             waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
         )
     except asyncio.CancelledError:
-        try:
-            process.kill()
-        except ProcessLookupError:
-            pass
+        # Shielded for the reason the awaits below are: a second cancellation
+        # arriving here cuts an unshielded await short, and the tree would
+        # outlive the call it belongs to.
+        await asyncio.shield(containment.reap(process))
         await asyncio.shield(wait_task)
         await _reap(pump_task, wait_task, watch_task)
         # Shielded, for the reason the helper documents: an unshielded await
@@ -355,10 +350,7 @@ async def run_subprocess_with_sink(
 
     if watch_task is not None and watch_task in done and wait_task not in done:
         # Cancel fired before the process exited — kill and drain.
-        try:
-            process.kill()
-        except ProcessLookupError:
-            pass
+        await containment.reap(process)
         await process.wait()
         await _reap(pump_task, wait_task, watch_task)
         await _emit("cli_end", {"exit_code": -1})
@@ -368,10 +360,7 @@ async def run_subprocess_with_sink(
         # of whatever it already streamed, so the model can see the run was
         # productive rather than assuming nothing happened. A bare
         # "timed out" string costs a full re-delegation.
-        try:
-            process.kill()
-        except ProcessLookupError:
-            pass
+        await containment.reap(process)
         await process.wait()
         await _reap(pump_task, wait_task, watch_task)
         await _emit("cli_end", {"exit_code": -1})

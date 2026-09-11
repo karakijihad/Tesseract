@@ -79,13 +79,13 @@ export interface ChannelLogEntry {
   message: string;
 }
 
-export type ChannelUserTier = 'operator' | 'friend';
+// There is no tier. A chat is on the allowlist or it is not, and being on it
+// is the whole permission.
 export type ChannelUserState = 'allowed' | 'pending' | 'blocked';
 
 export interface ChannelUser {
   user_id: string;
   display_name: string;
-  tier: ChannelUserTier;
   ttl_iso: string | null;
   first_seen: string;
   last_seen: string;
@@ -102,7 +102,6 @@ export interface ConversationRow {
 
 export interface ApproveInput {
   user_id: string;
-  tier: ChannelUserTier;
   ttl_iso: string | null;
   display_name: string | null;
 }
@@ -422,7 +421,6 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       }>(`/api/channels/${encodeURIComponent(channel)}/approve`, {
         session_id: sessionId,
         user_id: input.user_id,
-        tier: input.tier,
         ttl_iso: input.ttl_iso,
         display_name: input.display_name,
       });

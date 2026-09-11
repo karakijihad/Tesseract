@@ -35,6 +35,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,8 @@ class RetentionSetWindowTool(Tool):
         "code's and not a setting."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:
@@ -107,7 +110,7 @@ class RetentionSetWindowTool(Tool):
                 set_window, paths.config_dir(), inp.tree.strip(), inp.days
             )
         except RetentionError as exc:
-            return ToolResult(output=str(exc), is_error=True)
+            return ToolResult(output=str(exc), is_error=True, caller_error=True)
         except OSError as exc:
             logger.exception("retention_set_window: the table could not be written")
             return ToolResult(
@@ -140,6 +143,15 @@ class RetentionSetWindowTool(Tool):
             )
         return ToolResult(
             output=said,
+            receipt=(
+                Receipt(
+                    kind="record",
+                    id=now.tree.key,
+                    locator=str(paths.config_dir() / "retention.yaml"),
+                )
+                if was.keep_days != now.keep_days
+                else Receipt.nothing()
+            ),
             metadata={
                 "tree": now.tree.key,
                 "was": was.keep_days,

@@ -70,6 +70,43 @@ class Allowlist:
     # state mutation, no log spam. Round-trips through JSON as a sorted
     # list of ints (back-compat: load tolerates missing key).
     blocked: set[int] = field(default_factory=set)
+    #: Which approved chat is the OPERATOR's own. Everything else on this list
+    #: is somebody the operator let in, and the two are not the same thing:
+    #: approval to use this runtime is not approval to be recapped into the
+    #: operator's own digest, library and recall. `owner()` is the reader.
+    owner_chat_id: int | None = None
+
+    def owner(self) -> int | None:
+        """The operator's own chat, or `None` when the runtime cannot tell.
+
+        **Once an owner has been named it is that chat or nobody, and it is
+        never inferred again.** That is one rule doing two jobs, and both lanes
+        of an audit found what happens without it. `owner_chat_id` is the
+        record of a decision, so it OUTLIVES the chat leaving the list: it is
+        not cleared on revoke, and it is honoured again if that chat is ever
+        approved again, which is the decision still standing rather than a
+        stale claim.
+
+        Without that persistence the field could not tell "nobody was ever
+        named" from "somebody was named and is now gone", and both failures
+        followed from the same gap. Name yourself, approve a friend, then
+        revoke your own chat: the inference below would fall through to the
+        one chat left and make your GUEST the operator, putting their
+        conversations into your digest, library and recall. This module's own
+        regression test asserted that as intended, which is how it survived
+        being written.
+
+        The single-chat inference is only for an allowlist that has never
+        named one, which now means only an install predating this field: one
+        approved chat cannot be somebody else's, so those need no migration.
+        Everything else **fails closed**, because the failure in the other
+        direction is a second person's conversation in the operator's own day.
+        """
+        if self.owner_chat_id is not None:
+            return self.owner_chat_id if self.owner_chat_id in self.chat_ids else None
+        if len(self.chat_ids) == 1:
+            return next(iter(self.chat_ids))
+        return None
 
     def is_allowed(self, chat_id: int) -> bool:
         return chat_id in self.chat_ids
@@ -178,12 +215,16 @@ class PollState:
     # First-seen iso utc per chat_id — populated on the first inbound
     # message after an approve(); used for `ChannelUser.first_seen`.
     first_seen: dict[str, str] = field(default_factory=dict)
-    # Per-chat tier + ttl + display name written by approve(). Drives
-    # `ChannelUser` projections without re-reading the allowlist file.
-    # ``user_tier`` enforcement on inbound landed in audit fix M3; TTL
-    # is auto-revoked when expired (bridge moves the chat back to
-    # pending and replies once with an explanation).
-    user_tier: dict[str, str] = field(default_factory=dict)
+    # Per-chat ttl + display name written by approve(). Drives `ChannelUser`
+    # projections without re-reading the allowlist file. TTL is auto-revoked
+    # when expired (the bridge moves the chat back to pending and replies once
+    # with an explanation).
+    #
+    # There is no `user_tier` any more. A chat is on the allowlist or it is
+    # not, and that is the whole permission. A state file written before this
+    # still carries the key; it is ignored on load rather than migrated,
+    # because the only value it can hold that meant anything is the one every
+    # allowed chat now has.
     user_ttl: dict[str, str] = field(default_factory=dict)
     user_display: dict[str, str] = field(default_factory=dict)
     # Per-chat offline inbox. Inbound messages received
@@ -268,15 +309,17 @@ def load_allowlist(path: Path, *, env_seed: str | None = None) -> Allowlist:
             chat_ids.add(int(value))
         except (TypeError, ValueError):
             continue
+    seeded: set[int] = set()
     if env_seed:
         for value in env_seed.split(","):
             value = value.strip()
             if not value:
                 continue
             try:
-                chat_ids.add(int(value))
+                seeded.add(int(value))
             except ValueError:
                 continue
+        chat_ids |= seeded
     pending: dict[int, PendingChat] = {}
     for row in raw.get("pending") or []:
         if not isinstance(row, dict):
@@ -300,7 +343,27 @@ def load_allowlist(path: Path, *, env_seed: str | None = None) -> Allowlist:
     # `blocked` wins (latest decision) so an unblock-then-block sequence
     # stays effective after a restart.
     chat_ids -= blocked
-    return Allowlist(chat_ids=chat_ids, pending=pending, blocked=blocked)
+    owner: int | None = None
+    try:
+        raw_owner = raw.get("owner_chat_id")
+        owner = int(raw_owner) if raw_owner is not None else None
+    except (TypeError, ValueError):
+        owner = None
+    # **A seed of exactly one id is the operator naming themselves.** It is the
+    # only route onto this list that never passes through `approve`, which is
+    # the only other writer of the owner, so without this an install seeded
+    # from the environment reached the state `approve` was fixed to prevent:
+    # a second chat approved later left `owner()` with nothing recorded and
+    # nothing to infer, and the operator's OWN phone dropped out of their own
+    # digest permanently. One seeded id cannot be somebody else's; several
+    # genuinely cannot be told apart, and stay nobody.
+    if owner is None and len(seeded) == 1:
+        only = next(iter(seeded))
+        if only in chat_ids:
+            owner = only
+    return Allowlist(
+        chat_ids=chat_ids, pending=pending, blocked=blocked, owner_chat_id=owner,
+    )
 
 
 def save_allowlist(path: Path, allowlist: Allowlist) -> None:
@@ -310,6 +373,7 @@ def save_allowlist(path: Path, allowlist: Allowlist) -> None:
             "chat_ids": sorted(allowlist.chat_ids),
             "pending": [row.to_dict() for row in allowlist.pending.values()],
             "blocked": sorted(allowlist.blocked),
+            "owner_chat_id": allowlist.owner_chat_id,
         },
     )
 
@@ -335,7 +399,6 @@ def load_state(path: Path) -> PollState:
     _load_int_dict(raw.get("messages_in_total"), state.messages_in_total)
     _load_int_dict(raw.get("messages_out_total"), state.messages_out_total)
     _load_str_dict(raw.get("first_seen"), state.first_seen)
-    _load_str_dict(raw.get("user_tier"), state.user_tier)
     _load_str_dict(raw.get("user_ttl"), state.user_ttl)
     _load_str_dict(raw.get("user_display"), state.user_display)
     for entry in raw.get("recent_inbound_ts") or []:
@@ -418,7 +481,6 @@ def save_state(path: Path, state: PollState) -> None:
             "messages_in_total": state.messages_in_total,
             "messages_out_total": state.messages_out_total,
             "first_seen": state.first_seen,
-            "user_tier": state.user_tier,
             "user_ttl": state.user_ttl,
             "user_display": state.user_display,
             "recent_inbound_ts": state.recent_inbound_ts,

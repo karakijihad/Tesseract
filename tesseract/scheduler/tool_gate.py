@@ -115,10 +115,11 @@ def scheduled_context(run_id: str = "", app: Any = None) -> Any:
     from tesseract.kernel.tools.base import ToolContext
 
     if app is None or not hasattr(app, "get"):
-        return ToolContext(session_id="scheduler", current_call_id=run_id)
+        return ToolContext(session_id="scheduler", current_call_id=run_id, run_id=run_id)
     return ToolContext(
         session_id="scheduler",
         current_call_id=run_id,
+        run_id=run_id,
         tool_registry_provider=lambda: app.get("tool_registry"),
         scheduler_provider=lambda: app.get("scheduler"),
     )

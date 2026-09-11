@@ -255,9 +255,9 @@ export function SessionControlSection() {
   );
 }
 
-/** Compaction commits per control rather than behind the save button above —
- *  it writes roles.yaml, not the session block, and kept its own contract when
- *  the two panels merged. */
+/** The boundary setting commits per control rather than behind the save
+ *  button above: it writes roles.yaml, not the session block, and kept its own
+ *  contract when the two panels merged. */
 function CompactionBlock() {
   const thresholds = useIdentityStore((s) => s.compactThresholds);
   const setCompactThreshold = useIdentityStore((s) => s.setCompactThreshold);
@@ -272,21 +272,14 @@ function CompactionBlock() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const chat = thresholds?.chat_brain ?? null;
-  // No second copy of the shipped defaults: 0.4 and 10 were both wrong after
-  // the config moved to 0.25 and 5, and nobody noticed because the controls
-  // are disabled until `chat` arrives. Zero and an empty field are visibly
-  // "not loaded yet" rather than plausibly wrong.
+  // No second copy of the shipped default: 0.4 was wrong after the config
+  // moved to 0.25, and nobody noticed because the control is disabled until
+  // `chat` arrives. Zero is visibly "not loaded yet" rather than plausibly
+  // wrong.
   const [draftRatio, setDraftRatio] = useState<number>(chat?.ratio ?? 0);
-  const [keepDraft, setKeepDraft] = useState<string>(
-    chat?.keep_recent_turns != null ? String(chat.keep_recent_turns) : "",
-  );
 
   useEffect(() => {
     if (chat) setDraftRatio(chat.ratio);
-  }, [chat]);
-
-  useEffect(() => {
-    if (chat?.keep_recent_turns != null) setKeepDraft(String(chat.keep_recent_turns));
   }, [chat]);
 
   const commitRatio = async () => {
@@ -304,50 +297,19 @@ function CompactionBlock() {
     }
   };
 
-  const commitKeep = async () => {
-    if (!chat) return;
-    // `parseInt` on "2.9" is 2, so the field used to swallow a fraction and
-    // save a number the operator never typed. The route refuses one; let it.
-    const next = Number(keepDraft);
-    if (
-      !Number.isFinite(next) ||
-      !Number.isInteger(next) ||
-      next === chat.keep_recent_turns
-    ) {
-      setKeepDraft(String(chat.keep_recent_turns));
-      return;
-    }
-    setSaving(true);
-    setError(null);
-    try {
-      const res = await postCompactThreshold({
-        role: "chat_brain",
-        keep_recent_turns: next,
-      });
-      setCompactThreshold("chat_brain", res as IdentityCompactThreshold);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "keep_recent_turns update failed");
-      setKeepDraft(String(chat.keep_recent_turns));
-    } finally {
-      setSaving(false);
-    }
-  };
-
   return (
     // The tab strip above already says Compaction, so the block said it again
     // six pixels below while the sentence explaining it stayed hidden behind
     // an ⓘ. The sentence is the half worth showing.
     <Block title={null}>
       <Note>
-        How full the context window gets before older history is summarised
-        away, and how much of the recent conversation survives that word for
-        word. A fallback model keeps its own tuning.
+        How full the context window gets before this conversation is wrapped
+        up: what it taught gets written down, the transcript is archived, and a
+        fresh context carries the work on from there.
       </Note>
       <CompactionBar
         facts={{
           window: chat?.context_window ?? 0,
-          headroom: chat?.headroom_multiplier ?? null,
-          comfortable: chat?.comfortable_multiplier ?? null,
           // The SHIPPED value, not the running one. `compact_ratio` is what
           // this pane writes, so a line drawn from it sits on the handle and
           // marks nothing.
@@ -356,31 +318,23 @@ function CompactionBlock() {
           // only copy that belongs to a particular conversation: `/api/identity`
           // answers a GET with no session and no chat, so anything measured
           // there is some open chat's, not necessarily this one's.
-          anchorTokens: stats?.head_anchor_tokens ?? null,
-          tailTokens: stats?.tail_tokens ?? null,
-          tailTurns: stats?.tail_turns ?? null,
           systemTokens: stats?.system_tokens ?? null,
           ratioFloor: chat?.ratio_min ?? null,
           ratioCeiling: chat?.ratio_max ?? null,
         }}
         ratio={draftRatio}
-        turns={keepDraft}
-        turnsMin={chat?.turns_min ?? 0}
-        turnsMax={chat?.turns_max ?? 0}
         disabled={!chat || saving}
         onRatio={setDraftRatio}
         onRatioCommit={commitRatio}
-        onTurns={setKeepDraft}
-        onTurnsCommit={commitKeep}
       />
       <div className="compact-row compact-row--disabled">
         <span className="compact-row__role">observer_agent</span>
-        <span className="t-meta">Reset when it is switched on or off. Never compacted.</span>
+        <span className="t-meta">Reset when it is switched on or off. Never wrapped up.</span>
       </div>
       <div className="compact-bar__actions">
         <ResetDefaults
           run={() => postResetDefaults("compaction")}
-          reach="the threshold and the turns kept"
+          reach="the threshold"
           onDone={() => void useIdentityStore.getState().fetchIdentity()}
         />
         <span className="t-meta">

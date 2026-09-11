@@ -52,6 +52,10 @@ class BoundaryNudge:
     recommendation: NudgeRecommendation
     reason: str
     observation_id: str
+    #: How full the conversation was when this was read, or `None` if nothing
+    #: had measured it. Attached by the runtime after parsing, never parsed:
+    #: the observer is told this figure, so its own report of it is hearsay.
+    context_percent: int | None = None
 
 
 @dataclass(frozen=True)

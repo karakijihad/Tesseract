@@ -130,9 +130,12 @@ export interface ChatAttachment {
 
 export interface ChatMessage {
   id: string;
-  // `marker` is not a speaker. It is a transcript entry the runtime's
-  // compaction leaves behind, rendered as a divider rather than a bubble
-  // (`components/chat/FoldMarker.tsx`). It carries no content of its own.
+  // `marker` is not a speaker. It is a transcript entry an ARCHIVED
+  // conversation still carries, from before the summarising fold was deleted,
+  // rendered as a divider rather than a bubble
+  // (`components/chat/FoldMarker.tsx`). Nothing writes one now; it carries no
+  // content of its own and exists so a reloaded old conversation does not draw
+  // a summary the runtime wrote as something the operator said.
   //
   // `runtime` is a turn the runtime started and nobody typed: a background
   // task finishing, one taking too long, a press on a card the assistant
@@ -222,10 +225,10 @@ export interface RawHistoryEntry {
   }>;
   tool_call_id?: string;
   // `_runtime` is stamped by `ChatSession` on the messages it wrote itself
-  // (`brain/chat.py::_RUNTIME_KEY`). The running summary a fold leaves behind
-  // carries `"running_summary"`, which is how a reloaded transcript knows
-  // where the fold was without reading the text a participant could have
-  // typed. Every other value is a turn the runtime started
+  // (`brain/chat.py::_RUNTIME_KEY`). A running summary carries
+  // `"running_summary"`, written before the fold was deleted and never since,
+  // which is how a reloaded transcript knows where that fold was without
+  // reading text a participant could have typed. Every other value is a turn the runtime started
   // (`RUNTIME_ORIGINS`), and the same reasoning applies: the text ships in a
   // public repo, so the mark is the only safe way to know who wrote it.
   _runtime?: string;
@@ -256,22 +259,6 @@ export interface SessionDeletedData {
   title: string;
 }
 
-export interface SessionCompactFileData {
-  chat_id: string;
-  title: string;
-  tokens_before: number;
-  tokens_after: number;
-}
-
-export interface SessionCompactData {
-  tokens_before: number;
-  tokens_after: number;
-  trigger: "manual" | "auto";
-  /** Turns the fold kept word for word. The divider goes in FRONT of them,
-   *  because everything above it is what was summarised and these were not.
-   *  Absent from an older backend, which lands the divider at the end. */
-  tail_turns?: number;
-}
 
 export interface CostBudgetStateData {
   spent_usd: number;
@@ -366,41 +353,33 @@ export interface SessionStatsData {
   turns: number;
   compact_threshold_tokens: number;
   compact_threshold_ratio: number;
-  // Measured after every turn, not derived from the setting. The head anchor
-  // and the tail are what a fold always leaves behind, so their sum is the
-  // floor a control has to draw if it is not going to promise a threshold the
-  // runtime will refuse. Optional because a measurement can fail where the
-  // rest of the payload still stands.
+  // Measured after every turn, not derived from the setting. Optional because
+  // a measurement can fail where the rest of the payload still stands.
   context_window?: number;
-  head_anchor_tokens?: number;
-  tail_tokens?: number;
-  tail_turns?: number;
-  keep_recent_turns?: number;
-  unfoldable_tokens?: number;
-  fold_trigger_tokens?: number;
-  // What the fold trigger governs. `tokens` is the whole assembled payload,
-  // including the system prompt and the transient late half that a fold can
-  // never remove, so a fullness bar has to divide THIS by `foldCeiling`.
-  // Optional for the same reason as the rest: a measurement can fail.
-  foldable_tokens?: number;
+  boundary_trigger_tokens?: number;
+  // What the trigger governs. `tokens` is the whole assembled payload,
+  // including the system prompt and the transient late half that a boundary
+  // can never clear, so a fullness bar has to divide THIS by
+  // `boundaryCeiling`. Optional for the same reason as the rest.
+  conversation_tokens?: number;
 }
 
-/** Where a fold actually happens, which is what a fullness figure is
- *  measured against. `fold_trigger_tokens` is the runtime's own measured
- *  trigger and carries the floor it enforces; `compact_threshold_tokens` is
- *  the setting alone, and stands in only when a measurement failed. Mirrors
- *  `brain/context_report.py::fold_ceiling`, so the bar and the answer the
+/** Where the boundary actually happens, which is what a fullness figure is
+ *  measured against. `boundary_trigger_tokens` has the manifest taken out of
+ *  it; `compact_threshold_tokens` is the setting applied to the whole window,
+ *  and stands in only when a measurement failed. Mirrors
+ *  `brain/context_report.py::boundary_ceiling`, so the bar and the answer the
  *  assistant gives cannot disagree. */
-export function foldCeiling(stats: SessionStatsData): number {
-  return stats.fold_trigger_tokens || stats.compact_threshold_tokens || 0;
+export function boundaryCeiling(stats: SessionStatsData): number {
+  return stats.boundary_trigger_tokens || stats.compact_threshold_tokens || 0;
 }
 
-/** How much of the conversation the fold ceiling is measured against.
- *  `tokens` is the whole payload; the trigger governs only the part a fold can
- *  remove. Mirrors `brain/context_report.py::render`, and falls back to the
- *  whole payload for a session too old to report the split. */
-export function foldableTokens(stats: SessionStatsData): number {
-  return stats.foldable_tokens || stats.tokens;
+/** How much of the conversation the ceiling is measured against. `tokens` is
+ *  the whole payload; the trigger governs only the part a boundary clears.
+ *  Mirrors `brain/context_report.py::render`, and falls back to the whole
+ *  payload for a session too old to report the split. */
+export function conversationTokens(stats: SessionStatsData): number {
+  return stats.conversation_tokens || stats.tokens;
 }
 
 export interface LoopStartData {
@@ -750,6 +729,12 @@ export interface MessageStats {
   input_tokens: number;
   output_tokens: number;
   cached_tokens: number;
+  /** Model calls this turn made. A turn is up to eighty, each one a separate
+   *  billable request carrying the whole prompt, and the count is the only
+   *  part of the reading that cannot be derived from the others. Without it a
+   *  healthy three-call turn reads as a 33% cache failure, because one cold
+   *  call in three costs 33 points where one in six costs 20. */
+  calls: number;
 }
 
 export type ObserverMode = "meta" | "maintenance";
@@ -1088,19 +1073,14 @@ export interface IdentityCompactThreshold {
   ratio: number;
   context_window: number;
   tokens: number;
-  keep_recent_turns: number;
   /** The shipped default, for the line marking where a fresh install sits. */
   compact_ratio?: number | null;
-  headroom_multiplier?: number | null;
-  comfortable_multiplier?: number | null;
-  /* The measured floor is NOT here. It is per conversation, and this answers
-   * a GET with no session and no chat, so it cannot say whose floor it would
-   * be reporting. It rides `SessionStatsData` instead. */
+  /* The measured half is NOT here. It is per conversation, and this answers
+   * a GET with no session and no chat, so it cannot say whose numbers it
+   * would be reporting. It rides `SessionStatsData` instead. */
   /** The bounds the route enforces, so the control does not keep its own. */
   ratio_min?: number;
   ratio_max?: number;
-  turns_min?: number;
-  turns_max?: number;
   /** Where a fresh install starts, from the sealed factory config. Distinct
    *  from `compact_ratio`, which is the running value the pane overwrites. */
   shipped_ratio?: number | null;
@@ -1194,7 +1174,6 @@ export interface CompactThresholdResponse {
   ratio: number;
   context_window: number;
   tokens: number;
-  keep_recent_turns: number;
 }
 
 export interface ConfigFileEntry {

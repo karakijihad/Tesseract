@@ -37,6 +37,11 @@ from urllib.parse import urlparse
 
 from tesseract import http_client
 
+#: How much of a breaker's own error text a health row carries. Long enough for
+#: a provider's sentence and the page it names, short enough that a stack trace
+#: cannot take the row over: a remedy nobody can find in the noise is not one.
+_BREAKER_REASON_CHARS = 240
+
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
 
 Status = Literal["ok", "warn", "bad", "unknown"]
@@ -290,21 +295,37 @@ async def _check_ollama() -> list[Check]:
 
 
 def _check_breakers() -> list[Check]:
-    from tesseract.context.circuit_breaker import load_tripped_breakers
+    from tesseract.context.circuit_breaker import (
+        load_tripped_breakers,
+        tripped_breaker_reasons,
+    )
     from tesseract.paths import log_dir
 
-    tripped = load_tripped_breakers(log_dir("circuit-breakers"))
+    root = log_dir("circuit-breakers")
+    tripped = load_tripped_breakers(root)
     open_names = sorted(name for name, is_open in tripped.items() if is_open)
+    # The provider's own sentence, carried through instead of dropped. A name
+    # says something is shut; only this says whether to wait, to fix a config,
+    # or to go and pay a bill. Bounded because a stack trace in a health row is
+    # not a remedy either.
+    reasons = tripped_breaker_reasons(root)
+    said = {n: reasons.get(n, "")[:_BREAKER_REASON_CHARS] for n in open_names}
+    if open_names:
+        detail = f"{len(open_names)} breaker(s) open: " + "; ".join(
+            f"{n} ({said[n]})" if said[n] else n for n in open_names
+        )
+    else:
+        detail = f"no breakers open ({len(tripped)} tracked)"
     return [
         Check(
             name="circuit_breakers",
             status="bad" if open_names else "ok",
-            detail=(
-                f"{len(open_names)} breaker(s) open: {', '.join(open_names)}"
-                if open_names
-                else f"no breakers open ({len(tripped)} tracked)"
-            ),
-            evidence={"open": open_names, "tracked": sorted(tripped)},
+            detail=detail,
+            evidence={
+                "open": open_names,
+                "tracked": sorted(tripped),
+                "why": said,
+            },
         )
     ]
 

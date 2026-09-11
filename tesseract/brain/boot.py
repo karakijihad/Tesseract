@@ -33,9 +33,7 @@ from tesseract.brain.observer import Observer, build_observer_from_config
 from tesseract.brain.tools import ToolRegistry
 from tesseract.config.loader import (
     DEFAULT_COMPACT_RATIO,
-    DEFAULT_HEADROOM_MULTIPLIER,
     DEFAULT_PROMPT_CHAR_BUDGET,
-    DEFAULT_KEEP_RECENT_TURNS,
     PROVIDERS_YAML,
     ROLES_YAML,
     ConfigBundle,
@@ -62,6 +60,8 @@ from tesseract.kernel.tools.agent_promote import AgentPromoteTool
 from tesseract.kernel.tools.skill_create import SkillCreateTool
 from tesseract.kernel.tools.skill_promote import SkillPromoteTool
 from tesseract.kernel.tools.playbook_search import PlaybookSearchTool
+from tesseract.kernel.tools.playbook_judge import PlaybookJudgeTool
+from tesseract.kernel.tools.playbook_record import PlaybookRecordTool
 from tesseract.kernel.tools.skill_refine import SkillRefineTool
 from tesseract.kernel.tools.bash_tool import BashTool
 from tesseract.kernel.tools.breaker_reset import BreakerResetTool
@@ -131,6 +131,7 @@ from tesseract.kernel.tools.memory_get import MemoryGetTool
 from tesseract.kernel.tools.workspace_read import WorkspaceReadTool
 from tesseract.kernel.tools.atlas_query import AtlasQueryTool
 from tesseract.kernel.tools.brief_read import BriefReadTool
+from tesseract.kernel.tools.return_note_read import ReturnNoteReadTool
 from tesseract.kernel.tools.brief_render import BriefRenderTool
 from tesseract.kernel.tools.ask_clarification import AskClarificationTool
 from tesseract.kernel.tools.credential_list import CredentialListTool
@@ -138,9 +139,11 @@ from tesseract.kernel.tools.credential_request import CredentialRequestTool
 from tesseract.kernel.tools.api_request import ApiRequestTool
 from tesseract.kernel.tools.command_run import CommandRunTool
 from tesseract.kernel.tools.credential_setup import CredentialSetupTool
+from tesseract.kernel.tools.project_budget import ProjectBudgetTool
 from tesseract.kernel.tools.project_link import ProjectLinkTool
 from tesseract.kernel.tools.project_list import ProjectListTool
 from tesseract.kernel.tools.project_new import ProjectNewTool
+from tesseract.kernel.tools.project_propose import ProjectProposeTool
 from tesseract.kernel.tools.project_open import ProjectOpenTool
 from tesseract.kernel.tools.schedule_create import ScheduleCreateTool
 from tesseract.kernel.tools.schedule_list import ScheduleListTool
@@ -287,7 +290,7 @@ class ChatBrainConfig:
     """Typed view of one resolved chat_brain entry (primary or fallback).
 
     Built from a :class:`tesseract.config.loader.ResolvedRef` plus role-level
-    overrides (compact_threshold, keep_recent_turns, *_override fields). The
+    overrides (compact_threshold, *_override fields). The
     raw provider connection block stays accessible via ``provider_cfg`` for
     legacy call sites that still poke at timeout / max_retries / base_url
     directly.
@@ -302,11 +305,6 @@ class ChatBrainConfig:
     knowledge_cutoff: str
     use_responses_api: bool
     compact_threshold: float
-    keep_recent_turns: int
-    # Sliding-window knobs. See
-    # tesseract/brain/chat.py module docstring.
-    head_anchor_messages: int
-    summary_char_budget: int
     provider_cfg: dict
     ref: ResolvedRef
     tool_iteration_cap: int
@@ -317,11 +315,8 @@ class ChatBrainConfig:
     # cache breakpoint. See `AdapterOptions.prompt_cache_explicit`.
     prompt_cache_explicit: bool = False
     # Global, from `roles.yaml::compaction`, not a role override: it describes
-    # how compaction works rather than who is using it. Defaulted because
-    # there is exactly one shipped value and callers do not choose it.
-    headroom_multiplier: float = DEFAULT_HEADROOM_MULTIPLIER
-    # Also global and for the same reason: it describes the guard rather than
-    # who is using it. The hard ceiling on one assembled prompt.
+    # the guard rather than who is using it. The hard ceiling on one assembled
+    # prompt.
     prompt_char_budget: int = DEFAULT_PROMPT_CHAR_BUDGET
 
 
@@ -420,7 +415,7 @@ def _chat_brain_from_ref(
 
     Model fields come from the catalog; role-level *_override keys (e.g.
     ``reasoning_effort_override``, ``max_output_tokens_override``) replace the
-    catalog value. ``keep_recent_turns`` lives only on the role.
+    catalog value.
     ``compact_threshold`` may too, and wins there, but no shipped role names
     one: the answer is ``roles.yaml::compaction.compact_ratio``, which is why
     every caller passes the ``compaction`` block.
@@ -468,15 +463,7 @@ def _chat_brain_from_ref(
         compact_threshold=_compact_ratio(
             role_overrides, compaction, context_window, char_budget, where,
         ),
-        headroom_multiplier=float(
-            (compaction or {}).get("headroom_multiplier", DEFAULT_HEADROOM_MULTIPLIER),
-        ),
         prompt_char_budget=char_budget,
-        keep_recent_turns=int(
-            role_overrides.get("keep_recent_turns", DEFAULT_KEEP_RECENT_TURNS)
-        ),
-        head_anchor_messages=int(role_overrides.get("head_anchor_messages", 3)),
-        summary_char_budget=int(role_overrides.get("summary_char_budget", 8_000)),
         # Required YAML keys — no module-level fallbacks. The chat-loop tool
         # cap and adapter-error breaker are owned by `roles.yaml::roles.<role>`
         # so operators can tune them via the Settings panel.
@@ -1347,6 +1334,11 @@ def _build_provider_adapter(ref: ResolvedRef) -> ModelAdapter:
             supports_prompt_cache_key=conn.supports_prompt_cache_key,
             supports_stream_usage=conn.supports_stream_usage,
             cache_routing_header=conn.cache_routing_header,
+            # One field decides both the path and the claim. `AdapterOptions`
+            # reads the same entry for `use_responses_api`, so an adapter that
+            # says it defers is the same adapter that will take the branch
+            # able to.
+            defers_tool_loading=bool(ref.model.fields.get("use_responses_api", False)),
         )
     if adapter == "anthropic":
         return AnthropicAdapter(
@@ -1383,14 +1375,19 @@ def _build_provider_adapter(ref: ResolvedRef) -> ModelAdapter:
             # and `supports_stream_usage: false` in providers.yaml is the fix.
             supports_stream_usage=conn.supports_stream_usage,
             cache_routing_header=None,
+            # The compat surface has no Responses API, so no deferral either.
+            defers_tool_loading=False,
         )
     raise RuntimeError(f"no adapter wired for adapter='{adapter}' (ref={ref.ref})")
 
 
 def build_observer(cost_ledger: CostLedger | None = None) -> Observer | None:
-    """Walk the `observer_agent` role's primary + fallbacks, return the first
-    Observer we can actually build. None if the role is missing or every entry
-    lacks credentials — observer is optional infrastructure.
+    """Build the Observer over the `observer_agent` role's whole chain.
+
+    None if the role is missing or every entry lacks credentials — observer is
+    optional infrastructure. The role's fallbacks are runtime failover, not a
+    build-time preference list: the first ref with usable credentials decides
+    what shapes `ObserverConfig`, and every usable ref rides in the adapter.
     """
     bundle = load_bundle()
     if "observer_agent" not in bundle.roles:
@@ -1407,11 +1404,26 @@ def build_observer(cost_ledger: CostLedger | None = None) -> Observer | None:
         return None
 
     overrides = dict(role.overrides)
+    # Late import: `role_chain` imports from this module.
+    from tesseract.scheduler.role_chain import build_chain_for_role
+
+    # The whole chain, not the first entry that happened to build. Every other
+    # role gets runtime failover from this builder; the observer held one
+    # frozen adapter, chosen once at boot on whether its credentials existed.
+    # A provider that started refusing at RUN time therefore left it with
+    # nowhere to go, and — because the chain is what owns the breaker the
+    # health panel reads — its recovery was never recorded either.
+    #
+    # `cost_ledger` is withheld on purpose: the Observer meters its own calls
+    # (`observer.py::_observe`), and metering the chain too would bill twice.
+    chain = build_chain_for_role("observer_agent", log_label="observer")
+    if not chain:
+        return None
+    adapter = build_fallback_adapter(chain)
     for ref in (role.primary, *role.fallbacks):
-        try:
-            adapter = build_adapter(ref)
-        except RuntimeError as exc:
-            logger.info("observer: cannot build %s — %s", ref.ref, exc)
+        reason = adapter_unavailable_reason(ref)
+        if reason is not None:
+            logger.info("observer: cannot build %s — %s", ref.ref, reason)
             continue
         _where = f"providers.yaml entry for {ref.ref}"
         try:
@@ -1446,7 +1458,10 @@ def build_observer(cost_ledger: CostLedger | None = None) -> Observer | None:
         except Exception:
             logger.exception("observer: build failed for ref=%s", ref.ref)
             continue
-        logger.info("observer: built from ref=%s", ref.ref)
+        logger.info(
+            "observer: built from ref=%s over %d chain entr%s",
+            ref.ref, len(chain), "y" if len(chain) == 1 else "ies",
+        )
         return observer
     return None
 
@@ -1851,8 +1866,8 @@ def rebuild_adapters(app: Any) -> dict[str, Any]:
     runtime's presence so the watcher can compose a meaningful toast.
 
     Live `ChatSession` instances are rewired in place so an operator
-    edit to `roles.yaml` (model swap, compact_threshold tweak,
-    keep_recent_turns) lands on the next turn of every active session,
+    edit to `roles.yaml` (model swap, compact_threshold tweak) lands on
+    the next turn of every active session,
     not just on freshly-opened ones. The session dataclass exposes
     every knob as a writable attribute; mid-stream swap is safe because
     `adapter.stream(...)` returns an iterator whose pages don't
@@ -1965,8 +1980,8 @@ def rebuild_adapters(app: Any) -> dict[str, Any]:
         # Propagate the freshly-resolved chat runtime onto every live
         # ChatSession. Without this, an operator edit only lands on
         # sessions created AFTER the edit — sessions opened before
-        # the swap keep their captured adapter, threshold, and
-        # keep_recent_turns until they reconnect, which contradicts
+        # the swap keep their captured adapter and threshold until they
+        # reconnect, which contradicts
         # the watcher's "external YAML edits reflect live" goal.
         try:
             live_adapter = build_fallback_adapter(adapter_chain) if adapter_chain else adapter
@@ -1982,10 +1997,6 @@ def rebuild_adapters(app: Any) -> dict[str, Any]:
                     chat_session.adapter = live_adapter
                     chat_session.options = options
                     chat_session.compact_threshold = chat_cfg.compact_threshold
-                    chat_session.headroom_multiplier = chat_cfg.headroom_multiplier
-                    chat_session.keep_recent_turns = chat_cfg.keep_recent_turns
-                    chat_session.head_anchor_messages = chat_cfg.head_anchor_messages
-                    chat_session.summary_char_budget = chat_cfg.summary_char_budget
                     # The ceiling belongs to the MODEL, and this loop exists
                     # because the model just changed. Leaving it behind meant a
                     # swap onto a tighter model kept the looser model's guard,
@@ -2144,10 +2155,6 @@ def register_agent_session_tools(
 
     compaction = CompactionSettings(
         compact_threshold=chat_cfg.compact_threshold,
-        headroom_multiplier=chat_cfg.headroom_multiplier,
-        keep_recent_turns=chat_cfg.keep_recent_turns,
-        head_anchor_messages=chat_cfg.head_anchor_messages,
-        summary_char_budget=chat_cfg.summary_char_budget,
         prompt_char_budget=chat_cfg.prompt_char_budget,
     )
     # `None`, not the user root: both tools READ, so they want whichever
@@ -2260,7 +2267,9 @@ def build_tool_registry(
     from tesseract.kernel.tools.cockpit_show import CockpitShowTool
     from tesseract.kernel.tools.context_read import ContextReadTool
     from tesseract.kernel.tools.context_set import ContextSetTool
+    from tesseract.kernel.tools.day_read import DayReadTool
     from tesseract.kernel.tools.health_leave import HealthLeaveTool
+    from tesseract.kernel.tools.health_repair import HealthRepairTool
     from tesseract.kernel.tools.orb_visibility import OrbVisibilityTool
     from tesseract.kernel.tools.pipeline_run_stage import PipelineRunStageTool
     from tesseract.kernel.tools.retention_set_window import RetentionSetWindowTool
@@ -2271,6 +2280,7 @@ def build_tool_registry(
     )
     from tesseract.kernel.tools.workspace_hold import WorkspaceHoldTool
     registry.register(AutonomyReadTool(app_provider=app_provider))
+    registry.register(DayReadTool())
     registry.register(WorkspacePendingTool(app_provider=app_provider))
     registry.register(WorkspaceDecideTool(app_provider=app_provider))
     registry.register(ChannelNotifyTool())
@@ -2279,6 +2289,7 @@ def build_tool_registry(
     registry.register(ContextReadTool())
     registry.register(ContextSetTool(app_provider=app_provider))
     registry.register(HealthLeaveTool(app_provider=app_provider))
+    registry.register(HealthRepairTool(app_provider=app_provider))
     registry.register(OrbVisibilityTool(app_provider=app_provider))
     registry.register(PipelineRunStageTool(app_provider=app_provider))
     registry.register(RetentionSetWindowTool())
@@ -2317,6 +2328,12 @@ def build_tool_registry(
     registry.register(
         ProjectNewTool(store=workspace_store, app_provider=app_provider)
     )
+    # The door for an idea no project covers. It files a card and creates
+    # nothing, which is why it sits beside `project_new` rather than inside it.
+    registry.register(
+        ProjectProposeTool(store=workspace_store, app_provider=app_provider)
+    )
+    registry.register(ProjectBudgetTool())
     # Version control on whatever the active project is, plus any other
     # repo outside the seal. Registered beside the project tools because
     # it acts on the root they decide.
@@ -2515,6 +2532,15 @@ def build_tool_registry(
     # what the usage log records.
     registry.register(PlaybookSearchTool(skills_dir=skills_dir))
 
+    # The hand on a playbook. Matching never activates a draft and the
+    # measured retirement rule cannot run without a predecessor, so this
+    # is the only thing that decides whether a playbook stays.
+    registry.register(PlaybookJudgeTool(skills_dir=skills_dir))
+
+    # What the hand reads before it is given. The panel's route calls the same
+    # reader, so the question answers the same at the desk and on a phone.
+    registry.register(PlaybookRecordTool(skills_dir=skills_dir))
+
     # Resolve the chat_brain adapter first so it can be threaded into both
     # the librarian (M2 classifier fallback) and the vault-librarian wiring
     # below. If no provider has credentials, adapter=None and the missing-
@@ -2596,6 +2622,7 @@ def build_tool_registry(
         vault_librarian=vault_librarian,
         log_dir=log_dir("circuit-breakers"),
         agents_dir=agents_dir,
+        embeddings=bundle.embeddings,
     ))
 
     # invoke_agent ships with the Mirror registry so vault-librarian and
@@ -2641,6 +2668,7 @@ def build_tool_registry(
         adapter_options=chat_options,
         memory_store=bundle.store,
         event_store=workspace_store,
+        cost_ledger=(app.get("cost_ledger") if app is not None else None),
     ))
 
     # brief_read — read-only companion to brief_render. Returns
@@ -2648,6 +2676,13 @@ def build_tool_registry(
     # answer voice "read brief" requests by reading the file back
     # through the normal TTS lane.
     registry.register(BriefReadTool())
+
+    # return_note_read — the same question answered from every surface.
+    # "What did you do while I was away" has to reach one reader, whether it
+    # is typed in the cockpit or sent from a phone, or the two answers drift.
+    registry.register(ReturnNoteReadTool(
+        ledger=(app.get("cost_ledger") if app is not None else None),
+    ))
 
     # Lean-agent-os P1 Task 2 — tool_search meta-tool. AUTO, read-only;
     # searches the full registry and enables matching extended tools for

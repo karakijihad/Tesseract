@@ -294,7 +294,6 @@ def synthesize_legacy_models_dict(bundle: ConfigBundle) -> dict[str, Any]:
         # reads land on the active primary's view.
         for k in (
             "compact_threshold",
-            "keep_recent_turns",
             "tool_iteration_cap",
             "consecutive_error_cap",
         ):
@@ -308,7 +307,6 @@ def synthesize_legacy_models_dict(bundle: ConfigBundle) -> dict[str, Any]:
         }
         for k in (
             "compact_threshold",
-            "keep_recent_turns",
             "tool_iteration_cap",
             "consecutive_error_cap",
         ):

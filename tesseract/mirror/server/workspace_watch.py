@@ -143,7 +143,126 @@ class WorkspaceWatcher:
                 log.exception(
                     "workspace_watch: broadcast failed for %s", event.event_id
                 )
+            settled = await self._settle_if_the_mode_says_so(event)
+            await self._tell_them_it_applied(settled or event)
         return len(changed)
+
+    async def _settle_if_the_mode_says_so(self, event: Any) -> Any | None:
+        """Answer a card the operator's policy says needs no answering.
+
+        **This is the one place that decides, and that is the whole design.**
+        A dozen producers file cards and more will exist; asking each to read
+        a posture and settle itself is how three of them end up with three
+        answers, which is the fork this replaces. They file; this decides.
+
+        `permissions.yaml::workspace_cards` is the statement, keyed by kind,
+        the same shape `workspace_documents` uses for the files. `auto` means
+        the runtime approves it HERE, through `apply_decision` — the same
+        function the operator's own Approve button calls, with the same
+        side effects and the same ledger row, marked `mode` rather than
+        `operator` because the ledger is the record of who allowed what.
+
+        Cards about a document never reach this: they are settled at propose
+        time by `settle_proposal`, because the tool that raised one has to
+        tell the model what happened before its turn ends. Nothing waits on
+        these, so watching is the cheaper place.
+
+        A card filed while the backend was down is NOT settled on the next
+        boot: `start()` seeds the snapshot, so only cards that arrive or
+        change while this is running are seen. Approving a backlog in bulk
+        because a process restarted is not a decision anyone made.
+        """
+        if getattr(event, "status", "") != "pending":
+            return None
+        kind = getattr(event, "kind", "")
+        try:
+            from tesseract.workspace_events.events import DECIDABLE_KINDS
+
+            if kind not in DECIDABLE_KINDS:
+                return None
+            policy = self._app["config"].permissions
+            if policy.workspace_card_posture(kind) != "auto":
+                return None
+        except Exception:
+            # No policy wired means no operator is reachable either, and the
+            # half that waits for one is the safe half.
+            return None
+
+        from tesseract.kernel.workspace_changes import SETTLED_BY_THE_MODE
+        from tesseract.mirror.server.routes.workspace import DecisionError, apply_decision
+
+        try:
+            updated, _comments = await apply_decision(
+                self._app,
+                event.event_id,
+                "approve",
+                reason=SETTLED_BY_THE_MODE,
+                actor="mode",
+            )
+        except DecisionError as exc:
+            log.warning(
+                "workspace_watch: %s could not be settled: %s",
+                event.event_id, exc.payload,
+            )
+            return None
+        except Exception:
+            log.exception("workspace_watch: settling %s raised", event.event_id)
+            return None
+        log.info("workspace_watch: %s (%s) applied without asking", event.event_id, kind)
+        return updated
+
+    async def _tell_them_it_applied(self, event: Any) -> None:
+        """A document that changed itself says so, wherever the operator is.
+
+        Their framing, and it is the whole design: *"i do not want anymore
+        asks aproval, let all be auto. in the end it can send me the
+        notification and i read."* An approval is a message that stops the
+        work; this is the same message after it, and the work did not stop.
+
+        Watched here rather than emitted by whoever applied the change, for
+        the reason this whole file exists: the producers that would forget are
+        the ones nobody hears from. A change applied by the nightly
+        consolidator, by a chat turn, or by a process that is not this one all
+        arrive as the same row in the same file, so all three notify.
+
+        The broadcast row is seeded at start, so a restart re-announces
+        nothing, and `sync` only reaches here for a row that actually changed.
+        """
+        # Two things, and both: it HAPPENED, and the MODE is what did it. The
+        # status alone would announce a card the operator just approved, which
+        # is telling them what they did; the marker alone would announce a
+        # decision that has not landed yet.
+        from tesseract.kernel.workspace_changes import SETTLED_BY_THE_MODE
+        from tesseract.workspace_events.events import SETTLED
+
+        if getattr(event, "status", "") not in SETTLED:
+            return
+        if getattr(event, "decided_reason", "") != SETTLED_BY_THE_MODE:
+            return
+        payload = getattr(event, "payload", None) or {}
+        try:
+            from tesseract.mirror.server.app import _get_outbound_notifier
+
+            notifier = _get_outbound_notifier(self._app)
+            if notifier is None:
+                return
+            await notifier.notify("workspace_change_applied", {
+                # A document card names the file; a card that names none is
+                # described by its kind, which is what the operator would
+                # have read on the card itself.
+                "document": (
+                    payload.get("label")
+                    or payload.get("target_path")
+                    or str(getattr(event, "kind", "") or "").replace("_", " ")
+                    or "something"
+                ),
+                "summary": event.summary,
+                "event_id": event.event_id,
+            })
+        except Exception:
+            log.exception(
+                "workspace_watch: could not say that %s applied", event.event_id
+            )
 
     # ── reads ────────────────────────────────────────────────────
 

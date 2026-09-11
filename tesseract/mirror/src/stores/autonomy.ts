@@ -31,12 +31,14 @@ import {
   fetchAutonomyHistory,
   fetchAutonomyRetention,
   fetchAutonomyChannels,
+  fetchAutonomyDay,
   fetchAutonomyMemory,
   fetchManaged,
   fetchMachineMap,
   fetchRoomLines,
   fetchOperatorJournal,
   fetchOverview,
+  fetchReturnNote,
   fetchPipeline,
   fetchPruned,
   fetchWorkerDetail,
@@ -57,8 +59,10 @@ import {
   type LatestRecoveryResponse,
   type OperatorJournalRow,
   type OverviewResponse,
+  type ReturnNoteResponse,
   type HealthResponse,
   type ChannelsResponse,
+  type DayResponse,
   type AtlasResponse,
   type HistoryResponse,
   type RetentionResponse,
@@ -132,6 +136,11 @@ interface AutonomyState {
   fetchRecovery: () => Promise<void>;
   fetchJournal: () => Promise<void>;
   journal: SectionState<OperatorJournalRow[]>;
+  // What changed since the operator was last here. The Journal's own band,
+  // fetched beside its rows so the room is one request's worth of stale
+  // rather than two.
+  returnNote: SectionState<ReturnNoteResponse | null>;
+  fetchReturnNote: () => Promise<void>;
   // The operations strip. Fed by REST alone for now: the pipeline emits no
   // envelope of its own yet, so the strip decides it is stale from the age of
   // its own last fetch rather than from a socket it does not listen to.
@@ -169,6 +178,12 @@ interface AutonomyState {
   // what it last sent whether or not the room is open.
   channels: SectionState<ChannelsResponse | null>;
   fetchChannels: () => Promise<void>;
+
+  // The day: what it decided this morning and has carried forward since.
+  // Held here like the rest, because the rail draws the room's mark whether
+  // or not the room is open.
+  day: SectionState<DayResponse | null>;
+  fetchDay: () => Promise<void>;
 
   // Atlas: whether the map of how everything connects is current, and what
   // the last pass over it found. Held here for the same reason as the rest:
@@ -286,12 +301,14 @@ export const useAutonomyStore = create<AutonomyState>((set, get) => ({
   governor: _section<GovernorStateResponse | null>(null),
   recovery: _section<LatestRecoveryResponse | null>(null),
   journal: _section<OperatorJournalRow[]>([]),
+  returnNote: _section<ReturnNoteResponse | null>(null),
   pipeline: _section<PipelineResponse | null>(null),
   map: _section<MachineMapResponse | null>(null),
   health: _section<HealthResponse | null>(null),
   managed: _section<ManagedResponse | null>(null),
   memory: _section<MemoryResponse | null>(null),
   channels: _section<ChannelsResponse | null>(null),
+  day: _section<DayResponse | null>(null),
   atlas: _section<AtlasResponse | null>(null),
   retention: _section<RetentionResponse | null>(null),
   history: _section<HistoryResponse | null>(null),
@@ -403,11 +420,13 @@ export const useAutonomyStore = create<AutonomyState>((set, get) => ({
       fetchGovernor,
       fetchRecovery,
       fetchJournal,
+      fetchReturnNote,
       fetchPipeline,
       fetchHealth,
       fetchManaged,
       fetchMemory,
       fetchChannels,
+      fetchDay,
       fetchAtlas,
       fetchRetention,
       fetchOverview,
@@ -426,9 +445,13 @@ export const useAutonomyStore = create<AutonomyState>((set, get) => ({
       fetchGovernor(),
       fetchRecovery(),
       fetchJournal(),
+      fetchReturnNote(),
       fetchPipeline(),
       fetchHealth(),
       fetchManaged(),
+      // The day, because the rail's Today line is drawn from it whether or
+      // not the room is open, the same rule every other section here follows.
+      fetchDay(),
       // The rail says whether anything can reach the operator, which is
       // the one fact on this panel that is about the panel being read at
       // all. It is not waited for by the room.
@@ -551,6 +574,20 @@ export const useAutonomyStore = create<AutonomyState>((set, get) => ({
     } catch (err) {
       set((s) => ({
         history: { ...s.history, status: 'error', error: _describeError(err) },
+      }));
+    }
+  },
+
+  fetchDay: async () => {
+    set((s) => ({ day: { ...s.day, status: 'loading', error: null } }));
+    try {
+      const res = await fetchAutonomyDay();
+      set({
+        day: { data: res, status: 'ready', error: null, lastFetched: Date.now() },
+      });
+    } catch (err) {
+      set((s) => ({
+        day: { ...s.day, status: 'error', error: _describeError(err) },
       }));
     }
   },
@@ -737,6 +774,27 @@ export const useAutonomyStore = create<AutonomyState>((set, get) => ({
     } catch (err) {
       set((s) => ({
         journal: { ...s.journal, status: 'error', error: _describeError(err) },
+      }));
+    }
+  },
+
+  fetchReturnNote: async () => {
+    set((s) => ({
+      returnNote: { ...s.returnNote, status: 'loading', error: null },
+    }));
+    try {
+      const res = await fetchReturnNote();
+      set({
+        returnNote: {
+          data: res,
+          status: 'ready',
+          error: null,
+          lastFetched: Date.now(),
+        },
+      });
+    } catch (err) {
+      set((s) => ({
+        returnNote: { ...s.returnNote, status: 'error', error: _describeError(err) },
       }));
     }
   },

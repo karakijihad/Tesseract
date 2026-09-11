@@ -62,11 +62,19 @@ def load_autonomy_digest_config() -> AutonomyDigestConfig:
 @dataclass(frozen=True)
 class AgendaEntry:
     """One open agenda item. Caller's reader has already filtered to
-    operator-relevant, non-terminal statuses and sorted by relevance."""
+    operator-relevant, non-terminal statuses and sorted by relevance.
+
+    ``item_id`` is what makes the line actionable rather than informative.
+    `task_work` takes exactly this id and returns the item's goal, success
+    criteria and blockers; without it a turn is shown work it cannot open, and
+    the only way to reach the record is to guess where the store lives and
+    search it.
+    """
 
     title: str
     status: str
     created_at: datetime
+    item_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -202,7 +210,8 @@ def _format_agenda_line(entry: AgendaEntry, clock: datetime) -> str:
     try:
         title = _sanitize(entry.title)
         age = _format_age(entry.created_at, clock)
-        return f"Agenda: {title} · {entry.status} · {age}"
+        handle = f" · open it with task_work {entry.item_id}" if entry.item_id else ""
+        return f"Agenda: {title} · {entry.status} · {age}{handle}"
     except Exception:
         logger.warning("autonomy_digest: skipping malformed agenda entry", exc_info=True)
         return ""

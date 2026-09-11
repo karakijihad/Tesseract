@@ -6,9 +6,9 @@
 // payload. A room that sorted its own rows would be a second definition of
 // health, and the first one to go stale.
 //
-// The judge's steps sit under them as counts, because a judge nobody can
-// inspect is a filter, and a filter that silently drops a real fault is the
-// failure this phase exists to prevent.
+// Five tabs rather than one long scroll: what wants you, what is getting
+// worse, what it costs, what it keeps and why it was reported. `Tabs` is the
+// app's one section switcher and this file hand-rolls no other.
 //
 // The runtime's own errors are the room's bottom band, which the shell draws.
 
@@ -18,6 +18,8 @@ import { RowActions } from '../../components/common/Row';
 import { Disclosure } from '../../components/common/Disclosure';
 import { Markdown } from '../../components/common/Markdown';
 import { Note } from '../../components/common/Note';
+import { Tabs, type TabItem } from '../../components/common/Tabs';
+import { Hint } from '../../components/ui/Hint';
 import { useAutonomyStore } from '../../stores/autonomy';
 import {
   live,
@@ -33,6 +35,7 @@ import type {
   HistorySpent,
 } from '../../lib/api';
 import { Band, StateStrip, type StateLine } from '../../components/common/StateStrip';
+import { CapturePane } from './CapturePane';
 import { HistoryPlots } from './HistoryPlots';
 import { freshness } from '../../lib/time';
 import { sendCommand } from '../../lib/commands';
@@ -64,20 +67,42 @@ const BANDS: { key: HealthBand; label: string }[] = [
   { key: 'operating', label: 'Operating' },
 ];
 
-/** One row, and the one thing that may be done to it.
+/** Accepting a row keeps it on the panel and stops it asking. It fixes
+ *  nothing, and the room says so beside the rows it applies to rather than
+ *  leaving that to be discovered by pressing the button. `title=` on a
+ *  lowercase tag is a review blocker here, so this cannot be a tooltip. */
+const ACCEPT_SAYS =
+  'Accepting a problem keeps it on this panel and stops it asking for your ' +
+  'attention. It does not fix it.';
+
+/** What each button actually does, read into a `Hint` beside it because none
+ *  of the three labels below says its own consequence. */
+const LOOK_INTO_IT_SAYS =
+  'Hands this row to the assistant so it can look into what is wrong, using its ' +
+  'own tools through the ordinary approval gate. It fixes nothing by itself.';
+const ACCEPT_FOR_NOW_SAYS = ACCEPT_SAYS;
+const NEEDS_ATTENTION_AGAIN_SAYS =
+  'Undoes accepting this row. It goes back to asking for your attention and ' +
+  'counts as needing action again.';
+
+/** One row, and what may be done to it.
  *
- * The control is `health_leave`, sent as the slash command every tool already
- * has. Not a route of its own: ruling 26 says a control every surface can
- * reach is a tool, and its own text names the shape this takes, that the
- * operator pressing the room's button IS the approval. So the button, a
- * sentence on a channel and the assistant deciding all reach one
- * implementation, and there is no second path to keep in step.
+ * Both controls are slash commands every surface already has, not a route of
+ * their own: a control every surface can reach is a tool, and its own text
+ * names the shape this takes, that the operator pressing the room's button IS
+ * the approval. So a button, a sentence on a channel and the assistant
+ * deciding all reach one implementation, and there is no second path to keep
+ * in step.
  *
- * A row that asks for nothing carries no button. Offering "leave it alone" on
+ * Every control sends the row's exact `key`, never the rendered name: two
+ * rows can share a name and a label read back off the screen is not the same
+ * thing as the identity the row was drawn from.
+ *
+ * A row that asks for nothing carries no button. Offering a control on
  * something already quiet is a control with no effect, and a row that looks
  * actionable and is inert is what the panel's own second invariant forbids.
  *
- * A row that IS asking shows its control without being hovered. The
+ * A row that IS asking shows its controls without being hovered. The
  * reveal-on-hover is right for a long list where acting is occasional and
  * wrong here, for the reason `RowControls` already gives: the operator read
  * every held item, saw a reason and no next step, and said so. A remedy you
@@ -98,31 +123,63 @@ function line(dept: HealthDepartment, index: number): StateLine {
     // showing now or showing this morning, and a bare clock cannot answer that.
     when: freshness(dept.at, dept.expectedWithin),
     value: dept.value,
+    // What already answers this row, in the runtime's own words. Composed by
+    // the backend and never by this file: a view that wrote its own sentence
+    // about the machine is a second description that goes stale on its own.
+    //
+    // Drawn only when it is NEWS. "Nobody" is the commonest answer and the
+    // `look into it` button beside an asking row already says who that
+    // leaves; repeating it on every row is not information. A row that is
+    // not asking at all has no button beside it either, so the sentence
+    // would explain a control that is not there.
+    //
+    // The row's own edge already spends colour on what it WANTS, so a second
+    // colour here for what answers it would be a second, competing claim
+    // about the same row. The two states that do draw read at two weights:
+    // the runtime already having it is the calm case, a repair that gave up
+    // is the loud one.
+    more:
+      asking && dept.handled.state !== 'nobody' ? (
+        <p
+          className={`t-meta${
+            dept.handled.state === 'stopped' ? ' state-line__more--louder' : ''
+          }`}
+        >
+          {dept.handled.said}
+        </p>
+      ) : undefined,
     actions:
       asking || left ? (
         <RowActions
           className={`state-acts${asking ? ' state-acts--waiting' : ''}`}
         >
-          <Button
-            onClick={() =>
-              sendCommand(
-                '/health_leave',
-                // Quoted. The command line is split with `shlex`, so a
-                // two-word name like `event loop` or `stack dumps` arrived as
-                // `subject=event` plus a stray positional and was refused for
-                // mixing the two, which is most of the rows this control
-                // exists for.
-                ` subject=${JSON.stringify(dept.name)}${left ? ' action=restore' : ''}`,
-              )
-            }
-            ariaLabel={
-              left
-                ? `Have ${dept.name} count again`
-                : `Leave ${dept.name} alone`
-            }
-          >
-            {left ? 'pick it back up' : 'leave it alone'}
-          </Button>
+          <Hint label={LOOK_INTO_IT_SAYS}>
+            <Button
+              onClick={() =>
+                sendCommand('/health_repair', ` key=${JSON.stringify(dept.key)}`)
+              }
+              ariaLabel={`Look into ${dept.name}`}
+            >
+              look into it
+            </Button>
+          </Hint>
+          <Hint label={left ? NEEDS_ATTENTION_AGAIN_SAYS : ACCEPT_FOR_NOW_SAYS}>
+            <Button
+              onClick={() =>
+                sendCommand(
+                  '/health_leave',
+                  ` key=${JSON.stringify(dept.key)}${left ? ' action=restore' : ''}`,
+                )
+              }
+              ariaLabel={
+                left
+                  ? `Say ${dept.name} needs attention again`
+                  : `Accept ${dept.name} for now`
+              }
+            >
+              {left ? 'needs attention again' : 'accept for now'}
+            </Button>
+          </Hint>
         </RowActions>
       ) : undefined,
   };
@@ -198,6 +255,22 @@ function Spent({ spent }: { spent: HistorySpent }): React.ReactElement {
   );
 }
 
+export type Tab = 'attention' | 'worse' | 'cost' | 'remembered' | 'why';
+
+/** What each tab shows, in one sentence, read above its first row. */
+const TAB_CAPTIONS: Record<Tab, string> = {
+  attention:
+    'What needs you right now, what nothing is watching, and what is working on its own underneath.',
+  worse:
+    'A two week trend, so a slow slide shows up before it becomes a fault.',
+  cost:
+    'What the runtime has spent recently, and what each task actually cost.',
+  remembered:
+    'The rules that decide what this runtime is allowed to keep, and whether each one is on.',
+  why:
+    'What the daily judge kept or dropped, and the full written report behind this room.',
+};
+
 export function HealthRoomView({
   departments,
   judge,
@@ -207,6 +280,7 @@ export function HealthRoomView({
   error,
   readAt = null,
   liveness = NOTHING_PUSHED,
+  initial = 'attention',
 }: {
   departments: HealthDepartment[];
   judge: { stage: string; kept: number; dropped: number }[];
@@ -225,11 +299,24 @@ export function HealthRoomView({
   /** What the runtime has pushed since. Passed in rather than read here, for
    *  the reason the map's own view gives. */
   liveness?: LiveContext;
+  /** Which tab is showing. Only a test names one: the room opens on what
+   *  needs attention because that is the half the operator came for. */
+  initial?: Tab;
 }): React.ReactElement {
+  const [tab, setTab] = useState<Tab>(initial);
+
+  // The capture pane rides both early returns. It has its own read and its
+  // own error state, and hiding it because a different feed failed would take
+  // the rules off the screen along with the fact that they exist.
   if (status === 'error') {
-    return <Note tone="bad">The health feed could not be read. {error}</Note>;
+    return (
+      <>
+        <Note tone="bad">The health feed could not be read. {error}</Note>
+        <CapturePane />
+      </>
+    );
   }
-  if (status !== 'ready') return <></>;
+  if (status !== 'ready') return <CapturePane />;
 
   // One band of plots per group the payload declared, each under its title.
   // The first group leads the room and the rest follow the judge, so what
@@ -255,7 +342,7 @@ export function HealthRoomView({
     // wanted a minute ago and file it under a band it has left.
     const now = live(
       liveness,
-      `department:${dept.name}`,
+      `department:${dept.key}`,
       {
         state: dept.state,
         label: dept.label,
@@ -278,41 +365,78 @@ export function HealthRoomView({
     };
   });
 
+  // What a row asks of whoever reads it, counted once for the badge and once
+  // more per row inside `line`. Read off the payload rather than off the
+  // band: `blind` overrides `needs_action` for a source this room cannot see
+  // at all, and a row can still be asking for something underneath that.
+  const asking = rows.filter(
+    (d) => d.obligation === 'needs_you' || d.obligation === 'standing_fault',
+  );
+
+  const items: TabItem<Tab>[] = [
+    { key: 'attention', label: 'Needs attention', badge: asking.length },
+    { key: 'worse', label: 'Getting worse' },
+    { key: 'cost', label: 'What it costs' },
+    { key: 'remembered', label: 'What it keeps' },
+    { key: 'why', label: 'Why it was reported' },
+  ];
+
   return (
     <>
-      {/* First, because "is this getting worse" is the question the bands
-          underneath cannot answer, and a fortnight is what answers it. */}
-      {groups.slice(0, 1).map(plotsFor)}
-      {BANDS.map(({ key, label }) => {
-        const inBand = rows.filter((d) => d.band === key);
-        // An empty band is nothing, not a heading over a space. Blind with
-        // nothing in it is the answer everybody wants and it says itself by
-        // not being there.
-        if (inBand.length === 0) return null;
-        return (
-          <div key={key} className="autonomy-group">
-            <Band label={label} count={inBand.length} />
-            <StateStrip lines={inBand.map(line)} />
-          </div>
-        );
-      })}
-      {judge.length > 0 && (
-        <div className="autonomy-group">
-          <Band label="What the judge did with them" />
-          <StateStrip
-            lines={judge.map((step) => ({
-              key: `judge:${step.stage}`,
-              state: step.dropped > 0 ? 'degraded' : 'idle',
-              name: step.stage,
-              said: `${step.kept} kept, ${step.dropped} dropped`,
-              value: String(step.kept + step.dropped),
-            }))}
-          />
-        </div>
+      <Tabs items={items} active={tab} onSelect={setTab} label="Health" />
+      <p className="t-meta">{TAB_CAPTIONS[tab]}</p>
+
+      {tab === 'attention' &&
+        BANDS.map(({ key, label }) => {
+          const inBand = rows.filter((d) => d.band === key);
+          // An empty band is nothing, not a heading over a space. Blind with
+          // nothing in it is the answer everybody wants and it says itself by
+          // not being there.
+          if (inBand.length === 0) return null;
+          return (
+            <div key={key} className="autonomy-group">
+              <Band label={label} count={inBand.length} />
+              <StateStrip lines={inBand.map(line)} />
+              {/* The band that holds the rows a control can act on, so the
+                  consequence of pressing one sits with them rather than
+                  somewhere the operator has to already know to look. */}
+              {key === 'needs_action' && <Note>{ACCEPT_SAYS}</Note>}
+            </div>
+          );
+        })}
+
+      {/* "Is this getting worse" is the question the bands cannot answer, and
+          a fortnight is what answers it. */}
+      {tab === 'worse' && groups.slice(0, 1).map(plotsFor)}
+
+      {tab === 'cost' && (
+        <>
+          {groups.slice(1).map(plotsFor)}
+          {history?.spent && <Spent spent={history.spent} />}
+        </>
       )}
-      {groups.slice(1).map(plotsFor)}
-      {history?.spent && <Spent spent={history.spent} />}
-      <Report report={report} />
+
+      {tab === 'remembered' && <CapturePane />}
+
+      {tab === 'why' && (
+        <>
+          {judge.length > 0 && (
+            <div className="autonomy-group">
+              <Band label="What the judge did with them" />
+              <StateStrip
+                lines={judge.map((step) => ({
+                  key: `judge:${step.stage}`,
+                  state: step.dropped > 0 ? 'degraded' : 'idle',
+                  name: step.stage,
+                  said: `${step.kept} kept, ${step.dropped} dropped`,
+                  value: String(step.kept + step.dropped),
+                }))}
+              />
+            </div>
+          )}
+          <Report report={report} />
+        </>
+      )}
     </>
   );
 }

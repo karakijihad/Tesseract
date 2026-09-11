@@ -20,7 +20,19 @@ from tesseract.mirror.server.voice_loop import VoiceLoop
 log = logging.getLogger(__name__)
 
 
-SessionKind = Literal["cockpit", "channel"]
+#: Who is on the other end of a conversation, which is not the same question as
+#: which door a turn came through (`ChatSession.turn_entry`). `cockpit` and
+#: `channel` both mean a person is waiting; `autonomy` means nobody is, and it
+#: is the only one where an unanswered approval is a refusal on a timer rather
+#: than someone taking their time.
+#:
+#: Every consumer branches on `== "channel"` and lets everything else fall to
+#: the cockpit's behaviour, so a third kind inherits the attended path by
+#: default. That is right for the tag parser and the retry rule and wrong for
+#: exactly one thing, the memory leaf a turn leaves behind, which would
+#: otherwise file unattended work as something said in the cockpit
+#: (`chat.py::_emit_turn_leaf`).
+SessionKind = Literal["cockpit", "channel", "autonomy"]
 
 # mirror-multi-chat D5 — soft cap on simultaneously-open chats per session.
 # Creating past the cap auto-archives the oldest open chat. UI warns near it.
@@ -137,12 +149,44 @@ class ServerSession:
     # overlay and the ASK-gate behaviour both key off this.
     kind: SessionKind = "cockpit"
     turn_count: int = 0
+    # The session is over: the socket went away and `cleanup_session` has
+    # dropped it from every registry the app can reach it through.
+    #
+    # Read by `_run_turn`'s end-of-turn tail, which drains the operator's
+    # queued follow-ups and starts the next turn. That drain runs on every way
+    # a turn can end, including a cancel, because a stop must not throw away
+    # what the operator typed. A teardown cancels turns too, and the queue it
+    # leaves behind belongs to a session that no longer exists: draining it
+    # spawns a real turn, at real cost, streaming to a closed socket, which no
+    # later stop can reach because the session is not in `server_sessions` any
+    # more. Set BEFORE the cancels, so the tail cannot run before the flag.
+    torn_down: bool = False
     # Turn tasks keyed by chat_id (rather than a single
     # `current_turn_task`). The active chat's task is exposed via the
     # `current_turn_task` property+setter below, so every legacy reader/writer
     # (busy checks, channel-bridge driver, cancel, cleanup) keeps working
     # unchanged; conductor/background turns address other chats via the dict.
     current_turn_tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
+    # A turn that has been ADMITTED but has not started yet. A channel turn
+    # waits for the chat lock and then does awaited setup (the placeholder
+    # send, link extraction) before `channel_turn` assigns
+    # `current_turn_task`, and a stop arriving anywhere in that stretch used
+    # to find nothing to cancel, answer "Nothing was running", and then watch
+    # the turn start anyway. The admitting handler registers its own task here
+    # for the whole of it, from BEFORE the lock: a handler still queued on the
+    # lock is a turn the operator can see coming.
+    #
+    # A set per chat, not one task. Several handlers can be waiting at once,
+    # and with a single slot the newest would overwrite the one that is
+    # actually running, so a stop would cancel the turn that had not started
+    # and miss the turn that had.
+    #
+    # Read by `stop.py`; deliberately NOT read by the busy checks, because
+    # `_start_channel_turn` would find the caller's own task and wait for
+    # itself.
+    pending_turn_tasks: dict[str, set["asyncio.Task[None]"]] = field(
+        default_factory=dict,
+    )
     # Serializes the streaming body of ACTIVE-chat turns only (see
     # `_run_chat_turn`). TTS/stream-parser state is per-turn
     # now, so the lock's remaining job is audio ordering — a second active-chat
@@ -535,6 +579,24 @@ class ServerSession:
             self.current_turn_tasks.pop(cid, None)
         else:
             self.current_turn_tasks[cid] = task
+
+    def release_turn_slot(
+        self, chat_id: "str | None", task: "asyncio.Task[None] | None",
+    ) -> bool:
+        """Free `chat_id`'s turn slot, but only if `task` still holds it.
+
+        A stopped turn keeps its slot until it has actually unwound, and this
+        is what releases it. The guard matters because the slot may belong to
+        a different turn by then: a drained follow-up can claim it while this
+        one is still finishing. An unconditional pop would untrack the LIVE
+        turn, and every busy check and every later stop reads that slot.
+        Returns whether anything was released.
+        """
+        cid = self.active_chat_id if chat_id is None else chat_id
+        if task is not None and self.current_turn_tasks.get(cid) is not task:
+            return False
+        self.current_turn_tasks.pop(cid, None)
+        return True
 
     def has_running_turn(self) -> bool:
         """True if ANY chat (active or background) has an in-flight turn."""

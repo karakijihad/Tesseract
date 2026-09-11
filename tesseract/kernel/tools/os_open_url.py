@@ -34,6 +34,11 @@ class OsOpenUrlTool(Tool):
         "Model callers use `open`, which resolves the target and dispatches here itself."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    # The URL is the caller's, so a repeat is a second request to somebody
+    # else's server, and an unsubscribe or an approve link acts on a bare GET.
+    # `open` dispatches here and declares the same, as `api_request` does.
+    recovery_behaviour: ClassVar[str] = "unsafe"
 
     @property
     def name(self) -> str:

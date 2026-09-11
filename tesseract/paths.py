@@ -231,7 +231,7 @@ _RUNTIME_LOG_DIRS = frozenset(
 # prefix. `memory_get` exists to be the read path for it — its docstring says
 # so in as many words ("instead of widening `file_read` to cover the memory
 # store") and it enforces markdown-only plus an identity-file block on
-# `MEMORY.md` / `WHAT_NOT_TO_SAVE.md`. Listing it here would hand the generic
+# `MEMORY.md`. Listing it here would hand the generic
 # read tools the access that tool was written to withhold, and `glob`/`grep`
 # would enumerate and search the same files. The write-then-read asymmetry
 # therefore stands for memory-store on purpose: the read half has an owner.

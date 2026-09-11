@@ -26,6 +26,8 @@ class AlarmListTool(Tool):
     use_when: ClassVar[str] = "Use before canceling or snoozing so you know the label or id to reference."
     not_when: ClassVar[str] = "registered scheduler jobs, which is `schedule_list`."
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     def __init__(self, alarm_registry: AlarmRegistry) -> None:
         self._registry = alarm_registry

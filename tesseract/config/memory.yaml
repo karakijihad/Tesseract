@@ -43,8 +43,78 @@ auto_recall:
   # this many subsequent turns, so the same fact doesn't repeat every turn.
   dedup_window_turns: 3
 
+# Which admission rules are on. What each one blocks, and why, is declared in
+# `tesseract/memory/capture_policy.py` and shown in the Autonomy panel: this
+# file only decides whether a declared rule applies. A matcher never lives
+# here, and a key naming no declared rule raises at startup.
+#
+# `secrets` is locked. It is listed so the set is readable in one place, and
+# setting it to false changes nothing.
+capture_policy:
+  secrets: true
+  code_pattern: true
+  git_history: true
+  ephemeral_task_state: true
+  instruction_echo: true
+  routine_ack: true
+  request_echo: true
+  turn_summary: true
+
+  # A rule with a number of its own is written as a mapping instead of a bare
+  # true or false: `enabled`, plus that rule's own settings. One entry per
+  # rule either way, so a rule's switch and its measurement never drift apart.
+  #
+  # A MINIMUM, not a cap: a body under this many characters is refused, and
+  # nothing limits how long one may be.
+  #
+  # Measured at both places that read it, on the store it was made settable
+  # against. Nothing is under 120 at either: no memory record body, and no
+  # daily-note section. So every value from the shipped 80 up to 120 does
+  # exactly the same nothing, and the first value that does anything, 150,
+  # does the wrong thing: it would stop promoting the two shortest chat
+  # digests, which are short because those days were quiet.
+  #
+  # Left where it is deliberately. The number was never derived, so moving it
+  # wants the panel's count beside the rule to show it catching something
+  # first.
+  trivial_body:
+    enabled: true
+    min_chars: 80
+
 # Autonomy digest recency filter — applied before ranking so stale items
 # don't crowd out what's actually current.
 autonomy_digest:
   # Agenda entries older than this many days are excluded from the digest.
   max_age_days: 7
+
+# How far a record may stand from material nobody here wrote, and how much
+# that distance costs it in retrieval.
+#
+# The failure this closes: run for days on a topic, and by day three the
+# store is mostly the assistant's restatements of its own restatements.
+# They share every entity with their source, so they link densely, and dense
+# linkage reads as importance. By day four the answer comes from the
+# paraphrase instead of the paper, and every stage along the way reported
+# success.
+derivation:
+  # A record written from records that were themselves written here. 0 is
+  # raw material, 1 is a summary of it, 2 is a summary that also read a
+  # summary. Past this the write is refused and the chain is named.
+  #
+  # Two is a judgement, not a reading: nothing recorded depth before this
+  # setting existed, so there is no distribution behind it. Once records
+  # carry a depth, read the real one and re-set this against it.
+  max_depth: 2
+
+  # Multiplied into the merged retrieval score, beside temporal decay and
+  # the record's own confidence. Not a filter: a derived record still
+  # answers when it is the only thing that matches. It just cannot tie with
+  # the thing it was written from.
+  #
+  # Also asserted rather than measured. Where `recalled` belongs against
+  # `derived` is genuinely open, and the values here only preserve the
+  # ordering the work-history block already rendered.
+  tier_weights:
+    source: 1.0
+    derived: 0.85
+    recalled: 0.7

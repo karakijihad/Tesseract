@@ -128,7 +128,7 @@ NOT_APPROVED_CAUSE = (
     "answered"
 )
 NOT_APPROVED_TEMPLATE = (
-    "{tool} was not approved — " + NOT_APPROVED_CAUSE + ". Say what you "
+    "{tool} was not approved: " + NOT_APPROVED_CAUSE + ". Say what you "
     "intended, and offer to retry it or take a different approach."
 )
 

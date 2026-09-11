@@ -42,6 +42,8 @@ class SpawnCancelTool(Tool):
         "with `work_send` instead of cancelling and restarting it."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:

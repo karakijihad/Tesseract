@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.scheduler.alarm_parser import parse_alarm_when
 from tesseract.scheduler.alarms import AlarmRegistry
 
@@ -32,6 +33,8 @@ class AlarmSnoozeTool(Tool):
     )
     not_when: ClassVar[str] = "deleting the alarm entirely, which is `alarm_cancel`."
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "job"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     def __init__(self, alarm_registry: AlarmRegistry) -> None:
         self._registry = alarm_registry
@@ -56,6 +59,7 @@ class AlarmSnoozeTool(Tool):
             return ToolResult(
                 output=f"cannot parse snooze duration: {inp.duration!r}",
                 is_error=True,
+                caller_error=True,
             )
         alarm = self._registry.snooze(inp.handle, run_at)
         if alarm is None:
@@ -63,8 +67,13 @@ class AlarmSnoozeTool(Tool):
             msg = f"no alarm matches {inp.handle!r}"
             if suggestions:
                 msg += f" — candidates: {', '.join(suggestions)}"
-            return ToolResult(output=msg, is_error=True)
+            return ToolResult(output=msg, is_error=True, caller_error=True)
         return ToolResult(
             output=f"snoozed {alarm.label} [{alarm.id[:8]}] to {alarm.run_at.isoformat()}",
+            receipt=Receipt(
+                kind="job",
+                id=alarm.id,
+                locator=str(self._registry.state_path or ""),
+            ),
             metadata={"id": alarm.id, "label": alarm.label, "run_at": alarm.run_at.isoformat()},
         )

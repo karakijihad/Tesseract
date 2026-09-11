@@ -90,8 +90,8 @@ kernel:
       kind: store
       tone: info
       match: ["soul_growth_propose", "propose_change", "conscience_status",
-              "diary_append", "log_triage", "brief_*", "agenda_comment",
-              "task_*", "context_read", "context_set"]
+              "diary_append", "log_triage", "brief_*", "return_note_read",
+              "agenda_comment", "task_*", "context_read", "context_set"]
     - id: accounts
       label: accounts
       kind: store
@@ -100,8 +100,8 @@ kernel:
     - id: runtime
       label: runtime
       kind: stage
-      match: ["autonomy_read", "breaker_*", "health_leave",
-              "pipeline_run_stage", "retention_set_window"]
+      match: ["autonomy_read", "day_read", "breaker_*", "health_leave",
+              "health_repair", "pipeline_run_stage", "retention_set_window"]
     - id: shell
       label: shell
       kind: stage

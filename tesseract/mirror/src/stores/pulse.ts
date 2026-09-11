@@ -234,14 +234,6 @@ function deriveLabel(env: Envelope): string {
       const name = (d as { name?: unknown }).name;
       return typeof name === 'string' ? `identity → ${name}` : t;
     }
-    case 'session_compact': {
-      const before = (d as { tokens_before?: unknown }).tokens_before;
-      const after  = (d as { tokens_after?: unknown }).tokens_after;
-      if (typeof before === 'number' && typeof after === 'number') {
-        return `compact ${before}→${after}`;
-      }
-      return t;
-    }
     case 'cli_start': {
       const tool = (d as { tool?: unknown }).tool;
       return typeof tool === 'string' ? `cli: ${tool}` : t;

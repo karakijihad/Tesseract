@@ -36,6 +36,8 @@ class ControllerSessionListTool(Tool):
     use_when: ClassVar[str] = "Use to check whether a detached session from start_controller_session finished."
     not_when: ClassVar[str] = "lanes or interactive sessions, which are `lane_list`/`session_list`."
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:

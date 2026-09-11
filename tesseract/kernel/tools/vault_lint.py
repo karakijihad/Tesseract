@@ -21,6 +21,7 @@ from tesseract.memory.vault_manager import VaultManager
 
 if TYPE_CHECKING:
     from tesseract.brain.boot import VaultConfig
+    from tesseract.memory.embeddings import EmbeddingIndex
     from tesseract.memory.vault_librarian import VaultLibrarian
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,8 @@ class VaultLintTool(Tool):
         "reading vault content. That is `vault_query` or `vault_search`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     def __init__(
         self,
@@ -56,12 +59,16 @@ class VaultLintTool(Tool):
         vault_librarian: "VaultLibrarian | None" = None,
         log_dir: Path | None = None,
         agents_dir: Path | None = None,
+        embeddings: "EmbeddingIndex | None" = None,
     ) -> None:
         self._manager = vault_manager
         self._config = vault_config
         self._librarian = vault_librarian
         self._log_dir = log_dir
         self._agents_dir = agents_dir
+        # Cosine for the redundancy pass. None leaves that one pass unrun and
+        # every other one unaffected.
+        self._embeddings = embeddings
 
     @property
     def name(self) -> str:
@@ -82,6 +89,7 @@ class VaultLintTool(Tool):
             adapter_options=options,
             log_dir=self._log_dir,
             agents_dir=self._agents_dir,
+            embeddings=self._embeddings,
         )
         report = await linter.run(dry_run=inp.dry_run)
 
@@ -121,6 +129,7 @@ def _format_report(report, dry_run: bool) -> str:
     lines.append(f"- Stale: {len(report.stale)}")
     lines.append(f"- Contradictions: {len(report.contradictions)}")
     lines.append(f"- Missing hubs: {len(report.missing_hubs)}")
+    lines.append(f"- Pages that restate one another: {len(report.redundant)}")
     lines.append(
         f"- Scale: {report.scale_page_count} wiki pages "
         f"({'ALARM' if report.scale_alarm else 'under threshold'})"
@@ -139,6 +148,7 @@ def _report_to_json(report) -> dict:
         "stale": list(report.stale),
         "contradictions": [asdict(c) for c in report.contradictions],
         "missing_hubs": [asdict(m) for m in report.missing_hubs],
+        "redundant": [asdict(r) for r in report.redundant],
         "scale_alarm": report.scale_alarm,
         "scale_page_count": report.scale_page_count,
         "failures": list(report.failures),

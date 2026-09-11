@@ -52,7 +52,7 @@ async def _start_channel_turn(
     on_progress: Any | None = None,
     error_out: list[str] | None = None,
     refused_out: list[bool] | None = None,
-    fold_when_needed: Any | None = None,
+    boundary_when_needed: Any | None = None,
 ) -> str | None:
     """Drive a plain chat turn for an external-channel message.
 
@@ -75,7 +75,7 @@ async def _start_channel_turn(
     :func:`tesseract.mirror.server.after_turn.after_turn`, the same function
     and the same threshold the cockpit uses.
 
-    ``fold_when_needed``: the caller's own after-turn compaction hook, handed
+    ``boundary_when_needed``: the caller's own after-turn compaction hook, handed
     to the tool loop so a turn that outgrows the ceiling on its own folds and
     carries on. The same callable the caller invokes at the end of the turn,
     passed rather than rebuilt, so there is one compaction call site and not a
@@ -180,7 +180,7 @@ async def _start_channel_turn(
 
         try:
             async for chunk in session.chat_session.send(
-                body, fold_when_needed=fold_when_needed,
+                body, boundary_when_needed=boundary_when_needed,
             ):
                 if chunk.type == ChunkType.TEXT and chunk.text:
                     reply_holder.append(chunk.text)
@@ -284,7 +284,7 @@ async def _start_channel_turn(
     except asyncio.CancelledError:
         turn_cancelled = True
     finally:
-        session.current_turn_task = None
+        session.release_turn_slot(None, turn_task)
         if elapsed_task is not None and not elapsed_task.done():
             elapsed_task.cancel()
             try:

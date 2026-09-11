@@ -136,6 +136,24 @@ class ProjectStore:
                                 "identity": project.vcs.identity or existing.vcs.identity
                             }
                         ),
+                        # The same argument as identity, one field along.
+                        # Detection knows nothing about what a day of work on
+                        # this tree may spend, so `project_link` arrives with a
+                        # blank budget every time; taking it whole would clear
+                        # the operator's number on every relink, off the one
+                        # path (`set_budget`, behind an ask in every mode) that
+                        # is supposed to be the only way it moves.
+                        #
+                        # `is not None` rather than identity's `or`: a budget of
+                        # zero is a price the operator SET, and `0 or existing`
+                        # would silently replace it with the old number. That is
+                        # also why clearing is `set_budget`'s job and not this
+                        # one, so nothing here has to express it.
+                        "budget_usd": (
+                            project.budget_usd
+                            if project.budget_usd is not None
+                            else existing.budget_usd
+                        ),
                     }
                 )
             else:
@@ -252,6 +270,27 @@ class ProjectStore:
                 )
             self._save(registry)
             return identity
+
+    def set_budget(self, project_id: str, budget_usd: float | None) -> Project:
+        """What a day of unattended work on this project may spend.
+
+        ``None`` clears it, and a cleared budget is not zero: it is a project
+        the morning may not work at all. The two have to stay distinguishable
+        because they mean opposite things to the operator. Zero is a price
+        they set, and the morning honours it by proposing nothing; ``None`` is
+        a price they never set, and the morning has nothing to honour.
+        """
+        with _WRITE_LOCK:
+            registry = self._load()
+            project = registry.projects.get(project_id)
+            if project is None:
+                raise UnknownProjectError(
+                    f"no project registered with id {project_id!r}"
+                )
+            updated = project.model_copy(update={"budget_usd": budget_usd})
+            registry.projects[project_id] = updated
+            self._save(registry)
+            return updated
 
     def clear_identity(self, *, project_id: str | None = None) -> GitIdentity | None:
         """Forget an identity record and return what was there.

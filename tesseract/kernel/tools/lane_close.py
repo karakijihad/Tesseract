@@ -12,6 +12,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.orchestrator.agent_controller.lanes.tool_support import (
     resolve_lane_manager,
 )
@@ -41,6 +42,8 @@ class LaneCloseTool(Tool):
         "just stop being polled instead."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:
@@ -66,6 +69,13 @@ class LaneCloseTool(Tool):
             output=(
                 f"lane_id={inp.lane_id} status={result['final_status']} "
                 f"archive={result.get('archive_dir', '')}"
+            ),
+            receipt=Receipt(
+                kind="record",
+                id=inp.lane_id,
+                # Where the lane's record is NOW, which is the archive it was
+                # just moved to and no longer the live directory.
+                locator=str(result.get("archive_dir", "")),
             ),
             metadata={
                 "lane_id": inp.lane_id,

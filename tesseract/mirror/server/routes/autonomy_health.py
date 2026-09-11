@@ -144,6 +144,7 @@ _SOURCE_NAMES: dict[str, str] = {
     "provider-health": "providers",
     "conscience": "the conscience",
     "schedule": "scheduled work",
+    "pipeline": "the daily pass",
     # Named even though `_HAS_ITS_OWN_READER` keeps the sweep's copy of it off
     # the screen. This map is total over the collectors by test, and a name
     # that is here is a name the room has the day that set is emptied.
@@ -208,6 +209,7 @@ def department(
     )
     return {
         "name": name,
+        "handled": {"state": "nobody", "said": "Nothing picks this up on its own."},
         # Whether the operator has already answered this row. `from_sweep`
         # knows it for a watchman finding and passes it here; `_left_alone`
         # sets it for everything else. It was hardcoded False, which meant a
@@ -327,8 +329,9 @@ def unheard_payload() -> dict[str, str]:
 def collector_key(name: str) -> str:
     """The acknowledgement key for a row no watchman finding produced.
 
-    Same three-part shape `standing.key_for` uses, so one store holds both and
-    nothing has to know which kind a key came from to prune it.
+    Same three-part shape `standing.key_for` uses, so one store holds both.
+    The prefix distinguishes persistent collector rows from findings: a healthy
+    collector observation spends acceptance even though its key remains drawn.
     """
     return f"collector//{name}"
 
@@ -407,8 +410,8 @@ def from_sweep(latest: Sweep, now: datetime) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
 
     # What the operator has already looked at and left. Read once for the
-    # whole sweep rather than per finding, and pruned to what this sweep
-    # actually found: the condition ending is what ends the acknowledgement,
+    # whole sweep rather than per finding. The assembled room prunes what is
+    # no longer drawn: the condition ending is what ends the acknowledgement,
     # so a decision about today's incident cannot silently pre-accept the same
     # fault arriving next month.
     seen = _acknowledged(latest)
@@ -766,6 +769,16 @@ def from_capabilities() -> list[dict[str, Any]]:
             name=record.id,
             state=OperationalState.DEGRADED,
             said=record.reason or f"it is {record.state.value} and the app expects it",
+            # The operator's line is the record's own `reason`; the model's is
+            # composed here from the id and the state and nothing else. They
+            # differ because `reason` is not always this runtime's words:
+            # `check_ollama` builds it as "installed, but it did not answer
+            # (<error>)" and that error is `f"{type(exc).__name__}: {exc}"` off
+            # an httpx failure, which carries the request URL. Invariant 5 says
+            # `for_model` carries only what this runtime composed, and this was
+            # the one producer that let a handed string through by saying
+            # nothing.
+            for_model=f"{record.id} is {record.state.value} and the app expects it",
             at=checked,
             value=f"{record.size_mb} MB" if record.size_mb else "",
             # Not here and never asked for is a choice nobody has made yet, not
@@ -1258,6 +1271,52 @@ _SEVERITY_OF_STATE: dict[str, str] = {
 }
 
 
+# Acceptance pruning holds all of these properties at once:
+# 1. Findings keep their existing lifetime: their key disappearing spends the
+#    acceptance. An INFO finding is still a finding, not proof it cleared.
+# 2. A collector acceptance is also spent when the row gets BETTER than it was
+#    when the operator looked, even though the collector's key stays on the
+#    panel. The comparison is `Acknowledged.cleared`, the mirror of the
+#    `covers` call further down: worse than it was asks again, better than it
+#    was is the condition ending, the same as it was is the fault they accepted
+#    still standing. One vocabulary, one recorded severity, both directions.
+#
+#    THREE rules that look plausible are wrong, and all three were tried here
+#    before this one. Each was right about the case in front of it and dropped
+#    a guarantee the version before it had:
+#
+#    - An allowlist of healthy states. It has to name every well state by hand
+#      and it missed one: a stack-dump row with no dumps is `not_instrumented`,
+#      because no dumps written is the well state and the room draws
+#      nothing-produced that way.
+#    - The row's obligation. `happened_over` is why not. A dump that was taken
+#      is a real fault the operator may want to accept, and it asks for nothing
+#      because it is over, so this spends the acceptance while the fault is
+#      still on the panel.
+#    - Whether the row is rated INFO now. This one is subtle and it is the
+#      reason the rule is a comparison rather than a threshold. Most collector
+#      rows sit at INFO permanently, because a fact nothing produces is
+#      `not_instrumented` and that is rated INFO. Accepting such a row records
+#      INFO and the very next read sees INFO and spends it, so the row is
+#      unacceptable from every surface. That is the same defect this whole
+#      change exists to remove, moved from one set of rows to another.
+#
+#    `unknown` needs no case of its own under any of this. Something is
+#    watching and could not report is rated WARN, so an acceptance taken at
+#    WARN still stands and one taken at BAD is not cleared by it.
+# 3. Read the original state, never the band or obligation after acceptance.
+#    An accepted fault, an ended event and a disabled capability can all be
+#    quiet without being a healthy observation. Lesser severity is not clearing.
+# 4. Spend before applying acceptance, so the clearing response itself carries
+#    no accepted flag or note. Persist it so a recurrence asks again.
+# 5. A fault that remains retains its recorded severity and note without a time
+#    limit; worsening still asks again through the store's own covers rule.
+# 6. Presence pruning still sees every assembled row, so findings and collectors
+#    cannot prune each other. Health-based expiry applies only to collector keys.
+# 7. An unreadable store or failed write cannot take down the room. A healthy
+#    observation is drawn unaccepted even if spending it could not be persisted.
+
+
 def _left_alone(departments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Apply what the operator has already looked at, to every kind of row.
 
@@ -1269,9 +1328,9 @@ def _left_alone(departments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     The three rules are `acknowledged.py`'s and are not restated here: the row
     stays drawn and says who left it and when, it returns on its own if the
     same fault gets worse than it was, and the acknowledgement is spent when
-    the fault stops being found. The last of those is the prune below, and it
-    is here rather than in `from_sweep` because this is the only place that
-    knows every live key.
+    the fault stops being found. Findings spend theirs on disappearance;
+    collectors also spend theirs on a healthy observation. Both are visible
+    here without confusing an informational finding with collector recovery.
     """
     from tesseract.orchestrator.watchman import acknowledged
 
@@ -1280,6 +1339,23 @@ def _left_alone(departments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     except Exception:  # noqa: BLE001 — a room says more rather than failing
         log.exception("health route: the acknowledged store could not be read")
         return departments
+
+    healthy: set[str] = set()
+    for row in departments:
+        key = str(row.get("key") or "")
+        if not key.startswith("collector//"):
+            continue
+        held = seen.get(key)
+        if held is not None and held.cleared(
+            _SEVERITY_OF_STATE.get(str(row.get("state")), INFO)
+        ):
+            healthy.add(key)
+    for key in healthy & seen.keys():
+        seen.pop(key)
+        try:
+            acknowledged.forget(key)
+        except Exception:  # noqa: BLE001
+            log.exception("health route: a cleared acceptance could not be spent")
 
     out: list[dict[str, Any]] = []
     for row in departments:
@@ -1323,6 +1399,141 @@ def _left_alone(departments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _next_repair_try(app: web.Application, now: datetime) -> str:
+    """Ask the live schedule, not a restated interval or the sweep's age.
+
+    Interval jobs are due from their last fire; cron jobs follow the clock.
+    The scheduler's own reader holds that distinction. Missing, disabled or
+    stopped schedules cannot honestly promise a timestamp.
+    """
+    from tesseract.scheduler.cadence import due_after_last
+
+    scheduler = app.get("scheduler")
+    if scheduler is None:
+        return "The next scheduled try is not available."
+    try:
+        row = scheduler.runtime_state("watchman")
+        if not row["enabled"] or row["circuit_broken"]:
+            return "The scheduled check is stopped, so no next try is scheduled."
+        due = due_after_last(row["cadence"], _parse(row["last_fired_at"]), now)
+    except Exception:  # noqa: BLE001
+        log.exception("health route: the next repair check could not be read")
+        return "The next scheduled try could not be read."
+    if due is None:
+        return "The schedule gives no next try time."
+    if due <= now:
+        return f"Its next check was due at {_iso(due)} and has not started yet."
+    return f"It next checks at {_iso(due)}."
+
+
+def _handling_for(*, kind: str, subject: str, app: web.Application, now: datetime) -> dict[str, str]:
+    """Who has this exact identity, from declarations and their own records.
+
+    A similar kind or a familiar display label is not a repair declaration.
+    Only a finding's actual kind reaches REMEDIES and only an exact subject
+    reaches REPAIRS. In particular, an aggregate collector about providers is
+    not a provider_drift finding, and cannot inherit its automatic answer.
+
+    The three advice reasons and exhausted retries are different stop rules.
+    A repair hitting its limit has not suddenly acquired a money or sealed-tree
+    constraint. Both are the stopped case, with the reason actually recorded.
+    Nothing here runs a repair, resets a breaker, or files an advice card.
+    """
+    from tesseract.context.circuit_breaker import row_for
+    from tesseract.orchestrator import repairs
+    from tesseract.orchestrator.healing import remedies, stop_rule
+
+    repair = next((item for item in repairs.REPAIRS if item.key == subject), None)
+    remedy = remedies.remedy_for(kind)
+    if repair is None and remedy is None:
+        return {"state": "nobody", "said": "Nothing picks this up on its own."}
+
+    stop = stop_rule.assess(kind=kind, subject=subject) if remedy else None
+    attempts = remedies.attempts_for(remedy, subject) if remedy else None
+    if stop is not None and stop.condition == stop_rule.NEEDS_ADVICE:
+        tried = (
+            f"It has {attempts.failures} recorded failed tries."
+            if attempts is not None else "No attempt count is recorded."
+        )
+        return {
+            "state": "stopped",
+            "said": f"The runtime needs your answer before {remedy.title}, because {remedy.asks}. {tried}",
+        }
+
+    if repair is not None:
+        breaker = row_for(paths.log_dir("circuit-breakers"), repairs.BREAKER_PREFIX + repair.key)
+        if breaker is not None and breaker.get("tripped"):
+            count = breaker.get("failures")
+            tried = f" after {count} failed tries" if count is not None else "; its attempt count is not recorded"
+            return {
+                "state": "stopped",
+                "said": f"The runtime stopped trying to {repair.title.lower()}{tried}. Its retry limit was reached. Use look into it to check the cause.",
+            }
+        # The repair's breaker is authoritative even when an old attempt log
+        # still says held: resetting it restores the next scheduled check.
+        return {
+            "state": "runtime",
+            "said": f"The runtime has this: {repair.title.lower()}. {_next_repair_try(app, now)}",
+        }
+
+    if stop is not None and stop.condition == stop_rule.KERNEL_BUGGED:
+        tried = f" after {attempts.failures} recorded failed tries" if attempts else ""
+        return {
+            "state": "stopped",
+            "said": f"The runtime stopped {remedy.title}{tried}. No automatic retry remains. Use look into it to check the cause.",
+        }
+    if kind == "breaker_tripped":
+        breaker = row_for(paths.log_dir("circuit-breakers"), subject)
+        delay = breaker.get("retry_in_seconds") if breaker else None
+        when = (
+            f"The next call can try at {_iso(now + timedelta(seconds=max(0, float(delay))))}."
+            if delay is not None else "It next tries when another call needs it."
+        )
+    elif kind == "provider_drift":
+        when = "It uses the next model when another call needs it; there is no scheduled retry time."
+    else:
+        when = _next_repair_try(app, now)
+    return {"state": "runtime", "said": f"The runtime has this: {remedy.title}. {when}"}
+
+
+def _with_handling(
+    departments: list[dict[str, Any]], latest: Sweep, app: web.Application, now: datetime
+) -> list[dict[str, Any]]:
+    findings = {
+        _key_of(finding): finding
+        for finding in (latest.get("findings") or [])
+        if isinstance(finding, dict)
+    } if isinstance(latest, dict) else {}
+    out = []
+    for row in departments:
+        finding = findings.get(str(row.get("key") or ""))
+        # A finding names its own subject. A collector does not have one, and
+        # the label the room prints is NOT a substitute: those labels are
+        # written for a person ("stack dumps", "the watchman") while a repair
+        # key is a code identifier ("boot_substrates"), so matching one against
+        # the other is two namespaces meeting by accident. They do not collide
+        # today and nothing keeps them apart tomorrow, and the failure would be
+        # silent: a row would claim the runtime has it and name a next attempt,
+        # which is the single thing this field must never say untruthfully.
+        # A collector therefore offers no subject at all and reaches
+        # `_handling_for` with nothing to match, which is the honest answer.
+        # `.get` rather than `row["name"]` for invariant 6: this function is
+        # written so a bad row costs one department, and that was the one read
+        # in it that could still take the whole room down.
+        subject = str(finding.get("subject") or "") if finding is not None else ""
+        kind = str(finding.get("kind") or "") if finding is not None else ""
+        try:
+            handled = _handling_for(kind=kind, subject=subject, app=app, now=now)
+        except Exception:  # noqa: BLE001
+            log.exception("health route: the automatic answer could not be read")
+            handled = {
+                "state": "nobody",
+                "said": "The room could not verify an automatic answer. Use look into it to check.",
+            }
+        out.append({**row, "handled": handled})
+    return out
+
+
 async def read_departments(
     app: web.Application, now: datetime, *, with_tail: bool = True
 ) -> tuple[list[dict[str, Any]], Sweep, list[dict[str, Any]]]:
@@ -1360,6 +1571,7 @@ async def read_departments(
             *stalls,
         ]
     )
+    departments = await asyncio.to_thread(_with_handling, departments, latest, app, now)
     return departments, latest, tail
 
 
@@ -1380,7 +1592,15 @@ def department_states(
     panel's twelfth invariant is about.
     """
     return {
-        row["name"]: {
+        # Keyed by the row's own key, never by the name it is drawn under. Two
+        # rows can share a name and the panel supports it: two findings about
+        # one subject is a tested case, and `from_sweep` names both rows after
+        # that subject. A dict comprehension over the name silently kept one of
+        # them, so both rows then read whichever state won, and the room showed
+        # a pushed reading against the wrong line. It is the same lesson as the
+        # control that used to send a rendered label: a name is what a row is
+        # called and the key is what it IS.
+        row["key"]: {
             "state": row["state"],
             "label": row["label"],
             "observedAt": row["at"],

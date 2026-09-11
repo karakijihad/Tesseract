@@ -41,6 +41,12 @@ from tesseract.orchestrator.brief.workspace import collect_workspace_activity
 logger = logging.getLogger(__name__)
 
 SECTION_ORDER: tuple[tuple[str, str], ...] = (
+    # First, and only on the morning after an absence longer than a day.
+    # Renderer-only for the same reason `runtime-report` is, and more
+    # strongly: every line is a record plus the id it came from, and a model
+    # asked to smooth them out could only loosen the one thing that makes the
+    # note checkable. Dropped entirely on a day the operator was here.
+    ("return-note", "## While you were away"),
     ("workspace-digest", "## Yesterday in TESSERACT"),
     # The watchman's last sweep. Renderer-only (no sub-agent, no
     # model): the findings are already counted and written, and a digester
@@ -89,10 +95,16 @@ class BriefRenderer:
         event_store: "Any | None" = None,
         vault_wiki_dir: Path | None = None,
         home: Path | None = None,
+        cost_ledger: "Any | None" = None,
     ) -> None:
         self._briefs_dir = Path(briefs_dir)
         self._invoke_digester = invoke_digester
         self._memory_store = memory_store
+        # Only the return note reads it, and only for the cap it measures the
+        # absence's spend against. Handed in like the stores beside it: a
+        # renderer that built its own would be a second answer to what the
+        # day's ceiling is.
+        self._cost_ledger = cost_ledger
         # vault/wiki/ingest-log.md location. When wired, the renderer
         # pre-reads recent entries and hands them to vault-digest as a
         # structured payload, so the agent cannot invent wiki pages when
@@ -135,6 +147,9 @@ class BriefRenderer:
 
         section_bodies: dict[str, str] = {}
         for slug, _header in SECTION_ORDER:
+            if slug == "return-note":
+                section_bodies[slug] = self._collect_return_note()
+                continue
             if slug == "runtime-report":
                 section_bodies[slug] = _collect_runtime_block()
                 continue
@@ -286,6 +301,29 @@ class BriefRenderer:
         )
         return event.event_id
 
+    def _collect_return_note(self) -> str:
+        """The return note, and only when one is owed.
+
+        Empty on every ordinary morning, which drops the section: a person who
+        was here yesterday is not owed a report on an absence. `owed` reads the
+        last-seen marker, so a machine that has never seen the operator says
+        nothing rather than reporting on the whole of its own history.
+        """
+        from tesseract.orchestrator.brief import return_note
+
+        try:
+            since = return_note.owed()
+            if since is None:
+                return ""
+            return return_note.render(
+                since=since,
+                event_store=self._event_store,
+                ledger=self._cost_ledger,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("brief: return note failed")
+            return ""
+
     def _collect_yesterday_activity_payload(
         self, target_date: date
     ) -> dict[str, Any] | None:
@@ -426,6 +464,9 @@ class BriefRenderer:
             tags=["daily_brief"],
             source_path=rel,
             source_type="daily_brief",
+            # The brief file itself. The record is a pointer to it, so the
+            # brief is what it was written from.
+            derived_from=[rel],
             stability=Stability.ACTIVE,
         )
         memory_body = (

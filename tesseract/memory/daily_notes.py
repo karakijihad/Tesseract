@@ -12,10 +12,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Librarian's `_SECTION_MIN_CHARS = 80`. Sections shorter than this are
-# dropped by the promotion pass — zero-turn session_end entries and the
-# "no scheduled runs" rollup both need padding to survive.
-_LIBRARIAN_MIN_BODY = 80
+from tesseract.memory.capture_policy import trivial_body_floor
+
+# The capture policy's trivial-body floor, ASKED rather than restated or
+# bound at import. Sections shorter than this are dropped by the promotion
+# pass — zero-turn session_end entries and the "no scheduled runs" rollup both
+# need padding to survive. This was a third copy of the number, beside the
+# librarian's own, and then briefly a frozen copy of the shipped one.
+librarian_min_body = trivial_body_floor
 # Long enough that any short body + this pad clears the 80-char floor with slack.
 _DAILY_PAD = (
     "\n\n<!-- padded to meet the librarian's 80-char section floor so this "
@@ -87,7 +91,7 @@ def append_section(
             return False
 
     final_body = body
-    if pad_short and len(final_body) < _LIBRARIAN_MIN_BODY:
+    if pad_short and len(final_body) < librarian_min_body():
         final_body = f"{final_body}{_DAILY_PAD}"
 
     with target.open("a", encoding="utf-8") as fh:

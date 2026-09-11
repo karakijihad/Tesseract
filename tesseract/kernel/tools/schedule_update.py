@@ -16,6 +16,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field, model_validator
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 
 
 class ScheduleUpdateInput(BaseModel):
@@ -87,6 +88,8 @@ class ScheduleUpdateTool(Tool):
         "reminder is `alarm_set`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "job"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:
@@ -123,12 +126,25 @@ class ScheduleUpdateTool(Tool):
                 scheduler.set_model_role(inp.name, inp.model_role)
                 applied["model_role"] = inp.model_role if inp.model_role else None
         except KeyError:
-            return ToolResult(output=f"job {inp.name!r} is not registered", is_error=True)
+            return ToolResult(
+                output=f"job {inp.name!r} is not registered",
+                is_error=True,
+                caller_error=True,
+            )
         except (ValueError, RuntimeError) as exc:
             return ToolResult(output=f"schedule_update failed: {exc}", is_error=True)
         if not applied:
-            return ToolResult(output="schedule_update: nothing to apply", is_error=True)
+            return ToolResult(
+                output="schedule_update: nothing to apply",
+                is_error=True,
+                caller_error=True,
+            )
         return ToolResult(
             output=f"job '{inp.name}' updated ({', '.join(f'{k}={v!r}' for k, v in applied.items())})",
+            receipt=Receipt(
+                kind="job",
+                id=inp.name,
+                locator=str(scheduler.config_dir / "schedule.yaml"),
+            ),
             metadata={"name": inp.name, "applied": applied},
         )

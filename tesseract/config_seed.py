@@ -879,8 +879,8 @@ def ensure_workspace_seeded() -> None:
 
 def ensure_memory_store_seeded() -> None:
     """Seed ``<home>/memory-store/`` from the shipped scaffold (``MEMORY.md``,
-    ``WHAT_NOT_TO_SAVE.md``, ``.gitignore``) so a fresh install opens on a
-    ready-to-use store instead of an empty directory. The per-memory-type
+    ``.gitignore``) so a fresh install opens on a ready-to-use store instead
+    of an empty directory. The per-memory-type
     subdirs (``user/``, ``feedback/``, ...) are not part of this scaffold —
     ``MemoryStore._ensure_dirs()`` creates those lazily on first use."""
     from tesseract.paths import home_dir

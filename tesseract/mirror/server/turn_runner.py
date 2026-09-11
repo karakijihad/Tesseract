@@ -13,6 +13,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from tesseract.mirror.server import chat_store
+
 from aiohttp import web
 
 from tesseract.brain import context_report
@@ -204,10 +206,15 @@ async def _run_turn(
             # Mid-turn: fold only. The boundary clears the conversation in
             # place, and the conversation being cleared would be the one this
             # very loop is speaking.
-            fold_when_needed=(
+            boundary_when_needed=(
                 None if workspace_origin is not None
                 else lambda: _maybe_auto_compact(app, session, cs, mid_turn=True)
             ),
+            # A conversation nobody has written down cannot be restored, and a
+            # window restores what is on disk, so a crash in a chat's first
+            # minute used to take the whole conversation with it and leave
+            # recovery holding an id it could not wake.
+            turn_opened=lambda: _record_the_conversation_exists(session, chat_id),
         ):
             await _handle_chunk(app, session, chunk)
             if chunk.type in (ChunkType.STOP, ChunkType.ERROR):
@@ -361,41 +368,50 @@ async def _run_turn(
     await emit_stats(app, session, cs, cid)
     # Free THIS chat's task slot (active or background) so a background
     # conductor turn's completion releases its own slot, not the active one.
-    if cid is not None:
-        session.current_turn_tasks.pop(cid, None)
-    else:
-        session.current_turn_task = None
-    # Task 4.2 (Q2) — drain on every natural completion, INCLUDING a
-    # genuine crash (uncaught exception): the FIFO queue must not strand
-    # remaining entries just because one turn errored. Only an explicit
-    # CANCEL skips the drain — `_cancel_turn` / `_handle_voice_cancel`
-    # already cleared the whole queue for this chat before cancelling the
-    # task, so there's nothing left to drain; running it anyway would be a
-    # no-op at best. (Audit-3 finding #2 originally gated this on
-    # `stream_ok`, which also skipped drain on a plain crash — that
-    # silently stranded the queue once it became FIFO instead of
-    # single-slot, so the gate is now `not turn_cancelled`.)
+    # Guarded on identity, the way `send_and_await_turn` below already does
+    # it: the slot may belong to a different turn by now (a drained follow-up
+    # claims it while this one is still finishing), and an unconditional pop
+    # would untrack the LIVE turn. Every busy check and every later stop reads
+    # that slot.
+    session.release_turn_slot(cid, asyncio.current_task())
+    # Drain on EVERY way a turn can end: it finished, it crashed, the
+    # operator stopped it. The FIFO queue must not strand remaining entries
+    # because one turn errored, and it must not strand them because the
+    # operator stopped the turn in front of them either — a queued message is
+    # a whole next turn addressed to the session, and stopping this turn is
+    # not a decision about that one (`stop.py`, property 1). A cancel used to
+    # skip this, on the reasoning that `_cancel_turn` had already emptied the
+    # queue; it no longer does, and skipping now would leave the operator
+    # with a message the runtime had quietly decided not to answer.
     # Voice does NOT queue here: spoken follow-ups interrupt at
     # speech-start, never tail this path. Only the ACTIVE chat
     # drains its FIFO queue — it's the sole chat the operator queues into;
     # background conductor turns never populate the queue.
-    if not turn_cancelled:
-        # SDD Task 1.2 / Task 4.2: the drain itself (FIFO pop + stranded-
-        # inject fallback + re-entry into `_start_turn`) lives in
-        # `turn_intake.drain_next`. Lazy import: `turn_intake` is not
-        # needed until end-of-turn, and keeping this direction lazy
-        # matches the established ws.py/turn_runner.py cross-module
-        # convention.
-        from tesseract.mirror.server import turn_intake
-        if cid == session.active_chat_id:
-            await turn_intake.drain_next(app, session, cid)
-        elif cid is not None:
-            # A steer inject can strand on a BACKGROUND chat too (a steer
-            # landed on it, lost the race against ITS turn ending) and
-            # `drain_next`'s fallback only ever reaches the focused chat,
-            # so this turn's own end must rescue its own chat_id
-            # regardless of focus.
-            await turn_intake.drain_stranded_background(app, session, cid)
+    #
+    # Unless the SESSION ended, which is a different thing from the turn
+    # ending and the one case where the queue does not survive. A teardown
+    # cancels turns exactly the way a stop does, and it does not clear the
+    # queue, so this tail would pop a follow-up and start a full turn against
+    # a session already dropped from every registry: real model calls,
+    # streaming to a closed socket, and unreachable by any later stop. Found
+    # in review, not by a test, because the drain was made unconditional
+    # against the stop and never checked against the other caller.
+    if getattr(session, "torn_down", False):
+        return
+    # The drain itself (FIFO pop + stranded-inject fallback + re-entry into
+    # `_start_turn`) lives in `turn_intake.drain_next`. Lazy import:
+    # `turn_intake` is not needed until end-of-turn, and keeping this
+    # direction lazy matches the established ws.py/turn_runner.py convention.
+    from tesseract.mirror.server import turn_intake
+    if cid == session.active_chat_id:
+        await turn_intake.drain_next(app, session, cid)
+    elif cid is not None:
+        # A steer inject can strand on a BACKGROUND chat too (a steer
+        # landed on it, lost the race against ITS turn ending) and
+        # `drain_next`'s fallback only ever reaches the focused chat,
+        # so this turn's own end must rescue its own chat_id
+        # regardless of focus.
+        await turn_intake.drain_stranded_background(app, session, cid)
 
 
 def _resolve_chat_provider(app: web.Application, session: ServerSession, chat_id: str | None) -> str:
@@ -432,6 +448,16 @@ def _chat_turn_provider_slot(
         sem = asyncio.Semaphore(cap)
         sems[provider] = sem
     return sem
+
+
+async def _record_the_conversation_exists(session: Any, chat_id: str) -> None:
+    """Put a chat on disk the first time it has anything in it.
+
+    Off the loop, because it writes a file, and cheap after the first turn:
+    `persist_first_turn` returns at once when a record is already there, which
+    is every turn but one.
+    """
+    await asyncio.to_thread(chat_store.persist_first_turn, session, chat_id)
 
 
 async def _run_chat_turn(
@@ -538,37 +564,18 @@ async def _maybe_auto_compact(
 ) -> None:
     """The cockpit's delivery, bound to the shared after-turn hook.
 
-    Compact the chat that actually ran. A background conductor turn runs
-    against a non-active ChatSession; default to the active chat for legacy
-    callers that do not pass one.
+    Bound the chat that actually ran. A background conductor turn runs against
+    a non-active ChatSession; default to the active chat for legacy callers
+    that do not pass one.
 
-    The two envelopes are all this surface adds. Whether to compact, the
-    tally, and the `[auto_compact]` log entry are the runtime's, and they live
-    in `after_turn` so a channel gets the same ones.
+    The one envelope is all this surface adds. Whether a boundary is due, the
+    tally, and the `[boundary]` log entry are the runtime's, and they live in
+    `after_turn` so a channel gets the same ones.
     """
     target = cs if cs is not None else session.chat_session
-    # `session_compact` is not a turn-scoped type, so nothing infers the stamp.
-    # The transcript draws a divider off this envelope, and that divider is a
-    # permanent entry, so the stamp has to name the chat that FOLDED. One
-    # source: the thing that folds. A `chat_id` argument beside it would be a
-    # second answer to the same question, free to disagree with the first.
+    # The chat that ran, by identity. A `chat_id` argument beside it would be
+    # a second answer to the same question, free to disagree with the first.
     stamp = _chat_id_of(session, target)
-
-    async def report(before: int, after: int) -> None:
-        # One envelope, because one is read. `compaction_done` carried the same
-        # two numbers on the `loop` scope and no handler anywhere matched it —
-        # it reached `dispatch/loop.ts`'s default branch and drew a second,
-        # unlabelled pulse row beside the line `session_compact` already drew.
-        await send_envelope(session, make_envelope(
-            "session_compact", "session", session.session_id,
-            {
-                "tokens_before": before,
-                "tokens_after": after,
-                "trigger": "auto",
-                "tail_turns": getattr(target, "_last_fold_tail_turns", 0),
-            },
-            chat_id=stamp,
-        ))
 
     async def ending(reflect) -> bool:
         # The cockpit's answer to a boundary the agent reached: copy what was
@@ -603,7 +610,7 @@ async def _maybe_auto_compact(
 
     await after_turn(
         target, app=app, session=session,
-        report=report, ending=ending, announce=announce,
+        ending=ending, announce=announce,
         mid_turn=mid_turn,
     )
 
@@ -663,15 +670,14 @@ async def emit_stats(
             **{
                 key: report[key]
                 for key in (
-                    "context_window", "head_anchor_tokens", "tail_tokens",
-                    "tail_turns", "keep_recent_turns", "unfoldable_tokens",
-                    "fold_trigger_tokens",
+                    "context_window",
+                    "boundary_trigger_tokens",
                     # What the trigger is actually compared against. Without it
-                    # the HUD divided the WHOLE payload by a foldable-only
+                    # the HUD divided the WHOLE payload by a conversation-only
                     # ceiling and drew the bar over-full, while `context_read`
                     # answered the same question correctly for the same
                     # conversation at the same moment.
-                    "foldable_tokens",
+                    "conversation_tokens",
                 )
                 if key in report
             },

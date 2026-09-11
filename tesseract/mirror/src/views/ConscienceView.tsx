@@ -9,6 +9,8 @@ import { Button } from '../components/common/Button';
 import { Input } from '../components/common/Input';
 import { Note } from '../components/common/Note';
 import { RailView, type RailGroup } from '../components/common/RailView';
+import { CacheReport } from './conscience/CacheReport';
+import { DayPanel } from './conscience/DayPanel';
 import { DriftHistoryChart } from './conscience/DriftHistoryChart';
 import { PayloadBreakdown } from './conscience/PayloadBreakdown';
 import { PlaybookUsageChart } from './conscience/PlaybookUsageChart';
@@ -98,6 +100,16 @@ export function ConscienceView() {
 
   const groups: RailGroup[] = [
     {
+      label: 'What it did',
+      sections: [
+        {
+          key: 'day',
+          label: 'By day',
+          render: () => <DayPanel />,
+        },
+      ],
+    },
+    {
       label: 'Drift',
       sections: [
         {
@@ -156,6 +168,11 @@ export function ConscienceView() {
           key: 'heatmap',
           label: 'Over time',
           render: () => <Heatmap />,
+        },
+        {
+          key: 'cache',
+          label: 'Cache',
+          render: () => <Cache />,
         },
         {
           key: 'payload',
@@ -356,6 +373,52 @@ function ToolUsage() {
   );
 }
 
+/** What the prompt cache did, beside what the payload costs.
+ *
+ * Its own section rather than a figure on the payload panel: that one answers
+ * what a turn carries before you type, which is a composition and holds still.
+ * This one answers what the provider had already read, which changes with
+ * every turn and is the number the payload is being shaped to move.
+ */
+function Cache() {
+  const reading = useConscienceStore((s) => s.cache);
+  const loading = useConscienceStore((s) => s.cacheLoading);
+  const error = useConscienceStore((s) => s.cacheError);
+  const fetchCache = useConscienceStore((s) => s.fetchCache);
+
+  useRefreshOnVisible('conscience', fetchCache);
+
+  if (error) return <Note tone="bad">Error reading the cost ledger: {error}</Note>;
+  if (!reading) {
+    return loading ? <Note>Reading the cost ledger…</Note> : <Note>Nothing to show yet.</Note>;
+  }
+  if (!reading.ledger) {
+    return (
+      <Note>
+        No cost ledger has been written yet. It fills in as the assistant works,
+        one row per model call.
+      </Note>
+    );
+  }
+  if (!reading.summary || reading.summary.calls === 0) {
+    return (
+      <Note>
+        No model calls in the last {reading.days}{' '}
+        {reading.days === 1 ? 'day' : 'days'}.
+      </Note>
+    );
+  }
+
+  return (
+    <Block
+      title={null}
+      meta="What the provider had already read. What a turn carries is the next section."
+    >
+      <CacheReport reading={reading} />
+    </Block>
+  );
+}
+
 /** The other thing a turn carries, and the one that can say whether it worked.
  *
  * Its own section beside Tools rather than a second series on that chart: the
@@ -395,6 +458,7 @@ function PlaybookUsage() {
         days={usage.days}
         carriedCount={usage.carried_count}
         path={usage.path}
+        turnScopeNote={usage.turn_scope_note}
       />
     </Block>
   );

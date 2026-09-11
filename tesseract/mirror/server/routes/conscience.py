@@ -2,6 +2,7 @@
 GET /api/conscience/tool-usage — which tools get used, over a window.
 GET /api/conscience/playbook-usage — which playbooks get used, and how they went.
 GET /api/conscience/payload — what a turn costs before the first message.
+GET /api/conscience/cache — what the prompt cache did, per turn.
 
 Scrapes `home/logs/conscience/drift-YYYY-MM-DD.jsonl`, one file per day, and
 returns the most recent report line plus one report per day across the window
@@ -238,66 +239,41 @@ async def playbook_usage(request: web.Request) -> web.Response:
     carried on every turn and never once read is exactly what this panel is
     for, and a reader that returns only what the log holds cannot show one.
 
-    `unjoined` is reported rather than folded into either column. A load with
-    no closed turn around it is neither a success nor a failure, and counting
-    it as one would let a fortnight of open turns read as a procedure that
-    stopped working.
+    `unjoined` and `ungraded` are reported rather than folded into either
+    column. A load with no closed turn around it is neither a success nor a
+    failure, and counting it as one would let a fortnight of open turns read
+    as a procedure that stopped working. A load in a turn that closed its task
+    on the assistant's own sentence is the same refusal one step further in:
+    the turn is there, and its outcome is the model grading itself.
+
+    The rows themselves come from `brain/playbook_record.py`, which the tool
+    that answers this from a channel calls too. A panel that built its own
+    rows would be the per-surface reader ruling 23 refuses.
     """
-    from tesseract.brain.playbook_reuse import measure_all
-    from tesseract.brain.playbook_set import carried_path, load_carried_names
-    from tesseract.brain.skills import load_skills
+    from tesseract.brain.playbook_record import (
+        DEFAULT_WINDOW_DAYS as PLAYBOOK_WINDOW_DAYS,
+        TURN_SCOPE_NOTE,
+        records,
+    )
+    from tesseract.brain.playbook_set import carried_path
     from tesseract.paths import workspace_dir
 
     try:
-        days = int(request.query.get("days") or DEFAULT_WINDOW_DAYS)
+        days = int(request.query.get("days") or PLAYBOOK_WINDOW_DAYS)
     except ValueError:
-        days = DEFAULT_WINDOW_DAYS
+        days = PLAYBOOK_WINDOW_DAYS
     if not 0 < days <= 365:
-        days = DEFAULT_WINDOW_DAYS
+        days = PLAYBOOK_WINDOW_DAYS
 
     def _read() -> dict[str, object]:
-        skills_dir = workspace_dir() / "skills"
-        # A retired revision is a record, not an offer, and the prompt does not
-        # list it. Showing it here as an unused playbook would read as a
-        # demotion candidate for something already demoted.
-        entries = [
-            e
-            for e in load_skills(skills_dir)
-            if e.is_playbook and e.status != "retired"
-        ]
-        carried = load_carried_names(skills_dir / CARRIED_FILENAME)
-        by_name = measure_all([e.name for e in entries], window_days=days)
-
-        rows = []
-        for entry in entries:
-            revisions = [
-                by_name[entry.name][version].as_json()
-                for version in sorted(by_name.get(entry.name, {}))
-            ]
-            rows.append({
-                "playbook": entry.name,
-                "description": entry.description,
-                "version": entry.version,
-                "status": entry.status,
-                "carried": entry.name in carried,
-                "revisions": revisions,
-                "loads": sum(int(r["loads"]) for r in revisions),
-                "succeeded": sum(int(r["succeeded"]) for r in revisions),
-                "failed": sum(int(r["failed"]) for r in revisions),
-                "unjoined": sum(int(r["unjoined"]) for r in revisions),
-                "corrections": sum(int(r["corrections"]) for r in revisions),
-                "retries": sum(int(r["retries"]) for r in revisions),
-            })
-        # Most read first, then the ones with nothing, alphabetically. The
-        # zeroes sort last and are still all here, which is the same shape the
-        # tool half uses and for the same reason.
-        rows.sort(key=lambda r: (-int(r["loads"]), str(r["playbook"])))
+        rows = records(workspace_dir() / "skills", window_days=days)
         return {
             "days": days,
             "playbooks": rows,
             "carried_count": sum(1 for r in rows if r["carried"]),
             "total": len(rows),
             "path": str(carried_path()),
+            "turn_scope_note": TURN_SCOPE_NOTE,
         }
 
     # Off the loop: the usage log is read whole and the turn tree is walked a
@@ -553,3 +529,122 @@ async def payload(request: web.Request) -> web.Response:
         "readings": readings,
         "chars_per_token": prompt_payload.CHARS_PER_TOKEN,
     })
+
+
+async def what_it_did(request: web.Request) -> web.Response:
+    """GET /api/conscience/day — what the runtime did on a day, or a span.
+
+    `on` and `through` are `YYYY-MM-DD`; both absent means the newest day that
+    has records. That default matters: opening on today would draw an empty
+    panel on a morning where nothing has happened yet, and an empty day and a
+    day nobody kept records for read identically to somebody looking at it.
+
+    The reader is shared with the tool that answers the same question on a
+    channel. This route holds no arithmetic of its own for the reason
+    `playbook-usage` holds none: a second computation over the same rows is a
+    second answer waiting to disagree.
+    """
+    from tesseract.orchestrator.turns import day as day_reader
+
+    on = _parse_day(request.query.get("on"))
+    through = _parse_day(request.query.get("through"))
+
+    def _read() -> dict[str, object]:
+        anchor = on or day_reader.latest_day_with_records()
+        if anchor is None:
+            # Nothing has ever been recorded. Say that, rather than drawing
+            # today as a quiet day, which is a different thing entirely.
+            return {
+                **day_reader.DayReport(days=(), turns=(), calls=(), tools=()).as_json(),
+                "anchor": None,
+                "available": [],
+                "maxSpanDays": day_reader.MAX_SPAN_DAYS,
+            }
+        report = day_reader.day(anchor, through)
+        from tesseract.orchestrator.turns.manifest import TurnManifestStore
+
+        return {
+            **report.as_json(),
+            "anchor": anchor.isoformat(),
+            # Which days the picker may reach at all, so it can disable an
+            # arrow rather than offer a day it will then draw empty.
+            "available": [
+                d.isoformat() for d in TurnManifestStore().days_with_records()
+            ],
+            "maxSpanDays": day_reader.MAX_SPAN_DAYS,
+        }
+
+    # Off the loop: this walks a day directory at a time and reads every
+    # record in it, which is the same shape `playbook-usage` moves for.
+    return await asyncio.to_thread(lambda: web.json_response(_read()))
+
+
+#: How many of the window's turns the panel lists, per section. The ranked
+#: reading is "which turns stopped reusing their prefix", and that is a short
+#: list by nature: the ones worth acting on sit far above the rest, and a page
+#: of every turn is the shape nobody scrolls.
+WORST_TURNS = 25
+
+#: How many of the newest turns ride alongside the ranking. A well-cached turn
+#: is by definition nowhere near the top of a list ranked by what it re-read,
+#: so ranking alone answered "what should I fix" and could not answer "what did
+#: the turn I just took do". Both are asked of this panel, and the second is
+#: what a live reading after a settings change needs.
+LATEST_TURNS = 12
+
+
+async def cache(request: web.Request) -> web.Response:
+    """GET /api/conscience/cache — what the prompt cache did, per turn.
+
+    Answers two: what the turns just taken did, newest first, and which turns
+    stopped reusing their prefix. The second is ranked by uncached input
+    tokens, which is a measured number the ledger holds, rather than by
+    dollars-of-waste, which needs a counterfactual price for a request nobody
+    made.
+
+    Both, because a turn that cached well is at the bottom of the ranking by
+    construction, so a ranking on its own cannot say whether the change just
+    made cost anything. That is the reading every phase from here needs, and
+    it is the one that was missing when it was first asked for.
+
+    The window is calendar days on the operator's clock, inclusive of today,
+    the way `tool-usage` counts them.
+
+    Off the loop: the ledger is one growing file read whole, which is the shape
+    `playbook-usage` and `day` already move for.
+    """
+    from tesseract.brain.cost import cache_report
+    from tesseract.brain.cost.ledger import configured_log_path
+
+    try:
+        days = int(request.query.get("days") or 7)
+    except ValueError:
+        days = 7
+    if not 0 < days <= 365:
+        days = 7
+
+    def _read() -> dict[str, object]:
+        path = configured_log_path()
+        if path is None or not path.exists():
+            # No ledger yet is not an error and not a zero: a panel drawing a
+            # 0% hit rate here would be reporting a total miss on a runtime
+            # that has never made a call.
+            return {
+                "days": days, "summary": None,
+                "latest": [], "turns": [], "ledger": False,
+            }
+        rows = cache_report.parse(path.read_text(encoding="utf-8").splitlines())
+        windowed = cache_report.within(rows, days, today=date.today())
+        # `by_turn` is newest first already, so `latest` is a slice and the
+        # ranking is the one that sorts.
+        turns = cache_report.by_turn(windowed)
+        worst = sorted(turns, key=lambda t: t.uncached_tokens, reverse=True)
+        return {
+            "days": days,
+            "summary": cache_report.summarise(turns),
+            "latest": [cache_report.as_row(t) for t in turns[:LATEST_TURNS]],
+            "turns": [cache_report.as_row(t) for t in worst[:WORST_TURNS]],
+            "ledger": True,
+        }
+
+    return await asyncio.to_thread(lambda: web.json_response(_read()))

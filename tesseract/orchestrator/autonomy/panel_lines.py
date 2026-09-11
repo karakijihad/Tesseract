@@ -40,8 +40,7 @@ from typing import Any, Iterable, Sequence
 
 from tesseract import paths
 from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter, call_timeout
-from tesseract.brain import tool_availability as availability
-from tesseract.orchestrator.narration import invented_figures, is_faithful
+from tesseract.orchestrator.narration import one_line
 
 log = logging.getLogger(__name__)
 
@@ -159,96 +158,26 @@ def write_cache(cache: dict[str, Any]) -> None:
         log.warning("panel lines: could not write the cache at %s", path)
 
 
-def build_prompt(facts: Sequence[str]) -> str:
-    return "\n".join(
-        [INSTRUCTION, "", "--- OBSERVED ---", *(f"- {line}" for line in facts), ""]
-    )
-
-
-def _entry_ref(options: AdapterOptions) -> str:
-    """The catalog ref these options name, or "" when they name nothing."""
-    try:
-        from tesseract.kernel.tools.dependency import catalog_ref
-
-        if not options.provider or not options.model:
-            return ""
-        return catalog_ref(options.tier or "api", options.provider, options.model)
-    except Exception:  # noqa: BLE001 — a panel may not fail over its own gate
-        log.debug("panel lines: no ref for %s", options.model, exc_info=True)
-        return ""
-
-
 async def _one(
     room: Room, chain: Iterable[tuple[ModelAdapter, AdapterOptions]]
 ) -> tuple[str, bool]:
     """One room's line, and whether a model wrote it.
 
-    The two are separate answers because a model may legitimately return a
-    sentence identical to the counted facts. Comparing the text to decide
-    whether one answered would read that as a failure, leave it uncached, and
-    call again on every poll for numbers that never moved.
+    The walk itself is `narration.one_line`, shared with the outbound writer.
+    What is this module's is the room's own fallback: a room that nothing
+    could write for shows the counts, because the operator still needs to
+    know what is in it and a sentence over yesterday's numbers is worse than
+    no sentence at all.
     """
     facts = list(room.facts)
-    prompt = build_prompt(facts)
-    for adapter, options in chain:
-        label = f"{options.provider or '?'}/{options.model or '?'}"
-        # This walks raw adapters rather than `adapter_chain`, so it had no
-        # breaker of any kind: an entry that had reached end of life was
-        # called 29 consecutive times, 14 of them paying a full 120s timeout
-        # first. One breaker per catalog ref, the same name every other reader
-        # of that entry uses, so `breaker_status` shows it and one
-        # `breaker_reset` clears it here and in the chain together.
-        ref = _entry_ref(options)
-        shut = availability.refusal(ref, f"panel line for {room.key}") if ref else None
-        if shut is not None:
-            log.debug("panel lines: %s is set aside (%s)", label, shut[1])
-            continue
-        try:
-            timeout = call_timeout(options)
-        except KeyError as exc:
-            log.warning("panel lines: %s has no timeout (%s)", label, exc)
-            continue
-        try:
-            out = await asyncio.wait_for(
-                adapter.generate(prompt, options), timeout=timeout
-            )
-        except asyncio.TimeoutError:
-            log.warning("panel lines: %s timed out after %.1fs", label, timeout)
-            availability.note_provider_failure(
-                ref, f"no answer within {timeout:g}s", kind="no_answer"
-            )
-            continue
-        except Exception as exc:  # noqa: BLE001 — a line may fail; a panel may not
-            log.warning("panel lines: %s call failed (%s)", label, exc)
-            availability.note_provider_failure(ref, str(exc))
-            continue
-        said = (out or "").strip()
-        if not said:
-            # Answered with nothing, which is a fault the shared vocabulary
-            # already names. Counted BEFORE any success is recorded: reading
-            # "the call returned" as health let an entry that only ever
-            # returned empty strings close its own breaker on every pass and
-            # stay eligible forever, which is the behaviour the breaker was
-            # added to stop.
-            log.warning("panel lines: %s returned empty", label)
-            availability.note_provider_failure(
-                ref, "the model returned nothing", kind="empty_answer"
-            )
-            continue
-        # It answered with something. Whether the sentence is USABLE is the
-        # faithfulness question below and is not this entry's health: a model
-        # that writes 154 characters is working.
-        availability.note_success(ref)
-        if not is_faithful(said, facts, budget=LINE_CHARS):
-            log.warning(
-                "panel lines: %s wrote %r over %s, which names %s that nobody "
-                "observed. Publishing the counts instead",
-                label,
-                said,
-                room.key,
-                invented_figures(said, facts) or "nothing, but is too long",
-            )
-            continue
+    said, by_model = await one_line(
+        facts,
+        chain,
+        instruction=INSTRUCTION,
+        budget=LINE_CHARS,
+        subject=room.key,
+    )
+    if by_model:
         return said, True
     return counted(facts), False
 
@@ -514,7 +443,6 @@ __all__ = [
     "deadline_for",
     "one_room_budget",
     "Room",
-    "build_prompt",
     "cache_path",
     "counted",
     "lines_for",

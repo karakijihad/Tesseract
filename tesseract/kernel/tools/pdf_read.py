@@ -44,6 +44,8 @@ class PdfReadTool(Tool):
     )
     not_when: ClassVar[str] = "Use `file_read` for any non-PDF text file."
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:
@@ -64,14 +66,18 @@ class PdfReadTool(Tool):
         try:
             path = anchor_read_path(inp.file_path, context.workspace_root)
         except ReadPathRefused as exc:
-            return ToolResult(output=str(exc), is_error=True)
+            return ToolResult(output=str(exc), is_error=True, caller_error=True)
 
         if not path.exists():
             return ToolResult(
-                output=not_found_message("PDF", inp.file_path, path), is_error=True
+                output=not_found_message("PDF", inp.file_path, path),
+                is_error=True,
+                caller_error=True,
             )
         if not path.is_file():
-            return ToolResult(output=f"Not a file: {path}", is_error=True)
+            return ToolResult(
+                output=f"Not a file: {path}", is_error=True, caller_error=True
+            )
 
         try:
             from pypdf import PdfReader
@@ -86,7 +92,11 @@ class PdfReadTool(Tool):
         total_pages = len(reader.pages)
         start, end = _parse_pages(inp.pages, total_pages)
         if start is None:
-            return ToolResult(output=f"Invalid page range: {inp.pages!r}", is_error=True)
+            return ToolResult(
+                output=f"Invalid page range: {inp.pages!r}",
+                is_error=True,
+                caller_error=True,
+            )
 
         parts: list[str] = []
         char_count = 0

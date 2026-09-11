@@ -46,10 +46,12 @@ def names_an_hour(cadence: str) -> bool:
     fires every hour, `*/5 * * * *` every five minutes and `24h` every day of
     uptime, and moving any of those is a change to how OFTEN work happens.
 
-    The one predicate, because two things ask it: the check that exactly one
-    wall clock ships, and the rule deciding which of a shipped row's fields the
+    The one predicate, because two things ask it: the check on which rows ship
+    a wall clock, and the rule deciding which of a shipped row's fields the
     operator owns. Two copies of it would drift into disagreeing about which
-    rows those are.
+    rows those are. It answers a question about ONE cadence and has never
+    counted them, which is why adding `morning` beside `consolidate` cost this
+    function nothing and cost the sentences around it several corrections.
     """
     fields = cadence.split()
     return len(fields) == 5 and fields[1] != "*"
@@ -67,6 +69,36 @@ def moves_the_hour(shipped: str, wanted: str) -> bool:
     if not (names_an_hour(shipped) and names_an_hour(wanted)):
         return False
     return shipped.split()[2:] == wanted.split()[2:]
+
+
+def a_tick_fell_between(cadence: str, earlier: datetime, now: datetime) -> bool:
+    """Whether a cron point sits in `(earlier, now]`. Both LOCAL and naive.
+
+    The predicate for a tick the loop never saw. `SchedulerEngine._should_fire`
+    matches a cron by the MINUTE, so a scheduled moment that passed while the
+    process was suspended (the machine slept, the loop stalled, a trigger pass
+    ran long) is never matched and the row is simply skipped until tomorrow.
+    The boot catch-up does not cover it either, because nothing rebooted.
+
+    Asked of the GAP between two consecutive ticks rather than of the row's
+    last fire, and the difference matters: a row that was disabled for a month
+    and switched back on at three in the afternoon has not missed a tick, it
+    was off, and a rule reading its last fire would start it at once.
+
+    Exclusive at the earlier end and inclusive at `now`, so a point exactly on
+    the previous tick is not re-served and one landing on this tick is caught
+    whether or not the minute also matches.
+
+    Intervals answer False and are not a gap in this sense: they are measured
+    from the last fire, so a suspended process resumes overdue and fires on its
+    own rule the moment it is asked.
+    """
+    if parse_interval(cadence):
+        return False
+    try:
+        return croniter(cadence, earlier).get_next(datetime) <= now
+    except Exception:  # noqa: BLE001 - an unreadable cadence misses nothing
+        return False
 
 
 def next_fire(cadence: str, after: datetime) -> datetime | None:
@@ -271,6 +303,7 @@ def in_words(cadence: str) -> str:
 __all__ = [
     "INTERVAL_RE",
     "Reading",
+    "a_tick_fell_between",
     "due_after_last",
     "explain",
     "in_words",

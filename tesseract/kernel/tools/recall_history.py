@@ -71,6 +71,8 @@ class RecallHistoryTool(Tool):
         "`vault_query`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     def __init__(self, index: WorkIndex) -> None:
         self._index = index

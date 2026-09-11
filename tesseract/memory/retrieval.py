@@ -22,11 +22,17 @@ from pathlib import Path
 
 import numpy as np
 
+from tesseract.memory.derivation import load_derivation_config, tier_weight
 from tesseract.memory.embeddings import EmbeddingIndex
 from tesseract.memory.fts_index import FTSIndex
 from tesseract.memory.index import MemoryIndex
 from tesseract.memory.store import MemoryStore
-from tesseract.memory.types import MemoryFrontmatter, MemoryType, RetrievalPacket
+from tesseract.memory.types import (
+    MemoryFrontmatter,
+    MemoryType,
+    RetrievalPacket,
+    SourceTier,
+)
 from tesseract.memory.work_index import WorkIndex
 from tesseract.orchestrator.progress_events import ProgressEvent, emit as emit_progress
 
@@ -40,17 +46,28 @@ _TRUSTING_RECALL_SECTION = (
     "--- END NOTICE ---"
 )
 
-# Trust text for work-history hits. These are session
-# transcripts and workshop artifacts, NOT promoted memory. The model
-# must treat them as recall (suggestions) rather than ground truth.
-_WORK_HISTORY_NOTICE = (
-    "\n\n--- WORK HISTORY NOTICE ---\n"
-    "Work-history hits below are non-authoritative — session transcripts "
-    "and workshop artifacts surfaced for recall, NOT promoted memory. "
-    "Treat them as suggestions; verify against the source path before "
-    "acting. `file_read` the path for full context.\n"
+# Trust text for every hit, keyed on the tier it carries.
+#
+# This replaces a notice hardcoded for work-history hits alone. That was the
+# only authority distinction retrieval could make, so a model's own
+# restatement of a paper and the paper itself arrived looking identical.
+# Every hit now says which of the three it is.
+TIER_NOTICE = (
+    "\n\n--- WHERE THESE CAME FROM ---\n"
+    "Each hit is marked with how far it stands from material nobody in this "
+    "runtime wrote.\n"
+    "source: operator-supplied or fetched. The record itself.\n"
+    "derived: written by a model from something else in the store. It may "
+    "restate its source imperfectly. Prefer the source where both are "
+    "present, and read the source before acting on the restatement.\n"
+    "recalled: a conversation transcript or a workshop artifact. Nobody "
+    "authored it. Treat it as a suggestion and verify against the path.\n"
     "--- END NOTICE ---"
 )
+
+#: What a hit whose tier could not be read is called. The safe direction:
+#: unknown is presented as derived, never as source.
+UNKNOWN_TIER_LABEL = "derived"
 
 _RRF_K = 60
 # Half-life of a memory's retrieval weight. Long, because this store holds
@@ -130,6 +147,10 @@ class RetrievalResult:
     # True when the conversation this memory was learned from has been deleted.
     # The fact still stands; there is simply no transcript left to go back to.
     source_deleted: bool = False
+    # How far this record stands from material nobody here wrote. Carried so
+    # the rendered block can say it: a hit the assistant wrote and a hit the
+    # operator supplied read identically otherwise.
+    source_tier: SourceTier | None = None
 
 
 class RetrievalPipeline:
@@ -164,6 +185,25 @@ class RetrievalPipeline:
         # packet with `session:` / `workshop:` chunks. Promotion to
         # authoritative memory still requires the librarian path.
         self._work_index = work_index
+        # Read once per pipeline rather than per query: `list_frontmatter`
+        # already parses the whole store on a query and a YAML read on top of
+        # that is a cost with nothing to show for it. A config change is
+        # picked up the way every other one is, by the watcher rebuilding
+        # what reads it.
+        self._tier_config_cache = None
+
+    def _tier_config(self):
+        """The derivation config, or None when it cannot be read.
+
+        Retrieval degrades rather than failing: a broken config costs the
+        tier ordering, not the answer.
+        """
+        if self._tier_config_cache is None:
+            try:
+                self._tier_config_cache = load_derivation_config()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("tier ranking not applied (%s)", exc)
+        return self._tier_config_cache
 
     def load_hot_index(self) -> str:
         return self._index.load_raw()
@@ -282,6 +322,7 @@ class RetrievalPipeline:
                 provenance=prov,
                 confidence=fm.confidence,
                 source_deleted=fm.source_deleted_at is not None,
+                source_tier=fm.source_tier,
             ))
         for fm in entity_hits:
             read_result = self._store.read(fm.id, log_access=False)
@@ -298,6 +339,7 @@ class RetrievalPipeline:
                 provenance=prov,
                 confidence=fm.confidence,
                 source_deleted=fm.source_deleted_at is not None,
+                source_tier=fm.source_tier,
             ))
 
         # Short-circuit only on a single slug hit. Multiple slug hits
@@ -457,6 +499,7 @@ class RetrievalPipeline:
         # hit that has since expired (Stage A's expiry filter no longer
         # gates these ids, so it has to be re-checked here).
         now = datetime.now(timezone.utc)
+        tier_config = self._tier_config()
         for mem_id in list(rrf_scores.keys()):
             fm = candidate_map.get(mem_id)
             if fm is None:
@@ -491,6 +534,13 @@ class RetrievalPipeline:
             # the final ranking, not only the Stage A prefilter pool. Default
             # 1.0 preserves prior behavior; lower values dampen proportionally.
             rrf_scores[mem_id] *= fm.confidence
+            # Provenance rank, as a term rather than a filter. Two hits that
+            # match a query equally well no longer tie when one of them is a
+            # model's restatement of the other: the source wins. A derived
+            # record still answers when it is the only thing that matches,
+            # which is why this multiplies rather than excludes.
+            if tier_config is not None:
+                rrf_scores[mem_id] *= tier_weight(fm.source_tier, tier_config)
 
         ranked = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
 
@@ -509,6 +559,7 @@ class RetrievalPipeline:
                 provenance=tuple(provenance.get(mem_id, ())),
                 confidence=fm.confidence,
                 source_deleted=fm.source_deleted_at is not None,
+                source_tier=fm.source_tier,
             ))
         return results
 
@@ -542,6 +593,7 @@ class RetrievalPipeline:
                 provenance=("vector",),
                 confidence=fm.confidence,
                 source_deleted=fm.source_deleted_at is not None,
+                source_tier=fm.source_tier,
             ))
         results.sort(key=lambda r: r.score, reverse=True)
         return results
@@ -687,6 +739,7 @@ class RetrievalPipeline:
                         provenance=("prefilter",),
                         confidence=fm.confidence,
                         source_deleted=fm.source_deleted_at is not None,
+                        source_tier=fm.source_tier,
                     ))
             if top_a_results:
                 d_task = asyncio.create_task(
@@ -725,6 +778,7 @@ class RetrievalPipeline:
                         provenance=("prefilter",),
                         confidence=fm.confidence,
                         source_deleted=fm.source_deleted_at is not None,
+                        source_tier=fm.source_tier,
                     ))
 
         # Stage C-post: LLM evaluate/rerank (if selector available)
@@ -904,6 +958,7 @@ class RetrievalPipeline:
                 wh_section = _format_work_history(work_history)
                 if wh_section:
                     parts.append(wh_section)
+                parts.append(TIER_NOTICE)
                 return "\n".join(parts)
             items = results.results
         else:
@@ -921,7 +976,11 @@ class RetrievalPipeline:
             parts.append("--- RETRIEVED MEMORIES ---")
             for r in memory_items:
                 via = "+".join(r.provenance) if r.provenance else "unknown"
-                meta = f"via={via} score={r.score:.2f} confidence={r.confidence:.2f}"
+                tier = r.source_tier.value if r.source_tier else UNKNOWN_TIER_LABEL
+                meta = (
+                    f"via={via} score={r.score:.2f} "
+                    f"confidence={r.confidence:.2f} from={tier}"
+                )
                 parts.append(f"\n### [{r.mem_type.value}] {r.title}  ({meta})\n{r.body}")
             parts.append(_TRUSTING_RECALL_SECTION)
 
@@ -937,14 +996,27 @@ class RetrievalPipeline:
         if wh_section:
             parts.append(wh_section)
 
+        # Once for the whole block, never once per section. It explains all
+        # three tiers, so a turn carrying both promoted memory and work
+        # history was getting the same four hundred characters twice.
+        parts.append(TIER_NOTICE)
+
         return "\n".join(parts)
 
 
 def _format_work_history(hits: list) -> str:
-    """Render the work-history block. Empty string when no hits."""
+    """Render the work-history block. Empty string when no hits.
+
+    Every hit here is the `recalled` tier by construction: session
+    transcripts and workshop artifacts, which nobody authored. The block
+    says so in its own header rather than carrying a notice written for it
+    alone.
+    """
     if not hits:
         return ""
-    parts: list[str] = ["\n--- WORK HISTORY (non-authoritative recall) ---"]
+    parts: list[str] = [
+        f"\n--- WORK HISTORY (from={SourceTier.RECALLED.value}) ---"
+    ]
     for h in hits:
         try:
             label = f"{h.source}:{h.source_ref}"
@@ -958,5 +1030,4 @@ def _format_work_history(hits: list) -> str:
             parts.append(f"\n### [{label}]{ts_tag}  `{location}`\n{preview}")
         except Exception:  # noqa: BLE001
             continue
-    parts.append(_WORK_HISTORY_NOTICE)
     return "\n".join(parts)

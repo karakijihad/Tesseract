@@ -89,6 +89,12 @@ class Message:
     footer: Pair | None = None
     payload: bool = False
     actions: tuple[Action, ...] = ()
+    #: The body was written by a model over counted facts and judged before it
+    #: got here. `outbound_writer` reads this and leaves such a message alone:
+    #: a second pass spends twice to say the same thing worse. Set by the
+    #: template that had a narration to lead with, and by the writer itself
+    #: once it has written one.
+    written: bool = False
 
     @property
     def is_long(self) -> bool:
@@ -265,6 +271,7 @@ def _runtime_report(context: dict[str, Any]) -> Message:
         title="Runtime",
         mark=marker(_text(context, "severity")),
         body=narration or f"{count} thing(s) need you",
+        written=bool(narration),
         bullets=tuple(lines),
         footer=(
             ("Full report", _text(context, "report_path"))

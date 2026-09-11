@@ -36,6 +36,8 @@ class SurfaceBindSessionTool(Tool):
         "live streaming from a session."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:

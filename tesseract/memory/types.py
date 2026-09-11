@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 #: Last-resort guard on `MemoryFrontmatter.summary`, not a style rule.
@@ -82,6 +82,115 @@ class Stability(str, Enum):
     ARCHIVED = "archived"
 
 
+class SourceTier(str, Enum):
+    """How far a record stands from material nobody in this runtime wrote.
+
+    Ranked, and the order is the whole point: ``SOURCE`` outranks ``DERIVED``
+    so a model's paraphrase of a paper cannot answer in place of the paper.
+
+    The invariants this carries, and every later change is checked against
+    ALL of them rather than against whichever one prompted it:
+
+    1. Closed. A record's tier is one of three; an unrecognised
+       ``source_type`` resolves to ``DERIVED``, the direction that cannot
+       promote model output by accident.
+    2. Never inferred from text. The tier comes from the declared table
+       below, keyed on what the writer already says it is writing.
+    3. Ranked in retrieval as a weight, not applied as a filter. A `derived`
+       record still answers when nothing better exists; it just never ties
+       with its own source.
+    4. Cheap to read. `list_frontmatter` parses every record on every query,
+       so the tier is resolved once at parse and never recomputed.
+    5. Degrades. A record whose tier cannot be resolved is still readable and
+       still retrievable, because a record that vanishes from retrieval is a
+       worse failure than one that ranks low.
+
+    ``RECALLED`` is not below ``DERIVED`` on any measurement. It is placed
+    there because the work-history block already renders below promoted
+    memory and this preserves that ordering rather than inventing one. OT-8
+    is where it gets a number.
+    """
+
+    #: Operator-supplied or externally fetched. Nothing in this runtime wrote
+    #: it, so nothing in this runtime can regenerate it, so it is never deleted.
+    SOURCE = "source"
+    #: Written by a model from something else already in the store.
+    DERIVED = "derived"
+    #: A conversation transcript or work-history artifact. Nobody rewrote it,
+    #: and nobody authored it either.
+    RECALLED = "recalled"
+
+
+#: The one place a `source_type` becomes a tier.
+#:
+#: Every writer of `source_type` in the tree is named here. A value absent
+#: from this table resolves to `DERIVED` — a new writer that forgot to
+#: declare itself is far more likely to be a pass over the store than a new
+#: kind of raw material, and that is the direction that fails safe.
+_TIER_BY_SOURCE_TYPE: dict[str, SourceTier] = {
+    # Model-written passes over records that already existed.
+    "consolidation": SourceTier.DERIVED,
+    "daily_brief": SourceTier.DERIVED,
+    # First-hand records of something that happened. The runtime observing
+    # its own drift is not summarising a document; it is the only account of
+    # that transition there will ever be.
+    "conscience_heartbeat": SourceTier.SOURCE,
+    # Same class, and no longer written by anything: it is in the live store
+    # from a job that has since gone. A table built only from the writers
+    # alive in the code today would have let the fallback demote 13 first-hand
+    # observations to `derived`, which is why the migration reports an
+    # unrecognised value rather than quietly resolving it.
+    "autonomy_heartbeat": SourceTier.SOURCE,
+    # A decision recorded with the plan file it was taken against. First-hand,
+    # not a summary of the plan.
+    "research": SourceTier.SOURCE,
+    # `memory_save` / `memory_update`'s operator-facing vocabulary.
+    "chat": SourceTier.SOURCE,
+    "upload": SourceTier.SOURCE,
+    "paper": SourceTier.SOURCE,
+    "article": SourceTier.SOURCE,
+    "data": SourceTier.SOURCE,
+    "snapshot": SourceTier.SOURCE,
+    "imagination": SourceTier.SOURCE,
+    "observation": SourceTier.SOURCE,
+    # Unset. Operator-written records predate the field entirely and the
+    # store is mostly these; treating them as derived would demote the
+    # operator's own facts to make room for nothing.
+    "": SourceTier.SOURCE,
+}
+
+#: `capture/reflect.py` stamps the conversation's own source, which is
+#: `mirror` or `channel:<name>`. Both are transcripts.
+_RECALLED_SOURCE_PREFIXES = ("mirror", "channel:")
+
+#: `vault_ingest` and `vault_raw_watch` stamp the file's own extension. Raw
+#: bytes the operator put in the vault, which is the one store this runtime
+#: never rewrites.
+#:
+#: Spelled out rather than imported from `vault_manager.EXTENSION_MAP`, which
+#: imports this module. A test asserts the two stay in step, so a newly
+#: ingestable file type cannot quietly become `derived` by being forgotten
+#: here.
+_VAULT_SUFFIXES: frozenset[str] = frozenset(
+    {
+        "pdf", "md", "txt", "csv", "json", "tsv", "xlsx", "docx", "pptx",
+        "png", "jpg", "jpeg", "gif", "svg", "mp3", "wav", "mp4",
+    }
+)
+
+
+def tier_for(source_type: str) -> SourceTier:
+    """The tier a `source_type` resolves to. The only derivation of it."""
+    value = (source_type or "").strip()
+    if value in _TIER_BY_SOURCE_TYPE:
+        return _TIER_BY_SOURCE_TYPE[value]
+    if value.startswith(_RECALLED_SOURCE_PREFIXES):
+        return SourceTier.RECALLED
+    if value in _VAULT_SUFFIXES:
+        return SourceTier.SOURCE
+    return SourceTier.DERIVED
+
+
 class MemoryFrontmatter(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -101,6 +210,21 @@ class MemoryFrontmatter(BaseModel):
     source_url: str = ""
     source_type: str = ""
     stability: Stability = Stability.ACTIVE
+
+    # How far this record stands from material nobody here wrote, and what it
+    # was written from. Absent on every record written before the field
+    # existed, so it resolves from `source_type` at parse time and is stamped
+    # on the next write — a lazy migration rather than a pass over the store,
+    # because the file on disk is the truth and rewriting the store to add a
+    # field nobody has read yet is a large edit for no reading.
+    source_tier: SourceTier | None = None
+    # Locators, never prose: memory ids or store-relative paths. The atlas
+    # refuses an edge without one and this is the same rule a level down.
+    derived_from: list[str] = Field(default_factory=list)
+    # One more than the deepest thing in `derived_from`. Stamped by
+    # `MemoryStore.write`, which is the only place that can see the sources,
+    # so a caller cannot declare itself shallow.
+    derivation_depth: int = Field(default=0, ge=0)
 
     # Belief-state fields (spec.md §1, §"Memory record shape", 2026-04-29).
     # `slug` is the canonical exact-match key for decisions (e.g. "voice_default").
@@ -140,6 +264,28 @@ class MemoryFrontmatter(BaseModel):
             return v.replace(tzinfo=timezone.utc)
         return v
 
+    @field_validator("source_tier", mode="before")
+    @classmethod
+    def _tier_degrades(cls, v):
+        """An unreadable tier ranks low; it never hides the record.
+
+        `list_frontmatter` catches a parse error by skipping the file, so a
+        raise here would delete a memory from retrieval on a typo. Ranking it
+        as `derived` is the safe direction and keeps it answerable.
+        """
+        if v is None or isinstance(v, SourceTier):
+            return v
+        try:
+            return SourceTier(str(v))
+        except ValueError:
+            return SourceTier.DERIVED
+
+    @model_validator(mode="after")
+    def _resolve_tier(self) -> MemoryFrontmatter:
+        if self.source_tier is None:
+            object.__setattr__(self, "source_tier", tier_for(self.source_type))
+        return self
+
     @field_validator("slug")
     @classmethod
     def slug_format(cls, v: str) -> str:
@@ -174,6 +320,16 @@ class MemoryFrontmatter(BaseModel):
         for field in ("source_path", "source_url", "source_type", "slug"):
             if not d.get(field):
                 d.pop(field, None)
+        # The tier is always written once a record passes through here: it is
+        # the fact retrieval ranks on, and leaving it implicit would mean
+        # re-deriving it from `source_type` on every parse forever. This is
+        # the lazy migration, and it is why a record written before the field
+        # existed comes back with one extra line.
+        d["source_tier"] = (self.source_tier or tier_for(self.source_type)).value
+        if not d.get("derived_from"):
+            d.pop("derived_from", None)
+        if not d.get("derivation_depth"):
+            d.pop("derivation_depth", None)
         # Confidence defaults to 1.0; only persist when a non-default value is
         # set so older memories round-trip unchanged.
         if d.get("confidence") == 1.0:

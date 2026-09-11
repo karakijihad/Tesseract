@@ -5,6 +5,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.memory.embeddings import EmbeddingIndex
 from tesseract.memory.index import MemoryIndex
 from tesseract.memory.store import MemoryStore
@@ -30,6 +31,8 @@ class MemoryForgetTool(Tool):
         "it for forensics."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     def __init__(
         self,
@@ -54,8 +57,18 @@ class MemoryForgetTool(Tool):
     async def run(self, tool_input: BaseModel, context: ToolContext) -> ToolResult:
         inp = tool_input if isinstance(tool_input, MemoryForgetInput) else MemoryForgetInput(**tool_input.model_dump())
 
+        # Read before deleting: after the call there is no file to ask where
+        # it was, and where it was is the half of the receipt a later pass
+        # checks the deletion against.
+        doomed_file = self._store.find_file(inp.memory_id)
+        doomed_path = str(doomed_file) if doomed_file else ""
+
         if not self._store.delete(inp.memory_id):
-            return ToolResult(output=f"Memory {inp.memory_id} not found.", is_error=True)
+            return ToolResult(
+                output=f"Memory {inp.memory_id} not found.",
+                is_error=True,
+                caller_error=True,
+            )
 
         self._index.remove(inp.memory_id)
         if self._embeddings is not None:
@@ -70,4 +83,7 @@ class MemoryForgetTool(Tool):
             except Exception:
                 pass
 
-        return ToolResult(output=f"Memory {inp.memory_id} deleted.")
+        return ToolResult(
+            output=f"Memory {inp.memory_id} deleted.",
+            receipt=Receipt(kind="record", id=inp.memory_id, locator=doomed_path),
+        )

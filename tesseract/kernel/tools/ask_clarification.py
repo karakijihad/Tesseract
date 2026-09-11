@@ -21,6 +21,7 @@ from typing import Any, Callable, ClassVar, Literal, Optional
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.workspace_events import EventStore, WorkspaceEvent
 from tesseract.workspace_events.broadcast import broadcast_workspace_event
 
@@ -84,6 +85,8 @@ class AskClarificationTool(Tool):
         "already writing; a reply on an existing thread, use `workspace_reply`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     def __init__(
         self,
@@ -109,6 +112,7 @@ class AskClarificationTool(Tool):
             return ToolResult(
                 output="ask_clarification requires a non-empty question",
                 is_error=True,
+                caller_error=True,
             )
         priority = _URGENCY_PRIORITY[inp.urgency]
         expires_at = (
@@ -149,6 +153,11 @@ class AskClarificationTool(Tool):
             output=(
                 f"Posted clarification {event.event_id} (urgency={inp.urgency}, "
                 f"expires {expires_at})."
+            ),
+            receipt=Receipt(
+                kind="record",
+                id=event.event_id,
+                locator=str(self._store.events_path),
             ),
             metadata={
                 "event_id": event.event_id,

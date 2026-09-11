@@ -102,6 +102,8 @@ class CredentialListTool(Tool):
         "request as it is sent, and it never enters this conversation."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:

@@ -19,7 +19,8 @@ export type EventKind =
   | 'daily_brief'
   | 'yaml_change_proposal'
   | 'kb_merge_conflict'
-  | 'clarification';
+  | 'clarification'
+  | 'project_proposal';
 
 export type OperatorPostSource = 'button' | 'scratchpad' | 'voice' | 'hotkey' | 'telegram';
 
@@ -106,16 +107,30 @@ class HttpError extends Error {
   // What the route said went wrong. One status covers several refusals here,
   // so the code alone cannot decide what to tell the operator.
   reason: string;
-  constructor(path: string, status: number, reason = '') {
-    super(`${path} ${status}`);
+  // The sentence the route wrote for the operator. `reason` is a short code
+  // ('refused', 'invalid_proposal'); this is the half a person can act on,
+  // and it was being dropped on the floor while the screen showed a URL and
+  // a status number instead.
+  detail: string;
+  constructor(path: string, status: number, reason = '', detail = '') {
+    super(detail || `${path} ${status}`);
     this.status = status;
     this.reason = reason;
+    this.detail = detail;
   }
 }
 
 async function failure(path: string, r: Response): Promise<HttpError> {
-  const body = (await r.json().catch(() => ({}))) as { error?: unknown };
-  return new HttpError(path, r.status, typeof body.error === 'string' ? body.error : '');
+  const body = (await r.json().catch(() => ({}))) as {
+    error?: unknown;
+    detail?: unknown;
+  };
+  return new HttpError(
+    path,
+    r.status,
+    typeof body.error === 'string' ? body.error : '',
+    typeof body.detail === 'string' ? body.detail : '',
+  );
 }
 
 async function jget<T>(path: string): Promise<T> {
@@ -305,9 +320,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         });
         return false;
       }
-      // Real failure (5xx, network, parse). Keep the row in place so
-      // the operator can retry, surface the error so they can read it.
-      set({ lastError: (err as Error).message });
+      // Real failure (5xx, network, parse) and every refusal the route
+      // explains in words: a stale spending limit, a change that cannot be
+      // checked. Keep the row in place so the operator can retry, and show
+      // what the route actually said rather than the URL it said it about.
+      set({ lastError: (err as HttpError).detail || (err as Error).message });
       return false;
     }
   },

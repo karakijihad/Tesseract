@@ -8,8 +8,8 @@
 //
 // **This file authors nothing about any of them.** Every state, its words, and
 // the sentence beside each name arrive in the payload. What is written here is
-// the field the control acts on: `run now`, `disable`, `delete`. Those name a
-// control rather than describing a job.
+// the field the control acts on: `run now`, `disable`, `delete`, `keep`,
+// `drop`. Those name a control rather than describing a job.
 //
 // It replaces the Schedule and the Agents tabs, which are deleted. A tab that
 // existed only to be linked into is the duplication that came back through the
@@ -20,6 +20,7 @@ import { Button } from '../../components/common/Button';
 import { Note } from '../../components/common/Note';
 import { RowActions } from '../../components/common/Row';
 import { Segmented } from '../../components/common/Segmented';
+import { Hint } from '../../components/ui/Hint';
 import { sendCommand } from '../../lib/commands';
 import { deleteScheduleJob, toggleAgentDisabled, cancelAlarm } from '../../lib/api';
 import type { ManagedLine, ManagedPlaybook, ManagedResponse } from '../../lib/api';
@@ -44,6 +45,18 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'alarms', label: 'Alarms' },
   { key: 'playbooks', label: 'Playbooks' },
 ];
+
+/** One sentence per tab, said before the first row. The runtime writes every
+ *  row's own words; this is the only sentence in the room that is the view's
+ *  to write, because it says what the LIST is rather than what any one row
+ *  says. */
+const TAB_SUMMARY: Record<Tab, string> = {
+  schedules: 'Jobs the runtime fires on its own, and what each one did last time.',
+  agents: 'Cards wired to a role that can run for you, and whether each one is switched on.',
+  alarms: 'What is waiting to go off, once or on a repeat.',
+  playbooks:
+    'Procedures the assistant wrote down after a way of doing something worked, and whether each one is active.',
+};
 
 /** What acting on a row does. Every one of them is a write on the route that
  *  already owns it, and what the row says afterwards is re-read rather than
@@ -72,6 +85,22 @@ function Controls({
    *  sat reading `starting` until the operator changed room. */
   read: string;
 }): React.ReactElement {
+  // What flipping the switch does, said in words rather than left to
+  // `turn off`/`turn on`, which names the gesture and not what changes: a
+  // schedule that stops firing and a card that stops being usable are not
+  // the same consequence, and the operator asked for exactly this gap filled.
+  const toggleHint =
+    kind === 'agents'
+      ? line.enabled
+        ? 'Stops the card being used until you turn it back on.'
+        : 'Lets the card be used again.'
+      : line.enabled
+        ? 'Stops the job firing on its own until you turn it back on.'
+        : 'Lets the job fire on its own schedule again.';
+  const deleteHint =
+    kind === 'alarms'
+      ? 'Cancels the alarm. It will not go off.'
+      : 'Removes the job for good. It stops firing and the schedule is gone.';
   // `canRun` is the backend's answer from the LAST payload, so it is still
   // true across the round trip of a first press. The engine refuses a second
   // hand-fired run now, but a control that stays pressable while nothing on
@@ -96,22 +125,45 @@ function Controls({
           {fired ? 'starting' : 'run now'}
         </Button>
       )}
+      {/* Running it again is not finding out why it failed, and the room
+          offered only the first for as long as it has existed. The path is the
+          backend's: `TESSERACT_HOME` moves per install, so a path composed
+          here would be right on one machine and wrong on every other. */}
+      {line.logPath && (
+        <Hint label="Reads the backend log around this failure and reports what it finds. It changes nothing and does not run the job again.">
+          <Button
+            onClick={() =>
+              sendCommand(
+                '/log_triage',
+                ` path=${JSON.stringify(line.logPath)} min_level=WARNING`,
+              )
+            }
+            ariaLabel={`Look into why ${line.name} failed`}
+          >
+            look into it
+          </Button>
+        </Hint>
+      )}
       {line.canToggle && (
-        <Button
-          onClick={() => acts.toggle(line, kind)}
-          ariaLabel={`${line.enabled ? 'Turn off' : 'Turn on'} ${line.name}`}
-        >
-          {line.enabled ? 'turn off' : 'turn on'}
-        </Button>
+        <Hint label={toggleHint}>
+          <Button
+            onClick={() => acts.toggle(line, kind)}
+            ariaLabel={`${line.enabled ? 'Turn off' : 'Turn on'} ${line.name}`}
+          >
+            {line.enabled ? 'turn off' : 'turn on'}
+          </Button>
+        </Hint>
       )}
       {line.canDelete && (
-        <Button
-          tone="danger"
-          onClick={() => acts.remove(line, kind)}
-          ariaLabel={`Delete ${line.name}`}
-        >
-          delete
-        </Button>
+        <Hint label={deleteHint}>
+          <Button
+            tone="danger"
+            onClick={() => acts.remove(line, kind)}
+            ariaLabel={`Delete ${line.name}`}
+          >
+            delete
+          </Button>
+        </Hint>
       )}
     </RowActions>
   );
@@ -144,8 +196,13 @@ function toLine(line: ManagedLine, kind: Tab, acts: Acts, read: string): StateLi
 }
 
 /** A playbook, read into the same one-line shape every roster on this room
- *  uses. It carries no controls: nothing on this panel runs, toggles or
- *  deletes a playbook, so unlike `toLine` this never reaches for `Controls`.
+ *  uses. It carries the one control the runtime hands the operator directly:
+ *  `playbook_judge`'s verdict, keep or drop, offered as whichever one the
+ *  current status has not already given, so an active playbook shows only
+ *  `drop` and a retired one shows only `keep`. Rewording a playbook that is
+ *  staying replaces the whole file with a revision only the assistant can
+ *  write, so it is said in words under the list rather than drawn as a
+ *  button with nothing for a click to fill in.
  *
  *  The sentence is the producer's own: what the playbook is for, or, when it
  *  cannot run, the one sentence saying why. `useWhen` rides under the row
@@ -155,6 +212,13 @@ function toPlaybookLine(playbook: ManagedPlaybook): StateLine {
   const value = playbook.version
     ? `v${playbook.version}, ${playbook.status}`
     : playbook.status;
+  const active = playbook.status === 'active';
+  const retired = playbook.status === 'retired';
+  const judge = (verdict: 'keep' | 'drop') =>
+    sendCommand(
+      '/playbook_judge',
+      ` name=${JSON.stringify(playbook.name)} verdict=${verdict}`,
+    );
   return {
     key: `playbooks:${playbook.name}`,
     // The state is the backend's, said with the row, like every other roster.
@@ -166,6 +230,24 @@ function toPlaybookLine(playbook: ManagedPlaybook): StateLine {
     more: playbook.useWhen ? (
       <span className="t-meta">{playbook.useWhen}</span>
     ) : undefined,
+    actions: (
+      <RowActions className="state-acts">
+        {!retired && (
+          <Hint label="Retires it. The prompt, playbook search and this panel all stop reading it. The file stays on disk.">
+            <Button tone="danger" onClick={() => judge('drop')} ariaLabel={`Drop ${playbook.name}`}>
+              drop
+            </Button>
+          </Hint>
+        )}
+        {!active && (
+          <Hint label="Activates it and carries it on every turn from now on.">
+            <Button onClick={() => judge('keep')} ariaLabel={`Keep ${playbook.name}`}>
+              keep
+            </Button>
+          </Hint>
+        )}
+      </RowActions>
+    ),
   };
 }
 
@@ -218,6 +300,8 @@ export function ManagedRoomView({
         )}
       </div>
 
+      <p className="t-meta">{TAB_SUMMARY[tab]}</p>
+
       {adding && tab === 'schedules' && (
         <AddJobForm
           onClose={() => {
@@ -246,27 +330,42 @@ export function ManagedRoomView({
             <StateStrip lines={managed.playbooks.map(toPlaybookLine)} />
           </div>
         )
-      ) : lines.length === 0 ? (
-        <p className="t-meta">
-          {tab === 'alarms'
-            ? 'No alarm is waiting to go off.'
-            : 'Nothing here yet.'}
-        </p>
-      ) : tab === 'alarms' ? (
-        <div className="autonomy-group">
-          <Band label="Waiting to go off" count={lines.length} />
-          <StateStrip lines={lines.map((l) => toLine(l, tab, acts, managed.observedAt))} />
-        </div>
-      ) : (
-        // One list, the app's own rows first, each carrying its own tag. The
-        // order is the route's: it reads the shipped half before yours, so
-        // the marks still fall in blocks without this file sorting anything.
-        <div className="autonomy-group">
-          <StateStrip
-            lines={lines.map((l) => toLine(l, tab, acts, managed.observedAt))}
-          />
-        </div>
+      ) : null}
+
+      {tab === 'playbooks' && managed.playbooks.length > 0 && (
+        // Said out loud rather than drawn as a button: rewording a playbook
+        // that is staying replaces the whole file with a revision only the
+        // assistant can write, and there is no form here for a click to fill
+        // that in with.
+        <Note>
+          To reword a playbook that is staying, ask the assistant to revise
+          it. It writes the new version and keeps the one it replaces.
+        </Note>
       )}
+
+      {tab !== 'playbooks' &&
+        (lines.length === 0 ? (
+          <p className="t-meta">
+            {tab === 'alarms'
+              ? 'No alarm is waiting to go off.'
+              : 'Nothing here yet.'}
+          </p>
+        ) : tab === 'alarms' ? (
+          <div className="autonomy-group">
+            <Band label="Waiting to go off" count={lines.length} />
+            <StateStrip lines={lines.map((l) => toLine(l, tab, acts, managed.observedAt))} />
+          </div>
+        ) : (
+          // One list, the app's own rows first, each carrying its own tag.
+          // The order is the route's: it reads the shipped half before
+          // yours, so the marks still fall in blocks without this file
+          // sorting anything.
+          <div className="autonomy-group">
+            <StateStrip
+              lines={lines.map((l) => toLine(l, tab, acts, managed.observedAt))}
+            />
+          </div>
+        ))}
 
       {tab === 'agents' && (
         // Said out loud rather than left as a missing button. Nothing in the

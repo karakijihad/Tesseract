@@ -13,7 +13,9 @@ from pydantic import BaseModel, Field
 
 from tesseract.config.cockpit import load_conductor_relay
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.orchestrator.agent_controller.lanes.tool_support import (
+    lane_record_locator,
     maybe_await,
     resolve_lane_manager,
 )
@@ -55,6 +57,8 @@ class LaneSendTool(Tool):
         "waits, which is `lane_turn`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     @property
     def name(self) -> str:
@@ -103,6 +107,7 @@ class LaneSendTool(Tool):
             return ToolResult(
                 output=f"lane_send rejected: {result.reason or 'unspecified'}",
                 is_error=True,
+                caller_error=True,
                 metadata={
                     "lane_id": inp.lane_id,
                     "accepted": False,
@@ -121,6 +126,11 @@ class LaneSendTool(Tool):
                 output=(
                     f"accepted lane_id={inp.lane_id} turn_id={result.turn_id} "
                     f"queue_depth={result.queue_depth}"
+                ),
+                receipt=Receipt(
+                    kind="record",
+                    id=result.turn_id,
+                    locator=lane_record_locator(manager, inp.lane_id),
                 ),
                 metadata=metadata,
             )
@@ -158,5 +168,10 @@ class LaneSendTool(Tool):
             )
         return ToolResult(
             output=outcome.reply_text or "(the turn completed with no reply)",
+            receipt=Receipt(
+                kind="record",
+                id=result.turn_id,
+                locator=lane_record_locator(manager, inp.lane_id),
+            ),
             metadata=metadata,
         )

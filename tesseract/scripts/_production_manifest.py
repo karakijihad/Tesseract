@@ -109,7 +109,7 @@ EXCLUDE_PATH_GLOBS = (
     # make_shipping_workspace.build_shipping_workspace instead.
     "tesseract/workspace/*.md",
     # Task 17: memory-store/vault/workshop ship ready with hand-authored
-    # scaffold content (MEMORY.md+WHAT_NOT_TO_SAVE.md, CATALOG.md,
+    # scaffold content (MEMORY.md, CATALOG.md,
     # INDEX.md+README.md), same pattern as workspace above — templates live
     # under each dir's `_shipping/`, applied via
     # make_shipping_workspace.build_shipping_workspace, and must not also

@@ -100,6 +100,19 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => {
   // would re-dispatch /resume against a still-stale id — producing
   // duplicate "session not found" entries in the pulse feed.
   let _autoResumeAttempted = false;
+  // Whether the operator has already said something on this page load.
+  //
+  // Auto-resume fires on connect and reaches its `/resume` only after two
+  // awaited fetches, which is long enough for somebody to type. Resuming then
+  // switches the conversation out from under them: `loadHistory` replaces the
+  // slice wholesale, so the bubble they were watching disappears along with
+  // the chat it was in, and the composer had already cleared so it looked
+  // sent. Measured three times out of three in Playwright, which types faster
+  // than a person and so hits the window every time.
+  //
+  // Typing IS choosing a conversation. A restore that arrives afterwards is
+  // answering a question the operator has already answered.
+  let _operatorHasSpoken = false;
   // Live-gate fix pass (Finding 2, 2026-07-05) — one-shot guard mirroring
   // `_autoResumeAttempted`: the terminal store's `bootstrapPanes()` already
   // handles the FIRST successful connection per page load (via TerminalView's
@@ -248,6 +261,11 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => {
             ]).then(() => {
               const sessions = useSessionStore.getState().sessions;
               const match = sessions.find((s) => s.chat_id === persistedId);
+              if (_operatorHasSpoken) {
+                // Checked HERE and not before the fetches: the window this
+                // closes is the fetches themselves.
+                return;
+              }
               if (match && isWithinResumeCutoff(match.started_at)) {
                 if (_socket?.readyState === WebSocket.OPEN) {
                   // By id, not by name: `/resume` reopens the conversation
@@ -384,6 +402,7 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => {
     },
 
     sendMessage: (type: string, data: Record<string, unknown>) => {
+      if (type === "chat_message") _operatorHasSpoken = true;
       if (_socket?.readyState === WebSocket.OPEN) {
         _socket.send(JSON.stringify({ type, data }));
       } else {

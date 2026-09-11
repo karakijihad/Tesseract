@@ -36,8 +36,8 @@
 #              be worth 3,481,800 characters.
 #
 # That gap is the whole reason this is per model. A chain's ceiling is the
-# SMALLEST of its members, because a fold has to produce something sendable to
-# whichever member answers.
+# SMALLEST of its members, because whichever member answers has to be able to
+# take what is sent.
 #
 # Optional per-model quirks, absent meaning off: `use_responses_api`,
 # `reasoning_effort`, and `stream`. Set `stream: false` for an endpoint that
@@ -84,8 +84,6 @@ availability:
 #
 # Per-provider SDK retries (`max_retries` on each connection block)
 # operate at the HTTP layer and run BEFORE these chain-level retries.
-# Compaction (`tesseract/brain/compaction.py`) bypasses this chain
-# entirely and uses only the primary.
 #
 # Per-provider override: any provider block below may set its own
 # `transient_retries` / `transient_backoff_ms` / `cooldown_max_failures` /

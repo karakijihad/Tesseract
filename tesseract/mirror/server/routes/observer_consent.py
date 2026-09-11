@@ -109,6 +109,17 @@ async def arm(request: web.Request) -> web.Response:
 
 
 async def disarm(request: web.Request) -> web.Response:
+    """Stop watching. Deliberately NOT a withdrawal of consent.
+
+    It empties the consented set, which looks like the act that takes the
+    observation records off disk with it, and it is not: `arm` bulk-grants
+    consent for every live pane again, so this pair is a pause and a resume
+    rather than a decision about permission. An operator pausing the observer
+    for ten minutes would lose a fortnight of notes.
+
+    Withdrawing consent is per pane, and `PTYManager.withdraw_consent` is the
+    act that reaches the records.
+    """
     observer = request.app.get("observer")
     if observer is None:
         return _no_observer()

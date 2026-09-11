@@ -15,11 +15,18 @@ from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.memory import dedupe
+from tesseract.memory.capture_policy import explain_block
 from tesseract.memory.embeddings import EmbeddingIndex
 from tesseract.memory.index import MemoryIndex
 from tesseract.memory.store import MemoryStore
-from tesseract.memory.types import MemoryFrontmatter, MemoryType, lead_paragraph
+from tesseract.memory.types import (
+    MemoryFrontmatter,
+    MemoryType,
+    SourceTier,
+    lead_paragraph,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +80,27 @@ class MemorySaveInput(BaseModel):
     subdir: str = Field(default="", description="Optional sub-bucket within the type folder, e.g. 'people' to save into reference/people/. Forward slashes nest (e.g. 'sprints/2026-q2'). The frontmatter type still applies; subdir is organizational only.")
 
 
+#: What an unattended session's saves are called on the record. Not `chat`,
+#: which means the operator said it, and not the caller's own word: the whole
+#: point of the field is that a reader ranking a memory can tell where it came
+#: from, and a morning's read of the open web ranking as something the operator
+#: told us is the failure the provenance floor exists to prevent.
+AUTONOMY_SOURCE = "autonomy"
+
+
+def _source_type_for(inp: "MemorySaveInput", context: ToolContext) -> str:
+    """The provenance stamped on this save.
+
+    An autonomy session's is fixed, and the caller cannot name its way out of
+    it. Everywhere else the caller's own word wins as it always has, falling
+    back to `chat` for something said and `upload` for something with a file
+    behind it.
+    """
+    if context.session_kind == "autonomy":
+        return AUTONOMY_SOURCE
+    return inp.source_type or ("chat" if not inp.source_path else "upload")
+
+
 class MemorySaveTool(Tool):
     default_posture = "auto"
 
@@ -91,6 +119,11 @@ class MemorySaveTool(Tool):
         "`diary_append` for self-reflection about the assistant itself."
     )
     depends_on: ClassVar[str] = ""
+    # A memory is a record in the app's own store, and its id is what
+    # `memory_get` and `memory_update` are handed later. The path is the
+    # locator because the store is files on disk and always has been.
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     def __init__(
         self,
@@ -117,10 +150,31 @@ class MemorySaveTool(Tool):
     async def run(self, tool_input: BaseModel, context: ToolContext) -> ToolResult:
         inp = tool_input if isinstance(tool_input, MemorySaveInput) else MemorySaveInput(**tool_input.model_dump())
 
+
         try:
             mem_type = MemoryType(inp.type)
         except ValueError:
             return ToolResult(output=f"Invalid memory type: {inp.type}", is_error=True)
+
+        # A `feedback` memory is an operator correction: it governs behaviour
+        # from then on, in every conversation, attended or not. What the
+        # morning reads is the open web and files an outside tool may have
+        # written, so a sentence in one of them must not be able to become a
+        # standing rule about how the assistant works. Everything else an
+        # unattended session learns is welcome, which is why this refuses one
+        # type rather than the tool.
+        if mem_type is MemoryType.FEEDBACK and context.session_kind == "autonomy":
+            return ToolResult(
+                output=(
+                    "Nobody is watching this conversation, so it cannot save a "
+                    "correction about how you work. Save what you learned as "
+                    "`project` or `reference` instead, and if it really is a "
+                    "rule, say so in a turn the operator is part of."
+                ),
+                is_error=True,
+                caller_error=True,
+                metadata={"refused_unattended": True},
+            )
 
         if inp.slug and not re.match(r"^[a-z0-9][a-z0-9_]*$", inp.slug):
             return ToolResult(
@@ -195,7 +249,19 @@ class MemorySaveTool(Tool):
             source_session=context.session_id,
             source_path=inp.source_path,
             source_url=inp.source_url,
-            source_type=inp.source_type or ("chat" if not inp.source_path else "upload"),
+            # An unattended save says so, whatever the caller called it. The
+            # provenance floor downstream reads this field, and a morning's
+            # read of the web filed as `chat` is indistinguishable from
+            # something the operator actually said.
+            source_type=_source_type_for(inp, context),
+            # Stated rather than left to resolve from `source_type`, which is
+            # free text here: an unrecognised value resolves to `derived`, and
+            # a derived record with nothing to point at is refused. This is
+            # the first-hand save path, so what arrives through it is source
+            # material whatever the caller called it. A pass that summarises
+            # the store writes through the librarian, which declares what it
+            # read.
+            source_tier=SourceTier.SOURCE,
             slug=inp.slug,
             confidence=inp.confidence,
             expiry_at=expiry_dt,
@@ -221,7 +287,9 @@ class MemorySaveTool(Tool):
                 return await self._refresh_existing(existing_id, now)
 
         if not self._store.write(fm, body, subdir_override=subdir_override):
-            return ToolResult(output="Memory blocked by WHAT_NOT_TO_SAVE policy.", is_error=True)
+            return ToolResult(
+                output=explain_block(self._store.last_block_reason), is_error=True
+            )
 
         self._index.add(fm)
 
@@ -293,7 +361,12 @@ class MemorySaveTool(Tool):
 
                 # Off the loop: it reads the usage log whole and a day of
                 # turn records, inside a turn.
-                await asyncio.to_thread(attribute_session_corrections, context.session_id)
+                # The memory id travels with it: this record IS the
+                # correction, and the refinement job's evidence is a step
+                # number without it.
+                await asyncio.to_thread(
+                    attribute_session_corrections, context.session_id, fm.id
+                )
             except Exception:  # noqa: BLE001 — telemetry must never break the save
                 logger.warning("memory_save: skill-correction attribution failed", exc_info=True)
 
@@ -302,6 +375,7 @@ class MemorySaveTool(Tool):
         saved_path = str(saved_file) if saved_file else ""
         return ToolResult(
             output=f"Memory saved: {fm.id} ({fm.title}){slug_note}{embed_note}{link_note}",
+            receipt=Receipt(kind="record", id=fm.id, locator=saved_path),
             metadata={
                 "status": "saved",
                 "memory_id": fm.id,
@@ -339,7 +413,10 @@ class MemorySaveTool(Tool):
         existing = self._store.read(existing_id, log_access=False)
         if existing is None:
             logger.warning("dedupe reported %s but it could not be read; skipping refresh", existing_id)
-            return ToolResult(output=f"Memory deduped: match {existing_id} not readable (stale index?)")
+            return ToolResult(
+                output=f"Memory deduped: match {existing_id} not readable (stale index?)",
+                receipt=Receipt.nothing(),
+            )
         existing_fm, existing_body = existing
         existing_fm.updated_at = now
         existing_file = self._store.find_file(existing_id)
@@ -347,8 +424,9 @@ class MemorySaveTool(Tool):
         if not self._store.write(existing_fm, existing_body):
             return ToolResult(
                 output=(
-                    f"Memory deduped: near-duplicate of {existing_id} ({existing_fm.title}); "
-                    "refresh rejected by WHAT_NOT_TO_SAVE policy; updated_at not persisted."
+                    f"Memory deduped: near-duplicate of {existing_id} ({existing_fm.title}). "
+                    "The refresh could not be written, so updated_at was not "
+                    "persisted. The record itself is unchanged and still there."
                 ),
                 is_error=True,
                 metadata={
@@ -363,6 +441,9 @@ class MemorySaveTool(Tool):
                 f"Memory deduped: near-duplicate of {existing_id} ({existing_fm.title}); "
                 "refreshed updated_at instead of creating a new entry."
             ),
+            # A refresh is a write. It moved `updated_at` on a real
+            # record, so it points at that record rather than at nothing.
+            receipt=Receipt(kind="record", id=existing_id, locator=existing_path),
             metadata={
                 "status": "deduped",
                 "memory_id": existing_id,

@@ -1,4 +1,5 @@
-"""Vault lint — five-pass wiki auditor (orphan, stale, contradict, missing-hub, scale).
+"""Vault lint — six-pass wiki auditor (orphan, stale, contradict, missing-hub,
+redundant, scale).
 
 Lint is proposal, not action; `VaultLinter.run()` returns a `VaultLintReport`.
 `dry_run=True` skips all filesystem writes.
@@ -6,6 +7,7 @@ Lint is proposal, not action; `VaultLinter.run()` returns a `VaultLintReport`.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 import os
@@ -19,6 +21,8 @@ from itertools import combinations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 from tesseract.agents.loader import AgentDefinition, load_agent
 from tesseract.context.circuit_breaker import CircuitBreaker
 from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
@@ -28,11 +32,17 @@ from tesseract.lib import clock
 
 if TYPE_CHECKING:
     from tesseract.brain.boot import VaultConfig
+    from tesseract.memory.embeddings import EmbeddingIndex
 
 logger = logging.getLogger(__name__)
 
 _WRITABLE_VERDICTS = frozenset({"weaken", "qualify", "contradict"})
 _MISSING_HUB_MIN_MENTIONS = 3
+# Cosine at which two wiki pages read as one. Above `dedupe.MERGE_THRESHOLD`
+# (0.88) because a proposal a person reads should be right more often than a
+# write-time guard needs to be, and two pages about one subject sit high on
+# this scale without being restatements of each other.
+_REDUNDANCY_THRESHOLD = 0.93
 _MISSING_HUB_MAX_SUGGESTIONS = 10
 _RESERVED_STEMS = frozenset({"INDEX", "TAXONOMY", "ingest-log", "LINT-REPORT"})
 _SLUG_RE = re.compile(r"[^a-z0-9-]+")
@@ -53,12 +63,28 @@ class MissingHubFinding:
     suggested_slug: str
 
 
+@dataclass(frozen=True)
+class RedundancyFinding:
+    """Two wiki pages that restate one source.
+
+    The pass the other five could not make. A restatement AGREES with what it
+    restates, so the contradiction pass can never fire on one, and dense
+    linkage between a page and its own paraphrase reads to consolidation as
+    importance rather than as duplication.
+    """
+
+    slug_a: str
+    slug_b: str
+    similarity: float
+
+
 @dataclass
 class VaultLintReport:
     orphans: list[str] = field(default_factory=list)
     stale: list[str] = field(default_factory=list)
     contradictions: list[ContradictionFinding] = field(default_factory=list)
     missing_hubs: list[MissingHubFinding] = field(default_factory=list)
+    redundant: list[RedundancyFinding] = field(default_factory=list)
     scale_alarm: bool = False
     scale_page_count: int = 0
     failures: list[str] = field(default_factory=list)
@@ -73,6 +99,7 @@ class VaultLinter:
         adapter_options: AdapterOptions,
         log_dir: Path | None = None,
         agents_dir: Path | None = None,
+        embeddings: "EmbeddingIndex | None" = None,
     ) -> None:
         self._manager = vault_manager
         self._config = config
@@ -81,6 +108,10 @@ class VaultLinter:
         self._breaker = CircuitBreaker(name="vault_lint", log_dir=log_dir)
         self._agents_dir = agents_dir
         self._agent: AgentDefinition | None = None
+        # The redundancy pass needs cosine and nothing else. None means the
+        # pass is skipped, the way the contradiction pass is skipped with no
+        # adapter: an offline embedder costs a finding, never the run.
+        self._embeddings = embeddings
 
     async def run(self, dry_run: bool = False) -> VaultLintReport:
         report = VaultLintReport()
@@ -92,6 +123,7 @@ class VaultLinter:
         self._pass_stale(source_slugs, report, today, dry_run)
         await self._pass_contradict(source_slugs, report, today, dry_run)
         self._pass_missing_hub(source_slugs, report, today, dry_run)
+        await self._pass_redundant(source_slugs, report, today, dry_run)
         self._pass_scale(report, today, dry_run)
         return report
 
@@ -228,6 +260,81 @@ class VaultLinter:
         if findings and not dry_run:
             self._append_lint_report(findings, today)
 
+    async def _pass_redundant(
+        self,
+        slugs: list[str],
+        report: VaultLintReport,
+        today: str,
+        dry_run: bool,
+    ) -> None:
+        """Pages that restate one another, proposed for merge and never merged.
+
+        The vault is append-only and this phase does not change that. What
+        this produces is the same card the missing-hub pass produces: a line
+        in `LINT-REPORT.md` for the operator to act on or ignore.
+
+        **It embeds the pages itself rather than searching the shared index,
+        because compiled wiki pages are not in that index.** `VaultIndexer`
+        only ever runs over an ingested RAW file (`vault_ingest` and
+        `vault_raw_watch` are its two callers), so the index holds `mem_*`
+        records and `vault:<raw path>:chunk_N` chunks and no wiki slug has
+        ever been added to it. Searching it for one returns nothing, forever,
+        with every stage reporting success. That is the exact failure this
+        pass exists to catch, so it must not be the way the pass works.
+        """
+        if self._embeddings is None or len(slugs) < 2:
+            return
+        summaries: dict[str, str] = {}
+        for slug in slugs:
+            text = _page_summary(self._manager, slug).strip()
+            if text:
+                summaries[slug] = text
+        if len(summaries) < 2:
+            return
+
+        ordered = sorted(summaries)
+        # One embed per page, and they do not depend on each other. A lint
+        # over a shelf of pages is otherwise N sequential round trips to the
+        # embedder for a report nobody is waiting on.
+        vectors = await asyncio.gather(
+            *(self._embeddings.embed_text(summaries[slug]) for slug in ordered),
+            return_exceptions=True,
+        )
+
+        usable: list[tuple[str, "np.ndarray"]] = []
+        for slug, vector in zip(ordered, vectors):
+            if isinstance(vector, BaseException) or vector is None:
+                # An embedder that could not answer costs the comparisons that
+                # page was in, and no other. `embed_text` already logs why.
+                if isinstance(vector, BaseException):
+                    logger.warning(
+                        "vault lint: could not embed %s (%s)", slug, vector
+                    )
+                report.failures.append(f"redundant:{slug}")
+                continue
+            arr = np.asarray(vector, dtype=np.float32)
+            norm = float(np.linalg.norm(arr))
+            if norm == 0.0:
+                continue
+            # `embed_text` returns the raw vector; `EmbeddingIndex.add`
+            # normalises before it stores one. Normalising here is what makes
+            # the dot product below a cosine, and what makes the threshold
+            # comparable to the one the index uses.
+            usable.append((slug, arr / norm))
+
+        findings: list[RedundancyFinding] = []
+        for (slug_a, vec_a), (slug_b, vec_b) in combinations(usable, 2):
+            score = float(np.dot(vec_a, vec_b))
+            if score >= _REDUNDANCY_THRESHOLD:
+                findings.append(
+                    RedundancyFinding(
+                        slug_a=slug_a, slug_b=slug_b, similarity=score
+                    )
+                )
+        report.redundant = findings
+        if findings and not dry_run:
+            self._append_redundancy_report(findings, today)
+
     def _pass_scale(
         self,
         report: VaultLintReport,
@@ -281,7 +388,30 @@ class VaultLinter:
             out[slug] = terms
         return out
 
+    def _append_redundancy_report(
+        self, findings: list[RedundancyFinding], today: str
+    ) -> None:
+        self._append_report_entry(
+            f"## {today} — pages that restate one another",
+            [
+                f"- **{f.slug_a}** and **{f.slug_b}** read as one page "
+                f"(similarity {f.similarity:.2f}). Merge or keep both, "
+                f"deliberately."
+                for f in findings
+            ],
+        )
+
     def _append_lint_report(self, findings: list[MissingHubFinding], today: str) -> None:
+        self._append_report_entry(
+            f"## {today} — missing-hub suggestions",
+            [
+                f"- **{f.term}** (mentioned {f.mention_count}×) → suggested "
+                f"slug `{f.suggested_slug}`"
+                for f in findings
+            ],
+        )
+
+    def _append_report_entry(self, heading: str, lines: list[str]) -> None:
         path = self._manager.wiki_dir / "LINT-REPORT.md"
         self._manager.wiki_dir.mkdir(parents=True, exist_ok=True)
         header = "# Vault Lint Report\n\n"
@@ -292,12 +422,7 @@ class VaultLinter:
             if path.exists():
                 existing = path.read_text(encoding="utf-8")
                 body = existing[len(header):] if existing.startswith(header) else existing
-            entry_lines = [f"## {today} — missing-hub suggestions", ""]
-            for f in findings:
-                entry_lines.append(
-                    f"- **{f.term}** (mentioned {f.mention_count}×) → suggested slug `{f.suggested_slug}`"
-                )
-            entry_lines.append("")
+            entry_lines = [heading, "", *lines, ""]
             new_content = header + "\n".join(entry_lines) + "\n" + body
             tmp = path.with_suffix(".tmp")
             tmp.write_text(new_content, encoding="utf-8")

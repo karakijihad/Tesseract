@@ -69,6 +69,10 @@ _FIELDS: tuple[tuple[str, str], ...] = (
     ("Next", "next_action"),
     ("Open questions", "open_questions"),
     ("Blocked by", "blocked_by"),
+    # Immediately before the paths it makes readable. A list of relative paths
+    # with nothing saying what they hang off is a list the next context cannot
+    # open, and it goes looking for the project it is already standing in.
+    ("Working from", "work_root"),
     ("Artifacts", "artifacts"),
 )
 
@@ -182,7 +186,6 @@ def package_for(
 class BoundaryBounds:
     repeat_limit: int
     cycle_window: int
-    tool_failure_limit: int
 
 
 def _require(d: dict, key: str, where: str):
@@ -203,9 +206,6 @@ def load_boundary_bounds() -> BoundaryBounds:
     return BoundaryBounds(
         repeat_limit=int(_require(section, "repeat_limit", "roles.yaml boundary")),
         cycle_window=int(_require(section, "cycle_window", "roles.yaml boundary")),
-        tool_failure_limit=int(
-            _require(section, "tool_failure_limit", "roles.yaml boundary")
-        ),
     )
 
 
@@ -305,12 +305,60 @@ def why_not_continue(chat_id: str) -> str:
     return ""
 
 
-def _still_shrinking(run: list[Checkpoint], *, window_size: int) -> bool:
-    """Whether there is less left to do than there was before the window.
+def _owed(checkpoint: Checkpoint) -> set[str]:
+    """What a boundary said was left, as items rather than as a number.
 
-    `run` is newest first. Compares what the newest boundary says remains
-    against what was owed just before the window opened, so a conversation
-    closing items while it revisits steps reads as converging.
+    Compared loosely on purpose. These are sentences a model wrote at two
+    different moments about the same work, so "Fix the parser" and "fix the
+    parser." are the same thing owed twice and matching them exactly would
+    read a full stop as progress. Nothing stronger than case, surrounding
+    space and trailing punctuation is normalised: a rewrite that goes further
+    than that is a different description of the work, which is precisely what
+    the caller needs to be able to see.
+    """
+    items: set[str] = set()
+    for line in checkpoint.remaining:
+        text = " ".join((line or "").split()).casefold().rstrip(".,;:!? ")
+        if text:
+            items.add(text)
+    return items
+
+
+def _still_shrinking(run: list[Checkpoint], *, window_size: int) -> bool:
+    """Whether the work got smaller across the window, and not just shorter.
+
+    `run` is newest first. It compares what the newest boundary says remains
+    against what was owed just before the window opened.
+
+    Four things at once, because this is the exemption from the only refusal
+    left in `why_not_continue` and each of them has already been got wrong
+    once:
+
+    1. **Converging work is never refused.** Revisiting the same two steps
+       while closing items each pass is what finishing something looks like.
+       This is the property the deleted count broke, and refusing it in a
+       narrower disguise would be the same defect.
+    2. **A cycle is not excused.** Two steps alternating forever must still
+       reach the refusal.
+    3. **The evidence is read off the record**, never inferred from the
+       transcript or from how long the conversation has run.
+    4. **It is not a number the model can move without doing the work.** It
+       used to be `len(newest.remaining) < len(before.remaining)`, and a list
+       is a thing the model writes: merging two items into one sentence, or
+       simply reporting less, looked exactly like finishing one.
+
+    So it asks whether something that was owed is no longer owed, and it asks
+    it of items rather than of a count. A cycle owes the same things every
+    time, so nothing has closed and the refusal stands. Converging work has
+    closed at least one and carried the rest, so it is exempt.
+
+    The carried half is what makes the item comparison safe. A boundary whose
+    remaining list has nothing in common with the earlier one has not closed
+    items, it has rewritten the description, and a wholesale rewrite scores as
+    "everything closed" under set difference alone. Requiring something to
+    have been carried costs nothing real: work that is actually converging
+    still owes some of what it owed a few boundaries ago, or it would have
+    ended rather than continued.
 
     A boundary that reported nothing remaining is not evidence of progress
     here: it is the case the first refusal already answers, and treating an
@@ -320,9 +368,12 @@ def _still_shrinking(run: list[Checkpoint], *, window_size: int) -> bool:
     if len(run) <= window_size:
         return False
     newest, before = run[0], run[window_size]
-    if not newest.remaining or not before.remaining:
+    owed_now, owed_before = _owed(newest), _owed(before)
+    if not owed_now or not owed_before:
         return False
-    return len(newest.remaining) < len(before.remaining)
+    carried = owed_before & owed_now
+    closed = owed_before - owed_now
+    return bool(carried) and bool(closed)
 
 
 __all__ = [

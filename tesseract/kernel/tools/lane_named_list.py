@@ -34,6 +34,8 @@ class LaneNamedListTool(Tool):
         "a binding's liveness, which is `lane_status`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:

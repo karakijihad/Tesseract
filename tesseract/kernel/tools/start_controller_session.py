@@ -36,6 +36,7 @@ from tesseract.kernel.tools.base import (
     ToolContext,
     ToolResult,
 )
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.orchestrator.agent_controller.dispatcher import (
     DispatcherError,
     dispatch_to_controller,
@@ -102,6 +103,8 @@ class StartControllerSessionTool(Tool):
         "`lane_turn`/`session_send`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     @property
     def name(self) -> str:
@@ -236,6 +239,11 @@ class StartControllerSessionTool(Tool):
                 f"started controller session {result.session_id} "
                 f"({tool_input.mode}). Attach with: agent --session "
                 f"{result.session_id}"
+            ),
+            receipt=Receipt(
+                kind="record",
+                id=result.session_id,
+                locator=str(metadata.get("child_transcript_path", "")),
             ),
             metadata=metadata,
         )

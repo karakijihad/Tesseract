@@ -121,6 +121,24 @@ class VerifyCommands(BaseModel):
     def is_empty(self) -> bool:
         return not any((self.test, self.typecheck, self.lint, self.live))
 
+    def as_contract(self) -> str:
+        """The declared checks as one comparable string, gate order.
+
+        Written onto a task when it is accepted and compared against the live
+        project when it closes, so a close can tell whether the checks it ran
+        are the ones that were promised. One renderer for both sides, because
+        two would eventually disagree about spacing and report every task as
+        changed.
+        """
+        return "\n".join(
+            f"{name}: {command}"
+            for name, command in (
+                ("test", self.test), ("typecheck", self.typecheck),
+                ("lint", self.lint), ("live", self.live),
+            )
+            if command
+        )
+
 
 class Project(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -172,6 +190,20 @@ class Registry(BaseModel):
     git_identity: GitIdentity | None = None
 
 
+def budget_line(budget_usd: float | None) -> str:
+    """A budget as the operator reads it, and the two empties say different things.
+
+    Lives beside the field so every surface says it the same way: the proposal
+    `project_new` posts, the ASK gate `project_budget` raises, and the roster
+    `project_list` prints. `None` and `0` are opposite answers, and a renderer
+    showing either as "0.00" would hide the one that matters, which is that
+    nothing was ever priced.
+    """
+    if budget_usd is None:
+        return "none, so it will not be worked unattended"
+    return f"${budget_usd:.2f} a day"
+
+
 __all__ = [
     "AMBIENT",
     "GitIdentity",
@@ -179,6 +211,7 @@ __all__ = [
     "Registry",
     "VcsInfo",
     "VerifyCommands",
+    "budget_line",
     "mint_project_id",
     "normalize_root",
     "utc_now_iso",

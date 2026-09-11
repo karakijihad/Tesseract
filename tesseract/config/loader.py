@@ -39,24 +39,12 @@ from tesseract.paths import CONFIG_DIR, config_dir
 PROVIDERS_YAML = CONFIG_DIR / "providers.yaml"
 ROLES_YAML = CONFIG_DIR / "roles.yaml"
 
-# How full a conversation may get before it folds, when nothing else says.
-# `roles.yaml::compaction.compact_ratio` is the setting; this is what a caller
-# reaching for a session without that file gets. One definition, because
-# `boot.py` and `chat.py` each used to keep a number here and they disagreed.
+# How full a conversation may get before it reaches a boundary, when nothing
+# else says. `roles.yaml::compaction.compact_ratio` is the setting; this is
+# what a caller reaching for a session without that file gets. One definition,
+# because `boot.py` and `chat.py` each used to keep a number here and they
+# disagreed.
 DEFAULT_COMPACT_RATIO = 0.25
-
-# How many recent turns the verbatim tail keeps, when nothing else says. A
-# turn is one user message and everything the assistant did before the next
-# one, so five is five exchanges however many tool calls they carry. The
-# runtime keeps fewer when they do not fit; see `chat.py::_tail_ceiling_tokens`.
-DEFAULT_KEEP_RECENT_TURNS = 5
-
-# How far clear of the unfoldable floor the trigger must sit, when nothing
-# else says. `roles.yaml::compaction.headroom_multiplier` is the setting. This
-# number was written out three times, in `chat.py`, `boot.py` and the schema,
-# and the only reason they never disagreed is that nobody had reason to change
-# one of them yet.
-DEFAULT_HEADROOM_MULTIPLIER = 1.2
 
 # The hard ceiling on the assembled prompt, in characters, when nothing else
 # says. `roles.yaml::compaction.prompt_char_budget` is the setting.
@@ -65,15 +53,15 @@ DEFAULT_HEADROOM_MULTIPLIER = 1.2
 # Codex CLI errors at 1,048,576 with `input_too_large`, and this leaves about
 # 150 KB of headroom for adapter wrapping and output room. It is an EMERGENCY
 # guard and not what bounds a conversation: `compact_ratio` bounds it, and this
-# stops a single turn that outgrew the conversation between two folds from
-# failing every model in the chain.
+# stops a single turn that outgrew the conversation between two boundaries
+# from failing every model in the chain.
 #
-# It used to generate a second fold trigger of its own, at
+# It used to generate a second trigger of its own, at
 # `compaction.trigger_share` of this number. That trigger was lower than the
-# ratio's on every real configuration, so it was what decided every fold and
-# the operator's dial decided nothing. Boot now refuses a ratio this budget
-# cannot carry instead, which is the same protection stated as a question the
-# operator can answer.
+# ratio's on every real configuration, so it was what decided every crossing
+# and the operator's dial decided nothing. Boot now refuses a ratio this
+# budget cannot carry instead, which is the same protection stated as a
+# question the operator can answer.
 DEFAULT_PROMPT_CHAR_BUDGET = 900_000
 
 _SHELL_VAR_RE = re.compile(r"^\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}$")

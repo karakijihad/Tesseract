@@ -11,7 +11,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
 
-ChannelUserTier = Literal["operator", "friend"]
+# There is no tier. A channel has an allowlist, and being on it is the whole
+# of the permission: the operator is the only person this runtime talks to.
+# A second tier existed for a while and admitted a "friend" who could run
+# three commands, which was a second answer to who may speak to the assistant
+# and a second place for a mistake to hide.
 ChannelUserState = Literal["allowed", "pending", "blocked"]
 ChannelBridgeState = Literal["running", "stopped", "error"]
 
@@ -20,7 +24,6 @@ ChannelBridgeState = Literal["running", "stopped", "error"]
 class ChannelUser:
     user_id: str
     display_name: str
-    tier: ChannelUserTier
     ttl_iso: str | None
     first_seen: str
     last_seen: str
@@ -77,7 +80,6 @@ class ChannelAdapter(Protocol):
         self,
         user_id: str,
         *,
-        tier: ChannelUserTier,
         ttl_iso: str | None,
         display_name: str | None,
     ) -> ChannelUser: ...
@@ -94,6 +96,22 @@ class ChannelAdapter(Protocol):
         before_iso: str | None = None,
     ) -> list[dict[str, Any]]: ...
 
+    # `owner_principal() -> str` says which of this channel's approved users is
+    # the OPERATOR, as the `<channel>:<chat id>` principal a chat record
+    # carries. Approval and ownership are different facts: everyone on the
+    # list may use the runtime, and only one of them is the person whose
+    # digest, library and recall this machine keeps.
+    #
+    # Not declared here, for the same reason as `send_text` below: this
+    # protocol is `runtime_checkable` and `register_channel` refuses anything
+    # that misses a member, so requiring it would make an adapter that has not
+    # grown one unregisterable. It would also contradict the answer itself —
+    # `""` means "cannot tell", and an adapter with no method at all is making
+    # exactly that answer. `_channel_session.operator_principals` asks for it
+    # and treats a channel that cannot say as somebody else's, which is the
+    # safe direction: the failure the other way is a second person's
+    # conversation in the operator's own recap.
+    #
     # `send_text(*, chat_ref, text, disable_web_page_preview=False)` is the
     # other half of an adapter and every one of them has it, but it is
     # deliberately not declared here: this protocol is `runtime_checkable` and
@@ -101,3 +119,9 @@ class ChannelAdapter(Protocol):
     # would turn an incomplete adapter into a boot failure rather than a
     # failure at the moment something is sent. `_outbound.notify_operators`
     # asks for it when it needs it and reports a channel that cannot speak.
+    #
+    # It returns the channel's own id for the message it sent, or `""` from a
+    # channel that cannot say. That is what lets a send be checked afterwards
+    # by somebody who does not trust this process, and `""` is a real answer:
+    # the step is then recorded `unverified` rather than clean. A caller that
+    # ignores the return is unaffected, which is most of them.

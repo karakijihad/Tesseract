@@ -33,6 +33,7 @@ from tesseract.kernel.tools._path_anchor import (
     not_found_message,
 )
 from tesseract.paths import secret_exclusion_globs
+from tesseract.kernel.tools import _process_containment as containment
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
 
 # `<path>:<line>:<text>` for a match, `<path>-<line>-<text>` for a context
@@ -272,6 +273,8 @@ class GrepTool(Tool):
         "or `glob` when you want paths rather than contents."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:
@@ -300,10 +303,12 @@ class GrepTool(Tool):
         try:
             search_path = anchor_read_path(inp.path, context.workspace_root)
         except ReadPathRefused as exc:
-            return ToolResult(output=str(exc), is_error=True)
+            return ToolResult(output=str(exc), is_error=True, caller_error=True)
         if not search_path.exists():
             return ToolResult(
-                output=not_found_message("Path", inp.path, search_path), is_error=True
+                output=not_found_message("Path", inp.path, search_path),
+                is_error=True,
+                caller_error=True,
             )
 
         argv: list[str] = [
@@ -359,6 +364,12 @@ class GrepTool(Tool):
                 await watcher
             except asyncio.CancelledError:
                 pass
+            # The watcher answers the cooperative cancel, which only reaches
+            # a search that is still going when the event is set. A task
+            # cancel arrives at the `communicate()` above instead, and used to
+            # leave `rg` running over a large tree with nobody reading it.
+            # No-op once it has exited on its own.
+            await containment.reap(proc)
 
         if context.cancel_event.is_set():
             raise asyncio.CancelledError
@@ -368,7 +379,9 @@ class GrepTool(Tool):
             return ToolResult(output=f"No matches for '{inp.pattern}' in {search_path}")
         if proc.returncode and proc.returncode > 1:
             err = stderr.decode("utf-8", errors="replace").strip() or f"rg exited {proc.returncode}"
-            return ToolResult(output=err, is_error=True)
+            # rg exits 2 on a pattern it cannot compile, which is the caller's
+            # regex and not a search that broke.
+            return ToolResult(output=err, is_error=True, caller_error=True)
 
         raw = stdout.decode("utf-8", errors="replace").rstrip("\n")
         header, shown, metadata = summarise(

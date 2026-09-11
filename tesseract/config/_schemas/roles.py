@@ -17,7 +17,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from tesseract.config.loader import _REF_RE as _CATALOG_REF_RE
 from tesseract.config.loader import (
     DEFAULT_COMPACT_RATIO,
-    DEFAULT_HEADROOM_MULTIPLIER,
     DEFAULT_PROMPT_CHAR_BUDGET,
     ROLE_MODES,
     ROLE_MODE_INACTIVE,
@@ -140,9 +139,10 @@ class Boundary(BaseModel):
     """What bounds a conversation that keeps deciding to carry the work on.
 
     Top level beside `compaction:` and for the same reason: it describes the
-    mechanism rather than who is using it. Compaction is what happens when a
-    surface cannot clear a conversation at all; this is what stops the work
-    going round inside one.
+    mechanism rather than who is using it. A conversation that cannot be
+    cleared is left standing and the next turn tries again, so there is no
+    second mechanism; this is what stops the work going round inside one that
+    IS being cleared.
 
     There is deliberately no bound on HOW MANY times a conversation may carry
     on. There was one and it was the only refusal that fired without evidence,
@@ -161,9 +161,6 @@ class Boundary(BaseModel):
     #: judged against; at or below it there is no history to judge with and the
     #: check can never fire.
     cycle_window: int = Field(gt=0)
-    #: The same tool failing this many times in a row, which is the one
-    #: pathological pattern promoted from a hint to a hard boundary.
-    tool_failure_limit: int = Field(gt=0)
 
     @model_validator(mode="after")
     def _window_has_history_behind_it(self) -> "Boundary":
@@ -178,29 +175,21 @@ class Boundary(BaseModel):
 
 
 class Compaction(BaseModel):
-    """How compaction bounds a conversation, for every role at once.
+    """How the boundary bounds a conversation, for every role at once.
 
     Top level rather than per role because these describe the mechanism and
-    not who is using it: a fold always leaves the head anchor and the verbatim
-    tail behind, whichever model is answering.
+    not who is using it: a conversation that fills its share of the window is
+    consolidated and cleared, whichever model is answering.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    #: What share of the context window a conversation may fill before a fold
-    #: runs, and the ONE thing that decides it. Named `compact_ratio` because
+    #: What share of the context window a conversation may fill before it is
+    #: consolidated and cleared, and the ONE thing that decides it. Named `compact_ratio` because
     #: it is the setting and not a fallback for one; it was `default_ratio`
     #: while a second trigger derived from `prompt_char_budget` quietly
     #: outranked it on every real configuration.
     compact_ratio: float = Field(default=DEFAULT_COMPACT_RATIO, gt=0.0, lt=1.0)
-    #: How far clear of that unfoldable floor the trigger must sit. At or below
-    #: it, a fold cannot get under the line it just crossed and fires again on
-    #: the next turn, and every turn after, spending a summarisation call each
-    #: time. Must exceed 1.0 or it is not headroom.
-    headroom_multiplier: float = Field(default=DEFAULT_HEADROOM_MULTIPLIER, gt=1.0)
-    #: What the operator is advised to leave, as a multiple of the floor.
-    #: Advice rather than a limit: nothing refuses a setting below it.
-    comfortable_multiplier: float = Field(default=2.0, gt=1.0)
     #: The hard ceiling on one assembled prompt, in characters. Characters and
     #: not tokens because one chain member rejects on characters. An EMERGENCY
     #: guard: `compact_ratio` is what bounds a conversation, and this is what
@@ -217,12 +206,22 @@ class RolesConfig(BaseModel):
 
     embeddings: Embeddings
     reranker: Reranker | None = None
-    # Optional here and required by the LOADER. This gate validates proposed
-    # edits, which are routinely partial documents, and a gate that refuses
-    # what the runtime accepts is its own defect. `load_boundary_bounds` raises
-    # loudly on a missing key at boot; what this adds is that a boundary block
-    # which IS present cannot be written in a shape that would never fire.
-    boundary: Boundary | None = None
+    #: Required, because this gate is the only thing that can refuse its
+    #: absence. It was optional on the reading that the gate sees partial
+    #: edits; it does not. `workspace_changes.apply_yaml_change` loads the
+    #: file from disk, applies one mutation to it, and validates the WHOLE
+    #: document, so a `roles.yaml` reaching here without a `boundary:` block
+    #: is one that would be written without it.
+    #:
+    #: Nothing raises downstream, which is the reason this matters rather
+    #: than a reason it does not. Its reader fails open by design
+    #: (`continuity.why_not_continue`): an unreadable bound is not evidence a
+    #: conversation is going round, and halting the runtime over a config edit
+    #: would be worse. So a file written without this block does not break
+    #: anything loudly. It quietly takes the loop guard off the board and the
+    #: conversation carries on looking healthy, which is exactly the failure a
+    #: write gate exists to catch.
+    boundary: Boundary
     compaction: Compaction = Field(default_factory=Compaction)
     chains: dict[str, list[str]] = Field(default_factory=dict)
     roles: dict[str, RoleBody] = Field(default_factory=dict)

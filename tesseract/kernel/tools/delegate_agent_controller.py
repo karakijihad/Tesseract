@@ -46,6 +46,7 @@ from tesseract.kernel.tools.base import (
     ToolResult,
     spawn_cap_tool_result,
 )
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.orchestrator.agent_controller.dispatcher import (
     DispatcherError,
     dispatch_to_controller,
@@ -123,6 +124,8 @@ class DelegateAgentControllerTool(Tool):
         "A markdown sub-agent task: use `invoke_agent`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     @property
     def name(self) -> str:
@@ -175,6 +178,8 @@ class DelegateAgentControllerTool(Tool):
                         "started_at": handle.started_at,
                         "status": "running",
                     },
+                    # Nothing has run yet; the spawn that runs it answers.
+                    receipt=Receipt.nothing(),
                 )
             # Headless / REPL contexts carry no SpawnRegistry — degrade to
             # the inline path rather than failing the call.
@@ -225,6 +230,11 @@ class DelegateAgentControllerTool(Tool):
             )
         return ToolResult(
             output=result.assistant_text,
+            receipt=Receipt(
+                kind="record",
+                id=result.session_id,
+                locator="controller session",
+            ),
             metadata=metadata,
         )
 

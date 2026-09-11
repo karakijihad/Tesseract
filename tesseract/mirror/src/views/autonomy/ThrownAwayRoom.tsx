@@ -21,6 +21,7 @@ import { Button } from '../../components/common/Button';
 import { Input } from '../../components/common/Input';
 import { Note } from '../../components/common/Note';
 import { RowActions } from '../../components/common/Row';
+import { Hint } from '../../components/ui/Hint';
 import { Band, StateStrip, type StateLine } from '../../components/common/StateStrip';
 import { sendCommand } from '../../lib/commands';
 import type { RetentionLine, RetentionResponse } from '../../lib/api';
@@ -51,6 +52,33 @@ const SHORTEST = 1;
  *  moves because somebody moved it, and they are looking at the row when it
  *  does. */
 const STALE_KEY = 'autonomy.retention';
+
+interface SweepLine extends RetentionLine {
+  logPath?: string;
+}
+
+function SweepActions({ row }: { row: SweepLine }): React.ReactElement | null {
+  if (row.state !== 'failed' && row.state !== 'degraded') return null;
+  if (row.state !== 'failed' && !row.logPath) return null;
+  return (
+    <>
+      {row.state === 'failed' && (
+        <Hint label="Runs the sweep for every configured tree now, deleting or archiving old records according to each window.">
+          <Button onClick={() => sendCommand('/pipeline_run_stage', ' stage=retention')}>
+            run sweep again
+          </Button>
+        </Hint>
+      )}
+      {row.logPath && (
+        <Hint label="Summarizes warnings and errors in the shared backend log, which may include other failures as well as this sweep.">
+          <Button onClick={() => sendCommand('/log_triage', ` path=${JSON.stringify(row.logPath)} min_level=WARNING`)}>
+            look into it
+          </Button>
+        </Hint>
+      )}
+    </>
+  );
+}
 
 function lines(
   rows: RetentionLine[],
@@ -115,7 +143,7 @@ function Window({
   const sendable =
     shown !== '' && Number.isInteger(asked) && asked >= SHORTEST && asked !== row.days;
   return (
-    <RowActions className="state-acts">
+    <>
       <Input
         type="number"
         value={shown}
@@ -126,17 +154,19 @@ function Window({
         ariaLabel={`Days to keep ${row.name}`}
         ariaInvalid={held && !sendable}
       />
-      <Button
-        onClick={() => {
-          sendCommand(SET_WINDOW, ` tree=${row.tree} days=${asked}`);
-          onSent();
-        }}
-        disabled={!sendable}
-        ariaLabel={`Keep ${row.name} for ${shown} days`}
-      >
-        keep
-      </Button>
-    </RowActions>
+      <Hint label="Changes how many days this tree is kept before a sweep deletes or archives its old records.">
+        <Button
+          onClick={() => {
+            sendCommand(SET_WINDOW, ` tree=${row.tree} days=${asked}`);
+            onSent();
+          }}
+          disabled={!sendable}
+          ariaLabel={`Keep ${row.name} for ${shown} days`}
+        >
+          keep
+        </Button>
+      </Hint>
+    </>
   );
 }
 
@@ -163,6 +193,7 @@ export function ThrownAwayRoomView({
 
   return (
     <>
+      <p className="t-meta">Retention windows, the last sweep, and files kept on purpose or still awaiting a retention decision.</p>
       {/* Set only when no sweep has run here, or when its record could not be
           read. Those are two different claims and the backend picks which. */}
       {data.lastSweepSaid && <Note>{data.lastSweepSaid}</Note>}
@@ -172,19 +203,22 @@ export function ThrownAwayRoomView({
         <StateStrip
           whole
           lines={lines(data.ages, (row) => (
-            <Window
-              row={row}
-              draft={drafts[row.tree]}
-              onDraft={(text) =>
-                setDrafts((held) => ({
-                  ...held,
-                  [row.tree]: { against: row.days ?? 0, text },
-                }))
-              }
-              onSent={() =>
-                setDrafts(({ [row.tree]: _gone, ...rest }) => rest)
-              }
-            />
+            <RowActions className={`state-acts${row.state === 'failed' || row.state === 'degraded' ? ' state-acts--waiting' : ''}`}>
+              <Window
+                row={row}
+                draft={drafts[row.tree]}
+                onDraft={(text) =>
+                  setDrafts((held) => ({
+                    ...held,
+                    [row.tree]: { against: row.days ?? 0, text },
+                  }))
+                }
+                onSent={() =>
+                  setDrafts(({ [row.tree]: _gone, ...rest }) => rest)
+                }
+              />
+              <SweepActions row={row} />
+            </RowActions>
           ))}
         />
       </div>

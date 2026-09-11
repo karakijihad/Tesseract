@@ -186,4 +186,32 @@ async def extract_urls_to_context(
     return "--- URL CONTENT (auto-extracted) ---\n" + "\n\n".join(blocks)
 
 
-__all__ = ["find_urls", "extract_urls_to_context"]
+_RECALL_CLOSE = "</recall_context>"
+_RECALL_CLOSE_SAFE = "&lt;/recall_context&gt;"
+
+
+def wrap_recall_context(context_text: str, body: str) -> str:
+    """Put fetched page content above the operator's message, quoted.
+
+    BOTH halves are neutralized, and the fetched half is the one that matters.
+    The operator's own text was already escaped at the call site and a page's
+    was not, so a page carrying the closing tag ended the quoted block early
+    and everything after it, the rest of that page and the operator's own
+    message, read as instruction rather than as quoted material. A fetched
+    page is the one input in a turn that nobody in the conversation wrote, so
+    it is the one that has to be assumed hostile.
+
+    The escaping lives here, beside the thing that fetches the text, rather
+    than at a call site that has to remember to do it.
+    """
+    quoted = context_text.replace(_RECALL_CLOSE, _RECALL_CLOSE_SAFE)
+    safe_body = body.replace(_RECALL_CLOSE, _RECALL_CLOSE_SAFE)
+    return (
+        "<recall_context>\n"
+        + quoted
+        + "\n</recall_context>\n\n"
+        + safe_body
+    )
+
+
+__all__ = ["find_urls", "extract_urls_to_context", "wrap_recall_context"]

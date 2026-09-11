@@ -13,6 +13,7 @@ import React from 'react';
 import { Band, StateStrip, type StateLine } from '../../components/common/StateStrip';
 import { Note } from '../../components/common/Note';
 import { formatRelative } from '../../lib/time';
+import { useAutonomyStore, type AutonomyLevel } from '../../stores/autonomy';
 
 export interface RecoveryScans {
   [scan: string]: { [bucket: string]: number };
@@ -47,6 +48,23 @@ const SCAN_LABEL: Record<string, string> = {
   agenda: 'agenda items',
 };
 
+// What one of these things left half-finished actually is, in the panel's own
+// vocabulary. Only an agenda item and a worker have somewhere to open; a
+// conversation, an effect or a scan itself do not, so those rows keep their
+// reason on screen and stay plain rather than pretending there is a place to
+// go.
+const ATTENTION_OPENS: Record<string, AutonomyLevel['kind']> = {
+  agenda: 'agenda',
+  worker: 'worker',
+};
+
+// The plain statement for a kind `ATTENTION_OPENS` has nothing for. The row
+// stays a plain line rather than a `Row` (no click, no role=button), and this
+// is the sentence that says why in words, so a reader is told rather than
+// left to guess from the absence of a cursor.
+const CANNOT_OPEN_SAYS =
+  'This cannot be opened from here. The reason above is everything currently known about it.';
+
 /** What one scan found, as a sentence. Empty when it found nothing, so a scan
  *  with nothing to report is not drawn at all. */
 function found(buckets: { [bucket: string]: number }): string {
@@ -60,6 +78,7 @@ export function RecoveryPane({
   summary,
   recoveryState,
 }: RecoveryPaneProps): React.ReactElement {
+  const pushLevel = useAutonomyStore((s) => s.pushLevel);
   if (recoveryState === 'recovering') {
     return (
       <Note tone="warn">
@@ -93,18 +112,28 @@ export function RecoveryPane({
 
   return (
     <>
+      <p className="t-meta">
+        What the runtime found half-finished when it last started, and whether any of it is still waiting on you.
+      </p>
       {attn.length > 0 && (
         <div className="autonomy-group">
           <Band label="Left half-finished for you" count={attn.length} />
           <StateStrip
-            lines={attn.map((a, i) => ({
-              key: `${a.kind}:${a.id}:${i}`,
-              state: 'pending' as const,
-              label: 'waiting on you',
-              name: a.kind.replace(/_/g, ' '),
-              said: a.reason,
-              value: a.id,
-            }))}
+            lines={attn.map((a, i) => {
+              const opens = ATTENTION_OPENS[a.kind];
+              return {
+                key: `${a.kind}:${a.id}:${i}`,
+                state: 'pending' as const,
+                label: 'waiting on you',
+                name: a.kind.replace(/_/g, ' '),
+                said: a.reason,
+                value: a.id,
+                onOpen: opens
+                  ? () => pushLevel({ kind: opens, id: a.id, label: a.reason || a.id })
+                  : undefined,
+                more: opens ? undefined : <p className="t-meta">{CANNOT_OPEN_SAYS}</p>,
+              };
+            })}
           />
         </div>
       )}

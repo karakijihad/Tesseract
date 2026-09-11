@@ -928,16 +928,13 @@ class ControllerRuntime:
         )
 
         cfg = self.chat_brain_config
-        # ChatSession's compact_threshold / keep_recent_turns have safe
-        # dataclass defaults; pull cfg-driven values only when the
-        # config object actually exposes them so older boot paths still
-        # work in tests.
+        # ChatSession's compact_threshold has a safe dataclass default;
+        # pull cfg-driven values only when the config object actually
+        # exposes them so older boot paths still work in tests.
         compact_threshold = None
-        keep_recent_turns = None
         prompt_char_budget = None
         if cfg is not None:
             compact_threshold = getattr(cfg, "compact_threshold", None)
-            keep_recent_turns = getattr(cfg, "keep_recent_turns", None)
             # The character ceiling belongs to the model, and a controller
             # session picks its own. Left unset it took the dataclass default,
             # a number sized for nothing this session talks to.
@@ -974,7 +971,6 @@ class ControllerRuntime:
             session_emit=_make_controller_session_emit(daemon, record.session_id),
             options=self.adapter_options,
             compact_threshold=compact_threshold,
-            keep_recent_turns=keep_recent_turns,
             prompt_char_budget=prompt_char_budget,
         )
         return build_chat_session(wiring)

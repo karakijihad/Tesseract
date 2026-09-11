@@ -255,8 +255,12 @@ class DreamingEngine:
                 continue
             title = Path(path_part).stem
             new_body = f"[[{title}]]\n\n{body}"
-            self._store.write(fm, new_body)
-            count += 1
+            # This prepends to the prose, so it is an admission and the capture
+            # policy can refuse it. Counting it regardless reported records as
+            # backfilled that still carry no wikilink, which is the one thing
+            # the sweep exists to say.
+            if self._store.write(fm, new_body):
+                count += 1
         logger.info("Wikilink sweep: backfilled %d entries", count)
         return count
 
@@ -306,7 +310,7 @@ class DreamingEngine:
                 continue
             _, body = read_result
             repaired = fm.model_copy(update={"source_path": ""})
-            if self._store.write(repaired, body, skip_wnts_check=True):
+            if self._store.write(repaired, body):
                 count += 1
                 logger.info("Nulled stale source_path on %s (%s)", fm.id, cleaned)
         return count

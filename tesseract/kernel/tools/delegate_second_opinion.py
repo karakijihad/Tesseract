@@ -42,6 +42,7 @@ from tesseract.kernel.adapters.cli_utils import (
     resolve_cli_executable,
     subscription_env,
 )
+from tesseract.kernel.tools import _process_containment as containment
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
 from tesseract.kernel.tools.cli_stream import (
     _strip_control_sequences,
@@ -148,6 +149,8 @@ class DelegateSecondOpinionTool(Tool):
         "session that outlives the turn: use `delegate_agent_controller`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:
@@ -249,17 +252,18 @@ class DelegateSecondOpinionTool(Tool):
                 proc.communicate(), timeout=inp.timeout
             )
         except asyncio.TimeoutError:
-            proc.kill()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                pass
             return ToolResult(
                 output=f"{provider} did not answer within {inp.timeout:.0f}s",
                 is_error=True,
                 timed_out=True,
                 metadata={"provider": provider},
             )
+        finally:
+            # Both ways out that leave it running: it ran past the time limit,
+            # and the operator stopped the turn. A provider CLI is a process
+            # tree, so killing the leader reports success and leaves the work
+            # underneath it going. No-op once it has exited on its own.
+            await containment.reap(proc)
 
         stdout_text = _strip_control_sequences(stdout_bytes.decode("utf-8", errors="replace"))
         stderr_text = _strip_control_sequences(stderr_bytes.decode("utf-8", errors="replace"))

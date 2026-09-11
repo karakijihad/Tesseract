@@ -34,8 +34,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import subprocess
-import sys
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -56,12 +54,6 @@ logger = logging.getLogger(__name__)
 #: How many arguments one command may carry. Nothing legitimate needs more,
 #: and the whole list is echoed back to a person in the approval prompt.
 _MAX_ARGS = 64
-
-#: How long stopping a command may take before the attempt is given up on and
-#: reported. Not a `runtime.yaml` number: this is not a policy an operator
-#: tunes, it is the bound that keeps a `finally` from hanging a turn.
-_REAP_TIMEOUT_S = 5.0
-
 
 def _limits() -> tuple[float, int, int]:
     """How long it may run, how much is read, how much is reported.
@@ -193,6 +185,10 @@ class CommandRunTool(Tool):
         "`bash`. Pushing and pulling, which `git` does with its own account."
     )
     depends_on: ClassVar[str] = ""
+    # Same as `bash`: the code runs in someone else's environment and
+    # returns prose. There is no identifier for what it changed.
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "unsafe"
 
     security_deny_hint: ClassVar[str] = (
         "The command matched a security pattern. This tool runs a program "
@@ -411,13 +407,13 @@ class CommandRunTool(Tool):
             # nothing can be awaited uncancellably; a handle close cannot be
             # interrupted, and closing this one kills everything in it.
             #
-            # `_reap` stays behind it for the two cases the job does not
-            # cover: a machine where no job could be opened, and the
-            # microseconds between the process being created and being
+            # `containment.reap` stays behind it for the two cases the job
+            # does not cover: a machine where no job could be opened, and
+            # the microseconds between the process being created and being
             # assigned to one.
             containment.close_job(job)
             if process is not None:
-                await _reap(process)
+                await containment.reap(process)
 
         printed = _reportable(output.decode("utf-8", errors="replace"), report_chars)
         if cut:
@@ -483,60 +479,9 @@ async def _read_and_wait(
             cut = True
             break
     if cut:
-        await _reap(process)
+        await containment.reap(process)
         return bytes(body), True, process.returncode
     return bytes(body), False, await process.wait()
-
-
-async def _reap(process: asyncio.subprocess.Process) -> None:
-    """Stop the command and everything it started, or say why it could not.
-
-    **The tree, not the process.** The command is given every field of an
-    account in its environment, and a child it starts inherits that
-    environment. Killing only the one this runtime holds a handle to leaves
-    those descendants running with the values in them, after the tool has
-    reported that it stopped. `supervisor/reap.py` already answers this for
-    orphaned daemons and its answer is reused here: `taskkill /F /T` on
-    Windows, which walks the tree, and `SIGKILL` elsewhere, which does not,
-    and is named as the weaker half rather than presented as equivalent.
-
-    **Never raises, and never waits forever.** This runs in a `finally`, so an
-    exception here would replace whatever was actually being reported,
-    including a cancellation that has to propagate.
-    """
-    if process.returncode is not None:
-        return
-    try:
-        if sys.platform == "win32":
-            # A THREAD, for the reason `brain/cli_auth.py` gives at its own
-            # call: the proactor loop builds a subprocess transport by calling
-            # `Popen` inline, so spawning here would run `CreateProcess` ON the
-            # loop. Measured on this machine, worst single block 47 ms and
-            # 60 ms that way against 14 ms and 12 ms through a thread. This one
-            # runs in a `finally`, so it blocks the loop on the way out of
-            # every command that had to be stopped.
-            await asyncio.to_thread(
-                subprocess.run,
-                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=_REAP_TIMEOUT_S,
-            )
-        else:
-            process.kill()
-    except (OSError, ProcessLookupError, asyncio.TimeoutError, subprocess.TimeoutExpired):
-        # Best effort by construction: the process may already be gone, and
-        # `taskkill` may be missing on a stripped image. Logged rather than
-        # raised, because the caller is on its way out with something to say.
-        logger.warning(
-            "command_run: could not stop pid %s and its children",
-            process.pid,
-            exc_info=True,
-        )
-    try:
-        await asyncio.wait_for(process.wait(), timeout=_REAP_TIMEOUT_S)
-    except asyncio.TimeoutError:
-        logger.warning("command_run: pid %s did not exit after being stopped", process.pid)
 
 
 __all__ = ["CommandRunInput", "CommandRunTool"]

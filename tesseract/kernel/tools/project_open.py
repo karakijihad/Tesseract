@@ -18,6 +18,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 
 
 class ProjectOpenInput(BaseModel):
@@ -42,6 +43,8 @@ class ProjectOpenTool(Tool):
         "switches which project is active."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:
@@ -74,6 +77,7 @@ class ProjectOpenTool(Tool):
                     "Run project_list to see what is registered."
                 ),
                 is_error=True,
+                caller_error=True,
             )
 
         root = Path(project.root)
@@ -85,6 +89,7 @@ class ProjectOpenTool(Tool):
                     "location, or remove it from the registry."
                 ),
                 is_error=True,
+                caller_error=True,
             )
 
         try:
@@ -99,7 +104,9 @@ class ProjectOpenTool(Tool):
             # back, which is the state the check exists to prevent.
             assert_cwd_outside_seal(root)
         except SealViolation as exc:
-            return ToolResult(output=f"project_open: {exc}", is_error=True)
+            return ToolResult(
+                output=f"project_open: {exc}", is_error=True, caller_error=True
+            )
 
         # Activate before provisioning. Provisioning grants trust and rewrites
         # CLI config; doing it ahead of a set_active that then fails would leave
@@ -127,4 +134,8 @@ class ProjectOpenTool(Tool):
         if opened.conventions_file:
             lines.append(f"conventions: {opened.conventions_file}")
 
-        return ToolResult(output="\n".join(lines), metadata=opened.model_dump(mode="json"))
+        return ToolResult(
+            output="\n".join(lines),
+            receipt=Receipt(kind="record", id=opened.id, locator=str(store.path)),
+            metadata=opened.model_dump(mode="json"),
+        )

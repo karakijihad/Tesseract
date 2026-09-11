@@ -113,6 +113,7 @@ tools:
                                # manifest entry; operator-initiated
                                # at both call sites. Class floor is ASK.
   brief_read: auto             # read-only return of today's brief body for the voice "read brief" lane
+  return_note_read: auto       # read-only join of the growth records since you were last here
   memory_get: auto             # read-only path-scoped read of memory-store/ markdown files
   workspace_read: auto         # read-only read of the assistant's own workspace documents and playbooks
   file_read: auto
@@ -168,6 +169,8 @@ tools:
   project_link: ask
   project_open: ask
   project_new: ask
+  project_propose: ask        # puts an idea for a new project to you; it creates nothing
+  project_budget: ask          # what a day of unattended work on a project may spend
   git: ask                     # commit/checkout/push on a repo outside the seal. `push` needs confirm_push=true in the tool itself, so it holds in `free` too.
   surface_close: auto
   surface_create: auto
@@ -214,11 +217,15 @@ tools:
   skill_create: ask
   skill_promote: ask
   skill_refine: ask
+  playbook_judge: ask        # your verdict on a playbook, so it is never the assistant grading its own work
+  playbook_record: auto      # reads the usage log, the turn records and the ledger and reports what each playbook has done; writes nothing
   playbook_search: auto      # reads the playbooks already named in the prompt and returns the rest of one; nothing leaves the machine
   atlas_query: auto           # read-only walk over the derived graph; opens atlas.json and returns text
   autonomy_read: auto        # read-only view of the panel's own state; asking what it says costs no more than opening it
   context_read: auto         # the shape of the conversation it is already running in; no message content leaves it
+  day_read: auto             # reads the records the runtime keeps of its own turns; nothing leaves the machine
   health_leave: auto         # marks one Health line as seen. The row stays, under Operating, saying so; it comes back if the fault worsens, and one call undoes it
+  health_repair: auto        # gathers what is known about one Health row so the assistant can look into it. It changes nothing itself; anything it then does is gated on its own
   workspace_decide: ask       # the gate's prompt is where you approve. A mode baseline reaches this like every ask
   task_propose: ask           # the gate is you accepting the task
   task_work: auto             # takes up a task you already accepted and ties the turn to it; nothing new is decided
@@ -265,6 +272,8 @@ modes:
       task_propose: ask
       task_close: ask
       context_set: ask
+      playbook_judge: ask
+      project_budget: ask
 
 # Path-scoped overrides — evaluated before mode overrides. Matched by prefix
 # (forward-slash normalized) against the tool input's path field. First
@@ -408,6 +417,34 @@ workspace_documents:
       OPERATING.md: ask
       WORKSHOP.md: ask
       CHANNEL.md: ask
+
+# ─────────────────────────────────────────────────────────────────────────
+# The same statement, for the cards that are not about a document.
+#
+# A card asks you to decide something. Most name one of the files above and
+# are answered by that block; the rest name no file at all, like a memory
+# merge or a skill the assistant wants to keep, and had no way to be answered
+# by a policy. Same shape, keyed by the kind of card.
+#
+# `auto` means the runtime approves it itself, through the same path your
+# Approve button uses, and files the card as applied with its evidence rather
+# than making it vanish. It then tells you. It never means the card is
+# skipped. The four below always wait for you whatever the mode says.
+workspace_cards:
+  proposal:
+    max: ask
+    free: auto
+    overrides:
+      # A question the assistant asked YOU: approving it on its own would
+      # answer it with nothing.
+      clarification: ask
+      nudge: ask
+      # Config is what says how the app is actually wired.
+      yaml_change_proposal: ask
+      # You and the refresher edited the same paragraph of a knowledge-base
+      # file, so it left the file alone and asked. Approving that on its own
+      # would pick one wording over the other with nothing left to read.
+      kb_merge_conflict: ask
 
 # ─────────────────────────────────────────────────────────────────────────
 # Read-only self-verification allowlist. `PermissionPolicy._bash_readonly_posture`

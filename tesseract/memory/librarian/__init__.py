@@ -8,7 +8,7 @@ Responsibilities:
   1. Scan `daily/*.md` (raw capture) files older than today, parse markdown
      sections, and promote each promotable section into the appropriate
      canonical subdir via `store.write()`. Dedupe-check against embeddings
-     before write; WhatNotToSave inside `store.write()` catches trivial /
+     before write; the capture policy inside `store.write()` catches trivial /
      request-echo / turn-summary bodies.
   2. Refresh `memory-store/MEMORY.md` — the top-level curated synthesis.
      Lists top-20 most-important entries by frontmatter.importance + the
@@ -87,14 +87,14 @@ class Librarian(PromotionMixin, DistillationMixin, SummaryMixin):
 
         Returns `{promoted, deduped, merged, skipped, counts, top, recent}`.
 
-        - `promoted` — daily sections that passed dedupe + WNTS and were written
+        - `promoted` — daily sections that passed dedupe and the capture policy and were written
           to a canonical subdir.
         - `deduped` — daily sections blocked by title-exact/title-fuzzy/
           cosine-skip; new body discarded.
         - `merged` — cosine match in the merge band (0.88–0.92); existing
           entry's body replaced and `updated_at` bumped.
         - `skipped` — daily sections shorter than `_SECTION_MIN_CHARS` or
-          rejected by WhatNotToSave inside `store.write()`.
+          rejected by the capture policy inside `store.write()`.
         """
         promoted, deduped, merged, skipped = await self._promote_daily()
 

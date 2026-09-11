@@ -106,6 +106,26 @@ class ChatRecord:
     # tell them apart WITHOUT a second store. Defaulting to "cockpit" keeps
     # every record written before this field correct rather than unknown.
     surface: str = "cockpit"
+    # WHOSE conversation this is, as `<channel>:<chat id>`. Empty on a cockpit
+    # record, which is the operator's own by definition because they are the
+    # one sitting at it.
+    #
+    # **Empty on a CHANNEL record means nobody**, not the operator, and the
+    # two are read that way round deliberately: such a record was written
+    # before this field existed, and `chat_store.belongs_to_operator` refuses
+    # it rather than admitting it. Reading an unknown as the operator's is the
+    # failure the whole split exists to stop, so the predicate is the thing to
+    # believe here and this comment used to say the opposite.
+    #
+    # `surface` says how a conversation arrived and cannot answer this. On a
+    # machine with a second approved channel user, both of their conversations
+    # are `surface="channel"` and only one of them belongs in the operator's
+    # own digest, library and recall.
+    #
+    # It has to be STORED rather than derived: a live channel record is keyed
+    # on `durable_chat_id`, which names the chat, but `archive_copy` mints a
+    # fresh uuid and the archived copy is exactly what the daily jobs read.
+    principal: str = ""
     schema: int = SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -121,6 +141,7 @@ class ChatRecord:
             "turn_count": self.turn_count,
             "model": self.model,
             "surface": self.surface,
+            "principal": self.principal,
             "history": self.history,
         }
 
@@ -138,6 +159,7 @@ class ChatRecord:
             turn_count=int(data.get("turn_count", 0)),
             model=str(data.get("model") or ""),
             surface=str(data.get("surface") or "cockpit"),
+            principal=str(data.get("principal") or ""),
             history=data.get("history", []),
         )
 

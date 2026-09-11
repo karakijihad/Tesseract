@@ -54,6 +54,7 @@ from tesseract.kernel.workspace_changes import (
     resolve_proposable_path,
     validate_growth_section,
 )
+from tesseract.lib import last_seen
 from tesseract.paths import ROOT, workspace_dir
 from tesseract.permissions.approval_log import record_ask
 from tesseract.workspace_events import (
@@ -479,6 +480,18 @@ async def _commit_skill_refinement(
         skills_dir = _skills_dir()
         registry = app.get("tool_registry")
         names = frozenset(registry.names()) if registry is not None else None
+        # The proposal was written against a particular SKILL.md. Since the
+        # runtime stamps the new revision number from whatever is live at
+        # THIS moment, a card approved after the skill moved on would be
+        # silently rebased onto a text it was never about, and would read as
+        # current. Refuse instead: a stale proposal is not a proposal for the
+        # file that is there now. Cards filed before this field existed carry
+        # no hash and are applied as before.
+        base = str((ev.payload or {}).get("base_sha256") or "")
+        if base:
+            stale = await asyncio.to_thread(_base_moved, skills_dir, name, base)
+            if stale:
+                return None, ({"error": "skill_refinement_stale", "detail": stale}, 409)
         err = await asyncio.to_thread(_apply_skill_refinement, skills_dir, name, proposed, names)
         if err is not None:
             return None, ({"error": "refine_failed", "detail": err}, 409)
@@ -496,6 +509,47 @@ async def _commit_skill_refinement(
 
     _spawn_reject_reply(app, ev, comment, comment_body)
     return {"rejected": name}, None
+
+
+def _base_moved(skills_dir: Path, name: str, base_sha256: str) -> str | None:
+    """A sentence naming the drift when the live SKILL.md is no longer the
+    text this proposal was written against, else None."""
+    import hashlib
+
+    from tesseract.brain.skills import SKILL_FILENAME
+
+    path = skills_dir / name / SKILL_FILENAME
+    try:
+        current = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return f"{name} could not be read to check the proposal is still current: {exc}"
+    if hashlib.sha256(current.encode("utf-8")).hexdigest() == base_sha256:
+        return None
+    return (
+        f"{name} has changed since this was proposed, so the rewrite is "
+        "against text that is no longer there. Nothing was applied. Reject "
+        "this card; the next run measures the file as it stands now."
+    )
+
+
+def _subject_of(ev: WorkspaceEvent) -> dict[str, Any]:
+    """What a settled card was about, for the approval ledger's row.
+
+    Only the kinds that HAVE a durable subject, and only the identifiers: the
+    ledger is a decision record, not a copy of the payload. A refinement
+    carries the skill and the revision it was measured against, which is what
+    makes "did this rewrite measure better than the one it replaced" a
+    question the ledger can answer at all.
+    """
+    payload = ev.payload or {}
+    if ev.kind == "skill_refinement":
+        subject: dict[str, Any] = {"skill": str(payload.get("name") or "")}
+        for key in ("version", "applied_version"):
+            value = payload.get(key)
+            if value:
+                subject[key] = str(value)
+        return subject
+    return {}
 
 
 def _apply_skill_refinement(
@@ -602,16 +656,59 @@ async def _commit_tuning_proposal(
     # carries `expected_hash_before` for the same reason; this is that rule
     # for a number rather than a file.
     expected: dict[str, Any] = {}
-    for row in payload.get("changes") or []:
+    rows = payload.get("changes") or []
+    for row in rows:
+        # **A row this cannot read refuses the whole card.** Skipping it left
+        # the rest to be applied and marked `applied`, so a card the operator
+        # answered as three changes landed as two and said nothing about the
+        # third. The comment below promises one call to one seam precisely so
+        # that a partly applied card is impossible; silently dropping a row
+        # was that promise being broken one line above it.
         if not isinstance(row, dict):
-            continue
+            return None, (
+                {
+                    "error": "invalid_proposal",
+                    "detail": (
+                        "one of the changes on this card is not readable, so "
+                        "none of them have been applied"
+                    ),
+                },
+                400,
+            )
         role = str(row.get("role") or "")
         proposed = row.get("proposed_usd")
-        if role and proposed is not None:
-            wanted[role] = proposed
-            was = row.get("current_usd")
-            if was is not None:
-                expected[role] = was
+        if not role or proposed is None:
+            return None, (
+                {
+                    "error": "invalid_proposal",
+                    "detail": (
+                        "one of the changes on this card does not say which "
+                        "limit to move or what to move it to, so none of them "
+                        "have been applied"
+                    ),
+                },
+                400,
+            )
+        # **A change with no reading behind it is refused, not applied
+        # unchecked.** Every card this job files carries `current_usd`
+        # (`Change.as_json`), so a row without one did not come from the job
+        # as it stands, and letting it through would be the staleness gate
+        # opening for exactly the payload nobody can vouch for.
+        was = row.get("current_usd")
+        if was is None:
+            return None, (
+                {
+                    "error": "invalid_proposal",
+                    "detail": (
+                        f"the change for {role} does not say what the limit "
+                        "was when it was worked out, so it cannot be checked "
+                        "against what the limit is now"
+                    ),
+                },
+                400,
+            )
+        wanted[role] = proposed
+        expected[role] = was
     if not wanted:
         return None, (
             {"error": "invalid_proposal", "detail": "no role and cap to apply"},
@@ -783,7 +880,13 @@ async def _commit_working_set_proposal(
 
     if drop_playbooks or carry_playbooks:
         kept = set(load_carried_names())
-        live = {e.name for e in load_skills(skills_dir())}
+        # Retired ones are not live. `prompt_content.py` filters them out of
+        # what a turn is given, so carrying one back puts a name on the dial
+        # that the prompt will never read, and the card that did it looks
+        # like it worked.
+        live = {
+            e.name for e in load_skills(skills_dir()) if e.status != "retired"
+        }
         for name in drop_playbooks:
             if name in kept:
                 kept.discard(name)
@@ -1294,6 +1397,7 @@ async def apply_decision(
     *,
     reason: str | None = None,
     per_file: dict[str, str] | None = None,
+    actor: str = "operator",
 ) -> tuple[WorkspaceEvent, list[WorkspaceComment]]:
     """Approve, reject, resolve or delete one workspace event.
 
@@ -1436,6 +1540,13 @@ async def apply_decision(
                 "kind": ev.kind,
                 "decision": decision,
                 "reason": reason or "",
+                # What the decision was ABOUT. Without these the ledger holds
+                # one row per settled card carrying the kind and the verdict
+                # and nothing that names the thing, so "what changed this
+                # playbook, and did the change help" cannot be asked of it.
+                # `_subject_of` returns {} for a kind that has no subject, so
+                # the row is unchanged for every other card.
+                **_subject_of(ev),
             },
             posture_source="workspace_decision",
             result=(
@@ -1444,7 +1555,11 @@ async def apply_decision(
                 else "deleted" if decision == "delete"
                 else "deny"
             ),
-            actor="operator",
+            # Who actually decided. It was hardcoded to the operator, which
+            # was true while a person was the only thing that could reach
+            # here, and is a lie the moment the mode settles a card itself.
+            # The approval ledger is the record of who allowed what.
+            actor=actor,
         )
     except Exception:
         log.exception("workspace: approval ledger record failed")
@@ -1471,6 +1586,11 @@ async def post_decision(request: web.Request) -> web.Response:
         )
     except DecisionError as exc:
         return web.json_response(exc.payload, status=exc.status)
+    # A card answered is the operator being here, and for a day spent reading
+    # the inbox rather than talking it is the only trace of it. On the route
+    # rather than inside `apply_decision`, because the other caller is a tool
+    # the assistant runs, and under `free` that tool answers unattended.
+    last_seen.record()
     return web.json_response(_event_dict(updated, comments))
 
 
@@ -1496,6 +1616,10 @@ async def post_comment(request: web.Request) -> web.Response:
         reply_to=body.get("reply_to") or None,
     )
     store.append_comment(comment)
+    # Talking in a thread is being here as much as answering a card is. A day
+    # spent reading the inbox and replying, without settling anything, would
+    # otherwise leave the operator marked absent for all of it.
+    last_seen.record()
 
     # Live-push the operator comment to all attached Mirror sessions so the
     # CommentThread renders without a manual refresh. Best-effort — the
@@ -1586,6 +1710,7 @@ async def post_operator_post(request: web.Request) -> web.Response:
         payload={"body": text, "source": source},
     )
     store.append_event(event)
+    last_seen.record()
 
     try:
         from tesseract.workspace_events.broadcast import broadcast_workspace_event

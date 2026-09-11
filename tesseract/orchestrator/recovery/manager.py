@@ -1,7 +1,11 @@
 """RecoveryManager — orchestrates the boot-time scans.
 
-Four scans run, in this order: workers, turns, schedule, agenda. Each is
-isolated so a broken one costs only its own counts.
+Five scans run, in this order: workers, turns, schedule, agenda, effects.
+Each is isolated so a broken one costs only its own counts.
+
+`effects` is last and is the only one that closes nothing. The other four
+ask what STATE was left behind, and a record is ours to close; it asks what
+was left in the AIR, and a message that may have reached somebody is not.
 
 `turns` is the newest and the only one about a person rather than about the
 machine: a conversation the last process was mid answer in when it went down.
@@ -23,7 +27,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from tesseract.bootid import boot_started_at, current_boot_id, mint_boot_id
+from tesseract.orchestrator import checkpoints
 from tesseract.orchestrator.outcome import RunOutcome
+from tesseract.orchestrator.recovery import resume
+from tesseract.orchestrator.recovery.effects import (
+    BUCKET,
+    describe,
+    file_question,
+)
 from tesseract.orchestrator.workers.record import WorkerStatus
 from tesseract.orchestrator.recovery.summary import (
     RecoverySummary,
@@ -94,6 +105,12 @@ class RecoveryManager:
         self.schedule_log_dir = schedule_log_dir
         self.workspace_logs_dir = workspace_logs_dir
         self._event_store: EventStore | None = None
+        # Both are reset at the top of `run`, which is what makes a second run
+        # over the same state produce the same answer. Declared here as well so
+        # a caller driving one scan on its own finds them, rather than an
+        # attribute that exists only after a full pass.
+        self._owed_a_word: list[tuple[str, str]] = []
+        self._interrupted_runs: set[str] = set()
 
     # -- public surface --------------------------------------------------
 
@@ -123,12 +140,27 @@ class RecoveryManager:
         # Filled by `_scan_turns`, drained after the scans: the scans are
         # synchronous by contract and reaching a channel is not.
         self._owed_a_word: list[tuple[str, str]] = []
+        # The runs `_scan_turns` just closed as interrupted, which is what
+        # bounds the resumed turn to THIS crash. `unresolved` answers about
+        # every call ever left open, so without this a boot would offer to
+        # resume a conversation over a call from three weeks ago that the
+        # operator has long since dealt with by hand.
+        self._interrupted_runs: set[str] = set()
+        # The owed set lives in `resume`, so it is reset here rather than
+        # cleared there. Without this a second pass over the same state would
+        # add to what the first found instead of reproducing it, and this
+        # function's own contract is that running it twice gives one answer.
+        resume.forget_all()
 
         for name, scan in (
             ("workers", self._scan_workers),
             ("turns", self._scan_turns),
             ("schedule", self._scan_schedule),
             ("agenda", self._scan_agenda),
+            # Last, and after the four that close records, because it asks
+            # about effects rather than state: what is left here is what
+            # nothing else could close on its own.
+            ("effects", self._scan_effects),
         ):
             try:
                 scan(summary)
@@ -324,6 +356,11 @@ class RecoveryManager:
                     )
             summary.inc("turns", "interrupted")
             summary.flag(kind="turn", id=manifest.run_id, reason=reason)
+            # Read by `_scan_effects`, which runs after this one and knows
+            # which conversation each open call belongs to. A manifest carries
+            # `run_id` and no chat id, and a checkpoint carries both, so the
+            # join has to happen where the rows are.
+            self._interrupted_runs.add(manifest.run_id)
             # A person was waiting on this and nobody has reached them. The
             # bridge tries first, at shutdown, and notes on the record whether
             # it landed; this is the other half of that, for the case where it
@@ -522,6 +559,71 @@ class RecoveryManager:
                 summary.inc("agenda", "preserved")
 
     # -- helpers --------------------------------------------------------
+
+    # -- scan: effects ---------------------------------------------------
+
+    def _scan_effects(self, summary: RecoverySummary) -> None:
+        """What was in the air when the machine stopped, and who decides.
+
+        The four scans above this one ask what STATE was left behind, and each
+        can close what it finds because a record is ours to close. An effect is
+        not: a message either reached somebody or it did not. So this scan
+        closes nothing. It reads the calls the last process opened and never
+        recorded the end of, and sorts them by what the tool itself declared
+        before it ran.
+
+        `read_only` never appears: no boundary is written for one, because a
+        call recovery may simply repeat has nothing to write down.
+
+        The liveness line is this boot's start, the same rule `_scan_turns`
+        applies to an open manifest. A checkpoint carries no boot id, so it is
+        said in timestamps.
+
+        **It also decides which conversations are offered a resumed turn**, and
+        the two questions are answered in one walk because they read the same
+        rows. The card is filed over every open call whatever its age, because
+        an unaccounted effect stays unaccounted for. The resumed turn is
+        offered only for a run `_scan_turns` just closed as interrupted, which
+        is what makes it about THIS crash: a conversation is woken because the
+        machine died inside it minutes ago, never because a call from three
+        weeks ago was never closed.
+
+        Only where a turn can DO something. A conversation whose open calls are
+        all `unsafe` has a card waiting and no move to make, and waking it
+        would spend a model call to be told to leave everything alone.
+        """
+        started = boot_started_at(current_boot_id())
+        rows = checkpoints.unresolved(before=started)
+        if not rows:
+            return
+
+        store = None
+        for row in rows:
+            bucket = BUCKET.get(row.recovery, "asked_you")
+            summary.inc("effects", bucket)
+            if row.run_id in self._interrupted_runs and bucket != "asked_you":
+                # The RUN as well as the chat. The bound is this crash, and a
+                # chat id alone throws it away at the last step: a conversation
+                # read whole carries every call it ever left open, and the
+                # oldest of those is the one a resumed turn is least able to
+                # find in its own transcript and most likely to invent
+                # arguments for.
+                resume.note_owed(row.chat_id, row.run_id)
+            if bucket != "asked_you":
+                # Recorded and not asked about. The conversation that picks the
+                # work up is told what it is standing in; an inbox card for a
+                # call that can simply be run again is attention spent on
+                # nothing.
+                continue
+            summary.flag(kind="effect", id=row.call_id, reason=describe(row))
+            try:
+                if store is None:
+                    store = self._get_event_store()
+                file_question(store, row)
+            except Exception:  # noqa: BLE001 — a card never fails a boot
+                log.exception(
+                    "recovery: could not ask about %s (call %s)", row.tool, row.call_id
+                )
 
     def _get_event_store(self) -> EventStore:
         if self._event_store is None:

@@ -30,6 +30,7 @@ that is running it.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Iterable
 from pathlib import Path
 from typing import ClassVar, Literal
@@ -37,7 +38,11 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, Field
 
 from tesseract.credentials.redaction import redact_url_credentials
+from tesseract.kernel.tools import _process_containment as containment
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
+
+_log = logging.getLogger(__name__)
 
 #: What a remote is called when nothing says otherwise. git's own default,
 #: and the fallback `_effective_remote` lands on.
@@ -120,6 +125,16 @@ class GitTool(Tool):
         "is what creates a GitHub repository for a new one."
     )
     depends_on: ClassVar[str] = ""
+    # Most of what this tool does is read, and one thing it does is permanent.
+    # A commit is the only operation that leaves a mark somebody else can look
+    # up, so it is the only one producing a real receipt, and every other
+    # operation answers `nothing()` rather than staying silent.
+    receipt_kind: ClassVar[str] = "commit"
+    recovery_behaviour: ClassVar[str] = "queryable"
+
+    #: Operations that leave a commit behind. The hash is asked for after
+    #: exactly these, so no other operation pays a subprocess for it.
+    _COMMITTING: ClassVar[frozenset[str]] = frozenset({"commit"})
 
     @property
     def name(self) -> str:
@@ -174,7 +189,39 @@ class GitTool(Tool):
         return ToolResult(
             output=f"git {inp.operation} in {repo}\n{body or '(no output)'}",
             metadata={"operation": inp.operation, "repo": str(repo)},
+            receipt=await self._receipt_for(inp.operation, repo, timeout),
         )
+
+    async def _receipt_for(
+        self, operation: str, repo: Path, timeout: int
+    ) -> Receipt:
+        """The commit this call produced, or an explicit nothing.
+
+        The hash is ASKED FOR rather than parsed out of the command's own
+        output, which is porcelain: it prints an abbreviated hash inside a
+        sentence that changes with configuration and locale. `rev-parse HEAD`
+        is the plumbing answer, and a full hash is what a later pass can
+        actually look up.
+
+        A failed read answers `nothing()` rather than raising. The work
+        already landed, and losing it over a failure to describe it would
+        invert what a receipt is for. The step then records success with no
+        mark, which is honest: something happened and this run cannot say
+        what.
+        """
+        if operation not in self._COMMITTING:
+            return Receipt.nothing()
+        code, out, _err = await self._run_git(
+            ["-C", str(repo), "rev-parse", "HEAD"], cwd=repo, timeout=timeout
+        )
+        sha = out.strip()
+        if code != 0 or not sha:
+            _log.warning(
+                "git: %s in %s left no readable hash; the step records no mark",
+                operation, repo,
+            )
+            return Receipt.nothing()
+        return Receipt(kind="commit", id=sha, locator=str(repo))
 
     # --- helpers --------------------------------------------------------
 
@@ -642,13 +689,16 @@ class GitTool(Tool):
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
             return 1, "", (
                 f"git did not finish within {timeout}s and was stopped. A "
                 "network operation may be waiting on credentials that cannot "
                 "be entered here."
             )
+        finally:
+            # git spawns helpers of its own (a credential helper, a transport),
+            # and a clone or a push is long enough for a stop to land in the
+            # middle of one. No-op once it has exited on its own.
+            await containment.reap(proc)
         return (
             proc.returncode or 0,
             out.decode("utf-8", "replace"),

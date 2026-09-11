@@ -8,13 +8,56 @@
 // **This file authors nothing about the library.** Every count, every size and
 // every sentence is the payload's, and the steps of the last pass carry the
 // stage's own reason, rendered as it was written.
+//
+// Two controls, both existing tools and neither invented here: a failed step
+// of the last pass can be run again, off its schedule, and the vault can be
+// checked on demand. Neither writes a sentence of its own; what happened is
+// read back from the room the next time it asks.
 
 import { useEffect } from 'react';
+import { Button } from '../../components/common/Button';
 import { Note } from '../../components/common/Note';
+import { RowActions } from '../../components/common/Row';
+import { Hint } from '../../components/ui/Hint';
 import { Band, StateStrip, type StateLine } from '../../components/common/StateStrip';
-import type { MemoryResponse } from '../../lib/api';
+import { sendCommand } from '../../lib/commands';
+import type { MemoryLine, MemoryResponse } from '../../lib/api';
 import { useAutonomyStore } from '../../stores/autonomy';
 import { clock } from '../../lib/time';
+
+/** The vault is the one tree here with a tool that reads it. A tree nothing
+ *  has written yet has nothing to check, which is why the row that says so
+ *  carries no button either: `vault_lint` would only confirm the same
+ *  emptiness the row already states. */
+function treeActions(line: MemoryLine): React.ReactNode {
+  if (line.name !== 'vault' || line.state === 'not_instrumented') return undefined;
+  return (
+    <RowActions className="state-acts">
+      <Hint label="Checks the vault wiki for orphans, stale pages, contradictions and missing hubs, and writes down what it can fix safely.">
+        <Button onClick={() => sendCommand('/vault_lint')} ariaLabel="Check the vault now">
+          check it
+        </Button>
+      </Hint>
+    </RowActions>
+  );
+}
+
+function rows(
+  lines: MemoryResponse['trees'],
+  actionsFor?: (line: MemoryLine) => React.ReactNode,
+): StateLine[] {
+  return lines.map((line) => ({
+    key: line.name,
+    state: line.state,
+    obligation: line.obligation,
+    label: line.label,
+    name: line.name,
+    said: line.said,
+    when: clock(line.at),
+    value: line.value,
+    actions: actionsFor?.(line),
+  }));
+}
 
 export function MemoryRoomView({
   data,
@@ -30,20 +73,13 @@ export function MemoryRoomView({
   }
   if (status !== 'ready' || data === null) return <></>;
 
-  const rows = (lines: MemoryResponse['trees']): StateLine[] =>
-    lines.map((line) => ({
-      key: line.name,
-      state: line.state,
-      obligation: line.obligation,
-      label: line.label,
-      name: line.name,
-      said: line.said,
-      when: clock(line.at),
-      value: line.value,
-    }));
-
   return (
     <>
+      <p className="t-meta">
+        Whether the library can be searched right now, what is on disk, and
+        what last night&apos;s maintenance pass did to it.
+      </p>
+
       <div className="autonomy-group">
         <Band label="Whether it can be searched" count={data.retrieval.length} />
         <StateStrip lines={rows(data.retrieval)} />
@@ -51,7 +87,7 @@ export function MemoryRoomView({
 
       <div className="autonomy-group">
         <Band label="What is in it" count={data.trees.length} />
-        <StateStrip lines={rows(data.trees)} />
+        <StateStrip lines={rows(data.trees, treeActions)} />
       </div>
 
       <div className="autonomy-group">
@@ -82,6 +118,28 @@ export function MemoryRoomView({
               ),
               when: step.took,
               value: step.changed ? `${step.changed} changed` : '',
+              // A step that found nothing to do is the commonest healthy
+              // outcome and gets no button. A step that FAILED is the one
+              // that most needs one, so its control shows without being
+              // hovered, the same as a row that is asking for attention.
+              actions:
+                step.state === 'failed' ? (
+                  <RowActions className="state-acts state-acts--waiting">
+                    <Hint label="Runs this one step of tonight's maintenance again, right now, outside its schedule.">
+                      <Button
+                        onClick={() =>
+                          sendCommand(
+                            '/pipeline_run_stage',
+                            ` stage=${JSON.stringify(step.stage)}`,
+                          )
+                        }
+                        ariaLabel={`Run ${step.stage} again`}
+                      >
+                        run it again
+                      </Button>
+                    </Hint>
+                  </RowActions>
+                ) : undefined,
             }))}
           />
         )}

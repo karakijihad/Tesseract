@@ -18,6 +18,7 @@ from tesseract.kernel.tools.base import (
     ToolResult,
     spawn_cap_tool_result,
 )
+from tesseract.kernel.tools.receipt import Receipt
 
 log = logging.getLogger(__name__)
 
@@ -627,6 +628,8 @@ async def run_delegate(
                 f"{handle.handle_id}. Use spawn_check or spawn_await "
                 f"to retrieve the result."
             ),
+            # The delegation has not run yet. The spawn that runs it answers.
+            receipt=Receipt.nothing(),
             metadata={
                 "spawn_handle": handle.handle_id,
                 "spawn_kind": tool_name,

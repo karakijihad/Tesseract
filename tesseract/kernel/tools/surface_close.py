@@ -22,6 +22,8 @@ class SurfaceCloseTool(Tool):
     use_when: ClassVar[str] = "The operator is done with a card, or it's stale and needs clearing."
     not_when: ClassVar[str] = "`surface_update` to change a card's content without destroying it."
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:

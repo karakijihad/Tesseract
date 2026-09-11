@@ -18,6 +18,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.workspace_events import EventStore, WorkspaceComment
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,8 @@ class WorkspaceReplyTool(Tool):
         "question you can just ask in the reply you are already writing."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     def __init__(self, store: EventStore) -> None:
         """Writes the reply comment to disk (durable). Broadcasting is
@@ -84,12 +87,14 @@ class WorkspaceReplyTool(Tool):
             return ToolResult(
                 output="workspace_reply requires `event_id`, `comment_id`, and `body`.",
                 is_error=True,
+                caller_error=True,
             )
 
         if self._store.get_event(event_id) is None:
             return ToolResult(
                 output=f"Workspace event {event_id} not found.",
                 is_error=True,
+                caller_error=True,
             )
 
         reply = WorkspaceComment.new(
@@ -107,5 +112,10 @@ class WorkspaceReplyTool(Tool):
             )
         return ToolResult(
             output=f"Reply attached to {event_id} (cmt {reply.comment_id}).",
+            receipt=Receipt(
+                kind="record",
+                id=reply.comment_id,
+                locator=str(self._store.comments_path),
+            ),
             metadata={"event_id": event_id, "comment_id": reply.comment_id},
         )

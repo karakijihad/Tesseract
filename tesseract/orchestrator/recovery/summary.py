@@ -79,30 +79,57 @@ def empty_scan_counts() -> dict[str, dict[str, int]]:
         "turns": {"interrupted": 0, "preserved": 0, "unreadable": 0},
         "schedule": {"completed": 0, "failed": 0},
         "agenda": {"resume_queued": 0, "blocked": 0, "preserved": 0},
+        # What was in the air rather than what was on disk: a call the last
+        # process made and never recorded the end of. `resumable` is safe
+        # to run again by its own declaration, `check_first` has to be
+        # asked about before anything is repeated, and `asked_you` is one
+        # question waiting in the inbox.
+        "effects": {"resumable": 0, "check_first": 0, "asked_you": 0},
     }
 
 
+#: One card, for the life of the machine. It used to be `recovery-<boot_id>`,
+#: which is a new card on every boot: 266 of them in 27 days, cleared by
+#: deleting them in bulk, and a pile that size is one nobody reads. The store
+#: keys by `event_id` and the newest row wins, so a fixed id makes each boot
+#: REWRITE the card rather than add one. Which boot wrote it is in the title
+#: and in the payload, where it always was.
+EVENT_ID = "recovery-summary"
+
+
 def build_recovery_event(summary: RecoverySummary) -> WorkspaceEvent:
-    """Snapshot the summary into a `recovery_summary` workspace event.
+    """Snapshot the summary into the `recovery_summary` workspace event.
 
     `priority=8` because operator-attention items should bubble above
-    normal feedback churn but below `nudge`-priority hot asks. Stable
-    `event_id` shape (``recovery-<boot_id>``); the underlying boot_id
-    carries a uuid suffix so collisions across boots are vanishingly
-    rare. Dedup is handled on the READ side — `EventStore.list_events`
-    keys by `event_id` so duplicate raw rows surface only once in the
-    inbox. `append_event` itself is a blind append; do not rely on it
-    for write-side dedup.
+    normal feedback churn but below `nudge`-priority hot asks.
+
+    **It resolves itself.** A boot that found nothing needing the operator
+    writes the card as settled, so a card that was pending after a bad boot
+    clears on the next good one without anybody pressing anything, and a later
+    bad boot re-opens the same card. What that leaves in the inbox is one row
+    that is either asking or not, which is what a person can act on; what it
+    replaces is a stack of identical cards where only the top one was true.
+
+    Dedup is on the READ side: `EventStore.list_events` keys by `event_id` so
+    only the newest row for one id surfaces. `append_event` is a blind append
+    and is not a write-side dedup.
     """
     summary_text = _render_summary_text(summary)
+    now = datetime.now(timezone.utc).isoformat()
+    needs_you = bool(summary.operator_attention)
     return WorkspaceEvent(
-        event_id=f"recovery-{summary.boot_id}",
-        ts=datetime.now(timezone.utc).isoformat(),
+        event_id=EVENT_ID,
+        ts=now,
         kind="recovery_summary",
         source="recovery",
-        title=f"Recovery — boot {summary.boot_id}",
+        title=f"Recovery after boot {summary.boot_id}",
         summary=summary_text,
         payload=summary.to_payload(),
+        status="pending" if needs_you else "resolved",
+        decided_at=None if needs_you else now,
+        decided_reason=(
+            "" if needs_you else "this boot left nothing for you to answer"
+        ),
         priority=8,
         author_id="system",
         author_display="Recovery",
@@ -121,6 +148,15 @@ def _render_summary_text(summary: RecoverySummary) -> str:
             f"{cut_short} conversation{'s' if cut_short != 1 else ''} stopped "
             f"mid answer and got no reply"
         )
+    # Second, because it is the other line about something outside this
+    # machine: a call that may have reached somebody and may not have.
+    effects = summary.scans.get("effects") or {}
+    in_the_air = effects.get("check_first", 0) + effects.get("asked_you", 0)
+    if in_the_air:
+        parts.append(
+            f"{in_the_air} action{'s' if in_the_air != 1 else ''} may or may "
+            f"not have finished"
+        )
     sched = summary.scans.get("schedule") or {}
     failed_runs = sched.get("failed", 0)
     if failed_runs:
@@ -136,6 +172,7 @@ def _render_summary_text(summary: RecoverySummary) -> str:
 __all__ = [
     "AttentionItem",
     "RecoverySummary",
+    "EVENT_ID",
     "build_recovery_event",
     "empty_scan_counts",
 ]

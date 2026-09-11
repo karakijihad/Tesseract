@@ -140,12 +140,37 @@ def save_chat(record: ChatRecord) -> Path:
         # exclusion `_walk` enforces and into the operator's chat library. The
         # index is a picture of that library; a channel record is the bridge's
         # own restore state and is not in it.
-        if record.surface != "channel":
+        if record.surface not in NOT_IN_THE_LIBRARY:
             chat_index.upsert(record, path)
     return path
 
 
-def archive_copy(record: ChatRecord | None, history: list[dict[str, Any]]) -> str | None:
+#: The door a conversation came through, where the runtime knows it.
+COCKPIT_SURFACE = "cockpit"
+
+#: Written when NEITHER the caller nor the record could say. The conversation
+#: is kept whole and attributed to nobody, which is the only honest pair of
+#: answers: losing it and guessing at it are both worse.
+UNKNOWN_SURFACE = "unknown"
+
+#: The surfaces that are the operator's own by construction, needing no
+#: principal. `cockpit` is the window they sit at; `autonomy` is the runtime's
+#: own background turn on their install. Anything else proves it or is not.
+OPERATORS_OWN_SURFACES: frozenset[str] = frozenset({COCKPIT_SURFACE, "autonomy"})
+
+#: What the chat LIBRARY never lists, whatever else is true of it. A channel
+#: record is a bridge's restore state; an unknown one is a conversation the
+#: runtime could not attribute. Neither is a shelf the operator browses.
+NOT_IN_THE_LIBRARY: frozenset[str] = frozenset({"channel", UNKNOWN_SURFACE})
+
+
+def archive_copy(
+    record: ChatRecord | None,
+    history: list[dict[str, Any]],
+    *,
+    surface: str | None = None,
+    principal: str | None = None,
+) -> str | None:
     """Write what a conversation is leaving behind as its own archived record.
 
     The one place a boundary copies a transcript aside, called by both
@@ -162,9 +187,34 @@ def archive_copy(record: ChatRecord | None, history: list[dict[str, Any]]) -> st
     Returns the new id, or `None` when there was nothing to copy or the copy
     could not be written. `None` means the caller must NOT wipe: without the
     copy, wiping in place is deleting.
+
+    **`surface` and `principal` are the caller's to state, and guessing them
+    was a hole.** They used to fall back to `"cockpit"` whenever the record
+    could not be read, and a missing record is ORDINARY here: the autosave
+    sleeps a full interval before its first write, so a channel conversation
+    reaching a boundary inside its first minute has none. The copy was then
+    written as a COCKPIT chat, which carried a second approved user's
+    transcript past `belongs_to_operator` into the operator's digest and,
+    because `_walk` and the chat index are keyed on the same field, into the
+    operator's own chat library where it could be read by title.
+
+    Two things have to be true at once and the first fix here held only one.
+    **The conversation is never lost** (a missing record is not a reason to
+    drop it), **and it is never filed under somebody it does not belong to.**
+    So the caller says which surface it is, the record answers when the caller
+    does not, and when NEITHER can it is written as `UNKNOWN_SURFACE`: kept
+    whole, and excluded by every reader that speaks for the operator, because
+    those readers name the surfaces that are theirs rather than the ones that
+    are not.
     """
     if not history:
         return None
+    known_surface = (
+        surface if surface is not None else getattr(record, "surface", None)
+    ) or UNKNOWN_SURFACE
+    known_principal = (
+        principal if principal is not None else (getattr(record, "principal", "") or "")
+    )
     copy_id = uuid.uuid4().hex
     try:
         save_chat(ChatRecord(
@@ -176,7 +226,12 @@ def archive_copy(record: ChatRecord | None, history: list[dict[str, Any]]) -> st
             history=list(history),
             archived=True,
             model=getattr(record, "model", "") or "",
-            surface=getattr(record, "surface", "cockpit") or "cockpit",
+            surface=known_surface,
+            # Carried with the surface, and for a stronger reason: the copy
+            # gets a fresh uuid, so this is the ONLY thing on it that still
+            # says whose conversation it was. An archived copy that dropped it
+            # would read as the operator's own.
+            principal=known_principal,
         ))
         index_chat(copy_id)
     except Exception:
@@ -198,7 +253,7 @@ def load_chat(chat_id: str, *, include_channels: bool = False) -> ChatRecord | N
     record = chat_record.read_record(chat_id)
     if record is None:
         return None
-    if not include_channels and record.surface == "channel":
+    if not include_channels and record.surface in NOT_IN_THE_LIBRARY:
         return None
     return record
 
@@ -315,7 +370,7 @@ def _walk(
         record = chat_record.read_record(path.stem)
         if record is None:
             continue
-        if not include_channels and record.surface == "channel":
+        if not include_channels and record.surface in NOT_IN_THE_LIBRARY:
             continue
         if not _wanted(record.archived, include_archived, archived_only):
             continue
@@ -363,6 +418,67 @@ def list_records(
         include_channels=include_channels,
         touched_since=touched_since,
     ))
+    records.sort(key=_activity_key, reverse=True)
+    return records[:limit] if limit is not None else records
+
+
+def belongs_to_operator(record: ChatRecord, owners: "frozenset[str]") -> bool:
+    """Is this conversation the operator's OWN?
+
+    **Named rather than excluded**, and that is the whole guard. Asking "is it
+    not a channel" admits anything a later phase invents, and admitted the
+    `UNKNOWN_SURFACE` copy this module writes when nobody could say. So the
+    surfaces that ARE the operator's by construction are listed, and every
+    other one has to prove it with a principal an adapter named as its owner.
+
+    A record with no principal is not the operator's. That is a channel chat
+    written before the field existed, and reading an unknown as theirs is the
+    failure this whole split exists to stop.
+    """
+    if getattr(record, "surface", COCKPIT_SURFACE) in OPERATORS_OWN_SURFACES:
+        return True
+    principal = getattr(record, "principal", "") or ""
+    return bool(principal) and principal in owners
+
+
+def operator_records(
+    *,
+    include_archived: bool = False,
+    archived_only: bool = False,
+    limit: int | None = None,
+    touched_since: float | None = None,
+) -> list[ChatRecord]:
+    """Every conversation that is the OPERATOR's own, whichever door it came
+    through.
+
+    The reader for anything that speaks in the operator's own voice about
+    their own day: the daily digest, the feedback sweep, and what learns from
+    either. Surface-blind on purpose, which is the whole of the one-funnel
+    ruling: a conversation the operator had on their phone is a conversation
+    they had, and leaving it out of their own recap was the split.
+
+    **A purpose, not another boolean.** `include_channels` says how a record
+    arrived and cannot answer whose it is, and a caller that flipped it would
+    pull a second approved user's conversation into the operator's recap. This
+    names the question instead, and every caller that means it says so.
+
+    Fails CLOSED. When no adapter can say who owns it, the channel half is
+    empty and this returns what `list_records` always did, which is the
+    behaviour every one of these jobs has had until now.
+    """
+    from tesseract.integrations._channel_session import operator_principals
+
+    owners = operator_principals()
+    records = [
+        record
+        for record in _walk(
+            include_archived=include_archived,
+            archived_only=archived_only,
+            include_channels=True,
+            touched_since=touched_since,
+        )
+        if belongs_to_operator(record, owners)
+    ]
     records.sort(key=_activity_key, reverse=True)
     return records[:limit] if limit is not None else records
 
@@ -424,6 +540,63 @@ def _is_disposable(meta: Any, chat: Any, chat_id: str) -> bool:
     return not (is_valid_chat_id(chat_id) and chat_path(chat_id).exists())
 
 
+def _record_of(session: Any, chat_id: str, meta: Any, cs: Any) -> ChatRecord:
+    """One chat, as it goes to disk. The only place a record is assembled."""
+    return ChatRecord(
+        chat_id=chat_id,
+        session_id=session.session_id,
+        title=meta.title,
+        created_at=meta.created_at,
+        started_at=meta.started_at,
+        archived=meta.archived,
+        model=getattr(meta, "model", "") or "",
+        # The door this conversation came through. `ServerSession.kind` already
+        # carries it, so a channel chat lands in the same store as a cockpit
+        # one and stays tellable apart.
+        surface=getattr(session, "kind", "") or "cockpit",
+        # Whose it is. `stamp_identity` put it on the session, where the
+        # channel and the chat id are both still known; empty on a cockpit
+        # chat, which is the operator's own by definition.
+        principal=getattr(session, "channel_principal", "") or "",
+        history=list(getattr(cs, "history", []) or []),
+    )
+
+
+def persist_first_turn(session: Any, chat_id: str) -> bool:
+    """Write a conversation that has no record yet. True when one was written.
+
+    The autosave tick is what normally puts a chat on disk, so a conversation
+    is unwritten for up to a minute after it starts. A crash in that window
+    loses the whole thing, and the loss is silent in a particular way: recovery
+    knows which conversation is owed a resumed turn, but `resume_wake.offer`
+    can only wake a chat the window restored, and a window restores what is on
+    disk. So the conversation a crash interrupts was the one conversation that
+    could not be picked back up. Measured 2026-09-09: a chat crashed 89 seconds
+    into its first turn had no record until four minutes later.
+
+    Only the first turn, and only when nothing is there. A chat already on disk
+    is the autosave's to keep current; this is about the window where there is
+    nothing to be current.
+    """
+    meta = session.chat_meta.get(chat_id)
+    cs = session.chats.get(chat_id) if hasattr(session, "chats") else None
+    if meta is None or cs is None:
+        return False
+    if not getattr(cs, "history", None):
+        return False
+    if _is_disposable(meta, cs, chat_id):
+        return False
+    if load_chat(chat_id) is not None:
+        return False
+    try:
+        with _WRITE_LOCK, index_batch():
+            save_chat(_record_of(session, chat_id, meta, cs))
+    except Exception:  # noqa: BLE001 - a turn is not this write's to fail
+        logger.exception("persist_first_turn: failed for chat %s", chat_id)
+        return False
+    return True
+
+
 def persist_session_chats(session: Any, *, skip_empty: bool = False, model: str = "") -> int:
     """Flush every chat in a live ``ServerSession`` to disk. Returns the count.
 
@@ -470,20 +643,7 @@ def persist_session_chats(session: Any, *, skip_empty: bool = False, model: str 
             if _is_disposable(meta, cs, chat_id):
                 continue
             try:
-                save_chat(ChatRecord(
-                    chat_id=chat_id,
-                    session_id=session.session_id,
-                    title=meta.title,
-                    created_at=meta.created_at,
-                    started_at=meta.started_at,
-                    archived=meta.archived,
-                    model=getattr(meta, "model", "") or "",
-                    # The door this conversation came through. `ServerSession.
-                    # kind` already carries it, so a channel chat lands in the
-                    # same store as a cockpit one and stays tellable apart.
-                    surface=getattr(session, "kind", "") or "cockpit",
-                    history=list(getattr(cs, "history", []) or []),
-                ))
+                save_chat(_record_of(session, chat_id, meta, cs))
                 saved += 1
             except Exception:  # noqa: BLE001 — never lose other chats on one failure
                 logger.exception("persist_session_chats: failed for chat %s", chat_id)

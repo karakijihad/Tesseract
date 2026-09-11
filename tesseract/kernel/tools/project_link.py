@@ -17,6 +17,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 
 
 class ProjectLinkInput(BaseModel):
@@ -73,6 +74,8 @@ class ProjectLinkTool(Tool):
         "For a directory that does not exist yet, use `project_new`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:
@@ -104,12 +107,15 @@ class ProjectLinkTool(Tool):
             root = Path(inp.root).expanduser().resolve()
         except (OSError, ValueError) as exc:
             return ToolResult(
-                output=f"project_link: cannot resolve {inp.root!r} ({exc})", is_error=True
+                output=f"project_link: cannot resolve {inp.root!r} ({exc})",
+                is_error=True,
+                caller_error=True,
             )
         if not root.is_dir():
             return ToolResult(
                 output=f"project_link: {root} does not exist or is not a directory",
                 is_error=True,
+                caller_error=True,
             )
         try:
             # A lane opened in the sealed tree is refused at open. Registering
@@ -117,7 +123,9 @@ class ProjectLinkTool(Tool):
             # refusal belongs here where it can still be explained.
             assert_cwd_outside_seal(root)
         except SealViolation as exc:
-            return ToolResult(output=f"project_link: {exc}", is_error=True)
+            return ToolResult(
+                output=f"project_link: {exc}", is_error=True, caller_error=True
+            )
 
         # Detection shells out to git (up to four calls, each with its own
         # timeout) and reads files. On the loop that stalls health checks, WS
@@ -151,7 +159,9 @@ class ProjectLinkTool(Tool):
                 live=inp.live,
             )
         except ValueError as exc:
-            return ToolResult(output=f"Not linked: {exc}", is_error=True)
+            return ToolResult(
+                output=f"Not linked: {exc}", is_error=True, caller_error=True
+            )
 
         store = ProjectStore()
         try:
@@ -210,4 +220,8 @@ class ProjectLinkTool(Tool):
                     )
         lines.append(f"Not active yet — project_open('{saved.id}') to switch to it.")
 
-        return ToolResult(output="\n".join(lines), metadata=saved.model_dump(mode="json"))
+        return ToolResult(
+            output="\n".join(lines),
+            receipt=Receipt(kind="record", id=saved.id, locator=str(store.path)),
+            metadata=saved.model_dump(mode="json"),
+        )

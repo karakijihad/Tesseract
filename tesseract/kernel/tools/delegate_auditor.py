@@ -111,6 +111,8 @@ class DelegateAuditorTool(Tool):
         "A markdown sub-agent task: use `invoke_agent`."
     )
     depends_on: ClassVar[str] = "role:auditor"
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     @property
     def name(self) -> str:

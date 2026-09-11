@@ -63,6 +63,8 @@ class Context7LookupTool(Tool):
         "such as news or general topics."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:

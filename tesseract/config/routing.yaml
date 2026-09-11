@@ -54,3 +54,8 @@ routes:
   # One of the voices it speaks with stopped working. Replies still arrive
   # as text.
   voice_lane_down: [telegram]
+
+  # One of your own documents changed itself. The documents you hold back in
+  # `permissions.yaml` still ask before changing; this is what the others
+  # send afterwards instead. Set it to [] to read them in the app only.
+  workspace_change_applied: [telegram]

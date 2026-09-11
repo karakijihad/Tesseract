@@ -128,9 +128,10 @@ class AnthropicAdapter(ModelAdapter):
         # This used to read roles and guess, and the guess was right for this
         # provider and unavailable to any other.
         _mark(msg_list, boundary_at)
-        if tools:
+        projected = self.project_tools(tools)
+        if projected:
             translated = []
-            for t in tools:
+            for t in projected:
                 entry: dict[str, Any] = {
                     "name": t["name"],
                     "description": t.get("description", ""),
@@ -139,16 +140,12 @@ class AnthropicAdapter(ModelAdapter):
                 if t.get("defer_loading"):
                     entry["defer_loading"] = True
                 translated.append(entry)
-            # The search tool rides along only when there is something to
-            # search for, and only when something is also loaded: a payload
-            # where every tool defers is refused outright, and the search tool
-            # itself must never be one of them.
-            deferred = sum(1 for t in translated if t.get("defer_loading"))
-            if deferred and deferred < len(translated):
+            # The provider's search rides along only when there is something
+            # to search for. `project_tools` has already guaranteed that a
+            # payload which would defer everything defers nothing instead, so
+            # a mixed payload is the only one that reaches here with flags on.
+            if any(t.get("defer_loading") for t in translated):
                 translated.append({"type": _TOOL_SEARCH_TYPE, "name": _TOOL_SEARCH_NAME})
-            elif deferred:
-                for entry in translated:
-                    entry.pop("defer_loading", None)
             kwargs["tools"] = translated
 
         last_error: Exception | None = None

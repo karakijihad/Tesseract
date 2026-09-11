@@ -24,6 +24,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,8 @@ class DiaryAppendTool(Tool):
         "retrieved by `memory_search`; it's walled off from routine recall."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     """Append a first-person reflection entry to today's diary file.
 
@@ -88,6 +91,7 @@ class DiaryAppendTool(Tool):
             return ToolResult(
                 output="Diary entry empty — nothing written.",
                 is_error=True,
+                caller_error=True,
             )
 
         if len(text) > _MAX_ENTRY_CHARS:
@@ -97,6 +101,7 @@ class DiaryAppendTool(Tool):
                     "Diary is for short reflections, not reports. Trim and retry."
                 ),
                 is_error=True,
+                caller_error=True,
             )
 
         now = datetime.now(timezone.utc).astimezone()
@@ -123,5 +128,10 @@ class DiaryAppendTool(Tool):
 
         return ToolResult(
             output=f"Diary entry logged to {filename} at {timestamp}.",
+            receipt=Receipt(
+                kind="record",
+                id=f"{now.strftime('%Y-%m-%d')} {timestamp}",
+                locator=str(path),
+            ),
             metadata={"path": str(path), "timestamp": timestamp},
         )

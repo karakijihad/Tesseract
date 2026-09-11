@@ -1,5 +1,6 @@
 """Daily-note promotion stage — scan `daily/*.md`, promote promotable
-sections into canonical subdirs via `store.write()` with dedupe + WNTS.
+sections into canonical subdirs via `store.write()`, with dedupe and the
+capture policy.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
 from tesseract.memory import dedupe
 from tesseract.memory.classifier import classify_section
 from tesseract.memory.embeddings import EmbeddingIndex
-from tesseract.memory.librarian.constants import _PREFIX_TO_TYPE, _SECTION_MIN_CHARS
+from tesseract.memory.librarian.constants import _PREFIX_TO_TYPE, section_min_chars
 from tesseract.memory.librarian.utils import (
     _anchor_slug,
     _clip_words,
@@ -64,7 +65,7 @@ class PromotionMixin:
                 continue
 
             for title, body in _parse_daily_sections(text):
-                if len(body) < _SECTION_MIN_CHARS:
+                if len(body) < section_min_chars():
                     skipped += 1
                     continue
                 if _is_bookkeeping_title(title):
@@ -166,6 +167,10 @@ class PromotionMixin:
             source_path=source_anchor,
             source_url="",
             source_type="consolidation",
+            # The daily note this section was promoted out of. It sits
+            # outside the memory store, which is what makes this a first
+            # summary of raw material rather than a link in a chain.
+            derived_from=[source_anchor],
         )
         if self._store.write(fm, body):
             return fm

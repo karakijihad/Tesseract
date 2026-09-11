@@ -33,11 +33,14 @@ import logging
 import re
 import secrets
 import threading
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
+from tesseract.kernel.tools.base import ToolResult
+from tesseract.kernel.tools.receipt import NO_RECEIPT, Receipt
 from tesseract.lib.clock import to_local
 from tesseract.orchestrator.outcome import RunOutcome
+from tesseract.orchestrator.turns import receipts as receipts_log
 from tesseract.paths import runtime_dir
 from tesseract.scheduler.pipeline.artifacts import atomic_write_json
 from tesseract.scheduler.pipeline.manifest import RunManifest, StageRow
@@ -107,6 +110,18 @@ _DOOR_LABELS = {
     "schedule": "A scheduled question",
 }
 
+#: Rows whose turns are not a question anybody asked. A schedule row usually
+#: carries one the operator set up once and forgot, which "A scheduled
+#: question" says fairly; the two rows of the day are the runtime deciding what
+#: to do and then doing it, and calling either a question of the operator's
+#: puts their name on a decision they did not make. Keyed on the WHOLE entry
+#: rather than the qualifier, so `schedule:morning` cannot be confused with a
+#: channel of the same name.
+_ENTRY_LABELS = {
+    "schedule:morning": "What it decided to work on",
+    "schedule:workday": "What it worked on",
+}
+
 
 def turn_label(entry: str) -> str:
     """What to call a turn on a surface, in the door's own words.
@@ -118,7 +133,31 @@ def turn_label(entry: str) -> str:
     door, _, channel = (entry or "").partition(":")
     if door == "channel" and channel:
         return f"What you asked on {channel.capitalize()}"
+    if entry in _ENTRY_LABELS:
+        return _ENTRY_LABELS[entry]
     return _DOOR_LABELS.get(door, "What you asked")
+
+
+#: What to CALL a door, as against what to call a turn that came through one.
+#: `turn_label` answers "what is this turn", which is a sentence; this answers
+#: "where did it come from", which is a noun and is what a count reads with.
+#: Both here so one file owns the words for a door, because the alternative is
+#: a surface printing `channel:telegram`, which is a slug and a person cannot
+#: resolve one.
+_DOOR_NAMES = {
+    "cockpit": "the cockpit",
+    "terminal": "the terminal",
+    "schedule": "the schedule",
+    "channel": "a channel",
+}
+
+
+def door_name(entry: str) -> str:
+    """Where a turn came from, in a word a person can read."""
+    door, _, channel = (entry or "").partition(":")
+    if door == "channel" and channel:
+        return channel.capitalize()
+    return _DOOR_NAMES.get(door, "somewhere unrecorded")
 
 
 def step_name(index: int, kind: str, name: str) -> str:
@@ -137,6 +176,49 @@ def read_step_name(stage: str) -> tuple[str, str]:
     second place to fix when it changes."""
     parts = stage.split(".", 2)
     return (parts[1], parts[2]) if len(parts) == 3 else ("", "")
+
+
+def outcome_of(
+    result: "ToolResult", reason_chars: int, *, receipt_kind: str = ""
+) -> tuple[RunOutcome, str]:
+    """What one tool call is recorded as, and the sentence beside it.
+
+    Beside `step_name` and `read_step_name` deliberately: those two own what a
+    step is CALLED and this owns what it is worth, and all three are read by
+    anything reconstructing a turn from its record. It lived inline in
+    `chat.py::_result_chunk` while it had three branches; a fourth is the
+    point at which one owner starts to matter, because the day panel reports
+    these words and a second mapping would be a second answer.
+
+    **Order is load bearing.** A hard denial is checked before a timeout and
+    both before the error branches, because a refused call also carries
+    `is_error`. `caller_error` is checked ahead of the plain error for the
+    same reason: it is a narrowing of it, not an alternative to it.
+    """
+    if result.denied_hard:
+        return RunOutcome.REFUSED, (
+            result.deny_reason or "the permission gate refused it"
+        )
+    if result.timed_out:
+        return RunOutcome.TRUNCATED, "it ran out of time before it finished"
+    if result.is_error and result.caller_error:
+        # Asked for something it cannot do, said so by the tool itself. Apart
+        # from `failed` because a reader cannot otherwise tell a tool that is
+        # unwell from one handed a path that is not there, and the most used
+        # tool in the registry is the one that suffers: 87 `file_read` calls
+        # in a measured day, 2 of them "File not found".
+        return RunOutcome.CALLER_ERROR, result.output[:reason_chars]
+    if result.is_error:
+        return RunOutcome.FAILED, result.output[:reason_chars]
+    # It worked. Whether that can be checked by anyone else is a second
+    # question, and only a tool that has been TOLD to answer it is held to it:
+    # an unvisited tool carries `receipt_kind = ""` and is not accused of
+    # silence it was never asked to break.
+    if receipt_kind and receipt_kind != NO_RECEIPT and result.receipt is None:
+        return RunOutcome.UNVERIFIED, (
+            f"it reported success and left no {receipt_kind} anyone can check"
+        )
+    return RunOutcome.SUCCEEDED, ""
 
 
 #: Kinds the RUNTIME writes about its own filing, as against work the turn did.
@@ -202,9 +284,10 @@ def why_there_was_no_reply(outcome: RunOutcome | None, reason: str = "") -> str:
         if going_down():
             return SHUTDOWN_NOTICE
         return (
-            "I was still working on that when the turn was stopped, so the "
-            "answer never got finished. Nothing picks it up on its own, so "
-            "send it again if you still need it."
+            "Turn interrupted. I was still working on that, so the answer "
+            "never got finished. Nothing carries on by itself. Your next "
+            "message picks the conversation up from here, and if you still "
+            "need this one, send it again."
         )
     if outcome is RunOutcome.REFUSED:
         return reason.strip() or (
@@ -308,6 +391,35 @@ class TurnManifestStore:
         day = to_local(manifest.started_at).date().isoformat()
         return self._root / day / f"{manifest.run_id}.json"
 
+    def day_dir(self, on: date) -> Path:
+        """Where a day's finished turns live. Beside `closed_path`, which is
+        what puts them there, so the writer and the reader cannot disagree."""
+        return self._root / on.isoformat()
+
+    def closed_on(self, on: date) -> list[Path]:
+        """Every finished turn record for one day, oldest name first."""
+        directory = self.day_dir(on)
+        return sorted(directory.glob("*.json")) if directory.is_dir() else []
+
+    def days_with_records(self) -> list[date]:
+        """Every day this store holds finished turns for, oldest first.
+
+        Names that are not dates are skipped rather than raised on: `open/` and
+        `archive/` both live here by design, and a reader that tripped over
+        them would break the moment retention archived something.
+        """
+        if not self._root.is_dir():
+            return []
+        found: list[date] = []
+        for child in self._root.iterdir():
+            if not child.is_dir():
+                continue
+            try:
+                found.append(date.fromisoformat(child.name))
+            except ValueError:
+                continue
+        return sorted(found)
+
     def open_paths(self) -> list[Path]:
         """Every file under `open/`, readable or not.
 
@@ -404,6 +516,40 @@ class TurnRecorder:
         self.manifest.task_id = task_id
         self._commit()
 
+    def note_task_closed(self, outcome: str, by: str) -> None:
+        """Say how the task this turn was working ended, and who decided.
+
+        The other half of `bind_task`: that one says which task, this one says
+        what became of it. Committed at once for the same reason, and stamped
+        by the tool that closed the task rather than read back from the agenda
+        at the turn's end, so the record says what THIS turn did and not what
+        the task happened to stand at when the turn stopped. A field beside
+        `task_id` rather than a row, because it is that same join and the join
+        is one thing: the agenda binds one task to a turn, `note_turn_ended`
+        reads one `task_id`, and a turn's attempt is recorded against one item.
+
+        **Nothing enforces that, so this does not assume it.** `task_close`
+        closes whatever item it is given and never checks it against the
+        turn's binding, so a turn CAN close a second task. The first close's
+        outcome stands, and the provenance keeps the weaker of the two: the
+        question a reader asks of this record is whether the turn's own
+        outcome is evidence, and one close decided by a sentence is enough to
+        make it not. Overwriting silently was the alternative, and it would
+        have let a self-graded close hide behind a gated one.
+        """
+        first = not self.manifest.task_outcome
+        if not first:
+            log.warning(
+                "turn manifest: %s closed a second task (%s by %s) after %s by %s",
+                self.turn_id, outcome, by, self.manifest.task_outcome,
+                self.manifest.task_verification_by,
+            )
+        else:
+            self.manifest.task_outcome = outcome
+        if first or by == "model":
+            self.manifest.task_verification_by = by
+        self._commit()
+
     def step(
         self,
         *,
@@ -412,6 +558,7 @@ class TurnRecorder:
         outcome: RunOutcome,
         reason: str = "",
         started_at: datetime | None = None,
+        receipt: Receipt | None = None,
     ) -> None:
         """Record one step and commit. `kind` is `model` or `tool`.
 
@@ -419,12 +566,20 @@ class TurnRecorder:
         tool many times and `RunManifest.committed` is a set of stage names. An
         ordinal makes each step its own row rather than a collision, and it is
         what a resume reads to find where the turn stopped.
+
+        **A receipt is written here and nowhere else**, because this is the one
+        place the ordinal is computed. Keying a receipt anywhere else would
+        mean a second thing deriving the same stage name, and the two could
+        then disagree about which call a mark belongs to. The row is committed
+        first: a receipt whose step is not on disk is unattributable, and the
+        reverse is merely incomplete.
         """
         ended = datetime.now(timezone.utc)
         began = started_at or ended
+        stage = step_name(len(self.manifest.rows), kind, name)
         self.manifest.rows.append(
             StageRow(
-                stage=step_name(len(self.manifest.rows), kind, name),
+                stage=stage,
                 outcome=outcome,
                 reason=reason,
                 started_at=began,
@@ -433,6 +588,10 @@ class TurnRecorder:
             )
         )
         self._commit()
+        if receipt is not None:
+            receipts_log.record(
+                turn_id=self.turn_id, stage=stage, tool=name, receipt=receipt
+            )
 
     TOLD = "told"
 
@@ -495,6 +654,8 @@ __all__ = [
     "TurnManifestStore",
     "TurnRecorder",
     "close_interrupted",
+    "door_name",
+    "outcome_of",
     "forget_going_down",
     "going_down",
     "note_going_down",

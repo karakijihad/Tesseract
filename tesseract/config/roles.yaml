@@ -66,8 +66,9 @@ reranker:
 # roles on the chain do not move.
 # ─── The boundary ───────────────────────────────────────────
 # What bounds a conversation that keeps deciding to carry the work on.
-# Compaction below is what happens when a surface cannot clear a conversation
-# at all; this is what stops the work going round inside one.
+# A conversation that cannot be cleared is left standing, and the next turn
+# tries again; there is no second mechanism. This block is what stops the work
+# going round inside one that IS being cleared.
 #
 # The agent decides whether meaningful work remains and the runtime does not
 # argue with it. What the runtime does is refuse a continue that nothing is
@@ -98,23 +99,16 @@ boundary:
                                 # than this reads an action it repeated further
                                 # back as a new one, so raising it makes the
                                 # check see further rather than fire sooner.
-  tool_failure_limit: 2         # the same tool failing this many times in a
-                                # row is the one pathological pattern promoted
-                                # from a hint to a hard boundary: the runtime
-                                # stops the conversation rather than nudging
-                                # about it. Two matches repeat_limit for the
-                                # same reason, and it was the constant buried
-                                # in the tool loop before it was config.
 
-# ─── Compaction ─────────────────────────────────────────────
-# One block for every role, because it describes how compaction works rather
-# than who is using it. A fold always leaves the head anchor and the verbatim
-# tail behind, whichever model is answering.
+# ─── The boundary ───────────────────────────────────────────
+# One block for every role, because it describes how the boundary works rather
+# than who is using it.
 compaction:
-  compact_ratio: 0.25         # compact once the payload passes this share of the
-                              # window. THE dial: it is what decides when a
-                              # conversation folds, and nothing else competes
-                              # with it. A role may still name its own
+  compact_ratio: 0.25         # wrap the conversation up once it passes this
+                              # share of the window. THE dial: it is what
+                              # decides when a conversation is consolidated and
+                              # started again, and nothing else competes with
+                              # it. A role may still name its own
                               # `compact_threshold` and it wins; none ships
                               # one, and the Settings pane writes here.
                               #
@@ -131,14 +125,6 @@ compaction:
                               # per model because the limit is. Boot refuses a
                               # ratio the tightest member cannot carry and
                               # names the highest that fits.
-  headroom_multiplier: 1.2    # the trigger must clear that unfoldable floor by
-                              # this much. Below it a fold cannot get under the
-                              # line it just crossed, so it fires again every
-                              # turn and pays for a summary each time. The
-                              # runtime enforces this, rather than warning
-                              # about it in a comment.
-  comfortable_multiplier: 2.0 # what Settings marks as recommended. Advice, so
-                              # nothing refuses a setting below it.
   prompt_char_budget: 900000  # FALLBACK ONLY. The ceiling on one assembled
                               # prompt belongs to the model, and every chat
                               # entry in providers.yaml declares its own
@@ -176,17 +162,6 @@ roles:
     # transient error still resolves on OPENAI_API_KEY alone. The Grok
     # fallback only activates once XAI_API_KEY is added to .env.
     chain: chain_2
-    keep_recent_turns: 5          # how many recent turns a fold keeps word for word. A turn is one
-                                  # thing you said and everything the assistant did before you said
-                                  # the next thing, so five is five exchanges however many tool calls
-                                  # they carry. Together with the head anchor it is the floor
-                                  # compaction can never get under, which is why the runtime keeps
-                                  # FEWER than five when they do not fit under the trigger with
-                                  # `compaction.headroom_multiplier` to spare, and logs which. This
-                                  # was a token budget set by hand, and a hand-set number could not
-                                  # know what a turn weighed.
-    head_anchor_messages: 3       # first N user messages preserved verbatim across every compaction (attention-sink anchor)
-    summary_char_budget: 16000     # cap on the [Context from earlier...] block; oldest slice drops first when over
     tool_iteration_cap: 80    # hard cap on tool-call iterations per turn (runaway-loop guard)
     consecutive_error_cap: 3  # adapter ERRORs in a row before the chat_brain circuit-breaker trips and surfaces a final ERROR
     daily_budget_usd: 3.0     # role-level cap (in addition to global cap derived from sum of inner caps)
@@ -409,6 +384,15 @@ roles:
       One short line per room on the Autonomy panel. The cache is keyed on the
       counted facts themselves, so a room whose numbers have not moved calls
       no model.
+
+  outbound_writer:
+    mode: active
+    chain: chain_1
+    daily_budget_usd: 0.5
+    notes: >-
+      One short line at the top of each message the runtime sends you. Its own
+      limit rather than the panel's, so you can leave the panel rich and keep
+      the phone quiet, or the other way round.
 
 # ─── Voice subsystem ────────────────────────────────────────
 # Style/character is config-only via per-surface `synthesis_presets` on each

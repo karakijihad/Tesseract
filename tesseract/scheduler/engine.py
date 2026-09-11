@@ -16,7 +16,12 @@ from croniter import croniter
 
 from tesseract.context.circuit_breaker import _default_max_failures
 from tesseract.scheduler.base_job import BaseJob
-from tesseract.scheduler.cadence import INTERVAL_RE as _INTERVAL_RE, parse_interval as _parse_interval
+from tesseract.scheduler.cadence import (
+    INTERVAL_RE as _INTERVAL_RE,
+    a_tick_fell_between,
+    next_fire,
+    parse_interval as _parse_interval,
+)
 from tesseract.scheduler.config_loader import (
     JobConfig,
     RetryPolicy,
@@ -146,6 +151,11 @@ class SchedulerEngine:
     # replay can wait minutes, long past the 60s `last_fired_at` dedupe, and
     # a `*/5` cron job would otherwise double-fire ungated mid-queue.
     _catchup_pending: set[str] = field(default_factory=set)
+    # When the previous tick began, LOCAL and naive, the way cron is matched.
+    # `None` until the loop has ticked once, which is what stops the first tick
+    # after boot from claiming a gap: the boot catch-up has just covered that
+    # window and a second reading of it would run every clocked row twice.
+    _last_tick_local: datetime | None = None
     # Jobs a run is inside right now, by whichever door it came through.
     # `_run_job` owns this: the guard began on `run_now` alone, which covered
     # the panel's button against the `schedule_run` tool and left the commoner
@@ -297,6 +307,13 @@ class SchedulerEngine:
     async def start(self, app: Any) -> None:
         self._app = app
         self._stopping.clear()
+        # There is no previous tick of a loop that has not ticked. Today every
+        # production start builds a fresh engine (`app.py::_start_scheduler`),
+        # so the field is already None and this changes nothing; it is here
+        # because the field MEANS "the previous tick of this loop", and the day
+        # something reuses an engine across a stop and a start, the stale value
+        # would report the whole pause as a window every clocked row missed.
+        self._last_tick_local = None
         # The manifest describes what the app SHIPS, so it is checked against
         # the app tree and not against this engine's `config_dir` — a harness
         # pointed at four rows in `tmp_path` is not a machine whose declaration
@@ -428,18 +445,21 @@ class SchedulerEngine:
                 if (now - last).total_seconds() >= rt.interval_seconds:
                     catchup.append(name)
                 continue
-            try:
-                # Cron is local-time per `_should_fire`. Convert the UTC `last`
-                # to local naive, advance one cron step, convert back to UTC,
-                # then compare with `now` (UTC). Naive .astimezone() in py3.6+
-                # treats the value as system local.
-                last_local = last.astimezone().replace(tzinfo=None)
-                next_fire_local = croniter(rt.cfg.cadence, last_local).get_next(datetime)
-                next_fire_utc = next_fire_local.astimezone(timezone.utc)
-            except Exception:
-                log.exception("scheduler: catch-up cron parse failed for %s", name)
+            # `cadence.next_fire` rather than the same conversion written out
+            # here: it does the local-naive step and the walk back to UTC, and
+            # it is the reader `watchman/rows.py` already asks. Three copies of
+            # one piece of cron arithmetic is three places a DST fix has to
+            # reach, and this file held the copy nobody would think to look at.
+            # It answers `None` for a cadence it cannot read, which is the same
+            # "a row that cannot be read misses nothing" this loop had.
+            due = next_fire(rt.cfg.cadence, last)
+            if due is None:
+                log.warning(
+                    "scheduler: %s has a cadence catch-up cannot read (%r)",
+                    name, rt.cfg.cadence,
+                )
                 continue
-            if next_fire_utc <= now:
+            if due <= now:
                 catchup.append(name)
         return catchup
 
@@ -1085,7 +1105,7 @@ class SchedulerEngine:
             if rt.cfg.when:
                 armed.append((name, rt))
                 continue
-            if not self._should_fire(rt, now_utc, now_local):
+            if not self._should_fire(rt, now_utc, now_local, self._last_tick_local):
                 continue
             if not self._claim(name):
                 log.info("scheduler: %s is still running, so this tick skips it", name)
@@ -1095,6 +1115,12 @@ class SchedulerEngine:
                 self._run_job(name, rt, now_utc, trigger="scheduled"),
                 name=f"scheduler-{name}",
             )
+        # Moved once the whole row loop has read it, so every row this tick
+        # sees the same gap; advancing it inside the loop would let the first
+        # rows see a window the rest do not. It records when this tick BEGAN,
+        # so however long the tick takes, the minutes it spent working are part
+        # of the next tick's gap rather than lost from it.
+        self._last_tick_local = now_local
         if armed:
             await self._tick_triggers(armed, now_utc)
 
@@ -1144,7 +1170,12 @@ class SchedulerEngine:
             )
 
     @staticmethod
-    def _should_fire(rt: _JobRuntime, now_utc: datetime, now_local: datetime) -> bool:
+    def _should_fire(
+        rt: _JobRuntime,
+        now_utc: datetime,
+        now_local: datetime,
+        since_local: datetime | None = None,
+    ) -> bool:
         # Cron expressions in schedule.yaml are interpreted in **system local
         # time** so the operator can write `30 22 * * *` and have it mean
         # 22:30 wall-clock regardless of what zone the host runs in. Storage
@@ -1154,11 +1185,30 @@ class SchedulerEngine:
                 return True
             return (now_utc - rt.last_fired_at) >= timedelta(seconds=rt.interval_seconds)
         try:
-            if not croniter.match(rt.cfg.cadence, now_local):
-                return False
+            matched = croniter.match(rt.cfg.cadence, now_local)
         except Exception:
             log.exception("scheduler: cron match failed for %s (%r)", rt.cfg.name, rt.cfg.cadence)
             return False
+        if not matched:
+            # The minute match is the whole rule while the loop keeps time, and
+            # the loop does not always keep time: the machine sleeps, the loop
+            # stalls, a trigger pass runs long. A scheduled moment inside the
+            # gap between two ticks is never matched, and the boot catch-up
+            # cannot help because nothing rebooted, so a 15:00 row on a machine
+            # asleep from 14:59 to 19:00 was silently dropped until the next
+            # day. `since_local` is the previous tick and the gap is asked of
+            # THAT rather than of the row's last fire, so a row switched back
+            # on in the afternoon is not started at once: it did not miss a
+            # tick, it was off.
+            #
+            # It fires once. `_tick` stamps `last_fired_at`, and the next cron
+            # point after that is ahead of now, so a row missed for a week runs
+            # one time rather than seven — the same rule `_compute_catchup`
+            # holds at boot.
+            if since_local is None or not a_tick_fell_between(
+                rt.cfg.cadence, since_local, now_local
+            ):
+                return False
         # audit-1 m5 (2026-04-24): 60s in-slot dedupe. `croniter.match` is
         # minute-granular, so without this a `run_now` + a `_tick` in the
         # same wall-clock minute both fire the job. Also guards against

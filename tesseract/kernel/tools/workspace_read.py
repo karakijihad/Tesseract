@@ -146,6 +146,8 @@ class WorkspaceReadTool(Tool):
         "the memory store. This reads the workspace only, and only markdown."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     def __init__(self, *, workspace_root: Path | None = None) -> None:
         # Held as None by default and resolved per call, never at construction.

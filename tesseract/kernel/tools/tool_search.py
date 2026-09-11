@@ -87,6 +87,8 @@ class ToolSearchTool(Tool):
         "it directly."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:
@@ -129,7 +131,11 @@ class ToolSearchTool(Tool):
         home = await asyncio.to_thread(sync_home_tools, registry)
         terms = [t for t in inp.query.lower().split() if t]
         if not terms:
-            return ToolResult(output=f"tool_search({inp.query!r}): empty query", is_error=True)
+            return ToolResult(
+                output=f"tool_search({inp.query!r}): empty query",
+                is_error=True,
+                caller_error=True,
+            )
 
         # Ranked, because the glossary decides what a search IS. The model
         # reads a name off the map and comes here to make it callable, so an

@@ -34,15 +34,9 @@ core:
   # Remembering
   - atlas_query  # Ask how records connect, with a citation for every hop.
   - diary_append  # Append a first-person reflection to the assistant's private diary.
-  - memory_get  # Read a line-range slice of one known memory-store markdown file.
   - memory_save  # Write a new durable memory to the persistent store.
   - memory_search  # Search the persistent memory store by query, ranked by relevance.
   - memory_update  # Revise an existing memory's content, title, importance, or tags.
-  - recall_history  # Search past session transcripts and workshop artifacts by free text.
-  - soul_growth_propose  # Queue a distilled SOUL.md Growth bullet for operator approval.
-  # Research library
-  - vault_query  # Synthesizes an answer from the vault's compiled wiki of topic-grouped summaries.
-  - vault_search  # Hybrid BM25 + vector search over raw vault source chunks.
   # Searching the web
   - tavily_extract  # Extracts clean markdown from one or more specific URLs via Tavily.
   - tavily_search  # Web search via Tavily. Snippets shaped for a model, plus an optional answer.
@@ -55,53 +49,24 @@ core:
   # Showing the operator something
   - open  # Show the operator anything that exists: a URL, a file, a folder, an app, or a search.
   - surface_close  # Destroy a surface and remove its card from the canvas.
-  - surface_control  # Operate a card on the canvas: play, pause, volume, or press its controls.
   - surface_create  # Author a card from content you generated: html, markdown, code, or a chart.
   - surface_list  # List surfaces on a canvas view: id, type, title, mode, and whether each one rendered.
-  - surface_update  # Mutate an existing surface's props or title (shallow merge).
   # Driving a web page
   - browser_navigate  # Drive a headless browser and show a screenshot of the page on the canvas.
   # Looking for yourself
-  - browser_screenshot  # Capture an open browser page and refresh its card.
   - browser_snapshot  # Read the accessibility tree of an open browser page.
-  - screen_look  # Look at the operator's own screen and answer one question about it.
   # Handing work to someone else
-  - agent_ask  # Lets a background sub-agent ask its dispatcher a question and wait for the reply.
-  - agent_create  # Drafts a new markdown sub-agent proposal, quarantined until the operator promotes it.
-  - agent_promote  # Moves a quarantined agent from pending into the active, invokable set.
-  - delegate_agent_controller  # Dispatches a task to a fresh agent controller session running the full assistant brain.
   - delegate_auditor  # Delegates a review task to whichever CLI fills the auditor seat.
   - delegate_coder  # Delegates a coding task to whichever CLI fills the coder seat.
-  - invoke_agent  # Dispatches a bounded task to a markdown-defined sub-agent with a read-only tool subset.
-  # Long-running collaborators
-  - lane_list  # Enumerate every live lane_id the controller currently hosts.
-  - lane_named_list  # List every persistent name-to-lane_id binding, orphans included.
-  - lane_read  # Pull a lane's events since a cursor. Reads the tail and sends nothing.
-  - lane_status  # Fast read-only probe of one lane's alive/busy/queue_depth state.
-  - lane_turn  # Send a message into a lane and wait for that one turn's reply, in one call.
-  - session_list  # List every open interactive session with its handle and target.
   # Tracking what you spawned
-  - spawn_await  # Blocks until a background spawn finishes and returns its full result.
   - spawn_cancel  # Cancels a running background spawn and waits for it to unwind.
   - spawn_check  # A background spawn: running, done, failed or cancelled, and when it last emitted.
-  - work_send  # Sends a steering message into a running lane, session, or controller session.
   # Running commands
   - bash  # Runs a raw shell command through the operating system.
-  # Reaching the operator elsewhere
-  - channel_history_read  # Read past channel conversation directly from the per-day logs.
-  - channel_send_photo  # Send an image inline on an external chat channel.
-  - channel_send_voice  # Send a spoken voice note on an external chat channel.
-  - workspace_decide  # Answer one thing waiting in the operator's inbox.
   # Work you owe
-  - task_close  # Close a task as done with its evidence, or as failed with the reason.
   - task_propose  # Turn a request into a task that is owed until it is verified.
   - task_work  # Take an accepted task up in this turn and read what it owes.
-  # Asking without blocking
-  - propose_change  # Request a change to an operator-owned workspace file, gated on approval.
-  - workspace_reply  # Reply inside an existing Workspace event's operator comment thread.
   # Being present in the Mirror
-  - set_mood  # Sets affective mood: intensity (energy) and valence (cool-warm tone).
-  - set_state  # Sets a discrete orb state: happy, deep_focus, dreaming, or idle.
   - tasks_set  # Replaces the full operator-visible task checklist for this turn.
   - tasks_update  # Flips one task's status or renames it, by id, without touching the rest.
   # Time
@@ -110,33 +75,27 @@ core:
   - git  # Run version control on a repository: inspect it, commit, branch, push.
   - project_list  # List every registered project, its root, git identity, and which is active.
   # Your own accounts
-  - api_request  # Call a web service with one of your own accounts, without seeing the value.
-  - command_run  # Run your own code with one of your accounts in its environment.
   - credential_list  # Your own accounts: service, username, purpose, and whether each is ready.
-  # Extending yourself
-  - skill_create  # Draft a new skill or playbook into the pending quarantine.
-  - skill_promote  # Move a quarantined skill into the active set.
-  - skill_refine  # Revise an existing active skill or playbook.
   # Checking your own state
   - autonomy_read  # Read what the Autonomy panel says, in the same sentences it shows.
-  - health_leave  # Stop a Health finding asking for attention, or have it count again.
-  - session_continue  # Carry the work into a fresh start, or finish with this conversation.
   - system_diagnose  # Report this machine's runtime health in one call.
-  - workspace_pending  # List what is waiting on the operator to decide.
   # Finding a tool
   - tool_search  # Make a tool callable that is not in this turn's schema.
-  # Finding a playbook
-  - playbook_search  # Read the whole of a playbook the turn is carrying only as a line.
 
 # Not carried, and one `tool_search` away. Move a line up
 # into the list above to carry it every turn.
 #   Remembering
 #   - memory_forget  # Permanently delete a memory: its file, index entry, and embedding.
+#   - memory_get  # Read a line-range slice of one known memory-store markdown file.
 #   - memory_promote  # Run an operator-approved memory lifecycle action: archive, merge, or bump.
+#   - recall_history  # Search past session transcripts and workshop artifacts by free text.
+#   - soul_growth_propose  # Queue a distilled SOUL.md Growth bullet for operator approval.
 #   - workspace_read  # Read one of your own workspace documents, or a playbook's SKILL.md.
 #   Research library
 #   - vault_ingest  # Files a local document or URL into the immutable vault and indexes it.
 #   - vault_lint  # Runs lint passes over the compiled vault wiki and flags issues found.
+#   - vault_query  # Synthesizes an answer from the vault's compiled wiki of topic-grouped summaries.
+#   - vault_search  # Hybrid BM25 + vector search over raw vault source chunks.
 #   Searching the web
 #   - context7_lookup  # Fetches current library or framework API docs from Context7 by name or ID.
 #   Files on disk
@@ -150,8 +109,10 @@ core:
 #   - os_launch  # Internal primitive: open a local file, folder, or app in the program that owns it.
 #   - os_open_url  # Internal primitive: open an http(s) URL in the operator's default browser.
 #   - surface_bind_session  # Attach a lane or channel session to a surface so its card streams live updates.
+#   - surface_control  # Operate a card on the canvas: play, pause, volume, or press its controls.
 #   - surface_focus  # Bring a surface to the front and scroll it into view.
 #   - surface_highlight  # Pulse or glow a surface briefly to draw the eye to it.
+#   - surface_update  # Mutate an existing surface's props or title (shallow merge).
 #   Driving a web page
 #   - browser_click  # Click the element matching a selector on an open browser page.
 #   - browser_close  # Close a browser context and remove its card from the canvas.
@@ -164,39 +125,65 @@ core:
 #   - browser_wait_for  # Wait for an element to appear on an open browser page.
 #   Looking for yourself
 #   - browser_network_requests  # Read the network-request log of an open browser page.
+#   - browser_screenshot  # Capture an open browser page and refresh its card.
+#   - screen_look  # Look at the operator's own screen and answer one question about it.
 #   - transcribe_audio  # Hear an audio attachment the operator uploaded earlier in this session.
 #   Handing work to someone else
+#   - agent_ask  # Lets a background sub-agent ask its dispatcher a question and wait for the reply.
+#   - agent_create  # Drafts a new markdown sub-agent proposal, quarantined until the operator promotes it.
+#   - agent_promote  # Moves a quarantined agent from pending into the active, invokable set.
+#   - delegate_agent_controller  # Dispatches a task to a fresh agent controller session running the full assistant brain.
 #   - delegate_second_opinion  # Asks the auditor seat one read-only question and waits for the answer.
+#   - invoke_agent  # Dispatches a bounded task to a markdown-defined sub-agent with a read-only tool subset.
 #   Long-running collaborators
 #   - controller_session_list  # List agent controller sessions on disk, newest first, with status.
 #   - lane_attach  # Re-establish visibility on a live lane, returning a fresh snapshot and cursor.
 #   - lane_close  # Terminate a lane's CLI subprocess and archive its on-disk record.
+#   - lane_list  # Enumerate every live lane_id the controller currently hosts.
 #   - lane_named_ensure  # Get or open a named, persistent lane. Reuses it if alive, opens one if not.
 #   - lane_named_get  # Look up the lane_id currently bound to a named lane, without opening one.
+#   - lane_named_list  # List every persistent name-to-lane_id binding, orphans included.
 #   - lane_open  # Spawn a new unnamed CLI lane (claude or codex) that persists across turns.
+#   - lane_read  # Pull a lane's events since a cursor. Reads the tail and sends nothing.
 #   - lane_send  # Send one message into a running lane and return once it is accepted.
+#   - lane_status  # Fast read-only probe of one lane's alive/busy/queue_depth state.
+#   - lane_turn  # Send a message into a lane and wait for that one turn's reply, in one call.
 #   - session_close  # Close a session and free its resources. Idempotent on an already-closed handle.
+#   - session_list  # List every open interactive session with its handle and target.
 #   - session_open  # Open a new interactive session against claude, codex, or a named agent.
 #   - session_result  # Collect the result of a session's most recent background turn.
 #   - session_send  # Send a follow-up message to an open session and return its reply.
 #   - start_controller_session  # Spawn a whole new agent controller session in the background and fire its first prompt.
+#   Tracking what you spawned
+#   - spawn_await  # Blocks until a background spawn finishes and returns its full result.
+#   - work_send  # Sends a steering message into a running lane, session, or controller session.
 #   Reaching the operator elsewhere
+#   - channel_history_read  # Read past channel conversation directly from the per-day logs.
 #   - channel_notify  # Start a conversation with the operator on an external channel.
 #   - channel_react  # React to an existing channel message with a single emoji.
 #   - channel_send_animation  # Send a looping GIF-style animation on an external chat channel.
 #   - channel_send_document  # Send a file as a downloadable document on an external chat channel.
 #   - channel_send_location  # Share a static map location on an external chat channel.
+#   - channel_send_photo  # Send an image inline on an external chat channel.
 #   - channel_send_poll  # Send a multiple-choice poll on an external chat channel.
 #   - channel_send_sticker  # Send a sticker on an external chat channel.
 #   - channel_send_video  # Send a video file on an external chat channel.
 #   - channel_send_video_note  # Send a round short-form video-note bubble on an external chat channel.
+#   - channel_send_voice  # Send a spoken voice note on an external chat channel.
+#   - workspace_decide  # Answer one thing waiting in the operator's inbox.
+#   Work you owe
+#   - task_close  # Close a task as done with its evidence, or as failed with the reason.
 #   Asking without blocking
 #   - agenda_comment  # Reply inside an operator comment thread on an agenda item.
 #   - ask_clarification  # Post a question to the operator that can wait for an answer.
+#   - propose_change  # Request a change to an operator-owned workspace file, gated on approval.
 #   - workspace_post  # Open a new, self-initiated note in the operator's Workspace Inbox.
+#   - workspace_reply  # Reply inside an existing Workspace event's operator comment thread.
 #   Being present in the Mirror
 #   - chat_initiate  # Starts a new chat turn unprompted, without an inbound operator message.
 #   - orb_visibility  # Shows or hides the orb, which is the assistant's body, in the Mirror cockpit.
+#   - set_mood  # Sets affective mood: intensity (energy) and valence (cool-warm tone).
+#   - set_state  # Sets a discrete orb state: happy, deep_focus, dreaming, or idle.
 #   Time
 #   - alarm_cancel  # Cancels and deletes a pending alarm entirely, one-time or recurring.
 #   - alarm_list  # Lists every pending alarm with its label, fire time, and recurrence.
@@ -207,20 +194,38 @@ core:
 #   - schedule_run  # Fires a registered scheduler job immediately, off its configured cadence.
 #   - schedule_update  # Changes a registered job's cadence, enabled state, model role or description in place.
 #   Projects
+#   - project_budget  # Set what a day of unattended work on a project may spend.
 #   - project_link  # Register an existing directory as a project.
 #   - project_new  # Start a new project from scratch: create the directory, register, open it.
 #   - project_open  # Make a registered project the active one.
+#   - project_propose  # Put an idea for a new project to the operator, as a card.
 #   Your own accounts
+#   - api_request  # Call a web service with one of your own accounts, without seeing the value.
+#   - command_run  # Run your own code with one of your accounts in its environment.
 #   - credential_request  # Ask the operator for an account you do not have, or for more of what one needs.
 #   - credential_setup  # Say where one of your accounts' values goes and which hosts it may reach.
+#   Extending yourself
+#   - skill_create  # Draft a new skill or playbook into the pending quarantine.
+#   - skill_promote  # Move a quarantined skill into the active set.
+#   - skill_refine  # Revise an existing active skill or playbook.
 #   Checking your own state
 #   - breaker_reset  # Clears one open circuit breaker so the runtime tries that capability again now.
 #   - breaker_status  # Says which parts of the runtime have stopped trying, and what that has cost.
 #   - brief_read  # Return an already-rendered daily brief as plain text.
 #   - brief_render  # Render today's daily brief by running the digester sub-agents.
 #   - conscience_status  # Check the most recent behavioural-drift report.
-#   - context_read  # How full this conversation is: tokens, turns, cache, and its next fold.
-#   - context_set  # Change when a conversation folds, and how much of it survives.
+#   - context_read  # How full this conversation is: tokens, turns, cache, and when it gets wrapped up.
+#   - context_set  # Change when a conversation gets wrapped up.
+#   - day_read  # Read what the runtime actually did on a day: tools, outcomes, marks.
+#   - health_leave  # Stop a Health finding asking for attention, or have it count again.
+#   - health_repair  # Explain one Health row and name the tools that can look into it. Fixes nothing itself.
 #   - pipeline_run_stage  # Runs one step of the scheduled maintenance work now, off its schedule.
 #   - retention_set_window  # Sets how many days one of this machine's own logs is kept for.
+#   - return_note_read  # Say what changed since the operator was last here.
+#   - session_continue  # Carry the work into a fresh start, or finish with this conversation.
 #   - workspace_hold  # Says which of the operator's own documents a change must be asked about, and changes that.
+#   - workspace_pending  # List what is waiting on the operator to decide.
+#   Finding a playbook
+#   - playbook_judge  # Keep a playbook or drop it, on the operator's word.
+#   - playbook_record  # How often each playbook was used, how those turns went, and what they cost.
+#   - playbook_search  # Read the whole of a playbook the turn is carrying only as a line.

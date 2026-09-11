@@ -18,8 +18,10 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.orchestrator.autonomy.agenda_comments import append_comment
 from tesseract.orchestrator.autonomy.agenda_store import AgendaStore
+from tesseract.orchestrator.autonomy.paths import agenda_comments_path
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,8 @@ class AgendaCommentTool(Tool):
         "with `propose_change`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     def __init__(self, store: AgendaStore) -> None:
         """Writes the reply comment to disk (durable). Broadcasting is the
@@ -81,12 +85,14 @@ class AgendaCommentTool(Tool):
             return ToolResult(
                 output="agenda_comment requires `item_id` and `body`.",
                 is_error=True,
+                caller_error=True,
             )
 
         if self._store.get(item_id) is None:
             return ToolResult(
                 output=f"Agenda item {item_id} not found.",
                 is_error=True,
+                caller_error=True,
             )
 
         try:
@@ -98,5 +104,10 @@ class AgendaCommentTool(Tool):
             )
         return ToolResult(
             output=f"Reply attached to {item_id} (comment {comment.id}).",
+            receipt=Receipt(
+                kind="record",
+                id=comment.id,
+                locator=str(agenda_comments_path(item_id)),
+            ),
             metadata={"item_id": item_id, "comment_id": comment.id},
         )

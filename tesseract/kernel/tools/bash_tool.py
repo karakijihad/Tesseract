@@ -31,6 +31,7 @@ import pathlib
 
 from pydantic import BaseModel, Field
 
+from tesseract.kernel.tools import _process_containment as containment
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
 from tesseract.permissions.bash_security import ask_reason as security_ask_reason
 from tesseract.permissions.bash_security import asks as security_asks
@@ -171,6 +172,12 @@ class BashTool(Tool):
         "nothing. Most commands prompt the operator before running."
     )
     depends_on: ClassVar[str] = ""
+    # A shell command's effects are whatever the command did, and nothing
+    # comes back naming them. Declaring a kind here would mark every run
+    # unverifiable rather than say anything true: what a run of this tool
+    # is answerable for is its own recorded command and output.
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "unsafe"
 
     @property
     def name(self) -> str:
@@ -258,6 +265,7 @@ class BashTool(Tool):
         except SealViolation as exc:
             return ToolResult(output=f"bash: {exc}", is_error=True)
 
+        process: asyncio.subprocess.Process | None = None
         try:
             process = await asyncio.create_subprocess_shell(
                 inp.command,
@@ -276,6 +284,22 @@ class BashTool(Tool):
             )
         except OSError as e:
             return ToolResult(output=f"Command failed: {e}", is_error=True)
+        finally:
+            # The two ways out that leave the shell running: it ran past the
+            # timeout, and the operator stopped the turn. `reap` returns on
+            # its first line when the command exited on its own, so the
+            # ordinary path pays nothing and a command deliberately left
+            # running in the background survives, which is half of what a
+            # shell is for.
+            #
+            # Without this a stopped `bash` walked away from the shell. The
+            # command carried on with nobody reading it, and it held the pipe
+            # the tool had opened: measured, both the shell and its child were
+            # still in the process table seventeen seconds after the cancel,
+            # and stayed. Nothing here can raise, so a cancellation on its way
+            # out keeps going.
+            if process is not None:
+                await containment.reap(process)
 
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")

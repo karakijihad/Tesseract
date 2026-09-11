@@ -1,8 +1,8 @@
 /* MO-9-12 Users pane — allowlist + pending + blocked tables.
  *
- * The operator approves a pending row by opening the ApprovalModal; the
- * tier dropdown defaults to "operator" (the only enabled tier today —
- * friend is ghosted with a tooltip until the multi-user milestone lands).
+ * The operator approves a pending row by opening the ApprovalModal. There is
+ * no tier to pick: approving puts the chat on the allowlist, and being on it
+ * is the whole permission.
  * Revoke / Block fire ASK round-trips without a modal because they carry
  * no operator-supplied fields. The pane re-pulls the user list after every
  * approved mutation so the row moves between tables without a Refresh.
@@ -228,7 +228,6 @@ function UserTable({ rows, actions }: UserTableProps) {
         <tr>
           <th>user id</th>
           <th>display</th>
-          <th>tier</th>
           <th>ttl</th>
           <th>last seen</th>
           <th>msgs</th>
@@ -240,7 +239,6 @@ function UserTable({ rows, actions }: UserTableProps) {
           <tr key={row.user_id} data-testid={`channel-user-row:${row.user_id}`}>
             <td className="channel-users-id">{row.user_id}</td>
             <td>{row.display_name}</td>
-            <td>{row.tier}</td>
             <td className="t-meta">{row.ttl_iso ?? '—'}</td>
             <td className="t-meta">{_fmtSeen(row.last_seen)}</td>
             <td>{row.messages_total}</td>

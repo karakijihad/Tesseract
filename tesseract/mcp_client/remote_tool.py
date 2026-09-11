@@ -81,6 +81,10 @@ class MCPRemoteTool(Tool):
     risk_class: ClassVar[str] = "propose"
     untrusted_source: ClassVar[bool] = True
     tier: ClassVar[str] = "extended"
+    # A remote server's tools are one class here, so this is one answer for all
+    # of them, and the only honest one: we do not know what the far side did,
+    # and it offers nothing to ask afterwards.
+    recovery_behaviour: ClassVar[str] = "unsafe"
 
     def __init__(
         self,

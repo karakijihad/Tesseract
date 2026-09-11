@@ -140,6 +140,30 @@ async def cmd_observe(app: web.Application, session: ServerSession, arg: str | N
     ))
 
 
+async def cmd_stop(app: web.Application, session: ServerSession) -> None:
+    """`/stop` in the cockpit. The Stop button's act, typed.
+
+    Same code as the button and as `/stop` on a channel (`stop.stop_session`),
+    so the three cannot drift. Registered as a NON session-mutating command on
+    purpose: the dispatcher refuses a mutating command while a turn is
+    running, and a stop that a running turn can refuse is not a stop.
+    """
+    from tesseract.mirror.server.stop import describe, stop_session
+    from tesseract.mirror.server.tts import _cancel_tts_output
+
+    _cancel_tts_output(session)
+    stopped = stop_session(session)
+    await send_envelope(session, make_envelope(
+        "command_result", "command_result", session.session_id,
+        {
+            "command": "stop",
+            "ok": True,
+            "reason": describe(stopped),
+            "severity": "info",
+        },
+    ))
+
+
 async def cmd_soul_show(session: ServerSession) -> None:
     """Display-only — reads SOUL.md and emits `soul_updated` so the Mirror
     the From-agent section refreshes. Does NOT trigger reflection, which is
@@ -485,8 +509,23 @@ async def cmd_reset(
 
 async def _wipe_in_place(
     session: ServerSession, *, model: str, mode: str, chat_id: str
-) -> None:
+) -> bool:
     """Clear the conversation on screen, keep its id, and make disk agree.
+
+    Returns whether DISK agrees. The clear itself always happens: it is one
+    assignment on an object already in hand and there is nothing to fail. What
+    can fail is the write after it, and a caller told nothing about that
+    reports a boundary as taken while the record on disk is still the
+    conversation it was supposed to leave behind, so a restart brings it back
+    after the debt was settled.
+
+    A failed write also OWES A BOUNDARY. `reset()` drops that bool, which is
+    right in general: state about a conversation must not outlive the
+    conversation. Here the conversation is only half gone and the caller's
+    retry is read off the bool, so a False return without it is a return
+    nobody can act on. It is SET rather than restored, because what is true
+    after a failed write is the same however the boundary was reached, and
+    only one of the ways there arms it beforehand.
 
     Shared by the operator's `/reset clear` and by the agent's own boundary,
     because they end in exactly the same state and the difference between them
@@ -496,22 +535,45 @@ async def _wipe_in_place(
     Re-indexing is the half that is easy to leave out. Until it runs, the
     cleared conversation is still searchable by its own content, which is what
     was just taken off the screen.
+
+    `chat_id` names the conversation to clear, which is not always the one on
+    screen: a background turn reaches its own ceiling and consolidates its own
+    chat. So the ChatSession is looked up by id, and the connection-level
+    counters only move when the chat that was cleared IS the one in focus.
+    Resetting them for a background chat would tell the cockpit the operator's
+    own conversation had just started over.
     """
-    session.chat_session.reset()
-    session.started_at = datetime.now(timezone.utc).isoformat()
-    session.turn_count = 0
+    target = session.chats.get(chat_id) or session.chat_session
+    target.reset()
+    if chat_id == session.active_chat_id:
+        session.started_at = datetime.now(timezone.utc).isoformat()
+        session.turn_count = 0
 
-    def _persist_and_index() -> None:
-        chat_store.persist_session_chats(session, model=model)
-        chat_store.index_chat(chat_id)
-
-    try:
-        # A thread, for the reason the autosave path takes one: this writes
-        # files and SQLite, and on the loop it stops everything including the
-        # health probe the supervisor kills the backend for missing.
-        await asyncio.to_thread(_persist_and_index)
-    except Exception:
-        log.exception("%s: persist failed for %s", mode, session.session_id)
+    durable = await _persist_cleared(session, model=model, mode=mode, chat_id=chat_id)
+    if not durable:
+        # The FAILURE arms the debt. It does not carry one across the clear.
+        #
+        # This read the bool before `reset()` and put back what was there,
+        # which only ever helped a mid-turn crossing, the one path that had
+        # already armed it. An ordinary crossing reaches the boundary through
+        # `should_compact` and an agent's own decision through
+        # `session_continue`, and neither arms anything, so for the majority
+        # of boundaries there was nothing to put back: the next turn found no
+        # debt and an empty history, `should_compact` cannot fire on an empty
+        # conversation, and the write was never tried again.
+        #
+        # What is true after a failed write is the same on every path: this
+        # conversation owes a boundary. That is exactly what the bool means,
+        # so it is set rather than restored.
+        note = getattr(target, "note_grew_past_the_ceiling", None)
+        if note is not None:
+            try:
+                note()
+            except Exception:
+                log.exception("%s: could not owe the boundary for %s", mode, chat_id)
+    # Sent either way. The screen has to agree with memory, and memory is
+    # cleared whether or not the write landed; leaving the transcript on
+    # screen would be the one state nothing in the runtime is in.
     await send_envelope(session, make_envelope(
         "session_reset", "session", session.session_id,
         {
@@ -523,7 +585,46 @@ async def _wipe_in_place(
             "reflect_saves": 0,
             "mode": mode,
         },
+        # STAMPED, not only carried in `data`. `session_reset` is not a
+        # turn-scoped type, so nothing infers the stamp, and the reader takes
+        # an unstamped envelope for the chat on screen: a background boundary
+        # cleared the operator's own conversation in the browser and wiped
+        # their suggestions, observations and tasks with it. The nested copy
+        # is what the toast reads; this is what says WHOSE reset it is.
+        chat_id=chat_id,
     ))
+    return durable
+
+
+async def _persist_cleared(
+    session: ServerSession, *, model: str, mode: str, chat_id: str
+) -> bool:
+    """Make disk agree that this conversation is empty. True when it does.
+
+    Split out of `_wipe_in_place` because one caller needs the write WITHOUT
+    the clear beside it: a boundary that already cleared in memory and failed
+    to write comes back with nothing to archive, and re-running the whole wipe
+    there would reset an empty conversation and send the operator a second
+    `session_reset` for a chat that never changed, taking their suggestions,
+    observations and tasks with it if it happened to be the one on screen.
+
+    Re-indexing is the half that is easy to leave out. Until it runs, the
+    cleared conversation is still searchable by its own content, which is what
+    was just taken off the screen.
+    """
+    def _persist_and_index() -> None:
+        chat_store.persist_session_chats(session, model=model)
+        chat_store.index_chat(chat_id)
+
+    try:
+        # A thread, for the reason the autosave path takes one: this writes
+        # files and SQLite, and on the loop it stops everything including the
+        # health probe the supervisor kills the backend for missing.
+        await asyncio.to_thread(_persist_and_index)
+    except Exception:
+        log.exception("%s: persist failed for %s", mode, session.session_id)
+        return False
+    return True
 
 
 async def consolidate_in_place(
@@ -547,23 +648,47 @@ async def consolidate_in_place(
     and before the clear, because it reads a snapshot taken when it is called
     and a cleared conversation has nothing in it.
 
-    Returns whether the conversation was actually cleared. `False` leaves it
-    standing and the caller falls back to a fold.
+    `chat_id` names the conversation that ran, which for a background turn is
+    not the one on screen. It used to be REFUSED, on the reading that a new
+    chat appearing mid-work is a surprise the work did not ask for. Since a
+    boundary clears in place and keeps the thread id and its place in the
+    rail, there is no surprise left to protect against, and refusing was the
+    one path that left a conversation unbounded: a background chat crossed its
+    ceiling, was told no, and grew.
+
+    Returns whether the boundary is DONE, which means the cleared state
+    reached disk as well as memory. A write that failed after the clear leaves
+    the pre-clear transcript as the durable record, so a restart brings the
+    conversation back; reporting that as a boundary would settle a debt the
+    disk never heard about. `False` keeps the debt and the next turn tries
+    again, and the retry is cheap: the conversation is empty by then, so it
+    archives nothing and returns at the first check.
     """
-    outgoing_id = session.active_chat_id
-    if chat_id is not None and chat_id != outgoing_id:
+    outgoing_id = chat_id or session.active_chat_id
+    outgoing = session.chats.get(outgoing_id)
+    if outgoing is None:
         log.warning(
-            "not consolidating: the turn ran in chat %s and the operator is "
-            "looking at %s, so nothing was touched",
-            chat_id, outgoing_id,
+            "not consolidating: this connection has no chat %s open", outgoing_id
         )
         return False
     model = getattr(app.get("adapter_options"), "model", "") or ""
-    history = list(session.chat_session.history)
+    history = list(outgoing.history)
     if not history:
-        # Nothing was said, so there is nothing to archive, nothing to clear
-        # and nothing to reflect on. The boundary is satisfied.
-        return True
+        # Nothing to ARCHIVE, which is not the same as nothing to do. Two
+        # conversations reach here and only one of them is finished: a chat
+        # nobody said anything in, and a chat a previous attempt already
+        # cleared in memory and then failed to write. Returning True on both
+        # is how the second one settles its debt with the stale pre-clear
+        # transcript still the durable record, so the write is asked again.
+        #
+        # The WRITE and not the whole wipe: there is nothing here to clear,
+        # and re-running the wipe would send a second `session_reset` for a
+        # chat that never changed, taking the operator's suggestions,
+        # observations and tasks with it if it happened to be the one on
+        # screen.
+        return await _persist_cleared(
+            session, model=model, mode="consolidate", chat_id=outgoing_id
+        )
 
     try:
         await asyncio.to_thread(
@@ -574,18 +699,26 @@ async def consolidate_in_place(
         return False
 
     record = chat_store.load_chat(outgoing_id, include_channels=True)
-    if chat_store.archive_copy(record, history) is None:
+    # Said rather than inferred: a record that could not be read is not a
+    # reason to file this under a surface nobody named. This path is the
+    # cockpit's own consolidation and knows it.
+    # BOTH halves, or neither. Naming the surface and letting the record
+    # supply the principal is the split that produced this pass's worst
+    # finding; a cockpit consolidation owns both answers and gives them.
+    if chat_store.archive_copy(
+        record, history, surface="cockpit", principal="",
+    ) is None:
         # The copy is what makes the clear safe. Without it the clear is a
-        # delete, so it does not happen and the caller folds instead.
+        # delete, so it does not happen and the conversation stands: the
+        # caller keeps the debt and the next turn tries again.
         return False
 
     if on_persisted is not None:
         on_persisted()
 
-    await _wipe_in_place(
+    return await _wipe_in_place(
         session, model=model, mode="consolidate", chat_id=outgoing_id
     )
-    return True
 
 
 async def start_fresh_chat(
@@ -683,173 +816,6 @@ async def start_fresh_chat(
         },
     ))
     return kept
-
-
-async def cmd_compact(app: web.Application, session: ServerSession) -> None:
-    # Bound once. The fold, the tally it leaves behind and the stamp on the
-    # envelope are three facts about ONE conversation, and looking each of them
-    # up separately is how they come to disagree.
-    folded = session.chat_session
-    try:
-        before, after = await folded.compact()
-    except Exception as exc:
-        log.exception("manual compact failed for %s", session.session_id)
-        await send_envelope(session, make_envelope(
-            "stream_error", "loop", session.session_id, {"message": f"compact failed: {exc}"},
-        ))
-        return
-    if after == before:
-        # `compact()` returns `(before, before)` for two unrelated reasons and
-        # they need different sentences. Neither is a compaction, so neither
-        # sends `session_compact`: that would toast `Compacted 4000 to 4000
-        # tok` and leave a permanent divider saying earlier messages were
-        # summarised when none were. The operator asked, so they get an answer
-        # either way, and when the summarizer failed they get told that rather
-        # than told their chat fits.
-        failed = getattr(folded, "_last_fold_outcome", "") == "summarizer_failed"
-        await send_envelope(session, make_envelope(
-            "command_result", "command_result", session.session_id,
-            {
-                "command": "compact",
-                "ok": not failed,
-                "reason": (
-                    "could not summarise this chat: the model that writes the "
-                    "summary returned nothing. Nothing was lost and nothing "
-                    "changed. Try again, and if it keeps happening the chat "
-                    "will keep growing."
-                    if failed
-                    else "nothing to summarise yet; this chat still fits"
-                ),
-                "severity": "warning" if failed else "info",
-            },
-        ))
-        return
-    await send_envelope(session, make_envelope(
-        "session_compact", "session", session.session_id,
-        {
-            "tokens_before": before,
-            "tokens_after": after,
-            "trigger": "manual",
-            # The turns the fold kept word for word. The transcript puts its
-            # divider in front of them rather than at the end, so the kept
-            # turns are not labelled as summarised.
-            "tail_turns": getattr(folded, "_last_fold_tail_turns", 0),
-        },
-        # `/compact` folds the chat on screen. The stamp is what puts the
-        # transcript's divider in that chat rather than in whichever one the
-        # reader switches to next.
-        chat_id=session.active_chat_id or None,
-    ))
-
-
-async def cmd_compact_file(app: web.Application, session: ServerSession, arg: str | None) -> None:
-    """Compact a stored conversation without disturbing the live one.
-
-    Temporarily swaps the live ChatSession's history with the record's, runs
-    compact(), writes the compacted result back to the SAME record, then
-    restores. Guarded by the busy-turn check in the dispatcher so the swap
-    can't race a live turn.
-
-    Identity is untouched: ``chat_id``, ``created_at`` and ``started_at`` come
-    off the record and go back onto it. Compacting a conversation is a shorter
-    transcript of the same conversation, not a new one.
-    """
-    opts = app["adapter_options"]
-    if opts is None:
-        await send_envelope(session, make_envelope(
-            "stream_error", "loop", session.session_id, {"message": "chat infra not ready"},
-        ))
-        return
-    if not arg:
-        await send_envelope(session, make_envelope(
-            "stream_error", "loop", session.session_id,
-            {"message": "usage: /compact_file <chat title or id>", "severity": "warning"},
-        ))
-        return
-    # Persist BEFORE anything is read. The record is up to one autosave
-    # interval behind, and the compaction is written back over the live chat —
-    # so compacting a stale copy discards every turn taken since the last tick.
-    # It also has to happen before the lookup, or a live chat that has never
-    # been written yet reports itself missing.
-    try:
-        chat_store.persist_session_chats(session, model=opts.model)
-    except Exception:
-        log.exception("compact_file: pre-flush failed for %s", session.session_id)
-    chat_id, reason = _resolve_chat(session, arg)
-    record = chat_store.load_chat(chat_id) if chat_id else None
-    if record is None:
-        await send_envelope(session, make_envelope(
-            "stream_error", "loop", session.session_id,
-            {"message": _not_found_message(arg.strip(), reason), "severity": "warning"},
-        ))
-        return
-
-    # The compaction runs over the RECORD's history, which came back through
-    # the persistence filter — so a reasoning item the live session was still
-    # holding is not in it, and the compacted result written back below drops
-    # it from memory too. Intended: a compaction rewrites the history anyway,
-    # and a reasoning item is only ever needed inside the turn that made it.
-    live_history = list(session.chat_session.history)
-    # The held prompt sections go with the history, and come back with it. The
-    # fold releases them, and they belong to the conversation being moved
-    # aside, not to the one being compacted — without this the chat in focus
-    # re-reads its whole prefix because a different chat was compacted from
-    # the list.
-    live_hold = session.chat_session.head_hold
-    session.chat_session.history = list(record.history)
-    try:
-        before, after = await session.chat_session.compact()
-    except Exception as exc:
-        log.exception("batch compact failed for %s", record.chat_id)
-        session.chat_session.history = live_history
-        session.chat_session.head_hold = live_hold
-        await send_envelope(session, make_envelope(
-            "stream_error", "loop", session.session_id,
-            {"message": f"compact failed for {record.title}: {exc}"},
-        ))
-        return
-
-    compacted_history = list(session.chat_session.history)
-    session.chat_session.history = live_history
-    session.chat_session.head_hold = live_hold
-
-    try:
-        chat_store.save_chat(replace(
-            record,
-            history=compacted_history,
-            model=record.model or opts.model,
-        ))
-    except Exception as exc:
-        log.exception("save after batch compact failed for %s", record.chat_id)
-        await send_envelope(session, make_envelope(
-            "stream_error", "loop", session.session_id,
-            {"message": f"save failed for {record.title}: {exc}"},
-        ))
-        return
-    # A chat still live in this session holds the pre-compaction history in
-    # memory, and the next persist would write it straight back over what was
-    # just saved. Bring the live copy along.
-    # Whoever ends up holding the FOLDED history releases the hold with it.
-    # The save and restore above are for the conversation that was moved
-    # aside and got its own history back unchanged; these two branches are the
-    # opposite case, where a session keeps the rewritten history, so its
-    # cached prefix is gone and a fresh capsule costs nothing. The second
-    # branch is `/compact_file` aimed at the chat already in focus, where the
-    # restore two lines up would otherwise leave the new history wearing the
-    # old conversation's hold.
-    live = session.chats.get(record.chat_id)
-    if live is not None and live is not session.chat_session:
-        live.history = list(compacted_history)
-        live.refresh_head()
-    elif live is not None:
-        session.chat_session.history = list(compacted_history)
-        session.chat_session.refresh_head()
-
-    await send_envelope(session, make_envelope(
-        "session_compact_file", "session", session.session_id,
-        {"chat_id": record.chat_id, "title": record.title,
-         "tokens_before": before, "tokens_after": after},
-    ))
 
 
 def _delete_failed(session: ServerSession, reason: str, code: str, severity: str = "warning") -> dict:

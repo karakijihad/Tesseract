@@ -72,7 +72,12 @@ def _read_agenda_entries(ranked_items: list[Any]) -> list[AgendaEntry]:
     never raises past this function.
     """
     return [
-        AgendaEntry(title=item.goal, status=item.status.value, created_at=item.created_at)
+        AgendaEntry(
+            title=item.goal,
+            status=item.status.value,
+            created_at=item.created_at,
+            item_id=str(getattr(item, "id", "") or ""),
+        )
         for item in ranked_items
         if item.status.value in OPEN_AGENDA_STATUSES
     ]

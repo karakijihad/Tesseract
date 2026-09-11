@@ -778,6 +778,39 @@ def load_tripped_breakers(log_dir: Path) -> dict[str, bool]:
     return tripped
 
 
+def tripped_breaker_reasons(log_dir: Path) -> dict[str, str]:
+    """Why each open breaker is open, in the provider's own words.
+
+    `load_tripped_breakers` opens these same files, reads the same last event,
+    and returns a bool. The `error` field it steps over is the only thing that
+    tells the operator what to DO: one of these held "Your project has exceeded
+    its monthly spending cap. Please go to AI Studio at ..." for two days while
+    every surface said no more than "api.google is open", and the operator
+    could not tell an outage from a bill.
+
+    Empty string for a breaker whose trip recorded no error, which is not the
+    same fact as a breaker that is closed: absence from this map means closed,
+    a blank value means open for a reason nobody wrote down.
+    """
+    reasons: dict[str, str] = {}
+    if not log_dir.exists():
+        return reasons
+    for log_file in log_dir.glob("*.jsonl"):
+        last_event = None
+        try:
+            with log_file.open("r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        last_event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+        except OSError:
+            continue
+        if last_event and last_event.get("event") == "tripped":
+            reasons[log_file.stem] = str(last_event.get("error") or "").strip()
+    return reasons
+
+
 #: `(name, log_dir)` -> the one breaker held for it. Strong references, and
 #: safe because of the eviction below: this is a cache for ONE home at a time,
 #: not a process-lifetime pile.

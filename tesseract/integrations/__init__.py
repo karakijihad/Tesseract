@@ -18,7 +18,6 @@ from tesseract.integrations._channel_adapter import (
     ChannelStatus,
     ChannelUser,
     ChannelUserState,
-    ChannelUserTier,
 )
 
 __all__ = [
@@ -28,7 +27,6 @@ __all__ = [
     "ChannelStatus",
     "ChannelUser",
     "ChannelUserState",
-    "ChannelUserTier",
     "register_channel",
     "unregister_channel",
     "get_channel",

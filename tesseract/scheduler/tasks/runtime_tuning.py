@@ -104,7 +104,7 @@ class RuntimeTuningJob(BaseJob):
             # keeps being declined can be silenced without silencing the rest,
             # and gating the run on one of them would take the others with it
             # the moment there is more than one.
-            on = [key for key in MY_KINDS if _kind_is_on(cfg, key)]
+            on = [key for key in PROPOSERS if _kind_is_on(cfg, key)]
             if not on:
                 return self._closed(
                     ctx, t0, RunOutcome.SKIPPED_NO_WORK,
@@ -149,12 +149,16 @@ class RuntimeTuningJob(BaseJob):
                     {"filed": 0, "days_seen": spending.days_seen},
                 )
 
-            changes = _propose_ceilings(spending, cfg) if "ceiling" in todo else []
+            changes: list[Change] = []
+            for key in todo:
+                changes.extend(PROPOSERS[key](spending, cfg))
             if not changes:
-                # Rule 2.
+                # Rule 2, and it says which question it asked. Reporting that
+                # every ceiling matches after a run that looked at something
+                # else would be a fact about a kind nothing examined.
                 return self._closed(
                     ctx, t0, RunOutcome.SKIPPED_NO_WORK,
-                    "every ceiling matches what the roles under it spend",
+                    " and ".join(QUIET[key] for key in todo),
                     {"filed": 0, "days_seen": spending.days_seen},
                 )
 
@@ -203,9 +207,16 @@ class RuntimeTuningJob(BaseJob):
         )
 
 
-#: Every kind this job files. `working_set_review` files the other two, and a
-#: kind on neither list is declared and unbuilt.
-MY_KINDS: tuple[str, ...] = ("ceiling",)
+#: Every kind this job files, each with the arithmetic that finds it and the
+#: sentence for a run that found nothing. `working_set_review` files the other
+#: two, and a kind on neither list is declared and unbuilt.
+#:
+#: A table rather than a call, because everything around it is already per
+#: kind: the switch, the dedup and the run's own reason. A hardcoded kind here
+#: was the last place the job could still claim to have examined something it
+#: had not. Filing several kinds in one run means one card each, which is the
+#: extension this table leaves open and does not take.
+
 
 
 def _waiting_kinds(queue: Any) -> set[str]:
@@ -260,7 +271,13 @@ def _read_spending_blocking(ctx: JobContext, window_days: int) -> Spending:
     # off the UTC instant would compare two different calendars and the
     # window would start and end a day early for the last hours of every
     # evening east of Greenwich.
-    cutoff = to_local(ctx.fired_at).date() - timedelta(days=window_days)
+    # `window_days` DATES, counting today as one of them. `role_days` keeps
+    # every row on or after the cutoff, so subtracting the whole window would
+    # take in one more day than the number says, and the card would claim
+    # fourteen days of evidence over fifteen. `autonomy_history._days_ending`,
+    # the sibling reader in the same module, counts the same way this now
+    # does.
+    cutoff = to_local(ctx.fired_at).date() - timedelta(days=window_days - 1)
     out.per_role_day = role_days(path, since=cutoff)
     out.days_seen = len({day for byday in out.per_role_day.values() for day in byday})
     caps = _caps(ctx)
@@ -373,6 +390,15 @@ def _propose_ceilings(spending: Spending, cfg: dict[str, Any]) -> list[Change]:
                 days_seen=len(by_day),
             ))
     return out
+
+
+#: Built in one statement after its proposers, the way `conditions.CONDITIONS`
+#: is. Declared empty and filled afterwards, it was a closed list that anything
+#: could add to, which is the property the list exists to deny.
+PROPOSERS: dict[str, Any] = {"ceiling": _propose_ceilings}
+QUIET: dict[str, str] = {
+    "ceiling": "every ceiling matches what the roles under it spend",
+}
 
 
 def _explain(

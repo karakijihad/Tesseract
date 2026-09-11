@@ -29,9 +29,11 @@ import io
 import logging
 import os
 import re
+import shutil
 import tempfile
 import threading
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -166,6 +168,130 @@ def _lock_for(path: Path) -> threading.Lock:
             lock = threading.Lock()
             _target_locks[path] = lock
         return lock
+
+
+#: The soul's own `history/`, the way a playbook keeps `<name>/history/
+#: <version>/`. Outside `workspace/skills/`, so `load_skills` never sees it,
+#: and named for the file rather than under it, because SOUL.md is a file and
+#: not a folder.
+SOUL_HISTORY_DIRNAME = "history"
+
+SOUL_TARGET_PATH = "tesseract/workspace/SOUL.md"
+
+#: The reason written on a card nobody was asked about. One string, because it
+#: is not prose: the notifier reads it to tell a change the mode made from one
+#: the operator approved by hand, and telling somebody about a thing they just
+#: did themselves is the noise that gets a channel muted.
+SETTLED_BY_THE_MODE = "applied without asking: the mode says so"
+
+#: A slot is named for the INSTANT the edit landed, in UTC, with the colons
+#: dropped because Windows will not have them in a path. An instant and not a
+#: day: a reader asking what the soul said at some past moment has to be able
+#: to place an edit before or after it, and two edits on one calendar day, one
+#: either side of the operator leaving, are indistinguishable by date. Sorting
+#: these strings is chronological, which is the whole reason for the shape.
+#:
+#: Microseconds, not seconds. Two approvals settled in the same second is not
+#: a hypothetical: a queued pair, or a `free` run applying two bullets in a
+#: row, lands well inside one. At second resolution the two shared a name and
+#: the second predecessor was dropped, which is the day bug over again at a
+#: smaller scale.
+_SLOT_FORMAT = "%Y-%m-%dT%H%M%S.%f%z"
+
+
+def soul_history_dir() -> Path:
+    """`workspace/history/SOUL/`, resolved at call time like every other
+    workspace path."""
+    return workspace_dir() / SOUL_HISTORY_DIRNAME / "SOUL"
+
+
+def soul_slot_instant(name: str) -> datetime | None:
+    """The instant a slot directory is named for, or None if it is not one.
+
+    The one reader of the naming convention, so a later reader of this history
+    never has to know the format.
+    """
+    try:
+        return datetime.strptime(name, _SLOT_FORMAT)
+    except ValueError:
+        return None
+
+
+def _newest_slot_instant(root: Path) -> datetime | None:
+    """The latest instant any slot is named for, or None when there are none."""
+    if not root.is_dir():
+        return None
+    try:
+        found = [
+            instant
+            for child in root.iterdir()
+            if child.is_dir() and (instant := soul_slot_instant(child.name)) is not None
+        ]
+    except OSError:
+        return None
+    return max(found) if found else None
+
+
+def _keep_soul_predecessor(full_path: Path) -> None:
+    """Before an edit lands on SOUL.md, keep what it is replacing.
+
+    **Five properties, and they hold together or not at all.** This mechanism
+    was written three times, and each rewrite fixed the property in front of
+    it while dropping one the version before had. Check a change against the
+    whole list, not against whatever prompted it.
+
+    1. **Every edit's predecessor is kept.** No write is skipped and no slot
+       is overwritten. This is what the file exists for.
+    2. **A slot name orders against any instant.** A reader has to be able to
+       say whether a snapshot is before or after an arbitrary moment. The
+       first version named slots by local date, which cannot answer that for
+       two edits on one day, one either side of the operator leaving.
+    3. **A snapshot holds the state BEFORE its own edit.** `_soul_bullets` in
+       the return note reads it that way, so the copy happens before
+       `_atomic_replace` and never after.
+    4. **A record on disk survives a change to this code.** The day-named
+       slots the first version wrote were migrated to instants rather than
+       read through a compatibility branch, because a bare date read as
+       midnight UTC invents precision the record never had, and property 2 is
+       not satisfied by a guess.
+    5. **Writing never raises into the edit.** The operator approved a change
+       to their assistant's soul; losing a diff is not a reason to refuse it.
+
+    A soul refined over months is otherwise the one growth record with nothing
+    to compare against: a playbook keeps `history/<version>/` and can be
+    returned to, and every soul edit used to overwrite its predecessor, so a
+    bullet approved in month two could not be diffed against month one.
+
+    Nothing prunes this tree, the way nothing prunes a playbook's `history/`.
+    A soul file is a few kilobytes and an edit is operator gated, so the
+    record is kept for good on purpose rather than for want of a sweep.
+    """
+    now = datetime.now(timezone.utc)
+    root = soul_history_dir()
+    # A clock that stepped backwards, which is what an NTP correction does,
+    # lands inside a range of names already written. Starting after the newest
+    # of them replaces a walk through every snapshot in that window with one
+    # comparison.
+    newest = _newest_slot_instant(root)
+    if newest is not None and newest >= now:
+        now = newest + timedelta(microseconds=1)
+    slot = root / now.strftime(_SLOT_FORMAT) / full_path.name
+    # A name still taken means the clock did not move between two edits. Step
+    # the instant rather than returning: skipping the write is how a
+    # predecessor gets lost, which is the one thing this function exists to
+    # prevent. Every writer in this process is serialised by the per-path lock
+    # in `apply_change`, so the check and the copy below cannot interleave. A
+    # SECOND backend process against the same home could, and nothing here
+    # would notice; the supervisor runs one at a time, which is the whole of
+    # why that is a risk rather than a bug.
+    while slot.exists():
+        now += timedelta(microseconds=1)
+        slot = root / now.strftime(_SLOT_FORMAT) / full_path.name
+    try:
+        slot.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(full_path, slot)
+    except OSError:
+        log.warning("workspace_changes: could not keep %s", slot, exc_info=True)
 
 
 def _atomic_replace(path: Path, text: str) -> None:
@@ -421,7 +547,7 @@ def settle_proposal(
 
     _journal_applied(target_path=target_path, action=action, applied=applied)
     return (
-        event.with_status("applied", reason="applied without asking: the mode says so"),
+        event.with_status("applied", reason=SETTLED_BY_THE_MODE),
         applied,
         None,
     )
@@ -513,7 +639,6 @@ def apply_change(
     # would block a concurrent writer on an import that has nothing to do with
     # the file. Lazily here rather than at module scope because this is kernel
     # code and reaching into brain at import time would invert the dependency.
-    from tesseract.brain.prompt import bump_head_revision
 
     with _lock_for(full_path):
         applied = _apply_change_locked(
@@ -524,28 +649,12 @@ def apply_change(
             section=section,
             expected_hash_before=expected_hash_before,
         )
-        # A conversation holds its head for its whole life, so an approved
-        # edit to SOUL.md, USER.md or OPERATING.md would otherwise not be read
-        # again until the next chat. This is the one funnel every approved
-        # document write passes through, and the only place that KNOWS the
-        # operator acted: further down, an approved edit and a background job
-        # rewriting the same file are the same bytes.
-        #
-        # Inside the lock, with the write. Outside it there is a window where
-        # the new bytes are readable but the revision retiring the old head has
-        # not been published, so a turn assembling in that window snapshots
-        # fresh content under a stale revision and re-reads once more than it
-        # needed to. Never a swallowed edit, but free to close.
-        #
-        # Fired for every target, not only the three the head inlines. A list
-        # here would be a second roster to keep in step with `prompt.SECTIONS`,
-        # and the cost of being wrong in this direction is one re-read.
-        #
-        # Not fired for a no-op: `apply_change` short-circuits when the content
-        # is already present, and retiring every conversation's head over bytes
-        # that did not move is the exact waste this mechanism exists to stop.
-        if applied.no_op_reason is None:
-            bump_head_revision()
+        # Nothing here retires a running conversation's head. It is frozen at
+        # the first turn and stays that way until a boundary, so an approved
+        # edit to a head document is read by the NEXT conversation. Operator
+        # ruling, 2026-09-10: the conversation that approved the edit already
+        # has its content in the history it is reading, so re-reading the file
+        # pays the whole cached prefix to deliver what is three messages up.
     return applied
 
 
@@ -606,6 +715,8 @@ def _apply_change_locked(
             no_op_reason=reason,
         )
 
+    if target_path == SOUL_TARGET_PATH:
+        _keep_soul_predecessor(full_path)
     _atomic_replace(full_path, after)
     return ChangeApplied(
         target_path=target_path,

@@ -658,7 +658,6 @@ export async function postMode(mode: string): Promise<ModeResponse> {
 export interface CompactionUpdateInput {
   role: string;
   ratio?: number;
-  keep_recent_turns?: number;
 }
 
 export async function postCompactThreshold(
@@ -1786,6 +1785,10 @@ export interface GovernorPause {
   detector: string;
   reason: string;
   evidence: Record<string, unknown>;
+  // When the pause lifts itself. Null is one that waits for you, which is
+  // every pause a detector has no time configured for.
+  expires_at: string | null;
+  consecutive: number;
 }
 
 export interface GovernorTickPayload {
@@ -1910,6 +1913,18 @@ export async function fetchOperatorJournal(
   return apiFetch<OperatorJournalResponse>(
     `/api/autonomy/journal?limit=${limit}`,
   );
+}
+
+// What changed since the operator was last here. The same text the brief
+// carries and the tool returns, because one question gets one answer.
+export interface ReturnNoteResponse {
+  since: string | null;
+  owed: boolean;
+  text: string;
+}
+
+export async function fetchReturnNote(): Promise<ReturnNoteResponse> {
+  return apiFetch<ReturnNoteResponse>("/api/autonomy/return-note");
 }
 
 // ── Autonomy Dashboard mutators (AU-7 S2) ────────────────
@@ -2245,6 +2260,11 @@ export interface HealthDepartment extends Wants {
    *  these, and reading that off the prose would tie a control to the wording
    *  of a sentence somebody will improve one day. */
   acknowledged?: boolean;
+  /** The row's exact identity. What a control sends back to select this row
+   *  and no other, rather than the name it is drawn under: two rows can share
+   *  a name and a rendered label can be turned back into a slash command in a
+   *  way plain text cannot. */
+  key: string;
   name: string;
   band: HealthBand;
   state: OperationalState;
@@ -2255,6 +2275,15 @@ export interface HealthDepartment extends Wants {
   at: string | null;
   /** The one number worth putting beside it, when there is one. */
   value: string;
+  /** Who already answers this row, decided by the healing layer and never
+   *  guessed here: `runtime` means an automatic answer may run unasked,
+   *  `stopped` means one tried and gave up, `nobody` means nothing on this
+   *  machine picks it up on its own. `said` is the sentence that carries it,
+   *  in the runtime's own words. Present on every row. */
+  handled: {
+    state: 'nobody' | 'runtime' | 'stopped';
+    said: string;
+  };
 }
 
 export interface JudgeStage {
@@ -2457,6 +2486,15 @@ export interface ManagedLine extends Wants {
   canRun: boolean;
   canToggle: boolean;
   canDelete: boolean;
+  /** Where this row's errors can be read, when its own run went wrong. The
+   *  backend resolves it, because the home tree moves per install and a path
+   *  composed on a surface would be right on one machine only. Empty on every
+   *  row that did not fail, which is what keeps the control off them.
+   *
+   *  Optional for the same reason the retention room's is: the field is newer
+   *  than the payloads some tests build by hand, and a row read from an older
+   *  backend simply has no control rather than failing to draw. */
+  logPath?: string;
 }
 
 /** A playbook: a skill that has written down the procedure contract. Its own
@@ -2578,6 +2616,61 @@ export async function fetchAutonomyMemory(): Promise<MemoryResponse> {
 
 export async function fetchAutonomyChannels(): Promise<ChannelsResponse> {
   return apiFetch<ChannelsResponse>('/api/autonomy/channels');
+}
+
+// ── The day: what it decided and did on its own ─────────────────────────
+//
+// AR-29 item 7. Every field is read by the backend from a record it already
+// owns: the wakes from the scheduler's run log with the sentence each row
+// wrote about itself, the steps from the agenda, the money from the ledger
+// the rows themselves ask. Nothing here is composed in the view, and `read`
+// is carried on both halves because a day nobody could read is not a quiet
+// day.
+
+export interface DayWake {
+  row: string;
+  at: string;
+  outcome: string;
+  said: string;
+}
+
+export interface DayStep {
+  id: string;
+  goal: string;
+  project: string;
+}
+
+export interface DayClosed {
+  goal: string;
+  project: string;
+  status: string;
+  verifiedBy: string;
+}
+
+export interface DayProjectMoney {
+  id: string;
+  name: string;
+  spent_usd: number;
+  budget_usd: number | null;
+  left_usd: number | null;
+}
+
+export interface DayResponse {
+  wakes: DayWake[];
+  steps: {
+    proposed: DayStep[];
+    working: DayStep[];
+    closed: DayClosed[];
+    read: boolean;
+  };
+  money: {
+    read: boolean;
+    projects: DayProjectMoney[];
+  };
+}
+
+export async function fetchAutonomyDay(): Promise<DayResponse> {
+  return apiFetch<DayResponse>('/api/autonomy/day');
 }
 
 // ── Atlas: the map of how everything connects ───────────────────────────
@@ -3144,6 +3237,51 @@ export async function postNotificationMute(body: {
   muted: boolean;
 }): Promise<NotificationsMuteResponse> {
   return apiPost<NotificationsMuteResponse>("/api/notifications/mute", body);
+}
+
+// -- What may become a memory --------------------------------------------
+//
+// One read for the pane: every rule with its own words, its posture, the layer
+// that set it and what it stopped. The count rides the rule for the reason the
+// comment above gives.
+
+export interface CaptureRuleRow {
+  rule: string;
+  summary: string;
+  why: string;
+  enabled: boolean;
+  /** Which of the three layers decided: "code", "config" or "runtime". */
+  layer: string;
+  locked: boolean;
+  shipped_default: boolean;
+  /** Set when the rule is enforced elsewhere on the write path, and names
+   *  where. Such a rule has no matcher of its own. */
+  enforced_by: string | null;
+  /** What this rule's own numbers are set to, in its own words. Null for a
+   *  rule that has none. */
+  detail: string | null;
+  blocked: number;
+  state: OperationalState;
+  label: string;
+  obligation: Obligation;
+}
+
+export interface CapturePolicyResponse {
+  rules: CaptureRuleRow[];
+  layers: { config: Record<string, boolean>; runtime: Record<string, boolean> };
+  window_days: number;
+}
+
+export async function fetchCapturePolicy(): Promise<CapturePolicyResponse> {
+  return apiFetch<CapturePolicyResponse>("/api/capture/policy");
+}
+
+export async function postCaptureRule(body: {
+  session_id: string;
+  rule: string;
+  enabled: boolean;
+}): Promise<CaptureRuleRow> {
+  return apiPost<CaptureRuleRow>("/api/capture/policy", body);
 }
 
 /** One spend window, beside the identical span immediately before it — the

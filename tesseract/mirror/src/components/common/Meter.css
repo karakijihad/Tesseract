@@ -31,3 +31,46 @@
 .meter__fill--bad {
   background: var(--bad);
 }
+
+/* Several fills end to end. A bar that carries how a tool's day WENT rather
+   than how much of it happened: mostly clean, two the model got wrong, one
+   nobody can check.
+
+   Laid out with flex so the parts sit end to end and the last one reaches the
+   track's edge. `min-width` still applies per part, for the reason it applies
+   to a single fill: one bad call in ninety is the reading, and a segment of
+   zero pixels says it never happened. */
+.meter:has(.meter__fill + .meter__fill) {
+  display: flex;
+}
+
+/* Each tone is a MEANING, and each resolves through the semantic token so
+   Appearance moves all of them together. `ok-muted` rather than `ok` on the
+   clean part deliberately: it is most of every bar on a healthy day, and full
+   strength green across the panel drowns the parts that need reading. */
+.meter__fill--ok {
+  background: var(--ok-muted);
+}
+
+.meter__fill--warn {
+  background: var(--warn);
+}
+
+/* Asked for something it could not do. Informational rather than alarming:
+   nothing is broken, and painting it like a failure is exactly the confusion
+   the outcome split exists to remove. */
+.meter__fill--info {
+  background: var(--info);
+}
+
+/* It worked and left nothing anybody can check. Its own colour because it is
+   its own answer: folding it into either the clean part or the failures is
+   the reporting defect the state was added to prevent. */
+.meter__fill--unverified {
+  background: var(--cyan);
+}
+
+/* Ran out of time, or otherwise ended without a verdict worth a colour. */
+.meter__fill--quiet {
+  background: var(--neutral);
+}

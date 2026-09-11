@@ -16,6 +16,7 @@ path. Address in a later session.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 from dataclasses import dataclass, field
@@ -35,7 +36,9 @@ from tesseract.brain import tool_availability
 from tesseract.brain.tool_usage import record_tool_call
 from tesseract.kernel.adapters.cli import _HARD_ERROR_NEEDLES
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.recovery import behaviour_of as recovery_behaviour_of
 from tesseract.kernel.tools.tool_search import TOOL_SEARCH_NAME
+from tesseract.orchestrator import checkpoints
 from tesseract.permissions import approval_log
 from tesseract.permissions.decide import AskFn, evaluate as evaluate_permission
 from tesseract.permissions.policy import PermissionPolicy
@@ -216,121 +219,133 @@ class ToolRegistry:
     def schemas_for_adapter(
         self,
         enabled_extended: set[str] | None = None,
-        *,
-        defer_outside_working_set: bool = False,
     ) -> list[dict[str, Any]]:
-        """Tool schemas in the shape adapters expect.
+        """Every tool, each one saying whether it is LOADED or DEFERRED.
 
-        Matches the shape already used by the OpenAI + Gemini adapters'
-        `stream(tools=...)` parameter: name, description, input_schema
-        as JSON Schema.
+        One payload, provider-neutral, built once per turn. What a given
+        provider actually receives is that adapter's business:
+        `ModelAdapter.project_tools` translates this into a wire payload, and
+        the two projections are opposites. A provider that can discover a
+        deferred tool server-side keeps the deferred entries and drops our own
+        `tool_search`; one that cannot drops the deferred entries and keeps
+        it, landing on exactly the working set it would have been sent before
+        any of this existed.
 
-        Lean-agent-os P1 Task 2 — tool-schema tiering. `enabled_extended`
-        is `None` by default: returns every registered tool (the full
-        registry surface), used by callers that need the complete
-        picture (capability-matrix generator, introspection tests).
-        When a `set` is passed (even empty), tiering is enforced: only
-        `tier == "core"` tools plus any tool named in `enabled_extended`
-        are returned — this is the live chat-session path, threaded from
-        `ChatSession._tool_schemas` via its `_enabled_extended_tools`.
-        Visibility only — `execute_tool` resolves any registered tool by
-        name regardless of tier.
+        **The classification is here and the translation is not**, because the
+        alternative was measured and it does not work. The registry used to
+        decide, by asking whether the ADAPTER deferred, and a chat_brain chain
+        of three answers that question three different ways
+        (`roles.yaml::chain_2` is two OpenAI entries and one xAI). One payload
+        is built per turn and reused across failover, so the chain could only
+        answer for all of its members at once: `FallbackAdapter` required
+        every entry to defer, one xAI fallback said no, and the feature was
+        dead on the machine it was written for. Measured 2026-09-09: 74
+        schemas, then 75 after an unlock, then 74 again, every transition a
+        full re-read of the whole request.
 
-        ``defer_outside_working_set`` is the same decision made the other way,
-        for an adapter that declares `defers_tool_loading`. The whole registry
-        goes down the wire with everything outside the working set flagged
-        `defer_loading`, and the provider matches those server-side and appends
-        the schemas it needs INSIDE the request — so a demoted tool costs no
-        round trip there. `tool_search` is left out of that payload: the
-        provider's own search does the job, and shipping both is a model
-        choosing between two doors into the same room.
+        `enabled_extended` is `None` for a caller that wants the complete
+        picture with no working set at all — the capability-matrix generator
+        and the introspection tests. That path is unflagged and unchanged.
 
-        The working set is identical under both paths. What changes is whether
-        the tools outside it travel as deferred entries or do not travel at
-        all; nothing moves between tiers, and nothing about permission changes.
+        When a set is passed, even an empty one, every tool is returned and
+        each is marked:
+
+        - `defer_loading: True` — outside the working set. `tier == "core"`
+          plus anything `tool_search` unlocked this session is what is inside
+          it, and `ChatSession._enabled_extended_tools` owns that set.
+        - `_runtime_search: True` — our own `tool_search`, named rather than
+          matched by string at three call sites. It is the one entry whose
+          fate differs between the two projections.
+
+        Both keys are private to this boundary. `project_tools` strips them,
+        so nothing provider-shaped ever carries one.
+
+        Visibility only, in every direction: `execute_tool` resolves any
+        registered tool by name whatever this says, and `permissions.yaml`
+        decides authority. A name discovered by a provider is still looked up,
+        validated and permitted here like any other.
         """
         # One snapshot, read once. `home_tools.sync_home_tools` swaps this
         # dict from a worker thread, so re-reading `self.tools` between the
-        # passes below could build a payload whose core and deferred halves
-        # disagree about which tools exist.
+        # passes below could build a payload whose halves disagree about which
+        # tools exist.
         every = list(self.tools.values())
-        # The working set first, in registry order, then anything `tool_search`
-        # unlocked this session — appended, never interleaved.
-        #
-        # Tool schemas are serialised ahead of the system prompt, so the first
-        # byte that moves in this list invalidates the cached prefix behind it:
-        # the prompt, the memory capsule and the whole conversation. Selecting
-        # unlocked tools by re-filtering the registry put each one at its
-        # REGISTRATION position, which for a tool registered early is near the
-        # front of the block. Measured 2026-08-30: every tool-count change in a
-        # live session reported `cached=0` rather than the core block's own
-        # size, three times in one conversation, re-reading 223,470 tokens at
-        # full price to advertise three tools the model had already been handed
-        # in `tool_search`'s result.
-        #
-        # Appending bounds it: the core block holds still, so what survives is
-        # everything before the first unlock. It does not remove the cost, and
-        # nothing here can — the fix that does is not advertising an unlocked
-        # tool at all, which needs the provider to accept a call for a name it
-        # was not shown.
-        core = [t for t in every if getattr(t, "tier", "extended") == "core"]
-        if enabled_extended:
-            core += [
-                t
-                for t in every
-                if getattr(t, "tier", "extended") != "core"
-                and t.name in enabled_extended
-            ]
-        deferred: list[Any] = []
         if enabled_extended is None:
-            selected = list(every)
-        elif defer_outside_working_set:
-            core = [t for t in core if t.name != TOOL_SEARCH_NAME]
-            loaded = {t.name for t in core}
-            deferred = [
-                t
-                for t in every
-                if t.name not in loaded and t.name != TOOL_SEARCH_NAME
-            ]
-            # Never defer everything: the provider rejects a payload where no
-            # tool is loaded, and a session whose working set is somehow empty
-            # would reach nothing at all rather than reaching it one turn late.
-            selected = [*core, *deferred] if core else list(every)
-            if not core:
-                deferred = []
-                # Said out loud, because the fallback's cost is the whole
-                # registry at full price on every turn and the only other
-                # signal is a payload panel somebody has to be looking at.
-                #
-                # Once, not once per request. This is reached from
-                # `_tool_schemas` inside the tool loop, so a condition that
-                # cannot clear on its own would print on every model call and
-                # teach a reader to filter the log. Latched on the registry
-                # and released when the set comes back, the way a breaker
-                # reports a trip rather than every call after it.
-                if not self._warned_empty_working_set:
-                    self._warned_empty_working_set = True
-                    logger.warning(
-                        "working set resolved empty: sending all %d tool "
-                        "schemas undeferred. Check working_set.yaml::core.",
-                        len(every),
-                    )
-            else:
-                self._warned_empty_working_set = False
+            return [t.to_schema() for t in every]
+
+        # The working set, in registry order, then anything `tool_search`
+        # unlocked this session.
+        loaded = {
+            t.name for t in every if getattr(t, "tier", "extended") == "core"
+        } | set(enabled_extended)
+
+        # A working set that resolves to nothing is a broken
+        # `working_set.yaml::core`, and it is silent everywhere else: the
+        # projections cope with it (a payload that would defer everything
+        # defers nothing instead), so the turn still works and costs the whole
+        # registry at full price on every call, with a payload panel somebody
+        # has to be looking at as the only other signal.
+        #
+        # Once, not once per request. This is reached from `_tool_schemas`
+        # inside the tool loop, so a condition that cannot clear on its own
+        # would print on every model call and teach a reader to filter the
+        # log. Latched on the registry and released when the set comes back,
+        # the way a breaker reports a trip rather than every call after it.
+        if not loaded:
+            if not self._warned_empty_working_set:
+                self._warned_empty_working_set = True
+                logger.warning(
+                    "working set resolved empty: every one of %d tools will "
+                    "travel undeferred, at full price on every call. Check "
+                    "working_set.yaml::core.",
+                    len(every),
+                )
         else:
-            selected = core
-        deferred_names = {t.name for t in deferred}
+            self._warned_empty_working_set = False
+
         schemas: list[dict[str, Any]] = []
-        for t in selected:
+        for t in every:
             # `to_schema`, not the same three keys written again. `tool_search`
             # already builds a tool's schema through it, so a second copy here
             # meant the shape a demoted tool arrives in and the shape it is
             # unlocked in were two definitions that had to be edited together.
             schema = t.to_schema()
-            if t.name in deferred_names:
+            if t.name == TOOL_SEARCH_NAME:
+                schema["_runtime_search"] = True
+            elif t.name not in loaded:
                 schema["defer_loading"] = True
             schemas.append(schema)
         return schemas
+
+
+async def _say_it_ran_unrecorded(
+    tool_name: str, context: ToolContext, behaviour: str
+) -> None:
+    """File the card for a call going ahead with no record of it.
+
+    Off the loop, because an event store write takes a lock and touches disk,
+    and this runs on the hot path between a decision and the call it precedes.
+    Never raises: the checkpoint write already failed, and a turn must not die
+    because the complaint about it could not be filed either.
+    """
+    try:
+        from tesseract.bootid import current_boot_id
+        from tesseract.orchestrator.recovery.effects import file_unrecorded
+        from tesseract.kernel.workspace_changes import workspace_events_dir
+        from tesseract.workspace_events.events import EventStore
+
+        def _file() -> None:
+            file_unrecorded(
+                EventStore(workspace_events_dir()),
+                tool=tool_name,
+                call_id=context.current_call_id or "",
+                behaviour=behaviour,
+                boot=current_boot_id(),
+            )
+
+        await asyncio.to_thread(_file)
+    except Exception:  # noqa: BLE001 - the turn is not this card's to fail
+        logger.exception("recovery: could not say that %s ran unrecorded", tool_name)
 
 
 async def execute_tool(
@@ -371,17 +386,133 @@ async def execute_tool(
     error returns, which interpolate an exception's own text and are the most
     likely carriers of the header case above.
     """
-    return _screen_result(
+    # What recovery would be allowed to do with this call if the process died
+    # before its outcome was known. Read once, off the class, and recorded on
+    # both rows below: a later pass asking the registry again would be
+    # answering about today's tool rather than the one that ran.
+    behaviour = recovery_behaviour_of(registry.get(tool_name))
+    marked = behaviour != "read_only"
+    if marked:
+        opened = await checkpoints.step(
+            session_id=context.session_id,
+            chat_id=context.chat_id,
+            run_id=context.turn_id or context.run_id,
+            boundary="before_tool",
+            tool=tool_name,
+            call_id=context.current_call_id,
+            recovery=behaviour,
+        )
+        if opened is None:
+            # The record did not land, so this call would act with nothing able
+            # to say afterwards that it had. What happens next is decided by
+            # the same declaration everything else here turns on, and the two
+            # answers are different on purpose.
+            #
+            # `unsafe` is refused. It is the one class where nobody can check
+            # afterwards whether the call landed, so a crash between here and
+            # the result leaves an effect nothing can account for and no
+            # question anybody can be asked about it. Refusing costs one call;
+            # going ahead costs the guarantee the whole recovery path is built
+            # on.
+            #
+            # Everything else goes ahead. A disk that will not take a note must
+            # not turn the runtime off, which is the rule this machine runs on:
+            # one capability comes off the board and the rest keeps working. An
+            # `idempotent` or a `queryable` call is recoverable by repeating it
+            # or by asking the far side.
+            #
+            # But recoverable is not the same as recovered, and this is where
+            # that used to end. A `queryable` call's guarantee is that somebody
+            # asks the far side first, and the only thing that ever asks is a
+            # brief built from the row that just failed to write. So the class
+            # went ahead with its promise kept by nobody. The card below is the
+            # prompt the missing row would have produced, and it is filed for
+            # every class that goes ahead, because the same is true of an
+            # `idempotent` retry nobody knows to make.
+            logger.error(
+                "recovery: %s (call %s) has no record of what it is about to "
+                "do. The checkpoint could not be written, so if this process "
+                "stops before the call finishes, nothing will know it was made.",
+                tool_name, context.current_call_id or "unnamed",
+            )
+            if behaviour == "unsafe":
+                return ToolResult(
+                    output=(
+                        f"Not run. {tool_name} is one of the calls nothing can "
+                        "check afterwards, and the record that would let this "
+                        "machine ask you about it if it stopped mid call could "
+                        "not be written. Check the disk and the permissions on "
+                        "the home tree, then try again."
+                    ),
+                    is_error=True,
+                    metadata={"reason": "no_recovery_record"},
+                )
+            await _say_it_ran_unrecorded(tool_name, context, behaviour)
+    result = _screen_result(
         await _dispatch_tool(
             registry=registry,
             tool_name=tool_name,
             tool_input=tool_input,
             context=context,
-            ask_fn=ask_fn,
+            # Gated on `marked` for the same reason the two rows are, and it
+            # has to be the SAME condition: an `ask` posture on a `read_only`
+            # tool (`screen_look` today) would otherwise open a boundary that
+            # nothing closes, and the tail would report a conversation parked
+            # on an approval it was given long ago.
+            ask_fn=noting_the_park(ask_fn, context, tool_name, behaviour) if marked else ask_fn,
             policy=policy,
         ),
         tool_name,
     )
+    if marked:
+        await checkpoints.step(
+            session_id=context.session_id,
+            chat_id=context.chat_id,
+            run_id=context.turn_id or context.run_id,
+            boundary="after_tool",
+            tool=tool_name,
+            call_id=context.current_call_id,
+            recovery=behaviour,
+            receipt=result.receipt.to_dict() if result.receipt is not None else None,
+        )
+    return result
+
+
+def noting_the_park(
+    ask_fn: AskFn | None,
+    context: ToolContext,
+    tool_name: str,
+    behaviour: str,
+) -> AskFn | None:
+    """Write the boundary where a call stops and waits for a person.
+
+    Public because two places in the runtime dispatch a tool: this module and
+    `orchestrator/verify/policy_executor.py`, which runs a project's verify
+    commands as `bash` calls. A second copy of this would be a second answer
+    to what a parked call looks like on the record.
+
+    Wrapped rather than written at the call site because there is no call
+    site: the ask is issued from inside `decide.evaluate`, and a turn parked
+    on an approval is exactly the state a crash leaves nothing behind about.
+    `None` stays `None` — a headless context has nobody to wait for, and
+    handing it a callable would make it look like it had.
+    """
+    if ask_fn is None:
+        return None
+
+    async def _ask(tool: Any, validated: Any, ctx: ToolContext) -> bool:
+        await checkpoints.step(
+            session_id=context.session_id,
+            chat_id=context.chat_id,
+            run_id=context.turn_id or context.run_id,
+            boundary="awaiting_operator",
+            tool=tool_name,
+            call_id=context.current_call_id,
+            recovery=behaviour,
+        )
+        return await ask_fn(tool, validated, ctx)
+
+    return _ask
 
 
 def _screen_result(result: ToolResult, tool_name: str) -> ToolResult:
@@ -401,6 +532,21 @@ def _screen_result(result: ToolResult, tool_name: str) -> ToolResult:
         output = redact_payload(result.output)
         metadata = redact_payload(result.metadata) if result.metadata else result.metadata
         deny_reason = redact_payload(result.deny_reason)
+        # The receipt too, and it is the field this screen forgot: it was
+        # added after the wrapper was written, which is exactly the case the
+        # wrapper exists to catch. Every constructor in the tree puts a far
+        # side's own reference in it, so nothing leaks today; a custom or
+        # remote tool building one out of a response is why this is a screen
+        # and not a convention.
+        receipt = (
+            type(result.receipt)(
+                kind=result.receipt.kind,
+                id=redact_payload(result.receipt.id),
+                locator=redact_payload(result.receipt.locator),
+            )
+            if result.receipt is not None
+            else None
+        )
     except RedactionUnavailable as exc:
         logger.error("tool %s: result withheld, %s", tool_name, exc)
         # `deny_reason` is REPLACED, not preserved and not blanked, and it is
@@ -430,10 +576,15 @@ def _screen_result(result: ToolResult, tool_name: str) -> ToolResult:
         output == result.output
         and metadata is result.metadata
         and deny_reason == result.deny_reason
+        and receipt == result.receipt
     ):
         return result
     return dataclasses.replace(
-        result, output=output, metadata=metadata, deny_reason=deny_reason
+        result,
+        output=output,
+        metadata=metadata,
+        deny_reason=deny_reason,
+        receipt=receipt,
     )
 
 

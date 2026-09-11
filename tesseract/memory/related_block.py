@@ -39,6 +39,26 @@ _BLOCK_RE = re.compile(
 )
 
 
+def strip_trailing_block(body: str) -> str:
+    """Body with the auto-managed block at its END removed, and only that one.
+
+    `_BLOCK_RE.sub` removes EVERY marker pair in the body, which is right for
+    deriving a summary and wrong for rewriting the block: a record whose own
+    prose quotes the markers (a memory about this mechanism, say) had that
+    span silently deleted the next time the auto-linker, the scrub or the
+    delete cascade touched it, which is real data loss on a repair path. The
+    block this module writes always sits at the end, so that is the only place
+    one is recognised when rewriting.
+    """
+    start = body.rfind(START_MARKER)
+    if start == -1:
+        return body
+    tail = _BLOCK_RE.match(body, start)
+    if tail is None or body[tail.end():].strip():
+        return body
+    return body[:start]
+
+
 def strip_related_block(body: str) -> str:
     """Body with the auto-related block removed.
 
@@ -90,7 +110,7 @@ def replace_related_block(body: str, items: Sequence[RelatedItem]) -> str:
     Body lines outside the markers are preserved verbatim so any operator-
     written `## Related` heading without our markers stays untouched.
     """
-    stripped = _BLOCK_RE.sub("\n\n", body).rstrip()
+    stripped = strip_trailing_block(body).rstrip()
     new_block = render_related_block(items)
     if not new_block:
         return stripped + "\n" if stripped else ""

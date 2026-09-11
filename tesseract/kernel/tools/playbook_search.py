@@ -72,6 +72,8 @@ class PlaybookSearchTool(Tool):
         "`tool_search` for a TOOL rather than a procedure."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     def __init__(self, skills_dir: Path) -> None:
         self._skills_dir = skills_dir

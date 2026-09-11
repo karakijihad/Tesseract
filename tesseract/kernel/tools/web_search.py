@@ -64,6 +64,8 @@ class WebSearchTool(Tool):
         "instead of short snippets."
     )
     depends_on: ClassVar[str] = "service:brave"
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:

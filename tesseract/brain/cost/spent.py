@@ -26,7 +26,7 @@ import json
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Iterable
+from typing import Callable, Iterable
 
 
 @dataclass(frozen=True)
@@ -47,7 +47,14 @@ class Row:
 
 def parse(lines: Iterable[str]) -> list[Row]:
     """Rows out of ledger lines. A line that is not one is skipped, and a row
-    written before the ledger named turns reads as nobody's turn."""
+    written before the ledger named turns reads as nobody's turn.
+
+    **The whole row is built inside the guard.** The dates were guarded and
+    the numbers were not, so a `cost_usd` or `input_tokens` that was not a
+    number raised out of a parser whose contract is that a bad line is
+    skipped, and took down every reader of the ledger with it. One malformed
+    line in a file that only grows must cost its own row and nothing else.
+    """
     rows: list[Row] = []
     for line in lines:
         if not line.strip():
@@ -58,10 +65,7 @@ def parse(lines: Iterable[str]) -> list[Row]:
                 continue
             ts = datetime.fromisoformat(str(raw["ts"]).replace("Z", "+00:00"))
             day = date.fromisoformat(str(raw["local_date"]))
-        except (ValueError, KeyError, TypeError):
-            continue
-        rows.append(
-            Row(
+            row = Row(
                 ts=ts,
                 local_date=day,
                 role=str(raw.get("role") or ""),
@@ -79,7 +83,9 @@ def parse(lines: Iterable[str]) -> list[Row]:
                 tokens_sent=int(raw.get("input_tokens") or 0)
                 + int(raw.get("cache_creation_tokens") or 0),
             )
-        )
+        except (ValueError, KeyError, TypeError):
+            continue
+        rows.append(row)
     return rows
 
 
@@ -184,6 +190,42 @@ def per_task(rows: list[Row]) -> list[TaskSpend]:
     ]
     out.sort(key=lambda task: task.last or datetime.min, reverse=True)
     return out
+
+
+def per_project(rows: list[Row], project_of: Callable[[str], str]) -> dict[str, float]:
+    """What each project has spent, over whatever window `rows` covers.
+
+    The ledger has no project on it and should not grow one: a row already
+    carries the task it was paid for, and a task already carries its project
+    (`AgendaItem.project_id`, AR-27's). Recording it a third time would be a
+    third place for the same fact to be wrong in.
+
+    `project_of` resolves a task id to a project id and answers `""` for a task
+    that names none, or one whose record is gone because the reaper took it.
+    Both mean the same thing here and neither is an error: money spent on work
+    that belongs to no project is money no project's budget bounds. The
+    morning's own proposing turn is exactly that, and counting it against a
+    project would charge one of them for a decision about all of them.
+
+    It is called once per distinct task rather than once per row, because a
+    task with forty calls should not cost forty store reads.
+
+    **It is not guarded.** A resolver that raises takes this down with it,
+    deliberately: this function is pure and cannot tell a store that is broken
+    from a store that is empty, and answering "nothing was spent" for a
+    registry it could not read would hand a caller a budget that looks
+    untouched. Failing closed is the caller's to do, where the store is.
+    """
+    by_task: dict[str, float] = defaultdict(float)
+    for row in rows:
+        if row.task_id:
+            by_task[row.task_id] += row.cost_usd
+    out: dict[str, float] = defaultdict(float)
+    for task_id, cost in by_task.items():
+        project = project_of(task_id)
+        if project:
+            out[project] += cost
+    return {project: round(cost, 6) for project, cost in out.items()}
 
 
 @dataclass(frozen=True)

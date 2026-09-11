@@ -8,6 +8,16 @@
 // The table was the only one on this panel and it read as a spreadsheet in a
 // room of state lines, so a source is a row now and its stages are the
 // sentence beside it.
+//
+// **A rejected record carries no button to overturn the rejection.**
+// `task_propose` is the one door onto tracked work, and it requires
+// `success_criteria`: an observable measure of done. A pruned draft never had
+// one, so any value put here would be this room's invention rather than the
+// record's own words. There is also no tool that restores a pruned record as
+// the item it would have been; `task_propose` only mints a new one with a new
+// id, which is a different claim than "no, actually do that one." Each
+// record's own `reason` is shown instead, which is the whole of what this
+// room can honestly offer toward "why was this turned away."
 
 import { useEffect } from 'react';
 import { Button } from '../../components/common/Button';
@@ -16,6 +26,7 @@ import { RowActions } from '../../components/common/Row';
 import type { PrunedResponse } from '../../lib/api';
 import { useAutonomyStore } from '../../stores/autonomy';
 import { Band, StateStrip, type StateLine } from '../../components/common/StateStrip';
+import { Hint } from '../../components/ui/Hint';
 import { clock } from '../../lib/time';
 
 // The route's own default (`GET /api/autonomy/pruned?window_hours=168`).
@@ -91,13 +102,21 @@ export function PrunedPaneView({
       value: String(count),
       actions: (
         <RowActions className="state-acts">
-          <Button
-            onClick={() => onMute(source, !muted)}
-            disabled={busy}
-            ariaLabel={`${muted ? 'Unmute' : 'Mute'} ${source}`}
+          <Hint
+            label={
+              muted
+                ? 'Lets this source send drafts again. Nothing it sent while muted comes back.'
+                : 'Stops this source sending anything else until you unmute it. What it already sent stands as it is.'
+            }
           >
-            {muted ? 'unmute' : 'mute'}
-          </Button>
+            <Button
+              onClick={() => onMute(source, !muted)}
+              disabled={busy}
+              ariaLabel={`${muted ? 'Unmute' : 'Mute'} ${source}`}
+            >
+              {muted ? 'unmute' : 'mute'}
+            </Button>
+          </Hint>
         </RowActions>
       ),
     };
@@ -107,6 +126,11 @@ export function PrunedPaneView({
 
   return (
     <div data-testid="autonomy-pruned-pane">
+      <p className="t-meta">
+        What the admission gate turned away before it became work, and which
+        sources keep sending things that get rejected.
+      </p>
+
       <div className="managed-head">
         <span className="t-meta">
           The last {DEFAULT_WINDOW_HOURS} hours, {pruned.records.length} in all
@@ -129,6 +153,7 @@ export function PrunedPaneView({
         <div className="autonomy-group">
           <Band label="The most recent" count={pruned.records.length} />
           <StateStrip
+            whole
             lines={recent.map((rec, i) => ({
               key: `${rec.ts}:${rec.source}:${i}`,
               state: 'idle' as const,
@@ -137,6 +162,11 @@ export function PrunedPaneView({
               said: rec.goal,
               when: clock(rec.ts),
               value: STAGE_LABEL[rec.stage] ?? rec.stage,
+              // Why the gate turned this one away, in its own words. The
+              // whole of what "inspect a rejected item" can mean here: the
+              // gate never kept anything else about it, and nothing turns
+              // this into the tracked item it never became.
+              more: rec.reason ? <p className="t-meta">{rec.reason}</p> : undefined,
             }))}
           />
         </div>

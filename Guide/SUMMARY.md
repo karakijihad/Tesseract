@@ -23,10 +23,13 @@
 - [Permissions](mechanisms/permissions.md)
 - [The wake word](mechanisms/wake-word.md)
 - [Memory and the vault](mechanisms/memory-and-vault.md)
+- [When a conversation gets long](mechanisms/long-conversations.md)
 - [Prompts](mechanisms/prompts.md)
 - [Workspace](mechanisms/workspace.md)
+- [Skills, and how one gets judged](mechanisms/skills-and-playbooks.md)
 - [Connecting a CLI](mechanisms/connecting-a-cli.md)
 - [Was it the app, or the computer?](mechanisms/was-it-the-app.md)
+- [Was it broken, or asked wrong?](mechanisms/broken-or-asked-wrong.md)
 - [Updates and your settings](mechanisms/updates.md)
 
 ## Reference

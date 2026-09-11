@@ -32,6 +32,8 @@ because guessing a body shape produces a 400 that reads like an outage.
 
 from __future__ import annotations
 
+from hashlib import sha256
+
 import asyncio
 import base64
 import logging
@@ -50,6 +52,7 @@ from tesseract.kernel.tools.base import (
     ToolContext,
     ToolResult,
 )
+from tesseract.kernel.tools.receipt import Receipt
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +119,8 @@ class ImageGenerateTool(Tool):
         "it doesn't display one."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "file"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     @property
     def name(self) -> str:
@@ -392,6 +397,11 @@ class ImageGenerateTool(Tool):
 
         return ToolResult(
             output=rec.url,
+            receipt=Receipt(
+                kind="file",
+                id="sha256:" + sha256(image_bytes).hexdigest(),
+                locator=rec.url,
+            ),
             metadata={
                 "role": inp.model_role,
                 "model": ref.model.model,

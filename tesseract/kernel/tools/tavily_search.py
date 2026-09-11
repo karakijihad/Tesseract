@@ -59,6 +59,8 @@ class TavilySearchTool(Tool):
         "already have specific URLs and need their full readable content."
     )
     depends_on: ClassVar[str] = "service:tavily"
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:

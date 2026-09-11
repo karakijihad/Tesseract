@@ -43,6 +43,7 @@ import { AtlasRoom } from './autonomy/AtlasRoom';
 import { ThrownAwayRoom } from './autonomy/ThrownAwayRoom';
 import { BlockedPane } from './autonomy/BlockedPane';
 import { ChannelsRoom } from './autonomy/ChannelsRoom';
+import { DayRoom } from './autonomy/DayRoom';
 import { DecisionLogPane } from './autonomy/DecisionLogPane';
 import { EntryCard } from './autonomy/EntryCard';
 import { AgentCard } from './autonomy/AgentCard';
@@ -75,9 +76,11 @@ export function AutonomyView(): React.ReactElement {
   const governor = useAutonomyStore((s) => s.governor);
   const recovery = useAutonomyStore((s) => s.recovery);
   const journal = useAutonomyStore((s) => s.journal);
+  const returnNote = useAutonomyStore((s) => s.returnNote);
   const health = useAutonomyStore((s) => s.health);
   const managed = useAutonomyStore((s) => s.managed);
   const channels = useAutonomyStore((s) => s.channels);
+  const day = useAutonomyStore((s) => s.day);
   const memory = useAutonomyStore((s) => s.memory);
   const atlas = useAutonomyStore((s) => s.atlas);
   const retention = useAutonomyStore((s) => s.retention);
@@ -114,6 +117,7 @@ export function AutonomyView(): React.ReactElement {
         managed: managed.data,
         pruned: prunedLedger,
         channels: channels.data,
+        day: day.data,
         memory: memory.data,
         atlas: atlas.data,
         retention: retention.data,
@@ -129,6 +133,7 @@ export function AutonomyView(): React.ReactElement {
       managed.data,
       prunedLedger,
       channels.data,
+      day.data,
       memory.data,
       atlas.data,
       retention.data,
@@ -195,6 +200,21 @@ export function AutonomyView(): React.ReactElement {
               beside={(lvl) =>
                 lvl.kind === 'entry' ? <MachineMap marked={lvl.id} /> : null
               }
+            />
+          ),
+        },
+        {
+          key: 'day',
+          label: 'Today',
+          said: said('day'), // the backend's sentence
+          mark: mark('day'),
+          render: () => (
+            <RoomShell
+              room="Today"
+              said={said('day')}
+              purpose={purpose('day')}
+              tail={tails.day.tail}
+              root={() => <DayRoom />}
             />
           ),
         },
@@ -344,6 +364,14 @@ export function AutonomyView(): React.ReactElement {
                   />
                 </>
               )}
+              level={(lvl) => {
+                if (lvl.kind === 'agenda') {
+                  const item = agenda.data.find((i) => i.id === lvl.id);
+                  return item ? <AgendaDetail item={item} /> : null;
+                }
+                if (lvl.kind === 'worker') return <WorkerDetail />;
+                return null;
+              }}
             />
           ),
         },
@@ -363,8 +391,19 @@ export function AutonomyView(): React.ReactElement {
                   rows={journal.data}
                   status={journal.status}
                   error={journal.error}
+                  note={returnNote.data}
+                  noteStatus={returnNote.status}
+                  noteError={returnNote.error}
                 />
               )}
+              level={(lvl) => {
+                if (lvl.kind === 'agenda') {
+                  const item = agenda.data.find((i) => i.id === lvl.id);
+                  return item ? <AgendaDetail item={item} /> : null;
+                }
+                if (lvl.kind === 'worker') return <WorkerDetail />;
+                return null;
+              }}
             />
           ),
         },

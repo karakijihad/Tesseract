@@ -39,6 +39,12 @@ from tesseract.kernel.state import ToolCall
 #: Ours, not the provider's: strip it before the request goes out.
 CACHE_BOUNDARY = "_cache_boundary"
 
+#: The keys `ToolRegistry.schemas_for_adapter` adds to say what a tool IS, and
+#: which every projection strips before the payload reaches a provider.
+#: `defer_loading` is the one exception: a deferring adapter puts it back,
+#: because there it is the provider's own vocabulary rather than ours.
+_PAYLOAD_KEYS = frozenset({"defer_loading", "_runtime_search"})
+
 
 class ChunkType(str, Enum):
     TEXT = "text"
@@ -166,6 +172,59 @@ class ModelAdapter(ABC):
     #: **Visibility only.** Deferring changes what is LOADED, never what is
     #: permitted — `permissions.yaml` decides authority either way.
     defers_tool_loading: ClassVar[bool] = False
+
+    def project_tools(
+        self, tools: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]] | None:
+        """Turn the runtime's one payload into what THIS provider receives.
+
+        `ToolRegistry.schemas_for_adapter` classifies every tool once per turn
+        and translates nothing. This is the translation, and it happens inside
+        `stream()` so it happens per REQUEST: a chain whose primary defers and
+        whose fallback cannot is two different wire payloads built from one
+        frozen classification, and neither entry can be handed the other's.
+
+        **Both halves live here, chosen by `defers_tool_loading`**, rather than
+        each adapter overriding for itself. An adapter that declared deferral
+        and forgot to override would have been handed the wrong projection in
+        silence, which is a worse failure than the one this replaced: it would
+        send `defer_loading` to a provider that has never heard of it, or the
+        whole registry to one that cannot defer. There is one implementation
+        and the flag is the only input.
+
+        A provider that cannot defer gets exactly the payload that existed
+        before any of this: the working set, our own `tool_search` so the
+        model can still reach what was dropped, and no private key left on
+        anything.
+
+        A provider that can gets the opposite: the deferred entries kept, so
+        it can match them server-side and append the schemas it needs inside
+        the same request, and our search tool dropped because it brings its
+        own. Two doors into one room is a choice the model should not be asked
+        to make.
+
+        Never a payload where everything defers. The API refuses one with
+        nothing loaded, and there would be nothing to search FROM, so the
+        flags come off and the whole registry travels as ordinary tools. That
+        is expensive and it is not a failed turn.
+        """
+        if not tools:
+            return tools
+        if not self.defers_tool_loading:
+            return [
+                {k: v for k, v in t.items() if k not in _PAYLOAD_KEYS}
+                for t in tools
+                if not t.get("defer_loading")
+            ]
+        kept = [
+            {k: v for k, v in t.items() if k != "_runtime_search"}
+            for t in tools
+            if not t.get("_runtime_search")
+        ]
+        if kept and all(t.get("defer_loading") for t in kept):
+            for t in kept:
+                t.pop("defer_loading", None)
+        return kept
 
     @abstractmethod
     async def stream(

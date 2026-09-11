@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from collections.abc import Collection
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -121,12 +122,19 @@ def rows(month: str) -> list[dict[str, Any]]:
     return out
 
 
-def done_since(watermark: "datetime | None") -> list[dict[str, Any]]:
-    """Every row that closed `done` after `watermark`, oldest first.
+def closed_since(
+    watermark: "datetime | None", *, statuses: "Collection[str] | None" = None
+) -> list[dict[str, Any]]:
+    """Every row that closed after `watermark`, oldest first.
 
     `None` means everything on disk, which is what makes a first pass read
     the whole record. A row whose `closed_at` will not parse is not new: a
     reader may not act on evidence it could not read.
+
+    `statuses` is every terminal status when omitted. A reader asking what
+    happened while nobody was watching wants the failures as much as the
+    successes, and filtering them out here would make "nothing went wrong"
+    and "nothing was recorded" the same answer.
     """
     from datetime import datetime as _dt
 
@@ -136,7 +144,7 @@ def done_since(watermark: "datetime | None") -> list[dict[str, Any]]:
         return []
     for path in sorted(root.glob("*.jsonl")):
         for row in rows(path.stem):
-            if row.get("status") != "done":
+            if statuses is not None and row.get("status") not in statuses:
                 continue
             try:
                 closed = _dt.fromisoformat(str(row.get("closed_at") or ""))
@@ -150,7 +158,13 @@ def done_since(watermark: "datetime | None") -> list[dict[str, Any]]:
     return [row for _, row in sorted(found, key=lambda pair: pair[0])]
 
 
+def done_since(watermark: "datetime | None") -> list[dict[str, Any]]:
+    """Every row that closed `done` after `watermark`, oldest first."""
+    return closed_since(watermark, statuses={"done"})
+
+
 __all__ = [
+    "closed_since",
     "done_since",
     "history_dir",
     "history_path",

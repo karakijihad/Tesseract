@@ -31,6 +31,15 @@ log = logging.getLogger(__name__)
 # record of now and not a history.
 FORGET_AFTER = timedelta(days=2)
 
+# How long a standing fault WITH a declared remedy stays quiet between
+# mentions. Beside `FORGET_AFTER` because the two are one setting really: what
+# this file is for is how often the operator hears about something that has
+# not changed. A day, because the complaint this stage exists to answer was a
+# channel repeating itself every hour, and because the thing being re-announced
+# is what the remedy has managed since yesterday, which is a day's worth of
+# news or none.
+REANNOUNCE_AFTER = timedelta(days=1)
+
 
 @dataclass(frozen=True)
 class Standing:
@@ -48,6 +57,13 @@ class Standing:
     # that the fault is loud. Cleared the moment someone takes it on, so a
     # fault dropped again is heard again.
     announced_unowned: bool = False
+    # When this fault was last put in front of the operator, including the tick
+    # it first appeared on. A fault with a declared remedy is announced again
+    # once `REANNOUNCE_AFTER` has passed; one without keeps the flag above,
+    # which says once and then never. Both fields, because they answer
+    # different questions and collapsing them would make a remedy's daily line
+    # depend on whether anyone owns the fault.
+    last_announced: datetime | None = None
     summary: str = ""
 
 
@@ -91,6 +107,10 @@ def load() -> dict[str, Standing]:
             recovered_at=_parse(entry.get("recovered_at")),
             announced_recovery=bool(entry.get("announced_recovery")),
             announced_unowned=bool(entry.get("announced_unowned")),
+            # Absent in a store written before remedies existed. `None` reads
+            # as never announced, so the first tick after an upgrade says the
+            # remedy line once and the clock starts from there.
+            last_announced=_parse(entry.get("last_announced")),
             summary=str(entry.get("summary") or ""),
         )
     return out
@@ -111,6 +131,9 @@ def save(entries: dict[str, Standing], *, now: datetime) -> Path:
             "recovered_at": entry.recovered_at.isoformat() if entry.recovered_at else None,
             "announced_recovery": entry.announced_recovery,
             "announced_unowned": entry.announced_unowned,
+            "last_announced": (
+                entry.last_announced.isoformat() if entry.last_announced else None
+            ),
             "summary": entry.summary,
         }
         for key, entry in keep.items()
@@ -131,4 +154,12 @@ def _parse(value) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-__all__ = ["FORGET_AFTER", "Standing", "key_for", "load", "save", "store_path"]
+__all__ = [
+    "FORGET_AFTER",
+    "REANNOUNCE_AFTER",
+    "Standing",
+    "key_for",
+    "load",
+    "save",
+    "store_path",
+]

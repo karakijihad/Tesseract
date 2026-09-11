@@ -3,6 +3,7 @@
 Canonical file-first memory with involuntary kernel hooks and voluntary tools.
 """
 
+from tesseract.memory.capture_policy import CapturePolicy, CaptureRule
 from tesseract.memory.consistency import ConsistencyChecker, ConsistencyReport
 from tesseract.memory.dreaming import DreamingEngine
 from tesseract.memory.embeddings import EmbeddingIndex
@@ -11,9 +12,10 @@ from tesseract.memory.index import MemoryIndex
 from tesseract.memory.retrieval import RetrievalPipeline, RetrievalResult
 from tesseract.memory.store import MemoryStore
 from tesseract.memory.types import MemoryFrontmatter, MemoryType, Stability
-from tesseract.memory.what_not_to_save import WhatNotToSave
 
 __all__ = [
+    "CapturePolicy",
+    "CaptureRule",
     "ConsistencyChecker",
     "ConsistencyReport",
     "DreamingEngine",
@@ -26,5 +28,4 @@ __all__ = [
     "RetrievalPipeline",
     "RetrievalResult",
     "Stability",
-    "WhatNotToSave",
 ]

@@ -1,0 +1,259 @@
+/* What the runtime did on a day.
+
+   Every value here is a token. The rows carry their SHAPE and nothing else:
+   `Row` owns the cursor, the focus ring and the activation contract, `Meter`
+   owns the bar, `Fact` owns a labelled figure, and the fields and buttons in
+   the control strip are the app's own. What is left for this file is the grid
+   each row lays out on, which is the one thing that genuinely differs between
+   a tool row and a turn row. */
+
+.day-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+}
+
+/* ── The controls ───────────────────────────────────────────────────────── */
+
+.day-panel__controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  flex-wrap: wrap;
+}
+
+/* Width only. The field's own look is `Input`'s, and a caller painting one is
+   the divergence that component exists to end. */
+.day-panel__date {
+  width: 9.5rem;
+}
+
+.day-panel__span {
+  margin-left: var(--space-4);
+}
+
+.day-panel__reach {
+  margin-left: auto;
+}
+
+/* ── The day in figures ─────────────────────────────────────────────────── */
+
+.day-panel__summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-24);
+  padding: var(--space-12) 0;
+  border-top: var(--stroke-1) solid var(--panel-divider);
+  border-bottom: var(--stroke-1) solid var(--panel-divider);
+}
+
+/* A figure is coloured only when it is worth reading. Zero stays in the
+   ordinary ink, so a panel where nothing went wrong reads as calm rather than
+   as a wall of green ticks, and the eye lands on the one number that moved. */
+.day-panel__figure--bad {
+  color: var(--bad);
+}
+
+.day-panel__figure--info {
+  color: var(--info);
+}
+
+.day-panel__figure--unverified {
+  color: var(--cyan);
+}
+
+/* ── The trouble band ───────────────────────────────────────────────────── */
+
+.day-panel__heading {
+  font-size: var(--t-caption-size);
+  font-weight: 500;
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin: 0 0 var(--space-6);
+}
+
+.day-panel__trouble {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* One line of machine text: a clock, a tool name, what happened, and the
+   runtime's own reason. Deliberately not a `Row`: nothing here opens, and a
+   line that cannot be activated must not look like it can. */
+.day-panel__line {
+  display: grid;
+  grid-template-columns: 3.5rem 10rem 9rem 1fr;
+  gap: var(--space-10);
+  align-items: baseline;
+  padding: var(--space-4) 0;
+}
+
+.day-panel__clock {
+  font-family: var(--font-mono);
+  font-size: var(--t-caption-size);
+}
+
+.day-panel__tool {
+  font-family: var(--font-mono);
+  font-size: var(--t-caption-size);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The outcome, in the panel's own words. A colour and a word together: the
+   colour is the glance and the word is what a person can repeat back, and a
+   colour alone is a reading somebody who cannot see it never gets. */
+.day-panel__word {
+  font-size: var(--t-caption-size);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.day-panel__word--bad {
+  color: var(--bad);
+}
+
+.day-panel__word--warn {
+  color: var(--warn);
+}
+
+.day-panel__word--info {
+  color: var(--info);
+}
+
+.day-panel__word--unverified {
+  color: var(--cyan);
+}
+
+.day-panel__word--ok {
+  color: var(--ok-muted);
+}
+
+/* The runtime's own sentence, which can be a captured stderr dump. It stays on
+   its line and the whole of it is in the title, because a panel that reflowed
+   around one long reason would be unreadable on the days that have several. */
+.day-panel__reason {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── The rows ───────────────────────────────────────────────────────────── */
+
+.day-panel__rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.day-panel__detail {
+  padding: var(--space-4) 0 var(--space-8) var(--space-24);
+  border-bottom: var(--stroke-1) solid var(--panel-divider);
+}
+
+.day-panel__task {
+  margin: var(--space-6) 0 0;
+}
+
+/* One tool's day. A bare line with a bottom rule, not a card: a roster is
+   twenty nine of these and twenty nine cards is a wall. */
+.day-tool {
+  display: grid;
+  grid-template-columns: 12rem 3rem 1fr 9rem;
+  gap: var(--space-12);
+  align-items: center;
+  padding: var(--space-8) var(--space-4);
+  border-bottom: var(--stroke-1) solid var(--panel-divider);
+}
+
+.day-tool__name {
+  font-family: var(--font-mono);
+  font-size: var(--t-caption-size);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.day-tool__count {
+  font-family: var(--font-mono);
+  font-size: var(--t-caption-size);
+  color: var(--text-secondary);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.day-tool__marks {
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* One turn. The same bare line, a different set of columns, which is exactly
+   the half a shared row shape cannot decide for a surface. */
+.day-turn {
+  display: grid;
+  grid-template-columns: 3.5rem 6rem 1fr 9rem;
+  gap: var(--space-12);
+  align-items: center;
+  padding: var(--space-8) var(--space-4);
+  border-bottom: var(--stroke-1) solid var(--panel-divider);
+}
+
+.day-turn__door {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.day-turn__tools {
+  display: flex;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  overflow: hidden;
+}
+
+/* A tool name inside a turn row. Not a `Chip`: a chip is something you click,
+   and these are a list of what ran. The name is the whole content, so it wears
+   the mono face the tool names wear everywhere else on this panel. */
+.day-turn__chip {
+  font-family: var(--font-mono);
+  font-size: var(--t-meta-size);
+  padding: var(--space-1) var(--space-6);
+  border-radius: var(--radius-xs);
+  background: var(--wash-sm);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  /* The reason is the first thing to go: it is the longest column and its
+     whole text is in the row's title, so nothing is lost that a hover or a
+     focus does not give back. */
+  .day-panel__line {
+    grid-template-columns: 3.5rem 9rem 1fr;
+  }
+
+  .day-panel__line .day-panel__reason {
+    display: none;
+  }
+
+  .day-tool {
+    grid-template-columns: 10rem 2.5rem 1fr;
+  }
+
+  .day-tool__marks {
+    display: none;
+  }
+
+  .day-turn {
+    grid-template-columns: 3.5rem 5rem 1fr;
+  }
+
+  .day-turn .day-panel__word {
+    display: none;
+  }
+}

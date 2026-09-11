@@ -21,8 +21,18 @@ restart-safe) and append a JSONL audit row to
 the ``PauseStore`` on boot + on every detector trigger so a pause set
 on tick N is honoured on tick N+1.
 
-Unpause is operator-only via REST; the governor never
-auto-clears a pause.
+**A pause lifts itself.** Each detector has a time in ``agenda.yaml`` and
+the governor clears an expired pause at the top of its own tick, logging
+``unpause`` with ``by: expiry``. The operator's REST lift stays as the early
+one. This was the other half of stopping to dig: a detector that parks a
+source and waits for a person turns a bad hour into a dead capability, and
+the ``operator_view`` pause sat for twenty days.
+
+**A source that comes straight back waits longer, and then asks.** The store
+remembers the last lift per source: a pause inside the time it just served
+doubles, to a cap, and the count that reaches ``advice_after`` files the
+card that says the decision is the operator's. Backing off for ever is how a
+loop nobody is told about becomes permanent.
 """
 
 from __future__ import annotations
@@ -73,10 +83,60 @@ REASON_LOOP_DETECTED = "loop_detected"
 REASON_COST_SPIRAL = "cost_spiral"
 REASON_TRUST_DEGRADED = "trust_degraded"
 REASON_OPERATOR_UNPAUSE = "operator_unpause"
+#: What the audit row says when the pause ran out rather than being lifted.
+REASON_EXPIRED = "pause_expired"
 
 DETECTOR_LOOP = "loop"
 DETECTOR_COST_SPIRAL = "cost_spiral"
 DETECTOR_TRUST_DEGRADATION = "trust_degradation"
+
+#: Who lifted a pause, in the audit row and in the broadcast. Two words, and
+#: they are not interchangeable: the operator deciding a source is fine again
+#: starts the count over, and the clock running out does not.
+BY_OPERATOR = "operator"
+BY_EXPIRY = "expiry"
+
+
+@dataclass(frozen=True)
+class PausePolicy:
+    """How long a pause lasts, and what a repeat costs.
+
+    Indexed out of `agenda.yaml` rather than defaulted, per the project rule
+    that config is the source of truth: a default here is a second answer to
+    how long a capability stays off, and the one that would be believed is
+    whichever was read last.
+
+    `None` from `base_for` means this detector's pause does not expire, which
+    is what every pause did before this existed and is the behaviour a
+    detector with no row keeps.
+    """
+
+    ttl_seconds: dict[str, float] = field(default_factory=dict)
+    backoff_multiplier: float = 1.0
+    max_ttl_seconds: float = 0.0
+    advice_after: int = 0
+
+    def base_for(self, detector: str) -> float | None:
+        seconds = self.ttl_seconds.get(detector)
+        return seconds if seconds and seconds > 0 else None
+
+    @classmethod
+    def from_governor_dict(cls, gov: dict[str, Any]) -> "PausePolicy":
+        pause = gov.get("pause")
+        if not pause:
+            # A config written before pauses expired. Nothing expires, which
+            # is the old behaviour exactly rather than a guessed timeout.
+            return cls()
+        hours = pause["ttl_hours"] or {}
+        return cls(
+            ttl_seconds={
+                str(detector): float(value) * 3600.0
+                for detector, value in hours.items()
+            },
+            backoff_multiplier=float(pause["backoff_multiplier"]),
+            max_ttl_seconds=float(pause["max_ttl_hours"]) * 3600.0,
+            advice_after=int(pause["advice_after"]),
+        )
 
 
 @dataclass(frozen=True)
@@ -86,6 +146,7 @@ class GovernorConfig:
     loop_window_hours: int = DEFAULT_LOOP_WINDOW_HOURS
     cost_threshold_multiplier: float = DEFAULT_COST_MULTIPLIER
     trust_consecutive_rejections: int = DEFAULT_TRUST_CONSECUTIVE
+    pause: PausePolicy = field(default_factory=PausePolicy)
 
     @classmethod
     def from_yaml_dict(cls, raw: dict[str, Any]) -> "GovernorConfig":
@@ -103,6 +164,7 @@ class GovernorConfig:
             trust_consecutive_rejections=int(
                 trust.get("consecutive_rejections", DEFAULT_TRUST_CONSECUTIVE)
             ),
+            pause=PausePolicy.from_governor_dict(gov),
         )
 
 
@@ -115,6 +177,17 @@ class SourcePause:
     detector: str
     reason: str
     evidence: dict[str, Any] = field(default_factory=dict)
+    #: When this pause lifts itself. `None` is a pause that waits for the
+    #: operator, which is every pause written before this field existed and
+    #: every detector `PausePolicy` has no row for.
+    expires_at: datetime | None = None
+    #: How many pauses this is in an unbroken run of them, counting this one.
+    #: 1 is a first pause, and a run is broken by the source behaving for
+    #: longer than its own last wait or by the operator lifting it.
+    consecutive: int = 1
+    #: When the run started, so the card filed at `advice_after` is one card
+    #: for one run rather than a new one per pause after the third.
+    chain_started_at: datetime | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -123,6 +196,11 @@ class SourcePause:
             "detector": self.detector,
             "reason": self.reason,
             "evidence": self.evidence,
+            "expires_at": self.expires_at.isoformat() if self.expires_at else None,
+            "consecutive": self.consecutive,
+            "chain_started_at": (
+                self.chain_started_at.isoformat() if self.chain_started_at else None
+            ),
         }
 
     @classmethod
@@ -131,19 +209,64 @@ class SourcePause:
             source = AgendaSource(raw["source"])
         except (KeyError, ValueError):
             return None
-        try:
-            paused_at = datetime.fromisoformat(str(raw["paused_at"]))
-        except (KeyError, ValueError):
+        paused_at = _read_time(raw.get("paused_at"))
+        if paused_at is None:
             return None
-        if paused_at.tzinfo is None:
-            paused_at = paused_at.replace(tzinfo=timezone.utc)
         return cls(
             source=source,
             paused_at=paused_at,
             detector=str(raw.get("detector", "")),
             reason=str(raw.get("reason", "")),
             evidence=raw.get("evidence") or {},
+            expires_at=_read_time(raw.get("expires_at")),
+            consecutive=int(raw.get("consecutive") or 1),
+            chain_started_at=_read_time(raw.get("chain_started_at")) or paused_at,
         )
+
+
+@dataclass(frozen=True)
+class RecentLift:
+    """What the store remembers about a source between pauses.
+
+    Only an EXPIRY writes one. An operator lifting a pause is a decision that
+    the source is fine, so it clears the run rather than counting against it:
+    the backoff is for a source the runtime keeps having to park on its own.
+    """
+
+    lifted_at: datetime
+    consecutive: int
+    ttl_seconds: float
+    chain_started_at: datetime
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "lifted_at": self.lifted_at.isoformat(),
+            "consecutive": self.consecutive,
+            "ttl_seconds": self.ttl_seconds,
+            "chain_started_at": self.chain_started_at.isoformat(),
+        }
+
+    @classmethod
+    def from_payload(cls, raw: dict[str, Any]) -> "RecentLift | None":
+        lifted_at = _read_time(raw.get("lifted_at"))
+        if lifted_at is None:
+            return None
+        return cls(
+            lifted_at=lifted_at,
+            consecutive=int(raw.get("consecutive") or 1),
+            ttl_seconds=float(raw.get("ttl_seconds") or 0.0),
+            chain_started_at=_read_time(raw.get("chain_started_at")) or lifted_at,
+        )
+
+
+def _read_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -188,15 +311,28 @@ class PauseStore:
         self,
         *,
         broadcast_hook: Callable[[str, dict[str, Any]], None] | None = None,
+        policy: "PausePolicy | None" = None,
     ) -> None:
         self._cache: dict[AgendaSource, SourcePause] | None = None
+        self._recent: dict[AgendaSource, RecentLift] = {}
         self._broadcast_hook = broadcast_hook
+        # Settable after construction because `routes/agenda::register` builds
+        # a store before the config file has been read. No policy means no
+        # pause expires, which is the behaviour every pause had before this.
+        self._policy = policy or PausePolicy()
 
     def set_broadcast_hook(
         self,
         hook: Callable[[str, dict[str, Any]], None] | None,
     ) -> None:
         self._broadcast_hook = hook
+
+    def set_policy(self, policy: "PausePolicy") -> None:
+        self._policy = policy
+
+    @property
+    def policy(self) -> "PausePolicy":
+        return self._policy
 
     def _fire_broadcast(self, event_type: str, payload: dict[str, Any]) -> None:
         if self._broadcast_hook is None:
@@ -212,6 +348,7 @@ class PauseStore:
         if self._cache is not None:
             return self._cache
         out: dict[AgendaSource, SourcePause] = {}
+        recent: dict[AgendaSource, RecentLift] = {}
         path = source_pauses_path()
         if path.exists():
             try:
@@ -225,12 +362,33 @@ class PauseStore:
                 pause = SourcePause.from_payload(entry)
                 if pause is not None:
                     out[pause.source] = pause
+            for name, entry in (raw.get("recent") or {}).items():
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    source = AgendaSource(name)
+                except ValueError:
+                    continue
+                lift = RecentLift.from_payload(entry)
+                if lift is not None:
+                    recent[source] = lift
         self._cache = out
+        self._recent = recent
         return out
 
     def _persist(self) -> None:
         pauses = self._load()
-        payload = {"pauses": [p.to_payload() for p in pauses.values()]}
+        payload = {
+            "pauses": [p.to_payload() for p in pauses.values()],
+            # What each source did last, so a run of pauses survives the pause
+            # itself being gone. Written beside them rather than in a second
+            # file: they are one fact about a source and two files would need
+            # a rule about which of them is right.
+            "recent": {
+                source.value: lift.to_payload()
+                for source, lift in self._recent.items()
+            },
+        }
         _atomic_write_json(source_pauses_path(), payload)
 
     def reload(self) -> dict[AgendaSource, SourcePause]:
@@ -248,6 +406,20 @@ class PauseStore:
     def get(self, source: AgendaSource) -> SourcePause | None:
         return self._load().get(source)
 
+    def lifted_at(self, source: AgendaSource) -> datetime | None:
+        """When this source's pause last ran out, or `None`.
+
+        The detectors need it. A pause does not archive, cancel or age the
+        items that caused it: `kernel.pause_source` only stops the source being
+        dispatched, so the same group is still inside `loop_window_hours` when
+        the pause lifts, and a detector that counted the whole window would
+        re-pause on the very tick that lifted it. What each detector is for is
+        what the source has done SINCE, and this is where that line is.
+        """
+        self._load()
+        lift = self._recent.get(source)
+        return lift.lifted_at if lift is not None else None
+
     def add(
         self,
         source: AgendaSource,
@@ -262,14 +434,14 @@ class PauseStore:
         pauses = self._load()
         if source in pauses:
             return None
-        pause = SourcePause(
-            source=source,
-            paused_at=(now or datetime.now(timezone.utc)),
-            detector=detector,
-            reason=reason,
-            evidence=evidence or {},
+        at = now or datetime.now(timezone.utc)
+        pause = self._with_expiry(
+            source, detector, at, reason=reason, evidence=evidence or {},
         )
         pauses[source] = pause
+        # The run is carried on the pause now, so the memory of the lift that
+        # started it has been spent.
+        self._recent.pop(source, None)
         self._persist()
         _append_log({
             "event": "pause",
@@ -278,6 +450,8 @@ class PauseStore:
             "detector": detector,
             "reason": reason,
             "evidence": evidence or {},
+            "expires_at": pause.expires_at.isoformat() if pause.expires_at else None,
+            "consecutive": pause.consecutive,
         })
         self._fire_broadcast(
             "governor_pause_added",
@@ -286,9 +460,102 @@ class PauseStore:
                 "detector": detector,
                 "reason": reason,
                 "paused_at": pause.paused_at.isoformat(),
+                "expires_at": pause.expires_at.isoformat() if pause.expires_at else None,
+                "consecutive": pause.consecutive,
             },
         )
         return pause
+
+    def _with_expiry(
+        self,
+        source: AgendaSource,
+        detector: str,
+        at: datetime,
+        *,
+        reason: str,
+        evidence: dict[str, Any],
+    ) -> SourcePause:
+        """This pause's clock, and where it sits in a run of them.
+
+        A source paused again inside the wait it just served is one the lift
+        did not fix, so the next wait doubles to the cap. One that behaved for
+        longer than that starts over: the backoff is for a source that keeps
+        coming back, not a record of everything it has ever done.
+        """
+        base = self._policy.base_for(detector)
+        if base is None:
+            return SourcePause(
+                source=source, paused_at=at, detector=detector, reason=reason,
+                evidence=evidence, chain_started_at=at,
+            )
+        lift = self._recent.get(source)
+        seconds, consecutive, chain = base, 1, at
+        if lift is not None and (at - lift.lifted_at).total_seconds() < lift.ttl_seconds:
+            consecutive = lift.consecutive + 1
+            chain = lift.chain_started_at
+            seconds = min(
+                lift.ttl_seconds * self._policy.backoff_multiplier,
+                self._policy.max_ttl_seconds or lift.ttl_seconds,
+            )
+        return SourcePause(
+            source=source,
+            paused_at=at,
+            detector=detector,
+            reason=reason,
+            evidence=evidence,
+            expires_at=at + timedelta(seconds=seconds),
+            consecutive=consecutive,
+            chain_started_at=chain,
+        )
+
+    def expire_due(self, *, now: datetime | None = None) -> list[SourcePause]:
+        """Lift every pause whose time is up, and remember that it happened.
+
+        Returns what was lifted so the caller can reconcile its own cache: the
+        kernel answers `is_source_paused` from memory between ticks, and a
+        pause cleared only on disk would leave the source parked until the next
+        backend boot.
+        """
+        at = now or datetime.now(timezone.utc)
+        pauses = self._load()
+        due = [
+            pause for pause in pauses.values()
+            if pause.expires_at is not None and pause.expires_at <= at
+        ]
+        for pause in due:
+            pauses.pop(pause.source, None)
+            self._recent[pause.source] = RecentLift(
+                lifted_at=at,
+                consecutive=pause.consecutive,
+                ttl_seconds=max(
+                    (pause.expires_at - pause.paused_at).total_seconds(), 0.0
+                ) if pause.expires_at else 0.0,
+                chain_started_at=pause.chain_started_at or pause.paused_at,
+            )
+        if not due:
+            return []
+        self._persist()
+        for pause in due:
+            _append_log({
+                "event": "unpause",
+                "ts": at.isoformat(),
+                "source": pause.source.value,
+                "by": BY_EXPIRY,
+                "reason": REASON_EXPIRED,
+                "paused_for_seconds": round(
+                    (at - pause.paused_at).total_seconds(), 1
+                ),
+                "consecutive": pause.consecutive,
+            })
+            self._fire_broadcast(
+                "governor_pause_removed",
+                {
+                    "source": pause.source.value,
+                    "by": BY_EXPIRY,
+                    "reason": REASON_EXPIRED,
+                },
+            )
+        return due
 
     def remove(
         self,
@@ -304,6 +571,11 @@ class PauseStore:
         pause = pauses.pop(source, None)
         if pause is None:
             return None
+        # A hand on the control is a decision that this source is fine, so the
+        # run of pauses ends here. The backoff is for a source the runtime
+        # keeps having to park by itself, and counting an operator's lift
+        # against it would make their own judgement the thing that escalates.
+        self._recent.pop(source, None)
         self._persist()
         _append_log({
             "event": "unpause",
@@ -331,6 +603,13 @@ class GovernorTickResult:
     pauses_added: list[SourcePause] = field(default_factory=list)
     workers_cancelled: list[str] = field(default_factory=list)
     items_blocked: list[str] = field(default_factory=list)
+    #: Pauses this tick lifted because their time was up. Beside the ones it
+    #: added, because a tick that only ever reported new pauses could not show
+    #: the operator that anything ever comes back.
+    pauses_expired: list[SourcePause] = field(default_factory=list)
+    #: Sources whose run of pauses reached `advice_after`, as the agenda ids
+    #: of the cards filed for them.
+    advice_cards: list[str] = field(default_factory=list)
 
 
 class Governor:
@@ -347,6 +626,7 @@ class Governor:
         config: GovernorConfig | None = None,
         notify_fn: NotifyFn | None = None,
         kernel_pause_hook: Callable[[AgendaSource, str], None] | None = None,
+        kernel_resume_hook: Callable[[AgendaSource], None] | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._agenda = agenda_store
@@ -354,6 +634,11 @@ class Governor:
         self._config = config or GovernorConfig()
         self._notify = notify_fn
         self._kernel_pause_hook = kernel_pause_hook
+        # Its opposite, and it has to exist. The kernel answers
+        # `is_source_paused` from memory between ticks, so a pause lifted only
+        # on disk leaves the source parked until the next backend boot, which
+        # is the bug the REST route already works around by hand.
+        self._kernel_resume_hook = kernel_resume_hook
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._loop_task: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
@@ -458,6 +743,19 @@ class Governor:
         calls it on cadence. Returns the new pauses + side-effects so the
         operator-facing dashboard can stream the activity."""
         result = GovernorTickResult(at=self._clock())
+        # First, because a pause that has served its time must not stop this
+        # tick's detectors from looking at the source again. Nothing here
+        # spends or blocks: it is a file read and, on the rare tick that has
+        # one to lift, a write.
+        for lifted in self._lift_expired(result.at):
+            result.pauses_expired.append(lifted)
+            if self._kernel_resume_hook is not None:
+                try:
+                    self._kernel_resume_hook(lifted.source)
+                except Exception:
+                    log.exception(
+                        "governor: kernel_resume_hook raised for %s", lifted.source
+                    )
         # Both collectors read and parse every matching agenda file, which
         # is CPU and blocking I/O on a cadence — on the loop it showed up as
         # multi-second lag spikes while the operator was idle. Neither
@@ -500,6 +798,32 @@ class Governor:
 
     # -- Loop detector ----------------------------------------------
 
+    def _after_last_lift(self, items: list[AgendaItem]) -> list[AgendaItem]:
+        """Only what a source has done since its own pause last ran out.
+
+        **A pause does not clear the evidence that caused it.**
+        `kernel.pause_source` stops the source being dispatched and leaves its
+        items active, so the group that tripped the detector is still whole
+        inside `loop_window_hours` when the pause expires. Without this filter
+        the tick that LIFTS a pause re-pauses on the very same pass, off items
+        the source produced before it was ever stopped: `run_once` lifts first
+        so the source can be looked at again, and `_detect_loops` then looked
+        at the same six-hour-old evidence. The backoff read that as the source
+        coming straight back and climbed to the advice card while the source
+        had done nothing at all.
+
+        A source with no recorded lift is unfiltered, which is every source
+        that has never been paused and every one the OPERATOR lifted: their
+        hand on the control ends the run, so the next count starts clean.
+        """
+        out: list[AgendaItem] = []
+        for item in items:
+            lift = self._pauses.lifted_at(item.source)
+            if lift is not None and _stamp(item) <= lift:
+                continue
+            out.append(item)
+        return out
+
     def _detect_loops(self, items: list[AgendaItem]) -> list[SourcePause]:
         """Group active items by ``(source, dedupe_key)``; any group at
         or above ``loop_n`` triggers a pause for that source."""
@@ -507,7 +831,7 @@ class Governor:
         if n <= 1:
             return []
         groups: dict[tuple[AgendaSource, str], list[str]] = {}
-        for item in items:
+        for item in self._after_last_lift(items):
             key = (item.source, dedupe_key(item.goal, item.source))
             groups.setdefault(key, []).append(item.id)
 
@@ -643,7 +967,12 @@ class Governor:
         if n <= 0:
             return []
         by_source: dict[AgendaSource, list[AgendaItem]] = {}
-        for item in items:
+        # Since the lift, for the reason `_after_last_lift` gives: the
+        # rejections that paused a source are still in the window when its
+        # pause expires. This detector's ttl equals its window today, so the
+        # overlap is a boundary rather than a certainty, but one rule for both
+        # detectors is worth more than a second reading of the same hazard.
+        for item in self._after_last_lift(items):
             if not _passed_through_awaiting_operator(item):
                 continue
             by_source.setdefault(item.source, []).append(item)
@@ -689,6 +1018,9 @@ class Governor:
         if applied is None:
             return
         result.pauses_added.append(applied)
+        card = self._ask_if_it_keeps_coming_back(applied)
+        if card:
+            result.advice_cards.append(card)
         if self._kernel_pause_hook is not None:
             try:
                 self._kernel_pause_hook(applied.source, applied.reason)
@@ -701,6 +1033,56 @@ class Governor:
             )
             self._notify_tasks.add(notify_task)
             notify_task.add_done_callback(self._notify_tasks.discard)
+
+    def _lift_expired(self, now: datetime) -> list[SourcePause]:
+        """Every pause whose time has run out, cleared. Never raises: a store
+        that cannot be read must not stop the detectors from running."""
+        try:
+            return self._pauses.expire_due(now=now)
+        except Exception:  # noqa: BLE001
+            log.exception("governor: could not lift expired pauses")
+            return []
+
+    def _ask_if_it_keeps_coming_back(self, pause: SourcePause) -> str:
+        """File the card when a source has been parked `advice_after` times in
+        a row, and return its id.
+
+        The backoff alone would keep doubling in silence, which is a capability
+        going off for three days with nobody told. The count is what turns a
+        run of pauses into a decision, and the decision is the operator's:
+        whether this source is worth having at all is not a judgement the
+        runtime makes about itself.
+
+        Never raises. The pause is already written when this runs, so a
+        paperwork failure loses the card and not the safeguard.
+        """
+        after = self._pauses.policy.advice_after
+        if after < 1 or pause.consecutive < after:
+            return ""
+        try:
+            from tesseract.orchestrator.healing import stop_rule
+
+            since = pause.chain_started_at or pause.paused_at
+            stop = stop_rule.advice_owed(
+                kind="source_paused",
+                subject=pause.source.value,
+                said=(
+                    f"{pause.source.value} has been paused {pause.consecutive} "
+                    f"times in a row since "
+                    f"{since.isoformat(timespec='minutes')}, most recently for "
+                    f"{pause.reason or pause.detector}. Each pause lifted "
+                    f"itself and the source came straight back, so waiting "
+                    f"longer is not going to settle it. What is worth deciding "
+                    f"is whether this source should keep proposing work"
+                ),
+            )
+            item = stop_rule.file_card(stop, since=since, now=pause.paused_at)
+            return getattr(item, "id", "")
+        except Exception:  # noqa: BLE001
+            log.exception(
+                "governor: could not file the advice card for %s", pause.source.value
+            )
+            return ""
 
     async def _safe_notify(self, pause: SourcePause) -> None:
         try:
@@ -755,11 +1137,16 @@ class Governor:
         return out
 
 
-def _in_window(item: AgendaItem, cutoff: datetime) -> bool:
+def _stamp(item: AgendaItem) -> datetime:
+    """When this item last moved, in UTC. One reading, because the window
+    filter and the since-the-lift filter must agree about what an item's
+    moment IS."""
     ts = item.updated_at if item.updated_at else item.created_at
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    return ts >= cutoff
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
+def _in_window(item: AgendaItem, cutoff: datetime) -> bool:
+    return _stamp(item) >= cutoff
 
 
 def _passed_through_awaiting_operator(item: AgendaItem) -> bool:

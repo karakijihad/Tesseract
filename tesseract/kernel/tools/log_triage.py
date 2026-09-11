@@ -132,6 +132,8 @@ class LogTriageTool(Tool):
     )
     not_when: ClassVar[str] = "Use `grep` when you already know the exact string to find."
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:
@@ -159,10 +161,12 @@ class LogTriageTool(Tool):
         try:
             path = anchor_read_path(inp.path, context.workspace_root)
         except ReadPathRefused as exc:
-            return ToolResult(output=str(exc), is_error=True)
+            return ToolResult(output=str(exc), is_error=True, caller_error=True)
         if not path.exists():
             return ToolResult(
-                output=not_found_message("Log", inp.path, path), is_error=True
+                output=not_found_message("Log", inp.path, path),
+                is_error=True,
+                caller_error=True,
             )
         if path.is_dir():
             return ToolResult(

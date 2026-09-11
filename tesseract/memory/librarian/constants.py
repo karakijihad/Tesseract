@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tesseract.memory.capture_policy import trivial_body_floor
 from tesseract.memory.types import MemoryType
 
 MEMORY_INDEX_FILE = "MEMORY.md"
@@ -42,9 +43,13 @@ DIARY ENTRIES (most recent first):
 {diary}
 """
 # Any daily section shorter than this is treated as a fragment and skipped.
-# WhatNotToSave's `_TRIVIAL_BODY_MIN_CHARS` is 80; the librarian pre-filter
-# matches so the skip gets counted locally before the store.write path.
-_SECTION_MIN_CHARS = 80
+# The floor is the capture policy's `trivial_body` rule, ASKED rather than
+# restated or bound: the librarian filters early so the skip gets counted
+# locally, and two copies of one number is how the local count starts
+# disagreeing with what the store actually admits. A module-level assignment
+# was the second version of that same defect, since it froze the shipped
+# number at import and never saw the operator's.
+section_min_chars = trivial_body_floor
 
 # Section-title tags that are runtime bookkeeping, not durable memory.
 # The librarian refuses to promote these — they belong to a log stream, not

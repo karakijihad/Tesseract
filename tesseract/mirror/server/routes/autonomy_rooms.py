@@ -36,6 +36,7 @@ from tesseract.mirror.server.routes._isotime import parse as _parse_iso
 from tesseract.mirror.server.cors import origin_is_allowed, resolve_allowed_origins
 from tesseract.mirror.server.routes import autonomy_atlas as atlas_route
 from tesseract.mirror.server.routes import autonomy_channels as channels_route
+from tesseract.mirror.server.routes import autonomy_day as day_route
 from tesseract.mirror.server.routes import autonomy_health as health_route
 from tesseract.mirror.server.routes import autonomy_managed as managed_route
 from tesseract.mirror.server.routes import autonomy_memory as memory_route
@@ -96,6 +97,7 @@ QUOTE_CHARS = 200
 # selects on and what the line cache is keyed under.
 ROOM_KEYS = (
     "overview",
+    "day",
     "blocked",
     "health",
     "managed",
@@ -124,6 +126,10 @@ ROOM_KEYS = (
 ROOM_PURPOSE: dict[str, str] = {
     "overview": (
         "What wants you now, what is running, and what ran while you were away."
+    ),
+    "day": (
+        "What it decided to work on this morning, what it has carried forward "
+        "since, and what that has cost on each project."
     ),
     "blocked": (
         "Everything that stopped and is waiting on you to decide, and every "
@@ -563,8 +569,151 @@ def outcome_rows(items: list[Any], now: datetime) -> list[dict[str, Any]]:
     return out
 
 
+#: What each kind of note is, in the reader's words. Keyed by
+#: `journal.JOURNAL_EVENT_TYPES`; a kind missing here names nothing rather
+#: than putting an internal word in front of the operator.
+_JOURNAL_KIND: dict[str, str] = {
+    "approval": "an approval",
+    "dispatch": "work sent out to be done",
+    "outcome": "something that came back",
+    "advice_only": "advice with nothing to do",
+    "follow_up_draft": "a follow-up drafted",
+}
+
+
+def _newest_note(row: dict[str, Any]) -> str:
+    """The newest note as one fact, or `""` for a row that cannot say what it is.
+
+    The kind and what came of it, never the note's own text, for the reason
+    `channel_facts` gives: these facts are what a model writes the line from.
+    A reader who wants the words asks again with `detail`.
+    """
+    kind = str(row.get("event_type") or "")
+    if kind != "observer_nudge":
+        described = _JOURNAL_KIND.get(kind, "")
+        return f"the last one was {described}" if described else ""
+    wanted = str(row.get("recommendation") or "")
+    if not wanted:
+        return ""
+    answered = row.get("answered")
+    if answered is None:
+        # Read and refused. The row worth having, per this phase: a
+        # recommendation nobody acts on is either wrong or unread.
+        came_of_it = "nothing followed it"
+    elif row.get("followed"):
+        came_of_it = "it was taken"
+    else:
+        came_of_it = f"{answered} happened instead"
+    # `wanted` verbatim. The two answers a boundary has are stated in one
+    # place in this tree and restating them here in other words would be a
+    # second statement of them.
+    return f"the last one was a recommendation to {wanted}, and {came_of_it}"
+
+
 def journal_facts(rows: list[dict[str, Any]]) -> list[str]:
-    return [_plural(len(rows), "note", "notes")] if rows else []
+    """How many decisions were made without the operator, and what the last
+    one was.
+
+    The count alone was the whole room, so "what did the observer flag" could
+    not be answered from any surface: the rows holding it are one `detail`
+    read away and nobody asks when the first answer sounds like bookkeeping.
+    No figure in the added fact, so the faithfulness check still holds.
+    """
+    if not rows:
+        return []
+    facts = [_plural(len(rows), "note", "notes")]
+    newest = _newest_note(rows[0])
+    if newest:
+        facts.append(newest)
+    return facts
+
+
+def day_facts(
+    runs: list[dict[str, Any]],
+    steps: dict[str, Any],
+    money: dict[str, Any],
+) -> list[str]:
+    """What the day amounts to, counted rather than described.
+
+    **A day nobody could read is not a quiet day.** Both producers say whether
+    they answered, and when either did not this leads with that: an operator
+    asking why nothing ran needs the reason before the numbers, and a zero in
+    front of it reads as an answer.
+
+    A day where the rows have not fired yet says so too. The morning is at nine
+    and this panel is open before nine most mornings, so "nothing yet" is the
+    ordinary state and has to be a sentence rather than an absence.
+    """
+    if not steps.get("read", True):
+        return ["what it has been doing could not be read"]
+    if not money.get("read", True):
+        return ["what it has spent today could not be read"]
+    if not runs:
+        return ["it has not started its day yet"]
+
+    facts = [_plural(len(runs), "time it has woken", "times it has woken")]
+    proposed, closed = len(steps.get("proposed") or ()), len(steps.get("closed") or ())
+    working = len(steps.get("working") or ())
+    if proposed:
+        facts.append(_plural(proposed, "step proposed", "steps proposed"))
+    if working:
+        facts.append(_plural(working, "step in hand", "steps in hand"))
+    if closed:
+        facts.append(_plural(closed, "step closed", "steps closed"))
+    spent = sum(row["spent_usd"] for row in money.get("projects") or ())
+    if spent:
+        facts.append(f"${spent:.2f} spent")
+    refused = [r for r in runs if r["outcome"] == "refused"]
+    if refused:
+        facts.append(
+            _plural(len(refused), "wake refused", "wakes refused")
+        )
+    return facts
+
+
+def day_rows(
+    runs: list[dict[str, Any]],
+    steps: dict[str, Any],
+    money: dict[str, Any],
+) -> dict[str, Any]:
+    """The room's contents: every wake in order, the steps, and the money.
+
+    Wakes carry the row's OWN sentence rather than a word this file chooses.
+    `MorningJob` and `WorkdayJob` each write one for every way they stop, and
+    re-describing them here would be a second account of the same run.
+    """
+    return {
+        "wakes": [
+            {
+                "row": run["row"],
+                "at": run["at"].isoformat(),
+                "outcome": run["outcome"],
+                "said": run["said"],
+            }
+            for run in runs
+        ],
+        "steps": {
+            "proposed": [
+                {"id": i.id, "goal": i.goal, "project": i.project_id}
+                for i in steps.get("proposed") or ()
+            ],
+            "working": [
+                {"id": i.id, "goal": i.goal, "project": i.project_id}
+                for i in steps.get("working") or ()
+            ],
+            "closed": [
+                {
+                    "goal": row.get("goal"),
+                    "project": row.get("project_id"),
+                    "status": row.get("status"),
+                    "verifiedBy": row.get("verification_by") or "nobody",
+                }
+                for row in steps.get("closed") or ()
+            ],
+            "read": steps.get("read", True),
+        },
+        "money": money,
+    }
 
 
 def pruned_facts(counts: dict[str, dict[str, int]]) -> list[str]:
@@ -742,6 +891,9 @@ async def read_rooms(app: web.Application, now: datetime) -> PanelRead:
         drawing,
         thrown,
         plays,
+        wakes,
+        day_steps,
+        day_money,
     ) = await asyncio.gather(
         asyncio.to_thread(store.ranked),
         asyncio.to_thread(list_active_records),
@@ -762,6 +914,9 @@ async def read_rooms(app: web.Application, now: datetime) -> PanelRead:
         asyncio.to_thread(atlas_route.last_pass),
         asyncio.to_thread(retention_route.bands),
         asyncio.to_thread(managed_route.playbooks, app),
+        asyncio.to_thread(day_route.runs_today),
+        asyncio.to_thread(day_route.steps_today),
+        asyncio.to_thread(day_route.money_today),
         return_exceptions=True,
     )
 
@@ -787,6 +942,14 @@ async def read_rooms(app: web.Application, now: datetime) -> PanelRead:
     drawing, _drawing_said = _band(drawing, ([], ""))
     thrown = _band(thrown, {"ages": [], "kept": [], "undecided": [], "lastSweepSaid": ""})
     plays = _band(plays, [])
+    # A producer that raised is a day nobody could read, which `day_facts`
+    # says in words. The fallbacks carry that through rather than reporting
+    # an empty day, which is the distinction this room exists to keep.
+    wakes = _band(wakes, [])
+    day_steps = _band(
+        day_steps, {"proposed": [], "working": [], "closed": [], "read": False}
+    )
+    day_money = _band(day_money, {"spent": None, "projects": [], "read": False})
 
     # Every department, not the sweep's alone. The rail's line and the Health
     # room's own rows have to be one reading: the room draws recovery, the
@@ -809,6 +972,7 @@ async def read_rooms(app: web.Application, now: datetime) -> PanelRead:
 
     facts = {
         "overview": overview_facts(waiting, running, away, aged),
+        "day": day_facts(wakes, day_steps, day_money),
         "blocked": blocked_facts(items, pauses),
         "health": health_facts(departments, swept),
         "managed": managed_facts(rows, roster, plays),
@@ -827,6 +991,7 @@ async def read_rooms(app: web.Application, now: datetime) -> PanelRead:
             "ranWhileAway": away,
             "aged": aged,
         },
+        "day": day_rows(wakes, day_steps, day_money),
         "blocked": {
             "held": held,
             "paused": overview_route.paused_rows(pauses, kernel),
@@ -909,6 +1074,8 @@ __all__ = [
     "RECENT_HOURS",
     "atlas_facts",
     "ROOM_KEYS",
+    "day_facts",
+    "day_rows",
     "ROOM_PURPOSE",
     "blocked_facts",
     "channel_facts",

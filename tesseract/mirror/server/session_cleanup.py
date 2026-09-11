@@ -19,6 +19,12 @@ def cleanup_session(app: web.Application, session: ServerSession) -> None:
     # watch.ignored + globals.css @source). Info-level so a stuck-on-restart
     # pattern is reconstructible from the log without spamming WARNING for
     # normal disconnects.
+    # FIRST, and before anything is cancelled. A cancelled turn runs its own
+    # tail, and that tail drains the operator's queued follow-ups and starts
+    # the next turn. That is right after a stop, where the session survives;
+    # it is wrong here, where the session is about to be dropped from every
+    # registry. `_run_turn` reads this to tell the two apart.
+    session.torn_down = True
     running = [t for t in session.current_turn_tasks.values() if t is not None and not t.done()]
     if running:
         log.info(

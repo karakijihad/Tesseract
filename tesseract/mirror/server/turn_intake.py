@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 from aiohttp import web
 
+from tesseract.lib import last_seen
 from tesseract.mirror.server.envelope import (
     make_envelope,
     make_queue_overflow,
@@ -23,6 +24,7 @@ from tesseract.mirror.server.envelope import (
 )
 from tesseract.mirror.server.session import ServerSession, send_envelope
 from tesseract.mirror.server.tts import _cancel_tts_output
+from tesseract.mirror.server.stop import stop_session
 from tesseract.mirror.server.uploads import _validated_attachments
 
 log = logging.getLogger(__name__)
@@ -66,6 +68,12 @@ async def _start_turn(app: web.Application, session: ServerSession, data: dict) 
             {"message": f"text exceeds {MAX_USER_TEXT_CHARS} chars"},
         ))
         return
+    # The operator is here. Recorded on arrival rather than at dispatch, so a
+    # message that queues behind a running turn still counts as the moment
+    # they spoke; the drain re-enters this function and moves the mark forward
+    # by the length of the turn it waited on, which is a window they were
+    # present for anyway.
+    last_seen.record()
     if session.current_turn_task and not session.current_turn_task.done():
         # A follow-up arriving mid-turn is a NORMAL turn, queued FIFO behind
         # the active one, not a mid-turn inject.
@@ -189,34 +197,17 @@ async def handle_steer(app: web.Application, session: ServerSession, data: dict)
 
 
 async def _cancel_turn(app: web.Application, session: ServerSession) -> None:
+    """The Stop button. Breaks the loop for the whole session.
+
+    Scope used to be the focused chat's turn alone, on the argument that
+    stopping the chat panel was not a signal to abandon an open workspace
+    thread. The operator's ruling (2026-09-07) replaced it: stop is one act
+    and it means the session's turns have ended, the way Escape does in a
+    coding agent. The implementation is shared with `/stop` on every surface,
+    in `stop.py`, so there is exactly one answer to what stop does.
+    """
     _cancel_tts_output(session)
-    # Audit-3 #2/#4 — explicit cancel (operator stop button, voice
-    # speech-start barge-in) drops the ENTIRE queued backlog too, not just
-    # one entry, so a cancel clears all of them. The operator's live intent is
-    # whatever comes next (the new voice utterance, or nothing); draining
-    # stale queued turns after a cancel would surprise the operator with
-    # replies they no longer wanted. Popping `chat_queues[active_chat_id]`
-    # drops the whole deque. The same contract extends to mid-turn
-    # injected messages (steer) " + D + " they share the "queued during active
-    # turn" semantics.
-    session.chat_queues.pop(session.active_chat_id, None)
-    session.chat_session.pending_injected_messages = []
-    # Cancel ONLY affects the chat turn. Workspace synthetic turns
-    # (in `synthetic_turn_tasks`) and their queued payloads live on
-    # independent threads — the operator hitting Stop on the chat panel
-    # is not a signal to abandon every open workspace comment thread.
-    # If the operator wants to cancel a specific thread's reply, they
-    # dismiss the card directly. Cross-thread workspace queue stays
-    # intact; in-flight synthetic turns continue.
-    task = session.current_turn_task
-    if task and not task.done():
-        session.chat_session.tool_context.cancel_event.set()
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
-        session.current_turn_task = None
+    stop_session(session)
 
 
 async def drain_next(app: web.Application, session: ServerSession, chat_id: str | None) -> None:

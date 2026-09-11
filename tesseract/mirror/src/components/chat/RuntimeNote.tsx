@@ -23,6 +23,9 @@ const LABELS: Record<string, string> = {
   spawn_stalled: 'A background task is still running',
   card_press: 'You used a control on a card',
   reflection: 'End of session reflection',
+  recovery: 'The app picked this work back up after it stopped',
+  morning: 'The app decided what to work on today',
+  workday: 'The app worked on one of the steps it decided',
   continuity: 'What the last consolidation carried over',
   boundary: 'What happened when this conversation was consolidated',
 };
@@ -32,14 +35,14 @@ const FALLBACK = 'The app started this on its own';
 /**
  * A turn nobody typed, drawn as a line rather than as a speaker.
  *
- * Three things start a turn on a chat that is sitting idle: a background task
- * finishing, one running past its threshold, and a press on a card the
- * assistant drew. A fourth, the end-of-session reflection, starts one nobody
- * asked for either. All four reach the model as `role: "user"`, because that
- * is the only role a provider lets a caller place mid-conversation, and the
- * transcript drew every one of them wearing the operator's name. So a chat
- * took two turns on its own and the record said the operator had asked for
- * them.
+ * Five things start a turn nobody typed: a background task finishing, one
+ * running past its threshold, a press on a card the assistant drew, the
+ * end-of-session reflection, and the app picking work back up after it
+ * stopped in the middle of it. All five reach the model as `role: "user"`,
+ * because that is the only role a provider lets a caller place
+ * mid-conversation, and the transcript drew every one of them wearing the
+ * operator's name. So a chat took two turns on its own and the record said
+ * the operator had asked for them.
  *
  * It is a rule with a label and no bubble, which is what the mockup settled
  * on: the runtime is not a third participant and should not read like one.

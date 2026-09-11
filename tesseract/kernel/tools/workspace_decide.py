@@ -35,6 +35,7 @@ from typing import Any, Callable, ClassVar, Literal, Optional
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.workspace_events.events import DECIDABLE_KINDS, SETTLED
 
 logger = logging.getLogger(__name__)
@@ -90,6 +91,8 @@ class WorkspacePendingTool(Tool):
         "this machine's health, which is `system_diagnose`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     def __init__(self, app_provider: Optional[Callable[[], Any]] = None) -> None:
         self._app_provider = app_provider
@@ -183,6 +186,8 @@ class WorkspaceDecideTool(Tool):
         "used to clear the inbox on their behalf."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     def __init__(self, app_provider: Optional[Callable[[], Any]] = None) -> None:
         self._app_provider = app_provider
@@ -243,7 +248,11 @@ class WorkspaceDecideTool(Tool):
         except DecisionError as exc:
             # The route's own words, which say what was wrong with the ask.
             detail = exc.payload.get("detail") or exc.payload.get("error") or "refused"
-            return ToolResult(output=f"Not done: {detail}", is_error=True)
+            return ToolResult(
+                output=f"Not done: {detail}",
+                is_error=True,
+                caller_error=True,
+            )
         except Exception:
             logger.exception("workspace_decide: the decision failed to apply")
             return ToolResult(
@@ -258,12 +267,28 @@ class WorkspaceDecideTool(Tool):
         status = str(getattr(updated, "status", "") or "")
         return ToolResult(
             output=f"{kind} is {status}.",
+            receipt=Receipt(
+                kind="record", id=inp.event_id, locator=_events_path(self._app_provider)
+            ),
             metadata={
                 "event_id": inp.event_id,
                 "kind": getattr(updated, "kind", ""),
                 "status": status,
             },
         )
+
+
+def _events_path(app_provider: Optional[Callable[[], Any]]) -> str:
+    """Where the inbox keeps its events, for a receipt to point at.
+
+    Asked with `getattr`, because the store reaches this tool off the app
+    and is duck typed there. A decision that has already applied must not
+    turn into an AttributeError over the label on its receipt; an empty
+    locator still names the event.
+    """
+    store = _store(app_provider)
+    path = getattr(store, "events_path", None)
+    return str(path) if path is not None else ""
 
 
 def _store(app_provider: Optional[Callable[[], Any]]):

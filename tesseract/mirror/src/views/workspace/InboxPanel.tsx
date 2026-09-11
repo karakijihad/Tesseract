@@ -38,6 +38,7 @@ export const KIND_LABEL: Record<EventKind, string> = {
   yaml_change_proposal: 'Catalog',
   kb_merge_conflict: 'KB conflict',
   clarification: 'Question',
+  project_proposal: 'An idea',
 };
 
 // Kinds where Approve/Reject map to a real backend effect — the operator's
@@ -55,6 +56,10 @@ const ACTIONABLE_KINDS = new Set<EventKind>([
   'skill_refinement',
   'mission_reflection_proposal',
   'yaml_change_proposal',
+  // Approving one changes no file and creates nothing. It changes the card's
+  // own state, which is what the next morning reads to know an idea is worth
+  // starting, so Approve and Decline are the real decision and not a Resolve.
+  'project_proposal',
 ]);
 
 const KIND_ORIGIN_LABEL: Record<string, string> = {
@@ -114,6 +119,10 @@ function filterEvents(
   lastSeen: string | undefined,
 ): WorkspaceEvent[] {
   switch (filter) {
+    // Every kind whose name is a proposal. Two were missing for as long as
+    // they have existed: a card the runtime filed about what the turn carries
+    // or what it spends vanished under the one filter named after it, which
+    // reads as nothing waiting rather than as a filter that cannot see it.
     case 'proposals':
       return events.filter(
         (e) =>
@@ -122,7 +131,10 @@ function filterEvents(
           e.kind === 'soul_proposal' ||
           e.kind === 'change_proposal' ||
           e.kind === 'mission_reflection_proposal' ||
-          e.kind === 'yaml_change_proposal',
+          e.kind === 'yaml_change_proposal' ||
+          e.kind === 'working_set_proposal' ||
+          e.kind === 'tuning_proposal' ||
+          e.kind === 'project_proposal',
       );
     case 'approvals':
       return events.filter((e) =>
@@ -622,12 +634,24 @@ export function InboxPanel({
                   })()}
                   {ev.kind === 'skill_refinement' && (() => {
                     const p = ev.payload as {
-                      stats?: { total?: number; negative?: number };
+                      stats?: {
+                        loads?: number;
+                        corrections?: number;
+                        errors?: number;
+                      };
                     };
+                    const s = p.stats;
                     return (
                       <div className="workspace-event-agent-meta">
-                        {p.stats && (
-                          <span className="workspace-event-chip">{p.stats.negative}/{p.stats.total} failed</span>
+                        {s && s.loads !== undefined && (
+                          <span className="workspace-event-chip">
+                            {s.corrections}/{s.loads} corrected
+                          </span>
+                        )}
+                        {s && !!s.errors && (
+                          <span className="workspace-event-chip">
+                            {s.errors} would not read
+                          </span>
                         )}
                       </div>
                     );

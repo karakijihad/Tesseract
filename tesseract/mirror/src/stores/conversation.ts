@@ -107,7 +107,6 @@ interface ChatState {
   clearApproval: (chatId: string | null, callId: string) => void;
   resolveApproval: (chatId: string | null, callId: string, approved: boolean) => void;
   addEntityMessage: (chatId: string | null, message: string) => void;
-  addFoldMarker: (chatId: string | null, tailTurns?: number) => void;
   addRuntimeNote: (chatId: string | null, text: string, mark: string) => void;
   addError: (chatId: string | null, message: string) => void;
   addStreamNote: (chatId: string | null, text: string) => void;
@@ -116,7 +115,10 @@ interface ChatState {
   appendCliLine: (chatId: string | null, callId: string, delta: string) => void;
   endCli: (chatId: string | null, callId: string, exitCode: number) => void;
   setMessageModel: (chatId: string | null, info: ModelSelectedData) => void;
-  setMessageStats: (chatId: string | null, stats: MessageStats) => void;
+  /** One model call's usage. `calls` is not passed in and cannot be: the
+   *  count is this store's, because this store is the only thing that knows
+   *  how many times it has been told. A `stream_stop` envelope IS one call. */
+  setMessageStats: (chatId: string | null, stats: Omit<MessageStats, "calls">) => void;
   // Phase 2 (CLI parity, revised 2026-05-11) — when the backend's
   // mid-turn drain fires `stream_user_inject`, flip the oldest N
   // queued user bubbles to `complete` (FIFO order matches the
@@ -879,50 +881,6 @@ export const useConversationStore = create<ChatState>((set, get) => ({
     }));
   },
 
-  addFoldMarker: (chatId, tailTurns = 0) => {
-    const id = _resolveId(get(), chatId);
-    if (!id) return;
-    // The live half. A reloaded conversation gets its divider back from the
-    // summary message the fold left in history (`lib/chatHistory.ts`), so this
-    // is only the one drawn the moment it happens, on a transcript that is
-    // already on screen and has no reason to be rebuilt. Both must land in the
-    // same place, which is in front of the turns the fold kept word for word.
-    _patchSlice(set, id, s => {
-      // One divider, because there is one summary. The runtime replaces its
-      // running-summary record on every fold rather than keeping the old ones,
-      // and a reload draws exactly one line from it. A second live fold used
-      // to leave the first line stranded above, so the transcript on screen
-      // disagreed with the same transcript after a reload.
-      const messages = s.messages.filter(m => m.role !== 'marker');
-      const marker = {
-        id: `fold-${Date.now()}`,
-        role: 'marker' as const,
-        content: '',
-        timestamp: Date.now(),
-        status: 'complete' as const,
-      };
-      // `tailTurns` is counted on the backend over settled history, so the
-      // walk has to skip what the backend has not seen: a queued bubble is
-      // waiting to be sent and was never part of the fold.
-      let at = messages.length;
-      let kept = 0;
-      for (let i = messages.length - 1; i >= 0 && kept < tailTurns; i--) {
-        const m = messages[i];
-        if (m.status === 'queued') continue;
-        // A runtime note counts. The backend's tail is counted over messages
-        // that OPEN a turn (`brain/chat.py::_starts_a_turn`), and a wake turn
-        // opens one, so skipping it here would put the marker N turns off.
-        if (m.role === 'user' || m.role === 'runtime') {
-          kept += 1;
-          at = i;
-        }
-      }
-      return {
-        messages: [...messages.slice(0, at), marker, ...messages.slice(at)],
-      };
-    });
-  },
-
   addError: (chatId, message: string) => {
     const id = _resolveId(get(), chatId);
     if (!id) return;
@@ -1038,18 +996,23 @@ export const useConversationStore = create<ChatState>((set, get) => ({
     });
   },
 
-  setMessageStats: (chatId, stats: MessageStats) => {
+  setMessageStats: (chatId, stats: Omit<MessageStats, "calls">) => {
     const id = _resolveId(get(), chatId);
     if (!id) return;
     _patchSlice(set, id, s => {
       if (!s.streamingMessageId) return null;
       const prev = s.messageStats.get(s.streamingMessageId);
-      // Accumulate across tool-loop iterations: sum input/output, latest cached value.
+      // Accumulate across tool-loop iterations. Every field sums, cached
+      // included: each iteration is its own billable request that carries the
+      // whole prompt, so what the turn cost is the sum of what its calls cost.
+      // The comment here used to say "latest cached value" while the code
+      // summed, which is the reading that made a three-call turn look broken.
       const next = new Map(s.messageStats);
       next.set(s.streamingMessageId, {
         input_tokens: (prev?.input_tokens ?? 0) + stats.input_tokens,
         output_tokens: (prev?.output_tokens ?? 0) + stats.output_tokens,
         cached_tokens: (prev?.cached_tokens ?? 0) + stats.cached_tokens,
+        calls: (prev?.calls ?? 0) + 1,
       });
       return { messageStats: next };
     });

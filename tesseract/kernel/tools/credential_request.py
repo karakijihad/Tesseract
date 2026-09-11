@@ -39,6 +39,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 
 
 class CredentialRequestInput(BaseModel):
@@ -186,6 +187,8 @@ class CredentialRequestTool(Tool):
         "`credential_list` shows you what is outstanding."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:
@@ -284,6 +287,7 @@ class CredentialRequestTool(Tool):
                     f"{credential_id} already holds every field you asked "
                     f"for, so there is nothing waiting on the operator."
                 ),
+                receipt=Receipt.nothing(),
                 metadata={"credential": entry, "asked": False},
             )
         return ToolResult(
@@ -293,6 +297,9 @@ class CredentialRequestTool(Tool):
                 f"Settings, Credentials. Tell them what each one is and where "
                 f"to get it, because the box only carries its name."
             ),
+            # The credential's own id, which `credential_list` resolves. The
+            # values live in the vault and a receipt never points at those.
+            receipt=Receipt(kind="record", id=str(entry["id"])),
             metadata={"credential": entry, "asked": True},
         )
 
@@ -381,6 +388,7 @@ class CredentialRequestTool(Tool):
                     f"You already have a {service} account ({entry['id']}): "
                     f"{state}."
                 ),
+                receipt=Receipt.nothing(),
                 metadata={"credential": entry, "created": False},
             )
 
@@ -390,6 +398,7 @@ class CredentialRequestTool(Tool):
                 f"for the operator in Settings, Credentials. Tell them what you "
                 f"need it for so they know to go and add it."
             ),
+            receipt=Receipt(kind="record", id=str(entry["id"])),
             metadata={"credential": entry, "created": True},
         )
 

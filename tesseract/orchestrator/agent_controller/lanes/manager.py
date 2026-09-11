@@ -219,6 +219,16 @@ class LaneManager:
             return self._root_override / validate_lane_id(lane_id)
         return lane_dir(lane_id)
 
+    def record_dir(self, lane_id: str) -> Path:
+        """Where this lane's events and transcript sit.
+
+        Public because a caller citing what a lane call left behind has to say
+        where to go and look, and the root moves under a test override, so
+        deriving it from the module-level path helper would name a directory
+        this manager is not using.
+        """
+        return self._lane_dir(lane_id)
+
     def _events_path(self, lane_id: str) -> Path:
         return self._lane_dir(lane_id) / "events.jsonl"
 

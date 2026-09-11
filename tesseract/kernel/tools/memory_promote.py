@@ -31,6 +31,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.kernel.tools.soul_growth_propose import SoulGrowthProposeTool, SoulGrowthProposeInput
 from tesseract.kernel.workspace_changes import SOUL_GROWTH_SECTIONS
 from tesseract.memory.index import MemoryIndex
@@ -90,6 +91,8 @@ class MemoryPromoteTool(Tool):
         "for permanent deletion."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     def __init__(
         self,
@@ -100,6 +103,13 @@ class MemoryPromoteTool(Tool):
         self._store = store
         self._index = index
         self._soul = soul_growth_tool
+
+    def _receipt_for(self, memory_id: str) -> Receipt:
+        """The record this call moved, and where it sits now."""
+        path = self._store.find_file(memory_id)
+        return Receipt(
+            kind="record", id=memory_id, locator=str(path) if path else ""
+        )
 
     @property
     def name(self) -> str:
@@ -123,6 +133,7 @@ class MemoryPromoteTool(Tool):
         if existing is None:
             return ToolResult(
                 output=f"Memory {inp.memory_id} not found.", is_error=True,
+                caller_error=True,
             )
         fm, body = existing
 
@@ -133,53 +144,79 @@ class MemoryPromoteTool(Tool):
         if inp.action == "merge_into":
             return self._merge(fm, body, inp.target)
 
-        return ToolResult(output=f"Unknown action: {inp.action}", is_error=True)
+        return ToolResult(
+            output=f"Unknown action: {inp.action}",
+            is_error=True,
+            caller_error=True,
+        )
 
     def _archive(self, fm, body: str) -> ToolResult:
         if fm.stability == Stability.ARCHIVED:
-            return ToolResult(output=f"{fm.id} already archived.")
+            return ToolResult(
+                output=f"{fm.id} already archived.",
+                receipt=Receipt.nothing(),
+            )
         new_fm = fm.model_copy(update={
             "stability": Stability.ARCHIVED,
             "updated_at": datetime.now(timezone.utc),
         })
         if not self._store.write(new_fm, body):
-            return ToolResult(output="Archive blocked by WHAT_NOT_TO_SAVE.", is_error=True)
+            return ToolResult(
+                output="The record could not be written, so it was not archived.",
+                is_error=True,
+                caller_error=True,
+            )
         self._index.add(new_fm)
-        return ToolResult(output=f"{fm.id} archived.")
+        return ToolResult(
+            output=f"{fm.id} archived.",
+            receipt=self._receipt_for(new_fm.id),
+        )
 
     def _bump(self, fm, body: str, importance: int | None) -> ToolResult:
         if importance is None:
             return ToolResult(
                 output="bump_importance requires `importance` (1-10).",
                 is_error=True,
+                caller_error=True,
             )
         clamped = max(1, min(10, int(importance)))
         if clamped == fm.importance:
-            return ToolResult(output=f"{fm.id} already importance={clamped}.")
+            return ToolResult(
+                output=f"{fm.id} already importance={clamped}.",
+                receipt=Receipt.nothing(),
+            )
         new_fm = fm.model_copy(update={
             "importance": clamped,
             "updated_at": datetime.now(timezone.utc),
         })
         if not self._store.write(new_fm, body):
-            return ToolResult(output="Bump blocked by WHAT_NOT_TO_SAVE.", is_error=True)
+            return ToolResult(
+                output="The record could not be written, so its importance is unchanged.",
+                is_error=True,
+                caller_error=True,
+            )
         self._index.add(new_fm)
         return ToolResult(
             output=f"{fm.id} importance {fm.importance} → {clamped}.",
+            receipt=self._receipt_for(new_fm.id),
         )
 
     def _merge(self, source_fm, source_body: str, target_id: str | None) -> ToolResult:
         if not target_id:
             return ToolResult(
                 output="merge_into requires `target` id.", is_error=True,
+                caller_error=True,
             )
         if target_id == source_fm.id:
             return ToolResult(
                 output="Cannot merge a record into itself.", is_error=True,
+                caller_error=True,
             )
         target = self._store.read(target_id)
         if target is None:
             return ToolResult(
                 output=f"Target {target_id} not found.", is_error=True,
+                caller_error=True,
             )
         target_fm, target_body = target
 
@@ -194,6 +231,7 @@ class MemoryPromoteTool(Tool):
             if marker in target_body:
                 return ToolResult(
                     output=f"{source_fm.id} already merged into {target_id} (no-op).",
+                    receipt=Receipt.nothing(),
                 )
             return ToolResult(
                 output=(
@@ -201,6 +239,7 @@ class MemoryPromoteTool(Tool):
                     f"{target_id}; manual review needed before re-merging."
                 ),
                 is_error=True,
+                caller_error=True,
             )
 
         merged_body = _append_with_separator(target_body, source_body, source_fm.id)
@@ -214,8 +253,9 @@ class MemoryPromoteTool(Tool):
         })
         if not self._store.write(new_target, merged_body):
             return ToolResult(
-                output="Merge blocked by WHAT_NOT_TO_SAVE on target.",
+                output="The merged record could not be written, so nothing was merged.",
                 is_error=True,
+                caller_error=True,
             )
         self._index.add(new_target)
 
@@ -234,16 +274,19 @@ class MemoryPromoteTool(Tool):
                     f"was blocked — {source_fm.id} still active, manual "
                     "archive needed."
                 ),
+                receipt=self._receipt_for(new_target.id),
             )
         self._index.add(archived_source)
         return ToolResult(
             output=f"Merged {source_fm.id} → {target_id}; source archived.",
+            receipt=self._receipt_for(new_target.id),
         )
 
     async def _propose_soul_growth(self, inp: MemoryPromoteInput, ctx: ToolContext) -> ToolResult:
         if not (inp.bullet or "").strip():
             return ToolResult(
                 output="propose_soul_growth requires `bullet`.", is_error=True,
+                caller_error=True,
             )
         # Asked for here rather than defaulted. SOUL holds a section per kind
         # of growth, and this door is a delegation: passing no section built an
@@ -258,6 +301,7 @@ class MemoryPromoteTool(Tool):
                     + "."
                 ),
                 is_error=True,
+                caller_error=True,
             )
         return await self._soul.run(
             SoulGrowthProposeInput(section=section, bullet=inp.bullet), ctx

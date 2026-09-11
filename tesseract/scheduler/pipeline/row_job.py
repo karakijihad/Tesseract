@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from tesseract.orchestrator.outcome import RunOutcome
+from tesseract.orchestrator.outcome import RunOutcome, worst_of
 from tesseract.scheduler.pipeline.manifest import (
     ManifestStore,
     MemoryManifestStore,
@@ -86,27 +86,11 @@ def row_result(row: Row, manifest: RunManifest, ctx: JobContext) -> JobResult:
     )
 
 
-# Worst first. `skipped_no_work` sits above `succeeded` deliberately: a row
-# where one stage found nothing and another did real work has succeeded, and
-# only a row where NOTHING was due reports that it had nothing to do.
-_SEVERITY: tuple[RunOutcome, ...] = (
-    RunOutcome.FAILED,
-    RunOutcome.SKIPPED_UPSTREAM_FAILED,
-    RunOutcome.DEGRADED,
-    RunOutcome.TRUNCATED,
-    RunOutcome.REFUSED,
-    RunOutcome.SUCCEEDED,
-    RunOutcome.SKIPPED_NO_WORK,
-)
-
-
-def _worst(outcomes: list[RunOutcome]) -> RunOutcome:
-    if not outcomes:
-        return RunOutcome.SKIPPED_NO_WORK
-    for candidate in _SEVERITY:
-        if candidate in outcomes:
-            return candidate
-    return RunOutcome.SUCCEEDED
+# The ordering lives in `orchestrator/outcome.py`, beside the vocabulary it
+# ranks. It was here while this was its only reader; the day reader is a
+# second, and two orderings would let a row and a panel disagree about which
+# of two bad things is worse.
+_worst = worst_of
 
 
 __all__ = ["row_result", "run_row"]

@@ -51,6 +51,11 @@ log = logging.getLogger(__name__)
 
 
 NotificationCategory = Literal[
+    "workspace_change_applied",
+    # Was missing from this list while `BROADCASTS` carried it. The tuple
+    # below is derived from the declaration, so the drift cost nothing at
+    # runtime and would have cost a type check.
+    "runtime_repaired",
     "awaiting_operator",
     "recovery_summary",
     "governor_pause",
@@ -486,16 +491,41 @@ class OutboundNotifier:
         ledger: RateLedger | None = None,
         adapters: dict[str, Adapter] | None = None,
         routing_getter: Callable[[], Any | None] | None = None,
+        chain_getter: Callable[[], Any] | None = None,
     ) -> None:
         self._adapters = dict(adapters or {})
         self._routing_getter = routing_getter
         self._channels_config_getter = channels_config_getter
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._ledger = ledger or RateLedger()
+        # How the opening line gets written (AR-18 item 4). Left out, nothing
+        # is written and every message goes out phrased by its template, which
+        # is where this path was before and is a working message either way.
+        # A getter rather than a chain, because the config watcher rebuilds
+        # adapters without a restart and a chain held from boot would go on
+        # calling a model the operator has since moved off.
+        self._chain_getter = chain_getter
 
     @property
     def ledger(self) -> RateLedger:
         return self._ledger
+
+    async def _write_the_line(self, message: "Message", category: str) -> "Message":
+        """The composed message, with its body written from its own counts.
+
+        Wrapped here rather than inlined so the send path has one line for it
+        and a chain that cannot be built is not a message that fails to go.
+        """
+        from tesseract.orchestrator.autonomy import outbound_writer
+
+        if self._chain_getter is None:
+            return message
+        try:
+            chain = self._chain_getter()
+        except Exception:  # noqa: BLE001 — a message may not fail over its phrasing
+            log.exception("outbound: could not build the writing chain for %s", category)
+            return message
+        return await outbound_writer.written(message, chain, subject=category)
 
     def _channel_block(self, name: str) -> Any | None:
         cfg = self._channels_config_getter() if self._channels_config_getter else None
@@ -564,6 +594,32 @@ class OutboundNotifier:
 
         return operator_sender(channel)
 
+    def _refusal_for(
+        self, category: NotificationCategory, channel: str, now: datetime
+    ) -> str:
+        """Why this channel will not take this message, or `""` when it will.
+
+        ONE answer to the two guards, because two callers ask it and a second
+        copy would drift: `_deliver` refuses on it, and `notify` asks whether
+        ANY channel is going to take the message before paying a model to
+        write its opening line. Without that second caller, a category muted
+        everywhere still spent, and its ceiling could be emptied by messages
+        nobody was ever going to read.
+
+        Read-only. `RateLedger.allowed` counts and does not consume, so asking
+        twice about one message cannot spend a slot; `register` is what
+        consumes and only a real send calls it.
+        """
+        if category not in EXEMPT_CATEGORIES and self._muted(channel, category):
+            return "muted"
+        if category not in UNCAPPED_CATEGORIES:
+            cap = self._cap_for(channel, category)
+            if cap <= 0:
+                return "cap_zero"
+            if not self._ledger.allowed(channel, category, cap, now=now):
+                return "rate_capped"
+        return ""
+
     async def _deliver(
         self,
         category: NotificationCategory,
@@ -584,14 +640,9 @@ class OutboundNotifier:
         Routing is a separate question and stays the operator's: a kind they
         sent to no channel is sent to no channel, exempt or not.
         """
-        if category not in EXEMPT_CATEGORIES and self._muted(channel, category):
-            return _Delivered(channel, 0, 0, "muted", 0)
-        if category not in UNCAPPED_CATEGORIES:
-            cap = self._cap_for(channel, category)
-            if cap <= 0:
-                return _Delivered(channel, 0, 0, "cap_zero", 0)
-            if not self._ledger.allowed(channel, category, cap, now=now):
-                return _Delivered(channel, 0, 0, "rate_capped", 0)
+        refused = self._refusal_for(category, channel, now)
+        if refused:
+            return _Delivered(channel, 0, 0, refused, 0)
 
         # Fail where it is used, not at load: a channel can be written into
         # the table before anything can speak it, and the sender says so.
@@ -665,6 +716,20 @@ class OutboundNotifier:
             return NotifyResult(category=category, skipped=True, reason="empty_text")
 
         now = self._clock()
+        # **The one gate** (ruling 32). Every rule about what may and may not
+        # be written over lives in `outbound_writer`, not at the call sites:
+        # a caller cannot forget a rule it was never asked to remember, and
+        # `payload` in particular is a promise about the body that has to hold
+        # for every category at once. It returns the message unchanged on any
+        # refusal, so nothing below can tell whether a model was reached.
+        #
+        # Only when SOMETHING is going to take it. The mute and the cap are
+        # per channel and live in `_deliver`, so writing first meant a
+        # category muted everywhere still paid for a sentence nobody read.
+        # The same `now` decides here and there, so the two cannot disagree
+        # about a cap across the seconds the writing takes.
+        if any(not self._refusal_for(category, channel, now) for channel in targets):
+            message = await self._write_the_line(message, category)
         # One channel refusing, capping or failing must not decide anything
         # for the others: the whole point of a table with two names in a row
         # is that they are two answers, not one with a backup.

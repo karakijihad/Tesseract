@@ -299,7 +299,7 @@ async def _handle_chunk(app: web.Application, session: ServerSession, chunk: Str
     if is_set_state_result and not chunk.error:
         await _emit_entity_state_from_affect(app, session)
     # Auto-happy on a successful high-importance memory_save. Skip on
-    # rejected calls (dedupe blocks, type_mismatch, WHAT_NOT_TO_SAVE) —
+    # rejected calls (dedupe blocks, type_mismatch, a capture rule) —
     # the save didn't actually happen, so a "happy" flash would lie.
     if is_memory_save_result and happy_save_pending and not chunk.error:
         await _set_orb_state(app, session, "happy")

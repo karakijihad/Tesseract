@@ -46,12 +46,12 @@ from tesseract.integrations import (
 )
 from tesseract.integrations._person_record import upsert_person_record
 from tesseract.kernel.tools.base import PermissionResult, ToolContext
+from tesseract.permissions.decide import NOT_APPROVED_CAUSE
 
 log = logging.getLogger(__name__)
 
 
 _VALID_TELEGRAM_OVERRIDES: frozenset[str] = frozenset({"online", "offline"})
-_VALID_TIERS: frozenset[str] = frozenset({"operator", "friend"})
 _CONVERSATION_LIMIT_CAP = 500
 
 
@@ -168,10 +168,10 @@ def _not_approved_response(action: str, outcome: str) -> web.Response:
         return web.json_response(
             {
                 "status": "unresolved",
-                "output": (
-                    f"{action} was not approved — the operator declined it, or "
-                    "the approval prompt expired before it was answered."
-                ),
+                # The cause is imported, never rewritten. This sentence used
+                # to exist twice, in two spellings, and a reader had no way
+                # to know they were one message.
+                "output": f"{action} was not approved: {NOT_APPROVED_CAUSE}.",
             }
         )
     return web.json_response(
@@ -437,12 +437,13 @@ async def get_channel_conversation_handler(request: web.Request) -> web.Response
 async def _parse_user_mutation_body(
     request: web.Request,
     *,
-    require_tier: bool,
+    require_details: bool,
 ) -> tuple[dict[str, Any] | None, web.Response | None]:
     """Shared payload parser for ``/approve`` ``/revoke`` ``/block``.
 
     Returns ``(body, None)`` on success or ``(None, response)`` to short-circuit
-    the handler with a 400. ``require_tier=True`` is the approve-only path.
+    the handler with a 400. ``require_details=True`` is the approve-only path,
+    which also carries a TTL and a display name.
     """
     try:
         body = await request.json()
@@ -460,12 +461,7 @@ async def _parse_user_mutation_body(
     user_id = body.get("user_id")
     if not isinstance(user_id, str) or not user_id:
         return None, web.json_response({"error": "user_id required"}, status=400)
-    if require_tier:
-        tier = body.get("tier")
-        if not isinstance(tier, str) or tier not in _VALID_TIERS:
-            return None, web.json_response(
-                {"error": "tier must be 'operator' or 'friend'"}, status=400
-            )
+    if require_details:
         ttl_iso = body.get("ttl_iso", None)
         if ttl_iso is not None and not isinstance(ttl_iso, str):
             return None, web.json_response(
@@ -482,7 +478,13 @@ async def _parse_user_mutation_body(
 async def approve_channel_user_handler(request: web.Request) -> web.Response:
     """``POST /api/channels/{name}/approve`` — ASK-gated approve + person record.
 
-    Body: ``{session_id, user_id, tier, ttl_iso?, display_name?}``. The route
+    Body: ``{session_id, user_id, ttl_iso?, display_name?}``. There is no
+    tier: approving is the whole permission and everyone on the allowlist uses
+    the runtime the same way. It is NOT the same as being the operator, which
+    is one chat and decides whose conversations reach their own digest,
+    library and recall (``Allowlist.owner``). The first approval on an empty
+    list is recorded as that owner; approving somebody else never takes it.
+    The route
     writes BOTH the adapter's own allowlist (``adapter.approve()``) AND a
     person record (``memory-store/reference/people/<slug>.md``). Person-record
     failure does not roll back the allowlist write — the channel is still
@@ -495,14 +497,13 @@ async def approve_channel_user_handler(request: web.Request) -> web.Response:
     if adapter is None:
         return web.json_response({"error": f"channel {name!r} not found"}, status=404)
 
-    body, err_resp = await _parse_user_mutation_body(request, require_tier=True)
+    body, err_resp = await _parse_user_mutation_body(request, require_details=True)
     if err_resp is not None:
         return err_resp
     assert body is not None
 
     session_id = body["session_id"]
     user_id = body["user_id"]
-    tier = body["tier"]
     ttl_iso = body.get("ttl_iso") or None
     display_name = body.get("display_name") or None
 
@@ -513,7 +514,6 @@ async def approve_channel_user_handler(request: web.Request) -> web.Response:
         raw_input={
             "channel": name,
             "user_id": user_id,
-            "tier": tier,
             "ttl_iso": ttl_iso,
             "display_name": display_name,
         },
@@ -526,7 +526,6 @@ async def approve_channel_user_handler(request: web.Request) -> web.Response:
     try:
         user = await adapter.approve(
             user_id,
-            tier=tier,  # type: ignore[arg-type]
             ttl_iso=ttl_iso,
             display_name=display_name,
         )
@@ -545,7 +544,6 @@ async def approve_channel_user_handler(request: web.Request) -> web.Response:
         path = upsert_person_record(
             channel=name,
             user_id=user_id,
-            tier=tier,
             ttl_iso=ttl_iso,
             display_name=display_name,
         )
@@ -557,7 +555,7 @@ async def approve_channel_user_handler(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "status": "approved",
-            "output": f"{name}:{user_id} approved as {tier}",
+            "output": f"{name}:{user_id} approved",
             "user": asdict(user),
             "person_record_path": person_record_path,
             "person_record_error": person_record_error,
@@ -577,7 +575,7 @@ async def revoke_channel_user_handler(request: web.Request) -> web.Response:
     adapter = get_channel(name)
     if adapter is None:
         return web.json_response({"error": f"channel {name!r} not found"}, status=404)
-    body, err_resp = await _parse_user_mutation_body(request, require_tier=False)
+    body, err_resp = await _parse_user_mutation_body(request, require_details=False)
     if err_resp is not None:
         return err_resp
     assert body is not None
@@ -623,7 +621,7 @@ async def block_channel_user_handler(request: web.Request) -> web.Response:
     adapter = get_channel(name)
     if adapter is None:
         return web.json_response({"error": f"channel {name!r} not found"}, status=404)
-    body, err_resp = await _parse_user_mutation_body(request, require_tier=False)
+    body, err_resp = await _parse_user_mutation_body(request, require_details=False)
     if err_resp is not None:
         return err_resp
     assert body is not None

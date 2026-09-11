@@ -127,7 +127,7 @@ def mark_source_deleted(
     stamped = frontmatter.model_copy(
         update={"source_deleted_at": now or datetime.now(timezone.utc)}
     )
-    if not store.write(stamped, body, skip_wnts_check=True):
+    if not store.write(stamped, body):
         return False
     log.info("capture: %s outlived %s, which has been deleted", memory_id, key)
     return True

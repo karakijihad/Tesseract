@@ -86,6 +86,8 @@ class OpenTool(Tool):
         "not a live page. \"Show me this\" is always `open`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "unsafe"
 
     @property
     def name(self) -> str:

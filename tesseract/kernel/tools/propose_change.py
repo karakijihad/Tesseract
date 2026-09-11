@@ -21,6 +21,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.kernel.workspace_changes import (
     PROPOSABLE_PATHS,
     ProposeError,
@@ -92,6 +93,8 @@ class ProposeChangeTool(Tool):
         "`agenda_comment`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     def __init__(self, repo_root: Path) -> None:
         self._repo_root = repo_root
@@ -119,12 +122,14 @@ class ProposeChangeTool(Tool):
                     f"> {_MAX_CONTENT_BYTES}). Split into smaller proposals."
                 ),
                 is_error=True,
+                caller_error=True,
             )
         summary = (inp.summary or "").strip()
         if not summary:
             return ToolResult(
                 output="summary is required (operator-facing rationale)",
                 is_error=True,
+                caller_error=True,
             )
         if len(summary) > _MAX_SUMMARY_CHARS:
             summary = summary[:_MAX_SUMMARY_CHARS]
@@ -133,7 +138,7 @@ class ProposeChangeTool(Tool):
             full_path = validate_target(self._repo_root, inp.target_path)
             action = validate_action(inp.target_path, inp.action)
         except ProposeError as exc:
-            return ToolResult(output=str(exc), is_error=True)
+            return ToolResult(output=str(exc), is_error=True, caller_error=True)
 
         try:
             before = full_path.read_text(encoding="utf-8")
@@ -151,7 +156,7 @@ class ProposeChangeTool(Tool):
                 section=inp.section,
             )
         except ProposeError as exc:
-            return ToolResult(output=str(exc), is_error=True)
+            return ToolResult(output=str(exc), is_error=True, caller_error=True)
 
         spec = PROPOSABLE_PATHS[inp.target_path]
         label = str(spec["label"])
@@ -218,6 +223,11 @@ class ProposeChangeTool(Tool):
 
         return ToolResult(
             output=f"{note} event_id={event.event_id}",
+            receipt=Receipt(
+                kind="record",
+                id=event.event_id,
+                locator=str(store.events_path),
+            ),
             metadata={
                 "event_id": event.event_id,
                 "target_path": inp.target_path,

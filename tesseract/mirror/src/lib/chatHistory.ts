@@ -140,8 +140,8 @@ function entryTimestamp(entry: RawHistoryEntry, approxTimestamp: number): number
 // opens with instead would let anyone who types that line have what they said
 // replaced by a divider on the next reload, which is a way to make your own
 // words vanish from a conversation somebody else is reading. A summary written
-// before the mark existed renders as the message it is, once, until the next
-// fold folds it in. See `brain/chat.py::_is_running_summary_message`.
+// before the mark existed renders as the message it is, and stays that way:
+// nothing folds any more. See `brain/chat.py::_is_running_summary_message`.
 function isFoldSummary(entry: RawHistoryEntry): boolean {
   return entry._runtime === 'running_summary';
 }
@@ -272,6 +272,10 @@ export function rehydrateHistory(
             input_tokens: (prev?.input_tokens ?? 0) + (meta.usage.input_tokens ?? 0),
             output_tokens: (prev?.output_tokens ?? 0) + (meta.usage.output_tokens ?? 0),
             cached_tokens: (prev?.cached_tokens ?? 0) + (meta.usage.cached_tokens ?? 0),
+            // A resumed bubble shows the same reading it had live, so the
+            // count of calls has to survive the round trip too. One `_meta`
+            // per assistant message is one call.
+            calls: (prev?.calls ?? 0) + 1,
           });
         }
       }

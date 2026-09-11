@@ -456,9 +456,18 @@ function SkillApprovalBody({ payload }: { payload: Record<string, unknown> }) {
 
 function SkillRefinementBody({ payload }: { payload: Record<string, unknown> }) {
   const name = asString(payload.name) ?? '';
-  const stats = payload.stats as { total?: number; negative?: number } | undefined;
-  const total = asNumber(stats?.total) ?? 0;
-  const negative = asNumber(stats?.negative) ?? 0;
+  const stats = payload.stats as {
+    loads?: number;
+    corrections?: number;
+    errors?: number;
+    unattributable?: number;
+  } | undefined;
+  const loads = asNumber(stats?.loads) ?? 0;
+  const corrections = asNumber(stats?.corrections) ?? 0;
+  const errors = asNumber(stats?.errors) ?? 0;
+  const unattributable = asNumber(stats?.unattributable) ?? 0;
+  const version = asString(payload.version) ?? '';
+  const evidence = asString(payload.evidence) ?? '';
   const proposedMarkdown = asString(payload.proposed_markdown) ?? '';
   const currentMarkdown = asString(payload.current_markdown) ?? '';
   return (
@@ -466,9 +475,28 @@ function SkillRefinementBody({ payload }: { payload: Record<string, unknown> }) 
       <dl className="workspace-detail-dl">
         <dt className="t-meta">skill</dt>
         <dd>{name || <span className="t-meta">—</span>}</dd>
-        <dt className="t-meta">stats</dt>
-        <dd>{negative}/{total} loads ended in error/correction</dd>
+        <dt className="t-meta">revision</dt>
+        <dd>{version ? `v${version}` : <span className="t-meta">—</span>}</dd>
+        <dt className="t-meta">measured</dt>
+        <dd>{corrections} of {loads} loads were corrected afterwards</dd>
+        {(errors > 0 || unattributable > 0) && (
+          <>
+            <dt className="t-meta">not counted</dt>
+            <dd>
+              {[
+                errors > 0 ? `${errors} reads of the file failed` : '',
+                unattributable > 0 ? `${unattributable} named no revision` : '',
+              ].filter(Boolean).join(', ')}
+            </dd>
+          </>
+        )}
       </dl>
+      {evidence && (
+        <>
+          <h4 className="workspace-detail-section-head t-meta">What was measured</h4>
+          <pre className="workspace-event-agent-pre">{evidence}</pre>
+        </>
+      )}
       {proposedMarkdown ? (
         <>
           <h4 className="workspace-detail-section-head t-meta">Proposed SKILL.md</h4>
@@ -529,6 +557,7 @@ export function EventDetailBody({ event }: Props) {
       return <SkillRefinementBody payload={payload} />;
     case 'working_set_proposal':
     case 'tuning_proposal':
+    case 'project_proposal':
       return <ProposalBody payload={payload} />;
     case 'daily_brief':
       return <DailyBriefBody payload={payload} />;

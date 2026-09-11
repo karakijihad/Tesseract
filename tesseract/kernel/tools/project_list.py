@@ -11,6 +11,7 @@ from typing import ClassVar
 from pydantic import BaseModel
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.orchestrator.projects.models import budget_line
 
 
 class ProjectListInput(BaseModel):
@@ -30,6 +31,8 @@ class ProjectListTool(Tool):
     )
     not_when: ClassVar[str] = ""
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:
@@ -81,6 +84,10 @@ class ProjectListTool(Tool):
             ):
                 if cmd:
                     lines.append(f"    verify.{label}: {cmd}")
+            # Always, including when nothing is set: a project the morning
+            # will never work has to say so here, or the only way to find out
+            # is that nothing ever happens on it.
+            lines.append(f"    budget: {budget_line(project.budget_usd)}")
         if active_id is None:
             lines.append("\nNo active project. Use project_open to select one.")
 

@@ -125,6 +125,18 @@ trees:
     keep_days: 30
     action: delete
 
+  # One line per mark a turn left in the world: a message id, a commit hash, a
+  # file's content hash. Joined to the step that produced it by the turn id and
+  # the stage name, both of which live in `turn_manifests` above.
+  #
+  # The same window as the records it joins to, deliberately and not by
+  # coincidence. A receipt outliving its step is a mark nobody can attribute,
+  # and a step outliving its receipt is a claim that lost its evidence. Change
+  # one of these two numbers and you have to change the other.
+  receipts:
+    keep_days: 30
+    action: delete
+
   # One row each time the event loop was blocked long enough to threaten the
   # supervisor's heartbeat, with the frames it was in. Written only when it
   # happens, so a healthy machine adds nothing for weeks and a bad afternoon
@@ -135,7 +147,11 @@ trees:
     keep_days: 30
     action: delete
 
-  # One record per consolidation: what the work was, and what happens next.
+  # What the work was, what happens next, and where a turn had got to. One
+  # record per conversation boundary, plus the cursor rows a crash is picked
+  # up from. The cursor rows are bounded inside the file itself, because a
+  # conversation used every day never gets old enough for this window to
+  # reach it.
   # It holds references rather than copies, so nothing here is the only copy
   # of anything — the conversation keeps what was said and the memory store
   # keeps what it taught. Deleted rather than archived because the record is
@@ -143,6 +159,15 @@ trees:
   # that has either moved on or been forgotten.
   checkpoints:
     keep_days: 30
+    action: delete
+
+  # The inbox: every card the runtime has put in front of you, and the replies
+  # on it. Only a card you have ANSWERED ages, whatever its date, so nothing
+  # here can lose a decision still waiting on you. Deleted rather than
+  # archived because an answered card is a moment that has passed, and what it
+  # changed is recorded wherever the change landed.
+  workspace_events:
+    keep_days: 60
     action: delete
 
 # What is deliberately NOT swept is declared in tesseract/retention/policy.py

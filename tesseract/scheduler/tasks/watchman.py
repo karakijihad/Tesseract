@@ -78,6 +78,70 @@ async def _say_it_healed(app: Any, healed: list[Attempt]) -> None:
         log.exception("watchman: could not say what it repaired")
 
 
+def _stop_where_it_must(judgement: Any, *, now) -> list[dict[str, str]]:
+    """File a card for every kept fault the runtime will not carry alone.
+
+    Two conditions and they are declared in `orchestrator/healing/stop_rule.py`,
+    not decided here: the remedy has given up and the fault has not moved, or
+    the remedy is one the runtime may not run on its own. Everything else
+    reaches the operator through the report, as it always has.
+
+    The card is keyed on when the fault started, which the standing store
+    already holds, so a fault standing for a week updates one card rather than
+    filing one an hour. Runs on a thread: it reads two state files and writes
+    an agenda item.
+
+    **A fault the suppress stage silenced is still a fault here.** That stage
+    decides what reaches the MESSAGE, and a card is the queue rather than a
+    message: a standing fault is quiet by design from its second reading on,
+    which is exactly the reading this pass needs. Everything the two filters
+    before it ruled out is gone from this list, which is the part that matters:
+    a fault a real absence explains never becomes a question.
+    """
+    from tesseract.orchestrator.healing import stop_rule
+    from tesseract.orchestrator.watchman.judge import standing, suppress
+
+    try:
+        entries = standing.load()
+    except Exception:  # noqa: BLE001
+        log.exception("watchman: could not read the standing store for the stop rule")
+        entries = {}
+
+    stopped: list[dict[str, str]] = []
+    for verdict in judgement.verdicts:
+        finding = verdict.finding
+        if not finding.defect:
+            continue
+        if not verdict.kept and verdict.stage != suppress.STAGE:
+            continue
+        if suppress.ownership_of(finding)[0] == suppress.OWNED:
+            # Somebody is already answering for this one. The suppress stage
+            # drops an owned fault at its own stage, so reading the stage alone
+            # let it through here and filed a SECOND card for an outage the
+            # recovery pass already had one open on, under a different id
+            # scheme. A card for a decision already in the queue is the
+            # wallpaper this whole pass exists to remove.
+            continue
+        known = entries.get(standing.key_for(finding))
+        if known is None or known.first_reported >= now:
+            # First reading of this fault. A card is for something that has
+            # STOOD, and nothing retires one when the fault clears on its own,
+            # so a blip would leave a question in the queue that answers
+            # itself. The store was written by the suppress stage a moment ago,
+            # which is why a fault seen for the first time is already in it.
+            continue
+        stop = stop_rule.assess(kind=finding.kind, subject=finding.subject)
+        if stop is None:
+            continue
+        item = stop_rule.file_card(stop, since=known.first_reported, now=now)
+        stopped.append({
+            "condition": stop.condition,
+            "subject": stop.subject or stop.kind,
+            "item_id": getattr(item, "id", ""),
+        })
+    return stopped
+
+
 async def _repair_what_can_be(ctx: JobContext) -> list[Attempt]:
     """Attempt the declared repairs, and never let one end the sweep.
 
@@ -159,6 +223,13 @@ class WatchmanJob(BaseJob):
             collected = swept
             judgement = await asyncio.to_thread(judge.judge, swept, now=now)
             swept = judgement.judged
+
+            # AND WHERE IT STOPS. The repairs above are what the runtime does
+            # unasked; this is the other half of the same rule, and it runs
+            # after the judge so a fault the window explained never becomes a
+            # card. A card is filed only for the two declared conditions, so
+            # the common answer here is an empty list.
+            stopped = await asyncio.to_thread(_stop_where_it_must, judgement, now=now)
 
             # ONE LIST, and it is the one the message counts. The narration
             # used to be written over every kept finding and then sent above a
@@ -268,6 +339,10 @@ class WatchmanJob(BaseJob):
                     for a in repaired
                     if a.outcome != "nothing to do"
                 ],
+                # Where it stopped and asked, beside what it put right. Empty
+                # on every pass that healed or found nothing, which is what
+                # this list saying something has to mean.
+                "stopped": stopped,
             }
             if degraded_reason:
                 outcome, reason = RunOutcome.DEGRADED, degraded_reason
@@ -283,6 +358,8 @@ class WatchmanJob(BaseJob):
                 count = sum(1 for a in repaired if a.outcome == word)
                 if count:
                     detail += f" {word}={count}"
+            if stopped:
+                detail += f" asked={len(stopped)}"
             return JobResult(
                 job_name=ctx.job_name,
                 run_id=ctx.run_id,

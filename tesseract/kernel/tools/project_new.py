@@ -24,6 +24,8 @@ from typing import Any, Callable, ClassVar, Literal, Optional
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
+from tesseract.orchestrator.projects.models import budget_line
 from tesseract.workspace_events import EventStore, WorkspaceEvent
 from tesseract.workspace_events.broadcast import broadcast_workspace_event
 
@@ -86,6 +88,17 @@ class ProjectNewInput(BaseModel):
     remote_visibility: Literal["private", "public"] = Field(
         default="private", description="Visibility of the created GitHub repository."
     )
+    budget_usd: float | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "What a day of unattended work on this project may spend, in USD. "
+            "Ask the operator for it, the way you ask for the verify commands. "
+            "Leave it out only if they decline to name one: a project with no "
+            "budget is never worked unattended, so nothing is spent on work "
+            "they have not priced."
+        ),
+    )
     test: str | None = Field(default=None, description="Test command to record.")
     typecheck: str | None = Field(default=None, description="Type-check command to record.")
     lint: str | None = Field(default=None, description="Lint command to record.")
@@ -115,6 +128,8 @@ class ProjectNewTool(Tool):
         "for a directory that already exists, use `project_link` instead."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     def __init__(
         self,
@@ -185,6 +200,7 @@ class ProjectNewTool(Tool):
             f"- location: {target}  ({source})\n"
             f"- git repo: {'yes' if inp.git_init else 'no'}\n"
             f"- GitHub remote: {'yes — ' + inp.remote_visibility if inp.create_remote else 'no'}\n"
+            f"- daily budget: {budget_line(inp.budget_usd)}\n"
             "- verify commands:\n  " + "\n  ".join(verify_lines) + "\n\n"
             "Answer with any corrections, or 'go' to accept as proposed."
         )
@@ -204,6 +220,7 @@ class ProjectNewTool(Tool):
                     "git_init": inp.git_init,
                     "create_remote": inp.create_remote,
                     "verify": {"test": inp.test, "typecheck": inp.typecheck, "lint": inp.lint},
+                    "budget_usd": inp.budget_usd,
                 },
             },
             priority=5,
@@ -226,6 +243,11 @@ class ProjectNewTool(Tool):
                 "answers, call project_new again with confirmed=true and their "
                 "corrections."
             ),
+            receipt=Receipt(
+                kind="record",
+                id=event.event_id,
+                locator=str(self._store.events_path),
+            ),
             metadata={"event_id": event.event_id, "target": str(target), "created": False},
         )
 
@@ -245,15 +267,18 @@ class ProjectNewTool(Tool):
 
         target, source = self._resolve_target(inp)
         if target is None:
-            return ToolResult(output=source, is_error=True)
+            return ToolResult(output=source, is_error=True, caller_error=True)
         try:
             assert_cwd_outside_seal(target)
         except SealViolation as exc:
-            return ToolResult(output=f"project_new: {exc}", is_error=True)
+            return ToolResult(
+                output=f"project_new: {exc}", is_error=True, caller_error=True
+            )
         if target.exists() and not target.is_dir():
             return ToolResult(
                 output=f"project_new: {target} already exists and is not a directory",
                 is_error=True,
+                caller_error=True,
             )
         try:
             occupied = target.is_dir() and any(target.iterdir())
@@ -268,10 +293,33 @@ class ProjectNewTool(Tool):
                     "Use project_link to register it instead."
                 ),
                 is_error=True,
+                caller_error=True,
             )
 
         if not inp.confirmed:
             return await self._post_proposal(inp, target, source, context)
+
+        # **Nothing creates a project without the operator**, and a posture
+        # cannot say so: this tool is `ask` shipped and `auto` under `free`,
+        # which is the mode the unattended path exists for, so the posture that
+        # protects an install is exactly the one relaxed where it matters. The
+        # line is the session kind, as it is for `task_propose` and
+        # `soul_growth_propose`.
+        #
+        # Unconfirmed is left open on purpose: that half posts a card and
+        # creates nothing, so an unattended turn may still ASK. That is the
+        # whole of how an accepted `project_proposal` gets started.
+        if context.session_kind == "autonomy":
+            return ToolResult(
+                output=(
+                    "Nobody is watching this conversation, so it cannot create "
+                    "a project. Call this again without `confirmed` to put the "
+                    "plan to the operator, and it lands when they answer."
+                ),
+                is_error=True,
+                caller_error=True,
+                metadata={"refused_unattended": True},
+            )
 
         # Seeded, not used as an either/or fallback: on the common success
         # path `notes` is non-empty (git init) and the directory + AGENTS.md
@@ -337,6 +385,7 @@ class ProjectNewTool(Tool):
             vcs=await asyncio.to_thread(detect_vcs, target),
             verify=verify,
             conventions_file="AGENTS.md" if conventions_path.exists() else None,
+            budget_usd=inp.budget_usd,
         )
         # Register before trusting, so a registry failure does not leave a
         # standing trust grant behind for a project that is not on the books.
@@ -375,7 +424,11 @@ class ProjectNewTool(Tool):
             provision_note,
             *notes,
         ]
-        return ToolResult(output="\n".join(lines), metadata={**opened.model_dump(mode="json"), "created": True})
+        return ToolResult(
+            output="\n".join(lines),
+            receipt=Receipt(kind="record", id=opened.id, locator=str(store.path)),
+            metadata={**opened.model_dump(mode="json"), "created": True},
+        )
 
 
 def _run(args: list[str], *, cwd: Path, timeout: int) -> subprocess.CompletedProcess[str]:

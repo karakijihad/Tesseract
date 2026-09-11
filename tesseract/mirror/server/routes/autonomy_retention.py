@@ -88,6 +88,13 @@ def _row(
     tree: str = "",
     days: int | None = None,
 ) -> dict[str, Any]:
+    log_path = ""
+    if state in (OperationalState.FAILED, OperationalState.DEGRADED):
+        backend_log = paths.runtime_logs_root() / "mirror-backend.log"
+        if backend_log.is_file():
+            log_path = backend_log.resolve().as_posix()
+        else:
+            said += " The backend log is unavailable, so its errors cannot be investigated here."
     return {
         "name": name,
         "state": state.value,
@@ -108,6 +115,7 @@ def _row(
         # without the surface deciding that for itself.
         "tree": tree,
         "days": days,
+        "logPath": log_path,
     }
 
 
@@ -228,7 +236,7 @@ def ages(last: record.Record) -> list[dict[str, Any]]:
             state = OperationalState.FAILED
             did = (
                 f"The last sweep could not touch it ({why_it_failed}), so "
-                "nothing here was aged. The backend log names the file."
+                "nothing here was aged."
             )
         elif counts is None:
             # No record of this tree. Either nothing has swept here, or a
@@ -334,10 +342,10 @@ def undecided() -> list[dict[str, Any]]:
             # Nothing produces an answer about this one, which is the same
             # claim the panel makes about a department with no camera.
             OperationalState.NOT_INSTRUMENTED,
-            "Nothing decides how long this is kept, so it grows for as long as "
-            "the app runs. Give it a window in config/retention.yaml, or a "
-            "reason it is kept for good, and it moves into one of the bands "
-            "above.",
+            "No retention rule covers this tree. No tool or control can give "
+            "it a window or mark it as kept for good today. A code change must "
+            "register its sweep or declare it kept; adding a window to "
+            "config/retention.yaml alone is rejected.",
             value=in_words(size),
         )
         for size, name in found

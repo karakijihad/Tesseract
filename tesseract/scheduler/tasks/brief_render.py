@@ -87,6 +87,7 @@ class BriefRenderJob(BaseJob):
                 event_store=event_store,
                 vault_wiki_dir=_resolve_vault_wiki_dir(ctx),
                 home=_resolve_home(ctx),
+                cost_ledger=ctx.cost_ledger,
             )
             # `overwrite=False` — an operator who ran `/brief` for that date
             # already has the one they asked for, and re-rendering would both

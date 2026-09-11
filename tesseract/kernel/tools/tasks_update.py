@@ -44,6 +44,8 @@ class TasksUpdateTool(Tool):
         "replacing the whole checklist, which is `tasks_set`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:
@@ -83,6 +85,7 @@ class TasksUpdateTool(Tool):
                     "establish the checklist, then update by id."
                 ),
                 is_error=True,
+                caller_error=True,
             )
 
         snapshot = [dict(t) for t in context.todos]

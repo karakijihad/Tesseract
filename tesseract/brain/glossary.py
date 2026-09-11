@@ -19,6 +19,12 @@ shown.
 Headings and their order come from `kernel/tools/taxonomy.py`, which is
 authoritative and checked at boot. Nothing here is written by hand — the roster
 is the registry, the summaries are `Tool.summary`, and the count is counted.
+
+Everything this reads is fixed for the life of the process, so the same
+registry renders the same bytes on every turn. That is what lets the section
+sit inside the cached prefix without costing anything, and it is a property to
+keep: a render that reads a mutable attribute puts a moving byte in front of
+the whole conversation.
 """
 
 from __future__ import annotations
@@ -28,20 +34,22 @@ from tesseract.kernel.tools import taxonomy
 _HEADER = "# Every tool you have"
 
 _PREAMBLE = (
-    "Grouped by the question you are answering. A tool's full description — "
-    "when to reach for it, and which tool outranks it — comes with its "
-    "schema, so read that before choosing between two that sound alike."
+    "Grouped by the question you are answering. A tool's full description, "
+    "when to reach for it and which tool outranks it, comes with its schema, "
+    "so read that before choosing between two that sound alike."
 )
 
-#: The per-tool marker, and the sentence that defines it. Naming which side of
-#: the line each tool falls on is the point: the map used to say "some arrive
-#: as callable schemas, the rest are one `tool_search` away", which is true and
-#: unusable, because nothing said WHICH. A model scanning for a capability
-#: could not tell what a given line would cost it, and one that already
-#: believed it knew the answer never found out. That is not hypothetical:
-#: `surface_control` sat here correctly summarised while the assistant told the
-#: operator that a card it had just drawn could not be operated.
-_DEFERRED_MARK = " (search)"
+# Nothing here reads `tool.tier`, and that is deliberate. The map used to mark
+# each line with the side of the working-set line it fell on, which meant
+# rendering a mutable instance attribute that `boot._apply_tool_tiers`
+# reassigns live from Settings -> Tools and from the Conscience working-set
+# route. The tool NAMES held still; the rendered TEXT did not, and this block
+# sits inside the cached prefix, so one tier change re-read the whole
+# conversation behind it.
+#
+# What the mark told the model, the model can already see: a tool it was given
+# a schema for is one it can call, and everything else on this map is one
+# `tool_search` away. The preamble says that in one sentence instead.
 
 
 def render(registry) -> str:
@@ -81,21 +89,16 @@ def render(registry) -> str:
         taxonomy.heading_for(slug)
 
     total = sum(len(tools) for tools in by_group.values())
-    carried = sum(
-        1
-        for tools in by_group.values()
-        for t in tools
-        if getattr(t, "tier", "extended") == "core"
-    )
     lines = [
         _HEADER,
         "",
         _PREAMBLE,
         "",
-        f"You have {total} of them. {carried} are carried this turn with their "
-        f"full schemas. The other {total - carried} are marked (search): call "
-        f"`tool_search` for one and its schema arrives, then you can use it. "
-        f"Marked does not mean unavailable, it means one step away.",
+        f"You have {total} of them. Not all of them arrive with a schema on a "
+        f"given turn. If a tool on this map is not among the schemas you were "
+        f"handed, call `tool_search` with its name and the schema arrives, "
+        f"then you can use it. Missing from your schemas does not mean "
+        f"unavailable, it means one step away.",
         "",
     ]
 
@@ -105,8 +108,7 @@ def render(registry) -> str:
             continue
         lines.append(f"## {heading}")
         for tool in sorted(tools, key=lambda t: t.name):
-            mark = "" if getattr(tool, "tier", "extended") == "core" else _DEFERRED_MARK
-            lines.append(f"- `{tool.name}`{mark} — {tool.summary}")
+            lines.append(f"- `{tool.name}` — {tool.summary}")
         lines.append("")
 
     return "\n".join(lines).rstrip()

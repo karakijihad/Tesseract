@@ -13,7 +13,7 @@ turn under a day the operator had not reached yet.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 from tesseract.lib import clock
@@ -61,9 +61,27 @@ def records_covering(target: date) -> list[ChatRecord]:
     missing from the earlier one's. It appears in both, and the callers filter
     to the target day per MESSAGE — which is what keeps a record that spans a
     week from being reported as one day's work.
+
+    **Both surfaces**, through `operator_records`: a conversation the operator
+    had on their phone is a conversation they had, and reading only the
+    cockpit was the one-store ruling half applied. Somebody else's approved
+    chat is not in it, which is that same reader's other half.
     """
+    # **Bounded, and the bound is provable rather than hopeful.** Without it
+    # every daily run parses the install's entire history, growing with how
+    # long the operator has owned the app rather than with what they said
+    # yesterday. `save_chat` derives `ended_at` from the last message BEFORE
+    # writing the file, so a record's mtime is never earlier than its
+    # `ended_at`; and a record only survives the span test below when its
+    # local end date is on or after `target`. Two days of UTC margin covers
+    # every timezone offset that can sit between the two.
+    floor = datetime.combine(
+        target - timedelta(days=2), time.min, tzinfo=timezone.utc
+    ).timestamp()
     kept: list[ChatRecord] = []
-    for record in chat_store.list_records(include_archived=True):
+    for record in chat_store.operator_records(
+        include_archived=True, touched_since=floor
+    ):
         start = clock.parse_stamp(record.started_at)
         if start is None:
             continue

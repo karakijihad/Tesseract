@@ -115,6 +115,21 @@ class RunManifest:
     # the recorder the atlas has been waiting for: which run acted on which
     # agenda item was the one edge nothing on this machine produced.
     task_id: str = ""
+    # How that task stood when the turn closed it, and who wrote the evidence
+    # behind it: `done`/`failed`, and `gate` when a project's own checks
+    # decided or `model` when the assistant's sentence did. Both empty on a
+    # run that closed no task, which is every nightly run and most turns.
+    #
+    # Here beside `task_id` rather than on the closing row, for four reasons
+    # held at once: the fact is produced mid-turn and committed the moment it
+    # happens, so a kill between the close and the turn's end does not lose it
+    # and the boot that closes an interrupted turn still writes it; `StageRow`
+    # is shared with the nightly pipeline, where two task fields would mean
+    # nothing on every row; the join to a task already lives here, and a
+    # second place to read it is a second place for the two to disagree; and
+    # every reader of this fact parses the whole record anyway.
+    task_outcome: str = ""
+    task_verification_by: str = ""
     completed_at: datetime | None = None
 
     @property
@@ -137,6 +152,8 @@ class RunManifest:
             "disabled": list(self.disabled),
             "entry": self.entry,
             "task_id": self.task_id,
+            "task_outcome": self.task_outcome,
+            "task_verification_by": self.task_verification_by,
             "stages": [row.to_dict() for row in self.rows],
         }
 
@@ -152,6 +169,8 @@ class RunManifest:
             disabled=list(raw.get("disabled") or []),
             entry=str(raw.get("entry") or ""),
             task_id=str(raw.get("task_id") or ""),
+            task_outcome=str(raw.get("task_outcome") or ""),
+            task_verification_by=str(raw.get("task_verification_by") or ""),
             completed_at=datetime.fromisoformat(completed) if completed else None,
         )
 

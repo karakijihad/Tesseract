@@ -87,6 +87,7 @@ def log_skill_load(
     version: str = "",
     turn_id: str = "",
     step: int | None = None,
+    memory_id: str = "",
 ) -> None:
     """Append one usage line. Best-effort — never raises past this call.
 
@@ -94,6 +95,12 @@ def log_skill_load(
     reuse be measured against the version rather than the name, so a revision
     that performs worse than the one it replaced can be told apart from it.
     Empty for a plain skill, which has nothing to compare.
+
+    `memory_id` is the feedback memory that IS the correction. Without it the
+    row says a correction happened and the only way back to what the operator
+    said is session to session, which is many to many: a session can save
+    several corrections and consult several skills. The refinement job reads
+    it so its evidence carries the words rather than a step number alone.
     """
     row = {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -107,6 +114,8 @@ def log_skill_load(
         row["turn_id"] = turn_id
     if step is not None:
         row["step"] = step
+    if memory_id:
+        row["memory_id"] = memory_id
     try:
         path = usage_log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -142,7 +151,7 @@ def _version_at(path: str | Path) -> str:
     return entry.version if entry is not None and entry.is_playbook else ""
 
 
-def attribute_session_corrections(session_id: str) -> int:
+def attribute_session_corrections(session_id: str, memory_id: str = "") -> int:
     """Mark every skill loaded in ``session_id`` with a ``correction`` outcome.
 
     Called when a `feedback` memory is saved in the session. A plain skill is
@@ -195,7 +204,8 @@ def attribute_session_corrections(session_id: str) -> int:
             if step is not None and total and matched * 2 <= total:
                 continue
         log_skill_load(
-            skill, session_id, "correction", version=version, turn_id=turn_id, step=step
+            skill, session_id, "correction", version=version, turn_id=turn_id,
+            step=step, memory_id=memory_id,
         )
         added += 1
     return added

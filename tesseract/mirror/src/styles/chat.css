@@ -111,7 +111,11 @@
   opacity: 0.78;
   border-style: dashed;
 }
-.bubble-queued-pill {
+/* The neutral pill. Two states wear it: a message waiting for its turn, and
+   a turn that was stopped partway. Both are the assistant's state rather than
+   a judgement about it, so neither takes a colour of its own. */
+.bubble-queued-pill,
+.bubble-interrupted-pill {
   margin-left: 0.5rem;
   padding: 0 0.45rem;
   border: var(--stroke-1) solid var(--border);

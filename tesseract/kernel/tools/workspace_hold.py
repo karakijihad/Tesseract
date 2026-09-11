@@ -33,6 +33,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,8 @@ class WorkspaceHoldTool(Tool):
         "setting a tool reaches."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:
@@ -121,6 +124,7 @@ class WorkspaceHoldTool(Tool):
         if not document or inp.must_ask is None:
             return ToolResult(
                 output=_said(policy),
+                receipt=Receipt.nothing(),
                 metadata={"changed": False},
             )
 
@@ -129,7 +133,7 @@ class WorkspaceHoldTool(Tool):
                 set_document_hold, paths.config_dir(), document, inp.must_ask
             )
         except HoldError as exc:
-            return ToolResult(output=str(exc), is_error=True)
+            return ToolResult(output=str(exc), is_error=True, caller_error=True)
         except (OSError, ValueError) as exc:
             logger.exception("workspace_hold: the block could not be written")
             return ToolResult(
@@ -165,6 +169,15 @@ class WorkspaceHoldTool(Tool):
         )
         return ToolResult(
             output=f"{head}\n\n{_said(policy)}",
+            receipt=(
+                Receipt(
+                    kind="record",
+                    id=document,
+                    locator=str(paths.config_dir() / "permissions.yaml"),
+                )
+                if was != now
+                else Receipt.nothing()
+            ),
             metadata={"document": document, "was": was, "held": now, "changed": was != now},
         )
 

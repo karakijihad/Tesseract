@@ -9,8 +9,8 @@ answer on any surface, which is the same shape `autonomy_read` was built for.
 So the measuring lives here, on its own, and has two readers: `emit_stats`
 wraps it for the HUD, and `context_read` renders it as the paragraph a person
 gets wherever they asked. One measurement, because a second one drifts, and a
-panel drawing its own idea of the fold is the defect `fold_measurements`
-already exists to stop.
+panel drawing its own idea of where the boundary falls is the defect
+`boundary_measurements` already exists to stop.
 
 `gather` takes a ChatSession by duck type rather than by import: this module
 sits under the session's feet and importing it back would be a cycle.
@@ -43,20 +43,20 @@ def gather(cs: Any) -> dict[str, Any]:
     """
     # All three from ONE assembly. The assembly walks the whole history and
     # this runs after every turn, so asking separately was three walks; and
-    # `foldable_tokens` is what the fold trigger is actually compared against,
-    # while `tokens` is the whole payload including the parts a fold cannot
-    # touch. Reporting one against the other drew the bar over-full.
+    # `conversation_tokens` is what the trigger is actually compared against,
+    # while `tokens` is the whole payload including the parts a boundary
+    # cannot clear. Reporting one against the other drew the bar over-full.
     if hasattr(cs, "measure_payload"):
         # Asked BEFORE the call, not caught after it. An `except AttributeError`
         # around the call cannot tell "this stand-in has no such method" from an
         # AttributeError raised inside it, and downgrading the second to the
-        # legacy path would silently drop `foldable_tokens` and put the bar back
-        # to dividing the whole payload by a foldable-only trigger, which is the
-        # defect this measurement exists to fix.
-        total, foldable, system_tokens = cs.measure_payload()
+        # legacy path would silently drop `conversation_tokens` and put the
+        # bar back to dividing the whole payload by a conversation-only
+        # trigger, which is the defect this measurement exists to fix.
+        total, conversation, system_tokens = cs.measure_payload()
         report = {
             "tokens": total,
-            "foldable_tokens": foldable,
+            "conversation_tokens": conversation,
             "system_tokens": system_tokens,
         }
     else:
@@ -76,9 +76,9 @@ def gather(cs: Any) -> dict[str, Any]:
         report["turns"] = len(getattr(cs, "history", [])) // 2
 
     try:
-        report.update(cs.fold_measurements(report["system_tokens"]))
+        report.update(cs.boundary_measurements(report["system_tokens"]))
     except Exception:
-        logger.exception("context report: fold measurement failed")
+        logger.exception("context report: boundary measurement failed")
 
     try:
         window = report.get("context_window") or getattr(cs.options, "context_window", 0)
@@ -103,33 +103,60 @@ def gather(cs: Any) -> dict[str, Any]:
 
 
 def _last_turn_cache(history: list[dict[str, Any]]) -> dict[str, int]:
-    """The newest turn's cache split, off the record the bubbles already read.
+    """The newest TURN's cache split, off the records the bubbles already read.
 
-    `_meta.usage` is stamped by the turn loop and is what the Mirror's own
-    "cache in / cached" pill renders, so this is the same number the operator
-    can already see beside one message rather than a second accounting of it.
+    `_meta.usage` is stamped once per model CALL, and a turn is up to eighty of
+    them: every tool iteration appends its own assistant message with its own
+    usage. So the last turn is every assistant message back to the operator's
+    question, summed.
+
+    It used to read only the newest message, which is one call. The cockpit's
+    chip sums the turn, so the same question was answered two different ways
+    depending on where it was asked, and on a channel the answer was a third of
+    the truth on a three-call turn. Measured 2026-09-09: the chip said 127,744
+    in over three calls; this said 42,665.
+
+    `calls` travels with the split because the percentage cannot be read
+    without it. One cold call in a three-call turn is 33%, the same cold call
+    in a six-call turn is 80%, and both were mistaken for a broken cache.
+
     Zeros when no turn has run yet, which a renderer reads as "nothing to say"
     rather than "nothing was cached".
     """
+    sent = cached = calls = 0
     for message in reversed(history):
-        usage = (message.get("_meta") or {}).get("usage") if isinstance(message, dict) else None
+        if not isinstance(message, dict):
+            continue
+        # The operator's question ends the turn. Everything after it is one
+        # turn's traffic however many tool iterations it took.
+        if message.get("role") == "user":
+            break
+        usage = (message.get("_meta") or {}).get("usage")
         if not isinstance(usage, dict):
             continue
-        cached = int(usage.get("cached_tokens") or 0)
-        sent = int(usage.get("input_tokens") or 0)
-        return {"last_turn_input_tokens": sent, "last_turn_cached_tokens": cached}
-    return {"last_turn_input_tokens": 0, "last_turn_cached_tokens": 0}
+        sent += int(usage.get("input_tokens") or 0)
+        cached += int(usage.get("cached_tokens") or 0)
+        calls += 1
+    return {
+        "last_turn_input_tokens": sent,
+        "last_turn_cached_tokens": cached,
+        "last_turn_calls": calls,
+    }
 
 
-def fold_ceiling(report: dict[str, Any]) -> int:
-    """The number a fold actually happens at.
+def boundary_ceiling(report: dict[str, Any]) -> int:
+    """The number a boundary actually happens at.
 
-    `fold_trigger_tokens` is measured against the turns that exist and carries
-    the floor the runtime enforces; `compact_threshold_tokens` is the setting
-    alone. They differ the first time a turn runs heavy, and the one worth
-    telling somebody is the one that will fire.
+    `boundary_trigger_tokens` has the manifest taken out of it, because only
+    the conversation is what a boundary clears; `compact_threshold_tokens` is
+    the setting applied to the whole window. The one worth telling somebody is
+    the one that will fire.
     """
-    return int(report.get("fold_trigger_tokens") or report.get("compact_threshold_tokens") or 0)
+    return int(
+        report.get("boundary_trigger_tokens")
+        or report.get("compact_threshold_tokens")
+        or 0
+    )
 
 
 def _short(n: int) -> str:
@@ -149,26 +176,29 @@ def render(report: dict[str, Any]) -> str:
     """The report as the paragraph a person reads, on any surface that carries
     text. Blocks rather than a drawn widget, so a phone, a terminal and a chat
     bubble all show the same picture."""
-    ceiling = fold_ceiling(report)
+    ceiling = boundary_ceiling(report)
     tokens = int(report.get("tokens") or 0)
     # Against the same slice the trigger governs. `tokens` is the WHOLE
-    # assembly; the trigger applies to the part a fold can remove, so dividing
-    # one by the other drew the bar over-full by the size of the system prompt
-    # and the turn's late half. It went unnoticed because the tests that check
-    # this used an empty system prompt, which makes the two identical.
-    measured = int(report.get("foldable_tokens") or tokens)
+    # assembly; the trigger applies to the part a boundary can clear, so
+    # dividing one by the other drew the bar over-full by the size of the
+    # system prompt and the turn's late half. It went unnoticed because the
+    # tests that check this used an empty system prompt, which makes the two
+    # identical.
+    measured = int(report.get("conversation_tokens") or tokens)
     ratio = (measured / ceiling) if ceiling else 0.0
 
     lines = [f"Context  {_bar(ratio)}  {round(ratio * 100)}%"]
     if ceiling:
         lines.append(
-            f"{_short(measured)} of {_short(ceiling)} before it folds"
+            f"{_short(measured)} of {_short(ceiling)} before this "
+            f"conversation is wrapped up and started again"
             f" · {report.get('turns', 0)} turns"
         )
     else:
         lines.append(
             f"{_short(tokens)} carried · {report.get('turns', 0)} turns"
-            " · no window is configured, so nothing here can say when it folds"
+            " · no window is configured, so nothing here can say when it "
+            "will be wrapped up"
         )
     lines.append(
         f"manifest {_short(int(report.get('system_tokens') or 0))}"
@@ -177,23 +207,22 @@ def render(report: dict[str, Any]) -> str:
 
     sent = int(report.get("last_turn_input_tokens") or 0)
     cached = int(report.get("last_turn_cached_tokens") or 0)
+    calls = int(report.get("last_turn_calls") or 0)
     if sent:
+        # The same four figures the cockpit's chip carries, in the same order,
+        # because this is the answer on a channel and they have to be one
+        # answer. What was re-read is stated rather than left to be
+        # subtracted: those tokens were not lost, they were sent again at full
+        # price, and that is the number worth acting on.
+        call_part = f" over {calls} call{'s' if calls != 1 else ''}" if calls else ""
         lines.append(
             f"cache {round(cached / sent * 100)}% of the last turn's input"
-            f" ({_short(cached)} of {_short(sent)})"
+            f"{call_part} ({_short(cached)} of {_short(sent)},"
+            f" {_short(sent - cached)} re-read)"
         )
     else:
         lines.append("cache: no turn has reported its usage yet")
 
-    tail_turns = int(report.get("tail_turns") or 0)
-    tail_tokens = int(report.get("tail_tokens") or 0)
-    anchor = int(report.get("head_anchor_tokens") or 0)
-    if tail_turns or anchor:
-        lines.append(
-            f"a fold keeps the last {tail_turns} turns ({_short(tail_tokens)})"
-            f" and the opening ({_short(anchor)}); everything between them"
-            " becomes a summary"
-        )
 
     # Only when it has happened. A line that always prints is one more thing to
     # read past, and the guard trimming nothing is the normal case.
@@ -206,9 +235,9 @@ def render(report: dict[str, Any]) -> str:
             f"{_short(trim)} and tool results were dropped from it to keep it "
             "alive. One large tool result can do that on its own at any size, "
             "so it is not always the conversation. If it keeps happening, "
-            "lower the fold setting as well"
+            "lower the boundary setting as well"
         )
     return "\n".join(lines)
 
 
-__all__ = ["BAR_CELLS", "fold_ceiling", "gather", "render"]
+__all__ = ["BAR_CELLS", "boundary_ceiling", "gather", "render"]

@@ -115,6 +115,16 @@ def create_server_session(app: web.Application, ws: web.WebSocketResponse) -> Se
         _restore_persisted_chats(app, server_session)
     except Exception:
         log.exception("chat restore failed for %s; using fresh seed", session_id)
+    # AFTER the restore, because the chats it wakes are the ones the restore
+    # just rebuilt, and after the session is in `app["server_sessions"]`,
+    # because the turn it starts reaches back through it. Its own failures are
+    # swallowed inside; this catch is for the import itself.
+    try:
+        from tesseract.mirror.server import resume_wake
+
+        resume_wake.offer(app, server_session)
+    except Exception:
+        log.exception("resume wake failed for %s", session_id)
     return server_session
 
 
@@ -149,6 +159,72 @@ def new_chat_session(
     return chat_session
 
 
+#: What a session with nobody watching hands the factory.
+#:
+#: These lived in `integrations/telegram/bridge.py` while a channel was the only
+#: headless caller. They are not a transport's: every one of them is a stand-in
+#: for a callback that needs a live surface, and they sit here because this is
+#: where a session is built rather than where one transport happens to be
+#: implemented. A second headless caller importing them out of the Telegram
+#: bridge would be an autonomy row that stops working when the bridge does.
+
+
+class NullWebSocket:
+    """A socket that is already closed, for a `ServerSession` with no client."""
+
+    closed = True
+
+    async def send_json(self, payload: dict) -> None:
+        del payload
+        return None
+
+
+async def noop_cli_sink(*args, **kwargs) -> None:
+    del args, kwargs
+    return None
+
+
+async def noop_status_emit(*args, **kwargs) -> None:
+    del args, kwargs
+    return None
+
+
+async def deny_overage(*args, **kwargs) -> bool:
+    """What a headless session holds until the real question is installed.
+
+    `_build_chat_session` takes this callback before the `ServerSession` the
+    real one needs exists, exactly as it does for `ask_fn`, so it stands in for
+    the few lines between the two. It used to be the whole answer on a channel:
+    every one of them denied going over a cap without asking anybody, and a
+    spent budget ended a conversation mid research with no decision offered.
+    """
+    del args, kwargs
+    return False
+
+
+def _default_entry(kind: SessionKind) -> str:
+    """The funnel door a session gets when its caller names none.
+
+    `cockpit` and `channel` are doors in their own right and there is nothing
+    to qualify. An autonomy session is not: `schedule` is already the funnel's
+    node for work that starts itself on the clock (`funnel.py::NODES`), and
+    every autonomy session is a scheduler row, so it takes that door and names
+    its row after the colon the way a channel names its transport. Inventing a
+    `morning` node instead would put a second entrance on the atlas for work
+    that arrives through the one that is already drawn.
+
+    A caller may still pass `turn_entry` to say which row it is. Nothing else
+    may: this function stays the only place a door is decided, because a
+    ChatSession built with the wrong one records its turns under a door the
+    operator never used.
+    """
+    if kind == "channel":
+        return "channel"
+    if kind == "autonomy":
+        return "schedule:autonomy"
+    return "cockpit"
+
+
 def _build_chat_session(
     app: web.Application,
     session_id: str,
@@ -159,6 +235,7 @@ def _build_chat_session(
     *,
     kind: SessionKind = "cockpit",
     channel_display_name: str | None = None,
+    turn_entry: str = "",
 ) -> ChatSession:
     # Channel sessions get a session-specific ``prompt_builder``
     # that re-assembles the system prompt with the channel overlay inlined
@@ -220,7 +297,6 @@ def _build_chat_session(
         options=app["adapter_options"],
         compact_threshold=chat_cfg.compact_threshold,
         prompt_char_budget=chat_cfg.prompt_char_budget,
-        keep_recent_turns=chat_cfg.keep_recent_turns,
         cost_ledger=app.get("cost_ledger"),
         overage_ask_fn=overage_ask_fn,
         session_kind=kind,
@@ -230,7 +306,7 @@ def _build_chat_session(
         # function is the seam the cockpit and every channel are built
         # through, and it is the only place a session is given one — a
         # ChatSession built anywhere else records no turns.
-        turn_entry="channel" if kind == "channel" else "cockpit",
+        turn_entry=turn_entry or _default_entry(kind),
         spawn_stall_seconds=app.get("spawn_stall_seconds"),
         spawn_max_concurrent=app.get("max_concurrent_spawns_per_session"),
     )

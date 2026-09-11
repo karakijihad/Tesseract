@@ -3,9 +3,10 @@
 Natural-language requests work end-to-end through the assistant, but on a phone
 operators want a small, predictable command surface: ``/queue``
 returns the workspace inbox depth whether or not chat_brain decides to
-call the right tool. Read-only commands only — mutating actions
-(``/pause``, ``/cancel``) need the ASK-round-trip semantics nailed down
-before they land here.
+call the right tool. Most are read-only. The ones that are not (``/stop``,
+``/clear``) are the operator's own controls over their own session, and they
+run the same code the cockpit's buttons run rather than a channel-shaped
+variant of it.
 
 Each handler is a coroutine that returns a Telegram-ready text body. The
 router runs *before* the chat-turn dispatch; on a match the bridge sends
@@ -13,9 +14,9 @@ the reply and short-circuits the turn. Unknown ``/foo`` commands fall
 through to the normal chat path (so "/foo what should I do today?" still
 reaches the assistant).
 
-Tier policy: when the chat is on ``friend`` tier, only ``/status`` and
-``/help`` are served. The rest report "not available on this tier" so a
-friend never sees operator state via a deterministic path.
+There is no tier policy. A chat is on the allowlist or the bridge never gets
+this far, and being on it means being the operator, so every command is
+served to everyone who can reach the router.
 """
 
 from __future__ import annotations
@@ -25,16 +26,10 @@ from datetime import datetime, timezone
 from html import escape as html_escape
 from typing import Any, Awaitable, Callable
 
+from tesseract.mirror.server.stop import describe, stop_session
 from tesseract.workspace_events.events import DECIDABLE_KINDS, SETTLED
 
 log = logging.getLogger(__name__)
-
-# Commands a non-operator chat may invoke. Vestigial on a single-operator
-# install — `ctx.tier` resolves to "operator" for every chat, so this never
-# denies — and kept only because the dispatcher still reads it. The tool
-# tool denylist it would mirror is DELETED: it lived in the ask_fn
-# wrapper, so any AUTO posture skipped it entirely.
-_FRIEND_ALLOWED: frozenset[str] = frozenset({"/status", "/help", "/clear"})
 
 CommandHandler = Callable[["TelegramCommandContext"], Awaitable[str]]
 
@@ -52,13 +47,11 @@ class TelegramCommandContext:
         *,
         app: Any,
         chat_id: int,
-        tier: str,
         offline: bool,
         bridge: Any,
     ) -> None:
         self.app = app
         self.chat_id = chat_id
-        self.tier = tier
         self.offline = offline
         self.bridge = bridge
 
@@ -67,21 +60,14 @@ class TelegramCommandContext:
 
 
 async def _handle_help(ctx: TelegramCommandContext) -> str:
-    if ctx.tier == "friend":
-        return (
-            "Available commands:\n"
-            "/status — bridge state\n"
-            "/clear — clear this thread (asks YES/NO first)\n"
-            "/help — this list\n\n"
-            "Other commands are operator-only on this chat."
-        )
     return (
         "Available commands:\n"
+        "/stop — stop everything this conversation is running\n"
         "/status — bridge state (online/offline/busy)\n"
         "/queue — workspace inbox depth\n"
         "/context — how full this conversation is\n"
         "/brief — latest daily brief summary\n"
-        "/clear — clear this thread (asks YES/NO first)\n"
+        "/clear — reflect and clear this thread (asks whether to hand the state over)\n"
         "/voice_on — the assistant replies with voice notes\n"
         "/voice_off — back to text replies\n"
         "/help — this list\n\n"
@@ -90,8 +76,6 @@ async def _handle_help(ctx: TelegramCommandContext) -> str:
 
 
 async def _handle_queue(ctx: TelegramCommandContext) -> str:
-    if ctx.tier == "friend":
-        return "Queue is not available on this tier."
     event_store = (
         ctx.app.get("workspace_event_store") if hasattr(ctx.app, "get") else None
     )
@@ -134,8 +118,6 @@ async def _handle_queue(ctx: TelegramCommandContext) -> str:
 
 
 async def _handle_brief(ctx: TelegramCommandContext) -> str:
-    if ctx.tier == "friend":
-        return "Brief is not available on this tier."
     event_store = (
         ctx.app.get("workspace_event_store") if hasattr(ctx.app, "get") else None
     )
@@ -185,8 +167,9 @@ async def _handle_clear(ctx: TelegramCommandContext) -> str:
         save_state(ctx.bridge._state.state_path, poll_state)  # noqa: SLF001
     return (
         "🧹 Clear this thread?\n"
-        "Reply <b>YES</b> to reflect briefly then clear, "
-        "<b>NO</b> to clear without reflecting, "
+        "Either way I reflect first and write down what it taught me.\n"
+        "Reply <b>YES</b> to also hand the state over to the fresh thread, "
+        "<b>NO</b> to start clean, "
         "or anything else to cancel."
     )
 
@@ -195,8 +178,7 @@ async def _handle_voice_on(ctx: TelegramCommandContext) -> str:
     """Flip the per-chat ``reply_voice`` flag on.
 
     Subsequent the assistant replies in this chat synthesise via the configured TTS lane
-    and ship as voice notes instead of plain text. Operator-only — friend
-    tier hits ``_FRIEND_ALLOWED`` deny in the dispatcher.
+    and ship as voice notes instead of plain text.
     """
     from tesseract.integrations.telegram.state import save_state
 
@@ -229,8 +211,7 @@ async def _handle_context(ctx: TelegramCommandContext) -> str:
     It runs `context_read` rather than measuring the session here. A command
     that read the numbers itself would be a second answer to a question the
     runtime already answers, and when the two drifted the operator would have
-    no way to tell which one had. No tier check of its own: the dispatcher
-    already refuses anything outside `_FRIEND_ALLOWED` before a handler runs.
+    no way to tell which one had.
     """
     from tesseract.kernel.tools.context_read import ContextReadInput, ContextReadTool
 
@@ -259,8 +240,29 @@ async def _handle_status(ctx: TelegramCommandContext) -> str:
     return "the assistant status: busy" if busy else "the assistant status: online"
 
 
+async def _handle_stop(ctx: TelegramCommandContext) -> str:
+    """Break the loop for this chat's session.
+
+    The same act, and the same code, as the cockpit's Stop button and `/stop`
+    typed in the cockpit: `stop.stop_session`. Reached from here rather than
+    from the turn path because the command router runs BEFORE the turn is
+    started, which is what makes it answerable at all while a turn holds the
+    chat. The turn path waits on the running task, so a stop routed through it
+    could only ever arrive after the thing it was meant to stop.
+
+    Returns at once. Cancelling a turn does not mean the turn has finished
+    unwinding, and the operator should not be left watching a silent chat
+    while a tool's last thread returns.
+    """
+    session = ctx.bridge._sessions.get(ctx.chat_id)  # noqa: SLF001
+    if session is None:
+        return "Nothing is running here."
+    return describe(stop_session(session))
+
+
 _HANDLERS: dict[str, CommandHandler] = {
     "/help": _handle_help,
+    "/stop": _handle_stop,
     "/queue": _handle_queue,
     "/context": _handle_context,
     "/brief": _handle_brief,
@@ -280,15 +282,11 @@ async def dispatch(text: str, ctx: TelegramCommandContext) -> str | None:
     """Dispatch a ``/cmd`` to its handler; return the body or ``None``.
 
     Returns ``None`` when the text is not a recognised command — the
-    caller falls back to the normal chat turn. Friend-tier callers
-    receive a stable "not available on this tier" reply for any command
-    outside ``_FRIEND_ALLOWED``.
+    caller falls back to the normal chat turn.
     """
     head = _command_head(text)
     if head not in _HANDLERS:
         return None
-    if ctx.tier == "friend" and head not in _FRIEND_ALLOWED:
-        return "That command is operator-only on this chat."
     try:
         return await _HANDLERS[head](ctx)
     except Exception:

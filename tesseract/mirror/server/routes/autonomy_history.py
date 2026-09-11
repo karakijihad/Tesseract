@@ -554,6 +554,34 @@ def role_days(
     return out
 
 
+def project_spend(
+    ledger_path: Path | None,
+    *,
+    on: date,
+    project_of: Callable[[str], str],
+) -> dict[str, float]:
+    """What each project was billed for on `on`, keyed by project id.
+
+    **Here rather than in the caller, for `role_days`' reason.** There is one
+    reader of this ledger, and the morning asking it a third question is not a
+    reason for a third reader: a change to how a row is parsed or how far back
+    the file is tailed has to reach every answer at once.
+
+    The ledger carries no project and should not grow one. A row names the task
+    it was paid for and a task names its project, so `project_of` walks the
+    second half and answers `""` for a task that names none or whose record is
+    gone. Money on work that belongs to no project is money no project's budget
+    bounds, which is what the morning's own proposing turn is.
+
+    Raises whatever `project_of` raises. The store behind it is the caller's,
+    and a caller that cannot read it must not be handed a day that looks free.
+    """
+    return spent.per_project(
+        [row for row in _ledger_rows(ledger_path) if row.local_date == on],
+        project_of,
+    )
+
+
 def series(
     now: datetime | None = None,
     ledger_path: Path | None = None,

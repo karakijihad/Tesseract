@@ -1,6 +1,6 @@
 import { useConversationStore } from "../../../stores/conversation";
 import { useSessionStore } from "../../../stores/session";
-import { foldCeiling, foldableTokens } from "../../../lib/types";
+import { boundaryCeiling, conversationTokens } from "../../../lib/types";
 import { colorBand } from "../../../lib/money";
 import { sendCommand } from "../../../lib/commands";
 import { Hint } from "../../ui/Hint";
@@ -49,12 +49,12 @@ export function StatsChip({ hintPosition = "top" }: StatsChipProps) {
     );
   }
 
-  const threshold = foldCeiling(stats);
+  const threshold = boundaryCeiling(stats);
   // The slice the ceiling governs, not the whole payload. Dividing `tokens` by
   // it drew the bar over-full by the size of the system prompt and the turn's
   // late half, and disagreed with what `context_read` reports for the same
   // conversation.
-  const measured = foldableTokens(stats);
+  const measured = conversationTokens(stats);
   const totalRatio = threshold > 0 ? Math.min(measured / threshold, 1) : 0;
   const band = colorBand(totalRatio);
   const label =
@@ -74,7 +74,7 @@ export function StatsChip({ hintPosition = "top" }: StatsChipProps) {
         </span>
         {/* One fill. The bar used to draw the manifest as a share of this
             ceiling and the conversation as the rest, but the ceiling already
-            has the manifest taken out of it (`fold_trigger_tokens` is the
+            has the manifest taken out of it (`boundary_trigger_tokens` is the
             ratio's share of the window MINUS the system prompt), so the two
             segments were fractions of different things. The manifest's size
             stays in the hint, where `context_report.render` also keeps it. */}

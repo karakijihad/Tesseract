@@ -8,6 +8,13 @@ Two code paths, selected by `AdapterOptions.use_responses_api`:
 Both paths emit identical StreamChunk events so ChatSession stays agnostic.
 prompt_cache_key is auto-derived from the system prompt hash for free prompt caching
 (≤90% input-token discount + ≤80% latency reduction on cache hits).
+
+The Responses path also defers tool loading when the model entry asks for it:
+tools outside the working set travel flagged rather than withheld, and the
+provider appends the schemas it needs inside the same request. That matters
+because `tools[]` renders BEFORE `system` and before the conversation, so
+adding one unlocked schema mid-conversation used to re-read everything behind
+it at full price.
 """
 
 from __future__ import annotations
@@ -51,6 +58,13 @@ _RESPONSES_HARD_CODES = frozenset({
     "billing_hard_limit_reached",
 })
 
+# The provider's own tool search, which is what makes deferral worth anything:
+# it matches a deferred tool server-side and appends its schema INSIDE the same
+# request, so a tool outside the working set costs no round trip. A wire
+# constant like the `{"type": "function"}` envelope below; which models a role
+# reaches stays `roles.yaml`'s business.
+_TOOL_SEARCH_TOOL = {"type": "tool_search", "execution": "server"}
+
 _RESPONSES_TRANSIENT_CODES = frozenset({
     "rate_limit_exceeded",
     "server_error",
@@ -93,15 +107,32 @@ def _usage_raw(
         "input_tokens": getattr(usage, in_field, 0) or 0,
         "output_tokens": getattr(usage, out_field, 0) or 0,
     }
-    for field, source, key in (
-        ("cached_tokens", in_details_field, "cached_tokens"),
-        ("cache_creation_tokens", in_details_field, "cache_creation_tokens"),
-        ("reasoning_tokens", out_details_field, "reasoning_tokens"),
+    for field, source, keys in (
+        ("cached_tokens", in_details_field, ("cached_tokens",)),
+        # Two names for one number, and the one we read was never the
+        # provider's. OpenAI documents `cache_write_tokens`; the installed
+        # SDK's `InputTokensDetails` declares neither, so whichever the
+        # provider sends arrives as an extra field. Reading only
+        # `cache_creation_tokens` meant this term has never once returned a
+        # value on the path doing nearly all the caching, and a write nobody
+        # can see is the surcharge `_compute_usd` never exercises. The output
+        # key stays as it is: it is the ledger's provider-neutral name and
+        # every row on disk already uses it.
+        (
+            "cache_creation_tokens",
+            in_details_field,
+            ("cache_write_tokens", "cache_creation_tokens"),
+        ),
+        ("reasoning_tokens", out_details_field, ("reasoning_tokens",)),
     ):
         details = getattr(usage, source, None)
-        value = getattr(details, key, None) if details else None
-        if value is not None:
-            out[field] = int(value)
+        if not details:
+            continue
+        for key in keys:
+            value = getattr(details, key, None)
+            if value is not None:
+                out[field] = int(value)
+                break
     return out
 
 
@@ -434,6 +465,7 @@ class OpenAIAdapter(ModelAdapter):
         supports_prompt_cache_key: bool = False,
         supports_stream_usage: bool = True,
         cache_routing_header: str | None = None,
+        defers_tool_loading: bool = False,
     ) -> None:
         from openai import AsyncOpenAI
 
@@ -454,6 +486,14 @@ class OpenAIAdapter(ModelAdapter):
         # on the same cache node; without it they scatter and never hit.
         # Header NAME comes from providers.yaml (`cache_routing_header`).
         self._cache_routing_header = cache_routing_header
+        # Deferral is a Responses-path capability, so the claim and the path
+        # are read from ONE field: `boot._build_provider_adapter` passes
+        # `ref.model.fields["use_responses_api"]` here, and
+        # `AdapterOptions.use_responses_api` comes from the same entry. An
+        # openai-COMPATIBLE surface (NIM, xAI, Ollama) declares it false and
+        # keeps filtering to the working set exactly as before, so nothing
+        # there starts sending a whole registry it cannot defer.
+        self.defers_tool_loading = defers_tool_loading
 
     async def stream(
         self,
@@ -501,7 +541,12 @@ class OpenAIAdapter(ModelAdapter):
         # on spec-faithful providers.
         if opts.stream and self._supports_stream_usage:
             kwargs["stream_options"] = {"include_usage": True}
-        if tools:
+        # Projected here too. This path has no deferral, and an adapter that
+        # declares it still reaches this branch when a catalog entry does not
+        # set `use_responses_api` — so the payload is narrowed to the working
+        # set rather than 150 schemas arriving as ordinary functions.
+        projected = self.project_tools(tools)
+        if projected:
             kwargs["tools"] = [
                 {
                     "type": "function",
@@ -511,7 +556,7 @@ class OpenAIAdapter(ModelAdapter):
                         "parameters": t.get("input_schema", {}),
                     },
                 }
-                for t in tools
+                for t in projected
             ]
         if opts.reasoning_effort:
             kwargs["reasoning_effort"] = opts.reasoning_effort
@@ -763,16 +808,25 @@ class OpenAIAdapter(ModelAdapter):
                 cache_key = _routing_key(instructions, messages)
                 if cache_key:
                     kwargs["prompt_cache_key"] = cache_key
-        if tools:
-            kwargs["tools"] = [
-                {
+        projected = self.project_tools(tools)
+        if projected:
+            translated: list[dict[str, Any]] = []
+            for t in projected:
+                entry: dict[str, Any] = {
                     "type": "function",
                     "name": t["name"],
                     "description": t.get("description", ""),
                     "parameters": t.get("input_schema", {}),
                 }
-                for t in tools
-            ]
+                if t.get("defer_loading"):
+                    entry["defer_loading"] = True
+                translated.append(entry)
+            # The provider's search rides along only when there is something
+            # to search for. `project_tools` has already guaranteed that a
+            # payload which would defer everything defers nothing instead.
+            if any(t.get("defer_loading") for t in translated):
+                translated.append(dict(_TOOL_SEARCH_TOOL))
+            kwargs["tools"] = translated
         if opts.reasoning_effort:
             kwargs["reasoning"] = {"effort": opts.reasoning_effort}
             # Only ask for encrypted reasoning when the model will actually generate some.

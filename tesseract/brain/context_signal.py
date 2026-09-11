@@ -45,12 +45,12 @@ class Fullness:
     and a ratio cannot be checked against anything afterwards.
     """
 
-    foldable_tokens: int
+    conversation_tokens: int
     trigger_tokens: int
 
     @property
     def ratio(self) -> float:
-        """How far the foldable part is towards the boundary. 1.0 is at it.
+        """How far the conversation is towards the boundary. 1.0 is at it.
 
         A trigger of zero or less means the runtime has no boundary to reach
         here, which is a fresh or unconfigured session rather than a full one,
@@ -58,18 +58,18 @@ class Fullness:
         """
         if self.trigger_tokens <= 0:
             return 0.0
-        return self.foldable_tokens / self.trigger_tokens
+        return self.conversation_tokens / self.trigger_tokens
 
 
 _by_scope: dict[str, Fullness] = {}
 
 
-def record(scope: str, *, foldable_tokens: int, trigger_tokens: float) -> None:
+def record(scope: str, *, conversation_tokens: int, trigger_tokens: float) -> None:
     if not scope:
         return
     if scope not in _by_scope and len(_by_scope) >= MAX_SCOPES:
         return
-    _by_scope[scope] = Fullness(int(foldable_tokens), int(trigger_tokens))
+    _by_scope[scope] = Fullness(int(conversation_tokens), int(trigger_tokens))
 
 
 def read(scope: str | None) -> Fullness | None:

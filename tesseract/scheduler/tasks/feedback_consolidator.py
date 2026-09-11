@@ -26,6 +26,7 @@ import logging
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from tesseract.lib.clock import to_local
@@ -33,7 +34,7 @@ from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
 from tesseract.kernel.workspace_changes import SOUL_GROWTH_SECTIONS
 from tesseract.memory.store import MemoryStore
 from tesseract.memory.types import MemoryFrontmatter
-from tesseract.paths import TESSERACT_HOME, log_dir
+from tesseract.paths import TESSERACT_HOME, log_dir, workspace_dir
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.scheduler.role_chain import build_chain_for_job
 from tesseract.scheduler.tasks.feedback_sweep import _extract_first_json_object
@@ -375,6 +376,150 @@ def _write_jsonl(
     return path
 
 
+_SOUL_REL = "tesseract/workspace/SOUL.md"
+
+
+def _emit_soul_proposals(
+    ctx: JobContext,
+    store: Any,
+    proposals: list[dict[str, Any]],
+    target_date: Any,
+    log_path: Path,
+) -> None:
+    """A soul bullet from this job goes through the door every other one does.
+
+    It used to file its own `soul_proposal` kind, whose apply path called
+    `apply_change` directly and consulted no posture, so a bullet from here sat
+    waiting for an approval while the identical bullet proposed in a chat turn
+    applied itself. `permissions.yaml::workspace_documents` is the operator's
+    statement of which documents are theirs to hold, and one producer ignoring
+    it makes the statement untrue rather than partly true.
+
+    So: the same `change_proposal` event, the same `document_posture` reader,
+    the same `settle_proposal` door. SOUL.md is unheld, so under `free` this
+    now applies itself and files the card `applied` with the whole diff on it.
+    OPERATING, WORKSHOP and CHANNEL stay held, and would still ask if a
+    producer ever proposed one.
+    """
+    from tesseract.kernel.workspace_changes import (
+        PROPOSABLE_PATHS,
+        _normalize_bullet,
+        compute_diff,
+        document_posture,
+        hash_text,
+        preview_change,
+        settle_proposal,
+        validate_action,
+        validate_target,
+    )
+    from tesseract.workspace_events import WorkspaceEvent
+
+    if not proposals:
+        return
+
+    # The live policy, which is what `/mode` changes. A job with no app has no
+    # operator to ask either, and `document_posture` answers `ask` for that.
+    context = SimpleNamespace(policy=None)
+    app = getattr(ctx, "app", None)
+    if app is not None:
+        try:
+            context = SimpleNamespace(policy=app["config"].permissions)
+        except (KeyError, AttributeError, TypeError):
+            log.warning("feedback_consolidator: no live permission policy; bullets will ask")
+
+    try:
+        full_path = validate_target(workspace_dir(), _SOUL_REL)
+        action = validate_action(_SOUL_REL, "append_to_section")
+        label = str(PROPOSABLE_PATHS[_SOUL_REL]["label"])
+    except Exception:
+        log.exception("feedback_consolidator: SOUL.md is not proposable")
+        return
+
+    # Still pending from an earlier run, so a card is not raised twice while
+    # the operator has not answered the first.
+    pending = {
+        _normalize_bullet(str((ev.payload or {}).get("summary", "")))
+        for ev in store.list_events(kinds=("change_proposal",), status="pending")
+        if (ev.payload or {}).get("target_path") == _SOUL_REL
+    }
+    pending.discard("")
+
+    for prop in proposals:
+        bullet = prop.get("bullet", "")
+        section = prop.get("section", "")
+        if not bullet or not section:
+            continue
+        if _normalize_bullet(bullet) in pending:
+            log.info("feedback_consolidator: bullet already waiting, not raised again")
+            continue
+
+        bullet_line = f"- {bullet}\n"
+        try:
+            before = full_path.read_text(encoding="utf-8")
+            after = preview_change(
+                current_text=before,
+                action=action,
+                content=bullet_line,
+                section=section,
+            )
+        except Exception:
+            log.exception("feedback_consolidator: could not prepare a soul bullet")
+            continue
+
+        # The soul already says this. Reading the document before proposing a
+        # change to it is the difference between a card the operator dismisses
+        # and a card they never see: the dedup below this used to be the only
+        # one, and it fires at apply time, which is after the interruption.
+        if after == before:
+            log.info("feedback_consolidator: bullet is already in the soul, not proposed")
+            continue
+
+        expected_hash_before = hash_text(before)
+        event = WorkspaceEvent.new(
+            kind="change_proposal",
+            source="feedback_consolidator",
+            title=f"Soul · {section} — {bullet[:70]}",
+            summary=bullet,
+            payload={
+                "target_path": _SOUL_REL,
+                "label": label,
+                "action": action,
+                "content": bullet_line,
+                "section": section,
+                "summary": bullet,
+                "expected_hash_before": expected_hash_before,
+                "bytes_before": len(before.encode("utf-8")),
+                "bytes_after": len(after.encode("utf-8")),
+                "diff": compute_diff(before, after, target_label=label),
+                "kind_origin": "soul_growth",
+                "supporting_ids": prop.get("supporting_ids", []),
+                "target_date": target_date.isoformat(),
+                "log_path": str(log_path),
+            },
+        )
+
+        event, applied, error = settle_proposal(
+            event=event,
+            target_path=_SOUL_REL,
+            action=action,
+            content=bullet_line,
+            section=section,
+            expected_hash_before=expected_hash_before,
+            posture=document_posture(context, _SOUL_REL),
+        )
+        if error is not None:
+            log.warning("feedback_consolidator: soul bullet not settled: %s", error)
+            continue
+
+        try:
+            store.append_event(event)
+        except Exception:
+            log.exception("feedback_consolidator: append soul event failed")
+            continue
+        if applied is None:
+            pending.add(_normalize_bullet(bullet))
+
+
 def _emit_inbox_events(
     ctx: JobContext,
     target_date: Any,
@@ -423,53 +568,7 @@ def _emit_inbox_events(
         except Exception:
             log.exception("feedback_consolidator: append merge event failed")
 
-    # Layer-2 dedup: skip emitting a `soul_proposal` if a pending event
-    # with the same normalized bullet text is already in the inbox.
-    # Stops weekly re-runs (or back-to-back manual fires) from stacking
-    # identical cards in the operator's queue while a prior proposal is
-    # still awaiting decision. The kernel-side `_append_to_named_section`
-    # is the authoritative dedup at commit time; this is the upstream
-    # noise filter so the operator never sees the duplicate to begin with.
-    from tesseract.kernel.workspace_changes import _normalize_bullet
-    pending_soul = store.list_events(kinds=("soul_proposal",), status="pending")
-    pending_norms = {
-        _normalize_bullet(str((ev.payload or {}).get("bullet", "")))
-        for ev in pending_soul
-    }
-    pending_norms.discard("")
-
-    for prop in proposals["soul"]:
-        bullet = prop.get("bullet", "")
-        if _normalize_bullet(bullet) in pending_norms:
-            log.info(
-                "feedback_consolidator: skipped duplicate soul_proposal (%d-char bullet)",
-                len(bullet),
-            )
-            continue
-        title = f"Soul-growth bullet (×{len(prop.get('supporting_ids', []))})"
-        try:
-            from tesseract.workspace_events import WorkspaceEvent
-            store.append_event(WorkspaceEvent.new(
-                kind="soul_proposal",
-                source="feedback_consolidator",
-                title=title,
-                summary=bullet[:1200],
-                payload={
-                    "action": "propose_soul_growth",
-                    # Carried to the card and read back at approval. Without
-                    # it the commit refuses the proposal, so every bullet this
-                    # job raised would reach the operator and then fail to
-                    # file.
-                    "section": prop["section"],
-                    "bullet": bullet,
-                    "supporting_ids": prop.get("supporting_ids", []),
-                    "target_date": target_date.isoformat(),
-                    "log_path": str(log_path),
-                },
-            ))
-            pending_norms.add(_normalize_bullet(bullet))
-        except Exception:
-            log.exception("feedback_consolidator: append soul event failed")
+    _emit_soul_proposals(ctx, store, proposals["soul"], target_date, log_path)
 
     for prop in proposals["archives"]:
         rec_id = prop.get("id", "?")

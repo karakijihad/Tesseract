@@ -15,7 +15,6 @@ from tesseract.integrations._channel_adapter import (
     ChannelMessage,
     ChannelStatus,
     ChannelUser,
-    ChannelUserTier,
 )
 from tesseract.integrations._channel_attachment import (
     ChannelAttachment,
@@ -47,6 +46,7 @@ from tesseract.integrations._channels_config import (
 from tesseract.integrations._conversation_store import ConversationStore
 from tesseract.integrations._url_extract import (
     extract_urls_to_context,
+    wrap_recall_context,
     find_urls,
 )
 from tesseract.integrations._handlers.document import (
@@ -98,6 +98,7 @@ from tesseract.integrations.telegram.state import (
     save_state,
     save_status,
 )
+from tesseract.lib import last_seen
 from tesseract.mirror.server.after_turn import after_turn
 from tesseract.mirror.server.handoff import hand_off
 from tesseract.mirror.server.event_log import EventLog
@@ -107,6 +108,13 @@ from tesseract.config.runtime_limits import (
     load_shutdown_drain_seconds,
 )
 from tesseract.mirror.server.session import ServerSession, _build_chat_session
+from tesseract.mirror.server.session_factory import (
+    NullWebSocket,
+    deny_overage,
+    noop_cli_sink,
+    noop_status_emit,
+)
+from tesseract.orchestrator.outcome import RunOutcome
 from tesseract.orchestrator.turns import SHUTDOWN_NOTICE, why_there_was_no_reply
 
 log = logging.getLogger(__name__)
@@ -141,40 +149,24 @@ _SHUTDOWN_TELL_TIMEOUT_S = 5.0
 _APPROVAL_REASON_CHARS = 700
 
 
-class _NullWebSocket:
-    closed = True
-
-    async def send_json(self, payload: dict[str, Any]) -> None:
-        del payload
-        return None
+# The headless stand-ins live in `session_factory`, beside the function that
+# consumes them, because a channel is no longer the only caller that has
+# nobody watching. Aliased rather than re-exported under new names so this
+# file's own call sites read as they always did.
+_NullWebSocket = NullWebSocket
+_noop_cli_sink = noop_cli_sink
+_deny_overage = deny_overage
+_noop_status_emit = noop_status_emit
 
 
 async def _deny_ask(*args, **kwargs) -> bool:
-    del args, kwargs
-    return False
+    """A channel that opts into refusing rather than asking (`gate_policy`).
 
-
-async def _noop_cli_sink(*args, **kwargs) -> None:
-    del args, kwargs
-    return None
-
-
-async def _deny_overage(*args, **kwargs) -> bool:
-    """What a channel session holds until the real question is installed.
-
-    `_build_chat_session` takes the callback before the `ServerSession` the
-    real one needs exists, exactly as it does for `ask_fn`, so this stands in
-    for the few lines between the two. It used to be the whole answer: every
-    channel denied going over a cap without asking anybody, and a spent budget
-    ended a conversation mid research with no decision offered.
+    Stays here: it is a policy answer this transport offers, not a stand-in
+    for a callback that does not exist yet.
     """
     del args, kwargs
     return False
-
-
-async def _noop_status_emit(*args, **kwargs) -> None:
-    del args, kwargs
-    return None
 
 
 #: Inbound kinds a decoder reads, and what reading one produces. The channel
@@ -205,6 +197,23 @@ class PartialSend(TelegramAPIError, PartialDelivery):
     def __init__(self, message: str, *, delivered: int, total: int) -> None:
         TelegramAPIError.__init__(self, message)
         PartialDelivery.__init__(self, message, delivered=delivered, total=total)
+
+
+def _message_id_of(result: Any) -> int | None:
+    """The `message_id` in a sendMessage result, or None if it has none.
+
+    Read rather than assumed. The API wrapper guarantees a dict and nothing
+    more, and a send whose result cannot be read is a send this process cannot
+    name: answering None says exactly that, and the step it belongs to is
+    recorded `unverified` rather than clean.
+    """
+    if not isinstance(result, dict):
+        return None
+    raw = result.get("message_id")
+    try:
+        return int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
 
 
 class TelegramBridge:
@@ -251,6 +260,18 @@ class TelegramBridge:
         # decode, and outbound order would race. One lock per chat_id.
         # Operator stance: "no thread blocks".
         self._chat_locks: dict[int, asyncio.Lock] = {}
+        # Arrival order for one chat's inbound decode/append, held only for
+        # that. See `_handle_message`; it is NOT the turn lock.
+        self._decode_locks: dict[int, asyncio.Lock] = {}
+        # The typing keepalive and the progress throttler for the turn this
+        # chat is running. Held here, not as locals, because the thing that
+        # must cancel them is whatever exit the turn takes, and the awaited
+        # setup ahead of the turn can be cancelled too: `/stop` during the
+        # placeholder send or a link extraction left `_typing_keepalive`
+        # firing at Telegram every four seconds with nothing left to cancel
+        # it. One entry per chat is enough, because they are created inside
+        # the chat lock.
+        self._turn_indicators: dict[int, tuple[Any, Any]] = {}
         # One autosave timer per chat, so a channel conversation reaches disk
         # on the same cadence a cockpit one does. Keyed like `_sessions`.
         self._autosave_tasks: dict[int, asyncio.Task[None]] = {}
@@ -606,22 +627,15 @@ class TelegramBridge:
                 save_state(self._state.state_path, self._state.poll_state)
 
     async def _handle_message_guarded(self, message: TelegramMessage) -> None:
-        """Acquire the per-chat lock then delegate to ``_handle_message``.
+        """Clear this chat's pending asks, then delegate to ``_handle_message``.
 
-        Lock dict grows by one entry per distinct chat; that's bounded by
-        the operator's allow-list. We do not prune entries because the
-        lock object itself is cheap (asyncio.Lock is ~200 bytes).
+        No lock here. The chat's lock is taken inside ``_handle_message``,
+        around the turn alone, so a message that arrives while a turn is
+        running still reaches the command router and the steering branch.
         """
-        lock = self._chat_locks.get(message.chat_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._chat_locks[message.chat_id] = lock
-        # BEFORE the lock, never inside it. A turn parked on an approval
-        # prompt holds this lock, so a new message that waited for the lock
-        # first could never reach the code that releases it — the operator
-        # would be talking to a bot that had gone deaf until the gate's
-        # timeout expired. Sending another message means moving on from the
-        # prompt, so the pending calls are refused and the turn completes.
+        # A turn parked on an approval prompt is waiting for an answer that
+        # this message supersedes: sending anything else means moving on from
+        # the prompt, so the pending calls are refused and the turn completes.
         superseded = cancel_chat_asks(
             self._channel_asks(), str(message.chat_id),
         )
@@ -630,16 +644,15 @@ class TelegramBridge:
                 "telegram: new message superseded pending ask %s (%s)",
                 entry.event_id, entry.what,
             )
-        async with lock:
-            try:
-                await self._handle_message(message)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception(
-                    "telegram: _handle_message crashed for chat=%s message_id=%s",
-                    message.chat_id, message.message_id,
-                )
+        try:
+            await self._handle_message(message)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception(
+                "telegram: _handle_message crashed for chat=%s message_id=%s",
+                message.chat_id, message.message_id,
+            )
 
     async def _handle_message(self, message: TelegramMessage) -> None:
         assert self._api is not None
@@ -697,23 +710,27 @@ class TelegramBridge:
             return
 
         chat_key = str(message.chat_id)
-        tier = self._state.poll_state.user_tier.get(chat_key, "operator")
+
+        # The operator is here, whatever this message turns out to be — a
+        # command, a yes to the clear prompt, or an ordinary turn. Placed
+        # above every branch below because several of them return before the
+        # message is ingested. Being on the allowlist IS being the operator;
+        # anyone else was already turned away above.
+        last_seen.record()
 
         # /clear follow-up. When the previous turn left a
         # `pending_clear` stamp for this chat, the current message is
         # the operator's yes/no/anything-else answer — handled here
         # before the command router so a literal "yes" doesn't fall
         # through to a normal chat turn.
-        if await self._handle_pending_clear_followup(message, chat_key, tier):
+        if await self._handle_pending_clear_followup(message, chat_key):
             return
 
-        # agenda quick-reply (operator-tier only). Matches strings
-        # shaped exactly like ``ag-YYYY-MM-DD-HHMM-<slug>:<verb>``; falls
-        # through otherwise so casual operator chat stays conversational.
+        # agenda quick-reply. Matches strings shaped exactly like
+        # ``ag-YYYY-MM-DD-HHMM-<slug>:<verb>``; falls through otherwise so
+        # casual chat stays conversational.
         text_stripped = (message.text or "").strip()
-        if tier == "operator" and await self._handle_agenda_quick_reply(
-            message, text_stripped
-        ):
+        if await self._handle_agenda_quick_reply(message, text_stripped):
             return
 
         # m2 — deterministic command router. Read-only commands resolve
@@ -723,7 +740,6 @@ class TelegramBridge:
             ctx = TelegramCommandContext(
                 app=self._app,
                 chat_id=message.chat_id,
-                tier=tier,
                 offline=offline,
                 bridge=self,
             )
@@ -737,56 +753,69 @@ class TelegramBridge:
                 await self.send_text(chat_ref=str(message.chat_id), text=reply)
                 return
 
-        # Visibility-first body + concrete decoders. Each
-        # ``no_handler`` attachment runs through :meth:`_decode_attachment`
-        # which fetches bytes and dispatches on ``kind`` — promoting the
-        # envelope to ``status="ready"`` with an ``<extracted>`` body, or
-        # to ``too_large`` / ``extract_failed`` so the assistant gets a specific
-        # signal instead of silently dropping the content. Unhandled
-        # kinds keep ``no_handler``; video / sticker / location / contact /
-        # poll / dice are deliberately left at that level so
-        # The assistant can apologize or propose a tool.
-        decoded = await self._decode_attachments(message.attachments, message)
-        envelope = render_envelope(decoded)
-        if envelope:
-            if message.text:
-                model_body = f"{message.text}\n\n{envelope}"
+        # Arrival order, held by a lock of its own.
+        #
+        # Decoding an attachment fetches its bytes, so it is a real await, and
+        # every inbound is its own task. Without this a text-only message can
+        # overtake a slower one from the same chat and be appended to the
+        # conversation first, which hands the model its own history in the
+        # wrong order. The TURN lock below cannot do this job: it is held for
+        # the length of a turn, and waiting on it here is exactly what stopped
+        # `/stop` and a mid-turn message from ever reaching the router.
+        # Released before the two of them, so a chat with a turn in flight
+        # waits only for another message's decode.
+        order_lock = self._decode_locks.setdefault(message.chat_id, asyncio.Lock())
+        async with order_lock:
+            # Visibility-first body + concrete decoders. Each
+            # ``no_handler`` attachment runs through :meth:`_decode_attachment`
+            # which fetches bytes and dispatches on ``kind`` — promoting the
+            # envelope to ``status="ready"`` with an ``<extracted>`` body, or
+            # to ``too_large`` / ``extract_failed`` so the assistant gets a specific
+            # signal instead of silently dropping the content. Unhandled
+            # kinds keep ``no_handler``; video / sticker / location / contact /
+            # poll / dice are deliberately left at that level so
+            # The assistant can apologize or propose a tool.
+            decoded = await self._decode_attachments(message.attachments, message)
+            envelope = render_envelope(decoded)
+            if envelope:
+                if message.text:
+                    model_body = f"{message.text}\n\n{envelope}"
+                else:
+                    model_body = envelope
             else:
-                model_body = envelope
-        else:
-            model_body = message.text
+                model_body = message.text
 
-        now_iso = datetime.now(timezone.utc).isoformat()
-        self._conversations.append(
-            self.name,
-            chat_key,
-            ChannelMessage(
-                ts=now_iso,
-                direction="inbound",
-                body=model_body,
-                extra={
-                    "telegram_message_id": message.message_id,
-                    "from_user_id": message.from_user_id,
-                    "from_username": message.from_username,
-                    "telegram_date": message.date,
-                    "has_attachments": bool(message.attachments),
-                },
-                attachments=decoded,
-            ),
-        )
-        # Read BEFORE the write below overwrites it: the question is whether
-        # the PREVIOUS message fell on an earlier day.
-        crossed_into_a_new_day = is_new_local_day(
-            self._state.poll_state.last_message_ts.get(chat_key)
-        )
-        with self._state.with_lock():
-            self._state.poll_state.last_message_ts[chat_key] = now_iso
-            self._state.poll_state.messages_in_total[chat_key] = (
-                self._state.poll_state.messages_in_total.get(chat_key, 0) + 1
+            now_iso = datetime.now(timezone.utc).isoformat()
+            self._conversations.append(
+                self.name,
+                chat_key,
+                ChannelMessage(
+                    ts=now_iso,
+                    direction="inbound",
+                    body=model_body,
+                    extra={
+                        "telegram_message_id": message.message_id,
+                        "from_user_id": message.from_user_id,
+                        "from_username": message.from_username,
+                        "telegram_date": message.date,
+                        "has_attachments": bool(message.attachments),
+                    },
+                    attachments=decoded,
+                ),
             )
-            self._state.poll_state.first_seen.setdefault(chat_key, now_iso)
-            self._state.poll_state.record_inbound(chat_key, now_iso)
-            save_state(self._state.state_path, self._state.poll_state)
+            # Read BEFORE the write below overwrites it: the question is whether
+            # the PREVIOUS message fell on an earlier day.
+            crossed_into_a_new_day = is_new_local_day(
+                self._state.poll_state.last_message_ts.get(chat_key)
+            )
+            with self._state.with_lock():
+                self._state.poll_state.last_message_ts[chat_key] = now_iso
+                self._state.poll_state.messages_in_total[chat_key] = (
+                    self._state.poll_state.messages_in_total.get(chat_key, 0) + 1
+                )
+                self._state.poll_state.first_seen.setdefault(chat_key, now_iso)
+                self._state.poll_state.record_inbound(chat_key, now_iso)
+                save_state(self._state.state_path, self._state.poll_state)
 
         if offline:
             # M1 — enqueue the message for replay on flip-to-online. The
@@ -822,6 +851,121 @@ class TelegramBridge:
         # Revoke/block still rebuilds the session via :meth:`revoke` /
         # :meth:`block`.
         session = self._session_for(message.chat_id, reset=False)
+
+        # A message arriving while a turn already holds this chat is QUEUED
+        # INTO that turn rather than behind it. `_start_channel_turn` awaits the
+        # running task, so without this the operator's redirection lands only
+        # after the turn it was meant to redirect has already finished:
+        # measured at about ten minutes against an 89-tool-call turn, which is
+        # long enough that the answer is worthless by the time it arrives.
+        #
+        # The cockpit has always been able to do this (`turn_intake.handle_steer`
+        # into `ChatSession.enqueue_user_inject`). The channel could not reach
+        # it, which is a transport gap and not a claim about what a surface is
+        # allowed to do, so it is fixed here rather than by telling the model
+        # to behave differently on a phone.
+        #
+        # The text lands at the next tool boundary (`_drain_user_injections`).
+        # A turn already past its last tool call does not drain, and the entry
+        # then rides into the following turn rather than being lost.
+        # `cancelling()` matters as much as `done()`. A stopped turn keeps its
+        # slot until it unwinds, and injecting into it put the operator's next
+        # message into a conversation the runtime had already declared over:
+        # `stop_session` clears `pending_injected_messages`, and this ran after
+        # it and refilled the list. Falling through instead makes the message
+        # an ordinary turn, which is what it is.
+        running = getattr(session, "current_turn_task", None)
+        if running is not None and not running.done() and not running.cancelling():
+            chat_session_now = getattr(session, "chat_session", None)
+            if chat_session_now is not None and hasattr(
+                chat_session_now, "enqueue_user_inject"
+            ):
+                chat_session_now.enqueue_user_inject(message.text)
+                log.info(
+                    "telegram: queued into the running turn for chat_id=%s",
+                    message.chat_id,
+                )
+                await self._send_outbound(
+                    message.chat_id,
+                    "Got it. I will read that at my next step and take it from "
+                    "there.",
+                )
+                return
+
+        # The chat's lock is taken HERE, not around the whole inbound handler.
+        # It serialises TURNS, which is what `_drive_resume_turn` already says
+        # it is for. Held from the handler's first line it also covered the
+        # command router and the steering branch above, so `/stop` and a
+        # mid-turn redirection each waited on the very turn they were meant to
+        # reach and arrived only after it had finished.
+        # Registered BEFORE the lock, not after it, and before the awaited
+        # setup inside `_run_inbound_turn` (the placeholder send, the link
+        # extraction). `channel_turn` does not assign `current_turn_task`
+        # until the turn actually starts, so without this a `/stop` anywhere
+        # in that stretch found nothing to cancel, told the operator nothing
+        # was running, and then watched the turn start. Cancelling this task
+        # is what ends it; setting `cancel_event` is not, because the turn
+        # clears that event on its way in (`channel_turn.py`, `chat.py::send`).
+        lock = self._chat_locks.setdefault(message.chat_id, asyncio.Lock())
+        me = asyncio.current_task()
+        pending = session.pending_turn_tasks.setdefault(chat_key, set())
+        pending.add(me)
+        try:
+            async with lock:
+                try:
+                    await self._run_inbound_turn(
+                        message,
+                        session,
+                        chat_key,
+                        model_body,
+                        crossed_into_a_new_day=crossed_into_a_new_day,
+                    )
+                finally:
+                    # INSIDE the lock. `_turn_indicators` is keyed by chat, not
+                    # by turn, so silencing after the lock released would let
+                    # the next turn register its own and then have them killed
+                    # by this one's cleanup: no typing indicator and a dead
+                    # progress throttler on a turn that had only just started.
+                    # Whatever exit this turn took, including a cancel landing
+                    # in its setup, the chat stops showing the assistant at the
+                    # keyboard here.
+                    await self._silence_turn_indicators(message.chat_id)
+        finally:
+            waiting = session.pending_turn_tasks.get(chat_key)
+            if waiting is not None:
+                waiting.discard(me)
+                if not waiting:
+                    session.pending_turn_tasks.pop(chat_key, None)
+
+    async def _silence_turn_indicators(self, chat_id: int) -> None:
+        """Stop the typing keepalive and the progress throttler for `chat_id`.
+
+        Idempotent, and never raises: it runs on the way out of a turn that
+        may already be unwinding from a cancel, and a failure here must not
+        replace whatever ended the turn.
+        """
+        typing_task, throttler = self._turn_indicators.pop(chat_id, (None, None))
+        if throttler is not None:
+            try:
+                await throttler.stop()
+            except Exception:
+                log.exception("telegram: could not stop the progress throttler")
+        if typing_task is not None:
+            try:
+                await _cancel_task(typing_task)
+            except Exception:
+                log.exception("telegram: could not stop the typing keepalive")
+
+    async def _run_inbound_turn(
+        self,
+        message: TelegramMessage,
+        session: ServerSession,
+        chat_key: str,
+        model_body: str,
+        *,
+        crossed_into_a_new_day: bool,
+    ) -> None:
+        """Run one inbound message as a chat turn. The caller holds the lock."""
         # clear the per-turn gate-dedup set before the loop runs so
         # the first call to a previously gated tool can re-emit a fresh
         # ``agent_post`` if the operator is still away.
@@ -850,6 +994,7 @@ class TelegramBridge:
             self._typing_keepalive(message.chat_id),
             name=f"telegram:typing:{message.chat_id}",
         )
+        self._turn_indicators[message.chat_id] = (typing_task, None)
 
         # Placeholder-edit progress pattern: post a "thinking" bubble
         # immediately so the remote user gets an instant read-receipt,
@@ -877,6 +1022,7 @@ class TelegramBridge:
         # the turn logic doesn't branch on its presence.
         on_progress = self._build_progress_callback(message.chat_id, placeholder_id)
         throttler = on_progress._throttler  # for stop() on completion
+        self._turn_indicators[message.chat_id] = (typing_task, throttler)
         # `placeholder_id` is no longer fixed for the turn: every `<intent>`
         # retires one and opens the next. Read the live value back before
         # anything edits "the placeholder".
@@ -920,18 +1066,37 @@ class TelegramBridge:
                 url_ctx = ""
 
         if url_ctx:
-            # Neutralize an accidental ``</recall_context>`` in the user's
-            # body so a pasted XML fragment can't close the wrapper early and
-            # push the actual context outside the tagged block. Replacement
-            # preserves the literal intent (operator can still see
-            # "</recall_context>" they typed) without breaking the structure.
-            safe_body = model_body.replace(
-                "</recall_context>", "&lt;/recall_context&gt;",
-            )
-            turn_body = (
-                f"<recall_context>\n{url_ctx}\n</recall_context>\n\n{safe_body}"
+            turn_body = wrap_recall_context(url_ctx, model_body)
+
+        async def _boundary(*, mid_turn: bool = False) -> None:
+            """This turn's boundary, defined once and reached from two places.
+
+            Inside the tool loop when the turn outgrows the ceiling on its own,
+            and again when the turn ends. Same callable, because a mid-turn
+            variant of the boundary is a second consolidation and the runtime
+            has one. Which of the two it is has to be said: at the end the
+            conversation being cleared has finished speaking, and inside the
+            loop it has not.
+
+            Without the loop half, a long tool run on this surface fell through
+            to the emergency prompt trim, which is the guard against one turn
+            being too big for the model and not the thing that bounds a
+            conversation. The cockpit has had both halves since the hook
+            existed, and a channel is the same funnel.
+            """
+            await after_turn(
+                session.chat_session,
+                app=self._app,
+                session=session,
+                channel=self.name, chat_id=chat_key,
+                announce=lambda text: self._send_outbound(message.chat_id, text),
+                ending=lambda reflect: self._start_fresh_thread(
+                    session, message.chat_id, reflect,
+                ),
+                mid_turn=mid_turn,
             )
 
+        turn_crashed = False
         try:
             reply = await _start_channel_turn(
                 self._app,
@@ -941,11 +1106,44 @@ class TelegramBridge:
                 body=turn_body,
                 on_progress=on_progress,
                 error_out=turn_errors,
+                boundary_when_needed=lambda: _boundary(mid_turn=True),
             )
+        except asyncio.CancelledError:
+            # A stop reaches THIS task as well as the turn inside it: the
+            # handler is registered in `pending_turn_tasks` so that a `/stop`
+            # landing in the setup above still finds something to cancel. So
+            # the cancel arrives here rather than at `_start_channel_turn`'s
+            # own `turn_cancelled` branch, and every sentence below is
+            # skipped. The operator was left watching a bubble that said
+            # "thinking" and never said anything else, which is the thing this
+            # phase is named after.
+            #
+            # Awaiting after catching a cancel is deliberate and it is the
+            # only way to reach the person: the frame has already been
+            # cancelled once, so the next await runs normally, and a second
+            # stop arriving mid-edit is a cancellation that wins, which is
+            # correct. The sentence is the runtime's own, not this
+            # transport's, so the cockpit and a channel say the same thing.
+            await self._silence_turn_indicators(message.chat_id)
+            placeholder_id = progress_state["placeholder_id"]
+            if placeholder_id is not None:
+                notice = why_there_was_no_reply(RunOutcome.TRUNCATED)
+                await self._edit_or_fallback(
+                    message.chat_id, placeholder_id, notice,
+                )
+                self._note_the_bubble_said_it(session, notice)
+            raise
         except Exception:
             log.exception("telegram: chat turn failed for chat_id=%s", message.chat_id)
-            await throttler.stop()
-            await _cancel_task(typing_task)
+            turn_crashed = True
+        finally:
+            # `_handle_message`'s finally is what silences the typing keepalive
+            # and the throttler now, because a cancel can also land in the
+            # setup ABOVE this try, where nothing here would run. Stopping the
+            # throttler here as well keeps the progress edits from racing the
+            # final reply below; both calls are idempotent.
+            await self._silence_turn_indicators(message.chat_id)
+        if turn_crashed:
             placeholder_id = progress_state["placeholder_id"]
             if placeholder_id is not None:
                 await self._edit_or_fallback(
@@ -954,9 +1152,7 @@ class TelegramBridge:
                     "⚠️ I hit an error processing that. Try again?",
                 )
             return
-        await throttler.stop()
         placeholder_id = progress_state["placeholder_id"]
-        await _cancel_task(typing_task)
 
         # A1 — workspace-gate visibility. Any forced-ASK posture (the 5
         # forced-ASK bash_security checks, file_write, agent_promote,
@@ -1074,14 +1270,65 @@ class TelegramBridge:
         # the wait. The cockpit compacts after its stream has already reached
         # the UI; this is the same place in the same order.
         if reply is not None and not turn_errors:
-            await after_turn(
-                session.chat_session,
-                app=self._app,
-                session=session,
-                channel=self.name, chat_id=chat_key,
-                announce=lambda text: self._send_outbound(message.chat_id, text),
-                ending=lambda reflect: self._start_fresh_thread(
-                    session, message.chat_id, reflect,
+            await _boundary()
+
+        # Last of all, and inside the chat lock so no inbound message can
+        # overtake it. See `_answer_what_was_said_mid_turn`.
+        await self._answer_what_was_said_mid_turn(session, message.chat_id)
+
+    async def _answer_what_was_said_mid_turn(
+        self, session: ServerSession, tg_chat_id: int,
+    ) -> None:
+        """Keep the promise the channel makes when it queues a mid-turn message.
+
+        A message arriving while a turn runs is queued INTO that turn and the
+        operator is told "I will read that at my next step and take it from
+        there." The turn reads it at its next tool boundary
+        (`chat.py::_drain_user_injections`), which is true right up until the
+        turn has no next tool boundary. Measured on 2026-09-10: the operator
+        sent "actually just the latest" eleven seconds into a turn, was
+        acknowledged, and the answer that arrived five seconds later listed
+        three entries. The turn was already past its last tool call, so
+        nothing drained, and the words sat in `pending_injected_messages`
+        waiting for a tool call in some future turn that might never come.
+
+        The cockpit has never had that hole: `turn_intake.drain_next` rescues
+        a stranded inject at the end of the turn and runs it as a fresh one.
+        This is the same rescue, and it is here rather than in `chat.py`
+        because the cockpit's answer is already the right one and a second
+        answer inside the loop would be a second mechanism.
+
+        A `while` rather than one pass, because the operator can speak again
+        during the rescue turn and the promise is the same one. It cannot
+        spin: every pass runs a real turn, so it only continues for as long as
+        somebody keeps typing into one.
+
+        Nothing here runs after a stop. `stop.py` clears the pending
+        injections, deliberately: they were addressed to the turn the operator
+        just ended.
+        """
+        chat_session = getattr(session, "chat_session", None)
+        while True:
+            stranded = list(getattr(chat_session, "pending_injected_messages", None) or [])
+            if not stranded:
+                return
+            chat_session.pending_injected_messages = []
+            body = "\n".join(
+                said
+                for said in ((e.get("text") or "").strip() for e in stranded)
+                if said
+            )
+            if not body:
+                return
+            log.info(
+                "telegram: answering %d message(s) said mid-turn for chat_id=%s",
+                len(stranded), tg_chat_id,
+            )
+            await self._drive_channel_turn(
+                session, tg_chat_id, body,
+                nothing_to_add=(
+                    "I read what you sent while I was working and there was "
+                    "nothing to add to what I already said."
                 ),
             )
 
@@ -1605,7 +1852,7 @@ class TelegramBridge:
                     plain=chunk,
                     reply_to_message_id=this_reply_to,
                 )
-                if not sent:
+                if sent is None:
                     return
                 if this_reply_to is not None:
                     reply_to_consumed = True
@@ -1660,17 +1907,33 @@ class TelegramBridge:
                 "telegram: editMessageText (plain) failed for chat=%s (%s); fresh-send",
                 chat_id, exc,
             )
-        return await self._send_fresh(chat_id=chat_id, html=html, plain=plain)
+        # Coerced back to a bool deliberately: this one answers whether the
+        # operator saw it, and its other two paths are an edit, which has no
+        # new id to give.
+        return (
+            await self._send_fresh(chat_id=chat_id, html=html, plain=plain)
+        ) is not None
 
     async def _send_fresh(
         self, *, chat_id: int, html: str, plain: str,
         reply_to_message_id: int | None = None,
         disable_web_page_preview: bool = False,
         reply_markup: dict[str, Any] | None = None,
-    ) -> bool:
+    ) -> int | None:
+        """The message id Telegram minted, or None if nothing was sent.
+
+        It used to answer True/False, and the id it already had in hand
+        went in the bin. Nothing downstream could then say WHICH message
+        a notification was, so every send the runtime made unasked was
+        recorded as work nobody can check.
+
+        **Callers test `is None`, never truthiness.** A Telegram message
+        id is never 0, so the two agree today; relying on that is how a
+        delivered message comes to read as a failed one later.
+        """
         assert self._api is not None
         try:
-            await self._api.send_message(
+            result = await self._api.send_message(
                 chat_id=chat_id,
                 text=html,
                 parse_mode="HTML",
@@ -1678,26 +1941,26 @@ class TelegramBridge:
                 disable_web_page_preview=disable_web_page_preview,
                 reply_markup=reply_markup,
             )
-            return True
+            return _message_id_of(result)
         except TelegramAPIError as exc:
             log.warning(
                 "telegram: sendMessage (HTML) failed for chat=%s (%s); retrying plain",
                 chat_id, exc,
             )
         try:
-            await self._api.send_message(
+            result = await self._api.send_message(
                 chat_id=chat_id, text=plain,
                 reply_to_message_id=reply_to_message_id,
                 disable_web_page_preview=disable_web_page_preview,
                 reply_markup=reply_markup,
             )
-            return True
+            return _message_id_of(result)
         except TelegramAPIError as exc:
             log.warning(
                 "telegram: sendMessage (plain) also failed for chat=%s (%s)",
                 chat_id, exc,
             )
-            return False
+            return None
 
     def _build_progress_callback(self, chat_id: int, placeholder_id: int | None):
         """Build an ``on_progress`` lambda + its 1 Hz throttler for one turn.
@@ -2325,16 +2588,17 @@ class TelegramBridge:
             await self._safe_answer_callback(cb_id, "Bad chat context.")
             return
         message_id = (callback.get("message") or {}).get("message_id")
-        # Operator-only — the gate's approval token mutates session state,
-        # never let a friend-tier user flip it.
-        tier = self._state.poll_state.user_tier.get(str(chat_id), "operator")
-        if tier != "operator":
-            log.warning(
-                "telegram: callback refused — chat=%s tier=%s is not operator",
-                chat_id, tier,
-            )
+        # The gate's approval token mutates session state, so only a chat on
+        # the allowlist may flip it. Being allowed is the whole permission.
+        if not self._state.allowlist.is_allowed(chat_id):
+            log.warning("telegram: callback refused — chat=%s is not allowed", chat_id)
             await self._safe_answer_callback(cb_id, "Not authorized.", show_alert=True)
             return
+        # A tap is the operator being here, and for an approval prompt it is
+        # the whole interaction: an update carrying a callback query never
+        # reaches `_handle_message`, so without this a visit spent answering
+        # buttons leaves no trace that they were ever back.
+        last_seen.record()
         parts = data.split(":", 2)
         if len(parts) == 3 and parts[0] == "q":
             # An answer to a piece of parked autonomy work. It resolves no
@@ -2498,24 +2762,43 @@ class TelegramBridge:
         Behind the lock because it is a turn like any other, and two turns in
         one chat is the race `_chat_locks` exists to stop: the operator can tap
         an old prompt while a live message is mid-flight.
+
+        Registered in `pending_turn_tasks` for the same reason an inbound turn
+        is: `_drive_channel_turn` sends a placeholder before `channel_turn`
+        assigns `current_turn_task`, so a `/stop` in between found nothing to
+        cancel and the resumed turn ran anyway. A turn is a turn on every path
+        that starts one.
         """
         lock = self._chat_locks.setdefault(chat_id, asyncio.Lock())
-        async with lock:
-            try:
-                await self._drive_channel_turn(session, chat_id, body)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception(
-                    "telegram: the resumed turn failed for chat=%s", chat_id
-                )
-                await self._safe_send(
-                    chat_id=chat_id,
-                    text=(
-                        "I took your approval but could not pick the work back "
-                        "up. Ask me again and it will go straight through."
-                    ),
-                )
+        chat_key = str(chat_id)
+        me = asyncio.current_task()
+        pending = session.pending_turn_tasks.setdefault(chat_key, set())
+        pending.add(me)
+        try:
+            async with lock:
+                try:
+                    await self._drive_channel_turn(session, chat_id, body)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception(
+                        "telegram: the resumed turn failed for chat=%s", chat_id
+                    )
+                    await self._safe_send(
+                        chat_id=chat_id,
+                        text=(
+                            "I took your approval but could not pick the work "
+                            "back up. Ask me again and it will go straight "
+                            "through."
+                        ),
+                    )
+        finally:
+            waiting = session.pending_turn_tasks.get(chat_key)
+            if waiting is not None:
+                waiting.discard(me)
+                if not waiting:
+                    session.pending_turn_tasks.pop(chat_key, None)
+            await self._silence_turn_indicators(chat_id)
 
     async def _safe_answer_callback(
         self, cb_id: str, text: str, *, show_alert: bool = False,
@@ -2800,7 +3083,9 @@ class TelegramBridge:
         # the record can be a whole interval stale, which is long enough to be
         # missing the exchange whose boundary this is.
         history = list(getattr(session.chat_session, "history", ()) or ())
-        if history and archive_record(durable, history) is None:
+        if history and archive_record(
+            durable, history, channel=self.name, chat_id=str(chat_id),
+        ) is None:
             log.warning(
                 "channel handoff: nothing was archived for %s, so the thread "
                 "stands rather than being deleted",
@@ -2839,7 +3124,7 @@ class TelegramBridge:
     # -- /clear follow-up ------------------------------------
 
     async def _handle_pending_clear_followup(
-        self, message: TelegramMessage, chat_key: str, tier: str,
+        self, message: TelegramMessage, chat_key: str,
     ) -> bool:
         """Resolve a previously-issued /clear command.
 
@@ -2850,7 +3135,6 @@ class TelegramBridge:
         which case the pending stamp is dropped silently and the
         caller falls through to normal processing.
         """
-        del tier  # both tiers may answer their own /clear
         stamp = self._state.poll_state.pending_clear.get(chat_key)
         if not stamp:
             return False
@@ -2890,6 +3174,11 @@ class TelegramBridge:
                     session.chat_session,
                     reason="channel_clear",
                     label="clear",
+                    # YES is the answer to "hand it back", not to "reflect".
+                    # Both answers reflect and both write the record; this is
+                    # the one that also sends the package into the fresh
+                    # thread when the reflection has finished building it.
+                    deliver=lambda text: self._send_outbound(message.chat_id, text),
                 )
             except Exception:
                 # The operator asked to close the thread. Not closing it
@@ -2912,10 +3201,34 @@ class TelegramBridge:
             )
             return True
         if body in _CLEAR_NO_TOKENS:
+            # NO still reflects. Clearing is one act — reflect, record, clear —
+            # and the answer decides only whether the package comes back into
+            # the fresh thread. A `no` that skipped the reflection threw the
+            # thread away unlearned, which is not what the operator was
+            # declining: they were declining to be handed a briefing they did
+            # not want, not asking for what it taught to be discarded. The
+            # record is still written and `recall_history` still reaches it.
+            try:
+                session = self._session_for(message.chat_id, reset=False)
+                hand_off(
+                    self._app,
+                    session,
+                    session.chat_session,
+                    reason="channel_clear",
+                    label="clear",
+                )
+            except Exception:
+                log.exception(
+                    "telegram: /clear reflection failed to start for chat=%s",
+                    message.chat_id,
+                )
             await self.clear_session(message.chat_id)
             await self._safe_send(
                 chat_id=message.chat_id,
-                text="🧹 Cleared. Next message starts a fresh thread.",
+                text=(
+                    "🧹 Cleared. I am still writing down what this thread "
+                    "taught me. Next message starts a fresh thread."
+                ),
             )
             return True
         # Anything else cancels — fall through, no reply yet so the
@@ -3100,6 +3413,7 @@ class TelegramBridge:
     async def _drive_channel_turn(
         self, session: ServerSession, tg_chat_id: int, body: str,
         *, refused_out: list[bool] | None = None,
+        nothing_to_add: str = "A background task finished and there was nothing to add.",
     ) -> str | None:
         """Run one turn this bridge started itself, and deliver its reply.
 
@@ -3126,6 +3440,9 @@ class TelegramBridge:
         placeholder_id = await self._send_thinking_placeholder(tg_chat_id)
         on_progress = self._build_progress_callback(tg_chat_id, placeholder_id)
         throttler = on_progress._throttler  # noqa: SLF001
+        # Owned by the caller's finally, so a stop landing anywhere in this
+        # turn silences it. No typing keepalive on this path.
+        self._turn_indicators[tg_chat_id] = (None, throttler)
         # ``schedule_wake`` pre-registers the calling wrapper task into
         # ``current_turn_tasks[active_chat_id]``, which is the SAME slot
         # `_start_channel_turn`'s busy-check reads. Left alone it would find
@@ -3134,7 +3451,7 @@ class TelegramBridge:
         session.current_turn_task = None
         error_out: list[str] = []
 
-        async def _fold(*, mid_turn: bool = False) -> None:
+        async def _boundary(*, mid_turn: bool = False) -> None:
             """Same shape as an inbound turn's: one definition, used inside the
             tool loop and again at the turn boundary.
 
@@ -3166,23 +3483,26 @@ class TelegramBridge:
                 on_progress=on_progress,
                 error_out=error_out,
                 refused_out=refused_out,
-                fold_when_needed=lambda: _fold(mid_turn=True),
+                boundary_when_needed=lambda: _boundary(mid_turn=True),
             )
         finally:
             await throttler.stop()
         if reply:
             await self._send_outbound(tg_chat_id, reply, placeholder_id=placeholder_id)
         elif placeholder_id is not None:
+            # What a silent turn is called depends on what began it. A spawn
+            # finishing and the operator's own words said mid-turn are not the
+            # same event, and one sentence for both told them their message
+            # had been a background task.
             await self._edit_or_fallback(
-                tg_chat_id, placeholder_id,
-                "(background task finished — nothing to add)",
+                tg_chat_id, placeholder_id, nothing_to_add,
             )
         # A turn is a turn: it appends the body and the reply to the same
         # persisted history an inbound message would. Left out of this hook, a
         # chat receiving many background completions grew past the window with
         # nothing bounding it.
         if reply is not None and not error_out:
-            await _fold()
+            await _boundary()
         return error_out[0] if error_out else None
 
     # -- status / replies --------------------------------------------------
@@ -3838,7 +4158,7 @@ class TelegramBridge:
         self, *, chat_ref: str, text: str,
         reply_to_message_id: int | None = None,
         disable_web_page_preview: bool = False,
-    ) -> None:
+    ) -> str:
         """Public adapter surface for fire-and-forget outbound text.
 
         Used by the daily-brief push and any future "send a
@@ -3861,6 +4181,14 @@ class TelegramBridge:
         to, `OutboundNotifier` recorded the category as delivered, and the
         Channels room showed the operator a message they never received. A
         Telegram outage looked identical to a quiet morning.
+
+        **Returns the FIRST chunk's message id**, or `""` when there was
+        nothing to send. First rather than last because that is the message
+        a reply quotes and the one a reader looking for this notification
+        finds; a body split into four is four messages and one of them has
+        to be the answer. Callers that ignore it are unaffected. It exists
+        because nothing could say WHICH message a notification was, so
+        every send the runtime made unasked was recorded as unverifiable.
         """
         if self._api is None:
             raise RuntimeError("telegram bridge not initialized")
@@ -3870,7 +4198,8 @@ class TelegramBridge:
             raise ValueError(f"chat_ref must be an integer chat_id, got {chat_ref!r}") from exc
         chunks = chunk_for_telegram(text or "")
         if not chunks:
-            return
+            return ""
+        first_id: int | None = None
         for idx, chunk in enumerate(chunks):
             # ``send_text`` may receive pre-rendered Telegram-HTML (daily
             # brief, command router) or plain text. Either way the HTML
@@ -3885,7 +4214,7 @@ class TelegramBridge:
                 reply_to_message_id=(reply_to_message_id if idx == 0 else None),
                 disable_web_page_preview=disable_web_page_preview,
             )
-            if not sent:
+            if sent is None:
                 carried = (
                     f"the first {idx} of {len(chunks)} parts arrived and the "
                     f"rest did not"
@@ -3905,13 +4234,16 @@ class TelegramBridge:
                     delivered=idx,
                     total=len(chunks),
                 )
+            if first_id is None:
+                first_id = sent
         self._record_outbound_at(chat_id)
+        return "" if first_id is None else str(first_id)
 
     async def send_answerable(
         self, *, chat_ref: str, text: str, actions: Any,
         reply_to_message_id: int | None = None,
         disable_web_page_preview: bool = False,
-    ) -> None:
+    ) -> str:
         """`send_text`, with the message's answers as buttons under it.
 
         The adapter surface `_outbound.py::_sender_for` looks for. It keeps
@@ -3931,6 +4263,9 @@ class TelegramBridge:
         Buttons ride the LAST chunk. A long body is split, and a keyboard on
         the first part would sit above the half of the message the operator
         has not read yet.
+
+        Returns the first chunk's message id, as `send_text` does, since
+        keeping that signature is the whole point of this one.
         """
         from tesseract.integrations.telegram.agenda_quick_reply import letter_for
 
@@ -3949,12 +4284,11 @@ class TelegramBridge:
                 continue
             rows.append({"text": str(getattr(action, "label", "")), "callback_data": data})
         if not rows:
-            await self.send_text(
+            return await self.send_text(
                 chat_ref=chat_ref, text=text,
                 reply_to_message_id=reply_to_message_id,
                 disable_web_page_preview=disable_web_page_preview,
             )
-            return
         if self._api is None:
             raise RuntimeError("telegram bridge not initialized")
         try:
@@ -3965,7 +4299,8 @@ class TelegramBridge:
             ) from exc
         chunks = chunk_for_telegram(text or "")
         if not chunks:
-            return
+            return ""
+        first_id: int | None = None
         for idx, chunk in enumerate(chunks):
             last = idx == len(chunks) - 1
             sent = await self._send_fresh(
@@ -3976,7 +4311,7 @@ class TelegramBridge:
                 disable_web_page_preview=disable_web_page_preview,
                 reply_markup={"inline_keyboard": [rows]} if last else None,
             )
-            if not sent:
+            if sent is None:
                 carried = (
                     f"the first {idx} of {len(chunks)} parts arrived and the "
                     f"rest did not" if idx else "none of it arrived"
@@ -3990,7 +4325,10 @@ class TelegramBridge:
                     delivered=idx,
                     total=len(chunks),
                 )
+            if first_id is None:
+                first_id = sent
         self._record_outbound_at(chat_id)
+        return "" if first_id is None else str(first_id)
 
     def _record_outbound_at(self, chat_id: int) -> None:
         """Stamp this chat as having just been written to, and keep it.
@@ -4070,7 +4408,6 @@ class TelegramBridge:
             display = f"@{pending.username}"
         if not display:
             display = f"chat:{chat_id}"
-        tier = self._state.poll_state.user_tier.get(key, "operator")
         ttl = self._state.poll_state.user_ttl.get(key) or None
         first_seen = (
             self._state.poll_state.first_seen.get(key)
@@ -4084,7 +4421,6 @@ class TelegramBridge:
         return ChannelUser(
             user_id=key,
             display_name=display,
-            tier=tier,  # type: ignore[arg-type]
             ttl_iso=ttl,
             first_seen=first_seen,
             last_seen=last_seen,
@@ -4096,18 +4432,27 @@ class TelegramBridge:
         self,
         user_id: str,
         *,
-        tier: ChannelUserTier,
         ttl_iso: str | None,
         display_name: str | None,
     ) -> ChannelUser:
         chat_id = _coerce_chat_id(user_id)
         key = str(chat_id)
         with self._state.with_lock():
+            # The FIRST approval on a machine with nobody on it is the
+            # operator's own, by construction: they made the bot, they
+            # messaged it, and they are the one approving. Recorded here
+            # because nothing else ever writes this field, and without it a
+            # second approval later left `owner()` answering None forever -
+            # excluding the operator's OWN phone from their own digest, which
+            # is the opposite of what naming an owner is for. A later
+            # approval never takes it: this only fires on an empty list.
+            first = not self._state.allowlist.chat_ids
             self._state.allowlist.chat_ids.add(chat_id)
+            if first and self._state.allowlist.owner_chat_id is None:
+                self._state.allowlist.owner_chat_id = chat_id
             self._state.allowlist.pending.pop(chat_id, None)
             self._state.allowlist.blocked.discard(chat_id)
             save_allowlist(self._state.allowlist_path, self._state.allowlist)
-            self._state.poll_state.user_tier[key] = tier
             if ttl_iso:
                 self._state.poll_state.user_ttl[key] = ttl_iso
             else:
@@ -4119,6 +4464,23 @@ class TelegramBridge:
             )
             save_state(self._state.state_path, self._state.poll_state)
         return self._project_user(chat_id, state="allowed")
+
+    def owner_principal(self) -> str:
+        """Which approved chat is the operator's own, as a principal.
+
+        `Allowlist.owner` decides; this only spells it. `""` when the runtime
+        cannot tell, which on this bridge means several chats are approved and
+        none has been named, and every reader then treats Telegram
+        conversations as somebody else's.
+        """
+        from tesseract.integrations._channel_session import principal_for
+
+        try:
+            owner = self._state.allowlist.owner()
+        except Exception:  # noqa: BLE001 — a reader may not fail over this
+            log.warning("telegram: could not read who owns this bridge", exc_info=True)
+            return ""
+        return principal_for(self.name, str(owner)) if owner is not None else ""
 
     async def revoke(self, user_id: str) -> ChannelUser:
         chat_id = _coerce_chat_id(user_id)

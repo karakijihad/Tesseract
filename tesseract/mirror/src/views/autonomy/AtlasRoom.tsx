@@ -28,6 +28,7 @@ import { Button } from '../../components/common/Button';
 import { Note } from '../../components/common/Note';
 import { RowActions } from '../../components/common/Row';
 import { Band, StateStrip, type StateLine } from '../../components/common/StateStrip';
+import { Hint } from '../../components/ui/Hint';
 import { sendCommand } from '../../lib/commands';
 import type { AtlasResponse } from '../../lib/api';
 import { useAutonomyStore } from '../../stores/autonomy';
@@ -90,18 +91,28 @@ export function AtlasRoomView({
   const graph = rows(data.graph);
   // Redrawing acts on the map as a whole, so it sits on the row that IS the
   // map rather than on a row it would not touch.
+  //
+  // The other three rows here carry no button on purpose. Each is a COUNT —
+  // how many pairs disagree, how many connections name a record that is not
+  // here, how many nothing points at — and the payload that produces it
+  // (`routes/autonomy_atlas.py::graph`) never names which records they are.
+  // `atlas_query` needs a record or a search term to investigate, and there
+  // is none here to hand it; offering a button that opens on nothing would be
+  // the inert-looking row the panel's own rule forbids.
   if (graph.length > 0) {
     graph[0] = {
       ...graph[0],
       actions: (
         <RowActions className="state-acts">
-          <Button
-            onClick={onRedraw}
-            disabled={redrawing}
-            ariaLabel="Redraw the map now"
-          >
-            {redrawing ? 'redrawing' : 'redraw now'}
-          </Button>
+          <Hint label="Rebuilds the whole map from what the runtime holds right now. It does not resolve a disagreement or connect anything that is missing, and the next nightly pass runs the same rebuild on its own.">
+            <Button
+              onClick={onRedraw}
+              disabled={redrawing}
+              ariaLabel="Redraw the map now"
+            >
+              {redrawing ? 'redrawing' : 'redraw now'}
+            </Button>
+          </Hint>
         </RowActions>
       ),
     };
@@ -113,6 +124,11 @@ export function AtlasRoomView({
   // the other, so a band that sat under the picture was a third thing.
   const about = (
     <>
+      <p className="t-meta">
+        How current the map is, what it has not reached yet, and what its
+        last drawing did.
+      </p>
+
       <div className="autonomy-group">
         <Band label="The map" count={data.graph.length} />
         <StateStrip lines={graph} />

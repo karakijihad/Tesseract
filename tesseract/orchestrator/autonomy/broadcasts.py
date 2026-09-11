@@ -57,6 +57,16 @@ class Broadcast:
 
 
 BROADCASTS: dict[str, Broadcast] = {
+    "workspace_change_applied": Broadcast(
+        summary="One of your documents changed itself, and here is what it now says.",
+        why=(
+            "A document that only asks is a document you approve; one that "
+            "applies itself is one you would never hear about. The operator's "
+            "own framing: it is auto, and it tells you afterwards. Without "
+            "this the only trace is a card in an inbox nobody opened."
+        ),
+        producer="mirror/server/workspace_watch.py::_tell_them_it_applied",
+    ),
     "awaiting_operator": Broadcast(
         summary="Autonomy is waiting on a decision from you before it can continue.",
         why=(

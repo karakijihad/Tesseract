@@ -238,6 +238,14 @@ class AlarmRegistry:
         self.recently_fired: deque[FiredAlarm] = deque(maxlen=RECENT_FIRED_MAX)
         self._load()
 
+    @property
+    def state_path(self) -> Path | None:
+        """Where queued alarms are kept, or None when this registry is in
+        memory only. Public because a caller citing an alarm it just queued
+        has to say where the row is, and where a record lives is the store's
+        to know."""
+        return self._state_file
+
     # --- Mutation API --------------------------------------------------------
 
     def add(

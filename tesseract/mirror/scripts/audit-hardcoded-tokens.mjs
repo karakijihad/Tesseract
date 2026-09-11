@@ -736,6 +736,14 @@ const ROW_CLASSES = {
   // stacked lines and no state edge, which is neither the panel's row nor the
   // chat rail's; `Row` owns the activation contract under it.
   'graph-touch': 'Row',
+  // One tool's whole day on the Conscience panel: a name, a count, a bar of
+  // how its calls went, and what they left behind. A bare line with a bottom
+  // rule, because a roster is thirty of these and thirty cards is a wall.
+  'day-tool': 'Row',
+  // One turn on the same panel. The same bare line and a different set of
+  // columns, which is the half a shared row shape cannot decide for a surface:
+  // this one leads with a clock and the door the turn came through.
+  'day-turn': 'Row',
 };
 
 const CLICKABLE_TAG_RE =

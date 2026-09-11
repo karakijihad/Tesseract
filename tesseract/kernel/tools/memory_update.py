@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
+from tesseract.memory.capture_policy import explain_block
 from tesseract.memory.embeddings import EmbeddingIndex
 from tesseract.memory.index import MemoryIndex
 from tesseract.memory.related_block import strip_related_block
@@ -54,6 +56,8 @@ class MemoryUpdateTool(Tool):
         "lifecycle actions like archive/merge/bump."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     def __init__(
         self,
@@ -80,7 +84,11 @@ class MemoryUpdateTool(Tool):
 
         existing = self._store.read(inp.memory_id)
         if existing is None:
-            return ToolResult(output=f"Memory {inp.memory_id} not found.", is_error=True)
+            return ToolResult(
+                output=f"Memory {inp.memory_id} not found.",
+                is_error=True,
+                caller_error=True,
+            )
 
         fm, body = existing
         now = datetime.now(timezone.utc)
@@ -123,6 +131,17 @@ class MemoryUpdateTool(Tool):
             slug=fm.slug,
             confidence=fm.confidence,
             expiry_at=fm.expiry_at,
+            # Same reason: what a record was written from does not change
+            # because someone edited its title. The tier is deliberately NOT
+            # carried over — it follows `source_type`, so an edit that
+            # changes the type gets the tier that type resolves to.
+            derived_from=fm.derived_from,
+            derivation_depth=fm.derivation_depth,
+            # And the same again. This says the conversation this was learned
+            # from is gone, so there is nothing to re-read; an edit to the
+            # title does not bring the transcript back. Dropping it here
+            # re-advertised a source that no longer exists.
+            source_deleted_at=fm.source_deleted_at,
         )
 
         if new_source_path:
@@ -135,7 +154,17 @@ class MemoryUpdateTool(Tool):
                 new_body = f"{new_body}\n\nSource: {wikilink}"
 
         if not self._store.write(new_fm, new_body):
-            return ToolResult(output="Update blocked by WHAT_NOT_TO_SAVE.", is_error=True)
+            # A content edit is an admission: the body being written came from
+            # here rather than from the store, so the capture rules judge it
+            # like any other new content. Say which rule, in its own words.
+            return ToolResult(
+                output=(
+                    f"{explain_block(self._store.last_block_reason)} "
+                    f"{inp.memory_id} is unchanged."
+                ),
+                is_error=True,
+                caller_error=True,
+            )
 
         if new_fm.id != fm.id:
             self._store.delete(fm.id)
@@ -153,4 +182,12 @@ class MemoryUpdateTool(Tool):
             except Exception:
                 pass
 
-        return ToolResult(output=f"Memory {fm.id} updated.")
+        updated_file = self._store.find_file(new_fm.id)
+        return ToolResult(
+            output=f"Memory {fm.id} updated.",
+            receipt=Receipt(
+                kind="record",
+                id=new_fm.id,
+                locator=str(updated_file) if updated_file else "",
+            ),
+        )

@@ -243,6 +243,8 @@ def _register_routes(app: web.Application) -> None:
     # door is open. One join, so the room is one read.
     from tesseract.mirror.server.routes import autonomy_channels as autonomy_channels_route
     autonomy_channels_route.register(app)
+    from tesseract.mirror.server.routes import autonomy_day as autonomy_day_route
+    autonomy_day_route.register(app)
     # Atlas: whether the map of how everything connects is current, what it
     # could not make sense of, and what it does not reach at all.
     from tesseract.mirror.server.routes import autonomy_atlas as autonomy_atlas_route
@@ -274,6 +276,9 @@ def _register_routes(app: web.Application) -> None:
     # Outbound notification settings (mute UI + rate inspection).
     from tesseract.mirror.server.routes import notifications as notifications_route
     notifications_route.register(app)
+    # What may become a memory, and what the funnel turned away.
+    from tesseract.mirror.server.routes import capture as capture_route
+    capture_route.register(app)
     # Operator presence (viewSnapshot WS handler is wired in ws.py).
     from tesseract.mirror.server.routes import operator_view as operator_view_route
     operator_view_route.register(app)
@@ -431,7 +436,9 @@ def _register_routes(app: web.Application) -> None:
     app.router.add_get("/api/conscience/tool-usage", conscience_route.tool_usage)
     app.router.add_get("/api/conscience/payload", conscience_route.payload)
     app.router.add_get("/api/conscience/tool-heatmap", conscience_route.tool_heatmap)
+    app.router.add_get("/api/conscience/day", conscience_route.what_it_did)
     app.router.add_get("/api/conscience/playbook-usage", conscience_route.playbook_usage)
+    app.router.add_get("/api/conscience/cache", conscience_route.cache)
     app.router.add_get("/api/conscience/working-set", conscience_route.working_set)
     app.router.add_post("/api/conscience/working-set", conscience_route.set_working_set)
     app.router.add_get("/api/soul", system_route.soul)
@@ -700,6 +707,14 @@ async def _on_startup(app: web.Application) -> None:
     from tesseract.orchestrator.autonomy.broadcasts import check_producers
 
     check_producers()
+    # The same argument one subsystem over: the capture rules are rendered on
+    # the same panel and switched from it, so a rule with no stated consequence
+    # or no implementation is a switch the operator cannot reason about. This
+    # also reads `memory.yaml::capture_policy`, which is the one place a
+    # misspelled rule key is allowed to raise instead of silently doing nothing.
+    from tesseract.memory.capture_policy import check_rules
+
+    check_rules()
     await _prepare_mcp_server(app)
     # The boot graph is read and checked against the registry HERE, not inside
     # the background task. `_init_background` swallows its own exceptions so a
@@ -1209,11 +1224,28 @@ async def _init_background(app: web.Application) -> None:
         _enable_boot_timing_loop_debug()
         from tesseract.boot_graph import run_layers
 
-        await run_layers(
+        report = await run_layers(
             app["boot_layers"], app["boot_registry"],
             on_window_open=lambda: _mark_warm(app),
         )
-        log.info("mirror: background init complete; every layer prepared")
+        # What did NOT prepare, kept where something can act on it. The report
+        # was discarded here, so a substrate isolated at boot stayed off until
+        # somebody restarted, and after the one log line it read as fixed.
+        # `orchestrator/repairs.py::boot_substrates` retries these on the
+        # watchman's own tick.
+        app["boot_failed"] = {name: reason for name, reason in report.failed}
+        if report.failed:
+            # Never an all-clear over a partial boot. The line below said
+            # "every layer prepared" unconditionally, one line under the fix
+            # that made the failure visible at all, which is the exact
+            # "one log line and it read as fixed" this work exists to end.
+            log.error(
+                "mirror: background init finished WITHOUT %s: %s",
+                ", ".join(sorted(name for name, _ in report.failed)),
+                "; ".join(f"{name}: {reason}" for name, reason in report.failed),
+            )
+        else:
+            log.info("mirror: background init complete; every layer prepared")
     except Exception:
         log.exception("mirror: background init crashed — leaving backend in partial-ready state")
     finally:
@@ -2360,6 +2392,7 @@ async def _start_autonomy_kernel(app: web.Application) -> None:
         from tesseract.orchestrator.autonomy import (
             Governor,
             GovernorConfig,
+            PausePolicy,
             PauseStore,
             build_kernel_from_configs,
         )
@@ -2386,6 +2419,12 @@ async def _start_autonomy_kernel(app: web.Application) -> None:
         app["autonomy_pause_store"] = pause_store
 
         agenda_raw = _yaml.safe_load(agenda_yaml.read_text(encoding="utf-8")) or {}
+        # How long a pause lasts, given to the store rather than the governor:
+        # `routes/agenda::register` builds the store before this file has been
+        # read, and the store is what writes an expiry onto a pause.
+        pause_store.set_policy(
+            PausePolicy.from_governor_dict(agenda_raw.get("governor") or {})
+        )
         # Wire the live tool registry into the
         # autonomy runner so selected agenda items dispatch to real
         # delegate_coder / delegate_auditor / invoke_agent calls. Falls
@@ -2625,6 +2664,11 @@ async def _start_autonomy_kernel(app: web.Application) -> None:
             config=GovernorConfig.from_yaml_dict(agenda_raw),
             notify_fn=_make_governor_notify(app),
             kernel_pause_hook=lambda src, reason: kernel._paused_sources.add(src),
+            # The other direction, and the kernel needs it: it answers
+            # `is_source_paused` from memory between ticks, so a pause the
+            # governor lifted on its own would leave the source parked until
+            # the next boot.
+            kernel_resume_hook=lambda src: kernel._paused_sources.discard(src),
         )
         await governor.start()
         # Wire the tick hook now that Governor is constructed.
@@ -2650,8 +2694,27 @@ def _get_outbound_notifier(app: web.Application):
         return existing
     from tesseract.orchestrator.autonomy.outbound import OutboundNotifier
 
+    def _writing_chain():
+        """What writes a message's opening line, billed to its own entry.
+
+        Built per call, not held: the config watcher rebuilds adapters without
+        a restart, and a chain kept from boot would go on calling a model the
+        operator has since moved off. An empty one is not an error, it is the
+        message going out phrased by its template.
+        """
+        from tesseract.orchestrator.autonomy.outbound_writer import CHAIN, ENTRY
+        from tesseract.scheduler.role_chain import build_chain_for_chain
+
+        return build_chain_for_chain(
+            CHAIN,
+            billing_key=ENTRY,
+            log_label="outbound writer",
+            cost_ledger=app.get("cost_ledger"),
+        )
+
     notifier = OutboundNotifier(
         channels_config_getter=lambda: app.get("channels_config"),
+        chain_getter=_writing_chain,
     )
     app["outbound_notifier"] = notifier
     return notifier

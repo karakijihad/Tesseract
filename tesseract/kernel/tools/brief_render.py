@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 from tesseract.agents.loader import load_agent
 from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.memory.store import MemoryStore
 from tesseract.orchestrator.brief.renderer import BriefRenderer
 from tesseract.paths import TESSERACT_HOME
@@ -74,6 +75,8 @@ class BriefRenderTool(Tool):
         "has no side effects."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     def __init__(
         self,
@@ -85,6 +88,7 @@ class BriefRenderTool(Tool):
         briefs_dir: Path | None = None,
         event_store: "object | None" = None,
         vault_wiki_dir: Path | None = None,
+        cost_ledger: "object | None" = None,
     ) -> None:
         # Late-bind TESSERACT_HOME at constructor call time so a process
         # that toggles the env var post-import (test harness, alt-home
@@ -103,6 +107,11 @@ class BriefRenderTool(Tool):
         self._briefs_dir = briefs_dir or (home / "memory-store" / "daily" / "briefs")
         self._event_store = event_store
         self._vault_wiki_dir = vault_wiki_dir or (home / "vault" / "wiki")
+        # The return note's cap, and the reason it is here rather than left
+        # out: a brief the operator asked for by hand and a brief the night
+        # rendered are the same document, so a cap that only one of them can
+        # show is the funnel forking on which door was used.
+        self._cost_ledger = cost_ledger
         self._home = home
 
     @property
@@ -126,6 +135,7 @@ class BriefRenderTool(Tool):
             return ToolResult(
                 output=f"invalid date {inp.date!r}: expected YYYY-MM-DD",
                 is_error=True,
+                caller_error=True,
             )
 
         renderer = BriefRenderer(
@@ -137,6 +147,7 @@ class BriefRenderTool(Tool):
             event_store=self._event_store,
             vault_wiki_dir=self._vault_wiki_dir,
             home=self._home,
+            cost_ledger=self._cost_ledger,
         )
         try:
             result = await renderer.render(target, overwrite=inp.overwrite)
@@ -150,6 +161,7 @@ class BriefRenderTool(Tool):
                     f"brief for {target.isoformat()} already exists at "
                     f"{result.path}; pass overwrite=true to replace."
                 ),
+                receipt=Receipt.nothing(),
                 metadata={"path": str(result.path), "skipped_existing": True},
             )
 
@@ -157,6 +169,11 @@ class BriefRenderTool(Tool):
             output=(
                 f"brief rendered for {target.isoformat()} → {result.path} "
                 f"(sections: {', '.join(result.sections_rendered) or 'all empty'})"
+            ),
+            receipt=Receipt(
+                kind="record",
+                id=target.isoformat(),
+                locator=str(result.path),
             ),
             metadata={
                 "path": str(result.path),

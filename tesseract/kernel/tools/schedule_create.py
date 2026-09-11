@@ -15,6 +15,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.scheduler.config_loader import RetryPolicy
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,8 @@ class ScheduleCreateTool(Tool):
         "`schedule_update`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "job"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:
@@ -141,10 +144,19 @@ class ScheduleCreateTool(Tool):
                 ),
             )
         except (ValueError, KeyError) as exc:
-            return ToolResult(output=f"schedule_create failed: {exc}", is_error=True)
+            return ToolResult(
+                output=f"schedule_create failed: {exc}",
+                is_error=True,
+                caller_error=True,
+            )
         state = "on" if cfg.enabled else "off until you turn it on"
         return ToolResult(
             output=f"job '{cfg.name}' created (cadence={cfg.cadence}, {state})",
+            receipt=Receipt(
+                kind="job",
+                id=cfg.name,
+                locator=str(scheduler.config_dir / "schedule.yaml"),
+            ),
             metadata={
                 "name": cfg.name,
                 "cadence": cfg.cadence,

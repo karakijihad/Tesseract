@@ -119,11 +119,20 @@ def read_recent(limit: int = 50, *, days: int = 7) -> list[dict[str, Any]]:
                 if not line:
                     continue
                 try:
-                    rows.append(json.loads(line))
+                    row = json.loads(line)
                 except ValueError:
                     log.warning(
                         "operator_journal: skip malformed line in %s", path.name
                     )
+                    continue
+                # Every caller treats a row as a mapping, so a line parsing to
+                # a scalar took the whole rooms response down, not one note.
+                if not isinstance(row, dict):
+                    log.warning(
+                        "operator_journal: skip non-object line in %s", path.name
+                    )
+                    continue
+                rows.append(row)
         except OSError:
             log.exception("operator_journal: read failed for %s", path)
             continue

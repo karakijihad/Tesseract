@@ -34,6 +34,7 @@ from tesseract.brain.skills import (
     load_skill_folder,
 )
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.workspace_events import EventStore
 
 logger = logging.getLogger(__name__)
@@ -174,6 +175,8 @@ class SkillPromoteTool(Tool):
         "already-active skill, use `skill_refine`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     def __init__(self, skills_dir: Path, event_store: Optional[EventStore] = None) -> None:
         """``event_store`` lets a chat-side promotion settle any open
@@ -214,7 +217,7 @@ class SkillPromoteTool(Tool):
 
         entry, err = promote_pending_skill(self._skills_dir, inp.name)
         if err is not None:
-            return ToolResult(output=err, is_error=True)
+            return ToolResult(output=err, is_error=True, caller_error=True)
 
         # Settle any open proposal card for this skill so the Workspace Inbox
         # doesn't keep offering a promotion that already happened chat-side.
@@ -247,5 +250,8 @@ class SkillPromoteTool(Tool):
                 f"Active path: {dst / 'SKILL.md'}\n"
                 "It now appears in the prompt manifest and is readable with "
                 "`file_read`."
-            )
+            ),
+            receipt=Receipt(
+                kind="record", id=inp.name, locator=str(dst / "SKILL.md")
+            ),
         )

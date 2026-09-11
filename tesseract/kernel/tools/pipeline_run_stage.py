@@ -42,6 +42,7 @@ from typing import Any, Callable, ClassVar, Optional
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,8 @@ class PipelineRunStageTool(Tool):
         "capability is tried again, which is `breaker_reset`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "job"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     def __init__(self, app_provider: Optional[Callable[[], Any]] = None) -> None:
         self._app_provider = app_provider
@@ -117,6 +120,11 @@ class PipelineRunStageTool(Tool):
         return ToolResult(
             output=result.line,
             is_error=not result.ran,
+            receipt=(
+                Receipt(kind="job", id=result.stage)
+                if result.ran
+                else Receipt.nothing()
+            ),
             metadata={
                 "stage": result.stage,
                 "ran": result.ran,

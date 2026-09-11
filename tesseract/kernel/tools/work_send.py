@@ -24,6 +24,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.orchestrator.agent_controller.lanes.tool_support import (
     maybe_await,
     resolve_named_lane_manager,
@@ -79,6 +80,8 @@ class WorkSendTool(Tool):
         "`spawn_cancel` and re-dispatch with the new instruction instead."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     @property
     def name(self) -> str:
@@ -122,6 +125,7 @@ class WorkSendTool(Tool):
                         "session (session_open) next time."
                     ),
                     is_error=True,
+                    caller_error=True,
                     metadata={"reason": "unsteerable_one_shot", "target": target},
                 )
             answered = handle.question
@@ -132,6 +136,7 @@ class WorkSendTool(Tool):
                         "Use spawn_check for its result."
                     ),
                     is_error=True,
+                    caller_error=True,
                     metadata={"reason": "spawn_not_running", "target": target},
                 )
             return ToolResult(
@@ -139,6 +144,7 @@ class WorkSendTool(Tool):
                     f"delivered to {target}; it will apply this and continue."
                     + (" This answers its pending question." if answered else "")
                 ),
+                receipt=Receipt(kind="record", id=target, locator="spawn"),
                 metadata={
                     "target": target,
                     "route": "spawn_steer",
@@ -224,6 +230,7 @@ class WorkSendTool(Tool):
                 "or a controller session id (YYYY-MM-DD-xxxxxxxx)."
             ),
             is_error=True,
+            caller_error=True,
             metadata={"reason": "unknown_target", "target": target},
         )
 
@@ -262,6 +269,9 @@ class WorkSendTool(Tool):
             output=(
                 f"sent into controller session {session_id}. Watch with "
                 f"`agent --session {session_id}` or agent_review."
+            ),
+            receipt=Receipt(
+                kind="record", id=session_id, locator="controller session"
             ),
             metadata={"target": session_id, "route": "controller_user_input"},
         )

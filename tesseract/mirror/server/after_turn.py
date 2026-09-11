@@ -21,8 +21,7 @@ There is one consolidation and it always reflects. Two things can start it and
 they are recorded, never branched on:
 
     SOFT   the turn judged, through `session_continue`
-    HARD   the window filled, through `should_compact()`, or one tool failed
-           its way past `roles.yaml::boundary.tool_failure_limit`
+    HARD   the window filled, through `should_compact()`
 
 and it ends in one of two answers, both of which the AGENT gives:
 
@@ -58,8 +57,12 @@ finishes, which is after this function has returned. So the delivery rides the
 reflection's own completion callback, and if the operator speaks first it
 arrives after their first reply.
 
-Folding is what is left when a surface cannot end a conversation at all. It is
-the fallback, it is recorded as one, and it is no longer what CONTINUE means.
+There is no fallback. A consolidation that could not clear leaves the
+conversation STANDING, with the boundary still owed so the next turn retries,
+and says so at ERROR. There used to be a fold here, a second mechanism
+answering the same question with a different act, and on its worst branch it
+summarised the middle away immediately after the runtime had failed to archive
+a copy of it.
 """
 
 from __future__ import annotations
@@ -68,7 +71,6 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
-from tesseract.brain import failures_signal
 from tesseract.brain.chat import Continuation
 from tesseract.orchestrator.autonomy import journal
 from tesseract.memory.log_notes import append_log_entry
@@ -76,19 +78,9 @@ from tesseract.paths import log_dir
 
 log = logging.getLogger(__name__)
 
-#: What a person is told when the conversation folds. Plain words: they need
-#: to know the older detail is summarised now, and that asking for it still
-#: works, which is the only thing that changes for them. It lives beside the
-#: decision that fires it so there is one sentence and not one per surface.
-COMPACTED_NOTICE = (
-    "This conversation got long, so I summarised the earlier part to keep "
-    "going. Recent turns are intact. Ask me about anything older and I will "
-    "read it back from the record."
-)
-
 #: What a person is told when the turn decided it was finished with this
-#: conversation. Same reason `COMPACTED_NOTICE` lives here: one sentence,
-#: beside the moment that fires it, rather than one per surface.
+#: conversation. It lives beside the moment that fires it so there is one
+#: sentence and not one per surface.
 RESET_NOTICE = (
     "That work is done, so I am starting fresh here to keep this quick. I am "
     "writing down what it taught me. Ask me about any of it and I will read it "
@@ -124,40 +116,48 @@ def _label(session: Any, channel: str | None, chat_id: str | None) -> str:
     return str(getattr(session, "session_id", "") or "unknown")
 
 
-def _record_compaction(session: Any, label: str, before: int, after: int) -> None:
+def _record_boundary(
+    session: Any, label: str, *, trigger: str, outcome: str, refused: str
+) -> None:
     """The tally and the log line. Both surfaces, always. Never raises.
 
-    `compact_count` feeds the `[session_end]` entry, and the `[auto_compact]`
-    entry is the runtime's own record that a fold happened at all. A channel
-    was missing from both, so a compaction on a phone left no trace anywhere a
-    later session could read.
+    `compact_count` feeds the `[session_end]` entry, and the `[boundary]` entry
+    is the runtime's own record that a consolidation happened at all. A channel
+    was missing from both, so a boundary reached on a phone left no trace
+    anywhere a later session could read.
 
     The channel's tally is write-only for now: `[session_end]` is written by
     `ws_connection._autosave` on WebSocket teardown, which a channel session
-    never reaches. The `[auto_compact]` entry is what actually carries a
-    channel compaction into the log, and that one both surfaces share.
+    never reaches. The `[boundary]` entry is what actually carries a channel
+    boundary into the log, and that one both surfaces share.
+
+    No token counts. A boundary clears the conversation, so "before and after"
+    is the whole of it and zero, every time, and a pair of numbers that cannot
+    differ is not a measurement. What a later reader needs is why it fired and
+    what the agent decided.
     """
     try:
         session.compact_count += 1
     except Exception:
-        log.exception("compact_count increment failed for %s", label)
+        log.exception("boundary count increment failed for %s", label)
     session_id = str(getattr(session, "session_id", "") or "")
     try:
         now = datetime.now(timezone.utc)
-        ratio_pct = round((1 - after / before) * 100, 1) if before else 0.0
+        body = (
+            f"Consolidated (session={session_id[:8]}, "
+            f"turn={getattr(session, 'turn_count', 0)}). "
+            f"Trigger: {trigger}  |  Outcome: {outcome}"
+        )
+        if refused:
+            body += f"  |  Stopped instead: {refused}"
         append_log_entry(
-            header=f"## [auto_compact] Compaction {now.strftime('%Y-%m-%dT%H:%M:%SZ')}",
-            body=(
-                f"Auto-compact fired (session={session_id[:8]}, "
-                f"turn={getattr(session, 'turn_count', 0)}).\n"
-                f"Tokens before: {before}  |  Tokens after: {after}  |  "
-                f"Ratio: {ratio_pct}%"
-            ),
+            header=f"## [boundary] Consolidation {now.strftime('%Y-%m-%dT%H:%M:%SZ')}",
+            body=body,
             log_dir=log_dir("sessions"),
             date=now,
         )
     except Exception:
-        log.exception("logs/sessions [auto_compact] append failed for %s", label)
+        log.exception("logs/sessions [boundary] append failed for %s", label)
 
 
 async def after_turn(
@@ -168,7 +168,6 @@ async def after_turn(
     channel: str | None = None,
     chat_id: str | None = None,
     announce: Callable[[str], Awaitable[None]] | None = None,
-    report: Callable[[int, int], Awaitable[None]] | None = None,
     ending: Callable[[Callable[[], bool]], Awaitable[bool]] | None = None,
     mid_turn: bool = False,
 ) -> None:
@@ -186,31 +185,24 @@ async def after_turn(
     forwarded to a second rolling summary that a channel kept and the cockpit
     did not. That summary wrote its own output back into the conversation and
     ended up quoting itself; a channel is the same funnel as the cockpit, so
-    it now compacts here and nowhere else.
+    it consolidates here and nowhere else.
 
-    `announce` sends one line of text to the person. `report` hands the two
-    token counts to a surface that can draw them. A caller passes whichever
-    its transport has, or neither.
-
-    A fold that changed nothing is not a compaction, and nothing downstream
-    hears about it. `compact()` returns `(before, before)` both when it had
-    nothing to fold and when the summarizer came back empty; counting those,
-    logging them as `[auto_compact]`, or delivering them tells every reader
-    that history was summarised when it was not touched. The cockpit drew
-    `Auto-compacted 4000 -> 4000 tok` for exactly that, because the rule was
-    written into the `announce` gate and not into the moment itself.
+    `announce` sends one line of text to the person, and a caller whose
+    transport has none simply omits it.
 
     `app` is where the workspace event store lives, which a reflection has to
     reach. Required, and not something a caller can get wrong: both surfaces
     have exactly one and the cockpit's hook was already being handed it.
 
     `ending` is what this surface does with a conversation the turn has
-    finished with. The cockpit archives it and opens a new chat; a channel has
-    no chat to switch to and wipes in place. Only the ENDING differs, and a
+    finished with. The cockpit copies the transcript into its own archived
+    record and clears the SAME chat, keeping its id and its place in the rail;
+    a channel has no chat to switch to and wipes in place. Opening a new chat
+    is `/reset`, which is a different act. Only the ENDING differs, and a
     caller that has none simply cannot be asked to reset. It returns whether
-    it actually ended the conversation, because a cockpit that could not write
-    the transcript, or whose turn ran in a chat the operator is not looking at,
-    refuses rather than archiving the wrong thing.
+    the conversation was actually left behind AND the clear reached disk,
+    because a cockpit that could not write the transcript refuses rather than
+    archiving the wrong thing.
 
     It is HANDED the reflection rather than following it, because the moment
     reflection may fire is the moment the conversation is certainly being left,
@@ -221,10 +213,10 @@ async def after_turn(
     immediate.
 
     The turn's own decision outranks the threshold. `session_continue` records
-    one and this is where it is honoured, because `compact()` and `reset()`
-    rewrite history in place and doing that mid-turn discards the assistant
-    message carrying the pending `tool_use` block. A turn that decided nothing
-    meets exactly the threshold check it met before this existed.
+    one and this is where it is honoured, because `reset()` rewrites history
+    in place and doing that mid-turn discards the assistant message carrying
+    the pending `tool_use` block. A turn that decided nothing meets exactly
+    the threshold check it met before this existed.
 
     Never raises. The turn has already landed and been sent, and nothing here
     is allowed to turn a delivered answer into a failed one.
@@ -243,17 +235,28 @@ async def after_turn(
         # left the running one alone; unsafe from the moment it started
         # clearing in place.
         #
-        # So a mid-turn call folds and returns, and never asks whether a
+        # So a mid-turn call records and returns, and never asks whether a
         # boundary is due. The turn's own end asks that, a few seconds later,
         # with the turn finished and its messages safe.
         # `mid_turn` is what the one caller that can reach this says about
         # itself, and `_still_speaking` is what the conversation says. The
         # second is why this is a guard rather than a convention: a future
-        # caller wiring a fold hook without the keyword is protected anyway,
-        # and the defect this closes came from exactly that kind of change.
-        log.info("%s grew past the ceiling mid-turn, so it folds", label)
-        await _fold(chat_session, app=app, session=session, label=label,
-                    report=report, announce=announce)
+        # caller wiring the hook without the keyword is protected anyway, and
+        # the defect this closes came from exactly that kind of change.
+        #
+        # It used to fold here, and folding was the wrong answer twice over. A
+        # fold was a model call, and one paid for mid-turn is thrown away by
+        # the boundary a few seconds later. Worse, a fold that worked put the
+        # conversation back UNDER the trigger, so the end of the turn found
+        # nothing due and carried on: the crossing was silently answered by a
+        # summary instead of by the boundary, and the work never got a
+        # reflection, a checkpoint or a package. Heavy tool work crosses the
+        # ceiling mid-turn nearly every time, so that was most crossings.
+        #
+        # So the turn is let finish, on a ceiling that is no longer in its way,
+        # and the crossing is remembered. `_boundary_forced` reads it at the
+        # end of the turn and the boundary happens then, once.
+        _note_the_ceiling_was_crossed(chat_session, label)
         return
 
     answer = _requested(chat_session, label)
@@ -300,89 +303,31 @@ async def after_turn(
         announce=announce,
         ending=ending,
     ):
-        _forget_failure_streak(chat_session, label)
+        _record_boundary(
+            session,
+            label,
+            trigger=trigger,
+            outcome=answer.value,
+            refused=refused,
+        )
+        _forget_boundary_owed(chat_session, label)
         return
 
-    # The surface cannot end a conversation, or its ending refused. The room is
-    # made back the only other way there is, and the record says CONTINUE
-    # because that is what happened: the conversation stands and the work goes
-    # on inside it. Reflection first and on a snapshot, because the fold below
-    # rewrites the history it reads; `reflect_in_background` refuses to stack,
-    # so an ending that already reflected does not pay twice on the way past.
-    log.info("%s could not be cleared, so it folds instead", label)
-    _reflect(
-        app,
-        session,
-        chat_session,
-        label=label,
-        trigger=trigger,
-        outcome=Continuation.CONTINUE.value,
-        announce=announce,
+    # It could not clear, so the conversation STANDS. Nothing rewrites it: the
+    # only other act that ever made room here summarised the middle away, and
+    # on this exact branch it did so immediately after the runtime had failed
+    # to archive a copy of it.
+    #
+    # The debt is deliberately NOT forgotten. The next turn asks again, and
+    # keeps asking, until the boundary can actually run. ERROR rather than
+    # warning because `logsetup` turns a backend ERROR into a row the operator
+    # sees: a conversation that cannot be bounded is not something to discover
+    # from a log file later.
+    log.error(
+        "%s reached a boundary it could not take, so the conversation stands "
+        "and the next turn will try again",
+        label,
     )
-
-    # The fold is the boundary this conversation actually got, so the streak
-    # goes here too — but only if it folded something. A summariser that came
-    # back empty made no room, so the conversation is still failing with the
-    # same context behind it, and forgetting the streak would leave nothing
-    # counting that.
-    if await _fold(chat_session, app=app, session=session, label=label,
-                   report=report, announce=announce):
-        _forget_failure_streak(chat_session, label)
-
-
-async def _fold(
-    chat_session: Any,
-    *,
-    app: Any,
-    session: Any,
-    label: str,
-    report: Callable[[int, int], Awaitable[None]] | None,
-    announce: Callable[[str], Awaitable[None]] | None,
-) -> bool:
-    """Make room without ending anything. Never raises.
-
-    Returns whether it actually folded, which is not the same as whether it
-    ran: a summariser that comes back empty leaves the conversation exactly as
-    it was, and a caller treating that as a boundary would be recording one
-    that did not happen.
-
-    The only thing that is safe to do to a conversation that is still being
-    spoken: `compact()` rewrites the history in place and leaves the turn its
-    own messages. Clearing is the boundary's act and belongs at the end of a
-    turn, never inside one.
-    """
-    try:
-        # `should_compact()` is the rule and `compact()` is the act. Asking the
-        # rule again here would be a second answer to the question that decided
-        # this boundary was due.
-        result = await chat_session.compact()
-    except Exception:
-        log.exception("fold failed for %s", label)
-        return False
-    if result is None:
-        return False
-    before, after = result
-    if after == before:
-        # Worth a line: a threshold that keeps being crossed while the
-        # summarizer keeps coming back empty is a real fault, and silence here
-        # is what would hide it.
-        log.info("compaction folded nothing for %s (%d tokens)", label, before)
-        return False
-    log.info("compacted %s: %d to %d tokens", label, before, after)
-
-    _record_compaction(session, label, before, after)
-
-    if report is not None:
-        try:
-            await report(before, after)
-        except Exception:
-            log.exception("compaction report failed for %s", label)
-    if announce is not None:
-        try:
-            await announce(COMPACTED_NOTICE)
-        except Exception:
-            log.exception("compaction notice failed for %s", label)
-    return True
 
 
 def _still_speaking(chat_session: Any) -> bool:
@@ -401,74 +346,91 @@ def _still_speaking(chat_session: Any) -> bool:
 def _boundary_forced(chat_session: Any, label: str) -> bool:
     """Whether the runtime requires a boundary here, whatever the turn thinks.
 
-    Two reasons, and they are the runtime's own: the window is full, or the
-    same tool has failed enough times in a row that the conversation is not
-    going anywhere. The owner's document §25 allows exactly one pathological
-    pattern to be promoted from a nudge to a hard rule, and that is this one.
+    One reason, and it is the runtime's own: the window is full. There was a
+    second, the same tool failing its way past a count, and GOVERNANCE §11 is
+    what deleted it: a tool fails for a network blip, a bad argument, a rate
+    limit or a refusal, and clearing a healthy 50,000-token conversation fixes
+    none of them. The streak stays as a SIGNAL: `failures_signal` already
+    feeds the autonomy digest and the observer, so the pattern still surfaces
+    and the agent may act on it as a soft call.
 
     Asked before reflection so the snapshot the reflection reads is the
-    conversation about to be folded, rather than what is left of it. That
-    ordering is why this is the only place either is read: a helper that
-    checked again on its way to folding would be answering a question this
-    boundary has already answered.
+    conversation about to be cleared, rather than what is left of it. That
+    ordering is why this is the only place it is read: a helper that checked
+    again on its way to clearing would be answering a question this boundary
+    has already answered.
 
     A session that cannot answer has no threshold to cross. Sub-agent sessions
     and test doubles are the ordinary case for that, exactly as in `_requested`.
     """
+    # Two reasons now. The first is a crossing that already happened, while
+    # the turn was speaking and nothing could be done about it. It is read
+    # FIRST and on its own, because the other asks how big the conversation
+    # is NOW and that is the wrong question here: the turn was allowed to
+    # finish rather than be cut short, so the size it reached is exactly what
+    # the boundary is for, and a conversation that grew and then had its own
+    # tool results trimmed by the guard could measure under the trigger again.
+    if _owes_a_boundary(chat_session):
+        log.info("%s owes a boundary from a crossing it made mid-turn", label)
+        return True
     should = getattr(chat_session, "should_compact", None)
-    if should is not None:
-        try:
-            if bool(should()):
-                return True
-        except Exception:
-            log.exception("reading the compaction threshold failed for %s", label)
-    return _failing_in_place(chat_session, label)
-
-
-def _failing_in_place(chat_session: Any, label: str) -> bool:
-    """Whether one tool has failed its way past the limit in this session.
-
-    Presence of a streak IS the limit being reached: `chat.py` records one only
-    at `roles.yaml::boundary.tool_failure_limit`, so the number lives at the
-    one site that counts and is not read a second time here to be compared
-    against itself.
-
-    Fails closed on a bad read, like everything else on this path. A boundary
-    forced by a disk error would end a conversation for the wrong reason.
-    """
-    scope = getattr(chat_session, "_failures_scope_id", "")
-    if not scope:
+    if should is None:
         return False
     try:
-        streak = failures_signal.tool_error_streak(scope)
+        return bool(should())
     except Exception:
-        log.exception("reading the tool failure streak failed for %s", label)
+        log.exception("reading the boundary threshold failed for %s", label)
         return False
-    if streak is None:
-        return False
-    name, count = streak
-    log.info("%s: %s has failed %d times in a row, so the boundary is forced", label, name, count)
-    return True
 
 
-def _forget_failure_streak(chat_session: Any, label: str) -> None:
-    """Drop the tool failure streak when the conversation it belongs to ends.
+def _note_the_ceiling_was_crossed(chat_session: Any, label: str) -> None:
+    """Remember the crossing so the end of the turn can answer it.
 
-    A streak clears on its own only when the flagged tool succeeds, which is
-    right while the conversation is running and wrong the moment it is
-    consolidated: the streak describes the conversation being left behind, and
-    carrying it across the boundary would force the next one immediately, and
-    the one after that, with no tool call in between to break it.
-
-    Both answers, and a soft boundary too. The room is emptied either way.
+    Best effort, and loudly so. A session that cannot hold this is a sub-agent
+    or a test double, and for those the threshold check at the end of the turn
+    is the answer it always was.
     """
-    scope = getattr(chat_session, "_failures_scope_id", "")
-    if not scope:
+    note = getattr(chat_session, "note_grew_past_the_ceiling", None)
+    if note is None:
+        log.info(
+            "%s grew past the ceiling mid-turn and cannot record it, so the "
+            "end of the turn will decide on size alone",
+            label,
+        )
         return
     try:
-        failures_signal.clear_tool_error_streak(scope)
+        first = note()
     except Exception:
-        log.exception("clearing the tool failure streak failed for %s", label)
+        log.exception("could not record the mid-turn crossing for %s", label)
+        return
+    if first:
+        # Once. The hook fires on every tool-loop iteration for the rest of
+        # the turn, because the cheap check that reaches it stays true until
+        # the boundary happens.
+        log.info(
+            "%s grew past the ceiling mid-turn; it finishes, then consolidates",
+            label,
+        )
+
+
+def _owes_a_boundary(chat_session: Any) -> bool:
+    return bool(getattr(chat_session, "owes_a_boundary", False))
+
+
+def _forget_boundary_owed(chat_session: Any, label: str) -> None:
+    """The boundary happened. Called only after `_consolidate` said it did.
+
+    A debt cleared before its remedy ran is a boundary that never happens: the
+    next turn finds nothing owed, the conversation carries on over the ceiling,
+    and the crossing this bool exists to remember is gone.
+    """
+    forget = getattr(chat_session, "forget_boundary_owed", None)
+    if forget is None:
+        return
+    try:
+        forget()
+    except Exception:
+        log.exception("could not clear the boundary owed by %s", label)
 
 
 def _take_nudge(chat_session: Any, label: str) -> Any | None:
@@ -515,6 +477,9 @@ def _journal_nudge(nudge: Any | None, *, answered: Continuation | None, label: s
                 "observation_id": nudge.observation_id,
                 "answered": answered.value if answered is not None else None,
                 "followed": followed,
+                # On the row rather than in `reason`: the row is stamped, so
+                # the figure cannot be read back later as the state now.
+                "context_percent": nudge.context_percent,
                 "conversation": label,
             },
         )
@@ -638,9 +603,11 @@ async def _consolidate(
     snapshot taken synchronously when it is called, so it is unaffected by the
     clear that follows it.
 
-    A `False` return means the conversation still stands, and the caller falls
-    back to a fold. Claiming otherwise would leave one growing under a turn
-    that believes it started fresh.
+    A `False` return means the boundary did not happen: the surface refused,
+    or the clear did not reach disk. There is no fallback. The caller leaves
+    the conversation standing, keeps the debt so the next turn retries, and
+    says so at ERROR. Claiming otherwise would settle a debt the disk never
+    heard about.
     """
     if ending is None:
         log.warning(

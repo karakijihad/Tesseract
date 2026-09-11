@@ -63,6 +63,7 @@ from tesseract.config.runtime_limits import (
     load_agent_pending_cap,
 )
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.orchestrator.background_event_bus import get_background_bus
 from tesseract.workspace_events import EventStore, WorkspaceEvent
 from tesseract.workspace_events.broadcast import broadcast_workspace_event
@@ -141,6 +142,8 @@ class AgentCreateTool(Tool):
         "Running an existing one: use `invoke_agent`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     def __init__(
         self,
@@ -199,6 +202,7 @@ class AgentCreateTool(Tool):
                     "Must be lowercase, start with a letter, hyphens allowed, 2–32 chars."
                 ),
                 is_error=True,
+                caller_error=True,
             )
 
         # Both roots, not just the operator's: a proposal that took a shipped
@@ -213,6 +217,7 @@ class AgentCreateTool(Tool):
                     f"{existing.path}. Pick another name."
                 ),
                 is_error=True,
+                caller_error=True,
             )
         if inp.name in list_pending_agents(self._agents_dir):
             return ToolResult(
@@ -221,6 +226,7 @@ class AgentCreateTool(Tool):
                     f"{self._agents_dir}/pending/. Promote or remove it first."
                 ),
                 is_error=True,
+                caller_error=True,
             )
         if inp.name in list_rejected_agents(self._agents_dir):
             reason = _read_rejection_reason(self._agents_dir, inp.name)
@@ -232,6 +238,7 @@ class AgentCreateTool(Tool):
                     "different name."
                 ),
                 is_error=True,
+                caller_error=True,
             )
 
         # Stage 10 flood guard — UNATTENDED proposals are capped by
@@ -249,6 +256,7 @@ class AgentCreateTool(Tool):
                         "proposal cards before proposing more agents."
                     ),
                     is_error=True,
+                    caller_error=True,
                 )
 
         # `model_role` accepts either a role name from roles.yaml (e.g.
@@ -265,6 +273,7 @@ class AgentCreateTool(Tool):
                     "<tier>.<provider>.<model_id>."
                 ),
                 is_error=True,
+                caller_error=True,
             )
         # The shape being right is not the catalog holding it. A pin nothing
         # holds resolves to no adapter, and the call then runs on whichever
@@ -281,6 +290,7 @@ class AgentCreateTool(Tool):
                     "roles.yaml."
                 ),
                 is_error=True,
+                caller_error=True,
             )
         # A CLI subscription has no in-process adapter, so a card wearing one
         # can never be invoked: `invoke_agent` and `build_sub_session` both
@@ -298,6 +308,7 @@ class AgentCreateTool(Tool):
                     "delegate_coder or delegate_auditor instead of to an agent."
                 ),
                 is_error=True,
+                caller_error=True,
             )
         # The other half of the contract. A card with no description is a card
         # nothing can say the purpose of: the roster prints this field, and it
@@ -310,12 +321,14 @@ class AgentCreateTool(Tool):
                     "line anyone picking an agent reads."
                 ),
                 is_error=True,
+                caller_error=True,
             )
 
         if not inp.prompt_sections:
             return ToolResult(
                 output="prompt_sections must contain at least one section.",
                 is_error=True,
+                caller_error=True,
             )
 
         if "Role" in inp.prompt_sections:
@@ -325,6 +338,7 @@ class AgentCreateTool(Tool):
                     "The ## Role section is always the first section of every agent."
                 ),
                 is_error=True,
+                caller_error=True,
             )
 
         # --- Render + round-trip validation ---
@@ -335,6 +349,7 @@ class AgentCreateTool(Tool):
             return ToolResult(
                 output=f"Rendered markdown failed loader round-trip: {roundtrip_error}",
                 is_error=True,
+                caller_error=True,
             )
 
         # --- Atomic write to quarantine ---
@@ -420,7 +435,10 @@ class AgentCreateTool(Tool):
                 "The agent is quarantined: it cannot be invoked until the "
                 "operator promotes it (`agent_promote` or the Workspace "
                 "proposal card)." + card_note
-            )
+            ),
+            receipt=Receipt(
+                kind="record", id=inp.name, locator=str(agent_path)
+            ),
         )
 
 

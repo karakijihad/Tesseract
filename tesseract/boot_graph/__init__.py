@@ -16,6 +16,7 @@ from tesseract.boot_graph.graph import (
     Layer,
     layers_for_reload,
     load_graph,
+    retry_failed,
     run_layers,
     validate,
 )
@@ -29,6 +30,7 @@ __all__ = [
     "SubstrateRegistry",
     "layers_for_reload",
     "load_graph",
+    "retry_failed",
     "run_layers",
     "validate",
 ]

@@ -31,6 +31,7 @@ from tesseract.kernel.tools.base import (
     ToolContext,
     ToolResult,
 )
+from tesseract.kernel.tools.receipt import Receipt
 
 
 def _resolve_adapter(channel: str):
@@ -47,6 +48,24 @@ def _resolve_adapter(channel: str):
 
 
 # -- channel_send_voice -------------------------------------------------
+
+
+def sent_receipt(channel: str, chat_ref: str, msg_id: object) -> Receipt | None:
+    """The message this call left on a channel, or nothing to point at.
+
+    Public because `channel_notify` sends on the same channels and a second
+    answer to what a message receipt looks like is how the two come to disagree
+    about it.
+
+    `None` rather than `Receipt.nothing()` when the adapter gave no id back,
+    and the difference is the point: something WAS sent and this run cannot say
+    which message it is. The step then records `unverified`, which is the
+    honest answer and the one a later pass can act on. Reporting it as a clean
+    success would be the runtime taking its own word for it.
+    """
+    if msg_id is None:
+        return None
+    return Receipt(kind="message", id=str(msg_id), locator=f"{channel}:{chat_ref}")
 
 
 class ChannelSendVoiceInput(BaseModel):
@@ -94,6 +113,8 @@ class ChannelSendVoiceTool(Tool):
         "`channel_send_document` for that."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "message"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     @property
     def name(self) -> str:
@@ -158,6 +179,7 @@ class ChannelSendVoiceTool(Tool):
         source = "TTS" if inp.text is not None else f"file ({inp.audio_path})"
         return ToolResult(
             output=f"sent voice to {inp.channel}:{inp.chat_ref} from {source} (message_id={msg_id})",
+            receipt=sent_receipt(inp.channel, inp.chat_ref, msg_id),
         )
 
 
@@ -228,6 +250,8 @@ class ChannelSendPhotoTool(Tool):
         "preserves it but drops the inline preview."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "message"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     @property
     def name(self) -> str:
@@ -276,6 +300,7 @@ class ChannelSendPhotoTool(Tool):
         source = _named_source(inp.source_path, inp.source_url)
         return ToolResult(
             output=f"sent photo to {inp.channel}:{inp.chat_ref} from {source} (message_id={msg_id})",
+            receipt=sent_receipt(inp.channel, inp.chat_ref, msg_id),
         )
 
 
@@ -323,6 +348,8 @@ class ChannelSendDocumentTool(Tool):
         "inline instead: use the matching media verb (`channel_send_photo` and its siblings)."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "message"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     @property
     def name(self) -> str:
@@ -367,6 +394,7 @@ class ChannelSendDocumentTool(Tool):
         msg_id = result.get("message_id") if isinstance(result, dict) else None
         return ToolResult(
             output=f"sent document to {inp.channel}:{inp.chat_ref} from {inp.source_path} (message_id={msg_id})",
+            receipt=sent_receipt(inp.channel, inp.chat_ref, msg_id),
         )
 
 
@@ -412,6 +440,8 @@ def _make_media_tool(
         use_when: ClassVar[str] = use_when_text
         not_when: ClassVar[str] = not_when_text
         depends_on: ClassVar[str] = ""
+        receipt_kind: ClassVar[str] = "message"
+        recovery_behaviour: ClassVar[str] = "queryable"
 
         @property
         def name(self) -> str:
@@ -466,6 +496,7 @@ def _make_media_tool(
             source = _named_source(inp.source_path, inp.source_url)
             return ToolResult(
                 output=f"sent {kind_label} to {inp.channel}:{inp.chat_ref} from {source} (message_id={msg_id})",
+                receipt=sent_receipt(inp.channel, inp.chat_ref, msg_id),
             )
 
     _Tool.__name__ = "ChannelSend" + kind_label.capitalize().replace("_", "") + "Tool"
@@ -553,6 +584,8 @@ class ChannelSendStickerTool(Tool):
         "of sending a new sticker message."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "message"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     @property
     def name(self) -> str:
@@ -609,6 +642,7 @@ class ChannelSendStickerTool(Tool):
         msg_id = result.get("message_id") if isinstance(result, dict) else None
         return ToolResult(
             output=f"sent sticker to {inp.channel}:{inp.chat_ref} (message_id={msg_id})",
+            receipt=sent_receipt(inp.channel, inp.chat_ref, msg_id),
         )
 
 
@@ -638,6 +672,8 @@ class ChannelSendLocationTool(Tool):
         "a text answer with an address or directions is clearer than a pin."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "message"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     @property
     def name(self) -> str:
@@ -676,6 +712,7 @@ class ChannelSendLocationTool(Tool):
         msg_id = result.get("message_id") if isinstance(result, dict) else None
         return ToolResult(
             output=f"sent location to {inp.channel}:{inp.chat_ref} (lat={inp.latitude}, lon={inp.longitude}, message_id={msg_id})",
+            receipt=sent_receipt(inp.channel, inp.chat_ref, msg_id),
         )
 
 
@@ -708,6 +745,8 @@ class ChannelSendPollTool(Tool):
         "carries a plain question just as well."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "message"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     @property
     def name(self) -> str:
@@ -747,6 +786,7 @@ class ChannelSendPollTool(Tool):
         msg_id = result.get("message_id") if isinstance(result, dict) else None
         return ToolResult(
             output=f"sent poll to {inp.channel}:{inp.chat_ref} ({len(inp.options)} options, message_id={msg_id})",
+            receipt=sent_receipt(inp.channel, inp.chat_ref, msg_id),
         )
 
 
@@ -783,6 +823,8 @@ class ChannelReactTool(Tool):
         "sticker or a `channel_notify` instead."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "message"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:
@@ -825,6 +867,9 @@ class ChannelReactTool(Tool):
         action = f"reacted {inp.emoji}" if inp.emoji else "cleared reaction"
         return ToolResult(
             output=f"{action} on {inp.channel}:{inp.chat_ref}#{inp.message_id}",
+            # A reaction leaves no new message. The mark it leaves is ON one,
+            # and that message's id is the thing a later pass goes and looks at.
+            receipt=sent_receipt(inp.channel, inp.chat_ref, inp.message_id),
         )
 
 

@@ -20,11 +20,7 @@ from typing import Any
 from tesseract.agents.loader import AgentDefinition, list_agents, load_agent
 from tesseract.brain.chat import (
     DEFAULT_COMPACT_THRESHOLD,
-    DEFAULT_HEAD_ANCHOR_MESSAGES,
-    DEFAULT_HEADROOM_MULTIPLIER,
-    DEFAULT_KEEP_RECENT_TURNS,
     DEFAULT_PROMPT_CHAR_BUDGET,
-    DEFAULT_SUMMARY_CHAR_BUDGET,
     ChatSession,
 )
 from tesseract.brain.cost.ledger import CostLedger
@@ -36,12 +32,13 @@ from tesseract.permissions.policy import PermissionPolicy
 
 @dataclasses.dataclass(frozen=True)
 class CompactionSettings:
-    """The knobs a fold reads, carried from the parent's config.
+    """The knobs a boundary reads, carried from the parent's config.
 
     A sub-agent runs against the same context window as its parent, so it has
-    to fold on the operator's settings. Without this it took ChatSession's
-    dataclass defaults, which exist for sessions built outside boot, while the
-    parent ran `roles.yaml::compaction` against the same window.
+    to bound itself on the operator's settings. Without this it took
+    ChatSession's dataclass defaults, which exist for sessions built outside
+    boot, while the parent ran `roles.yaml::compaction` against the same
+    window.
 
     Read where the config is (`boot.register_agent_session_tools`) and moved
     from where the operator moves it: the compact-threshold route calls
@@ -50,10 +47,6 @@ class CompactionSettings:
     """
 
     compact_threshold: float = DEFAULT_COMPACT_THRESHOLD
-    headroom_multiplier: float = DEFAULT_HEADROOM_MULTIPLIER
-    keep_recent_turns: int = DEFAULT_KEEP_RECENT_TURNS
-    head_anchor_messages: int = DEFAULT_HEAD_ANCHOR_MESSAGES
-    summary_char_budget: int = DEFAULT_SUMMARY_CHAR_BUDGET
     #: The character ceiling on one assembled prompt. It belongs to the MODEL
     #: (`providers.yaml::max_prompt_chars`) and a chain carries its tightest
     #: member's, so a sub-agent left on the dataclass default was guarded by a
@@ -211,10 +204,6 @@ def build_agent_session(
         policy=policy,
         cost_ledger=cost_ledger,
         compact_threshold=folding.compact_threshold,
-        headroom_multiplier=folding.headroom_multiplier,
-        keep_recent_turns=folding.keep_recent_turns,
-        head_anchor_messages=folding.head_anchor_messages,
-        summary_char_budget=folding.summary_char_budget,
         prompt_char_budget=folding.prompt_char_budget,
         # M5 — inherit the parent's concurrent-spawn cap so a sub-agent's own
         # fan-out is bounded too (was uncapped: child registry never got it).

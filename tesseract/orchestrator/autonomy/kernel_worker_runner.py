@@ -84,6 +84,13 @@ log = logging.getLogger(__name__)
 # and the record's ``outcome`` is where that distinction survives. Every
 # other non-healthy outcome lands FAILED, so nothing that produced
 # nothing can read as completed work.
+#
+# ``unverified`` and ``caller_error`` are deliberately absent. Neither is
+# produced at worker granularity today — both are decided per tool call —
+# so leaving them out costs nothing and keeps the safe direction: a worker
+# that ends in a state this list has not been taught reads FAILED rather
+# than claiming completed work. ``unverified`` becoming a worker's own
+# terminal state is OT-4's decision, not one to pre-empt here.
 _DONE_OUTCOMES = frozenset(
     {RunOutcome.SUCCEEDED, RunOutcome.SKIPPED_NO_WORK, RunOutcome.DEGRADED}
 )
@@ -356,6 +363,7 @@ class KernelWorkerRunner:
             workspace_root=self._execution_root(record),
             session_id="autonomy",
             current_call_id=record.id,
+            run_id=record.id,
             # Autonomy dispatches delegate_coder / delegate_auditor, and a
             # delegation runs on a lane. The daemon is the only host of a real
             # LaneManager, so the proxy is what an out-of-Mirror caller uses.

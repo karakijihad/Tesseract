@@ -1,11 +1,16 @@
 """The plumbing every card-filing job shares: where the queue is, and telling
 an open cockpit about a card that just landed.
 
-Three jobs file proposal cards now. These four calls were written twice before
-the third arrived, which is the point at which two copies stop being a
-coincidence: the second copy of `_broadcast` differed from the first only in
-the name it logged under, and the second `logs_dir` carried a resolved-then-
-discarded local the first had already dropped.
+Three jobs file proposal cards now. These calls were written twice before the
+third arrived, which is the point at which two copies stop being a coincidence:
+the second copy of `_broadcast` differed from the first only in the name it
+logged under, and the second `logs_dir` carried a resolved-then-discarded local
+the first had already dropped.
+
+The one-at-a-time question used to live here too. It moved to
+`EventStore.one_is_pending` when a TOOL began filing cards as well, and the
+forwarding wrapper left behind was deleted once it had one caller: a second
+name for one operation is the thing this module exists to prevent.
 
 Nothing here decides anything about a card. What a job proposes, when it may
 propose it, and what its evidence is stay with the job; this is only how a
@@ -40,22 +45,6 @@ def store(ctx: JobContext) -> Any:
     return EventStore(logs_dir(ctx))
 
 
-def one_waiting(queue: Any, kind: str) -> bool:
-    """Whether a card of this kind is already waiting to be decided.
-
-    One at a time, per kind. A second card computed over an overlapping window
-    proposes most of the same thing, and the operator would be deciding it
-    twice. A queue that cannot be read reads as empty on purpose: the cost of
-    a duplicate card is an extra decision, and the cost of the other answer is
-    a proposal nobody ever sees.
-    """
-    try:
-        return bool(queue.list_events(kinds=(kind,), status="pending"))
-    except Exception:
-        log.warning("card: the queue could not be read for %s", kind, exc_info=True)
-        return False
-
-
 async def announce(ctx: JobContext, event: Any, *, who: str) -> None:
     """Push the card to any open cockpit, best effort. A card that only
     appears on the next reload is still a card."""
@@ -68,4 +57,4 @@ async def announce(ctx: JobContext, event: Any, *, who: str) -> None:
         log.warning("%s: broadcast failed", who, exc_info=True)
 
 
-__all__ = ["announce", "logs_dir", "one_waiting", "store"]
+__all__ = ["announce", "logs_dir", "store"]

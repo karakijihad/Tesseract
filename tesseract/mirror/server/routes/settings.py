@@ -27,15 +27,11 @@ log = logging.getLogger(__name__)
 # easiest to fork without noticing.
 _MIN_RATIO = compaction_control.RATIO_MIN
 _MAX_RATIO = compaction_control.RATIO_MAX
-_MIN_KEEP_RECENT = compaction_control.KEEP_RECENT_MIN
-_MAX_KEEP_RECENT = compaction_control.KEEP_RECENT_MAX
 #: What this route will accept, named once so `/api/identity` can send it to
 #: the control rather than the control keeping a second copy of the numbers.
 COMPACTION_BOUNDS = {
     "ratio_min": _MIN_RATIO,
     "ratio_max": _MAX_RATIO,
-    "turns_min": _MIN_KEEP_RECENT,
-    "turns_max": _MAX_KEEP_RECENT,
 }
 # Loop-limit guards. The lower bounds are deliberate: at least 1 tool iteration
 # (otherwise no tool can ever run) and at least 1 consecutive adapter error
@@ -352,25 +348,13 @@ async def set_compact_threshold(request: web.Request) -> web.Response:
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
 
-    keep_recent: int | None = None
-    if "keep_recent_turns" in body:
-        try:
-            keep_recent = compaction_control.validate_keep_recent(
-                body["keep_recent_turns"]
-            )
-        except ValueError as exc:
-            return web.json_response({"error": str(exc)}, status=400)
-
-    if ratio is None and keep_recent is None:
-        return web.json_response(
-            {"error": "at least one of ratio or keep_recent_turns is required"},
-            status=400,
-        )
+    if ratio is None:
+        return web.json_response({"error": "ratio is required"}, status=400)
 
     yaml_path = _roles_yaml_path(request.app)
     try:
         doc = compaction_control.apply_compaction(
-            request.app, yaml_path, ratio=ratio, keep_recent=keep_recent
+            request.app, yaml_path, ratio=ratio
         )
     except KeyError as exc:
         return web.json_response({"error": f"roles.yaml missing key: {exc}"}, status=500)
@@ -400,9 +384,6 @@ async def set_compact_threshold(request: web.Request) -> web.Response:
         effective_ratio = (
             ratio if ratio is not None else float(compact_source["compact_threshold"])
         )
-        effective_keep = (
-            keep_recent if keep_recent is not None else int(compact_source["keep_recent_turns"])
-        )
     except KeyError as exc:
         return web.json_response(
             {"error": f"config chat_brain missing key: {exc}"}, status=500,
@@ -416,7 +397,6 @@ async def set_compact_threshold(request: web.Request) -> web.Response:
         "ratio": effective_ratio,
         "context_window": context_window,
         "tokens": tokens,
-        "keep_recent_turns": effective_keep,
     })
 
 
@@ -672,11 +652,18 @@ async def set_cost(request: web.Request) -> web.Response:
     per_role_in = body.get("per_role")
     if per_role_in is not None and not isinstance(per_role_in, dict):
         return web.json_response({"error": "per_role must be an object"}, status=400)
-    # **The WHOLE request is checked before either file is touched.** This
-    # route writes two of them, and for one commit it wrote the warning
-    # percentage first and validated the role names second, so a request
-    # answered with a 400 had already changed the threshold on disk. A
-    # rejected request changes nothing.
+    # **The refusable file is written FIRST.** This route changes two of them
+    # and nothing makes a pair of files one transaction, so the ordering is
+    # what decides what a rejected request leaves behind. Everything that can
+    # say no lives in the roles write: a name the file does not have, a cap
+    # that is not a positive number. The providers write can only fail on I/O
+    # or a missing `cost_tracking` block. So roles first means a 400 changes
+    # nothing at all, which is the case that actually happens; the residue is
+    # a 500 from the providers write with the roles change already made, which
+    # needs the disk to fail between two writes.
+    #
+    # Written the other way round for one commit, and a request rejected for a
+    # role that does not exist had already moved the warning threshold.
     #
     # The baseline for the roles half is what is ON DISK, not the in-memory
     # snapshot. Those two differ the moment anything else changes a ceiling,
@@ -686,29 +673,6 @@ async def set_cost(request: web.Request) -> web.Response:
     # key. `apply_role_ceilings` holds that rule, and the tuning card's
     # approve is its second caller.
     if per_role_in is not None:
-        try:
-            validated_ceilings(_live_roles(request.app), per_role_in)
-        except ValueError as exc:
-            return web.json_response({"error": str(exc)}, status=400)
-        except Exception as exc:  # noqa: BLE001 — surface to UI
-            return web.json_response({"error": f"config load failed: {exc}"}, status=500)
-
-    try:
-        _round_trip_yaml(
-            _providers_yaml_path(request.app),
-            lambda d: _apply_cost_update_providers(d, new_pct),
-        )
-    except KeyError as exc:
-        return web.json_response({"error": f"config missing key: {exc}"}, status=500)
-
-    if per_role_in is None:
-        # A request that changed only the warning percentage. It never read
-        # roles.yaml before and does not start now: a caller who named no role
-        # should not be answered with a 500 because that file is unreadable.
-        # The ledger still has to be told, because it holds the fraction.
-        _sync_in_memory_cost(request.app, new_pct, current_per_role)
-        _reload_ledger(request.app)
-    else:
         try:
             apply_role_ceilings(request.app, per_role_in, warning_at_pct=new_pct)
         except ValueError as exc:
@@ -721,6 +685,22 @@ async def set_cost(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": f"config load failed: {exc}"}, status=500
             )
+
+    try:
+        _round_trip_yaml(
+            _providers_yaml_path(request.app),
+            lambda d: _apply_cost_update_providers(d, new_pct),
+        )
+    except KeyError as exc:
+        return web.json_response({"error": f"config missing key: {exc}"}, status=500)
+
+    # **The percentage reaches memory only after it has reached disk.**
+    # `apply_role_ceilings` syncs with the new fraction as it goes, which put
+    # the in-memory reading ahead of providers.yaml for as long as the write
+    # below could still fail. Re-stated here, after both writes, so the
+    # snapshot never claims a fraction the file does not hold.
+    _sync_in_memory_cost(request.app, new_pct, _snapshot_caps(request.app) or current_per_role)
+    _reload_ledger(request.app)
 
     return web.json_response(_identity_cost_tracking(request.app))
 
@@ -1080,29 +1060,74 @@ def _apply_cost_update_providers(doc: Any, warning_at_pct: float) -> None:
     ct["warning_at_pct"] = warning_at_pct
 
 
-def _apply_cost_update_roles(doc: Any, per_role: dict[str, float]) -> None:
-    """Write each role's per-day cap to `roles.<name>.daily_budget_usd`."""
+def _apply_cost_update_roles(
+    doc: Any,
+    per_role: dict[str, float],
+    expected: dict[str, Any] | None = None,
+) -> None:
+    """Check and write each role's per-day cap, against the document being
+    written and no other reading of it.
+
+    **Everything that can refuse the write happens in here**, which is the
+    whole point of the shape. `round_trip_yaml` opens the file, hands this the
+    document, and writes only if this returns; a raise leaves the file
+    untouched. So the names, the staleness and the mutation all see one
+    document, and there is no window between the reading a decision was made
+    on and the write that acts on it.
+
+    An earlier version checked the names against one read of `roles.yaml` and
+    the staleness against a second, and wrote through a third that
+    `round_trip_yaml` opens for itself. Four lenses and this file's own author
+    filed the same defect from different sides.
+    """
     roles = doc.get("roles")
     if roles is None:
         raise KeyError("roles")
     for role, cap in per_role.items():
         if role not in roles:
-            raise KeyError(f"roles.{role}")
+            raise ValueError(f"unknown role '{role}'")
+        if roles[role] is None:
+            # Decided once, in the loop that checks. The read below tolerated
+            # an empty block and the write below could not, so a role written
+            # as a bare name passed every check and then raised on the
+            # assignment, reaching the operator as a server fault rather than
+            # as the one line in their config that needs a body.
+            raise ValueError(
+                f"the {role} block in roles.yaml is empty, so there is "
+                "nothing to set a daily limit on. Give it a body first"
+            )
+        if expected and role in expected:
+            was = expected[role]
+            now = roles[role].get("daily_budget_usd")
+            if now is None:
+                raise ValueError(
+                    f"{role} has no daily limit any more, so the {was} this "
+                    "was worked out from is out of date. Nothing has been "
+                    "changed. Decline this and let a fresh reading be taken"
+                )
+            try:
+                unchanged = math.isclose(float(was), float(now), rel_tol=1e-9)
+            except (TypeError, ValueError):
+                unchanged = False
+            if not unchanged:
+                raise ValueError(
+                    f"the daily limit for {role} is {now} now, not the {was} "
+                    "this was worked out from. Nothing has been changed. "
+                    "Decline this and let a fresh reading be taken"
+                )
+    for role, cap in per_role.items():
         roles[role]["daily_budget_usd"] = cap
 
 
-def validated_ceilings(known: Any, per_role_in: dict[str, Any]) -> dict[str, float]:
-    """Every submitted cap, checked, or the sentence saying which one is wrong.
+def validated_ceilings(per_role_in: dict[str, Any]) -> dict[str, float]:
+    """Every submitted cap as a number, or the sentence saying which is wrong.
 
-    Apart from the write, because `set_cost` changes two files and has to know
-    the whole request is good BEFORE it touches either. It wrote the warning
-    percentage first and validated the roles second for one commit, so a
-    request rejected with a 400 had already changed the threshold on disk.
+    Values only. Whether a role EXISTS is a question about the file and is
+    asked inside the write, against the document being written; asking it
+    here as well would be the second reading this path keeps being caught by.
     """
     out: dict[str, float] = {}
     for role_name, cap_raw in per_role_in.items():
-        if role_name not in known:
-            raise ValueError(f"unknown role '{role_name}'")
         try:
             cap = float(cap_raw)
         except (TypeError, ValueError):
@@ -1153,23 +1178,11 @@ def apply_role_ceilings(
 
     Returns what the file holds afterwards, re-read rather than composed.
     """
-    known = _live_roles(app)
-    submitted = validated_ceilings(known, per_role_in)
-    if expected:
-        live = _caps_of(known)
-        for role_name, was in expected.items():
-            now = live.get(role_name)
-            if now is None or not math.isclose(float(was), now, rel_tol=1e-9):
-                raise ValueError(
-                    f"the daily limit for {role_name} is {now} now, not the "
-                    f"{was} this was worked out from. Nothing has been "
-                    "changed. Decline this and let a fresh reading be taken"
-                )
-
+    submitted = validated_ceilings(per_role_in)
     if submitted:
         _round_trip_yaml(
             _roles_yaml_path(app),
-            lambda d: _apply_cost_update_roles(d, submitted),
+            lambda d: _apply_cost_update_roles(d, submitted, expected),
         )
 
     # Re-read rather than assume. What the file now holds is the answer, and
@@ -1179,10 +1192,33 @@ def apply_role_ceilings(
         caps = _caps_of(_live_roles(app))
     except Exception:  # noqa: BLE001 — the write already landed
         log.exception("cost: could not re-read roles.yaml after the write")
-        caps = {**_caps_of(known), **submitted}
+        # The snapshot PLUS what was just written, never the submission
+        # alone. `_sync_in_memory_cost` replaces the whole map, so falling
+        # back to the submitted roles would drop every other role's ceiling
+        # from the reading the runtime spends against until it restarts. The
+        # merge base used to be the read this function no longer takes, and
+        # losing it was the cost of collapsing the reads.
+        caps = {**_snapshot_caps(app), **submitted}
     _sync_in_memory_cost(app, warning_at_pct, caps)
     _reload_ledger(app)
     return caps
+
+
+def _snapshot_caps(app: web.Application) -> dict[str, float]:
+    """The caps the runtime is currently spending against, off the in-memory
+    snapshot. Only a fallback: the file is the authority, and this is what
+    there is to merge onto when the file cannot be re-read."""
+    try:
+        raw = (app["config"].models.get("cost_tracking") or {}).get("per_role") or {}
+    except Exception:  # noqa: BLE001 — a fallback never raises
+        return {}
+    out: dict[str, float] = {}
+    for role, cap in raw.items():
+        try:
+            out[str(role)] = float(cap)
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def _reload_ledger(app: web.Application) -> None:

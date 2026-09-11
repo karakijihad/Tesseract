@@ -15,6 +15,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.orchestrator.autonomy.agenda_store import AgendaStore
 from tesseract.orchestrator.turns.tasks import (
     NotTakeable,
@@ -24,10 +25,19 @@ from tesseract.orchestrator.turns.tasks import (
 
 logger = logging.getLogger(__name__)
 
+#: What a resumed task is told when nothing on disk can say what it was doing.
+#:
+#: The careful answer, and it is now the FALLBACK rather than the rule. It was
+#: the rule while no record could tell a call that may be repeated from one
+#: that may not, and asking the operator about every one of them was the only
+#: safe thing left. `recovery/resume.py` reads that record when there is one,
+#: and a call the tool itself declared repeatable is repeated without spending
+#: the operator's attention on it.
 RESUME_NOTICE = (
-    "The last turn on this stopped when the app restarted. Anything it did "
-    "with an effect is on the record and must not be done twice: say what the "
-    "next step is and let the operator confirm it before you act."
+    "The last turn on this stopped when the app restarted, and there is no "
+    "record left of what it was doing. Anything it did with an effect may or "
+    "may not have landed: say what the next step is and let the operator "
+    "confirm it before you act."
 )
 
 
@@ -53,6 +63,8 @@ class TaskWorkTool(Tool):
         "`task_close`; for a session checklist, which is `tasks_set`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     def __init__(self, store: AgendaStore) -> None:
         self._store = store
@@ -79,12 +91,21 @@ class TaskWorkTool(Tool):
         item_id = inp.item_id.strip()
         item = self._store.get(item_id) if item_id else None
         if item is None:
-            return ToolResult(output=f"There is no task {item_id!r}.", is_error=True)
+            return ToolResult(
+                output=f"There is no task {item_id!r}.",
+                is_error=True,
+                caller_error=True,
+            )
         resumed = last_attempt_was_interrupted(item)
+        # Read before `take_up`, which appends THIS turn's id. Afterwards the
+        # index of the interrupted turn depends on whether the caller had a
+        # turn at all, and a fallback that reads the wrong turn is a brief
+        # about somebody else's calls.
+        stopped_in = item.turn_ids[-1] if item.turn_ids else ""
         try:
             take_up(item, turn_id=context.turn_id, bind=context.bind_task, store=self._store)
         except NotTakeable as exc:
-            return ToolResult(output=str(exc), is_error=True)
+            return ToolResult(output=str(exc), is_error=True, caller_error=True)
         except (OSError, ValueError) as exc:
             logger.exception("task_work: could not take up %s", item_id)
             return ToolResult(
@@ -104,8 +125,25 @@ class TaskWorkTool(Tool):
         if not context.turn_id:
             lines.append("No turn is being recorded here, so the task names no turn for this work.")
         if resumed:
-            lines.append(RESUME_NOTICE)
+            # The record first, and the careful sentence only when there is
+            # none. Which of the two a turn gets is decided by whether the
+            # runtime can actually say what happened, never by how cautious the
+            # copy sounds.
+            from tesseract.orchestrator.recovery import resume as resume_reader
+
+            lines.append(
+                resume_reader.for_task(
+                    current_checkpoint=item.current_checkpoint,
+                    last_turn_id=stopped_in,
+                )
+                or RESUME_NOTICE
+            )
         return ToolResult(
             output="\n".join(lines),
+            receipt=Receipt(
+                kind="record",
+                id=item.id,
+                locator=str(self._store.path_for(item.id) or ""),
+            ),
             metadata={"item_id": item.id, "turn_id": context.turn_id, "resumed": resumed},
         )

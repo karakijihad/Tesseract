@@ -14,8 +14,10 @@ only write target is the uninvokable quarantine below.
 **A playbook is refused at the door, not after the operator has read it.**
 The contract is checked before the write (`playbook_contract.gaps_for_skill`
 with the live registry): a step naming a tool the runtime does not have or
-one the playbook itself forbids, a status outside the vocabulary, a version
-that cannot be ordered. And any field naming a credential-bearing path or a
+one the playbook itself forbids, a status outside the vocabulary. The version
+gap cannot fire here any more, because a created playbook is stamped `1` by
+`render_skill_markdown` rather than taking one from the caller. And any field
+naming a credential-bearing path or a
 path outside the home tree is refused outright, because a generated
 procedure is untrusted until checked and the operator should never be handed
 one that can only do harm.
@@ -60,6 +62,7 @@ from tesseract.config.runtime_limits import (
     load_skill_pending_cap,
 )
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.kernel.tools.skill_promote import promote_pending_skill, promotion_is_auto
 from tesseract.orchestrator.background_event_bus import get_background_bus
 from tesseract.workspace_events import EventStore, WorkspaceEvent
@@ -98,7 +101,10 @@ class SkillCreateInput(BaseModel):
     )
     version: str = Field(
         default="0.1",
-        description="For a playbook, a whole number counting up from 1; 1 if left as is.",
+        description=(
+            "Interop field for a plain skill, free form. A playbook ignores "
+            "it: a new playbook is version 1 and the runtime writes it."
+        ),
     )
     license: str | None = Field(default=None)
     allowed_tools: list[str] | None = Field(
@@ -168,6 +174,8 @@ class SkillCreateTool(Tool):
         "existing active skill, use `skill_refine`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     def __init__(
         self,
@@ -227,14 +235,20 @@ class SkillCreateTool(Tool):
                     "with a letter, hyphens allowed, 2–64 chars."
                 ),
                 is_error=True,
+                caller_error=True,
             )
         if not inp.instructions.strip():
-            return ToolResult(output="instructions (the SKILL.md body) must not be empty.", is_error=True)
+            return ToolResult(
+                output="instructions (the SKILL.md body) must not be empty.",
+                is_error=True,
+                caller_error=True,
+            )
 
         if inp.name in list_skills_names(self._skills_dir):
             return ToolResult(
                 output=f"Skill {inp.name!r} already exists in {self._skills_dir}.",
                 is_error=True,
+                caller_error=True,
             )
         if inp.name in list_pending_skills(self._skills_dir):
             return ToolResult(
@@ -243,6 +257,7 @@ class SkillCreateTool(Tool):
                     f"{self._skills_dir}/{SKILL_PENDING_DIRNAME}/. Promote or remove it first."
                 ),
                 is_error=True,
+                caller_error=True,
             )
         if inp.name in list_rejected_skills(self._skills_dir):
             reason = read_rejection_reason(self._skills_dir, inp.name)
@@ -253,6 +268,7 @@ class SkillCreateTool(Tool):
                     + " Address the rejection before re-proposing, or pick a different name."
                 ),
                 is_error=True,
+                caller_error=True,
             )
 
         # Headless flood guard — UNATTENDED drafts are capped by
@@ -269,6 +285,7 @@ class SkillCreateTool(Tool):
                         "proposal cards before proposing more skills."
                     ),
                     is_error=True,
+                    caller_error=True,
                 )
 
         # --- Render + round-trip validation ---
@@ -278,10 +295,11 @@ class SkillCreateTool(Tool):
             return ToolResult(
                 output=f"Rendered SKILL.md failed loader round-trip: {roundtrip_error}",
                 is_error=True,
+                caller_error=True,
             )
         refused = refuse_playbook(rendered, inp.name, self._tool_names())
         if refused:
-            return ToolResult(output=refused, is_error=True)
+            return ToolResult(output=refused, is_error=True, caller_error=True)
 
         # --- Atomic write to quarantine ---
         pending_dir = self._skills_dir / SKILL_PENDING_DIRNAME / inp.name
@@ -355,7 +373,14 @@ class SkillCreateTool(Tool):
                         f"File: {self._skills_dir / inp.name / SKILL_FILENAME}\n\n"
                         "Promotion needs no approval in this mode, so it is live "
                         "now and listed in your prompt from the next turn." + card_note
-                    )
+                    ),
+                    receipt=Receipt(
+                        kind="record",
+                        id=inp.name,
+                        locator=str(
+                            self._skills_dir / inp.name / SKILL_FILENAME
+                        ),
+                    ),
                 )
             logger.warning("skill_create: auto promotion of %s failed: %s", inp.name, err)
 
@@ -366,7 +391,8 @@ class SkillCreateTool(Tool):
                 "The skill is quarantined: it does not appear in the prompt "
                 "manifest until the operator promotes it (`skill_promote` or "
                 "the Workspace proposal card)." + card_note
-            )
+            ),
+            receipt=Receipt(kind="record", id=inp.name, locator=str(skill_path)),
         )
 
     def _settle_card(self, name: str) -> None:
@@ -394,8 +420,13 @@ def render_skill_markdown(inp: SkillCreateInput) -> str:
     fm: dict[str, Any] = {"name": inp.name, "description": inp.description}
     playbook = _is_playbook(inp)
     if playbook:
-        # A playbook's version is ordered; the plain default is not a number.
-        fm["version"] = inp.version if inp.version.strip().isdigit() else "1"
+        # A playbook's version is an ordering key, so it is the runtime's and
+        # not the author's: `keep_predecessor` archives under it and refuses
+        # anything that does not sort above the live one. This tool CREATES,
+        # and a created playbook is the first revision. Reading `inp.version`
+        # here coerced a semantic one to "1" without saying so, which put a
+        # revision of a v3 playbook below its own predecessor.
+        fm["version"] = "1"
         fm["status"] = "draft"
     elif inp.version:
         fm["version"] = inp.version

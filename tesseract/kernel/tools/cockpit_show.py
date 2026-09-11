@@ -106,6 +106,13 @@ class CockpitShowTool(Tool):
         "opened, not the operator's own app."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    # `show` and an exact `scale` converge. `zoom in` and `scroll down` do not:
+    # a repeat is one more step, bounded by the scale clamp and undone by the
+    # operator's own control. That is the relative-nudge case `recovery.py`
+    # names, and it is here rather than at `unsafe` because a task must not
+    # park to ask about a scroll.
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     def __init__(self, app_provider: Optional[Callable[[], Any]] = None) -> None:
         """``app_provider`` resolves the Mirror ``web.Application`` at call

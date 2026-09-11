@@ -109,7 +109,7 @@ brief:
   #
   # A machine asleep at this hour delivers when it wakes, rather than skipping
   # the day.
-  delivery_hour: 8
+  delivery_hour: 9
   delivery_minute: 0
 
 mission:

@@ -7,11 +7,10 @@ and the brief's own delivery. A rule that was never that adapter's, imported
 from inside it by everything that needed it.
 
 The rule is small and says nothing about Telegram: send to the people this
-channel calls operators, skip anyone pending or blocked, and let one
-recipient's failure decide nothing for the rest. `ChannelAdapter.list_users()`
-already reports a tier and a state per person, so the rule is written against
-the protocol. A second channel gets it by implementing the protocol, not by
-being named here.
+channel has allowed, skip anyone pending or blocked, and let one recipient's
+failure decide nothing for the rest. `ChannelAdapter.list_users()` already
+reports a state per person, so the rule is written against the protocol. A
+second channel gets it by implementing the protocol, not by being named here.
 
 What stays behind the adapter boundary is what is genuinely a channel's: its
 API, its allowlist file, its message limits, and how it renders a message.
@@ -19,9 +18,8 @@ API, its allowlist file, its message limits, and how it renders a message.
 Three properties this module has to hold at once:
 
 1. **The same people as before.** An id that is allowed AND blocked is skipped,
-   which the old helper checked explicitly, and an id with no tier recorded
-   counts as an operator, which is what the bridge's own projection does.
-   Getting either wrong changes who hears from the runtime.
+   which the old helper checked explicitly. Getting it wrong changes who hears
+   from the runtime.
 2. **One failure is one failure.** Recipients are sent to together and every
    result is inspected, so one unreachable chat costs the others nothing.
 3. **`skipped` is a real count.** The brief's delivery decides whether to try
@@ -38,10 +36,6 @@ from typing import Any, Awaitable, Callable, Iterable, Sequence
 from tesseract.orchestrator.autonomy.message import Message
 
 log = logging.getLogger(__name__)
-
-#: The tier that hears from the runtime unasked. A friend on a channel gets
-#: replies to what they said and nothing else.
-OPERATOR_TIER = "operator"
 
 SendText = Callable[..., Awaitable[Any]]
 Sender = Callable[[Message], Awaitable[dict[str, Any]]]
@@ -100,8 +94,6 @@ def operators_of(users: Iterable[Any]) -> list[str]:
         ref = str(user.user_id)
         if ref not in allowed or ref in out:
             continue
-        if getattr(user, "tier", OPERATOR_TIER) != OPERATOR_TIER:
-            continue
         out.append(ref)
     return out
 
@@ -129,8 +121,8 @@ async def fan_out(
         # the channel as having carried the message.
         return {"sent": 0, "skipped": 0, "errors": 0, "reason": "no_operators"}
 
-    async def one(ref: str) -> None:
-        await send_text(
+    async def one(ref: str) -> Any:
+        return await send_text(
             chat_ref=ref, text=text, disable_web_page_preview=not link_preview,
         )
 
@@ -140,6 +132,12 @@ async def fan_out(
     sent = 0
     errors = 0
     partial = 0
+    # The FIRST delivery, kept so a caller can cite one message rather
+    # than a count. A fan-out is many messages and a receipt names one, so
+    # which one has to be decided somewhere: `gather` preserves the order
+    # it was given, and the first recipient is the same answer on every
+    # run. `sent` is still what says how many there were.
+    first: tuple[str, str] | None = None
     for ref, outcome in zip(recipients, outcomes):
         if isinstance(outcome, BaseException):
             log.exception("outbound: send failed for %s", ref, exc_info=outcome)
@@ -148,7 +146,11 @@ async def fan_out(
                 partial += 1
         else:
             sent += 1
+            if first is None and outcome:
+                first = (ref, str(outcome))
     result: dict[str, Any] = {"sent": sent, "skipped": 0, "errors": errors}
+    if first is not None:
+        result["first_chat_ref"], result["first_message_id"] = first
     if partial:
         # Named, not folded into either count. A caller deciding whether to
         # keep a record of what the operator was told needs to know that
@@ -249,21 +251,47 @@ def operator_sender(channel: str) -> Sender:
     adapter is not built yet, or is switched off: the table is the operator's
     statement of intent, and whether anything can carry it is answered at the
     moment of sending.
+
+    **A registry with nothing in it is not the same as no way to reach the
+    operator**, and treating them alike lost the message that matters most.
+    Recovery speaks about eight seconds into boot, telling the operator what a
+    crash left uncertain; the Telegram bridge registers seventeen to forty five
+    seconds in, because `getMe` retries. So every recovery nudge was reported
+    `skipped` and delivered to nobody, on four boots out of four, while the
+    card sat in an inbox the operator was not at. The channel's own no-bridge
+    adapter needs no registry and is the same one the daily brief and the
+    supervisor's last words already fall back to, so this reaches that rather
+    than holding a queue of its own.
     """
 
     async def send(message: Message) -> dict[str, Any]:
         from tesseract.integrations import get_channel
 
         adapter = get_channel(channel)
+        if adapter is not None:
+            return await notify_operators(adapter, message)
+
+        from tesseract.integrations._offline import offline_adapter
+
+        adapter = offline_adapter(channel)
         if adapter is None:
             return {"sent": 0, "skipped": 0, "errors": 0, "reason": "no_adapter"}
-        return await notify_operators(adapter, message)
+        try:
+            result = await notify_operators(adapter, message)
+        finally:
+            # Built for this one send, so it is ours to close however it went.
+            close = getattr(adapter, "aclose", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception:  # noqa: BLE001
+                    log.exception("outbound: closing the offline %s failed", channel)
+        return result
 
     return send
 
 
 __all__ = [
-    "OPERATOR_TIER",
     "PartialDelivery",
     "Sender",
     "allowed_refs",

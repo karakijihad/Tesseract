@@ -50,6 +50,21 @@ daily_caps:
   usd: 5.00                         # daily USD spend ceiling
   exceed_behavior: pause            # pause | operator_gate_all | stop
 
+# The morning: what the app proposes for itself when it opens, inside the
+# projects it owns. A project with no budget of its own gets no step at all,
+# so this bounds a day on the projects that have been priced.
+morning:
+  max_steps: 3                      # most steps one morning may propose. Zero
+                                    # steps is an ordinary morning; this is the
+                                    # other end, and it is small because a step
+                                    # is worked one per wake
+  # An idea that is not inside an existing project is a card, never work. Two
+  # limits, and they answer different questions: one open card at a time is
+  # about the operator's inbox, and the days between are about how often the
+  # runtime is allowed to have an idea at all. Raise the days and it proposes
+  # less; set it to 0 and only the one-at-a-time limit stands.
+  project_proposal_every_days: 7
+
 # agent controller daemon reload behavior.
 controller:
   drain_timeout_seconds: 30         # max wait for in-flight turns before forcing a reload
@@ -124,8 +139,8 @@ follow_up_mapper:
     - patch
     - rewrite
 
-# Stop-digging safeguards. Each trigger pauses a source until the operator
-# unpauses it.
+# Stop-digging safeguards. Each trigger pauses a source, and the pause lifts
+# itself when its time is up.
 governor:
   cadence_seconds: 60               # detector check interval
   loop:
@@ -135,3 +150,14 @@ governor:
     threshold_multiplier: 2.0       # spend at/above this multiple of the cap cancels the worker
   trust_degradation:
     consecutive_rejections: 3       # consecutive operator rejections from a source before it's paused
+  pause:
+    # How long a pause lasts before the governor lifts it, per detector. A
+    # pause with no entry here never expires and waits for you, which is what
+    # every pause did before this. You can always lift one early.
+    ttl_hours:
+      loop: 6                       # a mapper repeating itself is usually a window that has passed
+      cost_spiral: 6                # the spend that triggered it is a day's budget at most
+      trust_degradation: 24         # you rejecting a source is a slower signal than a loop
+    backoff_multiplier: 2           # a source paused again inside its own time waits this much longer
+    max_ttl_hours: 72               # and never longer than this
+    advice_after: 3                 # paused this many times in a row and you are asked instead

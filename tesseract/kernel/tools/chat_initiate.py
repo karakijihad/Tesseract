@@ -73,6 +73,10 @@ class ChatInitiateTool(Tool):
         "`workspace_post`; a push to an external chat channel, `channel_notify`."
     )
     depends_on: ClassVar[str] = ""
+    # A push to an open cockpit tab. Nothing is stored and the surface
+    # mints no id, so there is nothing a later pass could go and read.
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "unsafe"
 
     def __init__(self, app_provider: Optional[Callable[[], Any]] = None) -> None:
         """``app_provider`` resolves the Mirror ``web.Application`` at call
@@ -106,7 +110,11 @@ class ChatInitiateTool(Tool):
         )
         text = (inp.text or "").strip()
         if not text:
-            return ToolResult(output="chat_initiate: `text` is empty", is_error=True)
+            return ToolResult(
+                output="chat_initiate: `text` is empty",
+                is_error=True,
+                caller_error=True,
+            )
         if len(text) > MAX_TEXT_CHARS:
             return ToolResult(
                 output=(
@@ -114,6 +122,7 @@ class ChatInitiateTool(Tool):
                     f"{MAX_TEXT_CHARS}. Trim or use workspace_post."
                 ),
                 is_error=True,
+                caller_error=True,
             )
 
         app = self._app_provider() if self._app_provider is not None else None

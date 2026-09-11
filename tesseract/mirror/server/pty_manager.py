@@ -834,7 +834,8 @@ class PTYManager:
             return
         entry.observer_enabled = enabled
         if not enabled:
-            self.revoke_consent(pane_id)
+            # The operator's own switch, so the records go too.
+            await self.withdraw_consent(pane_id)
         await self._send(entry.ws, {
             "type": "terminal_observer_status",
             "pane_id": pane_id,
@@ -897,6 +898,12 @@ class PTYManager:
         self._app["observer_consented_panes"].add(pane_id)
 
     def revoke_consent(self, pane_id: str) -> None:
+        """The pane stops being watched. Its buffered output goes, and nothing else.
+
+        This is the pane going away: closed, or gone with the session. It is
+        not a statement about what the assistant already learned, so the
+        observation records stay. Closing a terminal is finishing work.
+        """
         if self._app is None:
             return
         self._app["observer_consented_panes"].discard(pane_id)
@@ -906,6 +913,26 @@ class PTYManager:
                 observer.drop_pty_for_pane(pane_id)
             except Exception:
                 log.exception("observer.drop_pty_for_pane failed for %s", pane_id)
+
+    async def withdraw_consent(self, pane_id: str) -> None:
+        """The operator taking permission back. The buffer and the records.
+
+        Kept apart from `revoke_consent` because they are two acts and not two
+        spellings of one. A pane closing must not quietly delete what the
+        assistant noticed; an operator switching the observer off for a pane
+        must, or the switch only stops the next observation and leaves every
+        earlier one on disk for the length of the retention window.
+        """
+        if self._app is None:
+            return
+        self._app["observer_consented_panes"].discard(pane_id)
+        observer = self._app.get("observer")
+        if observer is None:
+            return
+        try:
+            await observer.forget_pane(pane_id)
+        except Exception:
+            log.exception("observer.forget_pane failed for %s", pane_id)
 
     def _forward_to_observer(self, pane_id: str, text: str) -> None:
         """Fire-and-forget push of a PTY chunk into the observer when

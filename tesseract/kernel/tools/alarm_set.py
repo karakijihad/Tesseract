@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.scheduler.alarm_parser import ALARM_HANDLER_DOTPATH, parse_alarm_spec
 from tesseract.scheduler.alarms import AlarmRegistry
 
@@ -40,6 +41,8 @@ class AlarmSetTool(Tool):
         "backend automation that runs on a cadence, which is `schedule_create`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "job"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     def __init__(self, alarm_registry: AlarmRegistry) -> None:
         self._registry = alarm_registry
@@ -63,6 +66,7 @@ class AlarmSetTool(Tool):
             return ToolResult(
                 output=f"cannot parse when-expression: {inp.when!r}",
                 is_error=True,
+                caller_error=True,
             )
         message = inp.message.strip() or parsed_message
         try:
@@ -74,13 +78,18 @@ class AlarmSetTool(Tool):
                 recurrence=recurrence,
             )
         except ValueError as exc:
-            return ToolResult(output=str(exc), is_error=True)
+            return ToolResult(output=str(exc), is_error=True, caller_error=True)
         summary = (
             f"alarm queued: {alarm.label} [{alarm.id[:8]}] at {alarm.run_at.isoformat()}"
             + (f" (recurring: {alarm.recurrence.kind})" if alarm.recurrence else "")
         )
         return ToolResult(
             output=summary,
+            receipt=Receipt(
+                kind="job",
+                id=alarm.id,
+                locator=str(self._registry.state_path or ""),
+            ),
             metadata={
                 "id": alarm.id,
                 "label": alarm.label,

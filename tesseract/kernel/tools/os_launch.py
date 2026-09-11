@@ -59,6 +59,8 @@ class OsLaunchTool(Tool):
         "Model callers use `open`, which resolves the target and dispatches here itself."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "unsafe"
 
     @property
     def name(self) -> str:

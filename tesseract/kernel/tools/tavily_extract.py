@@ -52,6 +52,8 @@ class TavilyExtractTool(Tool):
         "Use `tavily_search` or `web_search` first when you don't yet have a specific URL."
     )
     depends_on: ClassVar[str] = "service:tavily"
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:

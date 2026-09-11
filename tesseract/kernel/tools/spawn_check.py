@@ -37,9 +37,14 @@ class SpawnCheckTool(Tool):
         "and when it last emitted."
     )
     use_when: ClassVar[str] = (
-        "Use to confirm a spawn's current state, before steering it with `work_send`, or "
-        "deciding whether to `spawn_cancel`. A spawn-cap error wants an await or a cancel "
-        "first; a depth-cap error means do the work inline and report to the parent."
+        # 350 chars is the glossary budget and this line rides every turn, so
+        # the long form of the reasoning lives in the RESULT, where a turn
+        # reads it at the moment it is deciding whether to check again.
+        "Use ONCE to confirm a spawn's state, before steering it with `work_send` "
+        "or deciding whether to `spawn_cancel`. If it is still running, say so and "
+        "end the turn: the outcome reaches you next turn on its own, and a second "
+        "check learns nothing and costs a model call. A spawn-cap error wants an "
+        "await or a cancel; a depth-cap error means work inline."
     )
     not_when: ClassVar[str] = (
         "Retrieving a finished spawn's output. That arrives on its own in "
@@ -47,6 +52,8 @@ class SpawnCheckTool(Tool):
         "result said it was too large to deliver whole."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:
@@ -90,6 +97,7 @@ class SpawnCheckTool(Tool):
             return ToolResult(
                 output=f"No spawn with handle={inp.handle!r}.",
                 is_error=True,
+                caller_error=True,
             )
         status = handle.status()
         line = (
@@ -111,6 +119,22 @@ class SpawnCheckTool(Tool):
             line += (
                 f" · {handle.activity_events} events, last "
                 f"{quiet:.0f}s ago"
+            )
+        # Said in the RESULT, not only in the schema, because this is what a
+        # turn reads while it is deciding what to do next. A running spawn
+        # finishes on its own and `ChatSession.ingest_spawn_completion` hands
+        # the outcome to the following turn, so checking again inside this one
+        # cannot learn anything the wait did not. Measured cost of not saying
+        # it: one turn checked the same handle twenty times, and because every
+        # check is preceded by a model call carrying the whole conversation,
+        # the waiting cost about as much as the work.
+        if status == "running":
+            line += (
+                "\nStill running. It will finish on its own and the outcome "
+                "reaches you at the start of your next turn. Do not check it "
+                "again in this turn: say what you are waiting for and end the "
+                "turn. Use `work_send` to steer it or `spawn_cancel` to stop "
+                "it."
             )
         return ToolResult(
             output=line,

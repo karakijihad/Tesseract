@@ -64,6 +64,16 @@ _FROM_OUTCOME: dict[RunOutcome, OperationalState] = {
     RunOutcome.TRUNCATED: OperationalState.DEGRADED,
     RunOutcome.FAILED: OperationalState.FAILED,
     RunOutcome.REFUSED: OperationalState.REFUSED,
+    # It did work and cannot show what it left behind, which is exactly
+    # "below what it promised": the tool declared a receipt kind and
+    # returned none.
+    RunOutcome.UNVERIFIED: OperationalState.DEGRADED,
+    # And this one is quiet on purpose. The strip answers whether a part of
+    # the machine is working; a tool asked for a file that is not there is
+    # working. Where the wrong call shows is the day panel, which reports
+    # what happened rather than what is healthy. Colouring it here would
+    # make `file_read` look broken every time the model mistypes a path.
+    RunOutcome.CALLER_ERROR: OperationalState.IDLE,
     # It never began, because what it reads did not succeed. That is a refusal
     # by the runner rather than a failure of this stage.
     RunOutcome.SKIPPED_UPSTREAM_FAILED: OperationalState.REFUSED,

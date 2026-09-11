@@ -453,9 +453,24 @@
    no width at all, present in the DOM and invisible. Measured 2026-08-25.
    So under the threshold below the row is two lines: what it is and when, then
    the sentence under them across the full width. */
+/* Every row is its own grid (a line has to stand on its own outside a Row, so
+   the strip cannot be one shared grid the way `DataTable` is), which is
+   exactly the trap `DataTable`'s own comment warns about: a `value`/`when`
+   column sized `auto` or `max-content` measures ONLY the row it sits in, so
+   a short count in one row and a long one two rows down compute two
+   different widths and neither lines up with the other. Fixed character
+   widths here are what `DataTable` gets from its caller instead; `StateStrip`
+   has one shape across all nineteen rooms that use it, so the widths are
+   declared once, here, rather than threaded through a prop every caller would
+   have to repeat identically. */
 .state-line {
   display: grid;
-  grid-template-columns: var(--space-3) minmax(0, 1fr) auto auto;
+  /* `when` gets 16ch, not 8. `freshness()` hands it a clock time and, when a
+     reading is overdue, the lateness after it: `12:31, 24m late` is fifteen
+     characters. At 8ch the ellipsis fell exactly on the lateness, so a row
+     three hours late and a row read a minute ago drew identically on a narrow
+     panel, and lateness is the half that asks to be acted on. */
+  grid-template-columns: var(--space-3) minmax(0, 1fr) 8ch 16ch;
   grid-template-areas:
     "edge name value when"
     "edge said said said"
@@ -489,7 +504,13 @@
    width off the sentence in the four rooms that mark nothing. `StateStrip`
    sets the class when a line in it carries a mark, so no room has to
    remember. */
-.state-line__tag { grid-area: tag; text-align: right; white-space: nowrap; }
+.state-line__tag {
+  grid-area: tag;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* This rule outranks the WIDE `.state-line` below it: a container query adds
    no specificity, so `.state-strip--tagged .state-line` beats a bare
@@ -507,6 +528,23 @@
    row with nothing in it collapses, so a line with nothing under it pays for
    none of this. */
 .state-line__more { grid-area: more; min-width: 0; }
+
+/* What already answers a row, weighted rather than coloured: the edge above
+   already spends colour on what the row WANTS, and a second colour on what
+   answers it would be a second, competing claim about the same row.
+
+   Only one of the two is marked. The calm end was `opacity: 0.7`, and an
+   audit was right that this is the banned thing wearing a different property:
+   the sentence already renders in `--text-meta`, the dimmest tier allowed to
+   carry text, and seven tenths of that lands about where `--text-dim` sits,
+   which the house rule reserves for deep background and forbids for text.
+   `audit:tokens` reads colour and not opacity, so the rule was bypassed
+   rather than followed.
+
+   A row the runtime already has needs no mark at all: it is the ordinary
+   case, and ordinary is what the default weight says. What is worth marking
+   is the exception, a repair that tried and stopped. */
+.state-line__more--louder { font-weight: 600; }
 /* An auto row with nothing in it collapses, so a row with no controls is not
    paying for the one that would carry them. */
 .state-line > .row__actions { grid-area: acts; }
@@ -514,8 +552,14 @@
 /* WIDE. One line, with the sentence between the name and the numbers, which is
    the shape the design was drawn at. */
 @container room (min-width: 560px) {
+  /* `value`/`when`/`tag` are fixed widths for the reason given on `.state-line`
+     above; wider than the narrow template's because there is room to hold a
+     row's whole reading instead of clipping it. `acts` stays `auto`: it holds
+     a variable set of buttons rather than a value read down the column, so
+     sizing it to the widest row's button count would either crowd a row with
+     fewer of them or clip one with more. */
   .state-line {
-    grid-template-columns: var(--space-3) 148px minmax(0, 1fr) auto auto auto;
+    grid-template-columns: var(--space-3) 148px minmax(0, 1fr) 10ch 16ch auto;
     grid-template-areas:
       "edge name said value when acts"
       "more more more more more more";
@@ -523,7 +567,7 @@
 
   /* Beside the name, where there is width for a column of its own. */
   .state-strip--tagged .state-line {
-    grid-template-columns: var(--space-3) 148px auto minmax(0, 1fr) auto auto auto;
+    grid-template-columns: var(--space-3) 148px 10ch minmax(0, 1fr) 10ch 16ch auto;
     grid-template-areas:
       "edge name tag said value when acts"
       "more more more more more more more";
@@ -574,11 +618,12 @@
 .state-line__value {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  /* It sits in an `auto` column, which takes its content's width and leaves
-     the sentence beside it the remainder. A 49 character reason slug therefore
-     ate the row and the goal it belonged to rendered at nothing. One line,
-     capped, and the full text is on the card the row opens. */
-  max-width: 18ch;
+  /* The box fills its grid track (a fixed width now, not `auto`), so this no
+     longer caps the box itself, only clips what does not fit it: a 49
+     character reason slug used to eat the row and leave the goal beside it
+     rendered at nothing, and the fixed track is what stops that regardless of
+     how long a producer's own value string runs. One line, and the full text
+     is on the card the row opens. */
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -587,8 +632,15 @@
 .state-line__when {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  min-width: 44px;
-  text-align: right;
+  /* Left rather than right: `freshness()` can hand this a clock time alone or
+     a clock time with a lateness clause after it ("14:32, 3m late"), and
+     right-aligning a string whose length varies row to row is what put the
+     clock itself at a different x-position on every row. Left-aligned, the
+     time leads every row and lines up regardless of what follows it. */
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* One colour per state, and the same eight the strip and the map paint.

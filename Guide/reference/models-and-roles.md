@@ -28,6 +28,7 @@ A role either names its own model or points at a shared **chain** — a list wri
 | `consolidate` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
 | `image_generator` | `api.google.gemini_31_flash_image` | `api.xai.grok_imagine_image` | `chain_5` |
 | `observer_agent` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
+| `outbound_writer` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
 | `panel_writer` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
 | `playbook_extract` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
 | `provider_watch` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |

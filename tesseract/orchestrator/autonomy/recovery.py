@@ -83,6 +83,12 @@ _CALLERS: tuple[_Caller, ...] = (
         "nothing indexes that file again on its own, so it stays out of search",
     ),
     _Caller(
+        "resuming chat ",
+        True,
+        "the app stopped in the middle of something in that chat and did not "
+        "pick it back up, so what was left half done is still waiting",
+    ),
+    _Caller(
         "straggler completion in chat ",
         False,
         "the next turn on that chat looks again",

@@ -26,6 +26,7 @@ from tesseract.agents.loader import (
     load_agent,
 )
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.workspace_events import EventStore
 
 logger = logging.getLogger(__name__)
@@ -122,6 +123,8 @@ class AgentPromoteTool(Tool):
         "already-active agent: use `invoke_agent`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     def __init__(self, agents_dir: Path, event_store: Optional[EventStore] = None) -> None:
         """``event_store`` (Stage 10) lets a chat-side promotion settle any
@@ -175,11 +178,12 @@ class AgentPromoteTool(Tool):
                     "by the operator by hand."
                 ),
                 is_error=True,
+                caller_error=True,
             )
 
         loaded, err = promote_pending_agent(self._agents_dir, inp.name)
         if err is not None:
-            return ToolResult(output=err, is_error=True)
+            return ToolResult(output=err, is_error=True, caller_error=True)
 
         # Stage 10 — settle any open proposal card for this agent so the
         # Workspace Inbox doesn't keep offering a promotion that already
@@ -211,7 +215,8 @@ class AgentPromoteTool(Tool):
                 f"Promoted agent: {inp.name}\n"
                 f"Active path: {dst}\n"
                 "It is now invokable through `invoke_agent`."
-            )
+            ),
+            receipt=Receipt(kind="record", id=inp.name, locator=str(dst)),
         )
 
 

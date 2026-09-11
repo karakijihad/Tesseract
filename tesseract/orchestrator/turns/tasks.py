@@ -158,6 +158,12 @@ def note_turn_ended(
             and outcome is RunOutcome.TRUNCATED
             and item.status is AgendaStatus.RUNNING
         ):
+            # Set on the item the transition below is about to save, so the
+            # reference rides that write and a transition that fails takes the
+            # unsaved field down with it. There is no half state: this function
+            # returns `None` on failure and its one caller reads nothing off
+            # the object it did not get.
+            item.current_checkpoint = _where_it_stopped(manifest.run_id)
             agenda.transition(
                 item, AgendaStatus.RESUME_QUEUED, reason=INTERRUPTED_REASON, by="recovery"
             )
@@ -167,6 +173,33 @@ def note_turn_ended(
         log.exception("turn %s: could not write its end onto task %s", manifest.run_id, item.id)
         return None
     return item
+
+
+def _where_it_stopped(run_id: str) -> str | None:
+    """The checkpoint this run was standing at, as a reference, or None.
+
+    Written only here, and only at the recovery park, which is the one moment
+    the reference means anything: a task moving to `resume_queued` is a task
+    whose next reader has to find the record of what it was doing, and every
+    other moment in a task's life has a live turn that already knows.
+
+    Stamping it at each boundary instead would be an agenda file rewritten
+    several times a turn to hold a value nothing reads until a crash, and the
+    id would be stale the instant the turn moved on anyway.
+
+    Best effort, like everything else in this module. A store that will not
+    read costs the reference and never the park: the task still resumes, and
+    the conversation that takes it up reads its own conversation's record,
+    which is where the same rows are.
+    """
+    try:
+        from tesseract.orchestrator.checkpoints import latest_for_run
+
+        row = latest_for_run(run_id)
+    except Exception:  # noqa: BLE001 - see invariant 4
+        log.exception("turn %s: could not read where it stopped", run_id)
+        return None
+    return row.checkpoint_id if row is not None else None
 
 
 __all__ = [

@@ -339,3 +339,61 @@ async def run_layers(
         skipped=tuple(skipped),
         failed=tuple(failed),
     )
+
+
+async def retry_failed(
+    layers: Iterable[Layer],
+    registry: SubstrateRegistry,
+    failed: Iterable[str],
+) -> BootReport:
+    """Prepare again the substrates a boot could not, without a restart.
+
+    Failure isolation leaves the runtime running without them, and until this
+    it left them off until somebody restarted: with `tool_registry` down, turns
+    ran with no tools and no permission policy, and after one mention it read
+    as fixed.
+
+    **In boot order, and serially.** One that failed may need one that also
+    failed, and the layers are the only statement of that order there is.
+    Retrying them in parallel would be a second opinion about what depends on
+    what, taken by the half of the system with no reason to know.
+
+    A substrate whose `requires` now says to skip is reported as skipped rather
+    than failed: this machine has no use for it, and carrying it as broken
+    would keep asking about something nobody wants. Never raises, because
+    `_run_one` returns its failure as text.
+    """
+    wanted = {str(name) for name in failed}
+    if not wanted:
+        return BootReport(prepared=(), skipped=(), failed=())
+    prepared: list[str] = []
+    skipped: list[tuple[str, str]] = []
+    still: list[tuple[str, str]] = []
+    for layer in layers:
+        for substrate_id in layer.carries:
+            if substrate_id not in wanted:
+                continue
+            try:
+                substrate = registry.get(substrate_id)
+            except Exception as exc:  # noqa: BLE001
+                still.append((substrate_id, str(exc) or type(exc).__name__))
+                continue
+            reason = substrate.requires()
+            if reason:
+                skipped.append((substrate_id, reason))
+                continue
+            outcome = await _run_one(substrate)
+            if outcome is None:
+                prepared.append(substrate_id)
+            else:
+                still.append((substrate_id, outcome))
+    # A name the graph no longer places cannot be prepared and must not be
+    # carried as broken for ever: the layers are what say what exists.
+    placed = {name for layer in layers for name in layer.carries}
+    for name in sorted(wanted - placed):
+        skipped.append((name, "the boot graph no longer places it"))
+    return BootReport(
+        prepared=tuple(prepared),
+        skipped=tuple(skipped),
+        failed=tuple(still),
+    )

@@ -1,15 +1,16 @@
 # The jobs the app runs on its own, and when.
 #
 # This file is the app's. It is read and never written: when you turn a job off
-# or move the one that fires at a set time, that choice is saved to your own
+# or move one that fires at a set time, that choice is saved to your own
 # schedule file as an override, so a correction in a later release still
 # reaches you. What you may change is enable and disable on any row, plus the
-# hour of the row that fires at a time of day. How often the rest run is part
+# hour of a row that fires at a time of day. How often the rest run is part
 # of what the work is.
 #
 # Times are your computer's local time. If the machine was off when a job was
 # due, the app runs it once on the next start rather than replaying every
-# missed turn.
+# missed turn, and the same holds if the machine was only asleep: a job whose
+# time went by while it was suspended runs once when it wakes.
 
 catchup:
   concurrency: 3
@@ -36,7 +37,10 @@ jobs:
       tail_turns: 40
       max_per_tick: 20
 - name: consolidate
-  cadence: 0 23 * * *
+  # The anchor for the whole daily pass. Set it to an hour your machine is on:
+  # one that fires while it is off runs once at the next start, not once per
+  # day missed.
+  cadence: 0 17 * * *
   handler: tesseract.scheduler.tasks.consolidate_pipeline.ConsolidatePipelineJob
   enabled: true
   on_failure: alert
@@ -68,6 +72,33 @@ jobs:
         awaiting_operator: 30
       exempt_sources:
       - operator
+- name: morning
+  # When the app opens, it reads the projects it owns and decides what is worth
+  # doing inside them, then stops. Set this to an hour your machine is on. A
+  # project you have not given a daily budget is never worked on its own, so
+  # until you set one this costs nothing.
+  cadence: 0 9 * * *
+  handler: tesseract.scheduler.tasks.morning.MorningJob
+  enabled: true
+  on_failure: log
+  retry_policy:
+    max_retries: 0
+    backoff_seconds: 0
+  config: {}
+- name: workday
+  # The rest of the day. Once an hour between the two times above, it takes one
+  # of the morning's steps forward in the same conversation and stops again. An
+  # hour with nothing open, or with every budget spent, costs nothing. Set these
+  # to the hours you are around, or turn the row off to have it only decide and
+  # never work.
+  cadence: 0 10-16 * * *
+  handler: tesseract.scheduler.tasks.workday.WorkdayJob
+  enabled: true
+  on_failure: log
+  retry_policy:
+    max_retries: 0
+    backoff_seconds: 0
+  config: {}
 - name: watchman
   cadence: 15 * * * *
   handler: tesseract.scheduler.tasks.watchman.WatchmanJob
@@ -79,9 +110,7 @@ jobs:
     backoff_seconds: 0
   config: {}
 - name: skill_refinement
-  when: skill_usage_volume
-  when_config:
-    min_new_rows: 40
+  cadence: "24h"
   handler: tesseract.scheduler.tasks.skill_refinement.SkillRefinementJob
   enabled: true
   on_failure: log
@@ -93,6 +122,8 @@ jobs:
     min_loads: 4
     ratio_threshold: 0.34
     max_cards: 3
+    max_evidence_rows: 8
+    max_correction_chars: 400
 - name: working_set_review
   when: tool_usage_volume
   when_config:
@@ -122,6 +153,7 @@ jobs:
   config:
     window_days: 14
     min_days_to_judge: 7
+    min_days_per_role: 3
     at_cap_fraction: 0.9
     days_at_cap_to_raise: 3
     raise_factor: 2.0

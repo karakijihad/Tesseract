@@ -33,6 +33,7 @@ from typing import Any, Callable, Iterable
 
 from tesseract.lib.log_envelope import BAD, INFO, SEVERITIES, WARN, parse_ts, read_when
 from tesseract.orchestrator.outcome import HEALTHY_OUTCOMES, RunOutcome
+from tesseract.orchestrator.watchman.pipeline_source import read_pipeline
 from tesseract.orchestrator.watchman.findings import (
     ALREADY_ACCOUNTED,
     CURRENT_STATE,
@@ -1443,6 +1444,10 @@ COLLECTORS: tuple[tuple[str, Callable[[datetime | None, datetime], SourceRead]],
     ("loop-stalls", read_loop_stalls),
     ("machine", read_machine),
     ("interpreter", read_interpreter),
+    # Whether the STAGES inside the daily row got their turn, which is not
+    # what "schedule" answers: a run whose stages were every one of them
+    # not_due reports exactly what a run that did the work reports.
+    ("pipeline", read_pipeline),
 )
 
 
@@ -1473,6 +1478,7 @@ __all__ = [
     "read_machine",
     "read_provider_health",
     "read_repairs",
+    "read_pipeline",
     "read_schedule",
     "read_supervisor",
     "read_workers",

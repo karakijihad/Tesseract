@@ -14,55 +14,40 @@ Nothing is appended outside it — the old imperative sequence let a section
 arrive without anyone asking whether it had earned its place, and let the
 policy live in a second list that had to be kept in step by hand.
 
-**Most of the head is frozen for the life of a conversation.** Caching is a
+**The head is frozen for the life of a conversation, all of it.** Caching is a
 prefix match: a block that differs from one request to the next invalidates
 everything after it, and everything after the head is the whole conversation.
-So a held section is read once, at the start, and those exact bytes are sent
-for as long as the conversation lasts (`ChatSession._held_sections`).
+So the head is read once, at the first turn, and those exact bytes are sent for
+as long as the conversation lasts (`ChatSession._head_for_turn`).
 
-Holding had to become a mechanism, because the previous version was a hope.
-`changes="never"` was not enforced anywhere: `_document`'s builder re-reads its
-file on every assembly, so one save through Identity -> Documents moved bytes
-at the top of the prefix and re-read the whole conversation behind them. Eight
-of the ten head sections could do that. Two were held.
+Operator ruling, 2026-09-10, and it is the whole of the policy: **a document
+edited during a conversation is read by the NEXT one.** The reasoning is that
+the conversation already has it. An approved edit to SOUL.md, USER.md or
+OPERATING.md was proposed, approved and answered in the history the model is
+reading, so re-reading the file to deliver it pays the entire cached prefix to
+say what is three messages up.
 
-What a freeze gives up is an edit landing mid-conversation, and a section is
-held only if it says which of these answers covers it — `hold_reason`,
-declared beside the builder. Saying nothing is a legitimate answer and means
-the section is NOT held, which is the safe default: the cost of staying silent
-is a rebuild nobody notices, and the cost of a wrong claim would be an edit
-nobody sees.
+Getting here took three wrong versions, and what each got wrong is worth
+keeping because the mistakes are not obvious:
 
-- **An operator act retires it.** `bump_head_revision()`, called from
-  `workspace_changes.apply_change`, the one funnel every approved document
-  write passes through, and the only place that KNOWS, because further down an
-  approved edit and a background job rewriting the same file are the same
-  bytes. The three inlined documents ride on this.
-- **Nobody asked it to move, and it is reachable another way.** The memory
-  capsule and the diary digest. `memory_search` and `file_read` fetch anything
-  newer the moment the assistant wants it, which is what makes holding them
-  safe rather than merely cheap.
+- **A claim nobody enforced.** `changes="never"` was a statement about how
+  often the operator acts, while every `never` section re-read its file on each
+  assembly. One save through Identity -> Documents moved bytes at the top of
+  the prefix. Eight of the ten head sections could do that.
+- **A hold per section, declared in prose.** Each section named what retired
+  its hold (`hold_reason`), and boot could not check a word of it. It froze
+  seven sections and left the tool map and the channel overlay rebuilt every
+  turn, which met the letter of holding and not the point: whatever sits
+  behind an unfrozen block is re-read with it.
+- **An exception for an operator act.** A counter on disk, bumped by
+  `workspace_changes.apply_change`, retired every hold so an edit could reach
+  the running conversation. It is gone. It was the reason the head could still
+  move at all, and the thing it bought was already in the history.
 
-There was a third answer here — "nothing in the process can move it" — and it
-was claimed for the tool map and the channel overlay. Both claims were wrong,
-and they are worth keeping as the warning this field exists for. The tool map
-holds its NAMES still but renders `tool.tier`, which `Settings -> Tools`
-reassigns live. `CHANNEL.md` was the one workspace document no list named, so
-an approved write edited it under a running backend; it is a document like the
-other three now, and the reason its section still is not held is in the section
-itself. A `hold_reason` is prose and no guard can go and check it, so the only
-defence is that it is written where the section is declared, by someone who has
-just had to look.
-
-**A section with no such answer is not held**, and says so by leaving
-`hold_reason` empty — four of them do. The saved directives come out of the
-memory store, the pointer list reads `workspace/skills/`, and the two above;
-no write path passes through the funnel, so holding any of them swallowed the
-operator's own edits for the rest of a conversation with nothing anywhere
-saying so. They are rebuilt every turn,
-which costs nothing while nothing changes: identical bytes leave the cached
-prefix exactly where it was, and the only turn that pays is the one after an
-edit actually landed.
+So there is no `hold_reason`, no revision counter, and no section that is
+special. `Section.held` is now `not volatile` and nothing else, and a section
+added later by someone who never reads this is frozen too, without having to
+claim anything.
 
 A fold releases every hold: compaction discards the cached prefix anyway, so a
 fresh read is free there.
@@ -93,11 +78,11 @@ moves and the cached prefix is merely shorter than it could be. Send one in
 the head that differs every turn and the whole conversation behind it is
 re-read every turn, at full price, with nothing anywhere saying so — that
 mistake cost 952,098 tokens in one measured session before the clock was moved
-out of the head. Hold something the operator moves without a matching
-`bump_head_revision` at its write site and the edit is swallowed for the rest
-of the conversation with the operator told nothing, which is the defect
-`fix_pass_2026_04_24/test_prompt_rebuild.py` exists to close. A new write path
-to a head document owes that bump.
+out of the head. And a document edited under a running conversation is read by
+the NEXT one, which is the operator's ruling rather than a defect: the
+conversation that approved the edit already has its content in the history it
+is reading. `ChatSession._watch_head` counts how often that happens so the
+price is visible instead of silent.
 
 **Nothing here is dropped, trimmed or truncated at assembly time.** Every
 section in `SECTIONS` is sent, every turn. Size is a thing to OPTIMISE,
@@ -134,6 +119,7 @@ All of the above are re-exported here so historical import paths
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -443,10 +429,8 @@ class Section:
     #:               edit, `project_open`. Between acts the rebuild produces
     #:               the SAME BYTES, which is why one of these can sit in the
     #:               head at all: a prefix cache asks what the bytes are, not
-    #:               how they were produced. Whether it is then HELD is a
-    #:               separate question with its own answer, `hold_reason` —
-    #:               the directives are on_write and are NOT held, because
-    #:               nothing at their write site retires a hold.
+    #:               how they were produced. Whether it is HELD is not a
+    #:               separate question any more: everything in the head is.
     #: `"in_background"` — nobody asked: the memory capsule and the diary
     #:               digest move when a consolidation job writes, and they
     #:               would move mid-answer. Rides in the head and is HELD for
@@ -476,24 +460,6 @@ class Section:
     #: the block. Conflating them would have meant calling the project block
     #: `every_turn`, which is false: nobody moves it most turns.
     rides_late: bool = False
-    #: Why a conversation may keep this section's first read, in a few words.
-    #: The answer is the only thing that makes a hold safe, and it is different
-    #: for each section: an operator act retires it, or nothing in the process
-    #: can move it, or it moves for nobody's reason and is reachable another
-    #: way.
-    #:
-    #: Silence is not an error, it is the safe default. Boot cannot check this
-    #: — it is prose, and no guard can read it and go and see whether the
-    #: funnel it names exists — so the failure it protects against is a
-    #: section held on a claim nobody made. A blank means rebuilt every turn,
-    #: which no one has to notice.
-    #:
-    #: Empty means NOT held: the section is rebuilt every turn and an edit to
-    #: it lands on the next one. That is the right answer for a block whose
-    #: writes do not pass through a funnel that calls `bump_head_revision`,
-    #: and it costs nothing when nothing changed, because a rebuild that
-    #: produces the same bytes leaves the cached prefix intact.
-    hold_reason: str = ""
 
     @property
     def volatile(self) -> bool:
@@ -508,27 +474,19 @@ class Section:
     def held(self) -> bool:
         """Whether a conversation reads this once and keeps those bytes.
 
-        A section in the head is held IF IT SAID WHY. `changes="never"` was
-        never enforced and never could be: it is a claim about how often the
-        operator acts, while every `never` section re-reads its file on each
-        assembly, so one save through Identity -> Documents moved bytes at the
-        top of the prefix and re-read the whole conversation behind it.
+        Every section in the head does, so this is `not volatile` and nothing
+        else. It is kept as a name rather than inlined because the payload
+        readout draws it, and "held" is what it means to a reader.
 
-        Holding everything fixed that and broke something else. A hold is only
-        safe when the operator's own edit can still get past it, and that needs
-        a funnel at the write site calling `bump_head_revision`. Two sections
-        have no such funnel — the directives come out of the memory store and
-        the pointer list reads `workspace/skills/` — so holding them swallowed
-        an edit with nothing anywhere saying so. They are not held, and they
-        cost nothing to rebuild: identical bytes leave the cached prefix
-        exactly where it was.
-
-        So the question every section answers is `hold_reason`, and boot
-        refuses a head section that does not answer it. The hold itself lives
-        in `ChatSession`, which is the only thing that knows where a
-        conversation begins.
+        It used to be a per-section decision, `hold_reason`, prose naming
+        what retired the hold, and that is what made the mechanism wrong
+        twice: seven sections were frozen while the tool map and the channel
+        overlay were rebuilt every turn, which met the letter of holding and
+        not the point of it. `ChatSession._head_for_turn` now snapshots the
+        assembled STRING, so a section added later by someone who never reads
+        this is frozen too, without having to claim anything.
         """
-        return bool(self.hold_reason) and not self.volatile
+        return not self.volatile
 
     @property
     def display_label(self) -> str:
@@ -600,7 +558,6 @@ def _document(
     *,
     title: str | None = None,
     description: str = "",
-    hold_reason: str = "",
 ) -> Section:
     """A workspace document, inlined whole and never dropped.
 
@@ -623,7 +580,6 @@ def _document(
     # the reader translate before they can go and look.
     return Section(name, build, group="instructions", document=filename,
                    label=filename, description=description,
-                   hold_reason=hold_reason,
                    origin="identity", origin_hint="Identity -> Documents")
 
 
@@ -644,20 +600,23 @@ def _build_manifest_section(ctx: PromptInputs) -> str:
 #: The whole assembly, in append order. Nothing is appended outside it, and
 #: every entry is sent on every turn.
 SECTIONS: tuple[Section, ...] = (
-    # Who it is and how it sounds. IDENTITY.md merged in here: the two files
-    # held each other's contents — IDENTITY carried the personality dials and
-    # the register rules, which is what a soul file is FOR, while SOUL carried
-    # a self-narrative that restated OPERATING.
-    _document(
-        "soul", "SOUL.md",
-        description="How it sounds, and the register it holds to.",
-        hold_reason="every write to this file goes through workspace_changes.apply_change, which bumps the head revision",
-    ),
-    _document(
-        "operator", "USER.md", title="Operator",
-        description="What it has learned about you, and keeps.",
-        hold_reason="every write to this file goes through workspace_changes.apply_change, which bumps the head revision",
-    ),
+    # The head, most stable first.
+    #
+    # Append order is cache order. The provider matches a PREFIX, so a section
+    # breaks the cache for everything declared after it and for the whole
+    # conversation behind that. The sort key is therefore stability, and size
+    # only breaks ties.
+    #
+    # Every section up here is frozen together: `ChatSession._head_for_turn`
+    # snapshots the assembled STRING on the first turn of a conversation and
+    # sends those bytes until a boundary. So the order inside the head cannot
+    # cost a cache read any more, and what it is now is a reading order with a
+    # tiebreak: biggest first, which is where CC-18 left it.
+    #
+    # It is kept, and kept declared, because the ordering was load-bearing
+    # until 2026-09-10 and would be again the moment anything up here stopped
+    # being frozen. If a section here ever starts moving it belongs at the
+    # tuple, not where its subject matter reads best.
     # Named OPERATING.md rather than AGENTS.md because three unrelated files
     # carried that one name: the repo-root Codex conventions file (fixed by the
     # `agents.md` convention, so it is the one that could not move), this file,
@@ -665,7 +624,150 @@ SECTIONS: tuple[Section, ...] = (
     _document(
         "operating", "OPERATING.md",
         description="How it works: the rules it follows on every turn.",
-        hold_reason="every write to this file goes through workspace_changes.apply_change, which bumps the head revision",
+    ),
+    # Bounded where it is BUILT — `MEMORY_CAPSULE_TOTAL_CAP` and
+    # `PER_FILE_CAP` in `prompt_content.py` — which is the only cap it has and
+    # the only one it needs.
+    Section(
+        "capsule", lambda ctx: _build_memory_capsule(ctx.memory_store),
+        group="memory", label="memory capsule",
+        description="The slice of memory it starts the turn already holding: "
+                    "your curated MEMORY.md, the last two days, and the "
+                    "freshest few topic pages. Sized as the files read now. A "
+                    "conversation already under way is carrying the copy it "
+                    "read when it began.",
+        # Nobody asks for this to move. A consolidation job writes, a day
+        # rolls over, and 7,168 tokens at the very front of the prompt differ
+        # from what the provider has cached — which re-reads the entire
+        # conversation behind it at full price, mid-answer, for memory the
+        # assistant did not ask for and can fetch with `memory_search` the
+        # moment it wants it. So it is read once per conversation and held.
+        changes="in_background",
+    ),
+    # The operating rules survive inline in OPERATING.md; this block carries
+    # operator-saved directives.
+    Section(
+        "directives", lambda ctx: _build_directives_section(ctx.memory_store),
+        group="memory", label="saved directives",
+        description="Standing instructions you saved that are not switched on "
+                    "right now, listed so it knows they exist.",
+        # Read once per conversation and held, on the operator's ruling.
+        #
+        # This block renders from the memory store and sits at the front of the
+        # cached prefix, so re-rendering it mid-conversation rewrites the first
+        # bytes of the payload and re-reads the whole conversation behind it at
+        # full price. Measured on one live session: four directive writes, and
+        # three of them were followed by a total cache miss on the next turn.
+        # One of those re-read 204,617 tokens to carry a changed sentence.
+        #
+        # Holding it costs nothing it needs, because a directive saved DURING a
+        # conversation is already in that conversation: the operator said it,
+        # it is in the history, and the assistant is answering it. The block
+        # exists to carry standing instructions ACROSS conversations, and the
+        # next one rebuilds it. Refreshing it mid-thread pays a full re-read to
+        # tell a turn something it was just told.
+        changes="on_write",
+    ),
+    # Who it is and how it sounds. IDENTITY.md merged in here: the two files
+    # held each other's contents — IDENTITY carried the personality dials and
+    # the register rules, which is what a soul file is FOR, while SOUL carried
+    # a self-narrative that restated OPERATING.
+    _document(
+        "soul", "SOUL.md",
+        description="How it sounds, and the register it holds to.",
+    ),
+    Section(
+        "manifest", _build_manifest_section, group="instructions",
+        label="pointers",
+        description="A list of the files and skills it can open on request, "
+                    "so it knows what exists without carrying any of it.",
+        # Held, on the operator's ruling, and for `directives`' reason turned
+        # the right way up.
+        #
+        # The skills half reads `workspace/skills/`, written through the file
+        # tools rather than through `apply_change`, so a skill authored
+        # mid-conversation does not reach this list. That was read as a reason
+        # NOT to hold. It is the opposite: a skill written in THIS conversation
+        # is one the assistant just wrote and already knows about, and the
+        # pointer list exists to name what it has never seen. Paying a full
+        # re-read of the whole prompt to tell it about a file it authored two
+        # turns ago is the most expensive way possible to say nothing.
+        #
+        # The next conversation rebuilds this, and `reset()` calls
+        # `refresh_head`, so a boundary picks up anything written since. If it
+        # needs the list sooner, the tools that read the directory are still
+        # there.
+    ),
+    _document(
+        "operator", "USER.md", title="Operator",
+        description="What it has learned about you, and keeps.",
+    ),
+    Section(
+        "diary", lambda ctx: _build_diary_digest(ctx.memory_store),
+        group="memory", label="diary digest",
+        description="A few lines on what it did over the last few days, in its "
+                    "own words. Sized as the files read now, like the capsule "
+                    "above, and held for a conversation the same way.",
+        # Written by jobs that run mid-session, and unchanged between them.
+        # Held with the capsule, and for its reason: the job that writes it
+        # runs because a clock said so, not because the operator did.
+        changes="in_background",
+    ),
+    # Bottom of the head, with the channel overlay. These two were the only
+    # sections a per-section hold did not cover, so they were put here where
+    # nothing that WAS covered sat behind them. The whole head is frozen now
+    # and the distinction is gone; the placement stays because it costs
+    # nothing and because it is the right place for the two blocks whose
+    # bytes are a property of the code rather than a promise.
+    Section(
+        "glossary", lambda ctx: _build_glossary_section(ctx.registry),
+        group="tools", label="the tool map",
+        description="Every tool it has, one line each, grouped by the question "
+                    "each one answers.",
+        origin="settings", origin_hint="Settings -> Tools",
+        # NOT held, and it no longer needs to be. The first draft claimed
+        # "the shipped roster cannot change inside a running process", which
+        # was checked against which tool NAMES `render()` emits. The names do
+        # hold still; the rendered TEXT did not, because `glossary.render`
+        # read `tool.tier` twice and `boot._apply_tool_tiers` reassigns that
+        # live from Settings -> Tools (`routes/workspace.py::_reload_tiers`)
+        # and from the Conscience working-set route, neither of which bumps
+        # the revision. Fourth of nine in the head, so one tier change re-read
+        # everything below it and the whole conversation behind that.
+        #
+        # `glossary.render` reads no mutable attribute now, so the same
+        # registry renders the same bytes every turn. That matters even though
+        # the head is frozen and a rebuild could no longer reach the wire: it
+        # is what makes the first read of every conversation the same read,
+        # and the claim this section already got wrong once was exactly the
+        # claim that nothing could move it.
+    ),
+    # The overlay rides BEFORE "Right now" so it stays inside the cacheable
+    # static prefix. It is identical for every turn of a given channel adapter,
+    # so it shares a cache slot with the base prompt. Cockpit
+    # (`channel_name is None`) leaves the prompt unchanged.
+    Section(
+        "channel", lambda ctx: build_channel_overlay(ctx.channel_name)
+        if ctx.channel_name is not None else "", group="instructions",
+        label="surface contract",
+        description="What this surface cannot physically carry, and nothing "
+                    "else. Absent at the cockpit.",
+        origin="channels", origin_hint="Channels",
+        # NOT held, and the blank is an answer rather than an omission.
+        # CHANNEL.md is a workspace document like the three inlined ones —
+        # named in `permissions.yaml::workspace_documents`, in
+        # `PROPOSABLE_PATHS`, and unreachable by any write verb — so an edit
+        # to it does bump the head. What it does not have is one head to bump:
+        # the overlay is per CHANNEL, built from `ctx.channel_name`, and a
+        # conversation on Telegram holds a different string from the one in
+        # the cockpit, so a revision cannot retire the right one.
+        #
+        # Not holding it costs nothing, and that is a property of the builder
+        # rather than a hope: it reads `ctx.channel_name` and nothing else,
+        # and a surface does not change name inside a thread, so every turn of
+        # a conversation rebuilds the same bytes and the cached prefix is
+        # untouched. The only turn that pays is the one after an approved edit
+        # to CHANNEL.md actually landed, which is the turn that should.
     ),
     Section(
         "project", lambda ctx: _build_project_block(), group="instructions",
@@ -692,116 +794,6 @@ SECTIONS: tuple[Section, ...] = (
         # A block that grew past that should go back to being held, and the
         # operator told before it does.
         rides_late=True,
-    ),
-    # The tool map sits above "Right now" so it rides inside the cacheable
-    # static prefix: static per build, so after the first turn of a cache
-    # window it costs nothing to send.
-    Section(
-        "glossary", lambda ctx: _build_glossary_section(ctx.registry),
-        group="tools", label="the tool map",
-        description="Every tool it has, one line each, grouped by the question "
-                    "each one answers.",
-        origin="settings", origin_hint="Settings -> Tools",
-        # NOT held, and the first draft of this said the opposite: "the
-        # shipped roster cannot change inside a running process". That was
-        # checked against which tool NAMES render() emits, and the names do
-        # hold still. The rendered TEXT does not. `glossary.render` reads
-        # `tool.tier` twice (the per-tool mark, and the "carried this turn"
-        # count), `tier` is a mutable instance attribute, and
-        # `boot._apply_tool_tiers` reassigns it live from Settings -> Tools
-        # (`routes/workspace.py::_reload_tiers`) and from the Conscience
-        # working-set route, neither of which bumps the revision.
-        #
-        # `routes/conscience.py` promises the operator "the change is live on
-        # the next turn". Holding this block would have made that false for
-        # every conversation already running.
-    ),
-    # Bounded where it is BUILT — `MEMORY_CAPSULE_TOTAL_CAP` and
-    # `PER_FILE_CAP` in `prompt_content.py` — which is the only cap it has and
-    # the only one it needs.
-    Section(
-        "capsule", lambda ctx: _build_memory_capsule(ctx.memory_store),
-        group="memory", label="memory capsule",
-        description="The slice of memory it starts the turn already holding: "
-                    "your curated MEMORY.md, the last two days, and the "
-                    "freshest few topic pages. Sized as the files read now. A "
-                    "conversation already under way is carrying the copy it "
-                    "read when it began.",
-        # Nobody asks for this to move. A consolidation job writes, a day
-        # rolls over, and 7,168 tokens at the very front of the prompt differ
-        # from what the provider has cached — which re-reads the entire
-        # conversation behind it at full price, mid-answer, for memory the
-        # assistant did not ask for and can fetch with `memory_search` the
-        # moment it wants it. So it is read once per conversation and held.
-        changes="in_background",
-        hold_reason="nobody asked it to move and memory_search reaches anything newer",
-    ),
-    Section(
-        "diary", lambda ctx: _build_diary_digest(ctx.memory_store),
-        group="memory", label="diary digest",
-        description="A few lines on what it did over the last few days, in its "
-                    "own words. Sized as the files read now, like the capsule "
-                    "above, and held for a conversation the same way.",
-        # Written by jobs that run mid-session, and unchanged between them.
-        # Held with the capsule, and for its reason: the job that writes it
-        # runs because a clock said so, not because the operator did.
-        changes="in_background",
-        hold_reason="nobody asked it to move and the diary is readable on request",
-    ),
-    # The operating rules survive inline in OPERATING.md; this block carries
-    # operator-saved directives.
-    Section(
-        "directives", lambda ctx: _build_directives_section(ctx.memory_store),
-        group="memory", label="saved directives",
-        description="Standing instructions you saved that are not switched on "
-                    "right now, listed so it knows they exist.",
-        # The operator edits these expecting the next turn to obey, and an
-        # edit is the only thing that moves them.
-        changes="on_write",
-        # NOT held, and no `hold_reason` is the mechanism that says so.
-        #
-        # These are built from `MemoryStore.list_active_directives()`, and a
-        # memory is written by `memory_save`, by `memory_update`, by the
-        # cockpit, and by the feedback consolidator. None of those passes
-        # through `apply_change`, so nothing retires a hold on this block: it
-        # was held for one commit and swallowed the operator's own edits for
-        # the rest of a conversation with nothing anywhere saying so.
-        #
-        # Rebuilding costs nothing when nothing changed. The bytes are
-        # identical, so the cached prefix is untouched, and the only turn that
-        # pays is the one after an edit actually landed — which is the turn
-        # that should pay.
-    ),
-    Section(
-        "manifest", _build_manifest_section, group="instructions",
-        label="pointers",
-        description="A list of the files and skills it can open on request, "
-                    "so it knows what exists without carrying any of it.",
-        # NOT held, for `directives`' reason. The skills half reads
-        # `workspace/skills/`, written through the file tools rather than
-        # through `apply_change`, so a skill authored mid-conversation would
-        # never reach the list that is supposed to name it.
-    ),
-    # The overlay rides BEFORE "Right now" so it stays inside the cacheable
-    # static prefix. It is identical for every turn of a given channel adapter,
-    # so it shares a cache slot with the base prompt. Cockpit
-    # (`channel_name is None`) leaves the prompt unchanged.
-    Section(
-        "channel", lambda ctx: build_channel_overlay(ctx.channel_name)
-        if ctx.channel_name is not None else "", group="instructions",
-        label="surface contract",
-        description="What this surface cannot physically carry, and nothing "
-                    "else. Absent at the cockpit.",
-        origin="channels", origin_hint="Channels",
-        # NOT held, and it is the one section where that is a choice rather
-        # than a property. CHANNEL.md is now a workspace document like the
-        # three above it — named in `permissions.yaml::workspace_documents`,
-        # in `PROPOSABLE_PATHS`, and unreachable by any write verb — so an
-        # edit to it does bump the head. What it does not have is one head to
-        # bump: the overlay is per CHANNEL, built from `ctx.channel_name`, and
-        # a conversation on Telegram holds a different string from the one in
-        # the cockpit. Rebuilding it every turn is cheaper than tracking which
-        # of them a revision retires.
     ),
     # Agenda + self-reflection cross-feed. Adjacent to "Right now" so open
     # items and ambient failure signal reach every turn.
@@ -859,12 +851,10 @@ def _verify_sections() -> None:
     exact string, so anything else silently means "never moves" and puts a
     block that does move in front of the whole conversation.
 
-    A hold is not checked here and cannot be: `hold_reason` is prose, and no
-    guard can read it and decide whether the funnel it names exists. What is
-    checked is that a head section made the CLAIM, so the question is answered
-    at the declaration by whoever added the section rather than discovered by
-    an operator whose edit went missing. Leaving it blank is a legitimate
-    answer and means the block is rebuilt every turn.
+    Holding is not checked here because there is nothing left to check: the
+    head is frozen as one string, so every section in it is held and none of
+    them has to say why. What decides placement is `changes` and `rides_late`,
+    and both are checked below.
     """
     for section in SECTIONS:
         if section.group not in GROUPS:
@@ -880,11 +870,6 @@ def _verify_sections() -> None:
         # A section that rides below the boundary is re-sent every turn and
         # can hold nothing, so a reason there would be a claim about a hold
         # that does not exist.
-        if section.volatile and section.hold_reason:
-            raise ValueError(
-                f"prompt.SECTIONS: {section.name!r} rides late and cannot be "
-                f"held, so it must not declare a hold_reason"
-            )
 
 
 _verify_sections()
@@ -920,7 +905,6 @@ HELD_SECTION_NAMES: tuple[str, ...] = tuple(
 #: nothing downstream can make this distinction; `workspace_changes.apply_change`
 #: can, and is the one funnel every approved document write already passes
 #: through.
-_REVISION_FILE = "head-revision"
 
 #: The last value successfully read in THIS process. What an unreadable file
 #: degrades to, and the direction of that degradation is the whole point: a
@@ -930,81 +914,6 @@ _REVISION_FILE = "head-revision"
 #: this was built.
 _last_good_revision = 0
 _revision_lock = threading.Lock()
-
-
-def _revision_path() -> Path:
-    """Resolved at call time, so a test pointing `TESSERACT_HOME` somewhere
-    else is answered by that home rather than the one imported at boot."""
-    from tesseract.paths import runtime_dir
-
-    return runtime_dir() / _REVISION_FILE
-
-
-def head_revision() -> int:
-    """The current head revision, read from disk.
-
-    Every failure returns the last value this process read successfully, so an
-    unreadable file means conversations keep the heads they are holding. That
-    is the safe direction: the cost is an operator edit landing late, which is
-    what happened before this mechanism existed, rather than every turn in
-    every chat re-reading its whole prompt.
-    """
-    global _last_good_revision
-    try:
-        text = _revision_path().read_text(encoding="utf-8").strip()
-    except OSError:
-        return _last_good_revision
-    try:
-        _last_good_revision = int(text)
-    except ValueError:
-        logger.warning(
-            "head revision file is not a number (%s); held prompts will not "
-            "notice your next document edit until it is deleted",
-            _revision_path(),
-        )
-    return _last_good_revision
-
-
-def bump_head_revision() -> None:
-    """Retire every conversation's held head, because the operator acted.
-
-    Deliberately not scoped to a section or a file. A hold is cheap to retake —
-    the builders read the same files the un-held path read every turn — and a
-    per-section counter would be a second roster to keep in step with the
-    first.
-    """
-    global _last_good_revision
-    with _revision_lock:
-        path = _revision_path()
-        try:
-            current = int(path.read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
-            current = _last_good_revision
-        nxt = current + 1
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            # A unique name per call, not `<name>.tmp`. `_revision_lock` is
-            # per interpreter and the whole point of this file is that there
-            # is more than one; two processes bumping at once would otherwise
-            # write the same tempfile and truncate each other.
-            fd, tmp_name = tempfile.mkstemp(
-                prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
-            )
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(str(nxt))
-            replace_with_retry(Path(tmp_name), path)
-            # Only once the number is actually on disk. Advancing the local
-            # fallback after a failed publish would claim a retirement that
-            # no other process can see, and `head_revision` would overwrite
-            # it with the stale disk value on its very next read anyway.
-            _last_good_revision = nxt
-        except OSError:
-            logger.warning(
-                "could not publish the head revision to %s; a conversation "
-                "already running will keep the prompt it is holding, so this "
-                "edit reaches it when it next starts a new chat",
-                path, exc_info=True,
-            )
 
 
 def assemble_system_prompt(
@@ -1047,6 +956,7 @@ def assemble_system_prompt(
         tool_registry_provider=tool_registry_provider,
     )
     built = build_sections(ctx)
+    _log_head_fingerprint(built)
     if not built:
         return PromptParts(
             "You are the assistant, the operator's personal AI assistant.", ""
@@ -1207,6 +1117,29 @@ def scrub_state_root(text: str, pattern: re.Pattern[str] | None = None) -> str:
     # `.` when the root was named on its own, nothing when a separator
     # followed it, so what is left reads as the relative path it now is.
     return pattern.sub(lambda m: "" if m.group(0)[-1] in "\\/" else ".", text)
+
+
+def _log_head_fingerprint(built: dict[str, str]) -> None:
+    """Name every frozen section and digest its text, once per assembly.
+
+    A provider reporting zero cached tokens matched nothing at all, so the
+    head's own bytes moved rather than the conversation behind them. WHICH
+    section moved is not derivable from the ledger, and not reliably readable
+    off this table either: a section's `changes` declares intent, not what its
+    builder did. Two consecutive lines of this diff to the answer, and the
+    section whose digest changed is the one that invalidated the prefix.
+
+    Frozen sections only. The volatile half rides after the cache boundary and
+    is meant to differ every turn, so digesting it would report noise as news.
+    """
+    if not logger.isEnabledFor(logging.INFO):
+        return
+    parts = " ".join(
+        f"{s.name}:{hashlib.sha1(built[s.name].encode('utf-8')).hexdigest()[:8]}"
+        for s in SECTIONS
+        if not s.volatile and s.name in built
+    )
+    logger.info("prompt head: %s", parts)
 
 
 def build_sections(ctx: PromptInputs) -> dict[str, str]:

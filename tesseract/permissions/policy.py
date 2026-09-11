@@ -110,6 +110,7 @@ class PermissionPolicy:
         bash_readonly_exact_allowlist: list[str] | None = None,
         git_readonly_operations: list[str] | None = None,
         workspace_documents: dict[str, Any] | None = None,
+        workspace_cards: dict[str, Any] | None = None,
     ) -> None:
         self.tools_defaults = tools_defaults
         # `custom:` — the operator's posture for tools the ASSISTANT wrote,
@@ -166,6 +167,10 @@ class PermissionPolicy:
         # The operator's own documents. Empty only in a hand-built policy (unit
         # fixtures); `load_permission_policy` refuses a file without the block.
         self._workspace_documents: dict[str, Any] = workspace_documents or {}
+        # The same statement for the cards that name no document. Empty only
+        # in a hand-built policy; `load_permission_policy` refuses a file
+        # without the block.
+        self._workspace_cards: dict[str, Any] = workspace_cards or {}
 
     @property
     def mode(self) -> str:
@@ -200,6 +205,7 @@ class PermissionPolicy:
         self._bash_readonly_exact_allowlist = fresh._bash_readonly_exact_allowlist
         self._git_readonly_operations = fresh._git_readonly_operations
         self._workspace_documents = fresh._workspace_documents
+        self._workspace_cards = fresh._workspace_cards
 
     def attach_class_defaults(self, defaults: Mapping[str, str]) -> None:
         """Wire each registered tool's class-declared baseline posture into
@@ -446,6 +452,40 @@ class PermissionPolicy:
         if held is None:
             return baseline
         return min((baseline, held), key=lambda p: _STRICTNESS.get(p, 0))
+
+    def workspace_card_posture(self, kind: str) -> str:
+        """What a card of THIS kind does when nobody is watching.
+
+        The other half of `workspace_document_posture`, and deliberately the
+        same shape: a baseline per mode, and the kinds the operator holds back
+        named as exceptions. A card that names one of the operator's documents
+        is answered by that function; this one answers the rest, which had no
+        policy to consult at all and so asked forever whatever the mode said.
+
+        The four properties from the document resolver hold here unchanged:
+        a kind the operator named asks whatever the mode says, the map can
+        only tighten, a kind nobody named follows the baseline, and `kind` is
+        required because a caller that did not know which card it held would
+        resolve the baseline and walk past a hold.
+        """
+        block = self._workspace_cards.get("proposal") or {}
+        value = block.get(self._mode)
+        if value is None:
+            raise ValueError(
+                f"permissions.yaml: workspace_cards.proposal names no posture "
+                f"for security mode {self._mode!r}. Every mode states its own "
+                f"answer here rather than inheriting one"
+            )
+        baseline = str(value).strip().lower()
+        held = self.workspace_card_holds.get(kind.strip())
+        if held is None:
+            return baseline
+        return min((baseline, held), key=lambda p: _STRICTNESS.get(p, 0))
+
+    @property
+    def workspace_card_holds(self) -> dict[str, str]:
+        """The card kinds the operator keeps a hand on, kind to posture."""
+        return dict(self._workspace_cards.get("proposal_overrides") or {})
 
     @property
     def workspace_documents(self) -> tuple[str, ...]:
@@ -761,6 +801,7 @@ def load_permission_policy(
     # happens to check. Moving it earlier made every test of another missing
     # key report this one instead.
     workspace_documents = _load_workspace_documents(raw)
+    workspace_cards = _load_workspace_cards(raw)
     _expand_workspace_documents(path_overrides, workspace_documents)
 
     return PermissionPolicy(
@@ -774,6 +815,7 @@ def load_permission_policy(
         bash_readonly_exact_allowlist=bash_readonly_exact_allowlist,
         git_readonly_operations=git_readonly_operations,
         workspace_documents=workspace_documents,
+        workspace_cards=workspace_cards,
     )
 
 
@@ -847,6 +889,75 @@ def _load_workspace_documents(raw: dict[str, Any]) -> dict[str, Any]:
         "direct_write": direct,
         "proposal": {str(k): str(v).strip().lower() for k, v in by_mode.items()},
         "proposal_overrides": _load_proposal_overrides(proposal, documents),
+    }
+
+
+def _load_workspace_cards(raw: dict[str, Any]) -> dict[str, Any]:
+    """Read and validate the `workspace_cards` block.
+
+    Required and loud for the same reason its sibling is: the block decides
+    what the runtime settles on the operator's behalf while nobody is looking,
+    and a missing key is not a default to fall back on.
+
+    An override naming a kind that does not exist is refused here rather than
+    silently ignored, because a hold on a misspelled kind is a hold that does
+    nothing and reads, in the file, exactly like one that works.
+    """
+    block = raw.get("workspace_cards")
+    if not isinstance(block, dict):
+        raise ValueError(
+            "permissions.yaml missing required 'workspace_cards' block — it "
+            "says what a card that names no document does per mode, and which "
+            "kinds always wait for the operator"
+        )
+    proposal = block.get("proposal")
+    if not isinstance(proposal, dict):
+        raise ValueError(
+            "permissions.yaml 'workspace_cards.proposal' must be a map of "
+            "security mode to posture"
+        )
+    by_mode = {k: v for k, v in proposal.items() if k != _OVERRIDES_KEY}
+    missing = sorted(VALID_MODES - set(by_mode))
+    if missing:
+        raise ValueError(
+            f"permissions.yaml 'workspace_cards.proposal' names no posture for "
+            f"{missing}. Every mode states its own answer here rather than "
+            f"inheriting one"
+        )
+    for mode_name, value in by_mode.items():
+        if str(value).strip().lower() not in _STRICTNESS:
+            raise ValueError(
+                f"permissions.yaml 'workspace_cards.proposal.{mode_name}' is "
+                f"{value!r}; expected one of {sorted(_STRICTNESS)}"
+            )
+
+    from tesseract.workspace_events.events import DECIDABLE_KINDS
+
+    overrides_raw = proposal.get(_OVERRIDES_KEY) or {}
+    if not isinstance(overrides_raw, dict):
+        raise ValueError(
+            "permissions.yaml 'workspace_cards.proposal.overrides' must be a "
+            "map of card kind to posture"
+        )
+    overrides: dict[str, str] = {}
+    for kind, value in overrides_raw.items():
+        name = str(kind).strip()
+        if name not in DECIDABLE_KINDS:
+            raise ValueError(
+                f"permissions.yaml 'workspace_cards.proposal.overrides' holds "
+                f"{name!r}, which is not a card anyone can decide. The kinds "
+                f"are {sorted(DECIDABLE_KINDS)}"
+            )
+        posture = str(value).strip().lower()
+        if posture not in _STRICTNESS:
+            raise ValueError(
+                f"permissions.yaml 'workspace_cards.proposal.overrides.{name}' "
+                f"is {value!r}; expected one of {sorted(_STRICTNESS)}"
+            )
+        overrides[name] = posture
+    return {
+        "proposal": {str(k): str(v).strip().lower() for k, v in by_mode.items()},
+        "proposal_overrides": overrides,
     }
 
 

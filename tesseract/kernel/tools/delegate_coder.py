@@ -111,6 +111,8 @@ class DelegateCoderTool(Tool):
         "sub-agent task: use `invoke_agent`."
     )
     depends_on: ClassVar[str] = "role:coder"
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     @property
     def name(self) -> str:

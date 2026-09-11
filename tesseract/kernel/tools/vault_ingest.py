@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, ClassVar
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.memory.vault_indexer import VaultIndexer
 from tesseract.memory.vault_manager import VaultManager
 
@@ -49,6 +50,8 @@ class VaultIngestTool(Tool):
         "reading what the vault already holds. That is `vault_query` or `vault_search`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     def __init__(
         self,
@@ -73,9 +76,17 @@ class VaultIngestTool(Tool):
 
         source = Path(inp.source_path)
         if not source.exists():
-            return ToolResult(output=f"Source file not found: {inp.source_path}", is_error=True)
+            return ToolResult(
+                output=f"Source file not found: {inp.source_path}",
+                is_error=True,
+                caller_error=True,
+            )
         if not source.is_file():
-            return ToolResult(output=f"Source path is not a file: {inp.source_path}", is_error=True)
+            return ToolResult(
+                output=f"Source path is not a file: {inp.source_path}",
+                is_error=True,
+                caller_error=True,
+            )
 
         title = inp.title or source.stem.replace("-", " ").replace("_", " ").title()
         suggested = self._manager.suggest_filing_path(
@@ -96,6 +107,7 @@ class VaultIngestTool(Tool):
                     f"To proceed, call vault_ingest again with confirmed_path set "
                     f"(use the raw path for automatic wiki compilation, or the categorized path)."
                 ),
+                receipt=Receipt.nothing(),
             )
 
         # Phase 2: execute ingestion
@@ -104,11 +116,12 @@ class VaultIngestTool(Tool):
         try:
             vault_abs = self._manager.file_to_vault(source, vault_rel_path)
         except ValueError as e:
-            return ToolResult(output=str(e), is_error=True)
+            return ToolResult(output=str(e), is_error=True, caller_error=True)
         except FileExistsError:
             return ToolResult(
                 output=f"Vault file already exists at {vault_rel_path}. Choose a different path.",
                 is_error=True,
+                caller_error=True,
             )
         except OSError as e:
             return ToolResult(output=f"Failed to copy to vault: {e}", is_error=True)
@@ -164,5 +177,8 @@ class VaultIngestTool(Tool):
                 f"{index_line}\n"
                 f"Catalog updated."
                 f"{wiki_line}"
+            ),
+            receipt=Receipt(
+                kind="record", id=vault_rel_path, locator=str(vault_abs)
             ),
         )

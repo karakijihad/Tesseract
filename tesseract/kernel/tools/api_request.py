@@ -165,6 +165,11 @@ class ApiRequestTool(Tool):
         "which cannot be done here and is the point."
     )
     depends_on: ClassVar[str] = ""
+    # The far side may mint an id and may not, and the shape differs per
+    # service, so nothing here can name one honestly. The call and its
+    # response are what the turn record keeps.
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "unsafe"
 
     @property
     def name(self) -> str:

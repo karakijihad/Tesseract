@@ -30,11 +30,15 @@ export function PlaybookUsageChart({
   days,
   carriedCount,
   path,
+  turnScopeNote,
 }: {
   rows: PlaybookUsageRow[];
   days: number;
   carriedCount: number;
   path: string;
+  /** Why the calls and cost figures are the turn's. Read off the backend so
+   *  this panel and the chat answer cannot word it differently. */
+  turnScopeNote: string;
 }) {
   const [showUnread, setShowUnread] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
@@ -69,7 +73,9 @@ export function PlaybookUsageChart({
                   {r.loads} {r.loads === 1 ? 'read' : 'reads'}
                   {closed > 0
                     ? `, ${r.succeeded} of ${closed} worked`
-                    : ', none of them in a turn that has closed yet'}
+                    : r.ungraded > 0
+                      ? ', none of them in a turn whose task was checked'
+                      : ', none of them in a turn that has closed yet'}
                   {r.corrections > 0
                     ? `, ${r.corrections} corrected`
                     : ''}
@@ -79,7 +85,30 @@ export function PlaybookUsageChart({
                       was found. */}
                   {r.carried ? '' : ', not carried'}
                 </span>
-                {(r.revisions.length > 1 || r.unjoined > 0 || r.retries > 0) && (
+                {/* Whether the last rewrite of this playbook was worth
+                    making. Undecided is the common answer and is said as
+                    one: a fresh revision has barely been read. */}
+                {r.previous_version ? (
+                  <span className="playbook-usage__figures t-meta">
+                    {r.improved === null
+                      ? `too early to say whether it is better than v${r.previous_version}`
+                      : r.improved
+                        ? `better than v${r.previous_version}`
+                        : `worse than v${r.previous_version}`}
+                  </span>
+                ) : null}
+                {/* The turn's cost, not the playbook's, which is what the
+                    caption says and why the wording is "those turns". */}
+                <span className="playbook-usage__figures t-meta">
+                  those turns made {r.turn_calls} tool calls and{' '}
+                  {r.turn_cost_usd === null
+                    ? 'their cost was not measured'
+                    : `cost $${r.turn_cost_usd.toFixed(4)}`}
+                </span>
+                {(r.revisions.length > 1 ||
+                  r.unjoined > 0 ||
+                  r.ungraded > 0 ||
+                  r.retries > 0) && (
                   <div className="playbook-usage__detail">
                     <Disclosure
                       variant="row"
@@ -110,6 +139,9 @@ export function PlaybookUsageChart({
                             {rev.unjoined > 0
                               ? `, ${rev.unjoined} in a turn with no closing record`
                               : ''}
+                            {rev.ungraded > 0
+                              ? `, ${rev.ungraded} in a turn that closed its task without checks`
+                              : ''}
                           </li>
                         ))}
                       </ul>
@@ -123,9 +155,11 @@ export function PlaybookUsageChart({
       )}
 
       <figcaption className="playbook-usage__caption t-meta">
-        Worked means the turn that read it closed as done. A read again mid task
-        is the cheapest sign that the steps did not carry the work through. Edit
-        which ones arrive every turn in {path}.
+        Worked means the turn that read it closed as done. A turn that closed
+        its task with no project checks behind it counts as neither, because
+        the only evidence there is what the assistant said. A read again mid
+        task is the cheapest sign that the steps did not carry the work
+        through. {turnScopeNote} Edit which ones arrive every turn in {path}.
       </figcaption>
 
       {unread.length > 0 && (
@@ -179,6 +213,9 @@ export function PlaybookUsageChart({
             <th scope="col">Went wrong</th>
             <th scope="col">Corrected</th>
             <th scope="col">No closing record</th>
+            <th scope="col">Closed without checks</th>
+            <th scope="col">Calls in those turns</th>
+            <th scope="col">Cost of those turns</th>
           </tr>
         </thead>
         <tbody>
@@ -190,6 +227,19 @@ export function PlaybookUsageChart({
               <td>{r.failed}</td>
               <td>{r.corrections}</td>
               <td>{r.unjoined}</td>
+              <td>{r.ungraded}</td>
+              <td>{r.turn_calls}</td>
+              <td>
+                {/* Three answers, not two. A playbook nobody read has no
+                    turns to have cost anything, and calling that "not
+                    measured" is the same mistake as calling an unread ledger
+                    $0.0000, one row over. */}
+                {r.turns === 0
+                  ? '—'
+                  : r.turn_cost_usd === null
+                    ? 'not measured'
+                    : `$${r.turn_cost_usd.toFixed(4)}`}
+              </td>
             </tr>
           ))}
         </tbody>

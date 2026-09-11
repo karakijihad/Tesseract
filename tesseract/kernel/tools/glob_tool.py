@@ -166,6 +166,8 @@ class GlobTool(Tool):
         "Use `grep` when the question is about file contents rather than paths."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:
@@ -188,18 +190,20 @@ class GlobTool(Tool):
         try:
             search_dir = anchor_read_path(inp.path, context.workspace_root)
         except ReadPathRefused as exc:
-            return ToolResult(output=str(exc), is_error=True)
+            return ToolResult(output=str(exc), is_error=True, caller_error=True)
 
         if not search_dir.exists():
             return ToolResult(
-                output=not_found_message("Directory", inp.path, search_dir), is_error=True
+                output=not_found_message("Directory", inp.path, search_dir),
+                is_error=True,
+                caller_error=True,
             )
 
         try:
             _reject_unsupported(inp.pattern)
             patterns = expand_braces(inp.pattern)
         except UnsupportedPattern as e:
-            return ToolResult(output=f"Unsupported glob pattern: {e}", is_error=True)
+            return ToolResult(output=f"Unsupported glob pattern: {e}", is_error=True, caller_error=True)
 
         # Dedup across expansions: `{py,*}` legitimately overlaps, and the
         # same file surfacing twice would misreport the count.

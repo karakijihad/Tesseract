@@ -44,7 +44,7 @@ async def _dispatch(app: web.Application, session: ServerSession, raw: str) -> N
         await app["pty_manager"].dispatch(msg, session.ws)
         return
     if kind == "observer_pane_ack":
-        _handle_observer_pane_ack(app, msg)
+        await _handle_observer_pane_ack(app, msg)
         return
     data = msg.get("data") or {}
     if kind == "chat_message":

@@ -10,10 +10,10 @@ Two modes:
 
 1. ``chat_ref`` provided → send to that specific chat_id only (e.g. a
    group chat the assistant already knows).
-2. ``chat_ref`` omitted → fan to everyone the adapter calls an operator
-   (:func:`notify_operators`, the one shared rule, so the tier filter and
-   the blocked / pending semantics are the same ones the runtime's own
-   notifications use).
+2. ``chat_ref`` omitted → fan to everyone the adapter has allowed
+   (:func:`notify_operators`, the one shared rule, so the blocked and
+   pending semantics are the same ones the runtime's own notifications
+   use).
 
 ``default_posture="auto"`` — the assistant choosing to ping the operator is
 part of the autonomy story. The tool itself enforces a hard per-call length cap
@@ -42,6 +42,7 @@ from tesseract.kernel.tools.base import (
     ToolContext,
     ToolResult,
 )
+from tesseract.kernel.tools.channel_send import sent_receipt
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ class ChannelNotifyInput(BaseModel):
         default=None,
         description=(
             "Specific chat to ping (Telegram chat_id as string). Omit to "
-            "fan to every operator-tier chat in the adapter allowlist. "
+            "fan to every chat on the adapter allowlist. "
             "this is the standard 'notify the operator' mode."
         ),
     )
@@ -114,7 +115,7 @@ class ChannelNotifyTool(Tool):
         "Use when the operator may be away from the Mirror and you have something "
         "they should see now: a finished thought, a result, an alert, a check-in. "
         "Pass `chat_ref` to target a specific chat, or omit it to fan to every "
-        "operator-tier chat in the allowlist. Be selective, because this is a tap on the "
+        "chat on the allowlist. Be selective, because this is a tap on the "
         "shoulder, not a stream."
     )
     not_when: ClassVar[str] = (
@@ -122,6 +123,8 @@ class ChannelNotifyTool(Tool):
         "reply or a surface card, not a channel message."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "message"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     @property
     def name(self) -> str:
@@ -150,6 +153,7 @@ class ChannelNotifyTool(Tool):
             return ToolResult(
                 output="channel_notify: `text` is empty",
                 is_error=True,
+                caller_error=True,
             )
         # Measured the way the delivery layer measures it. `len` counts code
         # points and Telegram counts utf-16 code units, so 4000 emoji passed a
@@ -166,6 +170,7 @@ class ChannelNotifyTool(Tool):
                     "use workspace_post for long-form notes."
                 ),
                 is_error=True,
+                caller_error=True,
             )
 
         from tesseract.integrations import get_channel
@@ -178,6 +183,7 @@ class ChannelNotifyTool(Tool):
                     "channels.yaml)"
                 ),
                 is_error=True,
+                caller_error=True,
             )
 
         send_text = getattr(adapter, "send_text", None)
@@ -199,8 +205,9 @@ class ChannelNotifyTool(Tool):
             # Addressing one chat used to skip the roster entirely, so any id
             # that reached this tool was written to whether the channel had
             # ever accepted it or not, at a posture that asks nobody first.
-            # Checking only that the chat was ACCEPTED closed that but left the
-            # tier behind, which let an unasked message reach a friend.
+            # Checking that the chat was ACCEPTED is the whole rule now: the
+            # tier that used to sit beside it is gone, because an allowlist is
+            # a trust boundary rather than a permission level.
             #
             # Fails closed: a roster that cannot be read is not one that said
             # yes.
@@ -226,7 +233,7 @@ class ChannelNotifyTool(Tool):
             from tesseract.integrations._render import render_for
 
             try:
-                await send_text(
+                msg_id = await send_text(
                     chat_ref=inp.chat_ref,
                     text=render_for(adapter, _as_message(text)),
                     reply_to_message_id=inp.reply_to_message_id,
@@ -238,6 +245,7 @@ class ChannelNotifyTool(Tool):
                 )
             return ToolResult(
                 output=f"notified {inp.channel}:{inp.chat_ref} ({len(text)} chars)",
+                receipt=sent_receipt(inp.channel, inp.chat_ref, msg_id or None),
             )
 
         # Fan to everyone the adapter calls an operator. This used to reach
@@ -270,6 +278,15 @@ class ChannelNotifyTool(Tool):
             output=(
                 f"notified {inp.channel} operators: sent={sent} "
                 f"skipped={skipped} errors={errors}"
+            ),
+            # A fan-out is many messages and a receipt names one, so it
+            # names the first that arrived. `sent` above says how many
+            # there were, and a fan-out that reached nobody leaves no
+            # receipt rather than an empty one.
+            receipt=sent_receipt(
+                inp.channel,
+                str(result.get("first_chat_ref") or ""),
+                result.get("first_message_id") or None,
             ),
             metadata=result,
         )

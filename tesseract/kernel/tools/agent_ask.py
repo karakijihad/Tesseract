@@ -78,6 +78,8 @@ class AgentAskTool(Tool):
         "instruction downward instead: use `work_send`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:

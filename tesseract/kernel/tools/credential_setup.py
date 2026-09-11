@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from tesseract.credentials.models import PRIMARY_FIELD
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 
 
 class CredentialSetupInput(BaseModel):
@@ -119,6 +120,8 @@ class CredentialSetupTool(Tool):
         "Neither this nor anything else returns a value."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:
@@ -245,6 +248,7 @@ class CredentialSetupTool(Tool):
                 f"{saved['id']} ({saved['service']}) is set up: sent as {where} "
                 f"to {', '.join(saved['allowed_hosts'])}. It is {ready}."
             ),
+            receipt=Receipt(kind="record", id=str(saved["id"])),
             metadata={"credential_id": saved["id"]},
         )
 

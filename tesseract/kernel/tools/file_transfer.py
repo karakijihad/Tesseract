@@ -16,6 +16,8 @@ is a write.
 
 from __future__ import annotations
 
+from hashlib import sha256
+
 import shutil
 from pathlib import Path
 from typing import ClassVar
@@ -23,6 +25,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.kernel.tools.file_write import (
     _check_runtime_lockdown,
     _maybe_index_workshop_write,
@@ -77,7 +80,11 @@ class _FileTransferTool(Tool):
             source = _resolve_for_check(inp.source_path, state_root)
             dest = _resolve_for_check(inp.dest_path, state_root)
         except (OSError, RuntimeError) as exc:
-            return ToolResult(output=f"path resolution failed: {exc}", is_error=True)
+            return ToolResult(
+                output=f"path resolution failed: {exc}",
+                is_error=True,
+                caller_error=True,
+            )
 
         for field in self._lockdown_fields:
             resolved = source if field == "source_path" else dest
@@ -101,21 +108,28 @@ class _FileTransferTool(Tool):
                 return ToolResult(output=msg, is_error=True, denied_hard=True, deny_reason=msg)
 
         if not source.exists():
-            return ToolResult(output=f"source not found: {source}", is_error=True)
+            return ToolResult(
+                output=f"source not found: {source}",
+                is_error=True,
+                caller_error=True,
+            )
         if source.is_dir():
             return ToolResult(
                 output=f"source is a directory: {source} — this tool handles single files; transfer files individually.",
                 is_error=True,
+                caller_error=True,
             )
         if dest.is_dir():
             return ToolResult(
                 output=f"dest_path is an existing directory: {dest} — pass the full target file path.",
                 is_error=True,
+                caller_error=True,
             )
         if dest.exists() and not inp.overwrite:
             return ToolResult(
                 output=f"dest exists: {dest} — pass overwrite=true to replace it.",
                 is_error=True,
+                caller_error=True,
             )
 
         try:
@@ -125,7 +139,16 @@ class _FileTransferTool(Tool):
             return ToolResult(output=f"{self.name} failed: {exc}", is_error=True)
 
         _maybe_index_workshop_write(dest, state_root)
-        return ToolResult(output=f"{self.name}: {source} -> {dest}")
+        # Hashed from what landed rather than from what was read: a copy
+        # that truncated is a copy whose receipt has to say so.
+        try:
+            digest = "sha256:" + sha256(dest.read_bytes()).hexdigest()
+        except OSError:
+            digest = ""
+        return ToolResult(
+            output=f"{self.name}: {source} -> {dest}",
+            receipt=Receipt(kind="file", id=digest, locator=str(dest)),
+        )
 
 
 class FileCopyTool(_FileTransferTool):
@@ -139,6 +162,8 @@ class FileCopyTool(_FileTransferTool):
     )
     not_when: ClassVar[str] = "Use `file_move` when the source should not remain at its old path."
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "file"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:
@@ -159,6 +184,8 @@ class FileMoveTool(_FileTransferTool):
     )
     not_when: ClassVar[str] = "Use `file_copy` when the source should still exist at its old path afterward."
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "file"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:

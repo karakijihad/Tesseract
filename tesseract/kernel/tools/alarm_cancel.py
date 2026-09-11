@@ -10,6 +10,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.scheduler.alarms import AlarmRegistry
 
 
@@ -32,6 +33,8 @@ class AlarmCancelTool(Tool):
         "which is `schedule_remove`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "job"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     def __init__(self, alarm_registry: AlarmRegistry) -> None:
         self._registry = alarm_registry
@@ -55,8 +58,13 @@ class AlarmCancelTool(Tool):
             msg = f"no alarm matches {inp.handle!r}"
             if suggestions:
                 msg += f" — candidates: {', '.join(suggestions)}"
-            return ToolResult(output=msg, is_error=True)
+            return ToolResult(output=msg, is_error=True, caller_error=True)
         return ToolResult(
             output=f"cancelled: {removed.label} [{removed.id[:8]}]",
+            receipt=Receipt(
+                kind="job",
+                id=removed.id,
+                locator=str(self._registry.state_path or ""),
+            ),
             metadata={"id": removed.id, "label": removed.label},
         )

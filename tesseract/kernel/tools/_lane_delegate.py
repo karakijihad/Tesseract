@@ -21,6 +21,7 @@ import logging
 from typing import Any
 
 from tesseract.kernel.tools.base import ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.kernel.tools.cli_stream import emit_cli_event as _emit
 from tesseract.orchestrator.agent_controller.lanes.tool_support import maybe_await
 
@@ -340,7 +341,14 @@ def delegate_result(
             is_error=True,
             metadata=metadata,
         )
-    return ToolResult(output=outcome.reply_text, metadata=metadata)
+    return ToolResult(
+        output=outcome.reply_text,
+        # The lane turn the CLI actually ran, named by the lane's own id.
+        # The lane is ephemeral and closed by now, so the id is what a
+        # later pass has: it appears in the spawn record and the log.
+        receipt=Receipt(kind="record", id=turn_id, locator=lane_id),
+        metadata=metadata,
+    )
 
 
 # Interrupt tasks are held so asyncio's weak reference to a running task

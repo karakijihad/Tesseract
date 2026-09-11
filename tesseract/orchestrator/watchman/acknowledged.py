@@ -68,6 +68,31 @@ class Acknowledged:
         """Does this acknowledgement still answer a finding rated `severity`?"""
         return _RANK.get(severity, 0) <= _RANK.get(self.severity, 0)
 
+    def cleared(self, severity: str) -> bool:
+        """Has the fault they accepted actually ENDED?
+
+        Rule 3 for a row that stays on the panel while it is well, which is
+        every collector row. A finding answers rule 3 by disappearing; a
+        collector has no way to disappear, so it has to be asked.
+
+        Both halves are needed and each one alone is a real defect:
+
+        - It has to be well NOW. Less broken is not the condition ending. A row
+          accepted while it was failing and now merely degraded is the same
+          standing fault, and spending the acceptance there asks the operator
+          again about the thing they just answered.
+        - It has to have been UNWELL when they looked. Otherwise an acceptance
+          taken on a row that is already well is spent by the very state it was
+          taken in. That is not theoretical: a fact nothing produces is rated
+          INFO and most collector rows sit there for months, so the row would
+          be unacceptable from every surface.
+
+        `covers` is the same recorded severity read the other way, which is why
+        the two live together. Worse than it was asks again, well after being
+        unwell is over, and anything between is the fault still standing.
+        """
+        return _RANK.get(severity, 0) == 0 < _RANK.get(self.severity, 0)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "at": self.at.isoformat(),

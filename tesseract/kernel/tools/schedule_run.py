@@ -12,6 +12,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 
 
 class ScheduleRunInput(BaseModel):
@@ -33,6 +34,8 @@ class ScheduleRunTool(Tool):
         "reminder, which is `alarm_set`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "job"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     @property
     def name(self) -> str:
@@ -59,11 +62,16 @@ class ScheduleRunTool(Tool):
         try:
             result = await scheduler.run_now(inp.name, trigger="assistant")
         except KeyError:
-            return ToolResult(output=f"job {inp.name!r} is not registered", is_error=True)
+            return ToolResult(
+                output=f"job {inp.name!r} is not registered",
+                is_error=True,
+                caller_error=True,
+            )
         except AlreadyRunning:
             # Not an error. The job is doing the thing that was asked for.
             return ToolResult(
                 output=f"job '{inp.name}' is already running. Nothing was started",
+                receipt=Receipt.nothing(),
                 metadata={"name": inp.name, "already_running": True},
             )
         return ToolResult(
@@ -71,6 +79,7 @@ class ScheduleRunTool(Tool):
                 f"job '{inp.name}' fired (ok={result.ok}, detail={result.detail!r}, "
                 f"duration_ms={result.duration_ms:.0f})"
             ),
+            receipt=Receipt(kind="job", id=result.run_id, locator=inp.name),
             metadata={
                 "name": inp.name,
                 "run_id": result.run_id,

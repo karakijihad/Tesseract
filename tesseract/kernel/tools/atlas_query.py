@@ -130,6 +130,8 @@ class AtlasQueryTool(Tool):
         "that is in front of you is a call for something you have."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:

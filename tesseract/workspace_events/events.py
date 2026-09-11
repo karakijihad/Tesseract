@@ -62,6 +62,7 @@ EventKind = Literal[
     "skill_refinement",          # refinement job flags an underperforming skill + proposes a revised body; approve applies the diff to the live SKILL.md
     "working_set_proposal",      # working_set_review proposes which tools and playbooks the turn carries; approve moves the names through each file's own generator
     "tuning_proposal",           # runtime_tuning proposes a change to what the runtime spends or how often it runs; approve moves the seam the card names
+    "project_proposal",          # project_propose puts up an idea no existing project covers; approving means it is worth starting, and creates nothing
 ]
 
 
@@ -85,6 +86,7 @@ DECIDABLE_KINDS: tuple[str, ...] = (
     "vault_raw_ingest_batch",
     "kb_merge_conflict",
     "clarification",
+    "project_proposal",
     "nudge",
 )
 
@@ -246,6 +248,27 @@ class WorkspaceComment:
         )
 
 
+def _row_that_is_the_card(rows: list[WorkspaceEvent], event_id: str) -> int | None:
+    """Which row IS the card for `event_id`: the newest one, or None.
+
+    The file is append-only and an id may repeat on purpose. The recovery
+    summary is one card rewritten every boot rather than a new card each time
+    (`orchestrator/recovery/summary.py::EVENT_ID`, which says so and says the
+    newest row wins), so ten rows can carry one id.
+
+    Every reader here already takes the newest. Every WRITER must take the same
+    one: a mutation that scans forward answers the oldest row instead, and the
+    operator then resolves the card they were shown, gets an ok, and watches it
+    stay pending while a historical shadow moves. That was live for three
+    mutations at once, and it is why the pick lives in one function rather than
+    being written out at each call site.
+    """
+    for idx in range(len(rows) - 1, -1, -1):
+        if rows[idx].event_id == event_id:
+            return idx
+    return None
+
+
 class EventStore:
     """Append-only event/comment store under ``logs_dir / 'workspace'``.
 
@@ -365,11 +388,59 @@ class EventStore:
         result.sort(key=lambda e: e.ts, reverse=True)
         return result[:limit]
 
+    def append_if_none_pending(self, event: "WorkspaceEvent") -> bool:
+        """Append `event` unless one of its kind is already pending. True if written.
+
+        **The check and the write are one act.** `one_is_pending` followed by
+        `append_event` is two, and the read takes no lock at all, so two callers
+        proposing at the same moment could each see an empty queue and each
+        write: the operator's own chat and a scheduled turn are exactly two such
+        callers. `is_concurrency_safe() -> False` does not help, because that
+        only serialises tool calls inside one turn's dispatch batch.
+
+        Both locks are held across the pair, the same pair `append_event` takes
+        for its write alone, so a second writer waits for the first to finish
+        before it looks.
+        """
+        with self._lock, self._interprocess_lock():
+            # `_read_events_unlocked`, because the locking reader takes the
+            # same two locks and neither is reentrant: calling it from inside
+            # here deadlocks the process against itself.
+            latest: dict[str, WorkspaceEvent] = {}
+            for ev in self._read_events_unlocked():
+                latest[ev.event_id] = ev
+            if any(
+                ev.kind == event.kind and ev.status == "pending"
+                for ev in latest.values()
+            ):
+                return False
+            with self.events_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(event.to_dict()) + "\n")
+        return True
+
+    def one_is_pending(self, kind: str) -> bool:
+        """Whether a card of this kind is already waiting to be decided.
+
+        One at a time, per kind, and the rule lives here because two callers
+        need it: a job filing a proposal (`scheduler/tasks/_card.py`) and a
+        tool filing one (`kernel/tools/project_propose.py`). It was written
+        twice, which is two places a change to the unreadable-queue policy has
+        to reach.
+
+        A queue that cannot be read reads as EMPTY on purpose: the cost of a
+        duplicate card is an extra decision, and the cost of the other answer
+        is a proposal nobody ever sees.
+        """
+        try:
+            return bool(self.list_events(kinds=(kind,), status="pending"))  # type: ignore[arg-type]
+        except Exception:  # noqa: BLE001 - see the docstring
+            log.warning("workspace events: the queue could not be read for %s", kind)
+            return False
+
     def get_event(self, event_id: str) -> WorkspaceEvent | None:
-        for ev in reversed(self._read_events()):
-            if ev.event_id == event_id:
-                return ev
-        return None
+        rows = self._read_events()
+        idx = _row_that_is_the_card(rows, event_id)
+        return rows[idx] if idx is not None else None
 
     def list_comments(self, event_id: str) -> list[WorkspaceComment]:
         rows = self._read_comments()
@@ -418,15 +489,12 @@ class EventStore:
     def mark_event_delivered(self, event_id: str) -> bool:
         with self._lock, self._interprocess_lock():
             rows = self._read_events_unlocked()
-            updated = False
-            for idx, ev in enumerate(rows):
-                if ev.event_id == event_id and not ev.delivered_to_agent:
-                    rows[idx] = ev.with_delivered()
-                    updated = True
-                    break
-            if updated:
-                self._rewrite_events_unlocked(rows)
-            return updated
+            idx = _row_that_is_the_card(rows, event_id)
+            if idx is None or rows[idx].delivered_to_agent:
+                return False
+            rows[idx] = rows[idx].with_delivered()
+            self._rewrite_events_unlocked(rows)
+            return True
 
     def mark_comment_delivered(self, comment_id: str) -> bool:
         with self._lock, self._interprocess_lock():
@@ -458,12 +526,12 @@ class EventStore:
     ) -> WorkspaceEvent | None:
         with self._lock, self._interprocess_lock():
             rows = self._read_events_unlocked()
-            for idx, ev in enumerate(rows):
-                if ev.event_id == event_id:
-                    rows[idx] = ev.with_status(status, reason=reason)
-                    self._rewrite_events_unlocked(rows)
-                    return rows[idx]
-        return None
+            idx = _row_that_is_the_card(rows, event_id)
+            if idx is None:
+                return None
+            rows[idx] = rows[idx].with_status(status, reason=reason)
+            self._rewrite_events_unlocked(rows)
+            return rows[idx]
 
     def merge_event_payload(
         self,
@@ -479,27 +547,28 @@ class EventStore:
         """
         with self._lock, self._interprocess_lock():
             rows = self._read_events_unlocked()
-            for idx, ev in enumerate(rows):
-                if ev.event_id == event_id:
-                    merged = {**(ev.payload or {}), **updates}
-                    rows[idx] = WorkspaceEvent(
-                        event_id=ev.event_id,
-                        ts=ev.ts,
-                        kind=ev.kind,
-                        source=ev.source,
-                        title=ev.title,
-                        summary=ev.summary,
-                        payload=merged,
-                        status=ev.status,
-                        priority=ev.priority,
-                        decided_at=ev.decided_at,
-                        decided_reason=ev.decided_reason,
-                        delivered_to_agent=ev.delivered_to_agent,
-                        author_id=ev.author_id,
-                        author_display=ev.author_display,
-                    )
-                    self._rewrite_events_unlocked(rows)
-                    return rows[idx]
+            idx = _row_that_is_the_card(rows, event_id)
+            if idx is not None:
+                ev = rows[idx]
+                merged = {**(ev.payload or {}), **updates}
+                rows[idx] = WorkspaceEvent(
+                    event_id=ev.event_id,
+                    ts=ev.ts,
+                    kind=ev.kind,
+                    source=ev.source,
+                    title=ev.title,
+                    summary=ev.summary,
+                    payload=merged,
+                    status=ev.status,
+                    priority=ev.priority,
+                    decided_at=ev.decided_at,
+                    decided_reason=ev.decided_reason,
+                    delivered_to_agent=ev.delivered_to_agent,
+                    author_id=ev.author_id,
+                    author_display=ev.author_display,
+                )
+                self._rewrite_events_unlocked(rows)
+                return rows[idx]
         return None
 
     def get_seen(self) -> dict[str, str]:
@@ -582,6 +651,42 @@ class EventStore:
                 fh.write(json.dumps(c.to_dict()) + "\n")
         tmp.replace(self.comments_path)
 
+    def prune_settled_before(self, cutoff: datetime) -> int:
+        """Drop every row of every event that is SETTLED and older than
+        `cutoff`, and the comments on it. Returns how many rows went.
+
+        **Per event, never per row.** The inbox reads the newest row for an id
+        and an older row is that event's history, so deleting one row at a time
+        would eventually delete a `resolved` row and leave the `pending` row
+        under it as the newest one, putting an answered decision back in front
+        of the operator. So an event ages as a whole, on its newest row, and
+        only when that row says it has been settled.
+
+        A pending event never ages, whatever its date. A window that can delete
+        an unanswered decision is not a window, it is a way to lose one.
+        """
+        with self._lock, self._interprocess_lock():
+            rows = self._read_events_unlocked()
+            if not rows:
+                return 0
+            newest: dict[str, WorkspaceEvent] = {}
+            for ev in rows:
+                newest[ev.event_id] = ev
+            drop = {
+                event_id for event_id, ev in newest.items()
+                if ev.status in SETTLED and _before(ev.ts, cutoff)
+            }
+            if not drop:
+                return 0
+            keep = [ev for ev in rows if ev.event_id not in drop]
+            removed = len(rows) - len(keep)
+            self._rewrite_events_unlocked(keep)
+            comments = self._read_comments_unlocked()
+            kept_comments = [c for c in comments if c.event_id not in drop]
+            if len(kept_comments) != len(comments):
+                self._rewrite_comments_unlocked(kept_comments)
+        return removed
+
     def has_pending_yaml_proposal(
         self,
         *,
@@ -609,3 +714,20 @@ class EventStore:
                 return True
         return False
 
+
+def _before(ts: str, cutoff: datetime) -> bool:
+    """Whether a row's stamp is older than the cutoff.
+
+    An unparsable or missing stamp reads as NOT older, which keeps it. A row
+    whose date nobody can read is the one case where deleting on a guess costs
+    something and keeping costs a line.
+    """
+    if not ts:
+        return False
+    try:
+        when = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when < cutoff

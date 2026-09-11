@@ -62,6 +62,8 @@ class TranscribeAudioTool(Tool):
         "same work twice."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     def __init__(self, stt_engine: "STTEngine | None" = None) -> None:
         self._stt_engine = stt_engine
@@ -115,6 +117,7 @@ class TranscribeAudioTool(Tool):
             return ToolResult(
                 output=f"attachment {inp.attachment_id!r} not found in this session",
                 is_error=True,
+                caller_error=True,
             )
         if att.kind != "audio":
             return ToolResult(
@@ -123,6 +126,7 @@ class TranscribeAudioTool(Tool):
                     f"(kind={att.kind!r}); use the appropriate reader instead"
                 ),
                 is_error=True,
+                caller_error=True,
             )
 
         file_path = _attachment_file_path(att)

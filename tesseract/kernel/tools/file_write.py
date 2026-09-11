@@ -5,12 +5,14 @@ Not concurrent-safe, not read-only. Creates parent directories as needed.
 
 from __future__ import annotations
 
+from hashlib import sha256
 from pathlib import Path
 from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.paths import readable_state_prefix
 
 # Source trees, state-root-relative. In a packaged install these are inert —
@@ -161,6 +163,11 @@ class FileWriteTool(Tool):
         "reading and rewriting it."
     )
     depends_on: ClassVar[str] = ""
+    # A file's own content is its identifier. A path alone proves nothing: the
+    # file at that path a minute later may be somebody else's, and the whole
+    # point of the mark is that a later pass can tell.
+    receipt_kind: ClassVar[str] = "file"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:
@@ -238,7 +245,14 @@ class FileWriteTool(Tool):
         # `..`-traversed targets.
         _maybe_index_workshop_write(path, state_root)
 
-        return ToolResult(output=f"Written {len(inp.content)} bytes to {path}")
+        return ToolResult(
+            output=f"Written {len(inp.content)} bytes to {path}",
+            receipt=Receipt(
+                kind="file",
+                id="sha256:" + sha256(inp.content.encode("utf-8")).hexdigest(),
+                locator=str(path),
+            ),
+        )
 
 
 def _maybe_index_workshop_write(path: Path, state_root: Path) -> None:

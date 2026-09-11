@@ -8,8 +8,9 @@ would be two mechanisms answering one question.
 
 **Derived, never authored.** A hand-maintained file of this would be the third
 instance of the defect this folder keeps finding — `HEARTBEAT.md` named a
-cadence that had been deleted, `WHAT_NOT_TO_SAVE.md` claims to enable eleven
-categories and enables none. So the default half is the manifest, which already
+cadence that had been deleted, and the memory store's exclusion list claimed
+for months to enable eleven categories while enabling none of them, which is
+why it is a declared registry now. So the default half is the manifest, which already
 carries each entry's one-liner, and the operator's half is their own
 `home/config/schedule.yaml`. Both sections derive; adding a row adds a line with
 no edit anywhere.

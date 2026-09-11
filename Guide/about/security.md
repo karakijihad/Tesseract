@@ -9,7 +9,7 @@ description: "TESSERACT runs an assistant that can read files, execute subproces
 
 TESSERACT runs an assistant that can read files, execute subprocesses, call
 external APIs, and act on your machine. That is the product, not a side effect.
-This document says what is defended, how, and — as plainly — what is not.
+This document says what is defended, how, and, just as plainly, what is not.
 
 ## Reporting a vulnerability
 
@@ -25,7 +25,7 @@ itself and the person running it. Anything you could do at your own shell, the
 assistant can be asked to do.
 
 What it defends against is narrower and more realistic: **the assistant doing
-something you did not intend** — because a model erred, because a web page it
+something you did not intend**, because a model erred, because a web page it
 read contained instructions, or because a tool did more than its name suggested.
 
 Two things follow, and both are load-bearing:
@@ -55,8 +55,8 @@ the obvious feature request runs straight into it.
 
 The interface is compiled into the desktop application and served by the app
 shell from its own private origin. Nothing publishes it on the network. The
-tempting shortcut — serve the interface from the backend so a browser can load
-it — would put a **web origin on a port that has no authentication**, and that
+tempting shortcut, serving the interface from the backend so a browser can load
+it, would put a **web origin on a port that has no authentication**, and that
 origin would then have to be permitted to make state-changing calls. Anything
 that could convince a browser it was on that origin would inherit full control
 of the runtime: conversation, tools, file writes, the terminal.
@@ -68,12 +68,12 @@ than a read verify the caller is local at the handler. Restarting the backend
 and running a vendor installer are the obvious two; so is dismissing the notice
 that says an update replaced your settings, because clearing it remotely means
 you are never told.
-Reads are not origin-gated — a cross-site page can send one, but cannot read
+Reads are not origin-gated. A cross-site page can send one, but cannot read
 the reply, because the response carries no header permitting it to.
 
 The same reasoning shapes how the assistant looks at your screen. Reading what
-a panel *contains* needs no network path at all — the assistant runs inside the
-backend process and shares its state directly.
+a panel *contains* needs no network path at all, because the assistant runs
+inside the backend process and shares its state directly.
 
 Seeing what a panel *looks like* is a separate capability with its own gate.
 `screen_look` photographs a screen, sends the frame to a vision-capable model,
@@ -84,7 +84,7 @@ and returns an answer in words. What that means for you:
   outbound action under the rule above. Unattended (`free`) operation is the
   one mode that auto-allows it, and that is a deliberate choice you make by
   selecting that mode.
-- **It captures one display — the one the application is on — and everything
+- **It captures one display, the one the application is on, and everything
   else that is on that display with it.** Not a crop of the application window:
   if a password manager, a private conversation or another person's message is
   open on the same screen, it is in the frame. Your other monitors are not.
@@ -97,7 +97,7 @@ and returns an answer in words. What that means for you:
 - **The assistant receives words, not the picture.** It asks a question, a
   vision model answers it, and the frame is not added to the conversation.
 - **The answer is treated as untrusted.** Your screen can show text nobody here
-  wrote — a web page, a terminal, an incoming message — so what the vision
+  wrote: a web page, a terminal, an incoming message. So what the vision
   model reads back is wrapped before the assistant sees it, the same as any
   other outside content.
 
@@ -110,7 +110,7 @@ that accounting outright; the agent controller runs as its own process and
 reconciles against the shared spend log before each paid call. Adding another
 entry point does not add another allowance.
 
-Every paid path checks the cap *before* spending, not after — including image
+Every paid path checks the cap *before* spending, not after, including image
 understanding, which until 2026-08-15 recorded what it spent without being able
 to refuse.
 
@@ -138,6 +138,15 @@ That makes it findable after a restart, and it also makes it computable, so the
 generic readers refuse it rather than relying on nobody knowing the number: it
 is not listed in the app's chat library, not written into the index the library
 reads, and not returned by a plain load. The bridge asks for its own by name.
+
+Your daily recap is the third rule, and it is about people rather than ids. If
+you have approved more than one person to message the bot, their conversations
+are kept in that same store and they are not yours. Every conversation records
+whose it is, and the jobs that read your day back to you take your own and
+nobody else's: the ones you had in the app, plus the ones you had on your own
+phone. When the app has only one approved chat, that chat is yours and there is
+nothing to set. When it has several and none has been marked as yours, the app
+takes none of them, so a recap can be short but it is never somebody else's.
 
 The tool that reads a chat's day-by-day log takes the chat as an argument, and
 it will only accept the chat it is running in. Asking for another one is
@@ -192,6 +201,11 @@ conversation gone, so nothing is kept. This is the assistant saying the room is
 full or the subject has changed, so everything is kept and only the room is made
 back.
 
+**A conversation you are not looking at is bounded the same way.** Work running
+in the background reaches the same ceiling, and it empties its own thread and
+leaves yours alone. It used to be refused instead, which meant a background
+conversation was the one thing that could grow without limit.
+
 You are told each time, in the conversation itself, and it says what carried
 over: what the work was, what is done, what is left, and what it wrote to memory
 on the way past. Nothing is summarised into that note. The transcript it came
@@ -200,19 +214,21 @@ retelling of it.
 
 The assistant can also be refused. If it asks to carry work on when the last
 boundary reported nothing left to do, or reports the same next step over and
-over, or has done it more times in a row than `roles.yaml` allows, the runtime
-stops it and says which of those it was. That is written down too, so a
-conversation the runtime stopped can be told apart later from one that finished.
+over, the runtime stops it and says which of those it was. That is written down
+too, so a conversation the runtime stopped can be told apart later from one that
+finished. There is deliberately no count of how many times it may carry on: a
+count cannot tell real multi-phase work from a loop, and it stopped the first
+while the second sailed past.
 
 ## Tool authority
 
 Every tool call resolves to one of three postures before it runs:
 
-- **auto** — runs immediately. Read-only tools, and the assistant's own interior
+- **auto**. Runs immediately. Read-only tools, and the assistant's own interior
   state (mood, memory, diary).
-- **ask** — you see an approval prompt and answer it. Writes, outbound calls,
+- **ask**. You see an approval prompt and answer it. Writes, outbound calls,
   subprocess execution.
-- **deny** — refused, non-negotiable.
+- **deny**. Refused, and not negotiable.
 
 That holds for work the runtime starts on your behalf as well, not only for
 calls the assistant composes: a link you send over Telegram is fetched under the
@@ -320,6 +336,29 @@ All of it is stated in one place, `workspace_documents` in
 writes are refused, what a proposal does in each mode, and which documents you
 hold back from that. There is no second list to fall out of step with it.
 
+**The cards that name no document are stated the same way.** Not everything the
+runtime asks you about is a change to a file. It also proposes merging two
+records it thinks are one, keeping a procedure it just learned, changing a
+spending ceiling it thinks is wrong. Those named no file, so the block above
+could not answer for them, and they waited for you whatever the mode said:
+half the runtime obeying your setting and half unable to. `workspace_cards`
+is the same statement keyed by the kind of card, with the same rule that a
+kind you name always waits for you.
+
+A fresh install holds four, and each is a thing a runtime should not decide on
+your behalf. Two are questions the assistant asked YOU, where approving it
+unattended answers with nothing. One is a change to the configuration that
+says how the app is actually wired. The last is a knowledge-base paragraph you
+and the refresher both edited, where approving on its own picks one wording
+over the other and the loser is gone.
+
+`auto` here means the runtime approves the card through the same code path
+your own Approve button uses, with the same side effects, and the card is
+filed showing what happened rather than disappearing. The approval record says
+the mode decided rather than that you did. And it tells you afterwards, on
+whichever channels you route `workspace_change_applied` to, so a change made
+while you were away is something you read rather than something you find.
+
 ## Tools you write yourself
 
 The assistant can write a tool into your own tools folder, and you approve that
@@ -348,7 +387,7 @@ built; until it is, that prompt is the boundary.
 If you have loosened a tool's posture and want it back, Settings → Tools has
 **Reset to defaults**: it restores every posture to what your installed version
 ships with, reading the untouched copy inside the sealed application tree. It
-reaches the baseline postures only — mode overrides, path overrides, and the
+reaches the baseline postures only. Mode overrides, path overrides, and the
 shell check list below are separate and are not touched.
 
 These rules sit underneath the policy and are not reachable from it:
@@ -358,11 +397,11 @@ These rules sit underneath the policy and are not reachable from it:
   `permissions.yaml`. Most are absolute denials covering audit evasion and
   attacks on the runtime and host; the rest force an operator prompt that no
   configuration can downgrade to auto. No hook, plugin, skill, or agent can
-  relax them. **The whole list is readable in the app** — Settings → Loop
-  limits — with what each check refuses and whether it refuses outright, asks
-  you, or does both depending on which pattern matched. Checks are identified
-  by number rather than by name, in the app and in the audit log, so a refusal
-  record does not describe the pattern that produced it.
+  relax them. **The whole list is readable in the app**, under Settings and
+  then Loop limits, with what each check refuses and whether it refuses
+  outright, asks you, or does both depending on which pattern matched. Checks
+  are identified by number rather than by name, in the app and in the audit
+  log, so a refusal record does not describe the pattern that produced it.
 
   **The unattended mode changes what happens to the prompting ones, and only
   those.** In `free` nobody is there by definition, so a prompt is a refusal on
@@ -387,13 +426,13 @@ These rules sit underneath the policy and are not reachable from it:
   one and has not been taken.
 
   **The assistant is told what the list refuses, in classes.** Its operating
-  document carries the same descriptions the app shows you — which classes
-  prompt you and which are refused outright — rendered from the check list
+  document carries the same descriptions the app shows you, which classes
+  prompt you and which are refused outright, rendered from the check list
   rather than written alongside it, so the two cannot disagree. It is told no
   patterns: a description of the shape a check matches would be a map around
   it, and the same reasoning that keeps patterns out of the audit log keeps
   them out of the prompt. Telling it which commands will reach you is a
-  usability decision, not a permission one — it changes what the assistant can
+  usability decision, not a permission one. It changes what the assistant can
   predict, never what it may do.
 - **Four config files are closed to every write path.**
   `config/permissions.yaml`, `config/mirror.yaml`, `config/mcp.yaml` and
@@ -407,13 +446,30 @@ These rules sit underneath the policy and are not reachable from it:
   `tesseract/kernel/`. A tool that ships with TESSERACT is drafted by the
   assistant, reviewed by you, and installed by you.
 - **Its own records are sealed too.** The agenda, the tool and skill usage
-  logs, the workspace events, the cost ledger and the project registry are
-  written by the runtime itself and read back to decide what it learned and
-  what it spent. No file tool and no shell command the assistant runs may
-  write into them, in any mode, the same way nothing may write into the
-  application tree; reading them stays open. A self-improving agent has been
-  measured scoring well by editing the record that scores it, and this is
+  logs, the workspace events, the cost ledger, the project registry and the
+  receipts are written by the runtime itself and read back to decide what it
+  learned and what it spent. No file tool and no shell command the assistant
+  runs may write into them, in any mode, the same way nothing may write into
+  the application tree; reading them stays open. A self-improving agent has
+  been measured scoring well by editing the record that scores it, and this is
   the line that keeps that move off the table here.
+
+  A receipt is the newest of those and the one the rule matters most for. When
+  the assistant sends a message, writes a file or makes a commit, the runtime
+  keeps the identifier the far side gave back: the message id, the content
+  hash, the commit hash. That is what lets you check afterwards that a thing
+  it said it did actually happened, rather than taking its word for it. A
+  receipt the assistant could write itself would prove nothing at all, so it
+  cannot.
+
+  Every tool in the app says which identifier it can leave, or says plainly
+  that it can leave none, and the app will not start if one of them says
+  nothing. One of those answers is worth reading on its own: a shell command
+  changes whatever it changed and nothing comes back naming it, so a run of
+  the shell is answerable for its own recorded command and output and no more.
+  Where a channel cannot say which message it just sent, that call is recorded
+  as unverified rather than as clean, which is the honest reading and not a
+  quiet success.
 - **Tools of your own live in your tree, and writing one prompts you.** The
   assistant can also write a tool into `tools/` in your home directory, where
   it is picked up without a restart and survives every update. That file is
@@ -424,9 +480,11 @@ These rules sit underneath the policy and are not reachable from it:
 
   - **It cannot take the name of a tool TESSERACT already has**, so nothing in
     your tree can stand in front of `bash` or the file tools.
-  - **It must declare what it is and what it may do**, the same as a shipped
-    tool, or it is skipped with the reason reported rather than loading half
-    configured.
+  - **It must declare what it is, what it may do, and what it leaves behind**,
+    the same as a shipped tool, or it is skipped with the reason reported
+    rather than loading half configured. Every tool answers the last of those,
+    including one that only reads: an app tool that does not is refused at
+    startup, and a tool of yours that does not is left out.
   - **What it declares is not what it is granted.** Every tool of yours starts
     at ask, whatever its file says, so a file cannot hand itself the right to
     run unattended. Raising it is a separate decision you make in Settings, and
@@ -469,9 +527,55 @@ These rules sit underneath the policy and are not reachable from it:
   inside it (a network share, a variable, a tilde, a drive-relative path).
   A revision of a live playbook goes through the same check.
 
+  **Three tools ask in every mode, including the one where nothing else
+  does**, and they share a shape: each is the assistant being asked to judge
+  its own work or widen its own room. `playbook_judge` is how you say a
+  playbook has earned its place or has not: keeping one activates it and puts
+  it on the list carried every turn, dropping one retires it so nothing reads
+  it again. It is held at ask in `free` as well as under the shipped default,
+  because the whole worth of the verdict is that it came from somebody other
+  than whoever did the work. An assistant free to approve its own procedures
+  would be grading its own homework, and the same rule is why a procedure is
+  only ever written down from a task whose checks actually ran.
+  `context_set` rewrites which model each job runs on and how every open
+  conversation folds, which is the wiring rather than the work.
+  `project_budget` is the ceiling on what a day of unattended work on one
+  project may spend: an assistant that could raise it is an assistant with no
+  ceiling, so the number is always yours. There is a second ceiling above it
+  that covers the whole machine and everything on it, your own conversations
+  included, and reaching it stops the two rows that work on their own for the
+  rest of the day. Neither number is one the assistant can move. All three
+  entries are still
+  `permissions.yaml`'s, so they are yours to change; they are listed here
+  because they are where the shipped file deliberately withholds a decision
+  from an install that has otherwise been told to run on its own.
+  `playbook_record`, which reports how each playbook has done, reads the
+  usage log, the turn records and the cost ledger and writes nothing.
+
   A new job also starts switched off. Writing one down is describing a plan;
   switching it on is agreeing to it, and only the second is something you
   approve.
+
+  **A turn nobody is watching is held to more than a posture can express.**
+  Once a day the app opens the projects you have priced and decides what is
+  worth doing in them, and that conversation has no one reading along. Three
+  things it may not do are refused by the code rather than by a setting,
+  because a setting is about a tool and this is about who is present:
+
+  - It may only work projects inside your workshop folder. A repository you
+    linked so the two of you could work in it together is not one it goes into
+    by itself.
+  - It may only propose a step that names what it will cost, on a project with
+    a daily budget, with enough of that budget left. A project you have not
+    priced is never worked on its own.
+  - It may not save a correction about how the assistant works, and it may not
+    propose a change to who the assistant is. It reads the open web and files
+    other tools have written, and a sentence in one of those must not be able
+    to become a standing rule. What it learns about a project it writes down
+    as usual, marked with where it came from.
+
+  In your own conversation none of these applies, because every one of them is
+  a question you are there to answer.
 - **The `app/` seal.** In a packaged install the application tree is sealed. The
   assistant writes to its workspace and your home directory, never to the code
   it is running.
@@ -487,8 +591,8 @@ These rules sit underneath the policy and are not reachable from it:
   no folder outside the sealed tree can be used at all, the app declines to
   start the tool rather than picking one for you.
 - **The scheduled work the app ships is the app's.** You can turn any of it
-  off, and you can move the one job that runs at a set time of day to an hour
-  that suits you. What each job does, and how often it runs, comes with the app:
+  off, and you can move any job that runs at a set time of day to an hour that
+  suits you. What each job does, and how often it runs, comes with the app:
   changing it is refused at the panel, refused when the assistant asks for it,
   and ignored if it is written straight into your own schedule file, where the
   change is named in the log and the app's value is used. The rest of that file
@@ -630,7 +734,7 @@ can do to make the first easier.
 ### What gets recorded
 
 Every tool call that passes the gate is appended to
-`runtime/logs/approvals.jsonl` — one JSON line carrying the time, the tool, a
+`runtime/logs/approvals.jsonl`, one JSON line carrying the time, the tool, a
 truncated summary of its input, which policy layer decided, and the outcome.
 The file is append-only and survives restarts.
 
@@ -672,10 +776,35 @@ command, and a failing step closes it `failed` whatever the assistant's
 sentence said. The record says who wrote the evidence, `gate` or `model`, so
 a task closed on a sentence is never mistaken for one closed on a check.
 
+**And the two things that learn from those records refuse the sentence.** A
+task closed on the assistant's own word is never written up as a procedure the
+assistant then follows on later work, and a turn that closed its task that way
+counts as neither a success nor a failure when a procedure is measured. Both
+floors are in the code rather than in a setting, because the shortest route to
+a self improving agent that improves nothing is one that grades itself and
+then learns from the grade. Only a close a project's own checks decided is
+evidence here.
+
+**Which raises the obvious question: who decides what the checks are.** In a
+mode that runs unattended the assistant can point at a directory that already
+exists and set its commands itself, so the next shortest route to a clean
+record is to weaken the check rather than do the work. Making a NEW project is
+no longer one of the ways: a conversation nobody is watching is refused when it
+tries to create one, whatever the mode says, and the most it can do is put the
+plan to you and wait. Two things stand against the rest of it. The commands a
+project declares are written onto a task when the task is accepted, so a change
+made afterwards cannot rewrite what the close was judged against: the checks
+still run and their output is still kept, but the close is recorded as the
+assistant's word, because nobody can say the proof is the one that was owed.
+And a task closed as failed runs the checks too, so declaring failure is no
+longer a way to have nothing run at all. Neither makes the manipulation
+impossible. Both make it visible in the record, and stop it counting as
+evidence.
+
 **Including the ones nobody was asked about.** An `auto` posture writes a row
 marked `"result": "auto"` rather than writing nothing. Until 2026-08-14 it wrote
 nothing at all, on the reasoning that an unapproved call has no approval to
-record — which left the tools most able to act unattended as the ones leaving no
+record, which left the tools most able to act unattended as the ones leaving no
 trace. `auto` is kept distinct from `allow_once` deliberately: the first means
 nobody was asked, the second means you were asked and said yes, and a ledger
 that conflated them would answer "did the operator approve this?" with yes for
@@ -690,14 +819,14 @@ tool, which element on the page, and how many characters went in. The prompt
 you answer at the time shows you the real values, because you are being asked
 to approve exactly that and a character count would not let you judge it.
 
-One limit worth knowing: the ledger records *decisions*, not outcomes — a row
+One limit worth knowing: the ledger records *decisions*, not outcomes. A row
 says a tool was allowed to run, not what it did or whether it succeeded.
 
 **It is archived, never deleted.** Rows older than the window in
 `config/retention.yaml` move once a night into a dated file beside the ledger
 (`approvals-archive/approvals-YYYY-MM.jsonl`); nothing removes them. You can
-widen or narrow the window, and you cannot turn the archive into a deletion —
-the retention table refuses `action: delete` for this file and for your saved
+widen or narrow the window, and you cannot turn the archive into a deletion.
+The retention table refuses `action: delete` for this file and for your saved
 conversations, and refuses at startup rather than quietly archiving instead.
 It refuses the reverse the same way: an action a sweep cannot carry out, such
 as archiving the record of which tools get called, which has no archive to
@@ -705,7 +834,7 @@ move rows into. Both are answered before anything is touched, so a table the
 app accepted is a table it can actually run.
 Two things make that safe rather than merely intended. The sweep holds the same
 lock the ledger's own writer holds, so a decision recorded while it is running
-waits and then lands in the rewritten file — without that, a row appended
+waits and then lands in the rewritten file. Without that, a row appended
 between reading the file and replacing it would be in neither the archive nor
 the ledger. And rows are moved only after they are written to the archive, so
 an interruption mid-sweep can duplicate a row and cannot lose one. A row whose
@@ -730,6 +859,93 @@ because below that the archive is holding almost all of it and answering what
 the runtime allowed last week means reading dated files rather than the ledger.
 `may_delete` says the evidence may not be deleted; the floor says how much of
 it stays in front of you.
+
+### What the observer keeps, and what a revoked pane takes with it
+
+The assistant watches the conversation with a second, smaller model, and it can
+also read a terminal panel you have explicitly consented to. Every observation
+it produces is written to `runtime/logs/observer/`, which is where you can read
+back what it noticed without opening the app.
+
+Those two facts meet at the point you withdraw consent. Turning the observer
+off for a panel, or answering no to the consent prompt, empties the buffered
+terminal output at once and now also removes the observations that were
+written from it. The record says which panels each observation read, and
+withdrawing consent for one takes its rows out of the files on disk.
+
+Closing a panel is not the same act and does not do this. The buffered output
+goes, because nothing is watching that panel any more, and what the assistant
+already noticed stays. Closing a terminal is finishing work, and deleting a
+record on the strength of it would remove notes you never asked to lose.
+
+That is stronger than trimming the text, and deliberately so. What the observer
+writes is its own prose about what it saw, so it can quote a line from your
+terminal in a sentence of its own. There is no way to edit such a sentence
+afterwards without guessing which half mattered, and a guess that is wrong
+leaves the thing you asked to be forgotten sitting in a file for a fortnight.
+The whole row goes.
+
+Two limits worth knowing. Observations written before the app recorded which
+panels it had read cannot be attributed to one, so they are left where they are
+and age out on the observer log's own window in `config/retention.yaml`; there
+is no way to tell whether such a row read the panel you revoked, another one,
+or none, and deleting all of them on any revoke would destroy unrelated records
+to answer a question that has no answer. And anything the observation already
+turned into a saved memory is a separate record with its own lifecycle, which
+you remove the way you remove any other memory.
+
+### What may become a memory
+
+Not everything the assistant writes down gets kept. Every new record passes one
+admission gate on its way to disk, and the rules it passes are declared in
+`tesseract/memory/capture_policy.py` with, for each one, what it blocks and why
+it exists. Eight of them read the text: source code, git output, scratch state
+like "currently working on", the assistant's own standing instructions quoted
+back, bare acknowledgements, records that only narrate what you just asked,
+summaries of the turn rather than of what was learned in it, and bodies too
+short to carry any context of their own. A record any of those matches is not
+written, and the reason is logged to `memory-store/events/writes.jsonl` under
+the rule's own name.
+
+That last one is the only rule with a number in it, and the number is yours:
+`capture_policy.trivial_body.min_chars` in `config/memory.yaml`, eighty as
+shipped. The panel shows what it is set to beside the rule.
+
+The ninth is credentials, and it is the one you cannot switch off. It is the
+check described further down: values from your credential store are stripped out
+of a record before it is written, and the write is refused outright if that
+check cannot run. The Autonomy panel shows it alongside the others so the set is
+readable in one place, with no control beside it.
+
+You can turn any of the other eight off, from the Autonomy panel under Health,
+and the change applies to the next record without a restart. Three layers decide
+what is on: the shipped default in the code, `config/memory.yaml` under
+`capture_policy`, and your own switches, which are kept in
+`runtime/capture-policy.json` and never leave your machine. The panel names
+which of the three set each value, and shows how much each rule has actually
+turned away over the last thirty days, so a rule that blocks nothing and a rule
+that blocks half of everything are both visible before you decide about them.
+
+One thing this gate is not. It judges records being ADMITTED, never records
+being repaired. When the runtime rewrites a memory it already holds, to drop a
+link to something you deleted or to fix a stale reference, the rules do not
+apply: the body of a repaired record can legitimately fall under the length
+floor, and refusing the repair would strand exactly the records most in need of
+it. No caller can ask for an exception beyond that. Whether a write is an
+admission is decided from whether the record already exists.
+
+### What stopping a command stops
+
+Stopping a turn ends the commands that turn started, and it ends what they
+started in turn. A shell command is rarely one process: it is a shell with the
+real work underneath it, and killing only the shell reports success while the
+work carries on reading and writing. So the tools that run commands kill the
+whole tree, on the two paths where the command has not already exited on its
+own: you stopped the turn, or the command ran past its time limit.
+
+A command deliberately left running in the background is the exception, and it
+is left alone. It survives because the shell that launched it has exited, which
+is what tells the runtime the command finished rather than was stopped.
 
 ### What the cleanup sweep may kill
 
@@ -762,9 +978,11 @@ Every process it ends is written to the sweep's own record under
 The runtime repairs a short, declared list of things about itself, and it does
 so without asking you. The list is `tesseract/orchestrator/repairs.py`, one row
 each, and every row says what broke and why doing it unasked is safe. Today it
-is one row: re-attaching the embedding index when the local endpoint starts
+is two rows. One re-attaches the embedding index when the local endpoint starts
 answering again, which is why memory search that came up on keywords alone does
-not stay that way until you notice.
+not stay that way until you notice. The other prepares again whatever the app
+failed to start: one part of the runtime breaking leaves the rest running, and
+until this it left the broken part off until you restarted.
 
 Three limits, and they are what make this narrow rather than open-ended. A
 repair may not change a setting, a spending cap, or a line of code: those are
@@ -785,6 +1003,85 @@ asks you to act.
 You can see what has stopped trying with `breaker_status` and start it again
 with `breaker_reset`, from any surface, including a phone.
 
+### Where it stops and asks you
+
+The runtime keeps going through whatever breaks. There are exactly two
+conditions where it stops and puts the decision to you instead, and both are
+declared in `tesseract/orchestrator/healing/stop_rule.py` rather than judged
+from how bad a log line looks.
+
+**The kernel is bugged.** What was supposed to fix the fault has been tried to
+its own limit and the fault has not moved. A repair reaches that limit when its
+circuit breaker opens after three failures; a breaker's own retry reaches it
+when no retry is coming. Either way there is nothing left the runtime can do
+about it alone, so it says so once and stops.
+
+The app crashing is the same rule one level up. Three crashes in five minutes
+used to stop the supervisor for good, and now it waits and starts the app
+again, five minutes then fifteen then an hour, telling you each time. It gives
+up only when the app dies of the SAME thing after every one of those waits,
+which is the point at which starting it again is not going to help. A crash it
+cannot read a cause out of never counts as the same thing, so it keeps trying.
+Clearing that with `clear_crash_storm`, or starting the supervisor with
+`--force`, works exactly as it did.
+
+**Your advice is owed.** The remedy is one the runtime may not run on its own,
+for one of three reasons and no others: it would spend money, it would write
+inside the sealed app tree, or it is on the unsafe list. Which reason applies
+is written on the remedy in `tesseract/orchestrator/healing/remedies.py`, so
+the answer is the same every time it is asked.
+
+Both conditions produce the same thing: one card in the queue that already
+holds everything else waiting on you, with what broke, what would fix it, and
+why the runtime did not do it. One card per episode, not one per check, and a
+card you have already answered is never asked again while the fault continues.
+A fault that already has a card open from somewhere else gets no second one.
+Nothing is changed for you in the meantime.
+
+Everything else heals and tells you afterwards. A fault whose remedy the
+runtime may run unasked is run, and you read about it in the runtime check
+rather than being asked about it.
+
+### Picking work back up after the app stops
+
+That rule is about a fault. This one is about the other thing a crash leaves
+behind: a call that was made and never finished recording, where nothing on
+disk can say whether it reached anybody. The two are separate questions and
+they are answered separately.
+
+Every tool in the app says one thing about itself before it ever runs, and the
+next start reads that answer off the record of the call rather than asking the
+tool again, so editing a tool afterwards cannot change what is done about a
+call it already made. There are four answers:
+
+- It changes nothing outside this machine. Running it again is free, and no
+  record is kept for one.
+- Running it again is the same act, not a second one. The app may repeat it.
+- Something can be asked what happened. The app checks first, and repeats the
+  call only if the check says it never landed.
+- Nothing can say whether it happened. **The app never repeats one of these.**
+  You get one question in the queue naming exactly which call is uncertain and
+  saying plainly that nothing has been done about it. It is answerable from a
+  phone like everything else there, it is asked once, and a question you have
+  already answered is never asked again.
+
+A tool that says nothing, one from an MCP server, and one from your own tools
+folder are all treated as the answer that waits for you. Being undeclared never
+buys a call the benefit of the doubt.
+
+**The app may start a turn on its own to do this.** Open a window on a
+conversation the last run died inside and it takes one turn to read what was
+verified, what is still open, and what it may do about each. The transcript
+draws that turn as the app's rather than as something you said. It happens once
+per conversation per start, only where there is something it may actually do,
+and it stops after three failures the way every other automatic turn here does.
+
+**None of it widens what a call may do.** A repeated call goes through the same
+permission check as a fresh one, with the same prompt under `max`, and the
+shell check list applies to it unchanged. The record it reads holds references
+to things that already have an owner and no copies of them, so a message, a
+prompt or a file is never duplicated into it.
+
 ## Prompt injection
 
 **This is the realistic attack.** TESSERACT reads untrusted text and then acts.
@@ -802,6 +1099,14 @@ it does instead is make a successful injection *insufficient on its own*:
 - The shell check list denies the audit-evasion and host-attack categories
   outright, so the highest-value follow-through is unavailable regardless of how
   convincing the injected text is.
+- Text that came from outside is fenced before it reaches the model, with a
+  marker at each end and a note saying the text between them is data to reason
+  about rather than instructions to follow. No attempt is made to strip
+  instruction-shaped wording out of the body, deliberately: an attacker can
+  reword anything a filter looks for, and the fence is what makes that
+  pointless. **The fence's own markers are removed from the body**, so a page
+  that writes the closing marker verbatim cannot end the fence early and have
+  the rest of itself read as trusted.
 - The kernel lockdown and the `app/` seal mean a successful injection cannot
   rewrite the code that would gate the next one.
 - Where the runtime sends a message on its own, the channel's own roster is the
@@ -841,9 +1146,42 @@ it does instead is make a successful injection *insufficient on its own*:
   a send worked or failed is read back by the assistant and shown to you. What
   survives is the scheme, the host and the path.
 
+### What it reads when it picks its own work
+
+Once a day, inside the hours you set, the runtime opens a conversation nobody
+is watching and works out what to do next. The question it asks itself is built
+from records rather than written as prose: the projects you registered and what
+each has left to spend, yesterday's finished and failed tasks, the open
+questions in your `SOUL.md`, and the newest diary entry. Every line of it names
+the file it was read from.
+
+One of those files is not written by you. A project's `PROGRESS.md` sits in
+that project's own working tree, which is a directory anywhere on your machine
+that you pointed the runtime at, and a collaborator or a build job can write
+to it. So this is a place where text you did not write is read by a model that
+then acts, with nobody in the room. That block is marked as untrusted where it
+is assembled, and nothing else in the question is, because marking everything
+would mark nothing. **The mark does not stop the turn acting on what it says.**
+
+What it does buy is narrower and worth knowing. Anything saved to memory during
+one of these turns is stamped as coming from unattended work, and a record
+stamped that way is refused if it would become a correction about how the
+assistant behaves. An injected line telling it to remember a new rule about
+itself is turned away with a sentence saying nobody was watching, so a note in
+a project file cannot become a standing instruction that outlives the day.
+
+Under the shipped `max` posture the rest holds the way it does everywhere else.
+Writing a file, running a command or spending money asks you first, and with
+nobody there to answer, it refuses rather than proceeds. Under `free` it does
+not, and that is the case worth thinking about before you switch: the
+assistant's own working folder and the folder it keeps the tools it wrote are
+both places it may write without asking, so a line in a project file reaches
+them. If you register a project whose files other people can write, leave this
+machine on `max`.
+
 The residual risk is real and worth stating: under `free`, or under a `max`
 config whose postures you have relaxed, injected instructions execute without
-a prompt. And **reading is not gated in any mode** — a successful injection can
+a prompt. And **reading is not gated in any mode**. A successful injection can
 cause the assistant to read files it can reach and include their contents in a
 reply, or in an outbound call you had already approved for another purpose.
 Credential files are refused outright, so keys are not reachable this way; your
@@ -852,7 +1190,7 @@ documents are.
 ## What a compromised skill or agent reaches
 
 Skills and agents are markdown, not code. They carry instructions and cannot
-themselves execute anything — they act only by calling tools, and every tool
+themselves execute anything. They act only by calling tools, and every tool
 call goes through the same policy as any other. A malicious skill is therefore
 equivalent to a malicious *prompt*, not to malicious *code*, and is bounded by
 everything in "Tool authority" above.
@@ -889,10 +1227,10 @@ declared in `mcp.yaml`. There are four identities and they are not equals:
   resolves to, and a spawned process holding every token could pick which
   owner to be.
 
-What any of them may call is `mcp.yaml`'s verb allowlist — default-deny, and
-capped again by the client's trust tier. Settings lists every verb and its
-posture next to the token, because a bearer token is not something you can
-consent to without seeing what it opens.
+What any of them may call is `mcp.yaml`'s verb allowlist, which is
+default-deny and capped again by the client's trust tier. Settings lists every
+verb and its posture next to the token, because a bearer token is not something
+you can consent to without seeing what it opens.
 
 The switch is not only about outside tools. The CLIs in TESSERACT's own
 terminal reach it through this same surface, so switching it off takes their
@@ -901,7 +1239,7 @@ access to memory and vault away too. Both facts are on the control.
 ## The microphone, and the wake word
 
 The microphone is armed by you and by nothing else. There is no path that
-opens capture on the assistant's behalf, and a muted microphone is muted —
+opens capture on the assistant's behalf, and a muted microphone is muted:
 there is no low-power listening path behind it. That is a deliberate choice
 rather than a missing feature: a mute that is not a mute is a claim you cannot
 walk back.
@@ -914,7 +1252,7 @@ armed, speech it rejects does not reach that fallback, because it is discarded
 before any transcription is attempted.
 
 What the check stores is your phrase and two sensitivity numbers. The
-recordings themselves are decoded in memory and dropped — never written to
+recordings themselves are decoded in memory and dropped, never written to
 disk, never uploaded. There is nothing stored from which speech could be
 reconstructed.
 
@@ -922,8 +1260,8 @@ The check endpoints write, so they are refused off loopback rather than
 relying on the bind alone: replacing the stored setting would change what
 wakes the assistant in a way you did not choose and could not see.
 
-**With the wake word off or not yet checked, none of the above applies** —
-every utterance is transcribed as normal, and the speech-to-text fallback is
+**With the wake word off or not yet checked, none of the above applies.**
+Every utterance is transcribed as normal, and the speech-to-text fallback is
 whatever `roles.yaml` configures. The gate is what creates the guarantee;
 without it there is no filtering to reason about. It stays open on every
 failure by design, including a missing model or a phrase the recogniser has no
@@ -942,15 +1280,15 @@ Stated because they are true, not because they are comfortable.
   in the system, it is known, and closing it is the security work currently in
   progress.
 - **Reads are broad by design.** The assistant can read widely across your
-  machine, and read is an `auto` posture — no prompt. Credential files are
-  refused by name wherever they sit, and a relative path cannot climb out of
-  the workspace, but within those bounds the assumption is that reading is not
-  the dangerous half. If that assumption does not hold for your machine, raise
-  `file_read` to `ask`.
+  machine, and read is an `auto` posture, so there is no prompt. Credential
+  files are refused by name wherever they sit, and a relative path cannot climb
+  out of the workspace, but within those bounds the assumption is that reading
+  is not the dangerous half. If that assumption does not hold for your machine,
+  raise `file_read` to `ask`.
 - **File guards are name-based, not descriptor-based.** Paths are resolved and
   re-checked immediately before use rather than pinned to a single open file
   handle. An attacker who can already write to your disk fast enough to swap a
-  file mid-check could defeat them — but such an attacker has your account
+  file mid-check could defeat them, but such an attacker has your account
   already.
 - **The application is not code-signed.** Windows SmartScreen will warn on
   first run. Verify you obtained the installer from the official releases page.
@@ -980,13 +1318,13 @@ Stated because they are true, not because they are comfortable.
 
 The first run has two halves, and the split is where consent sits.
 
-The first half installs the app itself — the source tree, a Python runtime, and
+The first half installs the app itself: the source tree, a Python runtime, and
 the dependency set. It is shown as progress rather than asked about, because
 there is no working install without it, and it downloads nothing optional.
 
 The second half is everything you are asked about: speech recognition, the
 voice, search models, the browser engine. Setup asks before any of it is
-fetched, and the answers are recorded rather than inferred — a lane you switch
+fetched, and the answers are recorded rather than inferred. A lane you switch
 off downloads nothing, now or later, and turning it back on in Settings is what
 makes it download. Every model artifact is pinned to an upstream revision plus a
 per-file SHA-256, verified before it is installed; a file that fails
@@ -994,7 +1332,7 @@ verification is discarded and never retried, because the same bytes would fail
 the same check.
 
 If the setup window cannot open, or the questions it should ask cannot be
-worked out for your machine, the app installs and nothing optional does — no
+worked out for your machine, the app installs and nothing optional does: no
 speech models, no search models, no third-party installer runs. The app then
 tells you it happened and leaves the choices to you in Settings, on the
 principle that a question nobody could ask is not an answer.
@@ -1005,10 +1343,10 @@ API keys live in `.env` under your home directory, never in the code tree and
 never in the repository. There is one config tree, and it is the one that ships:
 the same files this project runs on are copied verbatim into the public tree,
 so a setting added for a developer is a setting every install receives. What may
-never reach you — a permissive security mode, a scheduled job nobody asked for,
-a birth date belonging to someone else — is named in the build's own tests,
-which fail if one comes back. The build then runs a PII and secret audit
-against its own output before publishing.
+never reach you, such as a permissive security mode, a scheduled job nobody
+asked for or a birth date belonging to someone else, is named in the build's
+own tests, which fail if one comes back. The build then runs a PII and secret
+audit against its own output before publishing.
 
 Terminal output and provisioning logs are scrubbed for credential-shaped strings
 before being written or displayed, including credentials carried in URL userinfo
@@ -1303,7 +1641,7 @@ being avoided is a push that quietly succeeds as you.
 
 A great many things here are stored under a name: an agenda item, a canvas
 view, an agent card, an uploaded file. Every one of those names reaches a
-filesystem path, and several arrive from outside — a URL segment, a command you
+filesystem path, and several arrive from outside: a URL segment, a command you
 typed, or a tool call the model composed.
 
 Your conversations are the exception, and deliberately. Each is addressed by an
@@ -1368,7 +1706,7 @@ The public repository has GitHub's dependency alerts and code scanning enabled,
 and both run on every push to the default branch.
 
 Every alert is either fixed or dismissed with a stated reason recorded on the
-alert itself — never left open and never dismissed in bulk. A dismissal says
+alert itself, never left open and never dismissed in bulk. A dismissal says
 which specific check makes the finding a false positive, or why the risk is
 accepted; static analysis cannot see a validator it does not model, and saying
 so per alert is what keeps the next reader from having to re-derive it.
@@ -1382,9 +1720,9 @@ the next release.
 
 Stated because a scanner will show them and silence would be worse:
 
-- **esbuild** — a development-server advisory. It is reachable only by someone
+- **esbuild**. A development-server advisory, reachable only by someone
   running the frontend dev server. Installed builds are static assets compiled
   into the desktop shell; no dev server runs on a user's machine.
-- **glib** — reported against the lockfile but absent from the Windows build
+- **glib**. Reported against the lockfile but absent from the Windows build
   graph entirely (`cargo tree -i glib --target x86_64-pc-windows-msvc` returns
   nothing). It arrives through a GTK path this application does not build.

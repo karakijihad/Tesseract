@@ -24,6 +24,31 @@ export function formatRelative(iso: string | null | undefined, fallback: string 
 }
 
 
+/** How long until a moment still ahead of us, in the words a person reads.
+ *
+ *  `clock` is for a stamp on something that already happened: it gives the
+ *  time of day only when the date is today, and a bare day and month
+ *  otherwise. Pointed at the future that renders as "lifts itself at 8 Sep",
+ *  which is not a time, is not grammatical, and leaves the reader unable to
+ *  tell the start of that day from thirty hours away. A wait is a duration,
+ *  so this says one.
+ *
+ *  Past moments and unparseable input both return the empty string, so a
+ *  caller can fall back to whatever it says when there is nothing to say. */
+export function until(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const at = new Date(iso).getTime();
+  if (Number.isNaN(at)) return '';
+  const seconds = Math.floor((at - Date.now()) / 1000);
+  if (seconds <= 0) return '';
+  const min = Math.floor(seconds / 60);
+  if (min < 60) return `in ${Math.max(min, 1)} minutes`;
+  const hr = Math.floor(min / 60);
+  if (hr < 48) return `in ${hr} hour${hr === 1 ? '' : 's'}`;
+  return `in ${Math.floor(hr / 24)} days`;
+}
+
+
 /** A stamp as a person reads it on a dense row: the clock for today, the day
  *  and month for anything older. Lives here rather than in whichever room
  *  needed it first, which is where five surfaces had been importing it from. */

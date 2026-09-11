@@ -65,6 +65,42 @@ ROWS: tuple[Entry, ...] = (
         owner=Owner.HOME,
     ),
     Entry(
+        name="morning",
+        runs=Runs.ROW,
+        summary=(
+            "Reads the projects it owns when the app opens and decides what is "
+            "worth doing inside them today, then stops and waits."
+        ),
+        why=(
+            "Nothing would ever start without you. Work you have already agreed "
+            "to, on projects you have already priced, would wait for you to ask "
+            "for it again every single day."
+        ),
+        kind=Kind.REMOTE_MODEL,
+        # The turn rides the chat role like any other conversation, because it
+        # goes through the same door. Naming a chain here would be this file
+        # deciding which model a conversation uses, which is `roles.yaml`'s.
+        chains=(DISPATCHED,),
+        owner=Owner.HOME,
+    ),
+    Entry(
+        name="workday",
+        runs=Runs.ROW,
+        summary=(
+            "Takes one of the morning's steps forward each hour of your day, "
+            "in the same conversation, and closes it when its checks pass."
+        ),
+        why=(
+            "The morning would decide what is worth doing and then nothing "
+            "would happen until you sat down and asked for each step by hand."
+        ),
+        kind=Kind.REMOTE_MODEL,
+        # The conversation's model, like `morning`. Naming a chain here would
+        # be this file deciding which model a conversation uses.
+        chains=(DISPATCHED,),
+        owner=Owner.HOME,
+    ),
+    Entry(
         name="watchman",
         runs=Runs.ROW,
         summary="Reads what the runtime actually did and reports what broke.",
@@ -506,12 +542,15 @@ TRIGGERS: tuple[Entry, ...] = (
     ),
     Entry(
         name="skill_refinement",
-        runs=Runs.TRIGGER,
+        runs=Runs.ROW,
         summary=(
             "Reads how your skills have been performing and offers a rewrite of "
-            "one that keeps ending in errors or corrections. A playbook revision "
-            "that did worse than the one before it is retired, and the earlier "
-            "one is kept to return to."
+            "one whose work you keep having to correct afterwards. It judges "
+            "the version that is live now, never one you have already replaced, "
+            "and it shows you what it measured. A skill whose file will not "
+            "read is flagged separately, because no rewrite fixes that. A "
+            "playbook revision that did worse than the one before it is "
+            "retired, and the earlier one is kept to return to."
         ),
         why=(
             "A skill that quietly misleads the assistant goes on misleading it. "
@@ -605,6 +644,23 @@ TRIGGERS: tuple[Entry, ...] = (
             "it needs you."
         ),
         fires="when you open the panel and a room's numbers have moved",
+        kind=Kind.REMOTE_MODEL,
+        chains=("chain_1",),
+        owner=Owner.DELIVERY,
+    ),
+    Entry(
+        name="outbound_writer",
+        runs=Runs.TRIGGER,
+        summary=(
+            "Writes the opening line of a message the runtime sends you, "
+            "from the numbers that message already carries."
+        ),
+        why=(
+            "A notice assembled from counts reads like a log line on a "
+            "phone. Without it, what reaches you and what the panel shows "
+            "are two different voices about the same event."
+        ),
+        fires="when the runtime has something to tell you",
         kind=Kind.REMOTE_MODEL,
         chains=("chain_1",),
         owner=Owner.DELIVERY,

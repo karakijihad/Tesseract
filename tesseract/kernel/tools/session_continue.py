@@ -33,6 +33,10 @@ assistant message carrying the pending `tool_use` block before its
 `mirror/server/after_turn.py` acts on it, and that is the boundary both the
 cockpit and a channel already call.
 
+A turn that outgrows the ceiling on its own is answered the same way and for
+the same reason: it is let finish, and the boundary it owes is taken the
+moment it does.
+
 `default_posture="ask"`: either answer changes the conversation the operator is
 in. They answer that on whatever surface they are on, and under `free` the
 policy answers it for them.
@@ -99,6 +103,10 @@ class SessionContinueTool(Tool):
         "save a single fact, which is `memory_save` and costs nothing."
     )
     depends_on: ClassVar[str] = ""
+    # It records a decision about THIS conversation, which the turn's own
+    # record already carries. Nothing separate to point at.
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:

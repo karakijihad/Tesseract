@@ -16,6 +16,7 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.orchestrator.agent_controller.lanes.named import (
     InvalidNamedLaneNameError,
     NamedLaneError,
@@ -75,6 +76,8 @@ class LaneNamedEnsureTool(Tool):
         "opening, which is `lane_named_get`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:
@@ -95,7 +98,9 @@ class LaneNamedEnsureTool(Tool):
         model_error = validate_lane_model(inp.kind, inp.model)
         if model_error is not None:
             return ToolResult(
-                output=f"lane_named_ensure: {model_error}", is_error=True
+                output=f"lane_named_ensure: {model_error}",
+                is_error=True,
+                caller_error=True,
             )
         try:
             record = await manager.ensure(
@@ -105,7 +110,11 @@ class LaneNamedEnsureTool(Tool):
                 working_dir=inp.working_dir,
             )
         except InvalidNamedLaneNameError as exc:
-            return ToolResult(output=f"lane_named_ensure: {exc}", is_error=True)
+            return ToolResult(
+                output=f"lane_named_ensure: {exc}",
+                is_error=True,
+                caller_error=True,
+            )
         except NamedLaneError as exc:
             return ToolResult(output=f"lane_named_ensure: {exc}", is_error=True)
         except Exception as exc:  # noqa: BLE001
@@ -117,6 +126,9 @@ class LaneNamedEnsureTool(Tool):
             output=(
                 f"name={record.name} lane_id={record.lane_id} "
                 f"kind={record.kind} mode={record.mode}"
+            ),
+            receipt=Receipt(
+                kind="record", id=record.lane_id, locator=record.name
             ),
             metadata=record.model_dump(mode="json"),
         )

@@ -74,6 +74,10 @@ def line(
     value: str = "",
     tag: str,
     opens: dict[str, str] | None = None,
+    # What a model is given in place of `said`. `None` means both readers get
+    # the same line. Named and shaped after `routes/autonomy_health.py`, so
+    # the panel holds one answer to this rather than one per room.
+    for_model: str | None = None,
     enabled: bool = True,
     can_run: bool = False,
     can_toggle: bool = False,
@@ -117,6 +121,7 @@ def line(
             awaiting_operator=awaiting_operator,
         ),
         "said": said,
+        "saidToModel": said if for_model is None else for_model,
         "at": _iso(at),
         "value": value,
         "opens": opens,
@@ -124,7 +129,31 @@ def line(
         "canRun": can_run,
         "canToggle": can_toggle,
         "canDelete": can_delete,
+        # Where the errors of a row that failed can be read, absolute and
+        # resolved here. The path is the backend's for the reason every other
+        # path on this panel is: `TESSERACT_HOME` moves per install, so a view
+        # that composed one would be right on the machine it was written on and
+        # wrong everywhere else. Empty on a row that did not fail, which is what
+        # keeps the control off every other line.
+        "logPath": _log_path(state),
     }
+
+
+def _log_path(state: OperationalState) -> str:
+    """The backend log, for a row whose own run went wrong.
+
+    Running a job again is not finding out why it failed, and until this the
+    room offered the first and had no way to offer the second. Blank rather
+    than a guess when the file is not there yet: a control that opens nothing
+    is worse than no control, and the row's sentence already says what
+    happened.
+    """
+    from tesseract import paths
+
+    if state not in (OperationalState.FAILED, OperationalState.DEGRADED):
+        return ""
+    log = paths.runtime_logs_root() / "mirror-backend.log"
+    return log.resolve().as_posix() if log.is_file() else ""
 
 
 def when_it_fires(
@@ -191,6 +220,10 @@ def schedule_line(
     fires = when_it_fires(job, runtime, now, fired_at)
 
     aged_out = False
+    # What a model is told instead, on the one reading where `said` is not
+    # this runtime's own words. `None` everywhere else, meaning both readers
+    # get the same line, which is true of the four readings composed here.
+    for_model: str | None = None
     if running:
         state, said = OperationalState.RUNNING, "running now"
     elif not enabled:
@@ -205,6 +238,14 @@ def schedule_line(
     elif row is not None:
         state = state_of(outcome_of_row(row))
         said = str(row.get("outcome_reason") or "") or fires
+        # `outcome_reason` is the one string on this row the runtime did not
+        # choose. `JobResult` documents it as free plain language and
+        # `scheduler/engine.py` builds one branch of it as
+        # `f"unhandled exception: {exc!r}"`, so it can carry a path, a URL or
+        # a server's own words. The operator reads that; a model gets the
+        # outcome, which is a closed vocabulary. Left as `said` it was relayed
+        # verbatim by `autonomy_read`, which is `auto` and asks nobody.
+        for_model = f"its last run ended {state_of(outcome_of_row(row)).value}"
     elif fired_at is not None:
         # It ran, and the log no longer has the record. A retention sweep aged
         # it out, or it fired before this install kept one. Either way the room
@@ -230,6 +271,7 @@ def schedule_line(
         # row has nothing to report yet and `said` IS that sentence: the same
         # words twice on one line reads as a rendering fault, and it was one.
         value="" if not enabled or said == fires else fires,
+        for_model=for_model,
         # Everything declared in the manifest has a card. A row the operator
         # wrote has one too, built from their own schedule: the card route
         # answers for both, and a row with nowhere to go would be the only

@@ -18,6 +18,7 @@ from typing import Any, Callable, ClassVar, Literal, Optional
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.workspace_events import EventStore, WorkspaceEvent
 from tesseract.workspace_events.broadcast import broadcast_workspace_event
 
@@ -67,6 +68,8 @@ class WorkspacePostTool(Tool):
         "ambient or scheduler-job signal, routed through the autonomy bus instead."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     def __init__(
         self,
@@ -102,6 +105,7 @@ class WorkspacePostTool(Tool):
             return ToolResult(
                 output="workspace_post requires both `title` and `summary`.",
                 is_error=True,
+                caller_error=True,
             )
 
         event = WorkspaceEvent.new(
@@ -128,5 +132,10 @@ class WorkspacePostTool(Tool):
                 await broadcast_workspace_event(app, event)
         return ToolResult(
             output=f"Posted to Workspace as {event.event_id}.",
+            receipt=Receipt(
+                kind="record",
+                id=event.event_id,
+                locator=str(self._store.events_path),
+            ),
             metadata={"event_id": event.event_id},
         )

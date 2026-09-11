@@ -536,6 +536,40 @@ def agenda_records(keep_days: int, action: Action) -> Swept:
     return total
 
 
+def receipts_roots() -> tuple[Path, ...]:
+    from tesseract.orchestrator.turns.receipts import receipts_root
+
+    return (receipts_root(),)
+
+
+def receipts(keep_days: int, action: Action) -> Swept:
+    """`runtime/receipts/YYYY-MM-DD.jsonl` — the marks each day's turns left.
+
+    One file per day rather than a dated directory, so this sweeps files where
+    `turn_manifests` sweeps directories, and it is dated by NAME for the same
+    reason that one is: a backup touching a file would make an old record look
+    young forever.
+
+    **The window has to match `turn_manifests`.** A receipt outliving its step
+    is a mark nobody can attribute; a step outliving its receipt is a claim
+    that lost its evidence. `retention.yaml` says so beside both numbers.
+    """
+    (root,) = receipts_roots()
+    if not root.is_dir():
+        return Swept()
+    cutoff = date.today() - timedelta(days=keep_days)
+    total = Swept()
+    for path in sorted(root.glob("*.jsonl")):
+        try:
+            stamped = date.fromisoformat(path.stem)
+        except ValueError:
+            continue
+        if stamped >= cutoff:
+            continue
+        total += _retire(path, action, root / "archive")
+    return total
+
+
 def turn_manifests_roots() -> tuple[Path, ...]:
     from tesseract.orchestrator.turns import turns_root
 
@@ -604,6 +638,39 @@ def loop_stalls(keep_days: int, action: Action) -> Swept:
     return total
 
 
+def workspace_events_roots() -> tuple[Path, ...]:
+    from tesseract.paths import home_logs_root
+
+    root = home_logs_root() / "workspace"
+    return (root / "events.jsonl", root / "comments.jsonl")
+
+
+def workspace_events(keep_days: int, action: Action) -> Swept:
+    """`<logs>/workspace/events.jsonl`, and the comments on what goes.
+
+    The prune is `EventStore.prune_settled_before`, on the class that owns the
+    file and both of its locks, for the same reason the usage ledger's and the
+    approval ledger's are: a card filed between the read and the replace would
+    land in neither.
+
+    It ages an EVENT rather than a row, and only one that has been settled: an
+    older row is that card's history, and dropping a `resolved` row would leave
+    the `pending` one under it as the newest, putting an answered decision back
+    in front of the operator.
+    """
+    from tesseract.paths import home_logs_root
+    from tesseract.workspace_events import EventStore
+
+    if action is not Action.DELETE:
+        raise ValueError(
+            "the inbox is pruned in place — there is no archive for it, "
+            "because what an answered card changed is recorded where the "
+            "change landed"
+        )
+    cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
+    return Swept(removed=EventStore(home_logs_root()).prune_settled_before(cutoff))
+
+
 def checkpoints_roots() -> tuple[Path, ...]:
     from tesseract.orchestrator.checkpoints import checkpoint_dir
 
@@ -611,10 +678,16 @@ def checkpoints_roots() -> tuple[Path, ...]:
 
 
 def checkpoints(keep_days: int, action: Action) -> Swept:
-    """`<home>/checkpoints/YYYY-MM-DD.jsonl` — what each boundary wrote down.
+    """`<home>/checkpoints/<chat_id>.jsonl` — what each boundary wrote down.
 
-    Aged on the name, like every other dated artifact here: an mtime makes a
-    file a backup touched look young forever.
+    Aged on the NEWEST ROW, because the file is a conversation and not a day.
+    The name carries no date to age on any more, and an mtime makes a file a
+    backup touched look young forever. The last line is the newest: the file
+    is append-only.
+
+    A file whose last line will not parse, or carries no timestamp, is left
+    alone. Deleting a conversation's only record because one line is truncated
+    is the wrong way round.
     """
     (root,) = checkpoints_roots()
     if not root.is_dir():
@@ -622,10 +695,39 @@ def checkpoints(keep_days: int, action: Action) -> Swept:
     cutoff = date.today() - timedelta(days=keep_days)
     total = Swept()
     for path in sorted(root.glob("*.jsonl")):
-        stamped = _stamp_date(path.stem)
+        stamped = _newest_row_date(path)
         if stamped is not None and stamped < cutoff:
             total += _retire(path, action, root / "archive")
     return total
+
+
+def _newest_row_date(path: Path) -> date | None:
+    """The date on the NEWEST row of a JSONL file, or `None`.
+
+    The newest row and not the newest one that parses. Falling through to an
+    older row when the last line is truncated is how a file gets aged on a
+    date it has already moved past: a crash-truncated newest row is exactly
+    the case the caller says it leaves alone, and reading past it deleted a
+    file whose real last write was today.
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        if not line.strip():
+            continue
+        try:
+            stamp = json.loads(line).get("ts")
+        except (ValueError, AttributeError):
+            return None
+        if not isinstance(stamp, str):
+            return None
+        try:
+            return datetime.fromisoformat(stamp).date()
+        except ValueError:
+            return None
+    return None
 
 
 def _drop_empty_months(root: Path) -> None:
@@ -658,6 +760,8 @@ __all__ = [
     "scheduler_runs_roots",
     "sessions",
     "sessions_roots",
+    "receipts",
+    "receipts_roots",
     "turn_manifests",
     "turn_manifests_roots",
     "usage_ledger",

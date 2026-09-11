@@ -38,6 +38,7 @@ from typing import Any, Callable, ClassVar, Literal, Optional
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +48,17 @@ SUGGEST_ROWS = 12
 
 
 class HealthLeaveInput(BaseModel):
+    key: str = Field(
+        default="",
+        description="One exact Health row key. Use this or subject, never both.",
+    )
     subject: str = Field(
+        default="",
         description=(
-            "What the finding is about, exactly as the Health room names it: "
-            "a provider ref like `api.openai.gpt56_luna`, a scheduled row like "
-            "`capture`, a breaker name."
+            "What the problem is about: a model name, scheduled job, or the "
+            "name of another Health row. Selects every problem about that "
+            "subject, ignoring case. For a problem about the whole runtime, "
+            "use its key instead."
         )
     )
     action: Literal["leave", "restore"] = Field(
@@ -90,8 +97,12 @@ class HealthLeaveTool(Tool):
     use_when: ClassVar[str] = (
         "Use when the operator says a health row is known, expected, or fine "
         "to leave: 'I know about that one', 'that is expected', 'stop showing "
-        "me that'. Name the subject exactly as the room names it, and pass "
-        "their reason as the note. Use `restore` when they want it back."
+        "me that'. Name the row's `key` when you have it, which selects that "
+        "one row exactly, or its `subject` as the room names it, which selects "
+        "every problem about that name. Give one of the two and not both. A "
+        "problem about the whole runtime has no subject at all and can only be "
+        "reached by its key. Pass their reason as the note, and use `restore` "
+        "when they want it counting again."
     )
     not_when: ClassVar[str] = (
         "to hide something they have not said is fine; for what is waiting on "
@@ -99,6 +110,8 @@ class HealthLeaveTool(Tool):
         "for what the panel currently says, which is `autonomy_read`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:
@@ -117,37 +130,67 @@ class HealthLeaveTool(Tool):
 
         inp = args if isinstance(args, HealthLeaveInput) else HealthLeaveInput(**args.model_dump())
         subject = inp.subject.strip()
-        if not subject:
-            return ToolResult(output="Name what to leave alone.", is_error=True)
+        key = inp.key
+        if bool(key) == bool(subject):
+            return ToolResult(
+                output=(
+                    "Give either key for one exact Health row or subject for "
+                    "every problem about that name, never both. Problems about "
+                    "the whole runtime have no subject; use their key."
+                ),
+                is_error=True,
+                caller_error=True,
+            )
 
-        keys = [standing.key_for(f) for f in _findings_for(subject)]
-        rows = await self._rows_for(subject)
+        findings = _findings_for(subject, key=key)
+        keys = [standing.key_for(f) for f in findings]
+        rows = [] if key and findings else await self._rows_for(subject, key=key)
         keys += [str(row["key"]) for row in rows]
         if not keys:
+            if key:
+                return ToolResult(
+                    output=(
+                        f"No Health row has the exact key {key!r}. Use a key "
+                        "from the current Health panel, with the same case."
+                    ),
+                    is_error=True,
+                    caller_error=True,
+                )
             known = _subjects() | {str(r["name"]) for r in await self._rows()}
             listed = ", ".join(sorted(known)[:SUGGEST_ROWS]) or "nothing"
             return ToolResult(
                 output=(
                     f"The room says nothing about {subject!r}, so there is "
-                    f"nothing to leave alone. What it does say: {listed}."
+                    f"nothing to leave alone. What it does say: {listed}. "
+                    "Problems about the whole runtime have no subject; use "
+                    "their key."
                 ),
                 is_error=True,
+                caller_error=True,
             )
+        selected = key or subject
+        selector = {"key": key} if key else {"subject": subject}
         if inp.action == "restore":
             undone = [key for key in keys if acknowledged.forget(key)]
             if not undone:
                 return ToolResult(
-                    output=f"{subject} was already counting. Nothing changed."
+                    output=f"{selected} was already counting. Nothing changed.",
+                    receipt=Receipt.nothing(),
                 )
             return ToolResult(
                 output=(
-                    f"{subject} counts again and is back with whatever it was "
-                    f"rated. {len(undone)} finding(s) restored."
+                    f"{selected} counts again and is back with whatever it was "
+                    f"rated. {len(undone)} row(s) restored."
                 ),
-                metadata={"subject": subject, "restored": undone},
+                receipt=Receipt(
+                    kind="record",
+                    id=selected,
+                    locator=str(acknowledged.store_path()),
+                ),
+                metadata={**selector, "restored": undone},
             )
 
-        for finding in _findings_for(subject):
+        for finding in findings:
             acknowledged.acknowledge(
                 standing.key_for(finding), severity=finding.severity, note=inp.note
             )
@@ -157,11 +200,16 @@ class HealthLeaveTool(Tool):
             )
         return ToolResult(
             output=(
-                f"{subject} will stop asking for attention. It stays on the "
+                f"{selected} will stop asking for attention. It stays on the "
                 f"panel under Operating, says you marked it as seen, and comes "
                 f"back on its own if it gets worse or if it clears and returns."
             ),
-            metadata={"subject": subject, "left": keys},
+            receipt=Receipt(
+                kind="record",
+                id=selected,
+                locator=str(acknowledged.store_path()),
+            ),
+            metadata={**selector, "left": keys},
         )
 
 
@@ -189,7 +237,7 @@ class HealthLeaveTool(Tool):
             return []
         return departments
 
-    async def _rows_for(self, subject: str) -> list[dict[str, Any]]:
+    async def _rows_for(self, subject: str = "", *, key: str = "") -> list[dict[str, Any]]:
         """The collector rows this subject names.
 
         Findings are matched separately and by the judge's own key, so they
@@ -197,12 +245,13 @@ class HealthLeaveTool(Tool):
         under two keys and restored under one.
         """
         wanted = subject.casefold()
-        return [
+        rows = [
             row
             for row in await self._rows()
-            if str(row.get("name", "")).casefold() == wanted
+            if (row.get("key") == key if key else str(row.get("name", "")).casefold() == wanted)
             and str(row.get("key", "")).startswith("collector//")
         ]
+        return rows[:1] if key else rows
 
 
 def _severity_of(row: dict[str, Any]) -> str:
@@ -244,12 +293,21 @@ class _Finding:
         self.severity = str(row.get("severity") or "")
 
 
-def _findings_for(subject: str) -> list[_Finding]:
+def _findings_for(subject: str = "", *, key: str = "") -> list[_Finding]:
     """Every finding about `subject`, matched case-insensitively.
 
     A subject can carry more than one finding at a time, and leaving one while
     the other still shouts would look like the control did nothing.
     """
+    from tesseract.orchestrator.watchman.judge import standing
+
+    if key:
+        return [
+            finding
+            for row in (_sweep().get("findings") or [])
+            if isinstance(row, dict)
+            and standing.key_for(finding := _Finding(row)) == key
+        ][:1]
     wanted = subject.casefold()
     return [
         _Finding(row)

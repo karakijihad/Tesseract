@@ -85,7 +85,6 @@ SCOPES: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
             "roles.yaml",
             (
                 "compaction.compact_ratio",
-                "roles.chat_brain.keep_recent_turns",
             ),
         ),
     ),

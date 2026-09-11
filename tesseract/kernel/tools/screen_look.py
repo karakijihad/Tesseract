@@ -89,6 +89,9 @@ class ScreenLookTool(Tool):
         "time, and it sees whatever else they have open on it."
     )
     depends_on: ClassVar[str] = ""
+    # It looks and answers. Nothing is written.
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:

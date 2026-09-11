@@ -98,6 +98,12 @@ class BrowserNavigateTool(_BrowserTool):
         "browser engine to do it. \"Show me this\" is always `open`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    # A page load is a request to somebody else's server with a URL this
+    # process did not choose, and after a crash the context that could have
+    # been asked what it fetched is gone. Same answer as `open` and
+    # `api_request`, which carry the same arbitrary URL.
+    recovery_behaviour: ClassVar[str] = "unsafe"
     @property
     def name(self) -> str: return "browser_navigate"
     @property
@@ -130,6 +136,8 @@ class BrowserSnapshotTool(_BrowserTool):
         "`browser_screenshot` for how it LOOKS; a tree cannot show you a blank pane."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
     @property
     def name(self) -> str: return "browser_snapshot"
     @property
@@ -155,6 +163,8 @@ class BrowserClickTool(_BrowserTool):
         "`browser_navigate` first, which returns the context_id this takes."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "unsafe"
     @property
     def name(self) -> str: return "browser_click"
     @property
@@ -183,6 +193,8 @@ class BrowserFillFormTool(_BrowserTool):
     )
     not_when: ClassVar[str] = "`browser_click` presses controls; this types into them."
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "idempotent"
     @property
     def name(self) -> str: return "browser_fill_form"
     @property
@@ -203,6 +215,8 @@ class BrowserScreenshotTool(_BrowserTool):
         "The operator's own screen is `screen_look`. This only sees a page nobody is watching."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
     @property
     def name(self) -> str: return "browser_screenshot"
     @property
@@ -225,6 +239,8 @@ class BrowserNetworkRequestsTool(_BrowserTool):
         "`browser_snapshot` reads the rendered result; this reads the traffic behind it."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
     @property
     def name(self) -> str: return "browser_network_requests"
     @property
@@ -247,6 +263,8 @@ class BrowserCloseTool(_BrowserTool):
         "Switching pages does not need it, because `browser_navigate` reuses this session's card."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "idempotent"
     @property
     def name(self) -> str: return "browser_close"
     @property
@@ -302,6 +320,8 @@ class BrowserKeyTool(_BrowserTool):
         "`browser_fill_form` types a value into a field."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "unsafe"
     @classmethod
     def redact_input(cls, payload):
         """The contract's rule, with the one refinement this verb earns.
@@ -379,6 +399,8 @@ class BrowserMediaTool(_BrowserTool):
         "fullscreen, captions or the next video."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "idempotent"
     @property
     def name(self) -> str: return "browser_media"
     @property
@@ -420,6 +442,8 @@ class BrowserScrollTool(_BrowserTool):
         "scrolling to READ something is wasted."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "idempotent"
     @property
     def name(self) -> str: return "browser_scroll"
     @property
@@ -448,6 +472,8 @@ class BrowserHoverTool(_BrowserTool):
         "clicking, not instead of it."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "idempotent"
     @property
     def name(self) -> str: return "browser_hover"
     @property
@@ -479,6 +505,8 @@ class BrowserSelectTool(_BrowserTool):
         "styled drop-downs are. Check `browser_snapshot` if you are unsure which this is."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "idempotent"
     @property
     def name(self) -> str: return "browser_select"
     @property
@@ -520,6 +548,8 @@ class BrowserWaitForTool(_BrowserTool):
         "and tells you whether the wait ended in time."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
     @property
     def name(self) -> str: return "browser_wait_for"
     @property

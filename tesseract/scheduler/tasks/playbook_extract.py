@@ -29,6 +29,15 @@ brief said so and this is where the rule is kept.
 ``min_tool_steps`` tool calls is not a procedure; ``file_read`` once is a fact
 about a turn, not a way of doing something.
 
+**And an evidence floor, which is not in config.** Only a task whose close was
+decided by its project's own checks (``verification_by == "gate"``) is read
+here. A task that closed on the assistant's own sentence is the assistant
+saying its own work was good, and a playbook written from one becomes a
+procedure carried on every turn, measured afterwards against more sentences of
+the same kind. That loop is the failure this phase exists to prevent, so the
+floor is not a setting anybody can lower. A task closed that way is still read
+past: the position advances, so it is counted once and never again.
+
 **The model writes the prose, the record writes the steps.** The tool
 sequence, the tools allowed and the evidence come off the turn records and
 are never the model's to invent. The model is asked for the trigger, when to
@@ -130,6 +139,7 @@ class PlaybookExtractJob(BaseJob):
             proposed: list[str] = []
             supported: list[str] = []
             too_short = 0
+            self_graded = 0
             refused = 0
             no_model = 0
             no_card = 0
@@ -141,6 +151,9 @@ class PlaybookExtractJob(BaseJob):
                 if len(proposed) >= max_proposals:
                     break
                 handled.append(task)
+                if str(task.get("verification_by") or "") != "gate":
+                    self_graded += 1
+                    continue
                 turns = await asyncio.to_thread(_turns_of_task, turns_root, task)
                 sequence = _tool_sequence(turns)
                 if len(sequence) < min_tool_steps:
@@ -178,7 +191,8 @@ class PlaybookExtractJob(BaseJob):
 
             detail = (
                 f"tasks={len(tasks)} proposed={len(proposed)} supported={len(supported)} "
-                f"too_short={too_short} refused={refused} no_model={no_model} no_card={no_card}"
+                f"self_graded={self_graded} too_short={too_short} refused={refused} "
+                f"no_model={no_model} no_card={no_card}"
             )
             return JobResult(
                 job_name=ctx.job_name,
@@ -186,10 +200,14 @@ class PlaybookExtractJob(BaseJob):
                 ok=True,
                 detail=detail,
                 outcome=_outcome(tasks, proposed, supported, no_model + no_card),
-                outcome_reason=_reason(tasks, proposed, supported, too_short, refused, no_model, no_card, min_tool_steps),
+                outcome_reason=_reason(
+                    tasks, proposed, supported, self_graded, too_short, refused,
+                    no_model, no_card, min_tool_steps,
+                ),
                 payload={
                     "proposed": proposed,
                     "supported": supported,
+                    "self_graded": self_graded,
                     "too_short": too_short,
                     "refused": refused,
                     "no_model": no_model,
@@ -536,7 +554,7 @@ def _outcome(tasks, proposed, supported, no_model) -> RunOutcome:
     return RunOutcome.SUCCEEDED
 
 
-def _reason(tasks, proposed, supported, too_short, refused, no_model, no_card, floor) -> str:
+def _reason(tasks, proposed, supported, self_graded, too_short, refused, no_model, no_card, floor) -> str:
     if not tasks:
         return "no task closed done since the last pass"
     if no_model and not proposed and not supported:
@@ -545,6 +563,8 @@ def _reason(tasks, proposed, supported, too_short, refused, no_model, no_card, f
         return "the inbox could not take the card, so the draft was taken back to be written again next pass"
     if not proposed and not supported:
         parts = []
+        if self_graded:
+            parts.append(f"{self_graded} closed with no project checks behind them")
         if too_short:
             parts.append(f"{too_short} ran fewer than {floor} tool calls")
         if refused:

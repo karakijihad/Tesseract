@@ -31,7 +31,9 @@ from tesseract.kernel.tools.base import (
     ToolResult,
     spawn_cap_tool_result,
 )
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.orchestrator.agent_controller.lanes.tool_support import (
+    lane_record_locator,
     maybe_await,
     resolve_lane_manager,
     resolve_named_lane_manager,
@@ -129,6 +131,8 @@ class LaneTurnTool(Tool):
         "`lane_send` plus `lane_read`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     @property
     def name(self) -> str:
@@ -202,6 +206,9 @@ class LaneTurnTool(Tool):
                         f"handle={handle.handle_id}. Use spawn_check or "
                         f"spawn_await to retrieve the reply."
                     ),
+                    # The lane turn has not happened yet, so there is nothing
+                    # to point at. The spawn that will run it answers for it.
+                    receipt=Receipt.nothing(),
                     metadata=metadata,
                 )
             # Headless / REPL / MCP contexts carry no SpawnRegistry — degrade
@@ -306,6 +313,7 @@ class LaneTurnTool(Tool):
             return ToolResult(
                 output=f"lane_turn rejected: {send_result.reason or 'unspecified'}",
                 is_error=True,
+                caller_error=True,
                 metadata={
                     "lane_id": lane_id,
                     "accepted": False,
@@ -408,5 +416,10 @@ class LaneTurnTool(Tool):
             output="\n\n".join(output_parts) if output_parts else "(no events)",
             is_error=turn_is_error or poll_error is not None,
             timed_out=not turn_completed,
+            receipt=Receipt(
+                kind="record",
+                id=turn_id,
+                locator=lane_record_locator(manager, lane_id),
+            ),
             metadata=metadata,
         )

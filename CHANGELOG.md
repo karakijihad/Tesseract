@@ -7,6 +7,43 @@ Every release is installable from the same link —
 — which always points at the current version. If TESSERACT is already
 installed, you do not need it: the app offers you the update itself.
 
+## Unreleased
+
+- **The Autonomy panel can act, not just report.** Every room told you what was
+  wrong and left you nothing to press. A row that reports a fault now offers
+  the thing that answers it, and Health is five tabs, so the faults, the
+  decisions and the journal are separate pages instead of one wall.
+- **Every fault says who has it.** Each row tells you whether the runtime
+  repairs it unasked, whether it tried and stopped, or whether nobody has it
+  yet. That is the difference between waiting and it being your turn.
+- **Leaving a fault alone no longer silences it for good.** The button promised
+  the row would come back if the fault returned. For faults that are reported
+  continuously it never did, and the row stayed quiet for ever. Accepting one
+  now lasts until the fault ends, so a fault that comes back is shown again.
+- **Two kinds of fault could not be acknowledged at all.** A fault about the
+  runtime as a whole, rather than one named part of it, was listed under a
+  label the button could not match, so pressing it did nothing. That was true
+  on every surface, the phone included.
+- **Stopping keeps what you typed.** Anything you sent while the assistant was
+  working used to be thrown away along with the turn you stopped. It waits now,
+  and runs as soon as the stopped turn is finished, which is what a queued
+  message was always for. Work running in the background is left alone: a stop
+  ends what the assistant is doing for you here, not everything it has started.
+- **A stopped turn says it was stopped.** In the app the reply dimmed and said
+  nothing, and on a channel the "thinking" bubble stayed there for good. Both
+  now say the turn was interrupted, what it had already done still stands, and
+  that your next message carries the conversation on from there.
+- **A command you stop is actually stopped.** Stopping a turn left any shell
+  command it had started running, with nothing reading it. So did a command
+  that ran past its time limit. Both now end the command and everything it
+  started. A command deliberately left running in the background is untouched.
+- **A message sent while the assistant is working reaches it.** On a channel
+  you are told it will be read at the next step. If the assistant was already
+  past its last step, it never was, and the message vanished. It is answered
+  now either way.
+- **A stop reports one turn as one turn.** From a phone it said it had stopped
+  two, every time, because one turn is carried by two pieces of work inside.
+
 ## 1.1.2
 
 The assistant gets accounts of its own, a long conversation stops falling over,

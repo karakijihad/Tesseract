@@ -111,6 +111,12 @@ def line(
     name: str,
     state: OperationalState,
     said: str,
+    # What a model is given instead of `said`, when `said` carries text this
+    # runtime was handed. `None` means the two readers get the same line,
+    # which is true of every row here whose sentence is an agenda item's own
+    # goal. The name and the shape are `routes/autonomy_health.py`'s, so the
+    # panel has one answer to this and not a second one per room.
+    for_model: str | None = None,
     at: datetime | None = None,
     value: str = "",
     opens: dict[str, str] | None = None,
@@ -149,6 +155,7 @@ def line(
             awaiting_operator=awaiting_operator,
         ),
         "said": said,
+        "saidToModel": said if for_model is None else for_model,
         "at": _iso(at),
         "value": value,
         "opens": opens,
@@ -400,6 +407,13 @@ def wants_you(
                     # The status is already the state word beside it. Saying it
                     # twice is how this once read "failed / coder_seat / failed".
                     said=getattr(worker, "error_message", "") or "",
+                    # A worker's own error message is text this runtime was
+                    # handed: whatever the process printed as it died. The
+                    # operator reads it; a model gets the fact instead, the way
+                    # `routes/autonomy_health.py::department` has always done
+                    # it. Without this the row's message was relayed verbatim
+                    # by `autonomy_read`, which is `auto` and asks nobody.
+                    for_model=f"{worker.role or worker.kind} failed",
                     at=_parse(worker.updated_at),
                     value=f"worker {worker.id}",
                     opens={"kind": "worker", "id": worker.id},

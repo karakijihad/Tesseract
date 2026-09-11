@@ -120,6 +120,7 @@ DECLARED_AS: dict[str, str] = {
     "usage_ledger": "the runtime's own logs, ledgers and archives",
     "loop_stalls": "the runtime's own logs, ledgers and archives",
     "checkpoints": "the runtime's own logs, ledgers and archives",
+    "workspace_events": "the runtime's own logs, ledgers and archives",
 }
 
 

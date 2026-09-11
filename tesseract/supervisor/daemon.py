@@ -376,25 +376,24 @@ class Supervisor:
                 backend = self._spawn_backend(
                     continuation_id=self._pop_continuation_id(),
                 )
-            except Exception:  # noqa: BLE001
+            except Exception as spawn_exc:  # noqa: BLE001
                 # Popen itself failed (rare — bad cmd, env too long, OS
                 # refused to fork). Treat as a crash so the breaker can
                 # latch if it keeps happening, then back off and retry.
                 log.exception("supervisor: backend spawn failed — backoff and retry")
                 self._crash_count += 1
                 respawns += 1
-                try:
-                    if self._breaker.record_crash(exit_code=-1):
-                        log.error("supervisor: crash storm latched on spawn failure — exiting 2")
-                        self._announce_crash_storm(
-                            "it could not start the app at all, several times "
-                            "in a row"
-                        )
-                        self._stop_all_daemons()
-                        return 2
-                except Exception:  # noqa: BLE001
-                    log.exception("supervisor: crash-breaker raised — continuing")
-                self._sleep_backoff(self._crash_count)
+                # The signature is HANDED over here. There is no console tail
+                # to read one out of, because the process never started, and
+                # deriving nothing left the one failure with no way back (the
+                # app cannot be started at all) as the one that could never
+                # reach the latch.
+                if self._answer_a_storm(
+                    exit_code=-1,
+                    signature=f"{type(spawn_exc).__name__} at spawn",
+                    context=" on spawn failure",
+                ):
+                    return 2
                 if respawns >= self.max_respawns:
                     log.warning("supervisor: max_respawns reached, exiting")
                     self._announce_crash_storm(
@@ -487,23 +486,15 @@ class Supervisor:
                 else:  # crash
                     self._crash_count += 1
                     respawns += 1
-                    # Record into the rolling crash window. Three crashes
-                    # in CRASH_WINDOW_SECONDS → latch + exit 2; the operator
-                    # has to clear the marker before the next supervisor
-                    # start succeeds.
-                    try:
-                        if self._breaker.record_crash(exit_code=exit_code):
-                            log.error("supervisor: crash storm latched — exiting 2")
-                            self._announce_crash_storm(
-                                f"the app stopped {self._crash_count} times in a "
-                                f"few minutes, the last one with exit code "
-                                f"{exit_code}"
-                            )
-                            self._stop_all_daemons()
-                            return 2
-                    except Exception:  # noqa: BLE001
-                        log.exception("supervisor: crash-breaker raised — continuing")
-                    self._sleep_backoff(self._crash_count)
+                    # Three crashes in CRASH_WINDOW_SECONDS is a storm. A storm
+                    # waits and tries again, telling the operator each time;
+                    # only the same failure surviving every wait ends it.
+                    writer = self._console_writers.get("backend")
+                    if self._answer_a_storm(
+                        exit_code=exit_code,
+                        log_tail=writer.tail_text() if writer is not None else "",
+                    ):
+                        return 2
             except Exception:  # noqa: BLE001
                 # Catch-all so a single bad iteration (corrupted intent
                 # JSON, transient filesystem error, etc.) cannot crash
@@ -1158,10 +1149,65 @@ class Supervisor:
 
     # -- backoff -----------------------------------------------------------
 
+    def _answer_a_storm(
+        self,
+        *,
+        exit_code: int,
+        log_tail: str = "",
+        signature: str = "",
+        context: str = "",
+    ) -> bool:
+        """Record one crash and do what the breaker says about it.
+
+        Returns True when the supervisor must exit 2, having already told the
+        operator and torn the siblings down. Otherwise it has waited, either
+        the storm's own wait or the ordinary between-crash pause, and the
+        caller carries on.
+
+        One function because there are two crash paths and the ladder they
+        answer with is the same one. What differs between them is genuinely
+        only their INPUT: a backend that ran leaves a console tail to read a
+        signature out of, and one that never started leaves a caller who knows
+        what threw. Writing the ladder twice meant a change to the
+        safety-critical part had to be made in two places to stay true, and
+        the two copies had already drifted in what surrounded them.
+        """
+        storm = None
+        try:
+            storm = self._breaker.record_crash(
+                exit_code=exit_code, log_tail=log_tail, signature=signature,
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("supervisor: crash-breaker raised — continuing")
+        if storm is None:
+            self._sleep_backoff(self._crash_count)
+            return False
+        if storm.latched:
+            log.error("supervisor: crash storm latched%s — exiting 2", context)
+            self._announce_crash_storm(storm.reason)
+            self._stop_all_daemons()
+            return True
+        log.error(
+            "supervisor: crash storm %d%s — %s", storm.step, context, storm.reason,
+        )
+        self._announce_crash_storm(storm.reason)
+        self._sleep_seconds(storm.wait_seconds)
+        return False
+
     def _sleep_backoff(self, crash_n: int) -> None:
         idx = min(crash_n - 1, len(_CRASH_BACKOFF_S) - 1)
         delay = _CRASH_BACKOFF_S[max(idx, 0)]
         log.info("supervisor: backoff %.0fs before respawn", delay)
+        self._sleep_seconds(delay)
+
+    def _sleep_seconds(self, delay: float) -> None:
+        """Wait, and answer a stop while waiting.
+
+        A storm's wait is an hour at the top of the ladder, and a supervisor
+        that cannot be stopped during it is one the operator has to kill. The
+        half-second granularity is the crash backoff's own and is what makes
+        that responsive.
+        """
         slept = 0.0
         while slept < delay and not self._stop_event.is_set():
             time.sleep(0.5)

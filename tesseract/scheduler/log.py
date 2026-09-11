@@ -112,7 +112,11 @@ def _severity_of(result: JobResult) -> str:
     outcome = result.outcome.value if result.outcome else ""
     if outcome in {"failed", "refused"} or not result.ok:
         return BAD
-    if outcome in {"degraded", "truncated"}:
+    # `caller_error` sits here rather than with the failures: the machine is
+    # fine and was asked for the wrong thing, which is worth reading and is
+    # not an outage. `unverified` sits here because not knowing whether the
+    # effect landed is exactly a thing to look at once, not an alarm.
+    if outcome in {"degraded", "truncated", "caller_error", "unverified"}:
         return WARN
     return INFO
 

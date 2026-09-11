@@ -42,7 +42,6 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
 from tesseract.orchestrator.outcome import RunOutcome
@@ -73,8 +72,8 @@ class WorkingSetReviewJob(BaseJob):
             min_calls = int(cfg.get("min_calls_to_judge", 50))
             max_proposals = int(cfg.get("max_proposals", 8))
 
-            store = _resolve_store(ctx)
-            if _card_already_waiting(store):
+            store = _card.store(ctx)
+            if store.one_is_pending(CARD_KIND):
                 return self._closed(
                     ctx, t0, RunOutcome.SKIPPED_NO_WORK,
                     "a working set proposal is already waiting to be decided",
@@ -511,12 +510,10 @@ async def _file_card(
     except Exception:
         log.exception("working_set_review: append card failed")
         return False
-    await _broadcast(ctx, event)
+    await _card.announce(ctx, event, who="working_set_review")
     return True
 
 
-def _card_already_waiting(store: Any) -> bool:
-    return _card.one_waiting(store, CARD_KIND)
 
 
 #: How long a `no` holds. A rejection has to outlive the card it was said on,
@@ -584,16 +581,6 @@ def _moment(raw: Any) -> datetime | None:
     return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
 
 
-def _resolve_logs_dir(ctx: JobContext) -> Path:
-    return _card.logs_dir(ctx)
-
-
-def _resolve_store(ctx: JobContext) -> Any:
-    return _card.store(ctx)
-
-
-async def _broadcast(ctx: JobContext, event: Any) -> None:
-    await _card.announce(ctx, event, who="working_set_review")
 
 
 __all__ = ["WorkingSetReviewJob", "CARD_KIND"]

@@ -16,7 +16,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -162,9 +163,43 @@ class Observer:
             "pending_suggestion_count": 1 if self._last_suggestion_observation_id else 0,
         }
 
+    def _panes_in_the_prompt(self) -> list[str]:
+        """Which panes the next prompt will quote, so the row can name them."""
+        return sorted({
+            str(line.get("pane_id") or "")
+            for line in self._pty.lines
+            if line.get("pane_id")
+        })
+
     def drop_pty_for_pane(self, pane_id: str) -> int:
-        """Revoke buffered PTY content for a pane (consent revoke / pane close)."""
+        """Stop holding a pane's terminal output. The buffer, and nothing else.
+
+        This is the pane going away: closed, or its observer switch turned
+        off. Nothing about it is a statement that what the assistant already
+        learned should be unlearned, so the records stay. Closing a terminal
+        is finishing work, not withdrawing permission.
+        """
         return self._pty.drop_pane(pane_id)
+
+    async def forget_pane(self, pane_id: str) -> int:
+        """The operator withdrawing consent: the buffer AND the records.
+
+        A revoke that reaches memory and not disk is a revoke in name only.
+        The buffer is the terminal content itself and goes at once. The log
+        holds the observer's PROSE about that content, which can quote it and
+        cannot be scrubbed sentence by sentence without guessing which half
+        was the secret, so the whole row goes.
+
+        Awaited rather than launched. The disk half runs on a thread because
+        rewriting a fortnight of files on the loop stops the health probe the
+        supervisor kills the backend for missing; it is awaited because a
+        detached task holds no reference anybody keeps, can be collected
+        mid-flight, and is not joined at shutdown. A revoke that silently did
+        not finish is the failure this whole function exists to prevent.
+        """
+        dropped = self._pty.drop_pane(pane_id)
+        await asyncio.to_thread(_purge_pane_from_log, pane_id)
+        return dropped
 
     @property
     def options(self) -> AdapterOptions:
@@ -223,6 +258,9 @@ class Observer:
                 self._config.model,
             )
             return ""
+        # Read before the call, because the buffer keeps filling while it
+        # runs and what this row has to name is what went INTO the prompt.
+        panes_read = self._panes_in_the_prompt()
         try:
             text, _tokens = await asyncio.wait_for(
                 self._run_stream(self._compose_messages(trimmed)),
@@ -262,7 +300,9 @@ class Observer:
             self._circuit_breaker.record_success()
         out = text or ""
         if out:
-            _append_observation_log(mode=mode, session_id=session_id, text=out)
+            _append_observation_log(
+                mode=mode, session_id=session_id, text=out, panes=panes_read,
+            )
         return out
 
     async def feed_pty(self, lines: list[PtyLine]) -> None:
@@ -355,6 +395,9 @@ class Observer:
 
             self._circuit_breaker.record_success()
             reading = parse_reading(text, fallback_observation_id=observation_id)
+            # Written on after the parse: what the model says about the room
+            # is the one thing in its reply it was told rather than saw.
+            reading = _with_room(reading, _room_percent(room))
             self._last_suggestion_observation_id = (
                 reading.suggestion.observation_id if reading.suggestion else None
             )
@@ -482,6 +525,25 @@ class Observer:
         return text, output_tokens
 
 
+def _with_room(reading: ObserverReading, percent: int | None) -> ObserverReading:
+    """`reading` with the runtime's own fullness on its nudge.
+
+    Untouched where there is no nudge or nothing measured the room: an absent
+    field claims nothing, a zero would claim the conversation was empty.
+    """
+    if reading.nudge is None or percent is None:
+        return reading
+    return replace(reading, nudge=replace(reading.nudge, context_percent=percent))
+
+
+def _room_percent(room: Fullness | None) -> int | None:
+    """The one rounding of a `Fullness`, so the sentence the observer is told
+    and the figure on its nudge cannot differ by a point."""
+    if room is None or room.trigger_tokens <= 0:
+        return None
+    return round(room.ratio * 100)
+
+
 def _describe_room(room: Fullness | None) -> str:
     """How full the conversation was, for the observer's prompt.
 
@@ -498,8 +560,8 @@ def _describe_room(room: Fullness | None) -> str:
     if room is None or room.trigger_tokens <= 0:
         return "not measured yet for this conversation."
     return (
-        f"about {round(room.ratio * 100)}% used as of the end of the last "
-        f"turn ({room.foldable_tokens} of {room.trigger_tokens} tokens before "
+        f"about {_room_percent(room)}% used as of the end of the last "
+        f"turn ({room.conversation_tokens} of {room.trigger_tokens} tokens before "
         f"the runtime consolidates on its own). This turn's own words are not "
         f"in that figure yet."
     )
@@ -544,8 +606,23 @@ def _trim_history_for_observer(
     return plain[-context_turns:]
 
 
-def _append_observation_log(*, mode: str, session_id: str, text: str) -> None:
+#: Held by whoever is changing the observation log, and by nothing else. The
+#: purge runs on a worker thread while the writer runs on the loop, so a row
+#: appended between the purge's read and its replace would be in neither file.
+#: The approvals sweep answers the same race the same way, one layer up.
+_LOG_LOCK = threading.Lock()
+
+
+def _append_observation_log(
+    *, mode: str, session_id: str, text: str, panes: list[str] | None = None,
+) -> None:
     """Append one observation record to `tesseract/logs/observer/YYYY-MM-DD.jsonl`.
+
+    `panes` names the consented terminal panes whose output was in the prompt
+    this observation came out of. It is written so that revoking consent for
+    one of them can find this row again: the text is the model's own prose and
+    may quote the pane, and prose cannot be redacted after the fact without
+    guessing which half mattered.
 
     Fail-open: disk errors are logged at WARNING and swallowed — the
     observer must never refuse to return an observation just because
@@ -561,11 +638,73 @@ def _append_observation_log(*, mode: str, session_id: str, text: str) -> None:
             "mode": mode,
             "session_id": session_id,
             "text": text,
+            "panes": list(panes or ()),
         }
-        with target.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        with _LOG_LOCK:
+            with target.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception as exc:  # noqa: BLE001 — fail-open
         logger.warning("observer log write failed: %s", exc)
+
+
+def _purge_pane_from_log(pane_id: str) -> int:
+    """Rewrite the observation log without the rows this pane fed. Blocking.
+
+    A row that names no panes at all is left where it is. It was written
+    before the field existed and there is no way to tell whether it read this
+    pane, another one, or none; deleting every one of them on any revoke would
+    destroy unrelated evidence to answer a question nobody can answer. They
+    age out on the tree's own window like everything else here.
+
+    Bounded by that same window: the directory holds one file per day and the
+    retention sweep keeps a fortnight of them, so this walks a handful of
+    files however long the machine has been running.
+    """
+    removed = 0
+    root = _observer_log_dir()
+    if not root.is_dir():
+        return 0
+    with _LOG_LOCK:
+        for path in sorted(root.glob("*.jsonl")):
+            tmp = path.with_name(path.name + ".rewriting")
+            try:
+                kept: list[str] = []
+                dropped_here = 0
+                for raw in path.read_text(encoding="utf-8").splitlines():
+                    if not raw.strip():
+                        continue
+                    try:
+                        row = json.loads(raw)
+                    except Exception:  # noqa: BLE001 — a torn line is not a record
+                        kept.append(raw)
+                        continue
+                    if pane_id in (row.get("panes") or ()):
+                        dropped_here += 1
+                        continue
+                    kept.append(raw)
+                if not dropped_here:
+                    continue
+                # Written beside the file and moved onto it, so a reader never
+                # sees a half-rewritten day. The suffix is deliberately not
+                # `.jsonl`: the retention sweep ages this directory by globbing
+                # that extension and reading the stem as a date, so a stray
+                # `<day>.jsonl.tmp` would be a file nothing could ever remove.
+                tmp.write_text(
+                    "".join(f"{line}\n" for line in kept), encoding="utf-8",
+                )
+                tmp.replace(path)
+                removed += dropped_here
+            except Exception as exc:  # noqa: BLE001 — one unreadable day is not the others
+                logger.warning("observer log purge failed for %s: %s", path.name, exc)
+            finally:
+                # Only reachable when the move did not happen, because a
+                # successful `replace` leaves nothing at this name.
+                tmp.unlink(missing_ok=True)
+    if removed:
+        logger.info(
+            "observer: forgot %d observation(s) that read pane %s", removed, pane_id,
+        )
+    return removed
 
 
 def _render_pty_lines(lines) -> str:

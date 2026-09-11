@@ -15,6 +15,7 @@ from tesseract.orchestrator.autonomy.governor import (
     Governor,
     GovernorConfig,
     GovernorTickResult,
+    PausePolicy,
     PauseStore,
     SourcePause,
 )
@@ -69,6 +70,7 @@ __all__ = [
     "Governor",
     "GovernorConfig",
     "GovernorTickResult",
+    "PausePolicy",
     "KernelConfig",
     "KernelTickResult",
     "MapperConfig",

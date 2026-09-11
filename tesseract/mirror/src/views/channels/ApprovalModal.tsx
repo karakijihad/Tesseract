@@ -1,19 +1,16 @@
 /* MO-9-12 Approval modal — operator-facing form for approving a pending chat.
  *
- * Tier dropdown ships with `operator` enabled and `friend` ghosted; TTL
- * date picker is rendered but disabled. Both fields exist in the POST
- * payload so the backend contract is the multi-user-milestone shape even
- * though enforcement is deferred (phase doc §7.3 / GOVERNANCE rule 14).
- * The default tier is `operator` so the common case — operator approving
- * their own second Telegram chat — is a single-click flow.
+ * There is nothing to choose but the name. Approving puts the chat on the
+ * allowlist and being on it is the whole permission, so the tier dropdown
+ * that used to sit here is gone rather than ghosted: a control offering one
+ * value is a question with one answer. The TTL picker stays disabled until
+ * expiry is enforced.
  */
-import { Select } from '../../components/common/Select';
 import { useState } from 'react';
 import {
   useChannelsStore,
   refusalToast,
   type ChannelUser,
-  type ChannelUserTier,
 } from '../../stores/channels';
 import { useToastStore } from '../../stores/toasts';
 import { useWebSocketStore } from '../../stores/websocket';
@@ -36,7 +33,6 @@ export function ApprovalModal({ channel, user, onClose }: ApprovalModalProps) {
   const push = useToastStore((s) => s.push);
 
   const [displayName, setDisplayName] = useState<string>(user.display_name || '');
-  const [tier, setTier] = useState<ChannelUserTier>('operator');
   const [ttlIso, setTtlIso] = useState<string>('');
   const busy = Boolean(pending[`${channel}:approve:${user.user_id}`]);
 
@@ -50,14 +46,13 @@ export function ApprovalModal({ channel, user, onClose }: ApprovalModalProps) {
         channel,
         {
           user_id: user.user_id,
-          tier,
           ttl_iso: ttlIso ? ttlIso : null,
           display_name: displayName ? displayName : null,
         },
         sessionId,
       );
       if (result.approved) {
-        push(`${user.user_id} approved as ${tier}`, 'info');
+        push(`${user.user_id} approved`, 'info');
         onClose();
       } else {
         push(refusalToast('Approve', result), 'warning');
@@ -99,27 +94,6 @@ export function ApprovalModal({ channel, user, onClose }: ApprovalModalProps) {
             testId="channel-approval-display-name"
             className="channel-modal-input"
           />
-        </label>
-
-        <label className="channel-modal-field">
-          <span className="channel-modal-label">tier</span>
-          <Select
-            value={tier}
-            options={[
-              { value: 'operator', label: 'operator' },
-              {
-                value: 'friend',
-                label: 'friend (multi-user milestone)',
-                disabled: true,
-              },
-            ]}
-            onChange={(v) => setTier(v as ChannelUserTier)}
-            ariaLabel="Approve as tier"
-            testId="channel-approval-tier"
-          />
-          <span className="channel-modal-hint t-meta">
-            tier enforcement ships with the multi-user milestone
-          </span>
         </label>
 
         <label className="channel-modal-field">

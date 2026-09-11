@@ -875,3 +875,116 @@
   min-height: var(--space-16);
   font-variant-numeric: tabular-nums;
 }
+
+/* ── Cache report ───────────────────────────────────────────────────────────
+   Which turns stopped reusing what the provider already held. Shaped like the
+   payload rows above so the two panels read as one family: a headline figure,
+   then a stacked row whose bar is a rule under the text rather than a fourth
+   column that clips at panel width. */
+
+.cache-report__head {
+  margin: 0 0 var(--space-12);
+  padding: 0 0 var(--space-8);
+  border-bottom: var(--stroke-1) solid var(--border-subtle);
+}
+
+.cache-report__rate {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-6);
+  margin: 0;
+}
+
+.cache-report__rate strong {
+  font-size: var(--t-display-size);
+  font-variant-numeric: tabular-nums;
+}
+
+.cache-report__unit {
+  color: var(--text-meta);
+}
+
+.cache-report__totals,
+.cache-report__caveat {
+  margin: var(--space-4) 0 0;
+  line-height: 1.45;
+}
+
+.cache-report__heading {
+  margin: 0 0 var(--space-10);
+  padding: 0 var(--space-8) var(--space-6);
+  font-size: var(--t-body-size);
+  font-weight: 500;
+}
+
+.cache-report__rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.cache-report__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "name  figures"
+    "descr descr"
+    "bar   bar";
+  align-items: baseline;
+  gap: 0 var(--space-8);
+  padding: var(--space-6) var(--space-8);
+  border-radius: var(--radius-sm);
+}
+
+.cache-report__row > .cache-report__name { grid-area: name; }
+.cache-report__row > .cache-report__descr { grid-area: descr; }
+.cache-report__row > .cache-report__track { grid-area: bar; }
+.cache-report__row > .cache-report__figures { grid-area: figures; }
+
+.cache-report__name {
+  font-family: var(--font-mono);
+  font-size: var(--t-body-size);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.cache-report__figures {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-6);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.cache-report__rate-cell {
+  min-inline-size: 3ch;
+  text-align: end;
+}
+
+.cache-report__descr {
+  line-height: 1.45;
+}
+
+.cache-report__track {
+  position: relative;
+  display: block;
+  height: var(--space-4);
+  margin-top: var(--space-4);
+  background: var(--panel-divider);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+/* Warm, because every token on this bar is one that was paid for twice. */
+.cache-report__bar {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  display: block;
+  min-width: 2px;
+  border-radius: 2px;
+  background: var(--warn);
+}

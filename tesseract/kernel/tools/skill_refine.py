@@ -14,8 +14,8 @@ what asks.
 
 The revision goes through `brain/skills.py::replace_skill_body`, the one path
 that changes a live skill, so a playbook's previous revision is kept under
-`history/<version>/` and a proposal that is not a later revision is refused
-before anything is touched. A `skill_refinement` card is still filed, as the
+`history/<version>/` and the new one is numbered by the runtime rather than by
+whoever wrote the markdown. A `skill_refinement` card is still filed, as the
 record of what changed and why, and it is settled as applied.
 
 Unattended (no operator on any surface) this is refused like any other write.
@@ -36,6 +36,7 @@ from tesseract.brain.skills import (
     replace_skill_body,
 )
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.workspace_events import EventStore, WorkspaceEvent
 from tesseract.workspace_events.broadcast import broadcast_workspace_event
 
@@ -47,8 +48,8 @@ class SkillRefineInput(BaseModel):
     proposed_markdown: str = Field(
         description=(
             "The full revised SKILL.md (frontmatter + body). Its frontmatter "
-            "`name` must equal `name`. For a playbook, `version` must be a "
-            "whole number greater than the live one; the live revision is kept."
+            "`name` must equal `name`. For a playbook, leave `version` alone: "
+            "the runtime numbers the revision and keeps the live one."
         )
     )
     rationale: str = Field(
@@ -72,6 +73,8 @@ class SkillRefineTool(Tool):
         "this tool only refines an already-active one."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     def __init__(
         self,
@@ -121,16 +124,25 @@ class SkillRefineTool(Tool):
                     "skills can be refined; use skill_create for a new one."
                 ),
                 is_error=True,
+                caller_error=True,
             )
         if not inp.proposed_markdown.strip():
-            return ToolResult(output="proposed_markdown must not be empty.", is_error=True)
+            return ToolResult(
+                output="proposed_markdown must not be empty.",
+                is_error=True,
+                caller_error=True,
+            )
 
         current = _read_current(self._skills_dir, inp.name)
         err = replace_skill_body(
             self._skills_dir, inp.name, inp.proposed_markdown, tool_names=self._tool_names()
         )
         if err is not None:
-            return ToolResult(output=f"Not applied: {err}", is_error=True)
+            return ToolResult(
+                output=f"Not applied: {err}",
+                is_error=True,
+                caller_error=True,
+            )
 
         revised = load_skill_folder(self._skills_dir / inp.name)
         version = f" v{revised.version}" if revised is not None and revised.version else ""
@@ -166,7 +178,14 @@ class SkillRefineTool(Tool):
                 except Exception:
                     logger.warning("skill_refine: broadcast failed for %s", inp.name, exc_info=True)
 
-        return ToolResult(output=f"Revised {inp.name}{version}; the live skill is updated.{note}")
+        return ToolResult(
+            output=f"Revised {inp.name}{version}; the live skill is updated.{note}",
+            receipt=Receipt(
+                kind="record",
+                id=inp.name,
+                locator=str(self._skills_dir / inp.name / SKILL_FILENAME),
+            ),
+        )
 
 
 def _read_current(skills_dir: Path, name: str) -> str:

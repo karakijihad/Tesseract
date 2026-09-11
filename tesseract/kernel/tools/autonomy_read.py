@@ -125,10 +125,13 @@ class AutonomyReadTool(Tool):
     use_when: ClassVar[str] = (
         "Use whenever you are asked how autonomy is doing, what is running, "
         "what is waiting on the operator, or what one room of that panel "
-        "says. Answer from this rather than sending them to the panel: on a "
-        "channel they cannot open it. Relay its lines as they are, room name "
-        "in front of each. Ask again with detail:true when they want which, "
-        "not how many."
+        "says. Asked what the observer flagged, what was decided without "
+        "them, or what came of a recommendation: that is the journal room, "
+        "and nothing else in the tree can answer it. Answer from this rather "
+        "than sending them to the panel: on a channel they cannot open it. "
+        "Relay its lines as they are, room name in front of each. Ask again "
+        "with detail:true when they want which and not how many, or the "
+        "words a note was written in."
     )
     not_when: ClassVar[str] = (
         "to change what is on the operator's screen, which is `cockpit_show`; "
@@ -139,6 +142,8 @@ class AutonomyReadTool(Tool):
         "whether the machine under them is well."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     def __init__(self, app_provider: Optional[Callable[[], Any]] = None) -> None:
         self._app_provider = app_provider
@@ -341,17 +346,39 @@ def _one_line(entry: Any) -> str:
     """
     if not isinstance(entry, dict):
         return str(entry)
+    # `saidToModel` FIRST, and `said` only after it. A row carrying both is a
+    # row whose producer decided its two readers get different text: `said` is
+    # the operator's copy and can hold a log line, a provider's own words or
+    # the string of an exception this runtime was handed, while `saidToModel`
+    # is the half composed here. `routes/autonomy_health.py` states that as
+    # invariant 5, and this reader used to ignore it, because `said` sat first
+    # and is always truthy. The tool is `auto`, so nothing asked first.
+    #
+    # Dropping `said` entirely was tried and is wrong. Most rows that carry it
+    # carry an agenda item's own goal, and naming those IS what this reader is
+    # for: it exists because "8 things want your attention" was answered and
+    # the operator asked which ones. A row that keeps only its name answers
+    # that with `held: self_reflection` where it used to say what the thing
+    # actually was.
+    #
+    # So the two producers that can put HANDED text in `said` declare a
+    # `saidToModel` beside it, the way `department()` always has, and this
+    # reads the safe one when a row offers it.
     title = next(
         (
             str(entry[key])
-            for key in ("said", "goal", "name", "title", "subject", "source")
+            for key in ("saidToModel", "said", "goal", "name", "title", "subject", "source")
             if entry.get(key)
         ),
         "",
     )
+    # `reason` is deliberately not in this list. No producer reaching this
+    # reader sets one today, because the two that build a `reason` from
+    # `outcome_reason` serve their own routes, but that is a door standing
+    # open rather than a door that is shut.
     trail = [
         str(entry[key])
-        for key in ("state", "status", "value", "reason", "at", "took")
+        for key in ("state", "status", "value", "at", "took")
         if entry.get(key) and str(entry[key]) != title
     ]
     return f"{title} ({', '.join(trail)})" if trail else title or str(entry)

@@ -132,8 +132,7 @@ _INTERNAL_REF_ALLOWED: dict[str, frozenset[str]] = {
     # Detects a repository's conventions file by name.
     "tesseract/orchestrator/projects/detect.py": frozenset({"claude-md"}),
     # Names what memory must not store: the always-loaded instruction file.
-    "tesseract/memory/what_not_to_save.py": frozenset({"claude-md"}),
-    "tesseract/memory-store/WHAT_NOT_TO_SAVE.md": frozenset({"claude-md"}),
+    "tesseract/memory/capture_policy.py": frozenset({"claude-md"}),
     # The build itself: names the paths it excludes, then generates a fresh
     # instruction file. Every match here is a path being acted on.
     "tesseract/scripts/_production_manifest.py": frozenset({"claude-md", "test-tree"}),

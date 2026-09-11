@@ -60,6 +60,8 @@ class SpawnAwaitTool(Tool):
         "`spawn_check` to wait for it."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:

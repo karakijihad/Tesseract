@@ -38,6 +38,8 @@ class BreakerResetTool(Tool):
         "`python -m tesseract.scripts.clear_crash_storm` and is deliberately not a tool."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:
@@ -62,5 +64,5 @@ class BreakerResetTool(Tool):
             msg = f"there is no breaker called {inp.name!r}"
             if known:
                 msg += f". There is: {known}"
-            return ToolResult(output=msg, is_error=True)
+            return ToolResult(output=msg, is_error=True, caller_error=True)
         return ToolResult(output=said, metadata={"name": inp.name})

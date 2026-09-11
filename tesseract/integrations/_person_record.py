@@ -13,7 +13,7 @@ the upsert path round-trips:
     id: mem_xxxxxxxx
     type: reference
     title: Jane Doe
-    summary: Telegram contact (operator tier)
+    summary: Telegram contact
     created_at: 2026-05-14T08:00:00+00:00
     updated_at: 2026-05-14T08:00:00+00:00
     importance: 6
@@ -28,7 +28,6 @@ the upsert path round-trips:
     chat_ids:
       telegram:
         - 12345
-    tier: operator
     ttl: null
     display_name: Jane Doe
     <!-- person-record:end -->
@@ -37,7 +36,7 @@ the upsert path round-trips:
 
 Upsert semantics: re-running ``upsert_person_record(channel, user_id, ...)`` on
 an existing slug parses the delimited block, merges ``chat_ids[<channel>]`` (de-duped),
-updates ``tier`` / ``ttl`` / ``display_name`` to the new values, and rewrites
+updates ``ttl`` / ``display_name`` to the new values, and rewrites
 the block in place. Any free-form notes the operator added below the block are
 preserved verbatim. The frontmatter's ``id`` (mem_-prefixed) is preserved on
 upsert so memory-store callers that already linked to the record do not stale-out.
@@ -103,7 +102,6 @@ def upsert_person_record(
     *,
     channel: str,
     user_id: str,
-    tier: str,
     ttl_iso: str | None,
     display_name: str | None,
 ) -> Path:
@@ -130,13 +128,12 @@ def upsert_person_record(
             block_data,
             channel=channel,
             user_id=user_id,
-            tier=tier,
             ttl_iso=ttl_iso,
             display_name=display_name,
         )
         fm.setdefault("id", _new_memory_id())
         fm["title"] = display_name or fm.get("title") or slug
-        fm["summary"] = _summary_for(channel, tier)
+        fm["summary"] = _summary_for(channel)
         fm["updated_at"] = now_iso
         fm.setdefault("created_at", now_iso)
         fm["tags"] = _tags_for(channel, block_data.get("channels") or [])
@@ -146,7 +143,7 @@ def upsert_person_record(
             "id": _new_memory_id(),
             "type": "reference",
             "title": display_name or slug,
-            "summary": _summary_for(channel, tier),
+            "summary": _summary_for(channel),
             "created_at": now_iso,
             "updated_at": now_iso,
             "importance": 6,
@@ -156,7 +153,6 @@ def upsert_person_record(
             {},
             channel=channel,
             user_id=user_id,
-            tier=tier,
             ttl_iso=ttl_iso,
             display_name=display_name,
         )
@@ -191,8 +187,8 @@ def _new_memory_id() -> str:
     return f"mem_{secrets.token_hex(4)}"
 
 
-def _summary_for(channel: str, tier: str) -> str:
-    return f"{channel.capitalize()} contact ({tier} tier)"
+def _summary_for(channel: str) -> str:
+    return f"{channel.capitalize()} contact"
 
 
 def _tags_for(channel: str, channels: list[Any]) -> list[str]:
@@ -216,7 +212,6 @@ def _merge_block(
     *,
     channel: str,
     user_id: str,
-    tier: str,
     ttl_iso: str | None,
     display_name: str | None,
 ) -> dict[str, Any]:
@@ -244,7 +239,6 @@ def _merge_block(
     out: dict[str, Any] = {
         "channels": channels,
         "chat_ids": chat_ids,
-        "tier": tier,
         "ttl": ttl_iso,
     }
     if display_name:

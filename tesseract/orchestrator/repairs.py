@@ -305,7 +305,90 @@ async def _reattach_vector_index(app: Any) -> str:
     return "the embedding index answered again, so memory search is back to full retrieval"
 
 
+async def _a_substrate_is_missing(app: Any) -> bool:
+    """Whether this boot left something out.
+
+    `app["boot_failed"]` is what `run_layers` reported and nothing else writes
+    it, so an empty mapping is a clean boot and a missing key is a process that
+    has not booted through the graph at all. Both are "nothing to do", and only
+    the second could ever be mistaken for one: a controller daemon or a test
+    app has no failures to retry because it has no report.
+    """
+    failed = app.get("boot_failed") if hasattr(app, "get") else None
+    return bool(failed)
+
+
+async def _prepare_the_missing_again(app: Any) -> str:
+    """Prepare the isolated substrates again, in boot order.
+
+    Idempotent by the substrates' own contract: preparing one twice is what
+    every reload target already does. Spends nothing and changes no setting,
+    which is why it may run unasked, and it either brings a capability back or
+    leaves the runtime exactly as partial as it already was.
+
+    Raising when nothing came back is deliberate: that is what counts a failure
+    against this repair's breaker, so a substrate that can never prepare stops
+    being retried after three sweeps and becomes a fault the operator is told
+    about instead.
+    """
+    from tesseract.boot_graph import retry_failed
+
+    layers = app.get("boot_layers") if hasattr(app, "get") else None
+    registry = app.get("boot_registry") if hasattr(app, "get") else None
+    if layers is None or registry is None:
+        raise RuntimeError(
+            "this process has no boot graph, so there is nothing to prepare again"
+        )
+    failed = dict(app.get("boot_failed") or {})
+    report = await retry_failed(layers, registry, failed.keys())
+    for name in report.prepared:
+        failed.pop(name, None)
+    for name, _reason in report.skipped:
+        failed.pop(name, None)
+    for name, reason in report.failed:
+        failed[name] = reason
+    app["boot_failed"] = failed
+
+    if not report.prepared and not report.skipped:
+        raise RuntimeError(
+            "prepared "
+            + ", ".join(sorted(name for name, _ in report.failed))
+            + " again and it still will not come up: "
+            + "; ".join(f"{name}: {reason}" for name, reason in report.failed)
+        )
+    # What is STILL down is said in every branch that has one. This sentence
+    # reaches the operator through `read_repairs`, and the skipped-only branch
+    # used to return a clean resolution while another substrate was still
+    # broken, because the `if failed:` below it could not be reached from there.
+    still = f", and {', '.join(sorted(failed))} is still down" if failed else ""
+    back = ", ".join(sorted(report.prepared))
+    if not report.prepared:
+        return (
+            "nothing needs "
+            + ", ".join(sorted(name for name, _ in report.skipped))
+            + " on this machine, so it is no longer counted as missing"
+            + still
+        )
+    if failed:
+        return f"{back} came back without a restart{still}"
+    return f"{back} came back without a restart, so the runtime is whole again"
+
+
 REPAIRS: tuple[Repair, ...] = (
+    Repair(
+        key="boot_substrates",
+        title="Prepare what the boot left out",
+        what_broke=(
+            "Part of the runtime never started, because one substrate raised "
+            "while the rest of the boot carried on without it"
+        ),
+        why_unasked=(
+            "it runs the same preparation the boot already ran, in the same "
+            "order, spending nothing and changing no setting"
+        ),
+        still_broken=_a_substrate_is_missing,
+        attempt=_prepare_the_missing_again,
+    ),
     Repair(
         key="memory_vector_index",
         title="Re-attach the embedding index",

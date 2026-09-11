@@ -233,6 +233,11 @@ class InvokeAgentTool(CarriesCompaction, Tool):
         "`delegate_auditor` for heavy CLI work."
     )
     depends_on: ClassVar[str] = ""
+    # A sub-agent run leaves no artifact of its own: the live card is a
+    # view, not a file. What it changed in the world was changed by the
+    # tools IT called, and those answer for themselves.
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     def __init__(
         self,

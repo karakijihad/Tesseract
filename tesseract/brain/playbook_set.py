@@ -151,8 +151,18 @@ def _annotation(name: str, facts: dict[str, str]) -> str:
 
 
 def write_carried(chosen: list[str], path: Path | None = None) -> None:
-    """Replace the file with the rendered choice. Reads the live playbooks for
-    the annotations, so a save from the panel rebuilds them too."""
+    """Replace the file with the rendered choice.
+
+    Reads the live playbooks for the annotations, so a save from the panel
+    rebuilds them too.
+
+    **Nothing here retires a running conversation's head.** The pointer list
+    that renders `carried.txt` is inside the frozen head, so a change to the
+    dial is read by the NEXT conversation. That is the operator's ruling of
+    2026-09-10 rather than an oversight: a conversation that is running has
+    already been told whatever the dial was changed for, and re-reading the
+    whole prompt to deliver it costs the entire cached prefix.
+    """
     target = path or carried_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     entries = load_skills(target.parent)

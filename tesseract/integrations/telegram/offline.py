@@ -61,14 +61,24 @@ class OfflineTelegram:
     async def send_text(
         self, *, chat_ref: str, text: str,
         disable_web_page_preview: bool = False,
-    ) -> None:
+    ) -> str:
+        """The first chunk's message id, or `""` when nothing was sent.
+
+        The same answer the bridge gives, because this is the same surface and
+        a second implementation that quietly returned nothing would make a
+        message sent while the backend was down the one message nobody could
+        check. That is the path where it matters most: the supervisor speaks
+        here at the moment it has stopped trying to restart anything.
+        """
         from tesseract.integrations.telegram.api import TelegramAPIError
+        from tesseract.integrations.telegram.bridge import _message_id_of
         from tesseract.integrations.telegram.chunker import chunk_for_telegram
 
         chat_id = int(chat_ref)
+        first_id: int | None = None
         for chunk in chunk_for_telegram(text or ""):
             try:
-                await self._api.send_message(
+                result = await self._api.send_message(
                     chat_id=chat_id,
                     text=chunk,
                     parse_mode="HTML",
@@ -81,11 +91,14 @@ class OfflineTelegram:
                     "telegram: HTML send failed for chat=%s; retrying plain",
                     chat_ref,
                 )
-                await self._api.send_message(
+                result = await self._api.send_message(
                     chat_id=chat_id,
                     text=_strip_html_tags(chunk),
                     disable_web_page_preview=disable_web_page_preview,
                 )
+            if first_id is None:
+                first_id = _message_id_of(result)
+        return "" if first_id is None else str(first_id)
 
     async def aclose(self) -> None:
         try:
@@ -126,12 +139,11 @@ def build() -> OfflineTelegram | None:
             root / "allowlist.json",
             env_seed=os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS"),
         )
-        tiers = dict(load_state(root / "state.json").user_tier)
     except Exception:
         log.exception("telegram: could not read who is allowed")
         return None
 
-    users = _users_from(allowlist, tiers)
+    users = _users_from(allowlist)
     if not users:
         return None
 
@@ -143,7 +155,7 @@ def build() -> OfflineTelegram | None:
     return OfflineTelegram(api, users)
 
 
-def _users_from(allowlist: Any, tiers: dict[str, str]) -> list[ChannelUser]:
+def _users_from(allowlist: Any) -> list[ChannelUser]:
     """The allowlist files as the roster every other caller reads.
 
     Projecting its own users is the one thing only the channel can do, so it
@@ -156,7 +168,6 @@ def _users_from(allowlist: Any, tiers: dict[str, str]) -> list[ChannelUser]:
         return ChannelUser(
             user_id=key,
             display_name=key,
-            tier=tiers.get(key, "operator"),  # type: ignore[arg-type]
             ttl_iso=None,
             first_seen="",
             last_seen="",

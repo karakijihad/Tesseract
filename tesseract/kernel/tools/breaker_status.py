@@ -36,6 +36,8 @@ class BreakerStatusTool(Tool):
         "checking behavioural drift, which is `conscience_status`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:

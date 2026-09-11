@@ -9,7 +9,7 @@ close.
 
 **A reader, not a channel feature.** It assembles nothing. `brain/
 context_report.py` is the one measurement, the HUD's envelope is built from it
-too, and there is no second idea of where the fold happens. Whatever the bar
+too, and there is no second idea of where the boundary falls. Whatever the bar
 would draw, this says, in words.
 
 `default_posture="auto"` — it reads the shape of the conversation it is already
@@ -39,12 +39,14 @@ class ContextReadTool(Tool):
 
     group: ClassVar[str] = "checking-your-state"
     summary: ClassVar[str] = (
-        "How full this conversation is: tokens, turns, cache, and its next fold."
+        "How full this conversation is: tokens, turns, cache, and when it "
+        "gets wrapped up."
     )
     use_when: ClassVar[str] = (
         "Use when you are asked how much room is left, how long this "
-        "conversation has run, whether you are about to forget its earlier "
-        "part, what the window is, or how much of the prompt came from "
+        "conversation has run, whether it is about to be wrapped up and "
+        "carried on in a fresh one, what the window is, or how much of the "
+        "prompt came from "
         "cache. Relay the block as it is: it is the picture the cockpit "
         "draws, and a sentence of your own throws that away."
     )
@@ -56,6 +58,8 @@ class ContextReadTool(Tool):
         "caps are the cost ledger's, not this."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:

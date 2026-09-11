@@ -22,6 +22,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.orchestrator.autonomy.agenda_store import AgendaStore
 from tesseract.orchestrator.autonomy.models import (
     AgendaItem,
@@ -34,11 +35,51 @@ from tesseract.orchestrator.autonomy.models import (
 logger = logging.getLogger(__name__)
 
 
-def _resolve_project_id(requested: str) -> str:
-    """The project a new task belongs to: the one named, else the active one,
-    else none. A name that matches nothing is refused rather than dropped,
-    because a task silently filed without its project would close on the
-    assistant's word when the operator meant it to close on the checks."""
+#: Said back when a task will close on the assistant's own sentence. The
+#: closing tool says the same thing at the other end; this says it while there
+#: is still time to name a project instead.
+_ON_YOUR_WORD = "Nothing will check it, so it closes on your word."
+
+
+def _verify_contract(project_id: str) -> str:
+    """The project's declared checks as they stand right now, for the record.
+
+    Fixed onto the task here, beside `success_criteria`, because the two are
+    one contract: what would count as done, written and executable. Read at
+    CLOSE instead and the meaning of `gate` can change after the work began.
+    Best effort, like everything else that reads the registry here: a snapshot
+    that cannot be taken leaves the field empty, which reads as "not recorded"
+    and never as "no checks".
+    """
+    if not project_id:
+        return ""
+    from tesseract.orchestrator.projects.store import ProjectStore
+
+    try:
+        project = ProjectStore().get(project_id)
+    except Exception:  # noqa: BLE001 - the task matters more than the snapshot
+        logger.warning("task_propose: could not snapshot %s's checks", project_id)
+        return ""
+    return project.verify.as_contract() if project is not None else ""
+
+
+def _resolve_project_id(requested: str) -> tuple[str, str]:
+    """The project a new task belongs to, and what that means for its close.
+
+    A NAMED project wins whatever it declares. Naming one is a decision and
+    this is not the place to overrule it; a name that matches nothing is still
+    refused rather than dropped.
+
+    An UNNAMED task takes the active project ONLY when that project declares a
+    check. The default is the one case nobody chose, and the active project is
+    often an umbrella that declares nothing: filing work under it attaches a
+    name, still closes on the assistant's own sentence, and both learners then
+    throw the record away. Saying "no project" is the same close and an honest
+    record of it, and it does not put unrelated work under a project's name.
+
+    The second element is what to tell the caller, because a task that will
+    close on a sentence should never be made silently.
+    """
     from tesseract.orchestrator.projects.store import ProjectStore
 
     store = ProjectStore()
@@ -47,7 +88,15 @@ def _resolve_project_id(requested: str) -> str:
             found = store.get(requested)
         else:
             active = store.active()
-            return active.id if active is not None else ""
+            if active is None:
+                return "", f"It belongs to no project. {_ON_YOUR_WORD}"
+            if active.verify.is_empty():
+                return "", (
+                    f"It belongs to no project: {active.name} is the one open "
+                    f"and it declares no checks. {_ON_YOUR_WORD} Name a "
+                    f"project that declares checks to have them decide."
+                )
+            return active.id, f"{active.name}'s own checks decide when it is done."
     except Exception as exc:
         # A registry that cannot be read must not stop a task from being
         # made: a task with no project closes on the word and says so. A
@@ -60,13 +109,65 @@ def _resolve_project_id(requested: str) -> str:
                 f"cannot be checked. Leave project_id empty to make the task "
                 f"without a project, or fix the registry first."
             ) from exc
-        return ""
+        return "", f"It belongs to no project. {_ON_YOUR_WORD}"
     if found is None:
         raise LookupError(
             f"There is no project {requested!r}. project_list names the "
             f"ones that exist; leave project_id empty for the active one."
         )
-    return requested
+    if found.verify.is_empty():
+        return requested, f"{found.name} declares no checks. {_ON_YOUR_WORD}"
+    return requested, f"{found.name}'s own checks decide when it is done."
+
+
+def _why_not_unattended(
+    context: ToolContext, project_id: str, criteria: str, estimate: float | None
+) -> str:
+    """Why this proposal may not be made with nobody watching, or `""`.
+
+    **The gate is the session kind and nothing else.** A posture cannot draw
+    this line: `task_propose` is `ask` shipped and `auto` under `free`, and
+    `free` is the mode the unattended path exists for, so the posture that
+    protects the operator's install is exactly the one that is relaxed where
+    this matters. `ask_fn is None` cannot draw it either, for the same reason.
+
+    In the operator's own chat nothing here applies, and that is deliberate
+    rather than a gap. Every one of these refusals is a sentence they could
+    answer: price it, check it by hand, spend past it today. Unattended there
+    is nobody to answer, so the record has to.
+
+    Fails CLOSED on a registry it cannot read, which is the opposite of what
+    `_resolve_project_id` does one line above and is right in both places: an
+    unreadable registry there still lets a person make a task with no project,
+    and here it means the ceiling cannot be seen at all.
+
+    **What today has already committed is asked for here, not inside the
+    gate.** The gate is pure over what it is handed, and the answer needs the
+    agenda store. Without it three steps proposed in one turn each fitted the
+    room left, because the ledger has recorded none of them yet and none of
+    them knew about the other two.
+    """
+    if context.session_kind != "autonomy":
+        return ""
+    from tesseract.orchestrator.autonomy.morning import (
+        committed_today,
+        spent_today_by_project,
+        why_a_step_is_refused,
+    )
+    from tesseract.orchestrator.projects.store import ProjectStore
+
+    try:
+        project = ProjectStore().get(project_id) if project_id else None
+    except Exception:  # noqa: BLE001 - a ceiling nobody can read is not a ceiling
+        logger.warning("task_propose: the registry could not be read for a step")
+        return "the project registry could not be read, so no budget can be checked"
+    return why_a_step_is_refused(
+        project,
+        criteria,
+        estimate,
+        spent_today_by_project(),
+        committed_today(project_id),
+    )
 
 
 class TaskProposeInput(BaseModel):
@@ -94,8 +195,21 @@ class TaskProposeInput(BaseModel):
         max_length=120,
         description=(
             "The project this task belongs to, by its id from project_list. "
-            "Leave empty for the active project. A task with a project is "
-            "closed by the project's own checks; one without closes on your word."
+            "Leave empty to take the project that is open, which happens only "
+            "when it declares checks. A task with a project that declares "
+            "checks is closed by them; every other task closes on your word."
+        ),
+    )
+    estimated_cost_usd: float | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "What you expect this step to cost in dollars. It is checked "
+            "against what the project has left to spend today, and a step "
+            "nobody is watching is refused if it does not fit. It is kept on "
+            "the record either way, and every step still waiting is subtracted "
+            "from what that project may spend today, so a number given here in "
+            "conversation still counts. Leave it out if you cannot say."
         ),
     )
 
@@ -124,6 +238,8 @@ class TaskProposeTool(Tool):
         "an existing agenda item is `agenda_comment`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     def __init__(self, store: AgendaStore) -> None:
         self._store = store
@@ -151,7 +267,6 @@ class TaskProposeTool(Tool):
         return f"make this a task: {inp.goal.strip()} It is done when: {inp.success_criteria.strip()}"
 
     async def run(self, tool_input: BaseModel, context: ToolContext) -> ToolResult:
-        del context
         inp = (
             tool_input
             if isinstance(tool_input, TaskProposeInput)
@@ -166,12 +281,22 @@ class TaskProposeTool(Tool):
                     "or answer in the conversation instead."
                 ),
                 is_error=True,
+                caller_error=True,
             )
 
         try:
-            project_id = _resolve_project_id(inp.project_id.strip())
+            project_id, whats_owed = _resolve_project_id(inp.project_id.strip())
         except LookupError as exc:
-            return ToolResult(output=str(exc), is_error=True)
+            return ToolResult(output=str(exc), is_error=True, caller_error=True)
+
+        refusal = _why_not_unattended(context, project_id, criteria, inp.estimated_cost_usd)
+        if refusal:
+            return ToolResult(
+                output=f"Not proposed: {refusal}.",
+                is_error=True,
+                caller_error=True,
+                metadata={"refused_unattended": True},
+            )
 
         existing = self._store.find_dedupe(goal, AgendaSource.TASK)
         if existing is not None:
@@ -182,6 +307,7 @@ class TaskProposeTool(Tool):
                     f"rather than opening a second."
                 ),
                 is_error=True,
+                caller_error=True,
                 metadata={"item_id": existing.id, "deduped": True},
             )
 
@@ -197,11 +323,17 @@ class TaskProposeTool(Tool):
             status=AgendaStatus.PROPOSED,
             success_criteria=criteria,
             project_id=project_id,
+            verify_snapshot=_verify_contract(project_id),
+            estimated_cost_usd=inp.estimated_cost_usd,
         )
         try:
             self._store.add(item, by="operator", reason="accepted at the gate")
         except ValueError as exc:
-            return ToolResult(output=f"Not made a task: {exc}", is_error=True)
+            return ToolResult(
+                output=f"Not made a task: {exc}",
+                is_error=True,
+                caller_error=True,
+            )
         except OSError:
             logger.exception("task_propose: the agenda could not be written")
             return ToolResult(
@@ -214,8 +346,14 @@ class TaskProposeTool(Tool):
         return ToolResult(
             output=(
                 f"{item.id} is a task now. It is done when: {criteria} "
+                f"{whats_owed} "
                 f"The record keeps what is owed across restarts; work it here, "
                 f"and record the evidence before closing it."
+            ),
+            receipt=Receipt(
+                kind="record",
+                id=item.id,
+                locator=str(self._store.path_for(item.id) or ""),
             ),
             metadata={"item_id": item.id, "deduped": False},
         )

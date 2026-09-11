@@ -110,8 +110,29 @@ def validate_lane_model(kind: str, model: str) -> str | None:
     )
 
 
+def lane_record_locator(manager: Any, lane_id: str) -> str:
+    """Where this lane's record sits, for a receipt to point at.
+
+    Asked of the manager rather than derived, because the root moves under a
+    test override. Asked with `getattr` rather than called outright, because
+    the manager is duck typed on purpose: the Mirror IPC proxy and the test
+    fakes are managers too, and a receipt is not worth an AttributeError in
+    the middle of a lane turn that already succeeded. An empty locator is a
+    receipt that still names the turn.
+    """
+    reader = getattr(manager, "record_dir", None)
+    if reader is None:
+        return ""
+    try:
+        return str(reader(lane_id))
+    except Exception:  # noqa: BLE001 — the work landed; the label is optional
+        logger.debug("lane %s: record_dir raised", lane_id, exc_info=True)
+        return ""
+
+
 __all__ = [
     "catalog_lane_models",
+    "lane_record_locator",
     "maybe_await",
     "resolve_lane_manager",
     "resolve_named_lane_manager",

@@ -252,7 +252,12 @@ class AgendaItem(BaseModel):
     #      (`RunManifest.task_id`), so neither record is authoritative alone.
     #   6. `attempts` is bounded by whoever appends, never by the model.
     #   7. `current_checkpoint` is a reference to a record with an owner, never
-    #      a copy. Declared here; written by the checkpoint store when it exists.
+    #      a copy. Written once, by `turns/tasks.py::note_turn_ended` at the
+    #      moment recovery parks a running task, because that is the one moment
+    #      a later reader has to find the record of what the task was doing.
+    #      Not written at each boundary: that would rewrite this file several
+    #      times a turn to hold a value nothing reads until a crash, and the id
+    #      would be stale as soon as the turn moved on.
     success_criteria: str = Field(default="", max_length=2000)
     verification: str = Field(default="", max_length=4000)
     # Who wrote `verification`: "gate" when the project's verify steps ran
@@ -265,6 +270,26 @@ class AgendaItem(BaseModel):
     # a task with no project, which closes on the assistant's word and says
     # so in `verification_by`.
     project_id: str = ""
+    # The project's verify commands AS THEY STOOD when this task was accepted,
+    # `"<name>: <command>"` per line. The executable half of the same contract
+    # `success_criteria` is the written half, and fixed at the same moment for
+    # the same reason: a registry read at CLOSE lets what `gate` means change
+    # after the work began. `project_link` resolves to auto under `free`, so
+    # the assistant can rewrite a project's checks itself, and without this the
+    # cheapest way to a clean record is to weaken the check rather than do the
+    # work. Empty on a task with no project, and on every record written before
+    # this field, which falls back to the registry and says so.
+    verify_snapshot: str = Field(default="", max_length=4000)
+    # What the step said it would cost when it was proposed, in USD, or None
+    # for every task nobody had to estimate. Kept because the number is the
+    # only thing standing between an unattended turn and its project's daily
+    # ceiling, and it was CHECKED once at the gate and then thrown away: three
+    # steps proposed in one turn each fitted the room left, because none of
+    # them knew about the other two. It is a claim, not a reservation. What it
+    # buys is that the claim outlives the turn that made it, so
+    # `why_a_step_is_refused` can subtract what today has already committed.
+    # Outside CONTRACT_FIELDS, so a record written before this field loads.
+    estimated_cost_usd: float | None = Field(default=None, ge=0)
     turn_ids: list[str] = Field(default_factory=list)
     attempts: list[Attempt] = Field(default_factory=list)
     current_checkpoint: str | None = None

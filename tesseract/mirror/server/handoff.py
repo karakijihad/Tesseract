@@ -39,25 +39,65 @@ _BULLET_CAP = 6
 _SUMMARY_CHARS = 1200
 
 
+def _still_the_conversation_it_was_for(chat_session: Any, began_at: int | None, label: str) -> bool:
+    """Whether the conversation this package was written for is the one on screen.
+
+    The observer's nudge had this race first and the package has it too: both
+    are produced by a detached model call and both are read out into whatever
+    the object is holding when the call lands. Reflection is a model turn, so
+    the window is seconds, and a `/reset` or a second boundary inside it would
+    put one conversation's working state in front of another one.
+
+    Exactly one clear, and it is the boundary's own. Both endings reflect
+    BEFORE they wipe and say so in their own docstrings
+    (`commands.consolidate_in_place`, the bridge's `_start_fresh_thread`), so
+    the generation captured when the reflection was fired is always one behind
+    the conversation the package belongs to. Anything else is a conversation
+    that moved on: still at the captured number means the surface could not
+    clear and the caller folded instead, so the work is still in front of the
+    model and the package would repeat it; past it means something else wiped.
+    """
+    if began_at is None:
+        return True
+    now = getattr(chat_session, "conversation_generation", None)
+    if now is None:
+        return True
+    if now == began_at + 1:
+        return True
+    log.info(
+        "continuity: %s is not the conversation this package was written for "
+        "(it was fired at generation %d and the object is holding %d), so it "
+        "is dropped rather than read out into work it does not describe",
+        label, began_at, now,
+    )
+    return False
+
+
 def _deliver_package(
     chat_session: Any,
-    outcome: str,
     label: str,
     saves: list[dict[str, Any]],
+    began_at: int | None = None,
 ) -> str:
-    """The continuity package, put in front of the conversation that carries on.
+    """The continuity package, put in front of the cleared conversation.
 
-    Only for a CONTINUE, and only once this reflection has written its
-    checkpoint, which is why it lives here rather than at the boundary: the
-    boundary returned before the model turn that produces the record even
-    started.
+    Delivered whichever answer the boundary gave. Consolidating is one act —
+    reflect, package, clear, hand the package back — and `continue` decides
+    only whether the WORK carries on, never whether the state is handed over.
+    Withholding it on the other answer meant a conversation that consolidated
+    while its own record still listed remaining work and open questions woke
+    up with nothing, and paid to rediscover what it had just written down.
+
+    Only once this reflection has written its checkpoint, which is why it
+    lives here rather than at the boundary: the boundary returned before the
+    model turn that produces the record even started.
 
     Read back from the record rather than handed a copy of it, which is the
     rule the record itself is built on. Returns the text so a caller can send
     it; empty means there was nothing to say, which is what a conversation
     that was never about a piece of work leaves behind.
     """
-    if outcome != "continue":
+    if not _still_the_conversation_it_was_for(chat_session, began_at, label):
         return ""
     from tesseract.brain import continuity
     from tesseract.orchestrator import checkpoints
@@ -115,9 +155,13 @@ def reflect_callbacks(
     `on_error` writes the same kind at `priority=7`, so a reflection that failed
     rises above ambient inbox noise instead of being buried in a log.
     """
+    # Which conversation this reflection is about, read now rather than when
+    # it finishes. `_still_the_conversation_it_was_for` says what the number
+    # is compared against.
+    began_at = getattr(chat_session, "conversation_generation", None)
 
     async def on_complete(saves: list[dict[str, Any]], reason: str) -> None:
-        try:
+        async def _file_the_proposal() -> None:
             from tesseract.workspace_events.broadcast import broadcast_workspace_event
             from tesseract.workspace_events.events import WorkspaceEvent
 
@@ -163,16 +207,25 @@ def reflect_callbacks(
             )
             store.append_event(event)
             await broadcast_workspace_event(app, event)
+
+        try:
+            await _file_the_proposal()
         except Exception:
             log.exception(
                 "reflect_in_background on_complete: emit proposal failed (%s)", label
             )
-        # Outside the try above on purpose. The package is what the person is
+        # Outside the call above on purpose. The package is what the person is
         # left with, and an inbox that would not take the proposal must not
         # also cost them the only thing telling them what happened to their
         # conversation.
+        #
+        # Filing is its own function for that sentence to be true. It used to
+        # be the body of the try, and its "no event store on this app" branch
+        # was a bare `return` — which left the coroutine, so the one case the
+        # comment is about, an inbox that cannot take the proposal, was the
+        # one case that silently cost the package too.
         if chat_session is not None:
-            text = _deliver_package(chat_session, outcome, label, saves)
+            text = _deliver_package(chat_session, label, saves, began_at)
             if text:
                 await asyncio.to_thread(_persist, session, label)
                 if deliver is not None:

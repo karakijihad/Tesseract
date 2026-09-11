@@ -410,6 +410,23 @@ def _registry() -> dict[str, Tree]:
             where=sweeps.turn_manifests_roots,
         ),
         Tree(
+            key="receipts",
+            title="What each turn left behind",
+            summary=(
+                "One line per mark a turn left in the world: a message id, a "
+                "commit hash, a file's content hash."
+            ),
+            why=(
+                "It is what makes 'that was done' checkable by something other "
+                "than the assistant's own account of it. A line is tiny and one "
+                "is written per acting call, so with no ceiling it grows with "
+                "use. It ages with the turn records it joins to, because a mark "
+                "nobody can attribute to a step answers nothing."
+            ),
+            sweep=sweeps.receipts,
+            where=sweeps.receipts_roots,
+        ),
+        Tree(
             key="loop_stalls",
             title="How long the app was blocked",
             summary="One row per block of the event loop long enough to matter.",
@@ -435,6 +452,20 @@ def _registry() -> dict[str, Tree]:
             ),
             sweep=sweeps.checkpoints,
             where=sweeps.checkpoints_roots,
+        ),
+        Tree(
+            key="workspace_events",
+            title="Cards you have already answered",
+            summary="One row per card the runtime put in front of you, and the replies on it.",
+            why=(
+                "A card you have answered is a moment that has passed, and "
+                "what it changed is recorded wherever the change landed. One "
+                "you have NOT answered never ages, whatever its date, because "
+                "a window that can delete a decision still waiting on you is "
+                "not a window."
+            ),
+            sweep=sweeps.workspace_events,
+            where=sweeps.workspace_events_roots,
         ),
     )
     return {t.key: t for t in trees}
@@ -563,8 +594,8 @@ def load_policies(config_dir: Path) -> tuple[Policy, ...]:
     Both directions are checked. A tree the code declares and the config omits
     would age on a default nobody wrote down; a key the config names and the
     code does not know is a policy the operator believes is in force and that
-    nothing implements — the second being the exact defect that put
-    `WHAT_NOT_TO_SAVE.md`'s eleven categories in a file where eight were real.
+    nothing implements — the second being the exact defect that let the memory
+    store advertise eleven exclusion categories while eight were real.
     """
     path = config_dir / "retention.yaml"
     if not path.exists():

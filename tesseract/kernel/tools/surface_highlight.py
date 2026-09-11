@@ -35,6 +35,8 @@ class SurfaceHighlightTool(Tool):
         "highlight alone does not move it."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:

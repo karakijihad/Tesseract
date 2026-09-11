@@ -108,14 +108,6 @@ async def _h_reset(app, session, arg):
     await cmd_mod.cmd_reset(app, session, _split_first(arg))
 
 
-async def _h_compact(app, session, _arg):
-    await cmd_mod.cmd_compact(app, session)
-
-
-async def _h_compact_file(app, session, arg):
-    await cmd_mod.cmd_compact_file(app, session, arg)
-
-
 async def _h_delete(app, session, arg):
     await cmd_mod.cmd_delete(app, session, arg)
 
@@ -184,6 +176,10 @@ async def _h_schedule_set_role(app, session, arg):
 
 
 # ── Stats ── handled inline in dispatcher, no cmd_* needed
+async def _h_stop(app, session, _arg):
+    await cmd_mod.cmd_stop(app, session)
+
+
 async def _h_stats(app, session, _arg):
     # Late import to avoid circular: ws.py imports this module, and ws.py
     # owns emit_stats. Importing at module load would cycle.
@@ -227,19 +223,11 @@ _MIRROR_SESSION_SPECS: tuple[CommandSpec, ...] = (
         emit_stats_after=True,
     ),
     CommandSpec(
-        name="compact",
-        summary="summarize and trim history",
-        handler=_h_compact,
-        mutates_session=True,
-        emit_stats_after=True,
-    ),
-    CommandSpec(
-        name="compact_file",
-        summary="compact a stored conversation without disturbing the live one",
-        handler=_h_compact_file,
-        arg_label="<name>",
-        arg_help="its title, or its id if two share a title",
-        mutates_session=True,
+        name="stop",
+        summary="stop everything this conversation is running",
+        handler=_h_stop,
+        aliases=("cancel",),
+        arg_help="ends the turns, drops what is queued behind them, and cancels their background work; the conversation stays open",
     ),
     CommandSpec(
         name="stats",

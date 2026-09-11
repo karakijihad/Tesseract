@@ -213,10 +213,10 @@ def _scrub(store: MemoryStore, report, store_dir: Path) -> tuple[int, int]:
             update={"auto_links": new_auto_links, "links": new_links}
         )
         new_body = replace_related_block(body, items)
-        # Trusted-internal write: scrub must repair frontmatter even when
-        # the body would otherwise trip WhatNotToSave (same rationale as
-        # MemoryStore.delete's cascade — see `skip_wnts_check` docstring).
-        if store.write(updated_fm, new_body, skip_wnts_check=True):
+        # Repairing a record already on disk, so the capture policy does not
+        # apply and nothing here has to say so: `MemoryStore.write` decides
+        # that from the record, not from the caller.
+        if store.write(updated_fm, new_body):
             fixed_fm += 1
             store.log_event("writes.jsonl", {
                 "memory_id": mem_id,

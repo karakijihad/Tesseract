@@ -1,7 +1,5 @@
 import type {
   Envelope,
-  SessionCompactData,
-  SessionCompactFileData,
   SessionCreatedData,
   SessionDeletedData,
   SessionListData,
@@ -9,7 +7,7 @@ import type {
   SessionStatsData,
   SoulUpdatedData,
 } from "../../lib/types";
-import { foldCeiling } from "../../lib/types";
+import { boundaryCeiling } from "../../lib/types";
 import { useChannelsStore } from "../channels";
 import { useConversationStore } from "../conversation";
 import { useEntityStore } from "../entity";
@@ -70,6 +68,14 @@ export function handleSession(env: Envelope): void {
         | { autosaved?: boolean; chat_id?: string | null; title?: string | null }
         | undefined;
       chat.reset(env.chat_id ?? null);
+      // The four below are session-scoped, not chat-scoped, so they only move
+      // when the chat that was cleared is the one on screen. A background turn
+      // reaching its own boundary clears its own thread; wiping the operator's
+      // suggestions, observations and tasks because a chat they are not
+      // looking at consolidated would be this envelope reaching further than
+      // the act it reports.
+      const activeChatId = useConversationStore.getState().activeChatId;
+      if (env.chat_id != null && env.chat_id !== activeChatId) break;
       // The conversation that was reset is archived, not gone — but it is not
       // the one to auto-resume into either. The fresh chat becomes the target
       // on its first save.
@@ -95,18 +101,6 @@ export function handleSession(env: Envelope): void {
       }
       break;
     }
-    case "session_compact": {
-      const data = env.data as unknown as SessionCompactData;
-      const tag = data.trigger === "auto" ? "Auto-compacted" : "Compacted";
-      toasts.push(`${tag} ${data.tokens_before} → ${data.tokens_after} tok`);
-      // The toast is gone in five seconds; the divider stays where it
-      // happened. The backend stamps the chat that folded, which is not
-      // necessarily the one on screen when a background turn compacts, and
-      // says how many turns it kept verbatim so the divider lands in front of
-      // them rather than at the end.
-      chat.addFoldMarker(env.chat_id ?? null, data.tail_turns ?? 0);
-      break;
-    }
     case "session_stats": {
       const data = env.data as unknown as SessionStatsData;
       // A conductor fan-out emits stats for chats nobody is looking at, and
@@ -119,7 +113,7 @@ export function handleSession(env: Envelope): void {
       }
       const ui = useUIStore.getState();
       if (ui.pendingStatsToast) {
-        const ceiling = foldCeiling(data);
+        const ceiling = boundaryCeiling(data);
         const tokK = (data.tokens / 1000).toFixed(1);
         const capK = (ceiling / 1000).toFixed(1);
         const pct = ceiling ? Math.round((data.tokens / ceiling) * 100) : 0;
@@ -137,14 +131,6 @@ export function handleSession(env: Envelope): void {
       }
       sessions.fetchList();
       toasts.push(`Deleted ${data.title}`);
-      break;
-    }
-    case "session_compact_file": {
-      const data = env.data as unknown as SessionCompactFileData;
-      sessions.fetchList();
-      toasts.push(
-        `Compacted ${data.title}: ${data.tokens_before} → ${data.tokens_after} tok`,
-      );
       break;
     }
     case "soul_updated": {

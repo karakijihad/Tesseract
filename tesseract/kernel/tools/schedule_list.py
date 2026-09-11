@@ -34,6 +34,8 @@ class ScheduleListTool(Tool):
     )
     not_when: ClassVar[str] = "pending alarms, which is `alarm_list`."
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:

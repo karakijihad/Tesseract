@@ -28,6 +28,7 @@ import type {
   OperationalState,
   AtlasResponse,
   ChannelsResponse,
+  DayResponse,
   MemoryResponse,
   GovernorPause,
   HealthResponse,
@@ -37,7 +38,7 @@ import type {
   PrunedResponse,
   RetentionResponse,
 } from '../../lib/api';
-import { clock } from '../../lib/time';
+import { clock, until } from '../../lib/time';
 import type { RoomTail, TailLine } from './RoomShell';
 
 /** How many lines the bottom band carries. It is evidence under the room, not
@@ -90,6 +91,7 @@ interface RoomInputs {
   managed: ManagedResponse | null;
   pruned: PrunedResponse | null;
   channels: ChannelsResponse | null;
+  day: DayResponse | null;
   memory: MemoryResponse | null;
   atlas: AtlasResponse | null;
   retention: RetentionResponse | null;
@@ -116,6 +118,17 @@ function overviewRoom({ overview }: RoomInputs): RoomLine {
   return { tail: { label, lines: newestFirst(lines) } };
 }
 
+/** What a paused source's row says: why it stopped, and whether it comes back.
+ *
+ *  An expiry already in the past is a pause the governor has not swept yet, so
+ *  it reads as lifting now rather than as a date the reader has to subtract. */
+function pauseText(p: GovernorPause): string {
+  if (!p.expires_at) return `${p.reason}, waiting for you`;
+  const wait = until(p.expires_at);
+  return wait ? `${p.reason}, lifts itself ${wait}` : `${p.reason}, lifting now`;
+}
+
+
 /** Blocked and paused: what is waiting on something outside it. */
 function blocked({ items, pauses }: RoomInputs): RoomLine {
   const held = items.filter((i) => HELD.has(i.status));
@@ -125,7 +138,11 @@ function blocked({ items, pauses }: RoomInputs): RoomLine {
       sortKey: p.paused_at,
       at: clock(p.paused_at),
       source: p.detector,
-      text: p.reason,
+      // Whether it comes back on its own is the first thing a reader wants,
+      // and a row that says only why it stopped reads as parked for ever. A
+      // wait is said as a duration: `clock` gives a bare date for anything
+      // that is not today, and most of these expire tomorrow.
+      text: pauseText(p),
       severity: 'warn' as const,
     })),
     ...held.map((i) => ({
@@ -236,6 +253,31 @@ function managed({ managed: roster }: RoomInputs): RoomLine {
 }
 
 /** What was dropped at the door, and why. */
+/** The day's wakes, newest last, as the tail under the room.
+ *
+ *  Each line is the sentence the ROW wrote about its own run, never one made
+ *  here: `MorningJob` and `WorkdayJob` write one for every way they stop, and
+ *  a second account would disagree the first time a stop was reworded.
+ *
+ *  A refused wake is graded `warn` rather than `info`: it is the one outcome
+ *  an operator would want to see without opening anything, because it means
+ *  the day did not run and says why. */
+function day({ day: today }: RoomInputs): RoomLine {
+  const label = 'Today';
+  if (today === null) {
+    return { tail: { label, lines: [], unwired: NO_RECORD } };
+  }
+  const lines: TailLine[] = today.wakes.map((wake) => ({
+    key: `${wake.row}:${wake.at}`,
+    sortKey: wake.at,
+    at: clock(wake.at),
+    source: wake.row,
+    text: wake.said,
+    severity: wake.outcome === 'refused' ? ('warn' as const) : ('info' as const),
+  }));
+  return { tail: { label, lines } };
+}
+
 function pruned({ pruned: ledger }: RoomInputs): RoomLine {
   const label = 'Dropped at the door';
   if (ledger === null) {
@@ -357,6 +399,7 @@ function atlas({ atlas: payload }: RoomInputs): RoomLine {
 
 export type RoomKey =
   | 'overview'
+  | 'day'
   | 'blocked'
   | 'health'
   | 'managed'
@@ -371,6 +414,7 @@ export type RoomKey =
 export function roomLines(inputs: RoomInputs): Record<RoomKey, RoomLine> {
   return {
     overview: overviewRoom(inputs),
+    day: day(inputs),
     blocked: blocked(inputs),
     health: health(inputs),
     managed: managed(inputs),

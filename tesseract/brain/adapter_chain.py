@@ -16,8 +16,9 @@ Operator policy (2026-05-02): the chain must distinguish *transient* from
   → advance immediately, no retry.
 - UNKNOWN (adapter did not classify) → treated as TRANSIENT (safe default).
 
-Compaction is excluded from this chain — see `compact_history` for the
-unwrap-to-primary path.
+A boundary is not a model call this chain answers: `session_ops` runs the
+reflection as a turn of its own, so nothing here needs an unwrap-to-primary
+path any more. The summariser that did is gone.
 
 Contract:
 
@@ -34,8 +35,11 @@ Contract:
 - Each entry brings its own AdapterOptions. The `options=` kwarg from the
   caller is intentionally ignored: model name / temperature / context window
   vary per adapter and are baked into the chain.
-- `count_tokens` is delegated to the primary (ChatSession's compaction
-  threshold uses primary's context window).
+- `count_tokens` is delegated to the primary (ChatSession's boundary
+  threshold uses primary's context window). The CHARACTER ceiling is not the
+  chain's to answer: `boot._apply_chain_ceiling` gives every member the
+  tightest declared `max_prompt_chars` before a session is built, so the one
+  number `ChatSession` carries is already safe for whichever entry answers.
 - `check_available` returns True if any entry is reachable.
 """
 
@@ -765,19 +769,13 @@ class FallbackAdapter(ModelAdapter):
             error_kind=ErrorKind.HARD,
         )
 
-    @property
-    def defers_tool_loading(self) -> bool:  # type: ignore[override]
-        """Only when EVERY entry defers, not when the primary does.
-
-        One payload is built per turn and reused across failover. If the
-        primary deferred and a fallback did not, the fallback would receive
-        the whole registry as ordinary tools — the schema blow-up the working
-        set exists to prevent, arriving exactly when a turn is already failing.
-        """
-        return bool(self._chain) and all(
-            getattr(adapter, "defers_tool_loading", False)
-            for adapter, _ in self._chain
-        )
+    # No `defers_tool_loading` here, deliberately. A chain does not have one
+    # answer: `roles.yaml::chain_2` is two OpenAI entries that defer and one
+    # xAI entry that cannot. It used to answer `all()`, so one fallback
+    # switched the feature off for the primary and it never ran on the machine
+    # it was written for. Each member projects the runtime's one classification
+    # for itself now, inside its own `stream`, so the question stops being the
+    # chain's to answer.
 
     def count_tokens(self, messages: list[dict[str, Any]]) -> int:
         return self.primary.count_tokens(messages)

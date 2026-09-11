@@ -89,6 +89,8 @@ class SurfaceCreateTool(Tool):
         "is the verb, not the markup."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     @property
     def name(self) -> str:

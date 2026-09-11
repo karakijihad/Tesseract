@@ -55,6 +55,7 @@ from tesseract.kernel.tools.base import (
     Tool,
     check_tool_contract,
 )
+from tesseract.kernel.tools.recovery import UNSAFE
 from tesseract.paths import user_tools_dir
 
 log = logging.getLogger(__name__)
@@ -208,6 +209,27 @@ def _contract_error(tool: Tool) -> str | None:
             '"role:<roles.yaml key>"` or `"service:<providers.yaml services '
             'key>"` to its class, or `""` if it needs nothing outside this '
             "machine.",
+            tool.name,
+        )
+    # Same carve-out as `depends_on` above, and for the same reason. A kernel
+    # tool that says nothing about repetition is our omission and boot raises;
+    # one in `<home>/tools/` is the operator's, and refusing it would take a
+    # working tool away over a field that did not exist when they wrote it.
+    # The default takes nothing away either: `unsafe` is what recovery already
+    # does with anything it cannot reason about, so the tool behaves exactly as
+    # it did yesterday and the line says how to say otherwise.
+    if not any(
+        "recovery_behaviour" in klass.__dict__ for klass in cls.__mro__ if klass is not Tool
+    ):
+        cls.recovery_behaviour = UNSAFE
+        log.warning(
+            "custom tool %r does not say what a crash-recovery pass may do "
+            "with it, so an interrupted call will stop and ask you rather "
+            "than resume. Add `recovery_behaviour: ClassVar[str] = "
+            '"read_only"` if it changes nothing outside the app, '
+            '"idempotent" if running it again with the same arguments is the '
+            'same effect rather than a second one, or "queryable" if '
+            "something can be asked what happened first.",
             tool.name,
         )
     try:

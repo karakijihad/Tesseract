@@ -134,7 +134,6 @@ async def identity(request: web.Request) -> web.Response:
         roles_summary[key] = {"mode": role_cfg.get("mode", "")}
 
     live_chat_ratio = _live_chat_attr(request.app, "compact_threshold", chat_brain.get("compact_threshold"), float)
-    live_chat_keep = _live_chat_attr(request.app, "keep_recent_turns", chat_brain.get("keep_recent_turns"), int)
     chat_window = int(chat_brain.get("context_window", 0))
     compaction = config.models.get("compaction") or {}
     compact_thresholds = {
@@ -142,17 +141,15 @@ async def identity(request: web.Request) -> web.Response:
             "ratio": live_chat_ratio,
             "context_window": chat_window,
             "tokens": int(round(live_chat_ratio * chat_window)),
-            "keep_recent_turns": live_chat_keep,
             # What the panel needs to draw the same picture the runtime
-            # enforces, minus the measured floor. That one is per conversation
-            # and this route has no conversation: it answers a GET with no
-            # session and no chat, and reporting whichever open session came
-            # first drew one chat's shape under another's name. The floor
-            # rides the `session_stats` envelope instead, which is delivered
-            # to the session it belongs to and stamped with its chat.
+            # enforces, minus the measured trigger. That one is per
+            # conversation and this route has no conversation: it answers a GET
+            # with no session and no chat, and reporting whichever open session
+            # came first drew one chat's shape under another's name. The
+            # measurement rides the `session_stats` envelope instead, which is
+            # delivered to the session it belongs to and stamped with its
+            # chat.
             "compact_ratio": compaction.get("compact_ratio"),
-            "headroom_multiplier": compaction.get("headroom_multiplier"),
-            "comfortable_multiplier": compaction.get("comfortable_multiplier"),
             # What the route will accept, so the control does not keep its own
             # copy of the bounds and drift from them.
             **COMPACTION_BOUNDS,

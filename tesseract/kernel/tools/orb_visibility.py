@@ -56,6 +56,8 @@ class OrbVisibilityTool(Tool):
         "how the orb looks or behaves while visible, which is `set_mood` or `set_state`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     def __init__(self, app_provider: Optional[Callable[[], Any]] = None) -> None:
         """``app_provider`` resolves the Mirror ``web.Application`` at call

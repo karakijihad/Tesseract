@@ -12,7 +12,9 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.orchestrator.agent_controller.lanes.tool_support import (
+    lane_record_locator,
     resolve_lane_manager,
     validate_lane_model,
 )
@@ -65,6 +67,8 @@ class LaneOpenTool(Tool):
         "is `delegate_coder`/`delegate_auditor`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     @property
     def name(self) -> str:
@@ -84,7 +88,11 @@ class LaneOpenTool(Tool):
             )
         model_error = validate_lane_model(inp.kind, inp.model)
         if model_error is not None:
-            return ToolResult(output=f"lane_open: {model_error}", is_error=True)
+            return ToolResult(
+                output=f"lane_open: {model_error}",
+                is_error=True,
+                caller_error=True,
+            )
         try:
             lane_id = await manager.open(
                 kind=inp.kind,  # type: ignore[arg-type]
@@ -99,6 +107,11 @@ class LaneOpenTool(Tool):
             )
         return ToolResult(
             output=f"lane_id={lane_id}",
+            receipt=Receipt(
+                kind="record",
+                id=lane_id,
+                locator=lane_record_locator(manager, lane_id),
+            ),
             metadata={
                 "lane_id": lane_id,
                 "kind": inp.kind,

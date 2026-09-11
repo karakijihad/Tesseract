@@ -27,6 +27,8 @@ class SurfaceFocusTool(Tool):
         "`surface_update` changes what the card shows, not its position."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:

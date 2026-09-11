@@ -35,14 +35,35 @@ function fmtTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+/** What a turn cost, in the numbers the ledger actually holds.
+ *
+ * A turn is up to eighty model calls and every one of them carries the whole
+ * prompt, so the reading is a sum over calls and not a single request. The
+ * count leads because without it the percentage is unreadable: one cold call
+ * in a three-call turn is 33%, the same cold call in a six-call turn is 80%,
+ * and both were read as "the cache is broken" on 2026-09-09 when neither was.
+ *
+ * `re-read` rather than `miss`: the tokens were not lost, they were sent again
+ * at full price, and that is the number worth acting on.
+ */
 function formatStats(s: MessageStats): { label: string; hitRate: number; title: string } {
   const total = s.input_tokens || 0;
   const cached = s.cached_tokens || 0;
+  const reread = Math.max(0, total - cached);
+  const calls = s.calls || 0;
   const hitRate = total > 0 ? Math.round((cached / total) * 100) : 0;
+  const callPart = calls > 0 ? `${calls} ${calls === 1 ? 'call' : 'calls'} · ` : '';
   const label = total > 0
-    ? `${total.toLocaleString()} in / ${cached.toLocaleString()} cached (${hitRate}%) / ${s.output_tokens.toLocaleString()} out`
+    ? `${callPart}${total.toLocaleString()} in / ${s.output_tokens.toLocaleString()} out · ${cached.toLocaleString()} cached, ${reread.toLocaleString()} re-read (${hitRate}%)`
     : '';
-  const title = `input ${total}, cached ${cached} (${hitRate}%), output ${s.output_tokens}`;
+  const title = total > 0
+    ? [
+        `${calls} model ${calls === 1 ? 'call' : 'calls'} this turn, each one carrying the whole prompt`,
+        `input ${total.toLocaleString()} tokens, output ${s.output_tokens.toLocaleString()}`,
+        `${cached.toLocaleString()} read from cache, ${reread.toLocaleString()} re-read at full price`,
+        `${hitRate}% of the input came from cache`,
+      ].join('\n')
+    : '';
   return { label, hitRate, title };
 }
 
@@ -171,6 +192,14 @@ function MessageBubbleImpl({ message, isLastAssistantComplete = false, previousU
             {status === 'queued' && (
               <span className="bubble-queued-pill t-meta" aria-label={`queued - ${entityName || ENTITY_FALLBACK} will read this after the current turn`}>
                 queued
+              </span>
+            )}
+            {status === 'interrupted' && (
+              <span
+                className="bubble-interrupted-pill t-meta"
+                aria-label="interrupted - the turn was stopped partway. What it had already done stands, and the next message carries on from here"
+              >
+                interrupted
               </span>
             )}
             {steered && (

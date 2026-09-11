@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+import uuid
 
 from tesseract.brain.tools import ToolRegistry, execute_tool
 from tesseract.kernel.tools.base import Tool, ToolContext
@@ -43,7 +44,15 @@ async def _prompt(tool: Tool, tool_input: object, context: ToolContext) -> bool:
 
 async def _run(target: str, view: str, intent: str, destination: str) -> int:
     registry = _registry()
-    context = ToolContext(tool_registry_provider=lambda: registry, ask_fn=_prompt)
+    # A call id, because `open` can dispatch to `os_launch` and both declare
+    # `unsafe`. A checkpoint row with no call id is written and then skipped
+    # by every reader (`checkpoints/read.py::unclosed_in`), so the effect
+    # would be one no boot scan can see and no card can be filed about.
+    context = ToolContext(
+        tool_registry_provider=lambda: registry,
+        ask_fn=_prompt,
+        current_call_id=f"open-cli-{uuid.uuid4().hex[:12]}",
+    )
 
     try:
         policy = load_permission_policy(

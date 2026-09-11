@@ -18,6 +18,13 @@ from typing import Any, Awaitable, Callable, ClassVar, Optional
 
 from pydantic import BaseModel
 
+from tesseract.kernel.tools.receipt import (
+    NO_RECEIPT,
+    VALID_RECEIPT_KINDS,
+    Receipt,
+)
+from tesseract.kernel.tools.recovery import VALID_RECOVERY_BEHAVIOURS
+
 _log = logging.getLogger(__name__)
 
 CliSink = Callable[[str, str, dict[str, Any]], Awaitable[None]]
@@ -144,6 +151,31 @@ class ToolResult:
     # marker to `output` so the model sees the incompleteness even though
     # only `.output` reaches it as tool-message content.
     timed_out: bool = False
+    # True when `is_error` is set because the CALL was wrong rather than
+    # because the tool is unwell: a path that is not there, an argument of
+    # the wrong shape, work already done. The turn record writes
+    # `RunOutcome.CALLER_ERROR` for these instead of `failed`, so the day
+    # panel stops reporting the most used tool in the registry as the least
+    # reliable one. Measured: 87 `file_read` calls in a day, 2 of them "File
+    # not found", rendered as a 2% failure rate for reading files.
+    #
+    # Set by the tool at the point it already knows, exactly as `timed_out`
+    # is, and False by default so a tool nobody has visited keeps reading
+    # `failed`. **Never inferred from `depends_on`**, which answers a
+    # different question: it declares which breaker a tool is counted
+    # against, and `channel_send` carries `""`, so inferring from it would
+    # file a Telegram outage as the model's mistake.
+    caller_error: bool = False
+    # What this call left behind, and where to find it. `None` means the tool
+    # said nothing, which is only acceptable from a tool whose CLASS declares
+    # `receipt_kind = "none"`. Anything else that succeeds and returns no
+    # receipt is recorded `unverified`: it acted, and the only account of what
+    # it did is its own.
+    #
+    # A call that had no effect this time says so with `Receipt.nothing()`
+    # rather than by staying silent. `git status` through a tool that can also
+    # commit is the case that needs it.
+    receipt: "Receipt | None" = None
 
 
 @dataclass
@@ -178,7 +210,21 @@ class ToolContext:
     # handed down rather than the recorder itself, because a tool needs to say
     # one thing about the turn and nothing else.
     turn_id: str = ""
+    # What this call belongs to when there is no conversation and no turn
+    # record: a scheduled run, an autonomy item, a probe. It is a KEY and
+    # nothing more, which is why it is separate from `turn_id` rather than
+    # filling it in — that field means a turn was recorded, and the two
+    # callers that read it would then bind work to a record nobody wrote.
+    #
+    # `orchestrator/checkpoints/` keys a file on the conversation, then on
+    # this. Without it every scheduled turn and sub-agent shares one stream,
+    # and a run looking for its own last step finds somebody else's.
+    run_id: str = ""
     bind_task: Optional[Callable[[str], None]] = field(default=None, repr=False)
+    # The other half of `bind_task`: how the task this turn was working ended
+    # (`done`/`failed`) and who wrote the evidence (`gate`/`model`). Stamped
+    # the same way and `None` in the same places. Only `task_close` calls it.
+    note_task_closed: Optional[Callable[[str, str], None]] = field(default=None, repr=False)
     # The MCP client identity this call is being made on behalf of, when it
     # came in over the hub. Durable resource ownership hangs off this, not off
     # `session_id` — a session id changes every reconnect, so a lane owned by
@@ -187,6 +233,19 @@ class ToolContext:
     # scheduler): those reach the substrate directly rather than through a
     # gateway, and are the operator's work.
     caller_principal: str = ""
+    # Which KIND of conversation this call is running in, from
+    # `ChatSession.session_kind`: "cockpit", "channel" or "autonomy". Stamped
+    # per call beside `current_call_id`, and empty wherever no ChatSession owns
+    # the call (the REPL, the scheduler's own jobs, a probe).
+    #
+    # It exists because "autonomy" is the one kind with nobody reading along.
+    # A posture cannot answer this: a posture is about a TOOL, and the two
+    # tools that write what the assistant believes are `auto` in every mode by
+    # design, because a person is normally sitting there when they are called.
+    # `ask_fn is None` cannot answer it either, since under `free` no ask is
+    # reached at all. So the tools that install something durable ask what kind
+    # of conversation they are in, and that question needs a field.
+    session_kind: str = ""
     # Set by `decide.evaluate` before `ask_fn` is invoked so ask_fn
     # implementations can write durable approval-ledger rows with the
     # effective posture source. One of: "security", "path_validator",
@@ -408,6 +467,40 @@ class Tool(ABC):
     # it is structural rather than a table of error strings.
     depends_on: ClassVar[str] = ""
 
+    # What sort of mark this tool can leave in the world, from
+    # `receipt.py::VALID_RECEIPT_KINDS`, or `"none"` for a tool that can never
+    # leave one. Declared on the class exactly as `default_posture` and
+    # `risk_class` are, and read there rather than guessed.
+    #
+    # **It says what the tool CAN produce; the call says whether it did.** A
+    # call that succeeds through a tool declaring a kind and returns no
+    # receipt is recorded `unverified`, because a tool that was supposed to
+    # answer and did not is different from one that had nothing to point at.
+    # The second says so with `Receipt.nothing()`.
+    #
+    # The empty string is not a decision, it is a tool nobody has read, and
+    # `check_tool_contract` refuses it. Every tool answers, a read-only one
+    # included: `"none"` from a reader is a true sentence, and leaving readers
+    # out would have made the guard depend on `is_read_only()`, which is False
+    # on this class and so says nothing about whether an author thought at all.
+    receipt_kind: ClassVar[str] = ""
+
+    # What recovery may do with a call whose outcome is unknown, from
+    # `recovery.py::VALID_RECOVERY_BEHAVIOURS`. Declared on the class exactly
+    # as `receipt_kind` is, and for the same reason: the tool is the only
+    # thing that knows.
+    #
+    # **It is not `is_read_only()` renamed.** That answers whether the call may
+    # run unattended; this answers whether it may be repeated. `browser_screenshot`
+    # is False there and `read_only` here, because taking a screenshot twice is
+    # not two effects.
+    #
+    # The empty string is not a decision, and `check_tool_contract` refuses it.
+    # Read it through `recovery.behaviour_of`, never off the class: a tool that
+    # never reached the check answers `unsafe` there, which is the only answer
+    # that cannot produce a second effect.
+    recovery_behaviour: ClassVar[str] = ""
+
     # Input fields whose CONTENT must not reach a log. Declared here, on the
     # class, for the same reason the four fields above are: a rule kept
     # somewhere else is a rule the next tool does not inherit.
@@ -597,6 +690,32 @@ def check_tool_contract(tool: Tool) -> None:
             f"tool '{tool.name}' (class {cls.__name__}) is missing "
             f"tool-contract field(s) {sorted(missing)}. Declare them at the "
             f"class level — `description` composes from them."
+        )
+    # What this tool can leave behind, from the closed set. Every tool answers,
+    # including a read-only one, which answers `"none"`. Keyed on the
+    # declaration and not on `is_read_only()`: that returns False on the base,
+    # so 114 of 156 tools "are not read-only" whether their author thought
+    # about it or not, and a guard reading it would reward silence.
+    if cls.receipt_kind not in VALID_RECEIPT_KINDS:
+        raise RuntimeError(
+            f"tool '{tool.name}' (class {cls.__name__}) declares "
+            f"receipt_kind={cls.receipt_kind!r}; expected one of "
+            f"{sorted(VALID_RECEIPT_KINDS)}. Say what identifier this tool "
+            "leaves, or 'none' if it can never leave one — a call that acts "
+            "and cannot be checked is what this field exists to surface."
+        )
+    # What recovery may do with this call if the process dies before its
+    # outcome is known. Checked beside the receipt because the two are one
+    # answer: a receipt says what a call left, this says whether the call may
+    # be made a second time to leave it again.
+    if cls.recovery_behaviour not in VALID_RECOVERY_BEHAVIOURS:
+        raise RuntimeError(
+            f"tool '{tool.name}' (class {cls.__name__}) declares "
+            f"recovery_behaviour={cls.recovery_behaviour!r}; expected one of "
+            f"{sorted(VALID_RECOVERY_BEHAVIOURS)}. Say what a crash-recovery "
+            "pass may do with a call it cannot see the outcome of. Ask "
+            "whether REPEATING it repeats an effect, not whether it is safe "
+            "to run unattended."
         )
     if cls.group not in GROUPS:
         raise RuntimeError(

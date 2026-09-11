@@ -76,7 +76,6 @@ class ChatSessionWiring:
     # session on `config/loader.py`'s shipped answer, which is what a builder
     # with no `ChatBrainConfig` to read it off wants.
     prompt_char_budget: int | None = None
-    keep_recent_turns: int | None = None
     cost_ledger: CostLedger | None = None
     overage_ask_fn: Callable[[BudgetExhausted], Awaitable[bool]] | None = None
     session_kind: str = "cockpit"
@@ -92,7 +91,7 @@ class ChatSessionWiring:
 def build_chat_session(wiring: ChatSessionWiring) -> "ChatSession":
     """Construct the ``ToolContext`` + ``ChatSession`` shared by both builders.
 
-    ``options`` / ``compact_threshold`` / ``keep_recent_turns`` are omitted
+    ``options`` / ``compact_threshold`` are omitted
     from the ``ChatSession`` call when ``None`` on the wiring so the
     dataclass's own defaults apply — matching the controller's existing
     "only pass what the config actually has" behavior.
@@ -143,6 +142,4 @@ def build_chat_session(wiring: ChatSessionWiring) -> "ChatSession":
         kwargs["compact_threshold"] = wiring.compact_threshold
     if wiring.prompt_char_budget is not None:
         kwargs["prompt_char_budget"] = wiring.prompt_char_budget
-    if wiring.keep_recent_turns is not None:
-        kwargs["keep_recent_turns"] = wiring.keep_recent_turns
     return ChatSession(**kwargs)

@@ -14,9 +14,13 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
-from tesseract.memory.retrieval import RetrievalPipeline
+from tesseract.memory.retrieval import (
+    TIER_NOTICE,
+    UNKNOWN_TIER_LABEL,
+    RetrievalPipeline,
+)
 from tesseract.memory.tree_query import SUPPORTED_SCOPES, query as tree_query
-from tesseract.memory.types import MemoryType
+from tesseract.memory.types import MemoryType, SourceTier
 
 
 class MemorySearchInput(BaseModel):
@@ -89,6 +93,8 @@ class MemorySearchTool(Tool):
         "said in a past session, which is recall rather than settled fact."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     def __init__(self, pipeline: RetrievalPipeline) -> None:
         self._pipeline = pipeline
@@ -153,20 +159,18 @@ class MemorySearchTool(Tool):
             # gone, so there is nothing to re-read and no follow-up to quote.
             # The fact itself is unchanged — an old lesson, not a doubtful one.
             aged = ", source deleted" if r.source_deleted else ""
+            tier = r.source_tier.value if r.source_tier else UNKNOWN_TIER_LABEL
             header = (
                 f"[{r.mem_type.value}] {r.title} "
                 f"(id: {r.memory_id}, via: {via}, score: {r.score:.2f}, "
-                f"confidence: {r.confidence:.2f}{aged})"
+                f"confidence: {r.confidence:.2f}, from: {tier}{aged})"
             )
             parts.append(f"{header}\n{r.body}")
         if work_history_hits:
             # Trust-labeled block — keep promoted memory and work
             # history visually distinct so the model can tell.
             wh_lines = [
-                "--- WORK HISTORY (non-authoritative recall) ---",
-                "Session transcripts + workshop artifacts surfaced for "
-                "context. NOT promoted memory; treat as suggestions. "
-                "`file_read` the source path for full context.",
+                f"--- WORK HISTORY (from: {SourceTier.RECALLED.value}) ---",
             ]
             for h in work_history_hits:
                 label = f"{h.source}:{h.source_ref}"
@@ -179,6 +183,11 @@ class MemorySearchTool(Tool):
                     preview = preview[:480] + "…"
                 wh_lines.append(f"\n[{label}]{ts_tag}  `{location}`\n{preview}")
             parts.append("\n".join(wh_lines))
+        # One notice covering every hit, imported rather than restated: this
+        # surface and the auto-recall block used to carry two hand-written
+        # trust texts that could disagree, and each knew about work history
+        # alone.
+        parts.append(TIER_NOTICE.strip())
         return ToolResult(output="\n\n---\n\n".join(parts))
 
     def _run_tree(self, inp: MemorySearchInput) -> ToolResult:

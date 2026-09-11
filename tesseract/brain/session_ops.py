@@ -57,8 +57,16 @@ REFLECTION_PROMPT = (
     "Leave a field empty when you do not know it. An empty field is recorded "
     "as empty and that is useful; a guessed next action is not, because the "
     "next context acts on it. `artifacts` holds paths and identifiers, never "
-    "file contents. If this conversation was not about a piece of work, return "
-    "the block with every field empty.\n\n"
+    "file contents, and you do not need to write out where the project lives: "
+    "the runtime records that beside them. If this conversation was not about "
+    "a piece of work, return the block with every field empty.\n\n"
+    "`remaining` is WORK SOMEBODY WILL DO NEXT, and nothing else. Not what the "
+    "project has decided to leave out, not stages that need approval before "
+    "they can start, not standing scope notes. Those are true and they are not "
+    "remaining work, and this field is read as though they were: an empty "
+    "`remaining` is how the runtime knows the work is finished, so padding it "
+    "with things nobody is going to do says there is work left when there is "
+    "none. If a boundary decides on this, decide it honestly.\n\n"
     "One reflection pass, then stop."
 )
 
@@ -314,19 +322,29 @@ async def _attribute_skill_corrections(session: ChatSession, calls: list[dict[st
     down-weight the skills consulted this session. A deduped / policy-blocked /
     errored feedback save is NOT a durable correction and must not fire.
     Best-effort: telemetry must never break reflection."""
-    saved_correction = any(
-        c.get("save_type") == "feedback" and c.get("status") == "saved"
-        for c in calls
-    )
-    if not saved_correction:
+    saved = [
+        c for c in calls
+        if c.get("save_type") == "feedback" and c.get("status") == "saved"
+    ]
+    if not saved:
         return
+    # The memory that IS the correction, so the evidence can carry the words
+    # and not just a step number. `_merge_result_metadata` fills `memory_id`
+    # from the tool result; it is empty when the result carried none, and the
+    # row then says nothing rather than guessing. The FIRST durable feedback
+    # save is the one attributed, matching the single row this writes.
+    memory_id = str(saved[0].get("memory_id") or "")
     try:
         import asyncio
 
         from tesseract.brain.skill_usage import attribute_session_corrections
 
         # Off the loop: it reads the usage log whole and a day of turn records.
-        await asyncio.to_thread(attribute_session_corrections, session.tool_context.session_id)
+        await asyncio.to_thread(
+            attribute_session_corrections,
+            session.tool_context.session_id,
+            memory_id,
+        )
     except Exception:  # noqa: BLE001
         log.warning("reflection: skill-correction attribution failed", exc_info=True)
 
@@ -340,15 +358,15 @@ async def _attribute_skill_corrections(session: ChatSession, calls: list[dict[st
 # latencies. The second wrapped it in a threshold check.
 #
 # Both are gone because the boundary has to ask the threshold BEFORE it
-# reflects: reflection reads a snapshot, and a snapshot taken after the fold is
-# a snapshot of what the fold left. Once the boundary asks, a wrapper that asks
-# again and then folds is a second answer to a question already answered.
+# reflects: reflection reads a snapshot, and a snapshot taken after the
+# conversation was cleared is a snapshot of nothing. Once the boundary asks, a
+# wrapper that asks again is a second answer to a question already answered.
 #
-# So `session.should_compact()` is the rule, `session.compact()` is the act,
-# and `after_turn` is the only thing that puts them in order. Reflection has to
-# start there in any case: it writes a `reflection_proposal` into the workspace
-# event store, which lives on the Mirror app and cannot be reached from here
-# without inverting the layering.
+# So the threshold is read in `after_turn` and nowhere else, and `after_turn`
+# is the only thing that puts the reflection, the record, the archive and the
+# clear in order. Reflection has to start there in any case: it writes a
+# `reflection_proposal` into the workspace event store, which lives on the
+# Mirror app and cannot be reached from here without inverting the layering.
 
 
 # ── Background reflect ──────────────────────────────────────────────
@@ -398,10 +416,6 @@ def clone_for_reflection(session: ChatSession) -> ChatSession:
         # extended-tool set every background reflect (audit 2026-07-12).
         tool_context=copy.copy(session.tool_context),
         compact_threshold=session.compact_threshold,
-        headroom_multiplier=session.headroom_multiplier,
-        keep_recent_turns=session.keep_recent_turns,
-        head_anchor_messages=session.head_anchor_messages,
-        summary_char_budget=session.summary_char_budget,
         # Shares the live session's adapter, so it shares the model's ceiling.
         prompt_char_budget=session.prompt_char_budget,
         ask_fn=session.ask_fn,
@@ -487,39 +501,6 @@ async def rebuild_memory_index(bundle: MemoryBundle) -> int:
         _, body = entry
         pairs.append((fm.id, body))
     return await bundle.embeddings.rebuild(pairs)
-
-
-def do_stats(session: ChatSession) -> dict[str, Any]:
-    """Snapshot of turns, token estimate, compact threshold, context window.
-
-    Also surfaces the sliding-window knobs and the
-    current running-summary length, so the Mirror status pane / the assistant
-    `/stats` tool can show what shape the active window has.
-    """
-    # The runtime's own mark, like everywhere else. This read the banner the
-    # message opens with, which is public text a participant can type, so
-    # `/stats` could be made to report somebody's ordinary message as the size
-    # of the running summary.
-    from tesseract.brain.chat import _is_running_summary_message
-
-    ctx = session.options.context_window or 0
-    threshold = int(ctx * session.compact_threshold) if ctx else 0
-    summary_chars = 0
-    for msg in session.history:
-        if _is_running_summary_message(msg):
-            content = msg.get("content")
-            summary_chars = len(content) if isinstance(content, str) else 0
-            break
-    return {
-        "turns": session.turn_count(),
-        "tokens": session.token_estimate(),
-        "threshold": threshold,
-        "compact_ratio": session.compact_threshold,
-        "head_anchor_messages": session.head_anchor_messages,
-        "summary_chars": summary_chars,
-        "summary_char_budget": session.summary_char_budget,
-        **session.fold_measurements(session.system_prompt_tokens()),
-    }
 
 
 def do_set_mode(policy: "PermissionPolicy", mode: str) -> str:

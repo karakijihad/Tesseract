@@ -351,6 +351,35 @@ def keep_predecessor(folder: Path, live: SkillEntry, proposed: SkillEntry) -> st
 
 
 _STATUS_LINE_RE = re.compile(r"^status:[^\n]*$", re.MULTILINE)
+_VERSION_LINE_RE = re.compile(r"^version:[^\n]*$", re.MULTILINE)
+
+
+def stamp_playbook_version(proposed_markdown: str, number: int) -> str:
+    """Write `number` into a proposed SKILL.md's frontmatter `version`.
+
+    The revision number is the runtime's, never the author's. A version is an
+    ordering key: `keep_predecessor` archives the predecessor under it and
+    refuses anything that does not sort above the live one, so a wrong value
+    is not a typo but a refusal, and the model that writes the markdown kept
+    proposing `3.1` against a live `3` however plainly the field said whole
+    number. Restating the instruction had already been tried; this takes the
+    field out of the author's hands instead.
+
+    The line is replaced in place rather than the frontmatter re-serialised,
+    so the rest of the file is byte for byte what the author wrote
+    (`set_skill_status`'s reason, and the same idiom). Returns the markdown
+    unchanged when it has no frontmatter, which is a proposal the loader is
+    about to reject anyway.
+    """
+    match = _FRONTMATTER_RE.match(proposed_markdown)
+    if not match:
+        return proposed_markdown
+    block = match.group(1)
+    if _VERSION_LINE_RE.search(block):
+        block = _VERSION_LINE_RE.sub(f"version: {number}", block, count=1)
+    else:
+        block = f"{block}\nversion: {number}"
+    return proposed_markdown[: match.start(1)] + block + proposed_markdown[match.end(1):]
 
 
 def set_skill_status(folder: Path, status: str) -> str | None:
@@ -402,10 +431,12 @@ def replace_skill_body(
     names a different skill, and, for a playbook, when it would not pass the
     door a new one goes through (`skill_create.refuse_playbook`: a tool the
     runtime lacks, a credential-bearing path, a path outside the home tree).
-    Then `keep_predecessor` archives the live revision and refuses a proposal
-    that is not a later one. If the replace itself fails after the archive
-    was made, the archive is taken back, so the slot is not consumed by a
-    revision that never landed. Returns an error string or None.
+    A playbook's revision number is stamped by the runtime before any of that
+    (`stamp_playbook_version`), so `keep_predecessor` can only refuse over a
+    live version that cannot be ordered or a slot already taken, never over
+    arithmetic the author got wrong. If the replace itself fails after the
+    archive was made, the archive is taken back, so the slot is not consumed
+    by a revision that never landed. Returns an error string or None.
     """
     import tempfile
 
@@ -415,6 +446,17 @@ def replace_skill_body(
     live = load_skill_folder(skills_dir / name)
     if live is None:
         return f"the live skill {name!r} does not parse, so nothing can be kept before replacing it"
+
+    # The revision number is the runtime's. Stamped before validation so the
+    # text written and the entry loaded from it agree, and so `refuse_playbook`
+    # reads what will land. A live version that cannot be ordered is NOT
+    # stamped over: that is a real broken state and `keep_predecessor` says so.
+    if live.is_playbook:
+        from tesseract.brain.playbook_contract import version_number
+
+        live_number = version_number(live.version)
+        if live_number is not None:
+            proposed_markdown = stamp_playbook_version(proposed_markdown, live_number + 1)
 
     tmp_root = Path(tempfile.mkdtemp())
     tmp_folder = tmp_root / name

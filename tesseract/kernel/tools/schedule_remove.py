@@ -16,6 +16,7 @@ import logging
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,8 @@ class ScheduleRemoveTool(Tool):
         "is `alarm_cancel`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "job"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:
@@ -62,10 +65,19 @@ class ScheduleRemoveTool(Tool):
         try:
             cfg = scheduler.remove_job_runtime(inp.name)
         except KeyError:
-            return ToolResult(output=f"job {inp.name!r} is not registered", is_error=True)
+            return ToolResult(
+                output=f"job {inp.name!r} is not registered",
+                is_error=True,
+                caller_error=True,
+            )
         except Exception as exc:
             return ToolResult(output=f"schedule_remove failed: {exc}", is_error=True)
         return ToolResult(
             output=f"job '{cfg.name}' removed",
+            receipt=Receipt(
+                kind="job",
+                id=cfg.name,
+                locator=str(scheduler.config_dir / "schedule.yaml"),
+            ),
             metadata={"name": cfg.name, "cadence": cfg.cadence, "handler": cfg.handler},
         )

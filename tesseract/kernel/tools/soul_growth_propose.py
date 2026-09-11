@@ -27,6 +27,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.kernel.workspace_changes import (
     PROPOSABLE_PATHS,
     SOUL_GROWTH_SECTIONS,
@@ -89,6 +90,8 @@ class SoulGrowthProposeTool(Tool):
         "`memory_save` for facts about the operator or project."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "queryable"
 
     """Queue a SOUL.md Growth bullet for operator approval (workspace inbox)."""
 
@@ -110,14 +113,37 @@ class SoulGrowthProposeTool(Tool):
             else SoulGrowthProposeInput(**tool_input.model_dump())
         )
 
+        # SOUL.md is who the assistant is, and under `free` a proposal against
+        # it applies without an operator seeing it (`permissions.yaml`'s
+        # `workspace_documents` holds OPERATING, WORKSHOP and CHANNEL at ask
+        # and not this one). A turn nobody asked for, whose prompt is built
+        # from files an outside tool may have written, is not a turn that gets
+        # to say what the assistant is like.
+        if context.session_kind == "autonomy":
+            return ToolResult(
+                output=(
+                    "Nobody is watching this conversation, so it cannot propose "
+                    "a change to who you are. Write the observation in the "
+                    "diary and let a reflection the operator is part of decide "
+                    "whether it is a pattern."
+                ),
+                is_error=True,
+                caller_error=True,
+                metadata={"refused_unattended": True},
+            )
+
         try:
             section = validate_growth_section((inp.section or "").strip())
         except ProposeError as exc:
-            return ToolResult(output=str(exc), is_error=True)
+            return ToolResult(output=str(exc), is_error=True, caller_error=True)
 
         bullet = (inp.bullet or "").strip().lstrip("-•*").strip()
         if not bullet:
-            return ToolResult(output="Empty bullet — nothing proposed.", is_error=True)
+            return ToolResult(
+                output="Empty bullet — nothing proposed.",
+                is_error=True,
+                caller_error=True,
+            )
         if len(bullet) > _MAX_BULLET_CHARS:
             return ToolResult(
                 output=(
@@ -125,13 +151,14 @@ class SoulGrowthProposeTool(Tool):
                     "Growth is a distillate. Trim to one observation."
                 ),
                 is_error=True,
+                caller_error=True,
             )
 
         try:
             full_path = validate_target(self._repo_root, _SOUL_REL)
             action = validate_action(_SOUL_REL, "append_to_section")
         except ProposeError as exc:
-            return ToolResult(output=str(exc), is_error=True)
+            return ToolResult(output=str(exc), is_error=True, caller_error=True)
 
         try:
             before = full_path.read_text(encoding="utf-8")
@@ -147,7 +174,7 @@ class SoulGrowthProposeTool(Tool):
                 section=section,
             )
         except ProposeError as exc:
-            return ToolResult(output=str(exc), is_error=True)
+            return ToolResult(output=str(exc), is_error=True, caller_error=True)
 
         label = str(PROPOSABLE_PATHS[_SOUL_REL]["label"])
         diff = compute_diff(before, after, target_label=label)
@@ -214,6 +241,11 @@ class SoulGrowthProposeTool(Tool):
 
         return ToolResult(
             output=f"{note} event_id={event.event_id}",
+            receipt=Receipt(
+                kind="record",
+                id=event.event_id,
+                locator=str(store.events_path),
+            ),
             metadata={
                 "event_id": event.event_id,
                 "target_path": _SOUL_REL,

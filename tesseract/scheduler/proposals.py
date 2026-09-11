@@ -56,7 +56,18 @@ class ProposalKind:
 
 
 #: The closed set. Two producers draw from it: `working_set_review` files the
-#: first two, `runtime_tuning` the rest.
+#: first two, `runtime_tuning` the ceiling. The last two are declared and not
+#: fileable, which is the honest state for a kind whose number does not exist.
+#:
+#: **A kind is removed when its SEAM will not take it**, which is a different
+#: failure from having no gauge and has no honest `missing` sentence.
+#: `run_less_often` was here and is gone: it proposed re-timing a scheduled
+#: row, and `config_loader.py::refuse_cadence` refuses any change to how often
+#: a SHIPPED row runs, on the rule that the app owns the timing of its own
+#: work. Every row a user has is shipped, so the kind could only ever file a
+#: card whose approval was refused. It is not re-scoped to "turn the row off"
+#: either: a row producing the same thing every time is often a quiet watchman
+#: doing its job, and proposing to stop it is a different and worse claim.
 KINDS: tuple[ProposalKind, ...] = (
     ProposalKind(
         key="carry_more",
@@ -82,21 +93,6 @@ KINDS: tuple[ProposalKind, ...] = (
         reads=("logs/usage/tools.jsonl", "logs/skills/usage.jsonl"),
     ),
     ProposalKind(
-        key="run_less_often",
-        summary=(
-            "Run a scheduled job less often when its last several runs all "
-            "produced the same thing."
-        ),
-        why=(
-            "A job that has said the same thing for weeks is paying for a "
-            "question nobody is asking. Without this, a cadence set once is "
-            "the cadence forever."
-        ),
-        seam="schedule_update",
-        moves="how often that job runs",
-        reads=("logs/schedule/runs.jsonl",),
-    ),
-    ProposalKind(
         key="ceiling",
         summary=(
             "Raise a role's daily spending cap when it keeps hitting it, or "
@@ -108,7 +104,7 @@ KINDS: tuple[ProposalKind, ...] = (
             "from the outside, which is quiet."
         ),
         seam="POST /api/settings/cost",
-        moves="that part of the app's daily spending limit",
+        moves="the daily spending limits named above",
         reads=("logs/cost-tracking.jsonl", "config/roles.yaml"),
     ),
     ProposalKind(
@@ -124,7 +120,13 @@ KINDS: tuple[ProposalKind, ...] = (
         ),
         seam="workspace/skills/carried.txt",
         moves="which playbooks every turn carries",
-        reads=("logs/skills/usage.jsonl", "workspace/skills/"),
+        reads=(),
+        instrumented=False,
+        missing=(
+            "The playbook log records which ones ran, never which piece of "
+            "work ran without one, so nothing here can say a playbook was "
+            "the one that should have been reached for."
+        ),
     ),
     ProposalKind(
         key="keep_less",

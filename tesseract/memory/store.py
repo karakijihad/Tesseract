@@ -15,14 +15,117 @@ import shutil
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable, Sequence
 
 import yaml
 
-from tesseract.memory.related_block import RelatedItem, replace_related_block
+from tesseract.memory.derivation import (
+    DerivationRefusal,
+    load_derivation_config,
+    resolve as derivation_resolve,
+)
+from tesseract.memory.related_block import (
+    END_MARKER,
+    START_MARKER,
+    RelatedItem,
+    replace_related_block,
+)
 from tesseract.memory.types import MemoryFrontmatter, MemoryType, Stability
-from tesseract.memory.what_not_to_save import WhatNotToSave
+from tesseract.memory.capture_policy import CapturePolicy
 
 logger = logging.getLogger(__name__)
+
+#: The auto-managed Related block, matched ONLY where `replace_related_block`
+#: puts one: at the end of the body, from the LAST opening marker. Anchoring
+#: the end alone is not enough, and this was wrong once: `search` finds the
+#: FIRST marker, and a non-greedy body then runs to the last closing one, so a
+#: record whose prose quotes the markers had that prose swallowed into the
+#: block and could never be classified as repaired. Starting at the last
+#: opening marker means the interior can hold no marker of its own.
+_AUTO_BLOCK_TAIL = re.compile(
+    re.escape(START_MARKER) + r"(?P<inner>.*?)" + re.escape(END_MARKER) + r"\s*\Z",
+    re.DOTALL,
+)
+#: One rendered link line, in the two shapes `render_related_block` writes.
+#: The alias is captured rather than skipped: checking the id alone left the
+#: text beside it unchecked, and `- [[a real id|any payload at all]]` is a
+#: well-formed line whose id passes. That was a live bypass, not a latent one.
+_AUTO_BLOCK_LINK = re.compile(
+    r"^-\s*\[\[(?P<id>[^\]|]+)(?:\|(?P<alias>[^\]]*))?\]\]$"
+)
+
+
+def _body_of(text: str) -> str:
+    """The body of a memory file, without running its frontmatter through YAML.
+
+    Line-anchored like `MemoryStore._split_frontmatter`, and not a split on the
+    bare substring `---`: any YAML value carrying those three characters moves
+    a naive split's second boundary and hands back something that is not the
+    body. Raises `ValueError` on a file that opens a fence and never closes it.
+    """
+    text = text.replace("\r\n", "\n")
+    if not text.startswith("---\n"):
+        return text.strip()
+    return text[text.index("---\n", 4) + 4:].strip()
+
+
+def _split_auto_block(body: str) -> tuple[str, str | None]:
+    """`(prose, block interior)`, where a block only counts at the very end.
+
+    From the LAST opening marker rather than the first, so a marker quoted in
+    the record's own prose stays prose on both sides of the comparison.
+    """
+    start = body.rfind(START_MARKER)
+    if start == -1:
+        return body.strip(), None
+    match = _AUTO_BLOCK_TAIL.match(body, start)
+    if match is None:
+        return body.strip(), None
+    return body[:start].strip(), match.group("inner")
+
+
+def _block_declares_only(
+    inner: str,
+    auto_links: Sequence[str],
+    title_of: Callable[[str], str | None],
+) -> bool:
+    """Whether the block holds nothing but links the store itself would render.
+
+    This is what stops the marker pair being a hole. Without it, `stored prose
+    + markers + anything at all` compares equal to what is stored, so the write
+    reads as a repair and the payload is persisted having been judged by
+    nothing.
+
+    EVERY part of a line is checked against something the store owns, not just
+    the id. The id must be in the record's own `auto_links`, and the alias must
+    be the linked record's own title, which is what `render_related_block`
+    puts there. Checking the id alone was the first version and it left the
+    text beside it free: one real id plus `|` plus anything was accepted, and
+    `memory_update` could reach it with caller content on any record that had
+    a link. A caller supplies no part of this region that the store cannot
+    derive for itself.
+    """
+    declared = {str(link) for link in (auto_links or ())}
+    for line in inner.splitlines():
+        line = line.strip()
+        if not line or line == "## Related":
+            continue
+        match = _AUTO_BLOCK_LINK.match(line)
+        if match is None:
+            return False
+        memory_id = match.group("id").strip()
+        if memory_id not in declared:
+            return False
+        alias = match.group("alias")
+        if alias is None:
+            continue
+        # An alias that is not the neighbour's own title is text this record
+        # did not get from the store. A title is not itself judged by the
+        # capture policy, here or anywhere, so this bounds the region to what
+        # is already in the store rather than making it unreachable.
+        if alias.strip() != (title_of(memory_id) or "").strip():
+            return False
+    return True
 
 # Layer A — operator-directives section in the system prompt.
 # Floor 6 keeps load-bearing rules and drops trivial corrections.
@@ -155,7 +258,7 @@ def list_frontmatter(
 class MemoryStore:
     def __init__(self, store_dir: Path) -> None:
         self._store_dir = store_dir
-        self._wnts = WhatNotToSave()
+        self._policy = CapturePolicy()
         # Parsed-frontmatter cache for list_all — path -> (mtime_ns, size,
         # frontmatter-or-None). The lock serializes concurrent scans:
         # list_all runs both on the loop thread and under asyncio.to_thread
@@ -213,6 +316,72 @@ class MemoryStore:
                     return path
         return None
 
+    def _is_an_admission(
+        self, path: Path, body: str, auto_links: Sequence[str]
+    ) -> bool:
+        """Whether this write is putting NEW content into the store.
+
+        Every property this has to hold AT ONCE, because it has now been got
+        wrong twice in two different directions:
+
+        1. A record that is not on disk yet is an admission.
+        2. A write that hands back the stored body unchanged is a repair.
+        3. A write that differs ONLY in the auto-managed Related block is a
+           repair: the cascade strips it, the scrub rewrites it and the
+           auto-linker adds to it, and all three can leave a body under the
+           trivial-body floor.
+        4. Any other difference in the prose is an admission, however old the
+           id. This is the one `path.exists()` missed, and `memory_update`
+           walked through it with caller content.
+        5. Nothing is declared by a caller and nothing is exempt by name.
+        6. **Caller bytes never get to say where the auto-managed region is.**
+           The markers are matched only as a block at the END of the body,
+           where `replace_related_block` puts one, so a body whose own prose
+           quotes them is compared as prose on both sides rather than having a
+           span of itself silently eaten.
+        7. **And never what is inside it.** A repair's block may contain only
+           links the FRONTMATTER already declares. Otherwise `stored prose +
+           markers + anything` compares equal to the stored body and arbitrary
+           content rides into the store inside a region nothing judged, which
+           is property 4 defeated by the fix for property 6.
+
+        A stored record that cannot be read is an admission. That is the safe
+        direction: judging a repair costs a repair, and admitting unjudged
+        content costs the rule.
+        """
+        if not path.exists():
+            return True
+        try:
+            stored = _body_of(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):  # unreadable or malformed, so judge it
+            return True
+
+        stored_prose, _ = _split_auto_block(stored)
+        new_prose, new_inner = _split_auto_block(body)
+        if new_prose != stored_prose:
+            return True
+        if new_inner is None:
+            # The block removed altogether, which is the cascade's own move
+            # when a record loses its last neighbour.
+            return False
+
+        def title_of(memory_id: str) -> str | None:
+            record = self.read(memory_id, log_access=False)
+            return record[0].title if record is not None else None
+
+        return not _block_declares_only(new_inner, auto_links, title_of)
+
+    @property
+    def last_block_reason(self) -> str | None:
+        """Which capture rule turned the last write away, if one did.
+
+        A caller that has to tell the operator why a save did not happen needs
+        the rule's key to look up what it says about itself. Exposed rather
+        than reached for, so the rule stays a fact of the policy and not of
+        whoever asked.
+        """
+        return self._policy.last_reason
+
     def log_event(self, filename: str, entry: dict) -> None:
         """Append a forensic event to `events/<filename>` with an auto timestamp.
 
@@ -232,24 +401,13 @@ class MemoryStore:
         body: str,
         *,
         subdir_override: str | None = None,
-        skip_wnts_check: bool = False,
     ) -> bool:
-        # `skip_wnts_check` is the trusted-internal-caller escape hatch.
-        # Cascade / scrub rewrite *existing* entries to keep frontmatter
-        # consistent after a delete; their new body may legitimately fall
-        # below the trivial-body floor (Related block stripped, operator
-        # prose was already terse) and WhatNotToSave must not block the
-        # repair. Operator-facing save paths leave the default in place.
-        if not skip_wnts_check and not self._wnts.should_save(body):
-            self.log_event("writes.jsonl", {
-                "memory_id": frontmatter.id,
-                "type": frontmatter.type.value,
-                "title": frontmatter.title,
-                "status": "blocked",
-                "reason": self._wnts.last_reason or "what_not_to_save",
-            })
-            logger.info("Memory %s blocked by %s", frontmatter.id, self._wnts.last_reason or "what_not_to_save")
-            return False
+        # Cleared per write, not per judgement. `last_block_reason` is read by
+        # whoever has to tell the operator why a save did not happen, and only
+        # `admits()` used to reset it, so a repair whose credential check then
+        # failed reported whichever rule had blocked some earlier, unrelated
+        # write on the same store.
+        self._policy.last_reason = None
 
         if subdir_override is not None:
             target_subdir = self._validate_relative_path(subdir_override)
@@ -266,6 +424,77 @@ class MemoryStore:
             else:
                 subdir = self._type_to_subdir(frontmatter.type)
                 path = self._store_dir / subdir / f"{frontmatter.id}.md"
+
+        # Depth is stamped here and nowhere else, because this is the one
+        # function that can see both the record and the records it names. A
+        # caller cannot declare itself shallow, and a chain that would run
+        # past the cap never reaches the disk — a refused write is recoverable
+        # and a store full of restatement is not.
+        #
+        # New records only. The rule governs adding a link to a chain, not
+        # touching a record that already exists: the cascade and scrub paths
+        # rewrite records written long before this field, and refusing their
+        # repair would strand exactly the records most in need of it.
+        #
+        # One stat on the resolved path rather than `find_file`, which rglobs
+        # five subdirectories and finds nothing by definition when the record
+        # is new. Asking it here would have put five recursive walks of the
+        # store on the `subdir_override` path, which skipped that lookup
+        # entirely before.
+        # Admission is asked of an ADMISSION, and this is where the store
+        # decides what one is. The properties it has to hold at once:
+        #
+        #   1. a new record is judged;
+        #   2. a repair is never judged, because the cascade and the scrub
+        #      strip a Related block and can legitimately take a record under
+        #      the trivial-body floor, and refusing that repair would strand
+        #      the records most in need of it;
+        #   3. no caller can opt out by passing an argument, which is what the
+        #      deleted `skip_wnts_check` let any of them do;
+        #   4. content a caller SUPPLIES is judged even when it lands on a
+        #      record that already exists.
+        #
+        # Property 4 is the one `path.exists()` alone got wrong. It reads as a
+        # test of whether this is an admission and is really a test of whether
+        # the ID is new, and those come apart at `memory_update`, which takes
+        # caller content and writes it under the same id: a whole body of code
+        # or turn-recap entered the store with no rule consulted, through an
+        # `auto` tool. So the question asked is whether the BODY is the store's
+        # own. A repair hands back what was there, or what was there with its
+        # link block removed; anything else is content arriving from outside
+        # and is judged. Nothing is declared by a caller and nothing is
+        # exempt by name.
+        judged = self._is_an_admission(path, body, frontmatter.auto_links)
+        if judged:
+            if not self._policy.admits(body):
+                reason = self._policy.last_reason or "capture_policy"
+                self.log_event("writes.jsonl", {
+                    "memory_id": frontmatter.id,
+                    "type": frontmatter.type.value,
+                    "title": frontmatter.title,
+                    "status": "blocked",
+                    "reason": reason,
+                })
+                logger.info("Memory %s blocked by %s", frontmatter.id, reason)
+                return False
+
+        # Derivation stays NEW RECORDS ONLY, which is a narrower question than
+        # admission and deliberately not the same one: the rule governs adding
+        # a link to a chain, and the cascade and scrub rewrite records written
+        # long before the field existed. Widening it to every admission would
+        # refuse a repair this function has just decided is not an admission.
+        if not path.exists():
+            frontmatter, refusal = self._resolve_derivation(frontmatter)
+            if refusal is not None:
+                self.log_event("writes.jsonl", {
+                    "memory_id": frontmatter.id,
+                    "type": frontmatter.type.value,
+                    "title": frontmatter.title,
+                    "status": "refused",
+                    "reason": refusal.message(),
+                })
+                logger.info("Memory %s refused: %s", frontmatter.id, refusal.message())
+                return False
 
         # Every memory record gets a leading `kind` tag matching
         # its MemoryType so the Obsidian graph view's color groups fire
@@ -287,26 +516,28 @@ class MemoryStore:
         # is a backstop. It REFUSES the write when the store cannot be read,
         # which is the one degradation that is safe here: an unwritten memory
         # is recoverable and a durable one is not.
+        # A check that cannot run refuses the write, and that INCLUDES the
+        # check failing to import. It used to set `redact = None` and carry on,
+        # so the one condition the comment above calls unsafe was the one
+        # condition that wrote the record anyway. `SECURITY.md` states the
+        # stronger rule to the operator, and this is the code that owes it.
         try:
             from tesseract.credentials.redaction import redact
-        except Exception:  # noqa: BLE001 — no credential layer, nothing to check
-            redact = None  # type: ignore[assignment]
-        if redact is not None:
-            try:
-                content = redact(content)
-            except Exception as exc:  # noqa: BLE001
-                self.log_event("writes.jsonl", {
-                    "memory_id": frontmatter.id,
-                    "type": frontmatter.type.value,
-                    "title": frontmatter.title,
-                    "status": "blocked",
-                    "reason": "credential_check_unavailable",
-                })
-                logger.error(
-                    "Memory %s not written: it could not be checked for "
-                    "credentials (%s)", frontmatter.id, exc,
-                )
-                return False
+
+            content = redact(content)
+        except Exception as exc:  # noqa: BLE001
+            self.log_event("writes.jsonl", {
+                "memory_id": frontmatter.id,
+                "type": frontmatter.type.value,
+                "title": frontmatter.title,
+                "status": "blocked",
+                "reason": "credential_check_unavailable",
+            })
+            logger.error(
+                "Memory %s not written: it could not be checked for "
+                "credentials (%s)", frontmatter.id, exc,
+            )
+            return False
 
         tmp = path.with_suffix(".tmp")
         tmp.write_text(content, encoding="utf-8")
@@ -323,18 +554,67 @@ class MemoryStore:
             "type": frontmatter.type.value,
             "title": frontmatter.title,
             "status": "written",
+            # Whether the rules looked at this at all. The ledger could say
+            # what the funnel refused and not what it declined to examine,
+            # and the repair path is the one a bug would ride in on: a
+            # regression that started classifying admissions as repairs left
+            # no trace anywhere.
+            "judged": judged,
         })
         logger.info("Memory %s written to %s", frontmatter.id, path)
         _publish_bus_event("memory_written", {"id": frontmatter.id, "source": frontmatter.type.value})
         return True
 
+    def _resolve_derivation(
+        self, frontmatter: MemoryFrontmatter
+    ) -> tuple[MemoryFrontmatter, DerivationRefusal | None]:
+        """Look up what this record says it was written from, then judge it.
+
+        Resolving a locator is the store's job and deciding what it means is
+        `derivation`'s; keeping them apart is what lets a locator pointing
+        outside the store (a vault file, a daily note) read as raw material
+        rather than as an unreadable memory.
+
+        A config the operator has broken must not take memory writing down
+        with it: memory writes are unconditional and this check is a rule
+        over them, so an unreadable config leaves the write alone.
+        """
+        try:
+            config = load_derivation_config()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("derivation rule not applied (%s)", exc)
+            return frontmatter, None
+        sources: dict[str, MemoryFrontmatter | None] = {}
+        unresolved: set[str] = set()
+        for locator in frontmatter.derived_from:
+            record = None
+            if locator.startswith("mem_"):
+                read_result = self.read(locator, log_access=False)
+                if read_result is not None:
+                    record, _ = read_result
+                else:
+                    # A `mem_` id that does not read is NOT raw material. It
+                    # is a deleted source, a typo, or a race with a concurrent
+                    # delete, and treating it as raw would let one bogus id
+                    # satisfy the every-summary-reads-something-raw rule and
+                    # reset the depth of a chain that never ended.
+                    # `_cascade_deleted_id` cleans `links` and `auto_links`
+                    # and never `derived_from`, so a deleted source is a live
+                    # route to this.
+                    unresolved.add(locator)
+            sources[locator] = record
+        return derivation_resolve(frontmatter, sources, config, unresolved=unresolved)
+
     def update_body(self, memory_id: str, new_body: str) -> bool:
         """Refresh an existing memory's body + `updated_at`.
 
-        Returns False when the id is unknown or `write()` blocks on
-        WhatNotToSave. Logs a `status: "updated", reason: "cosine_merge"`
-        event alongside the atomic-write event so the forensic log shows
-        both the body replace and the dedupe-driven rationale.
+        Returns False when the id is unknown or the write does not land. This
+        replaces the body with content from somewhere else, so the capture
+        policy DOES judge it: what makes a write a repair is handing back the
+        body that is already there, and a cosine merge does the opposite.
+        Logs a `status: "updated", reason: "cosine_merge"` event alongside the
+        atomic-write event so the forensic log shows both the body replace and
+        the dedupe-driven rationale.
         """
         existing = self.read(memory_id, log_access=False)
         if existing is None:
@@ -503,7 +783,7 @@ class MemoryStore:
                 update={"auto_links": new_auto_links, "links": new_links}
             )
             new_body = replace_related_block(body, items)
-            if self.write(updated_fm, new_body, skip_wnts_check=True):
+            if self.write(updated_fm, new_body):
                 touched += 1
                 self.log_event("writes.jsonl", {
                     "memory_id": fm.id,

@@ -92,8 +92,15 @@ def stamp_identity(
       read by the adapter when it needs a send address.
 
     Stamping two of the three is not a partial success, it is a runtime where
-    a photo the operator sent a minute ago cannot be found. So all four
+    a photo the operator sent a minute ago cannot be found. So all five
     assignments happen together and no adapter gets to choose.
+
+    The fifth is ``session.channel_principal``, WHOSE conversation this is.
+    It is written onto the chat record, because a machine with a second
+    approved channel user has two conversations that are both
+    ``surface="channel"`` and only one of them is the operator's own. Derived
+    here rather than at the record, which by then has a fresh uuid and no way
+    back to the chat.
     """
     try:
         chat_session.tool_context.chat_id = durable_id
@@ -102,6 +109,60 @@ def stamp_identity(
     except AttributeError:
         log.debug("channel session: could not stamp tool_context identity")
     setattr(session, "channel_chat_id", chat_id)
+    setattr(session, "channel_principal", principal_for(channel, chat_id))
+
+
+def operator_principals() -> frozenset[str]:
+    """Every principal that is the OPERATOR's own, across every channel.
+
+    Asked of the adapters rather than composed here, because which approved
+    user is the operator is a fact each channel holds and no other module can
+    derive. An adapter that cannot tell contributes nothing, so its
+    conversations read as somebody else's.
+
+    Never raises. This decides what a digest may include, and a registry that
+    cannot be read is a reason to include less rather than a reason to fail a
+    scheduled job.
+    """
+    from tesseract.integrations import list_channels
+
+    out: set[str] = set()
+    try:
+        adapters = list_channels()
+    except Exception:  # noqa: BLE001
+        log.warning("channel session: the channel registry could not be read", exc_info=True)
+        return frozenset()
+    for adapter in adapters:
+        ask = getattr(adapter, "owner_principal", None)
+        if not callable(ask):
+            # An adapter that has not grown one is making the same answer as
+            # one returning "": this channel cannot say who owns it.
+            continue
+        try:
+            said = ask()
+        except Exception:  # noqa: BLE001 — one channel may not silence the rest
+            log.warning(
+                "channel session: %s could not say who owns it",
+                getattr(adapter, "name", "?"), exc_info=True,
+            )
+            continue
+        if said:
+            out.add(said)
+    return frozenset(out)
+
+
+def principal_for(channel: str, chat_id: str) -> str:
+    """The one spelling of whose conversation this is: `<channel>:<chat id>`.
+
+    One function because two places compare these strings and a second
+    spelling would make every comparison quietly false rather than loudly
+    wrong.
+    """
+    channel = (channel or "").strip()
+    chat_id = str(chat_id or "").strip()
+    if not channel or not chat_id:
+        return ""
+    return f"{channel}:{chat_id}"
 
 
 def restore_meta(session: Any, durable_id: str, record: Any | None = None) -> None:
@@ -200,7 +261,13 @@ def restore_history(
     return len(record.history)
 
 
-def archive_record(durable_id: str, history: list[dict[str, Any]]) -> str | None:
+def archive_record(
+    durable_id: str,
+    history: list[dict[str, Any]],
+    *,
+    channel: str = "",
+    chat_id: str = "",
+) -> str | None:
     """Copy this conversation into its own archived record, before it is wiped.
 
     A boundary the agent reached is not the operator saying they want the
@@ -216,11 +283,24 @@ def archive_record(durable_id: str, history: list[dict[str, Any]]) -> str | None
 
     Returns the new id, or `None` when there was nothing to copy or the copy
     could not be written, in which case the caller must not wipe.
+
+    **`channel` and `chat_id` are stated rather than read back**, for the same
+    reason the history is. The record can be missing entirely: the autosave
+    sleeps a full interval before its first write, so a conversation that
+    reaches a boundary inside its first minute has none, and `archive_copy`
+    then had nothing to read the surface off and called it a cockpit chat.
+    That put a channel transcript into the operator's own library and digest.
+    The caller knows both facts at this point; nothing here has to guess.
     """
     from tesseract.mirror.server import chat_store
 
     record = chat_store.load_chat(durable_id, include_channels=True)
-    return chat_store.archive_copy(record, history)
+    return chat_store.archive_copy(
+        record,
+        history,
+        surface="channel",
+        principal=principal_for(channel, chat_id) if channel and chat_id else None,
+    )
 
 
 def drop_record(durable_id: str) -> bool:

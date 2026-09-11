@@ -78,6 +78,8 @@ class VaultQueryTool(Tool):
         "vault is the operator's own library and is not the web."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     def __init__(
         self,

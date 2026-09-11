@@ -28,6 +28,7 @@ from tesseract.brain.agent_factory import (
     build_agent_session,
 )
 from tesseract.kernel.tools.base import Tool, ToolContext, ToolResult
+from tesseract.kernel.tools.receipt import Receipt
 from tesseract.orchestrator.agent_controller.interactive.agent_backend import (
     AgentSessionBackend,
 )
@@ -106,6 +107,13 @@ def _turn_to_toolresult(result: TurnResult, handle: str) -> ToolResult:
     return ToolResult(
         output=result.result_text or f"session={handle} turn={result.turn_index} done",
         is_error=result.is_error,
+        # The turn the collaborator actually ran, named by its own ordinal
+        # inside the session rather than by anything minted here.
+        receipt=Receipt(
+            kind="record",
+            id=f"{handle}#{result.turn_index}",
+            locator=result.target,
+        ),
         metadata={
             "handle": handle,
             "target": result.target,
@@ -157,6 +165,8 @@ async def _register_background(
     session._pending_spawn_id = spawn_handle.handle_id
     return ToolResult(
         output=f"{kind} spawned in background: handle={session.handle}, spawn={spawn_handle.handle_id}.",
+        # Nothing has run yet. The turn itself answers when it is collected.
+        receipt=Receipt.nothing(),
         metadata={
             "handle": session.handle,
             "spawn_handle": spawn_handle.handle_id,
@@ -176,6 +186,7 @@ async def _collect_background(
     if spawn_id is None:
         return ToolResult(
             output=f"session handle={session.handle}: no pending background turn.",
+            receipt=Receipt.nothing(),
             metadata={"handle": session.handle, "status": "idle"},
         )
 
@@ -197,6 +208,7 @@ async def _collect_background(
     if not wait and spawn_handle.is_running():
         return ToolResult(
             output=f"session handle={session.handle} spawn still running.",
+            receipt=Receipt.nothing(),
             metadata={"handle": session.handle, "spawn_handle": spawn_id, "status": "running"},
         )
 
@@ -284,6 +296,8 @@ class SessionOpenTool(CarriesCompaction, Tool):
         "one-shot worker, which is `delegate_coder`/`delegate_auditor`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "unsafe"
 
     def __init__(
         self,
@@ -456,6 +470,8 @@ class SessionSendTool(Tool):
         "result later, which is `session_result`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "unsafe"
 
     @property
     def name(self) -> str:
@@ -481,7 +497,9 @@ class SessionSendTool(Tool):
         session = reg.get(inp.handle)
         if session is None:
             return ToolResult(
-                output=f"session_send: unknown handle {inp.handle!r}.", is_error=True
+                output=f"session_send: unknown handle {inp.handle!r}.",
+                is_error=True,
+                caller_error=True,
             )
 
         if inp.background:
@@ -526,6 +544,8 @@ class SessionResultTool(Tool):
         "which is `lane_read`/`lane_turn`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "record"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:
@@ -554,7 +574,9 @@ class SessionResultTool(Tool):
         session = reg.get(inp.handle)
         if session is None:
             return ToolResult(
-                output=f"session_result: unknown handle {inp.handle!r}.", is_error=True
+                output=f"session_result: unknown handle {inp.handle!r}.",
+                is_error=True,
+                caller_error=True,
             )
 
         return await _collect_background(context, session, inp.wait, inp.timeout)
@@ -571,6 +593,8 @@ class SessionCloseTool(Tool):
     use_when: ClassVar[str] = "Use when a session's conversation is finished."
     not_when: ClassVar[str] = "terminating a lane's CLI process, which is `lane_close`."
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "idempotent"
 
     @property
     def name(self) -> str:
@@ -630,6 +654,8 @@ class SessionListTool(Tool):
         "`controller_session_list`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     @property
     def name(self) -> str:

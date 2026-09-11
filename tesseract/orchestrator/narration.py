@@ -18,7 +18,15 @@ failures, and passing because the digit existed somewhere in the input.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
+from typing import Iterable, Sequence
+
+from tesseract.brain import tool_availability as availability
+from tesseract.kernel.adapters.base import AdapterOptions, ModelAdapter, call_timeout
+
+log = logging.getLogger(__name__)
 
 _NUMBER = re.compile(r"\d+")
 
@@ -100,4 +108,106 @@ def is_faithful(text: str, facts: list[str], *, budget: int) -> bool:
     return not invented_figures(text, facts)
 
 
-__all__ = ["invented_figures", "is_faithful"]
+
+
+async def one_line(
+    facts: Sequence[str],
+    chain: Iterable[tuple[ModelAdapter, AdapterOptions]],
+    *,
+    instruction: str,
+    budget: int,
+    subject: str,
+) -> tuple[str, bool]:
+    """Walk a chain until one adapter writes a faithful line over `facts`.
+
+    Returns the line and whether a MODEL wrote it. The two are separate
+    answers because a model may legitimately return a sentence identical to
+    the facts it was given; comparing the text to decide whether one answered
+    would read that as a failure and call again forever.
+
+    Lifted out of `panel_lines._one` when a second surface needed it. Every
+    branch below is a lesson the panel already paid for, and a copy of this
+    loop is a second set of them:
+
+    * an entry set aside by its breaker is skipped, under the SAME breaker
+      name every other reader of that ref uses, so one `breaker_reset`
+      clears it here and in the chain together. Without it an end-of-life
+      entry was called 29 consecutive times, 14 of them paying a full 120s
+      timeout first.
+    * an empty answer is a provider failure and is counted BEFORE any success
+      is recorded. Reading "the call returned" as health let an entry that
+      only ever returned empty strings close its own breaker on every pass.
+    * a non-empty answer IS this entry's health, whether or not the sentence
+      turns out to be usable. A model that writes 154 characters is working;
+      faithfulness is a different question and it is the caller's line that
+      is dropped, never the provider's record.
+
+    `("", False)` means nothing wrote one. What that should show instead is
+    the caller's, because the two callers have different answers: a panel
+    room shows its counted facts, and a notification keeps the body its
+    template already composed.
+    """
+    observed = list(facts)
+    prompt = "\n".join(
+        [instruction, "", "--- OBSERVED ---", *(f"- {line}" for line in observed), ""]
+    )
+    for adapter, options in chain:
+        label = f"{options.provider or '?'}/{options.model or '?'}"
+        ref = _entry_ref(options)
+        shut = availability.refusal(ref, f"a written line for {subject}") if ref else None
+        if shut is not None:
+            log.debug("narration: %s is set aside (%s)", label, shut[1])
+            continue
+        try:
+            timeout = call_timeout(options)
+        except KeyError as exc:
+            log.warning("narration: %s has no timeout (%s)", label, exc)
+            continue
+        try:
+            out = await asyncio.wait_for(
+                adapter.generate(prompt, options), timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            log.warning("narration: %s timed out after %.1fs", label, timeout)
+            availability.note_provider_failure(
+                ref, f"no answer within {timeout:g}s", kind="no_answer"
+            )
+            continue
+        except Exception as exc:  # noqa: BLE001 — a line may fail; a surface may not
+            log.warning("narration: %s call failed (%s)", label, exc)
+            availability.note_provider_failure(ref, str(exc))
+            continue
+        said = (out or "").strip()
+        if not said:
+            log.warning("narration: %s returned empty", label)
+            availability.note_provider_failure(
+                ref, "the model returned nothing", kind="empty_answer"
+            )
+            continue
+        availability.note_success(ref)
+        if not is_faithful(said, observed, budget=budget):
+            log.warning(
+                "narration: %s wrote %r over %s, which names %s that nobody "
+                "observed. Dropping it",
+                label, said, subject,
+                invented_figures(said, observed) or "nothing, but is too long",
+            )
+            continue
+        return said, True
+    return "", False
+
+
+def _entry_ref(options: AdapterOptions) -> str:
+    """The catalog ref these options name, or "" when they name nothing."""
+    try:
+        from tesseract.kernel.tools.dependency import catalog_ref
+
+        if not options.provider or not options.model:
+            return ""
+        return catalog_ref(options.tier or "api", options.provider, options.model)
+    except Exception:  # noqa: BLE001 — a surface may not fail over its own gate
+        log.debug("narration: no ref for %s", options.model, exc_info=True)
+        return ""
+
+
+__all__ = ["invented_figures", "is_faithful", "one_line"]

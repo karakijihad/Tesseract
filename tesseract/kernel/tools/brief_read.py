@@ -54,6 +54,8 @@ class BriefReadTool(Tool):
         "one first. This tool only reads what already exists."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     def __init__(self, *, briefs_dir: Path | None = None) -> None:
         # Default resolved at call time via ``_resolve_briefs_dir`` so
@@ -81,6 +83,7 @@ class BriefReadTool(Tool):
             return ToolResult(
                 output=f"invalid date {inp.date!r}: expected YYYY-MM-DD",
                 is_error=True,
+                caller_error=True,
             )
         path = self._resolve_briefs_dir() / f"{target.isoformat()}.md"
         if not path.exists():
@@ -90,6 +93,7 @@ class BriefReadTool(Tool):
                     "the daily cron to fire."
                 ),
                 is_error=True,
+                caller_error=True,
                 metadata={"date": target.isoformat(), "path": str(path)},
             )
         text = path.read_text(encoding="utf-8")

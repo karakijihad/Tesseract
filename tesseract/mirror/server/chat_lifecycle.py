@@ -429,7 +429,7 @@ async def _handle_chat_rename(app: web.Application, session: ServerSession, data
     ))
 
 
-def _handle_observer_pane_ack(app: web.Application, msg: dict) -> None:
+async def _handle_observer_pane_ack(app: web.Application, msg: dict) -> None:
     pane_id = msg.get("paneId") or msg.get("pane_id")
     granted = bool(msg.get("granted"))
     if not isinstance(pane_id, str) or not pane_id:
@@ -445,5 +445,8 @@ def _handle_observer_pane_ack(app: web.Application, msg: dict) -> None:
         if app.get("observer_state") in {"armed", "observing"}:
             app["observer_state"] = "observing"
     else:
-        pty.revoke_consent(pane_id)
+        # This message IS the operator answering the consent prompt, so a `no`
+        # here is permission being taken back rather than a pane going away,
+        # and it reaches the records as well as the buffer.
+        await pty.withdraw_consent(pane_id)
 

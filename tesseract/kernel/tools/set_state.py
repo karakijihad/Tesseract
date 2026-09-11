@@ -73,6 +73,8 @@ class SetStateTool(Tool):
         "hiding the orb, `orb_visibility`."
     )
     depends_on: ClassVar[str] = ""
+    receipt_kind: ClassVar[str] = "none"
+    recovery_behaviour: ClassVar[str] = "read_only"
 
     def __init__(self, affect: EntityAffect) -> None:
         self._affect = affect

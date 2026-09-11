@@ -329,6 +329,46 @@ async def get_operator_journal(request: web.Request) -> web.Response:
     return web.json_response({"rows": rows, "limit": limit, "days": days})
 
 
+async def get_return_note(request: web.Request) -> web.Response:
+    """GET /api/autonomy/return-note — what changed since the operator was
+    last here, as the same text the brief and the tool carry.
+
+    The panel calls the one reader rather than assembling its own view of the
+    same records, so the cockpit and a phone cannot disagree about what
+    happened. `owed` says whether the absence was long enough for the brief to
+    have carried it; the panel shows the note either way, because a room the
+    operator opened is a question they asked.
+
+    On a thread: the note opens the agenda history, the archive, the ledger
+    and the inbox, and nothing on this panel may keep a browser waiting on
+    that disk.
+    """
+    from tesseract.kernel.workspace_changes import workspace_events_dir
+    from tesseract.lib import last_seen
+    from tesseract.orchestrator.brief import return_note
+    from tesseract.workspace_events.events import EventStore
+
+    ledger = request.app.get("cost_ledger")
+
+    def _read() -> dict[str, Any]:
+        # One read, answering both halves. Reading the marker again for `owed`
+        # let a message arriving between the two produce a response whose
+        # `since` described the old absence and whose `owed` described a new
+        # one.
+        since = last_seen.read()
+        return {
+            "since": since.isoformat() if since is not None else None,
+            "owed": return_note.is_owed(since),
+            "text": return_note.render(
+                since=since,
+                event_store=EventStore(workspace_events_dir()),
+                ledger=ledger,
+            ),
+        }
+
+    return web.json_response(await asyncio.to_thread(_read))
+
+
 # -- pruned ledger + source mute -----------------------------------------
 
 
@@ -474,6 +514,7 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/governor/state", get_governor_state)
     app.router.add_get("/api/recovery/latest", get_latest_recovery)
     app.router.add_get("/api/autonomy/journal", get_operator_journal)
+    app.router.add_get("/api/autonomy/return-note", get_return_note)
     app.router.add_get("/api/autonomy/pruned", get_pruned_ledger)
     app.router.add_get("/api/autonomy/completion", get_completion)
     app.router.add_post("/api/autonomy/source/{source}/mute", mute_source)
@@ -486,6 +527,7 @@ __all__ = [
     "get_latest_recovery",
     "get_operator_journal",
     "get_pruned_ledger",
+    "get_return_note",
     "get_worker_detail",
     "list_active_workers",
     "mute_source",

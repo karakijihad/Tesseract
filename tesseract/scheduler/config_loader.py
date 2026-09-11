@@ -24,9 +24,12 @@ app's own work runs is part of what that work is: the capture window is lost if
 it widens, and the stages of the nightly pass have order rather than clocks. What
 IS the operator's is the hour of the day a row fires at, because an hour is
 something we chose on one machine and their evening is not ours. So an override
-may say WHEN a shipped row fires and never HOW OFTEN, which in practice is the
-one wall clock that ships: the anchor for the nightly pass. Their own rows keep
-every control they ever had.
+may say WHEN a shipped row fires and never HOW OFTEN, on any row that names an
+hour. Two do: `morning` at the start of the operator's day and `consolidate` at
+the end of it. It was one for a long time and this said so, which stopped being
+true the moment a second one shipped, so the rule is stated as the rule.
+`names_an_hour` is the predicate and it never counted anything. Their own rows
+keep every control they ever had.
 """
 
 from __future__ import annotations

@@ -52,17 +52,33 @@ export interface DriftRange {
  *  is the half the tool ledger cannot answer. `unjoined` is neither: a load
  *  with no closed turn around it is not a success and not a failure, and
  *  folding it into either would let a run of open turns read as a procedure
- *  that stopped working. `trouble` is failures and corrections over loads, or
- *  null with no loads, because a ratio over nothing is not a reading. */
+ *  that stopped working. `ungraded` is the same refusal one step further in:
+ *  the turn closed its task on the assistant's own sentence, so its outcome is
+ *  the model grading itself. `trouble` is failures and corrections over loads,
+ *  and null when no turn graded this revision at all, whether because nothing
+ *  read it or because nothing that read it could be graded: a ratio over
+ *  nothing is not a reading, and zero over nothing is not a clean record. */
 export interface PlaybookRevisionRow {
   version: string;
   loads: number;
   succeeded: number;
   failed: number;
   unjoined: number;
+  ungraded: number;
   corrections: number;
   retries: number;
   trouble: number | null;
+  /** How many distinct turns the two figures below are summed over, so the
+   *  sample is visible rather than inferred from `loads`. */
+  turns: number;
+  /** The tool calls those turns made and what they cost. These belong to the
+   *  TURN, not to the playbook: a turn does the work the playbook describes
+   *  and everything else it was for, and nothing on disk separates them. Show
+   *  them only with that said. */
+  turn_calls: number;
+  /** null when the cost was not measured, which is not the same as nothing
+   *  spent. Render it as unmeasured, never as $0.0000. */
+  turn_cost_usd: number | null;
 }
 
 export interface PlaybookUsageRow {
@@ -78,8 +94,22 @@ export interface PlaybookUsageRow {
   succeeded: number;
   failed: number;
   unjoined: number;
+  ungraded: number;
   corrections: number;
   retries: number;
+  turns: number;
+  turn_calls: number;
+  /** null when the cost was not measured, which is not the same as nothing
+   *  spent. Render it as unmeasured, never as $0.0000. */
+  turn_cost_usd: number | null;
+  /** The revision this one replaced, or "" when there has never been one.
+   *  A playbook is rewritten because it kept being corrected, and this is
+   *  what says whether the rewrite worked. */
+  previous_version: string;
+  previous_trouble: number | null;
+  /** null means undecided, NOT unchanged: a fresh revision has barely been
+   *  read, and the comparison is refused rather than rounded to no change. */
+  improved: boolean | null;
 }
 
 export interface PlaybookUsageResponse {
@@ -89,6 +119,9 @@ export interface PlaybookUsageResponse {
   total: number;
   /** The file the carried list lives in, so the panel can say where to edit. */
   path: string;
+  /** Why the calls and cost figures are the turn's. Read off the backend so
+   *  the panel and the chat answer cannot come to word it differently. */
+  turn_scope_note: string;
 }
 
 export interface ToolUsageRow {
@@ -139,6 +172,76 @@ export interface WorkingSetResponse {
 export interface ToolHeatmap {
   dates: string[];
   tools: { tool: string; counts: number[] }[];
+}
+
+/** What the runtime did on a day, or over a span of them.
+ *
+ *  Every figure here is read back from the records a turn writes for itself.
+ *  Nothing is computed in this file and nothing should be: the same reader
+ *  answers `day_read` on a channel, and a second arithmetic over the same
+ *  rows is a second answer waiting to disagree with the first.
+ */
+export interface DayCall {
+  at: string;
+  tool: string;
+  outcome: string;
+  reason: string;
+  ms: number;
+  turn: string;
+  door: string;
+  /** What the call left behind, when it left anything. `null` covers three
+   *  different cases and the OUTCOME tells them apart: the tool cannot leave
+   *  marks, it had nothing to leave this time, or it owed one and did not
+   *  produce it, which is `unverified`. */
+  receipt: { kind: string; id: string; locator: string } | null;
+}
+
+export interface DayTool {
+  tool: string;
+  calls: number;
+  byOutcome: Record<string, number>;
+  receipts: number;
+}
+
+export interface DayTurn {
+  turn: string;
+  at: string;
+  entry: string;
+  label: string;
+  /** The door in words. Never `entry`, which is a slug: a person cannot
+   *  resolve `channel:telegram` and the backend already answers this. */
+  door: string;
+  tools: string[];
+  outcome: string;
+  taskId: string;
+  taskOutcome: string;
+  taskVerifiedBy: string;
+}
+
+export interface DayReport {
+  days: string[];
+  turns: DayTurn[];
+  calls: DayCall[];
+  tools: DayTool[];
+  /** Every call that was not a clean success, in the order it happened.
+   *  `unverified` is in here: a band showing only failures would be silent
+   *  about the calls nobody can check. */
+  trouble: DayCall[];
+  byOutcome: Record<string, number>;
+  byDoor: { entry: string; name: string; turns: number }[];
+  turnCount: number;
+  callCount: number;
+  /** Records this reader could not parse. Rendered rather than dropped:
+   *  "nothing happened" and "this could not tell you" are different answers. */
+  unreadable: number;
+  /** The day the report is anchored on, which is the newest day with records
+   *  when the caller named none. `null` when nothing has ever been recorded,
+   *  and the panel says that rather than drawing today as a quiet day. */
+  anchor: string | null;
+  /** Which days the picker may reach, so an arrow goes inert rather than
+   *  offering a day that draws empty. */
+  available: string[];
+  maxSpanDays: number;
 }
 
 /** One block of the system prompt, as the assembly built it. Every one of
@@ -199,6 +302,54 @@ export interface PayloadResponse {
   chars_per_token: number;
 }
 
+/** One turn's model calls, as far as the prompt cache is concerned.
+ *
+ *  `hit_rate` is `null`, never 0, when no call in the turn reported a cached
+ *  count. A provider that said nothing and a provider that said zero are
+ *  different facts, and only the second one is a miss. */
+export interface CacheTurn {
+  turn_id: string;
+  started_at: string;
+  local_date: string;
+  role: string;
+  model: string;
+  calls: number;
+  reported_calls: number;
+  input_tokens: number;
+  cached_tokens: number;
+  uncached_tokens: number;
+  written_tokens: number;
+  cost_usd: number;
+  hit_rate: number | null;
+}
+
+export interface CacheSummary {
+  turns: number;
+  calls: number;
+  reported_calls: number;
+  unreported_calls: number;
+  input_tokens: number;
+  cached_tokens: number;
+  uncached_tokens: number;
+  written_tokens: number;
+  cost_usd: number;
+  hit_rate: number | null;
+}
+
+/** `ledger: false` means no ledger file exists yet, which is not the same as
+ *  a window with no hits and must not be drawn as one. */
+export interface CacheResponse {
+  days: number;
+  summary: CacheSummary | null;
+  /** The newest turns in the window, newest first. A turn that cached well is
+   *  at the bottom of `turns` by construction, so this is the only half that
+   *  can answer what the turn you just took did. */
+  latest: CacheTurn[];
+  /** The same window ranked by what each turn re-read, worst first. */
+  turns: CacheTurn[];
+  ledger: boolean;
+}
+
 interface ConscienceState {
   report: DriftReport | null;
   history: DriftReport[];
@@ -228,6 +379,11 @@ interface ConscienceState {
   payloadError: string | null;
   fetchPayload: () => Promise<void>;
 
+  cache: CacheResponse | null;
+  cacheLoading: boolean;
+  cacheError: string | null;
+  fetchCache: (days?: number) => Promise<void>;
+
   workingSet: WorkingSetResponse | null;
   workingSetLoading: boolean;
   workingSetError: string | null;
@@ -248,6 +404,17 @@ interface ConscienceState {
   playbookUsageLoading: boolean;
   playbookUsageError: string | null;
   fetchPlaybookUsage: () => Promise<void>;
+
+  day: DayReport | null;
+  /** `YYYY-MM-DD`, or null for whichever day the backend anchors on.
+   *  Held here rather than in the view so a refresh keeps the day the
+   *  operator was reading. */
+  dayOn: string | null;
+  /** The far end of a span, or null for a single day. */
+  dayThrough: string | null;
+  dayLoading: boolean;
+  dayError: string | null;
+  fetchDay: (on?: string | null, through?: string | null) => Promise<void>;
 }
 
 export const useConscienceStore = create<ConscienceState>((set) => ({
@@ -268,6 +435,10 @@ export const useConscienceStore = create<ConscienceState>((set) => ({
   payloadLoading: false,
   payloadError: null,
 
+  cache: null,
+  cacheLoading: false,
+  cacheError: null,
+
   workingSet: null,
   workingSetLoading: false,
   workingSetError: null,
@@ -281,6 +452,12 @@ export const useConscienceStore = create<ConscienceState>((set) => ({
   playbookUsage: null,
   playbookUsageLoading: false,
   playbookUsageError: null,
+
+  day: null,
+  dayOn: null,
+  dayThrough: null,
+  dayLoading: false,
+  dayError: null,
 
   fetchWorkingSet: async () => {
     set({ workingSetLoading: true, workingSetError: null });
@@ -347,6 +524,39 @@ export const useConscienceStore = create<ConscienceState>((set) => ({
     }
   },
 
+  fetchDay: async (on, through) => {
+    // `undefined` means "keep what is showing"; `null` means "clear it". The
+    // two are different asks and collapsing them made the range toggle
+    // unable to turn itself off.
+    const held = useConscienceStore.getState();
+    const nextOn = on === undefined ? held.dayOn : on;
+    const nextThrough = through === undefined ? held.dayThrough : through;
+    set({
+      dayLoading: true,
+      dayError: null,
+      dayOn: nextOn,
+      dayThrough: nextThrough,
+    });
+    const query = new URLSearchParams();
+    if (nextOn) query.set('on', nextOn);
+    if (nextThrough) query.set('through', nextThrough);
+    try {
+      const res = await fetch(
+        `${BACKEND_BASE}/api/conscience/day?${query.toString()}`,
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as DayReport;
+      // The backend chose the day when nobody named one, and the picker has
+      // to show what is actually being drawn.
+      set({ day: data, dayOn: data.anchor ?? nextOn, dayLoading: false });
+    } catch (err) {
+      set({
+        dayError: err instanceof Error ? err.message : String(err),
+        dayLoading: false,
+      });
+    }
+  },
+
   fetchHeatmap: async (days) => {
     const window = days ?? useConscienceStore.getState().heatmapDays;
     set({ heatmapLoading: true, heatmapError: null, heatmapDays: window });
@@ -375,6 +585,21 @@ export const useConscienceStore = create<ConscienceState>((set) => ({
       set({
         payloadError: err instanceof Error ? err.message : String(err),
         payloadLoading: false,
+      });
+    }
+  },
+
+  fetchCache: async (days) => {
+    set({ cacheLoading: true, cacheError: null });
+    try {
+      const window = days ? `?days=${days}` : '';
+      const res = await fetch(`${BACKEND_BASE}/api/conscience/cache${window}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      set({ cache: (await res.json()) as CacheResponse, cacheLoading: false });
+    } catch (err) {
+      set({
+        cacheError: err instanceof Error ? err.message : String(err),
+        cacheLoading: false,
       });
     }
   },

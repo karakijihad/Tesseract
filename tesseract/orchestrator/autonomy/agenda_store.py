@@ -256,6 +256,22 @@ class AgendaStore:
         raw = json.loads(path.read_text(encoding="utf-8"))
         return AgendaItem.model_validate(raw)
 
+    def path_for(self, item_id: str) -> Path | None:
+        """Where this item's record sits now, active or archived.
+
+        The store's to answer rather than the caller's to reconstruct: a
+        terminal item moves out of ``active/`` on the transition that closed
+        it, so a caller deriving the path itself names the file the item was
+        at a moment ago.
+        """
+        try:
+            path = agenda_item_path(item_id)
+        except ValueError:
+            return None
+        if path.exists():
+            return path
+        return self._find_in_archive(item_id)
+
     def save(self, item: AgendaItem) -> Path:
         """Atomic rewrite; recomputes score before writing. Terminal items route
         to ``_archive``. Returns the resolved on-disk path.
