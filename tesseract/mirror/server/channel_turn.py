@@ -53,6 +53,7 @@ async def _start_channel_turn(
     error_out: list[str] | None = None,
     refused_out: list[bool] | None = None,
     boundary_when_needed: Any | None = None,
+    runtime_origin: str | None = None,
 ) -> str | None:
     """Drive a plain chat turn for an external-channel message.
 
@@ -86,6 +87,13 @@ async def _start_channel_turn(
     for it (the ``⚠`` envelope below) — populated with the raw
     ``error_holder`` entries when the stream produced an error envelope.
     Additive / opt-in: existing call sites that omit it are unaffected.
+
+    ``runtime_origin``: set when this bridge started the turn itself rather
+    than answering a message somebody sent, so the stored user message is
+    marked as the runtime's (``brain/chat.py::RUNTIME_ORIGINS``). A channel
+    draws no speaker for it, but the history is the same history the cockpit
+    reads back, and an unmarked message there is the operator's name on
+    sentences they never typed.
 
     ``refused_out``: optional list, filled with one bool saying whether the
     runtime declined to BEGIN this turn (a spending cap, a tool cap) as opposed
@@ -180,7 +188,9 @@ async def _start_channel_turn(
 
         try:
             async for chunk in session.chat_session.send(
-                body, boundary_when_needed=boundary_when_needed,
+                body,
+                boundary_when_needed=boundary_when_needed,
+                runtime_origin=runtime_origin,
             ):
                 if chunk.type == ChunkType.TEXT and chunk.text:
                     reply_holder.append(chunk.text)

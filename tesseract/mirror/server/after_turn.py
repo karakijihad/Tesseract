@@ -40,10 +40,13 @@ conversation the operator was in the middle of is not.
 ## One act, and the only difference is what follows it
 
 Both answers do the same four things: reflect on a snapshot, archive what was
-said, clear the conversation in place, keep the thread. Then a CONTINUE hands
-the cleared conversation the package `brain/continuity.py` renders from the
-checkpoint, and a RESET hands it nothing. There is no second path and nothing
-branches on the trigger.
+said, clear the conversation in place, keep the thread. Both then hand the
+cleared conversation the package `brain/continuity.py` renders from the
+checkpoint, because either way the next turn needs to know where the work
+stood. What the answer decides is who reads it: a CONTINUE starts a turn
+against the package at once, which is the whole of what the word means, and a
+RESET leaves it in front of the conversation for whenever somebody speaks.
+There is no second path and nothing branches on the trigger.
 
 Clearing in place rather than opening a new conversation is the operator's
 reading, 2026-09-06, and it is what the document asks for: a fresh CONTEXT,
@@ -168,6 +171,7 @@ async def after_turn(
     channel: str | None = None,
     chat_id: str | None = None,
     announce: Callable[[str], Awaitable[None]] | None = None,
+    carry_on: Callable[[str], Awaitable[None]] | None = None,
     ending: Callable[[Callable[[], bool]], Awaitable[bool]] | None = None,
     mid_turn: bool = False,
 ) -> None:
@@ -189,6 +193,15 @@ async def after_turn(
 
     `announce` sends one line of text to the person, and a caller whose
     transport has none simply omits it.
+
+    `carry_on` starts a turn on this conversation whose body is the continuity
+    package, and is called only when the answer was CONTINUE. It is the third
+    surface callback beside `announce` and `ending`, because starting a turn
+    is the third thing only the surface knows how to do: the cockpit reaches a
+    chat by its id over a WebSocket, a channel reaches one by its Telegram id.
+    A caller that omits it leaves the package in front of the conversation and
+    the work waits for somebody to speak, which is what both surfaces did
+    before this existed.
 
     `app` is where the workspace event store lives, which a reflection has to
     reach. Required, and not something a caller can get wrong: both surfaces
@@ -301,6 +314,7 @@ async def after_turn(
         outcome=answer,
         refused=refused,
         announce=announce,
+        carry_on=carry_on,
         ending=ending,
     ):
         _record_boundary(
@@ -549,6 +563,7 @@ def _reflect(
     outcome: str = "",
     refused: str = "",
     announce: Callable[[str], Awaitable[None]] | None = None,
+    carry_on: Callable[[str], Awaitable[None]] | None = None,
 ) -> bool:
     """Distil what this conversation taught, without changing its shape.
 
@@ -556,6 +571,10 @@ def _reflect(
     can only be built once this reflection has written its checkpoint. It is
     the same callable the notices go through, because the package is a thing
     the person is told and there is no second way to tell them.
+
+    `carry_on` rides the same callback for the same reason: the turn a
+    `continue` promised is handed the package, and the package does not exist
+    until this reflection has written it down.
     """
     if app is None:
         log.warning("reflection skipped for %s: no app to reach the inbox with", label)
@@ -573,6 +592,7 @@ def _reflect(
             outcome=outcome,
             refused=refused,
             deliver=announce,
+            carry_on=carry_on,
         )
     except Exception:
         log.exception("reflection failed for %s", label)
@@ -589,14 +609,15 @@ async def _consolidate(
     outcome: "Continuation",
     refused: str = "",
     announce: Callable[[str], Awaitable[None]] | None = None,
+    carry_on: Callable[[str], Awaitable[None]] | None = None,
     ending: Callable[[Callable[[], bool]], Awaitable[bool]] | None,
 ) -> bool:
     """Reflect, archive, clear in place. True when the surface actually did.
 
     ONE act for both answers. What the outcome decides is not what happens here
     but what happens afterwards: it is recorded on the checkpoint, and the
-    reflection's completion callback delivers the continuity package for a
-    CONTINUE and nothing for a RESET.
+    reflection's completion callback hands the continuity package over either
+    way, then starts a turn against it for a CONTINUE and not for a RESET.
 
     The surface's ending is the only half that differs, and it is given the
     reflection to fire at its own point of no return. Reflection reads a
@@ -627,6 +648,7 @@ async def _consolidate(
             outcome=outcome.value,
             refused=refused,
             announce=announce,
+            carry_on=carry_on,
         )
 
     try:

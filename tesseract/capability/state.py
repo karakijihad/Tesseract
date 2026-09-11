@@ -149,6 +149,17 @@ class DependencyRecord(BaseModel):
     consent_origin: ConsentOrigin = ConsentOrigin.UNASKED
     #: One line, written for a person. Empty when the state speaks for itself.
     reason: str = ""
+    #: Whether `reason` is entirely this runtime's own composed words and may
+    #: reach a narration model. Mirrors `Finding.quotable`
+    #: (`orchestrator/watchman/findings.py`): the PRODUCER declares it,
+    #: because only the producer knows whether a substring of its own
+    #: `reason` came from outside this process — `check_ollama` builds one
+    #: branch from an httpx error, which stringifies with the request URL in
+    #: it. Default False: a branch nobody marks is held back rather than
+    #: forwarded. `reason` itself is unaffected either way; this gates only
+    #: the model-facing copy a caller builds from it
+    #: (`autonomy_health._capability_for_model`).
+    quotable: bool = False
     #: Download size where it is a fact about the artifact. `None` where it is
     #: resolved per machine (the dependency set, the CUDA wheels) — an
     #: invented figure here would reach the operator as a claim.

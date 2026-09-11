@@ -54,6 +54,7 @@ def _record(
     *,
     wanted: bool = True,
     version: str = "",
+    quotable: bool = False,
 ) -> DependencyRecord:
     """One verdict.
 
@@ -62,6 +63,11 @@ def _record(
     Consent then stays `never_asked` rather than becoming `declined`, because
     nobody was asked; the difference is what stops a not-applicable dependency
     being reported as a problem or repaired as one.
+
+    `quotable` defaults False, matching `DependencyRecord.quotable`: a caller
+    that composes `reason` entirely from this runtime's own words passes
+    `quotable=True` explicitly. One call site in this module does not — the
+    only branch that embeds text this process was handed rather than wrote.
     """
     return DependencyRecord(
         id=dep_id,
@@ -72,6 +78,7 @@ def _record(
         reason=reason,
         size_mb=size_mb,
         version=version,
+        quotable=quotable,
     )
 
 
@@ -147,12 +154,14 @@ def check_venv() -> DependencyRecord:
             DependencyState.UNKNOWN,
             "running from a development checkout, which has no provisioned environment",
             wanted=False,
+            quotable=True,
         )
     return _record(
         "venv",
         "runtime",
         DependencyState.ABSENT,
         "the Python environment is missing. The next launch will rebuild it",
+        quotable=True,
     )
 
 
@@ -194,6 +203,7 @@ def check_browser_engine() -> DependencyRecord:
             "service",
             DependencyState.UNKNOWN,
             "the browser location is overridden, so it cannot be checked here",
+            quotable=True,
         )
     try:
         installed = any(
@@ -209,6 +219,7 @@ def check_browser_engine() -> DependencyRecord:
         "service",
         DependencyState.ABSENT,
         "reading web pages is unavailable until the browser engine is installed",
+        quotable=True,
     )
 
 
@@ -244,6 +255,7 @@ def check_gpu_packages() -> DependencyRecord:
             "packages",
             DependencyState.UNKNOWN,
             "this machine's hardware profile could not be read",
+            quotable=True,
         )
 
     if not extras:
@@ -253,6 +265,7 @@ def check_gpu_packages() -> DependencyRecord:
             DependencyState.ABSENT,
             "not applicable to this machine",
             wanted=False,
+            quotable=True,
         )
 
     try:
@@ -264,6 +277,7 @@ def check_gpu_packages() -> DependencyRecord:
             "packages",
             DependencyState.UNKNOWN,
             "the graphics acceleration check could not run",
+            quotable=True,
         )
 
     if ready:
@@ -274,6 +288,7 @@ def check_gpu_packages() -> DependencyRecord:
         DependencyState.ABSENT,
         "this machine has a compatible graphics card, but speech is running "
         "on the processor instead",
+        quotable=True,
     )
 
 
@@ -321,6 +336,7 @@ def check_package_conflicts() -> DependencyRecord:
             "packages",
             DependencyState.UNKNOWN,
             "the hardware profile could not be read",
+            quotable=True,
         )
 
     if not extras:
@@ -329,6 +345,7 @@ def check_package_conflicts() -> DependencyRecord:
             "packages",
             DependencyState.OK,
             wanted=False,
+            quotable=True,
         )
 
     conflicting = sorted(
@@ -355,6 +372,11 @@ def check_package_conflicts() -> DependencyRecord:
         f"packages are reinstalled, speech could quietly move back onto the "
         f"processor and get slower. Remove it with: "
         f"uv pip uninstall {' '.join(present)}",
+        # `present` is drawn from `hardware.yaml::conflicts`, this project's
+        # own catalog of package names, never from anything an install
+        # produced at runtime — the same trust boundary as any other config
+        # value, not text this runtime was handed.
+        quotable=True,
     )
 
 
@@ -380,6 +402,7 @@ async def check_ollama() -> list[DependencyRecord]:
                 "service",
                 DependencyState.UNKNOWN,
                 "the provider catalog could not be read",
+                quotable=True,
             )
         ]
 
@@ -392,6 +415,7 @@ async def check_ollama() -> list[DependencyRecord]:
                 DependencyState.ABSENT,
                 "nothing in this configuration runs on it",
                 wanted=False,
+                quotable=True,
             )
         ]
 
@@ -404,6 +428,7 @@ async def check_ollama() -> list[DependencyRecord]:
                 DependencyState.ABSENT,
                 "not installed, so searching your memory and files falls back to "
                 "matching words rather than meaning",
+                quotable=True,
             )
         ]
 
@@ -414,6 +439,11 @@ async def check_ollama() -> list[DependencyRecord]:
     )
 
     if not fetched.ok:
+        # `fetched.error` is `f"{type(exc).__name__}: {exc}"` off an httpx
+        # failure (`ollama_boot.fetch_tags`), which is text this process was
+        # HANDED, not composed — an `httpx.HTTPError` stringifies with the
+        # request URL in it. Not quotable: this is the one branch in this
+        # module that is not.
         return [
             _record(
                 "ollama",
@@ -438,6 +468,9 @@ async def check_ollama() -> list[DependencyRecord]:
                 DependencyState.ABSENT,
                 f"{', '.join(sorted(absent))} "
                 f"{'has' if len(absent) == 1 else 'have'} not been downloaded",
+                # `absent` is drawn from `models`, the configured model names
+                # — this runtime's own config, not the daemon's response.
+                quotable=True,
             )
         )
     else:

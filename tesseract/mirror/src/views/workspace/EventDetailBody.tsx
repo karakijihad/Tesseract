@@ -554,6 +554,7 @@ export function EventDetailBody({ event }: Props) {
     case 'skill_approval':
       return <SkillApprovalBody payload={payload} />;
     case 'skill_refinement':
+    case 'skill_retirement':
       return <SkillRefinementBody payload={payload} />;
     case 'working_set_proposal':
     case 'tuning_proposal':

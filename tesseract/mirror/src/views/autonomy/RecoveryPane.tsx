@@ -49,21 +49,37 @@ const SCAN_LABEL: Record<string, string> = {
 };
 
 // What one of these things left half-finished actually is, in the panel's own
-// vocabulary. Only an agenda item and a worker have somewhere to open; a
-// conversation, an effect or a scan itself do not, so those rows keep their
-// reason on screen and stay plain rather than pretending there is a place to
-// go.
+// vocabulary. An agenda item and a worker open into their own record. An
+// effect opens into the same clarification card recovery already filed about
+// it: the same question, the same thread, answered from here rather than a
+// second version of it. A conversation and a scan itself have nowhere real to
+// go, so those rows keep their reason on screen and stay plain.
 const ATTENTION_OPENS: Record<string, AutonomyLevel['kind']> = {
   agenda: 'agenda',
   worker: 'worker',
+  effect: 'effect',
 };
 
 // The plain statement for a kind `ATTENTION_OPENS` has nothing for. The row
 // stays a plain line rather than a `Row` (no click, no role=button), and this
 // is the sentence that says why in words, so a reader is told rather than
-// left to guess from the absence of a cursor.
-const CANNOT_OPEN_SAYS =
-  'This cannot be opened from here. The reason above is everything currently known about it.';
+// left to guess from the absence of a cursor. A scan failing has nothing
+// beyond the error message already on the row; a turn has a whole record,
+// just not one this room can reach, so it says where the record actually is
+// instead of claiming there is nothing more to know.
+function cannotOpenSays(kind: string): string {
+  if (kind === 'turn') {
+    return (
+      'This cannot be opened from here. The full record of what it did, ' +
+      'every step and every tool it called, is in the Conscience panel, ' +
+      'under Day, read by turn rather than by tool.'
+    );
+  }
+  return (
+    'This cannot be opened from here. The reason above is everything ' +
+    'currently known about it.'
+  );
+}
 
 /** What one scan found, as a sentence. Empty when it found nothing, so a scan
  *  with nothing to report is not drawn at all. */
@@ -131,7 +147,7 @@ export function RecoveryPane({
                 onOpen: opens
                   ? () => pushLevel({ kind: opens, id: a.id, label: a.reason || a.id })
                   : undefined,
-                more: opens ? undefined : <p className="t-meta">{CANNOT_OPEN_SAYS}</p>,
+                more: opens ? undefined : <p className="t-meta">{cannotOpenSays(a.kind)}</p>,
               };
             })}
           />

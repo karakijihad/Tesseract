@@ -504,17 +504,27 @@ async def send_and_await_turn(
     chat_id: str,
     text: str,
     attachments: list[dict[str, Any]] | None = None,
+    *,
+    runtime_origin: str | None = None,
 ) -> None:
     """Conductor relay primitive — fire a turn on ``chat_id`` and await its
     completion (the turn's ``loop_end``). Yields the event loop while the turn
     streams, so other chats stay responsive. inc.C2: a background ``chat_id``
     runs lock-free (parallel text) and stays silent (D8); the active chat takes
-    the stream lock so its voice stays single."""
+    the stream lock so its voice stays single.
+
+    ``runtime_origin`` marks a turn nobody typed, so the transcript draws it as
+    the runtime rather than putting the operator's name on it
+    (``brain/chat.py::RUNTIME_ORIGINS``). The conductor omits it: it relays
+    what the operator asked for."""
     # Lazy: `_spawn_tracked` still lives in ws.py; see the note in `_run_turn`.
     from tesseract.mirror.server import ws as _ws
     task = _ws._spawn_tracked(
         app,
-        _run_chat_turn(app, session, text, attachments, chat_id=chat_id),
+        _run_chat_turn(
+            app, session, text, attachments,
+            chat_id=chat_id, runtime_origin=runtime_origin,
+        ),
         f"chat_turn:{session.session_id}:{chat_id}",
     )
     session.current_turn_tasks[chat_id] = task
@@ -608,9 +618,39 @@ async def _maybe_auto_compact(
             chat_id=stamp,
         ))
 
+    async def carry_on(text: str) -> None:
+        # The turn a `continue` promised. Its body is the continuity package,
+        # stamped so the transcript draws it as the runtime's: nobody typed
+        # this, and the package reaching history through the turn is what
+        # keeps it out of the record twice.
+        #
+        # `send_and_await_turn` rather than a path of its own. It is the
+        # primitive this surface already has for a turn on a named chat, it
+        # registers the turn where the Stop button reads, and awaiting it here
+        # is safe because `handoff` spawned this whole call rather than
+        # awaiting it.
+        if stamp is None:
+            log.info("no chat to carry the work on for session %s", session.session_id)
+            return
+        running = session.current_turn_tasks.get(stamp)
+        if running is not None and not running.done():
+            # The operator spoke while the reflection was still in flight.
+            # Their turn owns the slot the Stop button reads and
+            # `send_and_await_turn` claims that slot unconditionally, so the
+            # carried turn waits for theirs to unwind rather than taking it
+            # out of reach. `asyncio.wait` rather than awaiting the task: a
+            # turn they stopped raises `CancelledError` into whoever awaits
+            # it, and their stop is not a decision about this turn.
+            await asyncio.wait({running})
+        if getattr(session, "torn_down", False):
+            # Asked again, because the wait above can be as long as a turn.
+            log.info("the session ended before %s could carry the work on", stamp)
+            return
+        await send_and_await_turn(app, session, stamp, text, runtime_origin="carry_on")
+
     await after_turn(
         target, app=app, session=session,
-        ending=ending, announce=announce,
+        ending=ending, announce=announce, carry_on=carry_on,
         mid_turn=mid_turn,
     )
 

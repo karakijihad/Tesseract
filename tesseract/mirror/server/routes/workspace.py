@@ -495,7 +495,31 @@ async def _commit_skill_refinement(
         err = await asyncio.to_thread(_apply_skill_refinement, skills_dir, name, proposed, names)
         if err is not None:
             return None, ({"error": "refine_failed", "detail": err}, 409)
-        return {"refined": name}, None
+        # What the rewrite BECAME. The card carries the revision it was
+        # measured against; the runtime stamps the new number inside
+        # `replace_skill_body` and nothing carried it back out, so the
+        # approval ledger held only the superseded version and "did this
+        # rewrite measure better than the one it replaced" had no second
+        # side. Assuming the measured version plus one is wrong whenever the
+        # live version could not be ordered, which is the case the stamp
+        # skips.
+        applied = await asyncio.to_thread(_live_skill_version, skills_dir, name)
+        if applied:
+            # Best-effort, and deliberately after the write: the rewrite has
+            # already landed, so failing the decision now would report a
+            # refusal for something that happened. The ledger gets the
+            # version from the returned meta either way; this is the card
+            # keeping its own record of what it became.
+            try:
+                _store(app).merge_event_payload(
+                    ev.event_id, {"applied_version": applied}
+                )
+            except Exception:
+                log.warning(
+                    "skill_refinement: could not record the applied version for %s",
+                    name, exc_info=True,
+                )
+        return {"refined": name, "applied_version": applied}, None
 
     # Reject — skill untouched; record the reason for the assistant.
     store = _store(app)
@@ -532,7 +556,7 @@ def _base_moved(skills_dir: Path, name: str, base_sha256: str) -> str | None:
     )
 
 
-def _subject_of(ev: WorkspaceEvent) -> dict[str, Any]:
+def _subject_of(ev: WorkspaceEvent, applied_version: str = "") -> dict[str, Any]:
     """What a settled card was about, for the approval ledger's row.
 
     Only the kinds that HAVE a durable subject, and only the identifiers: the
@@ -544,12 +568,33 @@ def _subject_of(ev: WorkspaceEvent) -> dict[str, Any]:
     payload = ev.payload or {}
     if ev.kind == "skill_refinement":
         subject: dict[str, Any] = {"skill": str(payload.get("name") or "")}
-        for key in ("version", "applied_version"):
-            value = payload.get(key)
-            if value:
-                subject[key] = str(value)
+        # `version` is what the card was MEASURED against and is on the
+        # payload from the moment it is filed. `applied_version` is what the
+        # approved rewrite became, and is only on the payload once an apply
+        # has stamped it, which is why it is passed in rather than assumed:
+        # the key was read here before anything wrote it, so every ledger row
+        # carried the superseded revision alone.
+        if applied_version:
+            subject["applied_version"] = applied_version
+        elif payload.get("applied_version"):
+            subject["applied_version"] = str(payload["applied_version"])
+        if payload.get("version"):
+            subject["version"] = str(payload["version"])
         return subject
     return {}
+
+
+def _live_skill_version(skills_dir: Path, name: str) -> str:
+    """The revision the skill carries NOW, read off the file that was just
+    written. "" for a plain skill, which has none, and on any failure to
+    parse: the ledger row is better short a field than carrying a guess."""
+    from tesseract.brain.skills import load_skill_folder
+
+    try:
+        entry = load_skill_folder(skills_dir / name)
+    except Exception:
+        return ""
+    return entry.version if entry is not None and entry.is_playbook else ""
 
 
 def _apply_skill_refinement(
@@ -1451,6 +1496,8 @@ async def apply_decision(
         if decision != "delete" and ev.status not in {"pending"}:
             return ev, store.list_comments(event_id)
 
+        applied_version = ""
+
         if decision == "approve" and ev.kind == "change_proposal":
             err = await _commit_change_proposal(app, ev)
             if err is not None:
@@ -1492,9 +1539,10 @@ async def apply_decision(
                 raise DecisionError(*err)
 
         if decision in {"approve", "reject"} and ev.kind == "skill_refinement":
-            _refine_meta, err = await _commit_skill_refinement(app, ev, decision, reason)
+            refine_meta, err = await _commit_skill_refinement(app, ev, decision, reason)
             if err is not None:
                 raise DecisionError(*err)
+            applied_version = str((refine_meta or {}).get("applied_version") or "")
 
         if decision in {"approve", "reject"} and ev.kind == "vault_raw_ingest_batch":
             _result, err = await _commit_vault_raw_ingest_batch(
@@ -1546,7 +1594,7 @@ async def apply_decision(
                 # playbook, and did the change help" cannot be asked of it.
                 # `_subject_of` returns {} for a kind that has no subject, so
                 # the row is unchanged for every other card.
-                **_subject_of(ev),
+                **_subject_of(ev, applied_version),
             },
             posture_source="workspace_decision",
             result=(

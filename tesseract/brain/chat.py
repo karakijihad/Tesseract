@@ -80,10 +80,7 @@ from tesseract.kernel.adapters.base import (
 )
 from tesseract.kernel.state import ToolCall
 from tesseract.kernel.tools.base import ToolContext, ToolResult
-from tesseract.kernel.tools.untrusted_envelope import (
-    is_wrapped as _is_envelope_wrapped,
-    wrap as _wrap_untrusted,
-)
+from tesseract.kernel.tools.untrusted_envelope import wrap as _wrap_untrusted
 from tesseract.permissions.policy import PermissionPolicy
 
 logger = logging.getLogger(__name__)
@@ -268,6 +265,12 @@ RUNTIME_ORIGINS: frozenset[str] = frozenset({
     # record with two marks on it rather than one origin covering both: a
     # reader has to be able to tell the decision from the work.
     "workday",
+    # A boundary that answered `continue`, carrying the work on by itself.
+    # The turn's body IS the continuity package, which is why this is an
+    # origin and not a second `RUNTIME_CONTINUITY` note: the handoff and the
+    # turn that reads it are one message rather than two, and the same mark
+    # keeps the operator's name off sentences they never typed.
+    "carry_on",
 })
 KEEP_LAST_TURNS = 3
 # Hard floor on the recall_context content kept inside the latest user
@@ -2391,6 +2394,11 @@ class ChatSession:
         anything, and counting it would make a cleared conversation report a
         turn it never took.
 
+        Which is why this is the half a `reset` leaves behind, and not what a
+        `continue` does. A continue starts a turn against the same text, and
+        that turn's own message carries it under the `carry_on` mark, so
+        calling this as well would put the package in the history twice.
+
         Appended, not prepended. A boundary clears the history and this runs
         moments later, so in the ordinary case it IS the first message; if the
         operator got there first it sits after their question, which is late
@@ -4108,21 +4116,29 @@ class ChatSession:
             # of which tool finished first.
             for i, tc in enumerate(pending_calls):
                 tc_done, result = results[i]
-                # Audit-3 M9 — wrap untrusted tool output (file/web/vault
-                # bodies) in the UNTRUSTED_TOOL_OUTPUT envelope before
-                # the model history sees it. Without this, a markdown
-                # file or web snippet containing ``<system-reminder>``
-                # or "ignore previous instructions" reaches the model
-                # as raw text and may be obeyed. The envelope is
-                # idempotent so a tool that already wraps its own
-                # output won't be double-wrapped.
+                # Wrap untrusted tool output (file/web/vault bodies) in the
+                # UNTRUSTED_TOOL_OUTPUT envelope before the model history
+                # sees it. Without this, a markdown file or web snippet
+                # containing ``<system-reminder>`` or "ignore previous
+                # instructions" reaches the model as raw text and may be
+                # obeyed.
+                #
+                # **Unconditionally, and the condition that used to be here
+                # is why.** It skipped wrapping when the content already
+                # looked like an envelope, which sounds idempotent and is
+                # not: `is_wrapped` can only read the text, so a fetched
+                # page that IS one well-formed envelope satisfied it and
+                # went to history wearing a `tool=` and `source=` of its own
+                # choosing. The transcript then named the wrong tool for the
+                # body, which is one of the three things the envelope exists
+                # to do. Nothing was bought for it: no `untrusted_source`
+                # tool wraps its own output, so the guard never once fired
+                # on a real double-wrap. `wrap` defuses our markers out of
+                # the body, so wrapping here always yields exactly one
+                # fence, whatever the body claimed to be.
                 content = result.output
                 tool_obj = self.registry.get(tc.name) if self.registry else None
-                if (
-                    tool_obj is not None
-                    and getattr(tool_obj, "untrusted_source", False)
-                    and not _is_envelope_wrapped(content)
-                ):
+                if tool_obj is not None and getattr(tool_obj, "untrusted_source", False):
                     content = _wrap_untrusted(tool=tc.name, output=content)
                 self.history.append({
                     "role": "tool",

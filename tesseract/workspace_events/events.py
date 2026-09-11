@@ -60,6 +60,7 @@ EventKind = Literal[
     "runtime_lock_deny",         # SU-1/SU-5 — file_write or bash attempted to mutate a locked runtime path or config yaml; operator-visible audit surface
     "skill_approval",            # skill_create drafted a skill into quarantine; approve promotes, reject archives (mirror agent_approval)
     "skill_refinement",          # refinement job flags an underperforming skill + proposes a revised body; approve applies the diff to the live SKILL.md
+    "skill_retirement",          # a playbook revision measured worse than the one before it and was retired; the retiring already happened, so Resolve only
     "working_set_proposal",      # working_set_review proposes which tools and playbooks the turn carries; approve moves the names through each file's own generator
     "tuning_proposal",           # runtime_tuning proposes a change to what the runtime spends or how often it runs; approve moves the seam the card names
     "project_proposal",          # project_propose puts up an idea no existing project covers; approving means it is worth starting, and creates nothing

@@ -9,6 +9,21 @@ installed, you do not need it: the app offers you the update itself.
 
 ## Unreleased
 
+- **The map tells you which records it means.** Where it said how many records
+  disagree, or how many links point at something that is not there, it now
+  names them and lets you ask about one. A broken link is asked about from the
+  record that still names it, because the missing end is the half nothing can
+  look up. Records that nothing points at can be shown on the map itself.
+- **You can search your memory from the panel that describes it.** The room
+  said how much was in there and gave you no way to look inside it.
+- **A half finished call can be answered where you find it.** When the app
+  restarts and cannot tell whether something it started actually happened, it
+  asks you. That question was only findable in the inbox, and now opens from
+  the row that reports it, with the same thread and the same answer.
+- **Rows that cannot be opened say why, and where to look instead.** A record
+  of a conversation that ended badly is not lost; it is in the Conscience
+  panel, under Day, and the row now says so rather than implying nothing more
+  is known.
 - **The Autonomy panel can act, not just report.** Every room told you what was
   wrong and left you nothing to press. A row that reports a fault now offers
   the thing that answers it, and Health is five tabs, so the faults, the

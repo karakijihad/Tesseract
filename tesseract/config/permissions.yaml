@@ -208,6 +208,7 @@ tools:
   # thing being photographed.
   screen_look: ask
   tool_search: auto
+  tool_register: auto        # rescans the tools folder and rewrites its own index; nothing it does needs your approval to be undone
   orb_visibility: auto
   cockpit_show: auto
   work_send: auto

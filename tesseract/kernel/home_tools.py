@@ -43,7 +43,9 @@ import hashlib
 import importlib.util
 import inspect
 import logging
+import os
 import sys
+import tempfile
 import threading
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -56,6 +58,7 @@ from tesseract.kernel.tools.base import (
     check_tool_contract,
 )
 from tesseract.kernel.tools.recovery import UNSAFE
+from tesseract.kernel.tools.taxonomy import heading_for
 from tesseract.paths import user_tools_dir
 
 log = logging.getLogger(__name__)
@@ -230,6 +233,30 @@ def _contract_error(tool: Tool) -> str | None:
             '"idempotent" if running it again with the same arguments is the '
             'same effect rather than a second one, or "queryable" if '
             "something can be asked what happened first.",
+            tool.name,
+        )
+    # Third and last of the same carve-out, and the one that had teeth: this
+    # field went in on 2026-09-07 and `check_tool_contract` refuses without it,
+    # so every custom tool written before that date stopped loading at the next
+    # scan. Six of them, all working the day before, and nothing said so.
+    #
+    # The split the three of these draw is the one worth keeping. A field that
+    # decides AUTHORITY (`default_posture`, `risk_class`, `group`) still
+    # refuses, because a wrong answer there grants something. A field that
+    # RECORDS (`depends_on`, `recovery_behaviour`, `receipt_kind`) defaults and
+    # warns, because a missing description is not a reason to take a working
+    # tool off the operator's machine. `none` is what a tool that leaves no
+    # identifier would have declared, so nothing is claimed on its behalf.
+    if not any(
+        "receipt_kind" in klass.__dict__ for klass in cls.__mro__ if klass is not Tool
+    ):
+        cls.receipt_kind = "none"
+        log.warning(
+            "custom tool %r does not say what it leaves behind, so a call "
+            "that acts cannot be checked afterwards. Add `receipt_kind: "
+            'ClassVar[str] = "file"` (or "commit", "job", "message", '
+            '"record") naming what it leaves, or `"none"` if it can never '
+            "leave one.",
             tool.name,
         )
     try:
@@ -557,6 +584,13 @@ def _sync_locked(registry: Any, policy: Any, tools_dir: Path | None) -> LoadRepo
         log.info("home_tools: %s", report.summary())
     for message in report.errors:
         log.warning("home_tools: %s", message)
+
+    # Every path that reaches this point just resynced the folder, so every
+    # one of them gets a true index for free: boot, `tool_search`, the
+    # `file_write` hook, and the explicit `tool_register`. Never raises: a
+    # failure to write the record must not fail the sync that triggered it.
+    write_tools_index(registry, tools_dir)
+
     return report
 
 
@@ -586,6 +620,117 @@ def reset_load_cache() -> None:  # noqa: D401
     global _last_carried
     _loaded.clear()
     _last_carried = None
+
+
+def _index_cell(value: str) -> str:
+    """One markdown table cell: no pipe, no newline, nothing left dangling."""
+    return str(value or "").replace("|", "\\|").replace("\n", " ").strip()
+
+
+def write_tools_index(registry: Any, tools_dir: Path | None = None) -> None:
+    """Render `<home>/tools/INDEX.md` whole, from the live registry.
+
+    One row per registered CUSTOM tool: its name, the posture
+    `permissions.yaml` actually resolves for it right now (never what the
+    tool's own class claims — `sync_home_tools` never lets that stand
+    unassisted), its taxonomy group, its contract fields, and the file that
+    defines it.
+
+    **Rendered, never appended.** An appended file drifts from what is
+    actually registered the first time a tool is renamed or removed; this
+    file's only job is to be true, so every call rebuilds it whole from
+    `registry.tools` as it stands right now. Rows are sorted by name so an
+    unrelated change does not reorder the rest of the file.
+
+    Written atomically (temp file in the same directory, then an OS-level
+    replace) so a reader never sees a half-written file, and **never raises
+    into the caller**: this runs at the tail of every scan (boot,
+    `tool_search`, the `file_write` hook, `tool_register`), and a failure to
+    write a record must not fail the act that triggered it.
+    """
+    try:
+        directory = tools_dir or user_tools_dir()
+        policy = getattr(registry, "permission_policy", None)
+
+        # Which file last produced which names, from the same record that
+        # made deletion and renaming work in `_sync_locked` above.
+        file_of: dict[str, str] = {}
+        for path, record in _loaded.items():
+            for name in record.names:
+                file_of[name] = path.name
+
+        rows = sorted(
+            (
+                tool
+                for tool in registry.tools.values()
+                if getattr(tool, "origin", "shipped") == "custom"
+            ),
+            key=lambda t: t.name,
+        )
+
+        lines = [
+            "<!-- Generated by kernel/home_tools.py::write_tools_index. Do "
+            "not edit by hand: the next scan of this folder (boot, "
+            "tool_search, tool_register, or writing any file here) rewrites "
+            "this whole file from the live registry, and a hand edit is "
+            "lost the moment that happens. -->",
+            "<!-- Posture is decided by permissions.yaml, never by this "
+            "file and never by what a tool's own code claims for itself. "
+            "-->",
+            "",
+            "# Custom tools",
+            "",
+        ]
+        if not rows:
+            lines.append("No custom tools are registered.")
+        else:
+            lines.append(
+                "| Name | Posture | Group | Summary | Use when | Not when | File |"
+            )
+            lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+            for tool in rows:
+                posture = (
+                    policy.default_posture(tool.name) if policy is not None else "ask"
+                )
+                group = getattr(tool, "group", "")
+                try:
+                    group_label = heading_for(group)
+                except KeyError:
+                    group_label = group
+                lines.append(
+                    "| "
+                    + " | ".join(
+                        [
+                            _index_cell(tool.name),
+                            _index_cell(posture),
+                            _index_cell(group_label),
+                            _index_cell(getattr(tool, "summary", "")),
+                            _index_cell(getattr(tool, "use_when", "")),
+                            _index_cell(getattr(tool, "not_when", "")),
+                            _index_cell(file_of.get(tool.name, "")),
+                        ]
+                    )
+                    + " |"
+                )
+        content = "\n".join(lines) + "\n"
+
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / "INDEX.md"
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=".INDEX.", suffix=".md.tmp", dir=str(directory)
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(content)
+            os.replace(tmp_name, target)
+        finally:
+            if os.path.exists(tmp_name):
+                try:
+                    os.remove(tmp_name)
+                except OSError:
+                    pass
+    except Exception:
+        log.warning("home_tools: could not write tools/INDEX.md", exc_info=True)
 
 
 #: Custom tools the operator wants in the always-visible set, one name per

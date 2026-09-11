@@ -81,6 +81,7 @@ core:
   - credential_list  # Your own accounts: service, username, purpose, and whether each is ready.
   # Checking your own state
   - autonomy_read  # Read what the Autonomy panel says, in the same sentences it shows.
+  - session_continue  # Carry the work into a fresh start, or finish with this conversation.
   - system_diagnose  # Report this machine's runtime health in one call.
   # Finding a tool
   - tool_search  # Make a tool callable that is not in this turn's schema.
@@ -211,6 +212,7 @@ core:
 #   - skill_create  # Draft a new skill or playbook into the pending quarantine.
 #   - skill_promote  # Move a quarantined skill into the active set.
 #   - skill_refine  # Revise an existing active skill or playbook.
+#   - tool_register  # Rescan the tools folder and report what registered.
 #   Checking your own state
 #   - breaker_reset  # Clears one open circuit breaker so the runtime tries that capability again now.
 #   - breaker_status  # Says which parts of the runtime have stopped trying, and what that has cost.
@@ -225,7 +227,6 @@ core:
 #   - pipeline_run_stage  # Runs one step of the scheduled maintenance work now, off its schedule.
 #   - retention_set_window  # Sets how many days one of this machine's own logs is kept for.
 #   - return_note_read  # Say what changed since the operator was last here.
-#   - session_continue  # Carry the work into a fresh start, or finish with this conversation.
 #   - workspace_hold  # Says which of the operator's own documents a change must be asked about, and changes that.
 #   - workspace_pending  # List what is waiting on the operator to decide.
 #   Finding a playbook

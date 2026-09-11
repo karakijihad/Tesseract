@@ -324,12 +324,17 @@ def check_lane(
     size_mb = sizes.get(lane.id)
 
     if lane.unresolvable:
+        # `lane.unresolvable` is one of the fixed strings the three lane
+        # resolvers above write (optionally naming a checkpoint drawn from
+        # this project's own config), never text an outside process handed
+        # this runtime.
         return DependencyRecord(
             id=lane.id,
             kind="model",
             state=DependencyState.UNKNOWN,
             reason=lane.unresolvable,
             size_mb=size_mb,
+            quotable=True,
         )
 
     if not lane.configured:
@@ -345,6 +350,7 @@ def check_lane(
             state=DependencyState.ABSENT,
             reason="not switched on, so nothing is downloaded for it",
             size_mb=size_mb,
+            quotable=True,
         )
 
     worst = DependencyState.OK
@@ -378,6 +384,9 @@ def check_lane(
         reason="; ".join(dict.fromkeys(reasons)),
         size_mb=size_mb,
         pins=merged,
+        # Every `reason` `pins.resolve` returns is composed from filenames
+        # `providers.yaml` names, never from anything a fetch handed back.
+        quotable=True,
     )
 
 

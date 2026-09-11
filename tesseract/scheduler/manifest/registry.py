@@ -123,6 +123,27 @@ ROWS: tuple[Entry, ...] = (
         kind=Kind.DETERMINISTIC,
         owner=Owner.RUNTIME,
     ),
+    Entry(
+        name="skill_refinement",
+        runs=Runs.ROW,
+        summary=(
+            "Reads how your skills have been performing and offers a rewrite of "
+            "one whose work you keep having to correct afterwards. It judges "
+            "the version that is live now, never one you have already replaced, "
+            "and it shows you what it measured. A skill whose file will not "
+            "read is flagged separately, because no rewrite fixes that. A "
+            "playbook revision that did worse than the one before it is "
+            "retired, and the earlier one is kept to return to."
+        ),
+        why=(
+            "A skill that quietly misleads the assistant goes on misleading it. "
+            "Without this, the usage log records that and nobody reads it, and a "
+            "revision that made a playbook worse stays the one it reaches for."
+        ),
+        kind=Kind.REMOTE_MODEL,
+        chains=("chain_1",),
+        owner=Owner.HOME,
+    ),
 )
 
 # ── Services: loops that run for as long as the app does. ──
@@ -535,27 +556,6 @@ TRIGGERS: tuple[Entry, ...] = (
         why=(
             "A problem solved once is solved again from scratch. Without this, "
             "the record of how a task was done is read by nobody."
-        ),
-        kind=Kind.REMOTE_MODEL,
-        chains=("chain_1",),
-        owner=Owner.HOME,
-    ),
-    Entry(
-        name="skill_refinement",
-        runs=Runs.ROW,
-        summary=(
-            "Reads how your skills have been performing and offers a rewrite of "
-            "one whose work you keep having to correct afterwards. It judges "
-            "the version that is live now, never one you have already replaced, "
-            "and it shows you what it measured. A skill whose file will not "
-            "read is flagged separately, because no rewrite fixes that. A "
-            "playbook revision that did worse than the one before it is "
-            "retired, and the earlier one is kept to return to."
-        ),
-        why=(
-            "A skill that quietly misleads the assistant goes on misleading it. "
-            "Without this, the usage log records that and nobody reads it, and a "
-            "revision that made a playbook worse stays the one it reaches for."
         ),
         kind=Kind.REMOTE_MODEL,
         chains=("chain_1",),

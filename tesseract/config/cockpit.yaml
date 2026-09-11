@@ -70,7 +70,8 @@ kernel:
       match:
         ["agent_*", "invoke_agent", "delegate_*", "spawn_*", "session_*",
          "lane_*", "skill_*", "controller_session_list",
-         "start_controller_session", "work_send", "tool_search"]
+         "start_controller_session", "work_send", "tool_search",
+         "tool_register"]
     - id: channels
       label: channels
       kind: stage

@@ -298,6 +298,12 @@ class SessionOpenTool(CarriesCompaction, Tool):
     depends_on: ClassVar[str] = ""
     receipt_kind: ClassVar[str] = "record"
     recovery_behaviour: ClassVar[str] = "unsafe"
+    # `build_tool_registry` only wires this in through
+    # `register_agent_session_tools`, and only `if invoke_adapter is not None
+    # and chat_cfg is not None` — a real precondition, not idempotency
+    # bookkeeping: no chat_brain adapter resolved, no registration. The
+    # completeness test cannot assert this is always present.
+    must_be_registered: ClassVar[bool] = False
 
     def __init__(
         self,

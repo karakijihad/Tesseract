@@ -378,7 +378,9 @@ def _playbooks(since: datetime, event_store: Any | None) -> list[Line]:
     from tesseract.workspace_events.events import SETTLED
 
     try:
-        events = event_store.list_events(kinds=("skill_approval", "skill_refinement"))
+        events = event_store.list_events(
+            kinds=("skill_approval", "skill_refinement", "skill_retirement")
+        )
     except Exception:
         log.warning("return note: could not read the inbox", exc_info=True)
         return []
@@ -388,9 +390,15 @@ def _playbooks(since: datetime, event_store: Any | None) -> list[Line]:
         decided = _parse(ev.decided_at)
         if ev.status not in SETTLED or decided is None or decided <= since:
             continue
-        verb = "added" if ev.kind == "skill_approval" else "revised"
+        verb = {
+            "skill_approval": "added",
+            "skill_retirement": "retired",
+        }.get(ev.kind, "revised")
         if ev.status in {"rejected", "deleted"}:
-            verb = "declined"
+            # A retirement asks for nothing, so there is no declining it: the
+            # revision was already withdrawn when the card was written, and
+            # the only decision on it is that it has been read.
+            verb = "declined" if ev.kind != "skill_retirement" else verb
         lines.append(Line(f"{ev.title}: {verb}{_numbers(ev)}", ev.event_id))
     return lines[-_PER_SECTION:]
 

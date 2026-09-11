@@ -912,6 +912,25 @@
   opacity: 1;
 }
 
+/* The search field in Memory's own band. Placement only: stacked below the
+   strip, the field and its button on one line beside each other. What either
+   looks like is `Input`'s and `Button`'s. */
+.memory-search {
+  margin-top: var(--space-4);
+}
+
+.memory-search__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-top: var(--space-2);
+}
+
+.memory-search__field {
+  flex: 1;
+  min-width: 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .state-acts {
     transition: none;

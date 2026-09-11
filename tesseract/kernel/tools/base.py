@@ -512,6 +512,26 @@ class Tool(ABC):
     # of them is a redaction that reads as done and is not.
     redacted_input_fields: ClassVar[tuple[str, ...]] = ()
 
+    # An ASSERTION `build_tool_registry` must satisfy, not an observation
+    # about what it happens to do — this is a claim the class makes about
+    # itself, read by a test, never a description read off a live registry.
+    # True means: this tool must be present in EVERY registry
+    # `build_tool_registry` builds, on every boot, regardless of runtime
+    # config, or `kernel_registry_taxonomy`'s completeness test fails by
+    # name. A tool whose registration in `brain/boot.py` genuinely depends on
+    # something that can be absent at boot (an adapter chain that failed to
+    # resolve, a config block nobody filled in) sets this False and is
+    # exempted from that test — it needs its own test asserting it registers
+    # when its precondition holds.
+    #
+    # Default True. `health_leave` and `health_repair` were once the only two
+    # tools a test checked were actually registered, by name, because nothing
+    # else asserted that a registration LINE could not simply be deleted: the
+    # taxonomy test partitions what IS in the live registry and stays green
+    # whether or not a given tool is in it. This closes that class instead of
+    # widening the hardcoded list.
+    must_be_registered: ClassVar[bool] = True
+
     @classmethod
     def redact_input(cls, payload: dict[str, Any] | None) -> dict[str, Any]:
         """`payload` with the declared fields replaced by their shape.

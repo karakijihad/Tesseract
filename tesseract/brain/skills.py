@@ -54,8 +54,6 @@ SKILL_REJECTED_DIRNAME = "rejected"
 #: guessing from whether a SKILL.md sits at the top. Public because the
 #: refinement job walks the same directory and must reach the same answer.
 SKIP_DIRNAMES = frozenset({SKILL_PENDING_DIRNAME, SKILL_REJECTED_DIRNAME, "__pycache__"})
-#: Kept as the old private name for in-module readers.
-_SKIP_DIRNAMES = SKIP_DIRNAMES
 
 
 #: The lifecycle a playbook may declare. A revision is `draft` until it has
@@ -287,7 +285,7 @@ def load_skills(skills_dir: Path) -> list[SkillEntry]:
         folders = sorted(
             (
                 p for p in skills_dir.iterdir()
-                if p.is_dir() and p.name not in _SKIP_DIRNAMES
+                if p.is_dir() and p.name not in SKIP_DIRNAMES
             ),
             key=lambda p: p.name,
         )
@@ -453,6 +451,19 @@ def replace_skill_body(
     live = load_skill_folder(skills_dir / name)
     if live is None:
         return f"the live skill {name!r} does not parse, so nothing can be kept before replacing it"
+    # A retired revision was withdrawn on measurement, and a rewrite is not
+    # the way back: returning to a playbook is a person's act on the
+    # retirement card. Without this the demotion is one-way only by accident.
+    # The card's own `base_sha256` catches the common route here, because
+    # retiring rewrites the frontmatter and so moves the hash, but that guard
+    # is skipped for a card carrying no hash and it is not this function's to
+    # rely on. `skill_refine` reaches here with no hash at all.
+    if live.status == "retired":
+        return (
+            f"{name} v{live.version} is retired, so nothing reads it and a "
+            "rewrite of it would not be carried. Make it active again with "
+            "`playbook_judge` keep if it should come back, then refine it."
+        )
 
     # The revision number is the runtime's. Stamped before validation so the
     # text written and the entry loaded from it agree, and so `refuse_playbook`

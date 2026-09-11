@@ -769,16 +769,7 @@ def from_capabilities() -> list[dict[str, Any]]:
             name=record.id,
             state=OperationalState.DEGRADED,
             said=record.reason or f"it is {record.state.value} and the app expects it",
-            # The operator's line is the record's own `reason`; the model's is
-            # composed here from the id and the state and nothing else. They
-            # differ because `reason` is not always this runtime's words:
-            # `check_ollama` builds it as "installed, but it did not answer
-            # (<error>)" and that error is `f"{type(exc).__name__}: {exc}"` off
-            # an httpx failure, which carries the request URL. Invariant 5 says
-            # `for_model` carries only what this runtime composed, and this was
-            # the one producer that let a handed string through by saying
-            # nothing.
-            for_model=f"{record.id} is {record.state.value} and the app expects it",
+            for_model=_capability_for_model(record),
             at=checked,
             value=f"{record.size_mb} MB" if record.size_mb else "",
             # Not here and never asked for is a choice nobody has made yet, not
@@ -791,6 +782,28 @@ def from_capabilities() -> list[dict[str, Any]]:
         )
         for record in wanted
     ]
+
+
+def _capability_for_model(record: Any) -> str:
+    """The model's copy of one capability row.
+
+    `record.reason` reaches it only when the producer declared it
+    `quotable` — the same rule `Finding.quotable`
+    (`orchestrator/watchman/findings.py`) applies to a watchman finding,
+    because only the producer knows whether a substring of its own `reason`
+    came from outside this process. `check_ollama` builds one branch from an
+    httpx error, which stringifies with the request URL in it, and does not
+    mark it quotable; every other branch across `capability/system.py` and
+    `capability/models.py` composes `reason` entirely from this runtime's own
+    words (or this project's own config-declared names) and does.
+
+    Everything not marked quotable falls back to the one line this room
+    composes itself, from the id and the state and nothing else — never the
+    record's own `reason`, whatever it happens to hold.
+    """
+    if record.quotable and record.reason:
+        return record.reason
+    return f"{record.id} is {record.state.value} and the app expects it"
 
 
 def from_crash_storm() -> list[dict[str, Any]]:
@@ -1600,7 +1613,15 @@ def department_states(
         # a pushed reading against the wrong line. It is the same lesson as the
         # control that used to send a rendered label: a name is what a row is
         # called and the key is what it IS.
-        row["key"]: {
+        #
+        # `.get` rather than `row["key"]`, matching `_with_handling` and
+        # `_left_alone` elsewhere in this file: `department()` always sets
+        # `key`, so this is not reachable today, but this function builds the
+        # WHOLE dict in one comprehension, so one bad row here costs the
+        # entire feed publish, not one department. The convention the rest of
+        # the file already settled on is the one that does not depend on a
+        # guarantee made across a call boundary.
+        str(row.get("key") or ""): {
             "state": row["state"],
             "label": row["label"],
             "observedAt": row["at"],

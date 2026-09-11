@@ -25,8 +25,17 @@
 import type { GraphNode, GraphResponse } from '../../lib/api';
 
 /** How a visit starts. Not a filter: it chooses the records the picture is
- *  drawn around, and the filters below then cut what it found. */
-export type Way = 'new' | 'crossing' | 'hubs' | 'all' | 'record';
+ *  drawn around, and the filters below then cut what it found.
+ *
+ *  `orphans` is not joined by a fourth way for the other two rows the Atlas
+ *  room can now name a record for. A conflict's subjects are two real nodes
+ *  with no edge between them, so drawing them would show two unconnected
+ *  dots and lose the one thing worth knowing, which is WHY they disagree.
+ *  A dangling link's missing side is not a node at all and never can be, so
+ *  there is no dot to seed a picture from. Both stay questions for the
+ *  assistant instead, in the room, where the fact that makes them worth
+ *  asking about still travels with the id. */
+export type Way = 'new' | 'crossing' | 'hubs' | 'orphans' | 'all' | 'record';
 
 export interface Lens {
   /** `null` is the entry state, where nothing is drawn yet. */
@@ -68,11 +77,14 @@ export const ENTRY: Lens = {
  *  A record on its own is a dot, and what arrived in the last drawing is only
  *  interesting beside what it attached itself to, so both start one link out.
  *  The crossing links already name both of their ends, and everything is
- *  already everything. */
+ *  already everything. An orphan has no edges by definition, so a reach past
+ *  zero would follow nothing: the person looking is free to raise it, but
+ *  there is nothing to gain by starting anywhere but zero. */
 export const REACH_OF: Record<Way, number> = {
   new: 1,
   crossing: 0,
   hubs: 1,
+  orphans: 0,
   all: 0,
   record: 1,
 };
@@ -151,6 +163,8 @@ function seedsOf(data: GraphResponse, lens: Lens): string[] {
     }
     case 'hubs':
       return data.hubs.filter((id) => here.has(id));
+    case 'orphans':
+      return data.orphans.filter((id) => here.has(id));
     case 'all':
       return data.nodes.map((n) => n.id);
     case 'record':

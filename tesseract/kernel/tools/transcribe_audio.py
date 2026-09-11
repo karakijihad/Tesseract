@@ -64,6 +64,13 @@ class TranscribeAudioTool(Tool):
     depends_on: ClassVar[str] = ""
     receipt_kind: ClassVar[str] = "none"
     recovery_behaviour: ClassVar[str] = "read_only"
+    # Registers AFTER boot, once the STT engine is up — absent at boot time on
+    # every launch and permanently absent when STT is unavailable. Same
+    # exemption `brain/boot.py::_CONDITIONAL_CORE_TOOL_NAMES` already carries
+    # for the working-set guard, restated here for the registry-completeness
+    # one; the two lists answer different questions and happen to name the
+    # same three tools today.
+    must_be_registered: ClassVar[bool] = False
 
     def __init__(self, stt_engine: "STTEngine | None" = None) -> None:
         self._stt_engine = stt_engine

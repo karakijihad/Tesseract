@@ -148,6 +148,30 @@ _SHUTDOWN_TELL_TIMEOUT_S = 5.0
 #: thing cut.
 _APPROVAL_REASON_CHARS = 700
 
+#: What a carried-on turn says when it read the package and had nothing to
+#: add. Reading the handover and answering that the work is finished is the
+#: loop's own way out, so this is an ordinary ending rather than a failure and
+#: the sentence says so.
+_NOTHING_LEFT_TO_CARRY = (
+    "I picked the work back up after clearing this conversation, and there "
+    "was nothing left to do on it."
+)
+
+#: What the operator is told when the work could not be picked back up. The
+#: record of where it stood is written down either way, so the remedy is one
+#: message rather than anything they have to reconstruct.
+_COULD_NOT_CARRY_ON = (
+    "I cleared this conversation and could not pick the work back up. What it "
+    "taught me is written down. Ask me where things stood and I will read it "
+    "back."
+)
+
+#: The same sentence for an approval answered after its turn had given up.
+_COULD_NOT_RESUME = (
+    "I took your approval but could not pick the work back up. Ask me again "
+    "and it will go straight through."
+)
+
 
 # The headless stand-ins live in `session_factory`, beside the function that
 # consumes them, because a channel is no longer the only caller that has
@@ -893,7 +917,7 @@ class TelegramBridge:
                 return
 
         # The chat's lock is taken HERE, not around the whole inbound handler.
-        # It serialises TURNS, which is what `_drive_resume_turn` already says
+        # It serialises TURNS, which is what `_drive_turn_in_its_place` already says
         # it is for. Held from the handler's first line it also covered the
         # command router and the steering branch above, so `/stop` and a
         # mid-turn redirection each waited on the very turn they were meant to
@@ -1090,6 +1114,12 @@ class TelegramBridge:
                 session=session,
                 channel=self.name, chat_id=chat_key,
                 announce=lambda text: self._send_outbound(message.chat_id, text),
+                carry_on=lambda text: self._drive_turn_in_its_place(
+                    session, message.chat_id, text,
+                    could_not_run=_COULD_NOT_CARRY_ON,
+                    runtime_origin="carry_on",
+                    nothing_to_add=_NOTHING_LEFT_TO_CARRY,
+                ),
                 ending=lambda reflect: self._start_fresh_thread(
                     session, message.chat_id, reflect,
                 ),
@@ -2750,14 +2780,20 @@ class TelegramBridge:
             f"approval, and say what came of it.]"
         )
         asyncio.create_task(
-            self._drive_resume_turn(session, chat_id, body),
+            self._drive_turn_in_its_place(
+                session, chat_id, body, could_not_run=_COULD_NOT_RESUME,
+            ),
             name=f"telegram:resume:{chat_id}",
         )
 
-    async def _drive_resume_turn(
+    async def _drive_turn_in_its_place(
         self, session: ServerSession, chat_id: int, body: str,
+        *,
+        could_not_run: str,
+        runtime_origin: str | None = None,
+        nothing_to_add: str | None = None,
     ) -> None:
-        """Run the resumed turn, behind the chat's own lock.
+        """Run a turn this bridge started, behind the chat's own lock.
 
         Behind the lock because it is a turn like any other, and two turns in
         one chat is the race `_chat_locks` exists to stop: the operator can tap
@@ -2766,9 +2802,19 @@ class TelegramBridge:
         Registered in `pending_turn_tasks` for the same reason an inbound turn
         is: `_drive_channel_turn` sends a placeholder before `channel_turn`
         assigns `current_turn_task`, so a `/stop` in between found nothing to
-        cancel and the resumed turn ran anyway. A turn is a turn on every path
-        that starts one.
+        cancel and the turn ran anyway. A turn is a turn on every path that
+        starts one.
+
+        Two things reach it and they differ only in what the person is told
+        when it will not run: an approval answered after its turn gave up, and
+        a boundary that answered `continue`. Neither may call
+        `_drive_channel_turn` directly, because the lock and the registration
+        are exactly the two things that function does not do: it clears
+        `current_turn_task` unconditionally, after a network round trip, and
+        an operator turn running at that moment loses the slot every stop
+        reads.
         """
+        extra = {} if nothing_to_add is None else {"nothing_to_add": nothing_to_add}
         lock = self._chat_locks.setdefault(chat_id, asyncio.Lock())
         chat_key = str(chat_id)
         me = asyncio.current_task()
@@ -2777,21 +2823,18 @@ class TelegramBridge:
         try:
             async with lock:
                 try:
-                    await self._drive_channel_turn(session, chat_id, body)
+                    await self._drive_channel_turn(
+                        session, chat_id, body,
+                        runtime_origin=runtime_origin, **extra,
+                    )
                 except asyncio.CancelledError:
                     raise
                 except Exception:
                     log.exception(
-                        "telegram: the resumed turn failed for chat=%s", chat_id
+                        "telegram: a turn the runtime started failed for chat=%s",
+                        chat_id,
                     )
-                    await self._safe_send(
-                        chat_id=chat_id,
-                        text=(
-                            "I took your approval but could not pick the work "
-                            "back up. Ask me again and it will go straight "
-                            "through."
-                        ),
-                    )
+                    await self._safe_send(chat_id=chat_id, text=could_not_run)
         finally:
             waiting = session.pending_turn_tasks.get(chat_key)
             if waiting is not None:
@@ -3106,6 +3149,21 @@ class TelegramBridge:
         return True
 
     async def _cancel_session_turn(self, session: ServerSession) -> None:
+        """End this session's turn, and mark the session as finished.
+
+        Every caller is dropping the session: `stop()`, `/clear`, a TTL
+        expiry, a revoke, a block, and `_session_for(reset=True)` replacing it.
+        The mark is what a background reflection reads when it lands afterwards
+        and finds its boundary answered `continue`: without it a carried turn
+        starts against a session already gone from every registry and sends
+        real messages to the person from a conversation the runtime no longer
+        has. The cockpit has had it since CC-16 (`session_cleanup.py`); this is
+        the same fact on the surface that never wrote it down.
+
+        Set BEFORE the early return, because a session with no turn running is
+        exactly as finished as one that had to be cancelled.
+        """
+        session.torn_down = True
         task = session.current_turn_task
         if task is None or task.done():
             return
@@ -3414,6 +3472,7 @@ class TelegramBridge:
         self, session: ServerSession, tg_chat_id: int, body: str,
         *, refused_out: list[bool] | None = None,
         nothing_to_add: str = "A background task finished and there was nothing to add.",
+        runtime_origin: str | None = None,
     ) -> str | None:
         """Run one turn this bridge started itself, and deliver its reply.
 
@@ -3467,6 +3526,12 @@ class TelegramBridge:
                 session=session,
                 channel=self.name, chat_id=chat_key,
                 announce=lambda text: self._send_outbound(tg_chat_id, text),
+                carry_on=lambda text: self._drive_turn_in_its_place(
+                    session, tg_chat_id, text,
+                    could_not_run=_COULD_NOT_CARRY_ON,
+                    runtime_origin="carry_on",
+                    nothing_to_add=_NOTHING_LEFT_TO_CARRY,
+                ),
                 ending=lambda reflect: self._start_fresh_thread(
                     session, tg_chat_id, reflect,
                 ),
@@ -3484,6 +3549,7 @@ class TelegramBridge:
                 error_out=error_out,
                 refused_out=refused_out,
                 boundary_when_needed=lambda: _boundary(mid_turn=True),
+                runtime_origin=runtime_origin,
             )
         finally:
             await throttler.stop()

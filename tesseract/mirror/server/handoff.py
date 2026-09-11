@@ -30,6 +30,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from tesseract.brain.chat import Continuation
 from tesseract.brain.session_ops import reflect_in_background
 
 log = logging.getLogger(__name__)
@@ -73,15 +74,15 @@ def _still_the_conversation_it_was_for(chat_session: Any, began_at: int | None, 
     return False
 
 
-def _deliver_package(
+def _package_text(
     chat_session: Any,
     label: str,
     saves: list[dict[str, Any]],
     began_at: int | None = None,
 ) -> str:
-    """The continuity package, put in front of the cleared conversation.
+    """The continuity package for the conversation this boundary cleared.
 
-    Delivered whichever answer the boundary gave. Consolidating is one act —
+    Built whichever answer the boundary gave. Consolidating is one act —
     reflect, package, clear, hand the package back — and `continue` decides
     only whether the WORK carries on, never whether the state is handed over.
     Withholding it on the other answer meant a conversation that consolidated
@@ -93,9 +94,9 @@ def _deliver_package(
     model turn that produces the record even started.
 
     Read back from the record rather than handed a copy of it, which is the
-    rule the record itself is built on. Returns the text so a caller can send
-    it; empty means there was nothing to say, which is what a conversation
-    that was never about a piece of work leaves behind.
+    rule the record itself is built on. Empty means there was nothing to say,
+    which is what a conversation that was never about a piece of work leaves
+    behind.
     """
     if not _still_the_conversation_it_was_for(chat_session, began_at, label):
         return ""
@@ -109,13 +110,56 @@ def _deliver_package(
     text = continuity.package_for(checkpoints.latest_for_chat(chat_id), saves)
     if not text:
         log.info("continuity: the boundary at %s said nothing about the work", label)
-        return ""
+    return text
+
+
+def _note_the_package(chat_session: Any, label: str, text: str) -> bool:
+    """Put the package in front of the cleared conversation, to be read
+    whenever somebody next speaks.
+
+    What a `reset` leaves behind, and what a `continue` falls back to on a
+    surface with no way to start a turn of its own. A `continue` that CAN
+    start one does not call this: that turn's own first message carries the
+    same text under the same kind of mark, and noting it here as well would
+    put the package into the history twice.
+    """
     try:
         chat_session.note_continuity(text)
     except Exception:
         log.exception("continuity: could not put the package in front of %s", label)
-        return ""
-    return text
+        return False
+    return True
+
+
+def _carry_the_work_on(app: Any, carry_on: Any, text: str, label: str) -> None:
+    """Start the turn that reads the package, and return without awaiting it.
+
+    `continue` says the work goes on, and until this existed nothing started
+    it: the package landed in a cleared conversation and waited for somebody
+    to speak. Measured on the operator's phone, 2026-09-10, at a boundary
+    whose record carried a filled `Remaining` and `Next`: nothing moved until
+    they typed.
+
+    **Spawned here rather than awaited, and that is structural rather than a
+    convention the surfaces have to remember.** This runs inside
+    `reflect_in_background`'s task, and that task stays registered as in
+    flight until its completion callback returns. A turn awaited here would
+    reach its own boundary while the registration still stood,
+    `reflect_in_background` would skip it as "prior reflect still running",
+    and the second boundary would clear the conversation with no reflection,
+    no checkpoint and no package. Spawning is also what makes the loop a loop
+    rather than a stack that deepens once per boundary.
+
+    Never raises. The boundary has already happened and the package has
+    already been handed over; a turn that could not be started is one thing
+    going wrong, not two.
+    """
+    try:
+        from tesseract.mirror.server.ws_connection import _spawn_tracked
+
+        _spawn_tracked(app, carry_on(text), f"carry_on:{label}")
+    except Exception:
+        log.exception("continuity: %s could not carry the work on", label)
 
 
 def _persist(session: Any, label: str) -> None:
@@ -142,6 +186,7 @@ def reflect_callbacks(
     chat_session: Any = None,
     outcome: str = "",
     deliver: Any = None,
+    carry_on: Any = None,
 ) -> tuple:
     """Build `(on_complete, on_error)` for `reflect_in_background`.
 
@@ -154,6 +199,13 @@ def reflect_callbacks(
 
     `on_error` writes the same kind at `priority=7`, so a reflection that failed
     rises above ambient inbox noise instead of being buried in a log.
+
+    `carry_on` is how this surface starts a turn nobody typed, and it is
+    called only when the boundary answered `continue`. It is the third thing
+    a surface supplies, beside `announce` and `ending`, and for the same
+    reason they are injected: the cockpit reaches a chat by its id over a
+    WebSocket and a channel reaches one by its Telegram id, and neither of
+    those is a decision this function should be making.
     """
     # Which conversation this reflection is about, read now rather than when
     # it finishes. `_still_the_conversation_it_was_for` says what the number
@@ -224,15 +276,38 @@ def reflect_callbacks(
         # was a bare `return` — which left the coroutine, so the one case the
         # comment is about, an inbox that cannot take the proposal, was the
         # one case that silently cost the package too.
-        if chat_session is not None:
-            text = _deliver_package(chat_session, label, saves, began_at)
-            if text:
-                await asyncio.to_thread(_persist, session, label)
-                if deliver is not None:
-                    try:
-                        await deliver(text)
-                    except Exception:
-                        log.exception("continuity: could not tell %s about it", label)
+        if chat_session is None:
+            return
+        text = _package_text(chat_session, label, saves, began_at)
+        if not text:
+            return
+        # Whether the work carries on by itself, decided here because here is
+        # where the turn would start. A session torn down between the boundary
+        # and this moment starts nothing: that is CC-16's hole in the shape
+        # this path has it, a turn begun from a tail against a session already
+        # dropped from every registry, streaming to a socket nobody holds and
+        # unreachable by any later stop.
+        carrying = (
+            outcome == Continuation.CONTINUE.value
+            and carry_on is not None
+            and not getattr(session, "torn_down", False)
+        )
+        if not carrying:
+            if not _note_the_package(chat_session, label, text):
+                return
+            # Only on this half. The carried half writes the same text into
+            # the same history moments from now, as the first message of the
+            # turn it is starting, and that turn persists its own record.
+            await asyncio.to_thread(_persist, session, label)
+        if deliver is not None:
+            try:
+                await deliver(text)
+            except Exception:
+                log.exception("continuity: could not tell %s about it", label)
+        # Last, so the person has the package in front of them before the
+        # work moves on it.
+        if carrying:
+            _carry_the_work_on(app, carry_on, text, label)
 
     async def on_error(exc: BaseException, reason: str) -> None:
         try:
@@ -283,6 +358,7 @@ def hand_off(
     outcome: str = "",
     refused: str = "",
     deliver: Any = None,
+    carry_on: Any = None,
 ) -> bool:
     """Reflect on a snapshot of `chat_session`, in the background.
 
@@ -306,6 +382,7 @@ def hand_off(
     on_complete, on_error = reflect_callbacks(
         app, session, label,
         chat_session=chat_session, outcome=outcome, deliver=deliver,
+        carry_on=carry_on,
     )
     return (
         reflect_in_background(

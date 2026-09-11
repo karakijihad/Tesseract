@@ -21,7 +21,7 @@ class AttentionItem:
     decided the operator should look. Kept tiny so the envelope stays
     scannable; deep detail lives in the underlying records."""
 
-    kind: str  # "agenda" | "worker"
+    kind: str  # "agenda" | "worker" | "turn" | "effect" | "scan_error"
     id: str
     reason: str
 

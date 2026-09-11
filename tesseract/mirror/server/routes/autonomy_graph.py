@@ -125,6 +125,7 @@ def _nothing_to_draw(said: str) -> dict[str, Any]:
         "provenance": [],
         "links": [],
         "hubs": [],
+        "orphans": [],
         "drawn": {"nodes": 0, "edges": 0, "edgesHidden": 0, "of": 0},
         "nodes": [],
         "edges": [],
@@ -257,6 +258,13 @@ def _payload(target: Path, ceiling: int) -> dict[str, Any]:
         # is a way in that opens on nothing.
         "hubs": [
             node_id for node_id, _ in atlas_report.hubs(atlas) if node_id in kept
+        ],
+        # The other real way into the picture. An orphan IS a node, unlike a
+        # dangling link's missing side, so the canvas can honestly draw one:
+        # bounded to what is drawn, the same rule `hubs` follows and for the
+        # same reason.
+        "orphans": [
+            node_id for node_id in atlas_report.orphans(atlas) if node_id in kept
         ],
         # The key to the colours, in the words the model already keeps. Only
         # the kinds actually on the picture: a legend naming a colour the

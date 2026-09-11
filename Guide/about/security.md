@@ -1125,7 +1125,13 @@ it does instead is make a successful injection *insufficient on its own*:
   reword anything a filter looks for, and the fence is what makes that
   pointless. **The fence's own markers are removed from the body**, so a page
   that writes the closing marker verbatim cannot end the fence early and have
-  the rest of itself read as trusted.
+  the rest of itself read as trusted. **The fence goes up every time, and the
+  label on it says which tool actually ran.** The runtime never decides that
+  from the text: a page that is written to look exactly like a fenced result
+  is fenced again, because only the caller knows what it asked for. So the
+  record of where a piece of text came from is the runtime's account of it,
+  not the text's own claim, which is what makes that record worth reading
+  after something has gone wrong.
 - The kernel lockdown and the `app/` seal mean a successful injection cannot
   rewrite the code that would gate the next one.
 - Where the runtime sends a message on its own, the channel's own roster is the

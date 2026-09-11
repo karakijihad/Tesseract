@@ -193,6 +193,7 @@ from tesseract.kernel.tools.browser_tools import (
     BrowserKeyTool, BrowserMediaTool, BrowserScrollTool,
     BrowserHoverTool, BrowserSelectTool, BrowserWaitForTool,
 )
+from tesseract.kernel.tools.tool_register import ToolRegisterTool
 from tesseract.kernel.tools.tool_search import ToolSearchTool
 from tesseract.memory.dreaming import DreamingEngine
 from tesseract.memory.embeddings import EmbeddingIndex
@@ -2688,6 +2689,13 @@ def build_tool_registry(
     # searches the full registry and enables matching extended tools for
     # the rest of the session. See `core_tool_names()` above.
     registry.register(ToolSearchTool())
+
+    # The explicit half of "creating a tool lands in the system": `file_write`
+    # already registers a tool the moment its file is written, and this is
+    # the trigger the assistant fires on its own once it is done, to confirm
+    # what registered and see any contract error verbatim without writing
+    # anything else.
+    registry.register(ToolRegisterTool())
 
     # Tools the operator's own tree carries, before the tier and posture
     # passes so a home tool faces both exactly as a shipped one does. It

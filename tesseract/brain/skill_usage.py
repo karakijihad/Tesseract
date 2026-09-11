@@ -88,40 +88,80 @@ def log_skill_load(
     outcome: SkillOutcome = "ok",
     *,
     version: str = "",
+) -> None:
+    """Append one LOAD row: the skill was read, and whether the read worked.
+
+    `version` is the revision that was read, for a playbook. It is what lets
+    reuse be measured against the version rather than the name, so a revision
+    that performs worse than the one it replaced can be told apart from it.
+    Empty for a plain skill, which has nothing to compare, and empty for an
+    `error` by construction, since `_version_at` reads the version off the
+    file whose read just failed.
+    """
+    _append(skill, session_id, outcome, {"version": version} if version else {})
+
+
+def log_correction(
+    skill: str,
+    session_id: str,
+    *,
+    version: str = "",
     turn_id: str = "",
     step: int | None = None,
     memory_id: str = "",
     unattributed: bool = False,
 ) -> None:
-    """Append one usage line. Best-effort — never raises past this call.
+    """Append one CORRECTION row: the work that followed the read was put
+    right afterwards.
 
-    `version` is the revision that was read, for a playbook. It is what lets
-    reuse be measured against the version rather than the name, so a revision
-    that performs worse than the one it replaced can be told apart from it.
-    Empty for a plain skill, which has nothing to compare.
+    **Its own function because it is its own row shape.** These five fields
+    only ever mean something together with `outcome="correction"`, and while
+    they hung off `log_skill_load` the signature described neither row: a
+    caller could write an `ok` that claimed to be `unattributed`, or a
+    correction with no turn, and nothing refused either. Two shapes, two
+    functions, and each one's arguments are now the ones it actually has.
 
     `memory_id` is the feedback memory that IS the correction. Without it the
     row says a correction happened and the only way back to what the operator
     said is session to session, which is many to many: a session can save
     several corrections and consult several skills. The refinement job reads
     it so its evidence carries the words rather than a step number alone.
+    `unattributed` says there WAS a memory and it could not be tied to this
+    skill, which is a different thing to tell an operator than no memory.
     """
-    row = {
+    extra: dict[str, Any] = {}
+    if version:
+        extra["version"] = version
+    if turn_id:
+        extra["turn_id"] = turn_id
+    # `is not None`, never a truth test: 0 is a real answer here. It is the
+    # turn that read the playbook and then followed none of it, which is the
+    # most interesting row on the log, and `if step:` drops exactly that one.
+    if step is not None:
+        extra["step"] = step
+    if memory_id:
+        extra["memory_id"] = memory_id
+    if unattributed:
+        extra["unattributed"] = True
+    _append(skill, session_id, "correction", extra)
+
+
+def _append(
+    skill: str, session_id: str, outcome: SkillOutcome, extra: dict[str, Any]
+) -> None:
+    """One line on the log. Best-effort — never raises past this call.
+
+    A field the caller left out is absent from the row rather than written as
+    a blank: every reader of this file tells "no version" from "version is
+    empty" by whether the key is there at all.
+    """
+    row: dict[str, Any] = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "skill": skill,
         "session_id": session_id or "",
         "outcome": outcome,
     }
-    if version:
-        row["version"] = version
-    if turn_id:
-        row["turn_id"] = turn_id
-    if step is not None:
-        row["step"] = step
-    if memory_id:
-        row["memory_id"] = memory_id
-    if unattributed:
-        row["unattributed"] = True
+    row.update(extra)
     try:
         path = usage_log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -186,7 +226,14 @@ def attribute_session_corrections(session_id: str, *, memory_id: str = "") -> in
             # that was read last, and on the turn that read it.
             loaded[skill] = r
     targets = {skill: loaded[skill] for skill in loaded if skill not in corrected}
-    added = 0
+
+    # Which skills actually get a row, resolved BEFORE any is written.
+    # Attribution is keyed on this and not on `targets`, because the skips
+    # below are the rules that decide what a correction is about: a session
+    # that followed playbook A and merely read playbook B has two targets and
+    # one correction, and keying on the candidate count threw the operator's
+    # words away on exactly the case the more-than-half rule exists to isolate.
+    eligible: list[tuple[str, str, str, int | None]] = []
     for skill in sorted(targets):
         row = targets[skill]
         version = str(row.get("version") or "")
@@ -207,25 +254,30 @@ def attribute_session_corrections(session_id: str, *, memory_id: str = "") -> in
             # four it read as content reached 4, 4, 2 and 0 of 8. More than
             # half is the line, and a playbook with no tool steps has nothing
             # to be judged by and is marked as read.
-            if step is not None and total and matched * 2 <= total:
+            if total and matched * 2 <= total:
                 continue
-        # The memory is recorded only when ONE skill is being corrected. A
-        # session that consulted two playbooks and then saved a correction
-        # about one of them cannot say which, and stamping both with the same
-        # memory puts the operator's words against work they were not about.
-        # A quote that may be wrong is worse than no quote: it invites a
-        # confident rewrite aimed at the wrong thing, which is the failure
-        # this whole evidence path exists to end.
-        log_skill_load(
-            skill, session_id, "correction", version=version, turn_id=turn_id,
+        eligible.append((skill, version, turn_id, step))
+
+    # The memory is recorded only when ONE skill is being corrected. A
+    # session that consulted two playbooks and then saved a correction
+    # about one of them cannot say which, and stamping both with the same
+    # memory puts the operator's words against work they were not about.
+    # A quote that may be wrong is worse than no quote: it invites a
+    # confident rewrite aimed at the wrong thing, which is the failure
+    # this whole evidence path exists to end.
+    alone = len(eligible) == 1
+    added = 0
+    for skill, version, turn_id, step in eligible:
+        log_correction(
+            skill, session_id, version=version, turn_id=turn_id,
             step=step,
-            memory_id=memory_id if len(targets) == 1 else "",
+            memory_id=memory_id if alone else "",
             # Why there is no memory, when there is one to be had. Without
             # this the row is indistinguishable from one written before the
             # field existed, and a card would say the words were never
             # recorded when in fact they were and could not be tied to this
             # skill. The two are different things to tell an operator.
-            unattributed=bool(memory_id) and len(targets) > 1,
+            unattributed=bool(memory_id) and not alone,
         )
         added += 1
     return added

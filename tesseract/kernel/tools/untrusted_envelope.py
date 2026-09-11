@@ -76,27 +76,31 @@ def wrap(*, tool: str, output: str, source: str | None = None) -> str:
 
 
 def is_wrapped(text: str) -> bool:
-    """True iff ``text`` IS this envelope, not merely text that contains its
-    markers. Idempotent guard for callers that might wrap twice.
+    """Whether ``text`` has the SHAPE of this envelope. For display only.
 
-    **Structural, because a substring test was a way past the fence.**
-    `chat.py` skips wrapping when this returns True, so under
-    ``BEGIN in text and END in text`` any untrusted body carrying both strings
-    anywhere reached model history with NO envelope at all, free to put its
-    own instructions outside its own fake one. That is worse than the early
-    close `defuse` fixes: there, the text is at least inside a fence for part
-    of its length; here there is no fence.
+    **Never gate wrapping on this.** It reads the text and nothing else, so it
+    cannot tell an envelope the runtime built from one an untrusted body
+    merely looks like, and the two are the same string. `chat.py` used to skip
+    wrapping when this returned True: a fetched page that was itself one
+    well-formed envelope then reached history carrying a `tool=` and `source=`
+    it had chosen, so the transcript named the wrong tool for the body. It
+    wraps unconditionally now, which is cheap and answers the question the
+    text cannot.
 
-    Three conditions, and the third is the one a first attempt at this missed.
-    Opening with the BEGIN marker and closing with the system note is not
-    enough: text shaped as
+    That was the third defect on this predicate. The first was
+    ``BEGIN in text and END in text``, which let any body carrying both
+    strings anywhere through with NO fence at all. The second was requiring
+    only that it open with the marker and close with the note, which
 
         <fake envelope>  INJECTED INSTRUCTIONS  <fake envelope>
 
-    satisfies both ends while the injected middle sits OUTSIDE either fence.
-    So the count has to be exactly one pair. `wrap` guarantees that for
-    anything it produced, because `defuse` removes the markers from the body
-    first, which is why the two changes only work together.
+    satisfies while the injected middle sits outside either fence, hence the
+    exactly-one-pair rule below. Each fix was correct and none of them could
+    have been sufficient, because no test on the text can establish who wrote
+    it. Only the caller knows that.
+
+    What it is still good for: `strip`, and a renderer deciding whether to
+    paint a trust badge. Both are looking at text the runtime just produced.
     """
     if not text:
         return False

@@ -67,6 +67,16 @@ function openings(data: GraphResponse): Opening[] {
           : undefined,
     },
     {
+      way: 'orphans',
+      name: 'What nothing points at',
+      why: 'records nothing connects to, in either direction, so no walk of the graph arrives. Searching for their words still finds them',
+      count: data.orphans.length,
+      instead:
+        data.orphans.length === 0
+          ? 'nothing on the picture has zero connections'
+          : undefined,
+    },
+    {
       way: 'all',
       name: 'Everything the map drew',
       why: 'the whole working set at once, which is a lot to read and the honest place to start looking for a shape',

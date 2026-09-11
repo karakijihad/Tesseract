@@ -38,10 +38,9 @@ from tesseract.permissions.policy import load_permission_policy
 PERMISSIONS_YAML = CONFIG_DIR / "permissions.yaml"
 
 
-def _build_registry_snapshot() -> dict[str, str]:
-    """Harvest every concrete Tool subclass's class-declared
-    ``default_posture`` together with the string its ``name`` property
-    returns, without instantiating the tool.
+def discover_tool_classes() -> dict[str, type[Tool]]:
+    """Every concrete Tool subclass this checkout can import, keyed by the
+    string its ``name`` property returns, without instantiating the tool.
 
     Many tools require runtime services (registries, adapters, vault
     managers) in ``__init__``, so we cannot just call ``cls().name``.
@@ -49,6 +48,13 @@ def _build_registry_snapshot() -> dict[str, str]:
     body that is a single ``return "<literal>"``. That covers every
     tool currently in the tree. Anything more dynamic would surface as
     an empty match and be reported as a sync miss.
+
+    This is the sole source of "every Tool class in the tree" — reused by
+    `_build_registry_snapshot` below (posture reconciliation) and by
+    `kernel_registry_taxonomy`'s completeness test (`Tool.must_be_registered`
+    against the live registry `build_tool_registry` builds). One scan, one
+    place a class can go missing from both at once rather than drift between
+    two copies of the same walk.
     """
     import ast
     import importlib
@@ -56,7 +62,7 @@ def _build_registry_snapshot() -> dict[str, str]:
 
     import tesseract.kernel.tools as pkg
 
-    snapshot: dict[str, str] = {}
+    classes: dict[str, type[Tool]] = {}
     for info in pkgutil.iter_modules(pkg.__path__, pkg.__name__ + "."):
         try:
             mod = importlib.import_module(info.name)
@@ -94,11 +100,6 @@ def _build_registry_snapshot() -> dict[str, str]:
             # warnings (the AST table is per-module).
             if getattr(cls, "__module__", "") != mod.__name__:
                 continue
-            posture = getattr(cls, "default_posture", "")
-            if posture not in ("auto", "ask", "deny"):
-                raise SystemExit(
-                    f"tool class {cls.__name__} has invalid default_posture={posture!r}"
-                )
             tool_name = ast_names.get(cls.__name__)
             if not tool_name:
                 # Factory-built tools (e.g. `channel_send._make_media_tool`)
@@ -117,7 +118,26 @@ def _build_registry_snapshot() -> dict[str, str]:
                     "instantiation failed)", cls.__name__,
                 )
                 continue
-            snapshot[tool_name] = posture
+            classes[tool_name] = cls
+    return classes
+
+
+def _build_registry_snapshot() -> dict[str, str]:
+    """Every discovered tool class's class-declared ``default_posture``,
+    keyed by its ``name``.
+
+    Discovery itself lives in `discover_tool_classes`; this layer's own job
+    is reading `default_posture` off what that finds and enforcing it is one
+    of the three valid values.
+    """
+    snapshot: dict[str, str] = {}
+    for tool_name, cls in discover_tool_classes().items():
+        posture = getattr(cls, "default_posture", "")
+        if posture not in ("auto", "ask", "deny"):
+            raise SystemExit(
+                f"tool class {cls.__name__} has invalid default_posture={posture!r}"
+            )
+        snapshot[tool_name] = posture
     return snapshot
 
 

@@ -42,15 +42,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from tesseract.brain.playbook_contract import version_number
-from tesseract.brain.playbook_reuse import Reuse, measure, worse_than
+from tesseract.brain.playbook_reuse import Reuse, measure_all, worse_than
 from tesseract.brain.skill_usage import read_usage
 from tesseract.brain.skills import (
     SKILL_FILENAME,
@@ -61,7 +59,7 @@ from tesseract.brain.skills import (
     set_skill_status,
 )
 from tesseract.orchestrator.outcome import RunOutcome
-from tesseract.paths import TESSERACT_HOME, home_logs_root
+from tesseract.paths import home_logs_root
 from tesseract.scheduler.base_job import BaseJob
 from tesseract.scheduler.role_chain import build_chain_for_job
 from tesseract.scheduler.types import JobContext, JobResult
@@ -263,12 +261,7 @@ class SkillRefinementJob(BaseJob):
                 # skill moved to v4 is silently rebased and reads as current.
                 "version": version,
                 "base_sha256": _sha256(current),
-                "stats": {
-                    "loads": cand["total"],
-                    "corrections": cand["neg"],
-                    "errors": cand["errors"],
-                    "unattributable": cand["unattributable"],
-                },
+                "stats": _stats_payload(cand),
                 "current_markdown": current,
                 "proposed_markdown": proposed,
                 # The same block the model was given. On the card so the
@@ -319,12 +312,7 @@ class SkillRefinementJob(BaseJob):
                 "name": name,
                 "version": cand["version"],
                 "base_sha256": _sha256(current),
-                "stats": {
-                    "loads": cand["total"],
-                    "corrections": cand["neg"],
-                    "errors": cand["errors"],
-                    "unattributable": cand["unattributable"],
-                },
+                "stats": _stats_payload(cand),
                 "current_markdown": current,
                 "proposed_markdown": "",
             },
@@ -347,8 +335,16 @@ class SkillRefinementJob(BaseJob):
         before: Reuse,
     ) -> None:
         """One card per retirement: what was retired, against what, and where
-        the predecessor is. Flag-only by construction, so the approve route
-        has nothing to apply; the numbers are the point."""
+        the predecessor is.
+
+        Its OWN kind, because the retiring already happened and there is
+        nothing to approve. Filed as `skill_refinement` it inherited that
+        kind's Apply button, and Apply on a card carrying no proposal is
+        refused with `skill_refinement_no_proposal` every single time: the
+        only control that worked was Reject, which then posted "Refinement
+        rejected" about a card that proposed nothing. `reflection_proposal`
+        is the same shape and was already modelled this way.
+        """
         from tesseract.workspace_events import WorkspaceEvent
 
         summary = (
@@ -359,7 +355,7 @@ class SkillRefinementJob(BaseJob):
             f"history/{before.version}/ to return to."
         )
         event = WorkspaceEvent.new(
-            kind="skill_refinement",
+            kind="skill_retirement",
             source="agent",
             title=f"Playbook revision retired: {name} v{live.version}",
             summary=summary,
@@ -491,72 +487,37 @@ def _correction_text(memory_id: str, cap: int) -> str:
     """What the operator actually said, off the feedback memory that IS the
     correction, or "" when the row carries no reference to one.
 
-    Read straight off the file rather than through `MemoryStore.read`, which
-    logs an access: a background job counting evidence has not "recalled" the
-    memory, and a retrieval-frequency signal that this job feeds would be
-    measuring itself.
+    `log_access=False` is the whole reason this once walked the buckets by
+    hand: a background job counting evidence has not "recalled" the memory,
+    and a retrieval-frequency signal that this job feeds would be measuring
+    itself. The store's own reader already takes that flag, so the second
+    implementation bought nothing and cost two things. It parsed `expiry_at`
+    with a regex where the store has a validated, timezone-normalised field,
+    and it resolved an id to a path itself, which is the check that has now
+    been got wrong twice in this subsystem. One reader, one place the rule
+    lives.
     """
-    # The id becomes a path segment, so it is checked before it is one. It
-    # comes off a log line the assistant cannot write, but a name built from
-    # data is a name whichever way the data arrived, and a separator in it
-    # would reach outside the store.
-    if not memory_id or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", memory_id):
+    if not memory_id:
         return ""
+    from tesseract.memory.store import MemoryStore
     from tesseract.paths import home_dir
 
-    store = home_dir() / "memory-store"
-    # The store's own layout rather than a walk of it: `MemoryStore.find_file`
-    # checks these buckets, and a whole-tree `rglob` per quoted row scaled the
-    # cost with the operator's library instead of with the evidence.
-    # The store's own list, not a second copy of it: a new memory type added
-    # there would otherwise be a type this reader silently cannot quote.
-    from tesseract.memory.store import MEMORY_SUBDIRS
-
-    buckets = MEMORY_SUBDIRS
-    found: Path | None = None
-    for bucket in buckets:
-        flat = store / bucket / f"{memory_id}.md"
-        if flat.is_file():
-            found = flat
-            break
-    if found is None:
-        # The operator may curate sub-buckets (`reference/people/`), which
-        # `find_file` supports, so a miss above is not an absence. Bounded to
-        # the five buckets rather than the whole store.
-        for bucket in buckets:
-            found = next((store / bucket).rglob(f"{memory_id}.md"), None)
-            if found is not None:
-                break
-    if found is None:
-        return ""
     try:
-        raw = found.read_text(encoding="utf-8")
-    except OSError:
+        found = MemoryStore(home_dir() / "memory-store").read(
+            memory_id, log_access=False
+        )
+    except Exception:  # noqa: BLE001 — evidence is best-effort, never the job
         return ""
-    if _expired(raw):
+    if found is None:
         return ""
-    body = raw.split("---", 2)[-1] if raw.startswith("---") else raw
+    fm, body = found
+    # Retrieval drops an expired record from the prefilter, and a quote
+    # carries the authority of something the operator still stands behind.
+    # Without this a correction they deliberately gave a shelf life could be
+    # read back into a rewrite prompt weeks after it lapsed.
+    if fm.expiry_at is not None and fm.expiry_at <= datetime.now(timezone.utc):
+        return ""
     return " ".join(body.split())[:cap]
-
-
-def _expired(raw: str) -> bool:
-    """Whether a memory has passed its own `expiry_at`.
-
-    Retrieval drops an expired record from the prefilter, and a quote carries
-    the authority of something the operator still stands behind. Without this
-    a correction they deliberately gave a shelf life could be read back into a
-    rewrite prompt weeks after it lapsed.
-    """
-    match = re.search(r"^expiry_at:\s*(\S+)", raw, re.MULTILINE)
-    if not match:
-        return False
-    try:
-        when = datetime.fromisoformat(match.group(1).strip("'\"").replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
-    return when <= datetime.now(timezone.utc)
 
 
 def _evidence_block(
@@ -588,15 +549,29 @@ def _evidence_block(
             f"  {cand['unattributable']} rows named no revision and are not "
             "counted above."
         )
-    shown = [f for f in cand["failures"] if f.get("step") is not None][:max_rows]
+    # A step is what a PLAYBOOK adds, not what makes a correction worth
+    # quoting. `attribute_session_corrections` computes one only for a row
+    # carrying a revision, so a plain skill's corrections all carry None, and
+    # gating on a step hid every one of them: no quote, no "what went wrong"
+    # block, and `held_back` below then printed "and N more not shown" with
+    # nothing shown above it. The operator's own words are the strongest
+    # evidence this card has and a plain skill lost all of them.
+    shown = [
+        f for f in cand["failures"]
+        if f.get("step") is not None or not cand["version"]
+    ][:max_rows]
     # Read once per row and carried: the count below used to re-read every
     # one of them, which is a second walk of the memory store per failure.
     quoted = [(f, _correction_text(f.get("memory_id", ""), max_chars)) for f in shown]
     if shown:
         lines.append("")
-        lines.append("What went wrong, and where the turn had got to:")
+        lines.append(
+            "What went wrong, and where the turn had got to:"
+            if cand["version"] else "What went wrong:"
+        )
         for f, said in quoted:
-            lines.append(f"  step {f['step']} reached, {f['ts'][:19]}")
+            at = f"step {f['step']} reached, " if f.get("step") is not None else ""
+            lines.append(f"  {at}{f['ts'][:19]}")
             if said:
                 lines.append(f"    you said: {said}")
     held_back = len(cand["failures"]) - len(shown)
@@ -620,6 +595,21 @@ def _evidence_block(
         "prove the procedure caused it."
     )
     return wrap(tool="skill_refinement", output="\n".join(lines), source="usage.jsonl")
+
+
+def _stats_payload(cand: dict[str, Any]) -> dict[str, int]:
+    """The four counts a card carries, in one place.
+
+    Both card kinds show the same numbers, and a field added to one and not
+    the other is a card that disagrees with its sibling about what was
+    measured.
+    """
+    return {
+        "loads": cand["total"],
+        "corrections": cand["neg"],
+        "errors": cand["errors"],
+        "unattributable": cand["unattributable"],
+    }
 
 
 def _sha256(text: str) -> str:
@@ -788,9 +778,13 @@ def _retire_worse_revisions(
     predecessor over the window. Returns what was retired, with both records,
     for the cards."""
     retired: list[tuple[str, Reuse, Reuse]] = []
-    for entry in load_skills(skills_dir):
-        if not entry.is_playbook or entry.status != "active":
-            continue
+    actives = [e for e in load_skills(skills_dir) if e.is_playbook and e.status == "active"]
+    # One pass of the log and the turn tree for all of them. `measure` is the
+    # one-name case and delegates here anyway, so asking it per playbook read
+    # the whole usage log and re-walked the whole window once per playbook.
+    # `playbook_record.records` was written this way for the same reason.
+    by_name = measure_all([e.name for e in actives], window_days=window_days, now=now)
+    for entry in actives:
         folder = skills_dir / entry.dirname
         live_number = version_number(entry.version)
         if live_number is None:
@@ -803,7 +797,7 @@ def _retire_worse_revisions(
         if not kept:
             continue
         predecessor: SkillEntry = kept[-1]
-        by_version = measure(entry.name, window_days=window_days, now=now)
+        by_version = by_name.get(entry.name, {})
         live = by_version.get(entry.version)
         before = by_version.get(predecessor.version)
         if live is None or before is None:

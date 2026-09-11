@@ -25,6 +25,7 @@ export const KIND_LABEL: Record<EventKind, string> = {
   agent_approval: 'Approval',
   skill_approval: 'Skill',
   skill_refinement: 'Skill fix',
+  skill_retirement: 'Playbook retired',
   working_set_proposal: 'What it carries',
   tuning_proposal: 'What it spends',
   soul_proposal: 'Soul',

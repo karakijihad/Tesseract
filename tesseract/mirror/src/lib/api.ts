@@ -2680,6 +2680,34 @@ export async function fetchAutonomyDay(): Promise<DayResponse> {
 // failed run. What is here is whether the map is current, what it could not
 // make sense of, and what it does not cover at all.
 
+/** Two records the map says cannot both be right. `subjects` are real node
+ *  ids and both of them exist: a conflict never invents a side. */
+export interface AtlasConflict {
+  id: string;
+  kind: string;
+  detail: string;
+  subjects: string[];
+}
+
+/** A link naming a record that is not there. */
+export interface AtlasDanglingLink {
+  /** The id nothing answers to. Never a seed for a query: the retrieval drops
+   *  an id the map does not hold, and an empty answer looks like a working
+   *  one. */
+  missing: string;
+  /** The record that still names it, which is the only queryable half of the
+   *  pair. Empty when both ends are gone, and then there is nothing to ask
+   *  about. */
+  citing: string;
+  locator: string;
+}
+
+/** A record nothing points at, in either direction. */
+export interface AtlasOrphan {
+  id: string;
+  title: string;
+}
+
 export interface AtlasResponse {
   /** The map as it stands: how much is in it, what disagrees, what points at
    *  a record that is not there, and what nothing points at. */
@@ -2692,6 +2720,13 @@ export interface AtlasResponse {
   /** Why there are none, when there are none. Never run, an unreadable
    *  record, and a pass that did not draw are three different claims. */
   lastPassSaid: string;
+  /** The three summary rows carry a count. These carry who. A room that
+   *  publishes only the count cannot aim a tool at anything, which is the
+   *  whole reason these exist. Each list is capped the same way `ATLAS.md`
+   *  caps its own. */
+  disagreements: AtlasConflict[];
+  dangling: AtlasDanglingLink[];
+  orphans: AtlasOrphan[];
   observedAt: string;
 }
 
@@ -2833,6 +2868,12 @@ export interface GraphResponse {
    *  `ATLAS.md` ranks its hub list by. One of the ways into the picture, and
    *  bounded to what was drawn. */
   hubs: string[];
+  /** Records nothing points at, in either direction, bounded to what was
+   *  drawn. The other real way into the picture besides a search: unlike a
+   *  dangling link, an orphan IS a node, so the picture can honestly open on
+   *  it. `AtlasOrphan` carries a title because a room reads it; this carries
+   *  only the id because the picture only needs a seed. */
+  orphans: string[];
   drawn: {
     nodes: number;
     edges: number;

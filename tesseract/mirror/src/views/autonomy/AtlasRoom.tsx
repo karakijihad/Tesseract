@@ -25,13 +25,15 @@
 
 import { useEffect, useState } from 'react';
 import { Button } from '../../components/common/Button';
+import { Disclosure } from '../../components/common/Disclosure';
 import { Note } from '../../components/common/Note';
 import { RowActions } from '../../components/common/Row';
 import { Band, StateStrip, type StateLine } from '../../components/common/StateStrip';
 import { Hint } from '../../components/ui/Hint';
-import { sendCommand } from '../../lib/commands';
-import type { AtlasResponse } from '../../lib/api';
+import { askAssistant, sendCommand } from '../../lib/commands';
+import type { AtlasConflict, AtlasDanglingLink, AtlasResponse } from '../../lib/api';
 import { useAutonomyStore } from '../../stores/autonomy';
+import { useGraphStore } from '../../stores/graph';
 import { usePanelStore } from '../../cockpit/panelStore';
 import { useStaleStore } from '../../stores/stale';
 import { clock } from '../../lib/time';
@@ -53,6 +55,40 @@ const POLL_MS = 90_000;
  *  it, and they are looking at the row when it does. */
 const STALE_KEY = 'autonomy.atlas';
 
+/** The words that go to the assistant when a disagreement is questioned.
+ *
+ * Everything in it is the conflict's own: the kind the atlas gave it, its
+ * detail sentence, and the real ids of both records it names, never a
+ * rendered label. `atlas_query` can seed on either one, because a conflict
+ * never invents a side: both subjects are records the atlas already holds.
+ */
+export function askedAboutConflict(c: AtlasConflict): string {
+  return [
+    'The atlas found two records that disagree and I want it looked at.',
+    `It calls this ${c.kind}: ${c.detail}.`,
+    `The records are ${c.subjects.join(' and ')}.`,
+    'Use atlas_query starting from both of them, then tell me which one is',
+    'right, or how they should both stand.',
+  ].join(' ');
+}
+
+/** The words that go to the assistant when a dangling link is questioned.
+ *
+ * Named on `citing`, the surviving side of the edge, never on `missing`: the
+ * missing id is not a node and `atlas_query` would drop it as a seed and
+ * answer empty, which would look like it worked and found nothing. Only
+ * called where `citing` is not empty; the room offers no button at all
+ * otherwise, because there is then no record left to ask about.
+ */
+export function askedAboutDangling(d: AtlasDanglingLink): string {
+  return [
+    `A connection in the atlas points at ${d.missing}, and nothing by that`,
+    `name is there any more. ${d.citing} wrote it down at ${d.locator}.`,
+    `Use atlas_query starting from ${d.citing}, then tell me whether the`,
+    'reference still holds or should be dropped.',
+  ].join(' ');
+}
+
 export function AtlasRoomView({
   data,
   status,
@@ -60,6 +96,7 @@ export function AtlasRoomView({
   onRedraw,
   redrawing,
   onOpen,
+  onSeeOrphans,
 }: {
   data: AtlasResponse | null;
   status: 'idle' | 'loading' | 'ready' | 'error';
@@ -70,7 +107,14 @@ export function AtlasRoomView({
    *  every view the same way, and the assistant's `cockpit_show` reaches the
    *  same store, so the door and "show me the map" are one act. */
   onOpen: () => void;
+  /** Opens the graph surface already drawn around what nothing points at.
+   *  Separate from `onOpen`: this one also chooses the way in, because the
+   *  row it sits on already knows which records are worth looking at. */
+  onSeeOrphans: () => void;
 }): React.ReactElement {
+  const [openDisagreements, setOpenDisagreements] = useState(false);
+  const [openDangling, setOpenDangling] = useState(false);
+
   if (status === 'error') {
     return <Note tone="bad">The map could not be read. {error}</Note>;
   }
@@ -91,14 +135,6 @@ export function AtlasRoomView({
   const graph = rows(data.graph);
   // Redrawing acts on the map as a whole, so it sits on the row that IS the
   // map rather than on a row it would not touch.
-  //
-  // The other three rows here carry no button on purpose. Each is a COUNT —
-  // how many pairs disagree, how many connections name a record that is not
-  // here, how many nothing points at — and the payload that produces it
-  // (`routes/autonomy_atlas.py::graph`) never names which records they are.
-  // `atlas_query` needs a record or a search term to investigate, and there
-  // is none here to hand it; offering a button that opens on nothing would be
-  // the inert-looking row the panel's own rule forbids.
   if (graph.length > 0) {
     graph[0] = {
       ...graph[0],
@@ -111,6 +147,117 @@ export function AtlasRoomView({
               ariaLabel="Redraw the map now"
             >
               {redrawing ? 'redrawing' : 'redraw now'}
+            </Button>
+          </Hint>
+        </RowActions>
+      ),
+    };
+  }
+
+  // The three counts below now carry who, in `data.disagreements`,
+  // `data.dangling` and `data.orphans`. Matched by name rather than by
+  // position, because the row order is `routes/autonomy_atlas.py::graph`'s to
+  // choose and this file authors nothing about the map.
+  //
+  // The three do not get the same control, and that is deliberate rather than
+  // an oversight: a conflict's subjects and an orphan are both real, present
+  // atlas ids, safe to hand `atlas_query`. A dangling link's missing id is
+  // never a node and never can be, so there is nothing honest to seed a
+  // picture with; what IS honest is the surviving record that still cites it,
+  // which is a fact about a connection rather than about a record on its own,
+  // so it goes to the assistant rather than onto the canvas.
+  const disagreeIdx = graph.findIndex((line) => line.name === 'records that disagree');
+  if (disagreeIdx >= 0 && data.disagreements.length > 0) {
+    graph[disagreeIdx] = {
+      ...graph[disagreeIdx],
+      more: (
+        <>
+          <Disclosure
+            open={openDisagreements}
+            onToggle={() => setOpenDisagreements((open) => !open)}
+          >
+            {openDisagreements
+              ? 'hide them'
+              : `see ${data.disagreements.length === 1 ? 'it' : 'them'}`}
+          </Disclosure>
+          {openDisagreements && (
+            <StateStrip
+              whole
+              lines={data.disagreements.map((conflict) => ({
+                key: conflict.id,
+                state: 'degraded' as const,
+                name: conflict.kind,
+                said: `${conflict.detail} The records: ${conflict.subjects.join(' and ')}.`,
+                actions: (
+                  <RowActions className="state-acts">
+                    <Hint label="Puts this pair to the assistant in the chat, naming both records and what the atlas says they disagree about. It can use atlas_query to look at how each one connects. Nothing is resolved by pressing this.">
+                      <Button
+                        onClick={() => askAssistant(askedAboutConflict(conflict))}
+                        ariaLabel={`Ask about the ${conflict.kind} disagreement`}
+                      >
+                        ask about it
+                      </Button>
+                    </Hint>
+                  </RowActions>
+                ),
+              }))}
+            />
+          )}
+        </>
+      ),
+    };
+  }
+
+  const danglingIdx = graph.findIndex((line) => line.name === 'connections into nothing');
+  if (danglingIdx >= 0 && data.dangling.length > 0) {
+    graph[danglingIdx] = {
+      ...graph[danglingIdx],
+      more: (
+        <>
+          <Disclosure open={openDangling} onToggle={() => setOpenDangling((open) => !open)}>
+            {openDangling
+              ? 'hide them'
+              : `see ${data.dangling.length === 1 ? 'it' : 'them'}`}
+          </Disclosure>
+          {openDangling && (
+            <StateStrip
+              whole
+              lines={data.dangling.map((link) => ({
+                key: `${link.missing}:${link.locator}`,
+                state: 'degraded' as const,
+                name: link.missing,
+                said: link.citing
+                  ? `${link.citing} still cites it, written down at ${link.locator}.`
+                  : `Written down at ${link.locator}. Neither end of this one is on the map any more, so there is nothing left to ask about.`,
+                actions: link.citing ? (
+                  <RowActions className="state-acts">
+                    <Hint label="Puts this to the assistant in the chat, naming the record that still holds the reference and what it points at. It can use atlas_query to check whether the reference still holds. Nothing is changed by pressing this.">
+                      <Button
+                        onClick={() => askAssistant(askedAboutDangling(link))}
+                        ariaLabel={`Ask about the connection to ${link.missing}`}
+                      >
+                        ask about it
+                      </Button>
+                    </Hint>
+                  </RowActions>
+                ) : undefined,
+              }))}
+            />
+          )}
+        </>
+      ),
+    };
+  }
+
+  const orphanIdx = graph.findIndex((line) => line.name === 'nothing points at these');
+  if (orphanIdx >= 0 && data.orphans.length > 0) {
+    graph[orphanIdx] = {
+      ...graph[orphanIdx],
+      actions: (
+        <RowActions className="state-acts">
+          <Hint label="Opens the map already drawn around every record nothing connects to, so you can look at each one and what it says on its own.">
+            <Button onClick={onSeeOrphans} ariaLabel="see what nothing points at, on the map">
+              see them on the map
             </Button>
           </Hint>
         </RowActions>
@@ -210,6 +357,7 @@ export function AtlasRoom(): React.ReactElement {
   useEffect(() => setRedrawing(false), [atlas.lastFetched]);
 
   const openPanel = usePanelStore((s) => s.openPanel);
+  const enterGraphWay = useGraphStore((s) => s.enter);
 
   return (
     <AtlasRoomView
@@ -218,6 +366,13 @@ export function AtlasRoom(): React.ReactElement {
       error={atlas.error}
       redrawing={redrawing}
       onOpen={() => openPanel('graph')}
+      onSeeOrphans={() => {
+        // The way in first, then the door: opening the panel before the
+        // store has a way chosen would draw the entry state for one frame
+        // rather than the picture this button promises.
+        enterGraphWay('orphans');
+        openPanel('graph');
+      }}
       onRedraw={() => {
         setRedrawing(true);
         // The same tool a channel calls and the same gate it passes. The

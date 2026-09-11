@@ -93,11 +93,30 @@ def _plural(n: int, one: str, many: str) -> str:
     return f"{n:,} {one if n == 1 else many}"
 
 
+#: What is empty is still shaped: three lists, none of them missing. A caller
+#: that only checked `if items:` could not tell "nothing to draw" from "the
+#: file is not there yet" apart, which is the same mistake the rows above
+#: exist to refuse.
+_EMPTY_ITEMS: dict[str, list[dict[str, Any]]] = {
+    "disagreements": [],
+    "dangling": [],
+    "orphans": [],
+}
+
 #: The reading, keyed on the file it was taken from. A poll that arrives
 #: between two nightly passes gets the same answer for the price of a `stat`,
 #: and the poll after a rebuild reads the new file: identity is the file's own
 #: size and modification time, so nothing has to be invalidated by hand.
-_graph_cache: tuple[tuple[str, int, int], list[dict[str, Any]]] | None = None
+#:
+#: Holds both halves of the same pass over the atlas: the four summary rows
+#: and the records behind three of them. `graph()` and `graph_items()` are two
+#: views onto one cached read, not two reads, because the file this room reads
+#: is megabytes and parsing it twice for one poll would undo the reason this
+#: cache exists at all.
+_graph_cache: (
+    tuple[tuple[str, int, int], tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]]
+    | None
+) = None
 _graph_lock = threading.Lock()
 
 
@@ -111,15 +130,7 @@ def _identity(path: Path) -> tuple[str, int, int]:
     return (str(path), stat.st_mtime_ns, stat.st_size)
 
 
-def graph(path: Path | None = None) -> list[dict[str, Any]]:
-    """The map as it stands, in four rows a person can act on.
-
-    Every count comes from `report.py`, which is where what an orphan is and
-    what a link into nothing is are decided. The states are readings and not
-    faults except where something is genuinely owed: a record nothing points at
-    is still found by searching for its words, so it is a fact about the shape
-    of the library rather than a fault in it.
-    """
+def _cached(path: Path | None) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
     global _graph_cache
 
     target = path or atlas_store.atlas_path()
@@ -133,12 +144,50 @@ def graph(path: Path | None = None) -> list[dict[str, Any]]:
         cached = _graph_cache
         if cached is not None and cached[0] == key:
             return cached[1]
-        rows = _read(target)
-        _graph_cache = (key, rows)
-        return rows
+        result = _read(target)
+        _graph_cache = (key, result)
+        return result
 
 
-def _read(target: Path) -> list[dict[str, Any]]:
+def graph(path: Path | None = None) -> list[dict[str, Any]]:
+    """The map as it stands, in four rows a person can act on.
+
+    Every count comes from `report.py`, which is where what an orphan is and
+    what a link into nothing is are decided. The states are readings and not
+    faults except where something is genuinely owed: a record nothing points at
+    is still found by searching for its words, so it is a fact about the shape
+    of the library rather than a fault in it.
+    """
+    rows, _items = _cached(path)
+    return rows
+
+
+def graph_items(path: Path | None = None) -> dict[str, list[dict[str, Any]]]:
+    """The records behind three of the rows above: who disagrees, what points
+    at nothing, and what nothing points at.
+
+    A row says how many; this says which. Without it `atlas_query` has
+    nothing to be pointed at, and the room could only ever describe the map
+    rather than let anyone act on what it found. Shares `graph`'s cache, so
+    asking for both after a poll costs one file read.
+
+    **Not symmetric, on purpose.** Every disagreement and every orphan here
+    carries a real, present atlas id: a conflict's subjects are both real
+    records and an orphan IS a node, just one with no edges, so either is safe
+    to hand `atlas_query` as a seed. A dangling link is different in kind: the
+    id it is ABOUT is not a node and never can be — `retrieve()` drops a seed
+    `atlas.nodes` does not hold and still answers successfully, empty, which
+    would make a button built on `missing` look like it worked and did
+    nothing. So each dangling entry carries `citing` instead, the surviving
+    side of the same edge, which is the only identity in the pair anything can
+    honestly be asked about. `citing` is `""` when that side is gone too:
+    real, not a bug, and there is then nothing left to ask.
+    """
+    _rows, items = _cached(path)
+    return items
+
+
+def _read(target: Path) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
     if not target.exists():
         return [
             _row(
@@ -147,7 +196,7 @@ def _read(target: Path) -> list[dict[str, Any]]:
                 "nothing has drawn it on this machine yet, so how things "
                 "connect is not known rather than empty",
             )
-        ]
+        ], dict(_EMPTY_ITEMS)
     atlas = atlas_store.load(target)
     if not atlas.nodes:
         # A file with nothing in it is a real answer and not a missing one:
@@ -160,7 +209,7 @@ def _read(target: Path) -> list[dict[str, Any]]:
                 "nothing yet to remember or to have read",
                 at=atlas.built_at,
             )
-        ]
+        ], dict(_EMPTY_ITEMS)
 
     stale = atlas.builder_version != BUILDER_VERSION
     rows = [
@@ -231,7 +280,35 @@ def _read(target: Path) -> list[dict[str, Any]]:
             value=str(len(alone)) if alone else "",
         )
     )
-    return rows
+
+    # The identities behind the three rows above, capped the same way
+    # `ATLAS.md` caps its own sections. Real atlas ids throughout: a
+    # conflict's subjects and an orphan are both present nodes, and a
+    # dangling link's `citing` is the surviving side of the edge, never the
+    # missing one — see `graph_items`'s own docstring for why that split is
+    # not a shortcut taken here but the shape the data actually has.
+    items = {
+        "disagreements": [
+            {
+                "id": conflict.id,
+                "kind": conflict.kind,
+                "detail": conflict.detail,
+                "subjects": list(conflict.subjects),
+            }
+            for conflict in sorted(atlas.conflicts.values(), key=lambda c: c.id)[
+                : atlas_report.TOP_N
+            ]
+        ],
+        "dangling": [
+            {"missing": missing, "citing": citing, "locator": locator}
+            for missing, citing, locator in loose[: atlas_report.TOP_N]
+        ],
+        "orphans": [
+            {"id": node_id, "title": atlas.nodes[node_id].title}
+            for node_id in alone[: atlas_report.TOP_N]
+        ],
+    }
+    return rows, items
 
 
 def not_reached() -> list[dict[str, Any]]:
@@ -306,9 +383,12 @@ async def get_atlas(request: web.Request) -> web.Response:
     del request
     now = datetime.now(timezone.utc)
     # A file read and a walk of every edge, off the loop that carries health,
-    # the socket and inbound turns.
-    rows, pass_over = await asyncio.gather(
+    # the socket and inbound turns. `graph` and `graph_items` share one cached
+    # read, so gathering both costs a stat and a dict lookup, not a second
+    # parse of a megabytes-large file.
+    rows, items, pass_over = await asyncio.gather(
         asyncio.to_thread(graph),
+        asyncio.to_thread(graph_items),
         asyncio.to_thread(last_pass),
         return_exceptions=True,
     )
@@ -316,6 +396,7 @@ async def get_atlas(request: web.Request) -> web.Response:
         pass_over,
         ([], "the record could not be read, so when it was last drawn is unknown"),
     )
+    items = _band(items, dict(_EMPTY_ITEMS))
     return web.json_response(
         {
             "graph": _band(rows, []),
@@ -324,6 +405,11 @@ async def get_atlas(request: web.Request) -> web.Response:
             # Why there is nothing, when there is nothing. The backend answers,
             # so no view restates what an empty band means.
             "lastPassSaid": said,
+            # Who, behind the three counts above. See `graph_items` for why
+            # the dangling entries carry `citing` and not `missing`.
+            "disagreements": items["disagreements"],
+            "dangling": items["dangling"],
+            "orphans": items["orphans"],
             "observedAt": _iso(now),
         }
     )
@@ -338,6 +424,7 @@ __all__ = [
     "NIGHTLY",
     "get_atlas",
     "graph",
+    "graph_items",
     "last_pass",
     "not_reached",
     "register",

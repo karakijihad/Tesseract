@@ -249,18 +249,42 @@ def bridges(atlas: Atlas) -> list[tuple[str, str]]:
     )
 
 
-def dangling(atlas: Atlas) -> list[tuple[str, str]]:
+def dangling(atlas: Atlas) -> list[tuple[str, str, str]]:
     """Edges pointing at ids no node carries — a link into nothing.
 
     Not always a defect in the atlas: a `backlinks_from` naming a page that
     was deleted is a stale record in the vault, and this is where it becomes
     visible. Each row names the edge's locator, so the fix is one file away.
+
+    **`(missing, citing, locator)`, and the middle field is why this function
+    exists rather than a one-liner.** `missing` is not a node and never can be
+    queried as one: `atlas_query`'s seeding drops any id `atlas.nodes` does
+    not hold and answers with an empty, SUCCESSFUL result rather than an
+    error, so handing a caller `missing` looks like it worked and finds
+    nothing. `citing` is the other end of the same edge, when it is still a
+    real node: the one identity in the pair anything can actually be asked
+    about. It is `""` when that end is gone too, which happens and is not a
+    bug — both records a link once joined can be deleted. A caller with
+    nothing but `""` has nothing to ask, and must not invent a question.
+
+    This is also why a dangling link can never become a way into the picture
+    the way an orphan can: an orphan IS a node with zero edges, so the canvas
+    can draw one. `missing` never has a node at all, so there is no dot to
+    seed the picture from. Do not "fix" that by drawing `citing` instead: a
+    picture centred on the citing record answers a different question
+    ("what does this one connect to") and quietly stops being about the
+    dangling link at all.
     """
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, str]] = []
     for edge in atlas.edges.values():
-        for side in (edge.subject, edge.object):
-            if side not in atlas.nodes:
-                out.append((side, edge.locator))
+        subject_here = edge.subject in atlas.nodes
+        object_here = edge.object in atlas.nodes
+        if subject_here and object_here:
+            continue
+        if not subject_here:
+            out.append((edge.subject, edge.object if object_here else "", edge.locator))
+        if not object_here:
+            out.append((edge.object, edge.subject if subject_here else "", edge.locator))
     return sorted(set(out))
 
 
@@ -371,7 +395,9 @@ def render(atlas: Atlas) -> str:
         lines += ["", "## Links into nothing", "",
                   "An edge naming an id no record carries. Usually a stale "
                   "reference in the source rather than a fault in the map.", ""]
-        lines += [f"- `{target}` — cited by `{locator}`" for target, locator in loose[:TOP_N]]
+        lines += [
+            f"- `{target}` — cited by `{locator}`" for target, _citing, locator in loose[:TOP_N]
+        ]
         if len(loose) > TOP_N:
             lines.append(f"- …and {len(loose) - TOP_N} more")
 

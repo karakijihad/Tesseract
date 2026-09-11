@@ -83,7 +83,11 @@ type AsyncStatus = 'idle' | 'loading' | 'ready' | 'error';
 /** One step down inside a room. `kind` says what the pane should render and
  *  `id` says which one; the room owns the rendering, this owns the trail. */
 export interface AutonomyLevel {
-  kind: 'entry' | 'agent' | 'agenda' | 'worker' | 'step';
+  kind: 'entry' | 'agent' | 'agenda' | 'worker' | 'step' | 'effect';
+  /** The record's own key, never the label a row happened to render. An
+   *  `effect` carries the call's id and not the clarification card's: the
+   *  card's id is derived from it in one place, the way the backend derives
+   *  it in one place. */
   id: string;
   /** What the breadcrumb calls it. */
   label: string;

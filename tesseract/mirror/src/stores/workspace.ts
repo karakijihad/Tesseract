@@ -7,6 +7,7 @@ export type EventKind =
   | 'agent_approval'
   | 'skill_approval'
   | 'skill_refinement'
+  | 'skill_retirement'
   | 'working_set_proposal'
   | 'tuning_proposal'
   | 'soul_proposal'
@@ -80,7 +81,13 @@ interface WorkspaceState {
   upsertEvent: (event: WorkspaceEvent) => void;
   appendComment: (comment: WorkspaceComment) => void;
   setThreadPending: (event_id: string, entry: ThreadPendingEntry | null) => void;
-  refreshEvent: (event_id: string) => Promise<void>;
+  /** Re-reads one event from the backend and upserts it. Resolves `true` when
+   *  the event was found (whatever its status), `false` when the read failed
+   *  or the id no longer exists. A caller that only wants the side effect can
+   *  still ignore it; a caller opening a record by id on the strength of this
+   *  alone (nothing else loaded it first) cannot tell "still loading" from
+   *  "does not exist" any other way, and must not guess which one it was. */
+  refreshEvent: (event_id: string) => Promise<boolean>;
   /** Resolves `true` when the decision settled (applied, or the row was
    *  already gone) and `false` when it did not — a 5xx, a network drop, a
    *  parse failure. It reports rather than throws because a caller that only
@@ -279,8 +286,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     try {
       const ev = await jget<WorkspaceEvent>(`/api/workspace/event/${event_id}`);
       get().upsertEvent(ev);
+      return true;
     } catch {
-      /* swallow — best-effort */
+      /* best-effort for the two live-push callers below; the boolean is for
+       * the caller that has nothing else and needs to know it failed. */
+      return false;
     }
   },
 
