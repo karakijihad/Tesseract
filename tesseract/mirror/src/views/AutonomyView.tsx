@@ -48,6 +48,7 @@ import { DecisionLogPane } from './autonomy/DecisionLogPane';
 import { EntryCard } from './autonomy/EntryCard';
 import { AgentCard } from './autonomy/AgentCard';
 import { EffectDetail } from './autonomy/EffectDetail';
+import { TurnDetail } from './autonomy/TurnDetail';
 import { HealthRoom } from './autonomy/HealthRoom';
 import { ManagedRoom } from './autonomy/ManagedRoom';
 import { MachineMap } from './autonomy/MachineMap';
@@ -372,6 +373,7 @@ export function AutonomyView(): React.ReactElement {
                 }
                 if (lvl.kind === 'worker') return <WorkerDetail />;
                 if (lvl.kind === 'effect') return <EffectDetail callId={lvl.id} />;
+                if (lvl.kind === 'turn') return <TurnDetail id={lvl.id} day={lvl.day} />;
                 return null;
               }}
             />

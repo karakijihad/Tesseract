@@ -152,13 +152,22 @@ async def reflect_on_session(
     trigger: str = "",
     outcome: str = "",
     refused: str = "",
-) -> list[dict[str, Any]]:
-    """Run one bounded reflection turn. Returns a list of summaries — one
-    per reflection-related tool call observed (``memory_save`` /
-    ``diary_append`` / ``soul_growth_propose``). Each entry has the
-    shape produced by `_summarize_reflection_call` plus result-side
-    fields (``memory_id``, ``path``, ``status``) merged from the
-    matching TOOL_RESULT chunk.
+) -> tuple[list[dict[str, Any]], Any]:
+    """Run one bounded reflection turn. Returns the summaries and the
+    checkpoint this turn wrote.
+
+    The summaries are one per reflection-related tool call observed
+    (``memory_save`` / ``diary_append`` / ``soul_growth_propose``). Each entry
+    has the shape produced by `_summarize_reflection_call` plus result-side
+    fields (``memory_id``, ``path``, ``status``) merged from the matching
+    TOOL_RESULT chunk.
+
+    **The checkpoint is HANDED BACK rather than looked up afterwards.** What a
+    caller wants is the record THIS reflection wrote, and the store can only
+    answer "the newest one this chat has", which is a different thing the
+    moment a write fails: the caller would render the previous boundary's
+    state and believe it current. `None` means no record was written, and a
+    caller that needs one must treat that as nothing to say.
 
     Safe to cancel — ``KeyboardInterrupt`` / ``CancelledError`` propagate
     after logging.
@@ -174,16 +183,16 @@ async def reflect_on_session(
     the runtime stopped from one that finished its work.
     """
     if len(session.history) < MIN_HISTORY_FOR_REFLECTION:
-        return []
+        return [], None
     calls: list[dict[str, Any]] = []
     by_call_id: dict[str, dict[str, Any]] = {}
     said: list[str] = []
     try:
         result = await _reflect(session, reason, calls, by_call_id, said)
-        _write_checkpoint(
+        written = _write_checkpoint(
             session, said, trigger=trigger, outcome=outcome, refused=refused,
         )
-        return result
+        return result, written
     finally:
         # Reflection is a summarisation pass, not a turn the operator reads.
         # `send` drains the pending spawn-completion queue like any other turn,
@@ -290,30 +299,41 @@ def _write_checkpoint(
     trigger: str = "",
     outcome: str = "",
     refused: str = "",
-) -> None:
-    """Record what this conversation was doing. Never raises.
+) -> Any:
+    """Record what this conversation was doing, and hand the record back.
 
-    Reflection has already run and the boundary is about to fold or end the
-    conversation, so nothing here may turn a completed boundary into a failed
-    turn. The store is best-effort by the same reasoning and returns `None`
-    rather than raising; this catches the rest, including an import that fails.
+    Never raises. Reflection has already run and the boundary is about to fold
+    or end the conversation, so nothing here may turn a completed boundary into
+    a failed turn. The store is best-effort by the same reasoning and returns
+    `None` rather than raising; this catches the rest, including an import that
+    fails.
+
+    `None` therefore means the record did NOT land, and the caller is the only
+    one that can tell: the store still holds the PREVIOUS boundary's row, so
+    anything that asks it afterwards is answered, confidently, with state that
+    is one boundary stale.
     """
     try:
         from tesseract.orchestrator import checkpoints
 
         context = session.tool_context
-        checkpoints.write(
-            checkpoints.build(
-                session_id=str(getattr(context, "session_id", "") or ""),
-                chat_id=str(getattr(context, "chat_id", "") or ""),
-                trigger=trigger,
-                outcome=outcome,
-                refused=refused,
-                state=_parse_state(said),
-            )
+        checkpoint = checkpoints.build(
+            session_id=str(getattr(context, "session_id", "") or ""),
+            chat_id=str(getattr(context, "chat_id", "") or ""),
+            trigger=trigger,
+            outcome=outcome,
+            refused=refused,
+            state=_parse_state(said),
         )
+        # The store's own answer, not the object we handed it: `write` returns
+        # the id it appended, or `None` when the disk would not take it, and
+        # a record that never landed must not be handed on as one that did.
+        if checkpoints.write(checkpoint) is None:
+            return None
+        return checkpoint
     except Exception:  # noqa: BLE001
         log.warning("reflection: the checkpoint was not written", exc_info=True)
+        return None
 
 
 async def _attribute_skill_corrections(session: ChatSession, calls: list[dict[str, Any]]) -> None:
@@ -379,10 +399,25 @@ async def _attribute_skill_corrections(session: ChatSession, calls: list[dict[st
 # between the clone and the live session beyond the (idempotent) tool
 # registry.
 
-ReflectCompleteCb = Callable[[list[dict[str, Any]], str], Awaitable[None]]
+#: `(saves, reason, checkpoint)`. The checkpoint is the record THIS reflection
+#: wrote, or `None` when none landed, and it is passed rather than looked up so
+#: a callback cannot render the previous boundary's state as if it were this
+#: one's (`reflect_on_session`).
+ReflectCompleteCb = Callable[[list[dict[str, Any]], str, Any], Awaitable[None]]
 ReflectErrorCb = Callable[[BaseException, str], Awaitable[None]]
 
 _active_reflect_tasks: "dict[int, asyncio.Task[Any]]" = {}
+
+
+def _reflection_ceiling() -> float:
+    """How long one reflection may run, from `roles.yaml`.
+
+    Read at call time so the config watcher's rebuild is enough to change it,
+    which is the rule every other boundary bound follows.
+    """
+    from tesseract.brain.continuity import load_boundary_bounds
+
+    return load_boundary_bounds().reflection_ceiling_seconds
 
 
 def is_reflect_running(session: ChatSession) -> bool:
@@ -457,12 +492,23 @@ def reflect_in_background(
     async def _run() -> list[dict[str, Any]]:
         saves: list[dict[str, Any]] = []
         try:
-            saves = await reflect_on_session(
-                clone, reason, trigger=trigger, outcome=outcome, refused=refused,
+            # Bounded, because a boundary will not clear a conversation
+            # while its previous reflection is still running, and nothing
+            # else stops one. A provider call that never returns used to
+            # leave that conversation unable to consolidate for the life of
+            # the process: it kept its debt, retried every turn, and grew
+            # past its window with no way to bound it. The ceiling is
+            # `roles.yaml::boundary.reflection_ceiling_seconds`.
+            saves, written = await asyncio.wait_for(
+                reflect_on_session(
+                    clone, reason, trigger=trigger, outcome=outcome,
+                    refused=refused,
+                ),
+                timeout=_reflection_ceiling(),
             )
             if on_complete is not None:
                 try:
-                    await on_complete(saves, reason)
+                    await on_complete(saves, reason, written)
                 except Exception:
                     log.exception("reflect_in_background on_complete failed (%s)", reason)
             return saves

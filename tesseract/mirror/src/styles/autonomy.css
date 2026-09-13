@@ -549,6 +549,45 @@
    paying for the one that would carry them. */
 .state-line > .row__actions { grid-area: acts; }
 
+/* NARROW. The first line stops trying to hold the name and both readings.
+
+   `value` and `when` are fixed, so every pixel a room loses comes off the
+   name. Measured in the running app at 7.05px per character: the two tracks
+   and the three gaps take 208px whatever the room's width, which left a
+   282px room 10 characters of name and cut "memory consolidation sweep" to
+   "memory consol...". A room gets that narrow by being dragged, not by the
+   window being small, which is why this is a container query.
+
+   `when` moves rather than shrinks. 16ch is what holds `12:31, 24m late`,
+   and the lateness is the half that asks to be acted on, for the reason
+   written on `.state-line` above. `value` stays on the first line because a
+   count is short and is what the row is scanned for, and it keeps its column
+   so a value still sits under a value down the page. */
+@container room (max-width: 400px) {
+  .state-line {
+    grid-template-columns: var(--space-3) minmax(0, 1fr) 8ch;
+    grid-template-areas:
+      "edge name value"
+      "edge when when"
+      "edge said said"
+      "edge acts acts"
+      "more more more";
+  }
+
+  /* Restated for the reason given on `.state-strip--tagged .state-line`
+     above: a container query adds no specificity, so without this the tagged
+     strip would keep its own four column areas against these three tracks and
+     draw every marked row wrong. */
+  .state-strip--tagged .state-line {
+    grid-template-areas:
+      "edge name value"
+      "edge when tag"
+      "edge said said"
+      "edge acts acts"
+      "more more more";
+  }
+}
+
 /* WIDE. One line, with the sentence between the name and the numbers, which is
    the shape the design was drawn at. */
 @container room (min-width: 560px) {

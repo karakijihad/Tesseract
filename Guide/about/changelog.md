@@ -16,6 +16,23 @@ installed, you do not need it: the app offers you the update itself.
 
 ## Unreleased
 
+- **Two things going wrong at once are now two things.** Every check the app
+  makes about itself, disk space, the local models, the voice files, shared
+  one identity when it reported a problem. So two of them failing in the same
+  sweep counted as one: saying you had seen one quietly silenced the other,
+  and only one of them was ever mentioned again after the first time.
+- **The app clears space for itself when a disk is nearly full.** It brings
+  forward the tidy up it already had scheduled for that night. It deletes only
+  what your own settings had already marked for deletion, and changes none of
+  those settings. If that is not enough to free the disk, it says so rather
+  than reporting that it fixed anything.
+- **A conversation that ended badly opens where it is reported.** The list of
+  things the app could not finish named it and then sent you to another panel
+  to find it. It opens in place now, with everything it did before it stopped.
+- **A narrow panel stops cutting names in half.** When a panel is dragged
+  narrow, the time a row was last read used to take space from the row's own
+  name until the name was unreadable. The time moves to its own line instead,
+  and nothing is shortened.
 - **Forgetting a memory can only remove a memory.** The name you give it is
   now treated as a name and never as a location, and the file that comes back
   is checked to be inside your memory store before anything reads or deletes

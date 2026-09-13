@@ -24,6 +24,11 @@ class AttentionItem:
     kind: str  # "agenda" | "worker" | "turn" | "effect" | "scan_error"
     id: str
     reason: str
+    #: Which calendar day a `turn` row's record files under, so the panel
+    #: that opens it knows which day to read without a second endpoint.
+    #: Empty for every other kind, and empty for a `turn` whose manifest
+    #: could not be read at all — there is no day to name, and none to open.
+    day: str = ""
 
 
 @dataclass
@@ -49,8 +54,10 @@ class RecoverySummary:
         block = self.section(scan)
         block[bucket] = block.get(bucket, 0) + by
 
-    def flag(self, *, kind: str, id: str, reason: str) -> None:
-        self.operator_attention.append(AttentionItem(kind=kind, id=id, reason=reason))
+    def flag(self, *, kind: str, id: str, reason: str, day: str = "") -> None:
+        self.operator_attention.append(
+            AttentionItem(kind=kind, id=id, reason=reason, day=day)
+        )
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -58,7 +65,7 @@ class RecoverySummary:
             "downtime_seconds": round(self.downtime_seconds, 3),
             "scans": {k: dict(v) for k, v in self.scans.items()},
             "operator_attention": [
-                {"kind": a.kind, "id": a.id, "reason": a.reason}
+                {"kind": a.kind, "id": a.id, "reason": a.reason, "day": a.day}
                 for a in self.operator_attention
             ],
         }

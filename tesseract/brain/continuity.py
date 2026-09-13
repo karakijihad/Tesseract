@@ -186,6 +186,7 @@ def package_for(
 class BoundaryBounds:
     repeat_limit: int
     cycle_window: int
+    reflection_ceiling_seconds: float
 
 
 def _require(d: dict, key: str, where: str):
@@ -206,6 +207,9 @@ def load_boundary_bounds() -> BoundaryBounds:
     return BoundaryBounds(
         repeat_limit=int(_require(section, "repeat_limit", "roles.yaml boundary")),
         cycle_window=int(_require(section, "cycle_window", "roles.yaml boundary")),
+        reflection_ceiling_seconds=float(
+            _require(section, "reflection_ceiling_seconds", "roles.yaml boundary")
+        ),
     )
 
 

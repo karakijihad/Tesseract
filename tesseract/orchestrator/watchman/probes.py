@@ -69,10 +69,31 @@ async def read_diagnostics(now: datetime) -> SourceRead:
         Finding(
             source="diagnostics",
             kind=f"check_{check.status}",
-            # A check reports its condition as of now, so there is no
-            # beginning for a window to contain.
+            # The check's own name. Every other producer in this tree sets a
+            # `subject` so a repair or a remedy can be matched to the SAME
+            # thing tick to tick; this one never did, so `disk_home` and
+            # `ollama` both going bad in one sweep shared one identity
+            # (`diagnostics/check_bad/`, empty subject) in the standing store,
+            # the acknowledgement store and the room's own `department` key.
+            # One of the two events was silently the only one ever reported,
+            # and no repair declared against a check's name could ever be
+            # found by `_handling_for`, which matches a repair by exact
+            # subject. Filling it in changes neither `kind` nor `severity`,
+            # and matches no remedy: `kind` here is always
+            # `check_bad`/`check_warn`, never one of the four declared remedy
+            # kinds, and a remedy is looked up by kind alone.
+            #
+            # It DOES make two repairs matchable that were not before, which
+            # is the point and not a side effect. `repairs.py` declares
+            # `disk_home` and `disk_runtime` against exactly the names
+            # `diagnostics._check_disk` gives those checks, so `_handling_for`
+            # now finds them and the room can say the runtime has that fault.
+            # It could not say so while the subject was blank, even though the
+            # repair ran. Any repair keyed on a check's name behaves the same
+            # way, so check both files when adding one.
             by_boot=UNDECLARED,
             by_outage=CURRENT_STATE,
+            subject=check.name,
             summary=f"{check.name} is {check.status}: {check.detail}",
             # A check's `detail` is free runtime text — absolute paths, an
             # exception's own words, a provider's reply. The operator's copy

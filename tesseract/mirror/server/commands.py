@@ -201,7 +201,9 @@ async def cmd_reflect(app: web.Application, session: ServerSession) -> None:
 
     base_complete, base_error = reflect_callbacks(app, session, label="manual")
 
-    async def _on_complete(saves: list[dict[str, Any]], reason: str) -> None:
+    async def _on_complete(
+        saves: list[dict[str, Any]], reason: str, checkpoint: Any = None,
+    ) -> None:
         # Run the librarian consolidation pass + SOUL transparency notification
         # AFTER the reflection turn finishes. Failures here are non-fatal —
         # they're surfaced via log + the proposal event.
@@ -283,7 +285,7 @@ async def cmd_reflect(app: web.Application, session: ServerSession) -> None:
                     "post-reflect envelope send failed for %s", session.session_id
                 )
         finally:
-            await base_complete(saves, reason)
+            await base_complete(saves, reason, checkpoint)
 
     started = reflect_in_background(
         session.chat_session,
@@ -713,8 +715,17 @@ async def consolidate_in_place(
         # caller keeps the debt and the next turn tries again.
         return False
 
-    if on_persisted is not None:
-        on_persisted()
+    if on_persisted is not None and not on_persisted():
+        # Its answer is believed, the way the archive copy's is just above.
+        # `False` means this boundary may not reflect yet, and clearing anyway
+        # is a conversation emptied with nothing written down and nothing to
+        # hand the next turn. The conversation stands, the debt is kept, and
+        # the next turn asks again.
+        log.warning(
+            "consolidation: %s may not reflect yet, so the conversation stands",
+            outgoing_id,
+        )
+        return False
 
     return await _wipe_in_place(
         session, model=model, mode="consolidate", chat_id=outgoing_id

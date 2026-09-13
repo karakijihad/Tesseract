@@ -83,12 +83,17 @@ type AsyncStatus = 'idle' | 'loading' | 'ready' | 'error';
 /** One step down inside a room. `kind` says what the pane should render and
  *  `id` says which one; the room owns the rendering, this owns the trail. */
 export interface AutonomyLevel {
-  kind: 'entry' | 'agent' | 'agenda' | 'worker' | 'step' | 'effect';
+  kind: 'entry' | 'agent' | 'agenda' | 'worker' | 'step' | 'effect' | 'turn';
   /** The record's own key, never the label a row happened to render. An
    *  `effect` carries the call's id and not the clarification card's: the
    *  card's id is derived from it in one place, the way the backend derives
    *  it in one place. */
   id: string;
+  /** Which day's record holds this one, for a `turn` and nothing else. Turn
+   *  records are filed by the day they started in the operator's own clock,
+   *  so the id alone does not say where to read it. Absent means the record
+   *  could not be read at all, and then there is nothing to open. */
+  day?: string;
   /** What the breadcrumb calls it. */
   label: string;
 }

@@ -79,6 +79,7 @@ def _package_text(
     label: str,
     saves: list[dict[str, Any]],
     began_at: int | None = None,
+    checkpoint: Any = None,
 ) -> str:
     """The continuity package for the conversation this boundary cleared.
 
@@ -93,21 +94,39 @@ def _package_text(
     lives here rather than at the boundary: the boundary returned before the
     model turn that produces the record even started.
 
-    Read back from the record rather than handed a copy of it, which is the
-    rule the record itself is built on. Empty means there was nothing to say,
-    which is what a conversation that was never about a piece of work leaves
-    behind.
+    Empty means there was nothing to say, which is what a conversation that was
+    never about a piece of work leaves behind.
+
+    **The record is the one THIS reflection wrote, and it is handed in.** It
+    used to be read back with `checkpoints.latest_for_chat`, which answers a
+    different question: the newest row this chat has. The two agree only while
+    every write lands, and a write that does not is logged at WARNING and
+    swallowed, by design, because a disk that will not take a note must not
+    fail a boundary that already happened. So the failure was silent and the
+    package rendered the PREVIOUS boundary's objective, remaining and next
+    action as if they were this one's. On a `continue` that is a turn started
+    against work that was finished a boundary ago.
+
+    `checkpoint is None` therefore means no record landed, and what is handed
+    over is whatever the reflection wrote to MEMORY and nothing about the
+    state: losing the record is not a reason to lose the saves as well.
     """
     if not _still_the_conversation_it_was_for(chat_session, began_at, label):
         return ""
     from tesseract.brain import continuity
-    from tesseract.orchestrator import checkpoints
 
     chat_id = str(getattr(getattr(chat_session, "tool_context", None), "chat_id", "") or "")
     if not chat_id:
         log.info("continuity: %s has no durable id, so nothing carries over", label)
         return ""
-    text = continuity.package_for(checkpoints.latest_for_chat(chat_id), saves)
+    if checkpoint is None:
+        log.warning(
+            "continuity: the boundary at %s wrote no record, so the package "
+            "carries what reflection saved and nothing about where the work "
+            "stood",
+            label,
+        )
+    text = continuity.package_for(checkpoint, saves)
     if not text:
         log.info("continuity: the boundary at %s said nothing about the work", label)
     return text
@@ -212,7 +231,9 @@ def reflect_callbacks(
     # is compared against.
     began_at = getattr(chat_session, "conversation_generation", None)
 
-    async def on_complete(saves: list[dict[str, Any]], reason: str) -> None:
+    async def on_complete(
+        saves: list[dict[str, Any]], reason: str, checkpoint: Any = None,
+    ) -> None:
         async def _file_the_proposal() -> None:
             from tesseract.workspace_events.broadcast import broadcast_workspace_event
             from tesseract.workspace_events.events import WorkspaceEvent
@@ -278,7 +299,7 @@ def reflect_callbacks(
         # one case that silently cost the package too.
         if chat_session is None:
             return
-        text = _package_text(chat_session, label, saves, began_at)
+        text = _package_text(chat_session, label, saves, began_at, checkpoint)
         if not text:
             return
         # Whether the work carries on by itself, decided here because here is
@@ -293,6 +314,13 @@ def reflect_callbacks(
             and not getattr(session, "torn_down", False)
         )
         if not carrying:
+            if getattr(session, "torn_down", False):
+                # Same reason the carried half is guarded: this closure holds a
+                # `ChatSession` the surface may have dropped while the
+                # reflection ran, and writing into it, then persisting it, puts
+                # a package into a conversation nobody can reach.
+                log.info("continuity: %s ended before the package could land", label)
+                return
             if not _note_the_package(chat_session, label, text):
                 return
             # Only on this half. The carried half writes the same text into
@@ -362,10 +390,23 @@ def hand_off(
 ) -> bool:
     """Reflect on a snapshot of `chat_session`, in the background.
 
-    Returns whether reflection actually started. `False` means the history was
-    too short to be worth a model turn, or a prior reflect is still in flight —
-    both of which `reflect_in_background` decides, and neither of which is a
-    reason for the caller not to end the conversation.
+    **Returns whether the conversation may now be left behind**, which is not
+    the same question as whether reflection started, and conflating the two is
+    what let a boundary clear with no reflection at all.
+
+    `reflect_in_background` declines for two unrelated reasons and used to
+    return the same `None` for both. A history too short to be worth a model
+    turn is not a refusal: there is nothing to distil, the boundary is
+    ordinary, and the caller clears. A reflection ALREADY RUNNING is a
+    refusal: starting the clear anyway means this boundary reflects never,
+    writes no checkpoint and hands over nothing, and GOVERNANCE 7 says there
+    is one consolidation and it always reflects. CC-26 made that case common
+    rather than rare, because a carried turn can reach its own boundary while
+    the reflection that started it is still finishing.
+
+    So a busy reflection returns `False` and the caller leaves the
+    conversation STANDING with its boundary still owed, which `after_turn`
+    already knows how to do: the next turn asks again.
 
     `trigger` and `outcome` describe the boundary that led here and are recorded
     on the checkpoint the reflection turn writes. They default to empty because
@@ -379,23 +420,34 @@ def hand_off(
     can be wiped or switched away from in parallel; the clone owns its own copy
     of the history.
     """
+    from tesseract.brain.session_ops import is_reflect_running
+
+    if is_reflect_running(chat_session):
+        log.warning(
+            "%s reached a boundary while its previous reflection was still "
+            "running, so the conversation stands rather than being cleared "
+            "with nothing written down",
+            label,
+        )
+        return False
+
     on_complete, on_error = reflect_callbacks(
         app, session, label,
         chat_session=chat_session, outcome=outcome, deliver=deliver,
         carry_on=carry_on,
     )
-    return (
-        reflect_in_background(
-            chat_session,
-            reason=reason,
-            on_complete=on_complete,
-            on_error=on_error,
-            trigger=trigger,
-            outcome=outcome,
-            refused=refused,
-        )
-        is not None
+    reflect_in_background(
+        chat_session,
+        reason=reason,
+        on_complete=on_complete,
+        on_error=on_error,
+        trigger=trigger,
+        outcome=outcome,
+        refused=refused,
     )
+    # `None` here is the too-short case and nothing else: the busy case was
+    # answered above, before a snapshot was taken.
+    return True
 
 
 __all__ = ["hand_off", "reflect_callbacks"]

@@ -1812,12 +1812,22 @@ export interface GovernorStateResponse {
   timestamp: string;
 }
 
+export interface RecoveryAttention {
+  kind: string;
+  id: string;
+  reason: string;
+  // Which day a `turn` row's record files under. Absent for every other
+  // kind, and absent for a `turn` whose manifest could not be read at all:
+  // there is no day to name, and nothing to open.
+  day?: string;
+}
+
 export interface LatestRecoveryResponse {
   recovery: {
     boot_id: string | null;
     downtime_seconds: number;
     scans: Record<string, Record<string, number>>;
-    operator_attention: { kind: string; id: string; reason: string }[];
+    operator_attention: RecoveryAttention[];
     started_at: string | null;
   } | null;
   state: "recovering" | "ready";

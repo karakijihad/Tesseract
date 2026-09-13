@@ -101,6 +101,17 @@ def _mint(session_id: str) -> str:
     return f"{_UNSAFE.sub('-', session_id) or 'session'}{_ID_SEPARATOR}{secrets.token_hex(4)}"
 
 
+def turn_day(manifest: RunManifest) -> date:
+    """The calendar day a turn's record files under, in the operator's own
+    clock.
+
+    Beside `closed_path`, which is the only thing that turns this into a
+    path, so the writer and anything reading the same fact off a manifest
+    (recovery's operator-attention item, so a `turn` row knows which day to
+    open) cannot compute it two different ways and drift apart."""
+    return to_local(manifest.started_at).date()
+
+
 #: What to call a turn on a surface, by the door it came through. The entry is
 #: the manifest's own: `cockpit`, `terminal`, `schedule`, or `channel:<name>`.
 _DOOR_LABELS = {
@@ -388,8 +399,7 @@ class TurnManifestStore:
         # A day-named directory is a calendar day, so it is the operator's.
         # `playbook_extract._day` walks these names to find a task's records
         # and moved with it; the two are one choice, not two.
-        day = to_local(manifest.started_at).date().isoformat()
-        return self._root / day / f"{manifest.run_id}.json"
+        return self._root / turn_day(manifest).isoformat() / f"{manifest.run_id}.json"
 
     def day_dir(self, on: date) -> Path:
         """Where a day's finished turns live. Beside `closed_path`, which is
@@ -662,6 +672,7 @@ __all__ = [
     "note_told",
     "read_step_name",
     "step_name",
+    "turn_day",
     "turn_label",
     "turn_session_id",
     "turns_root",

@@ -374,6 +374,183 @@ async def _prepare_the_missing_again(app: Any) -> str:
     return f"{back} came back without a restart, so the runtime is whole again"
 
 
+async def _disk_is_low(label: str) -> bool:
+    """Whether `<label>`'s free space is under the floor `diagnostics.py`
+    already grades `bad` at.
+
+    Read through `diagnostics._check_disk` rather than a second copy of the
+    number: the floor lives in exactly one place, and this asks it rather
+    than restating it. Blocking (`shutil.disk_usage`), so run off the loop
+    like every other repair check that touches the filesystem.
+    """
+    import asyncio
+
+    from tesseract.orchestrator.diagnostics import _check_disk
+
+    checks = await asyncio.to_thread(_check_disk)
+    check = next((c for c in checks if c.name == f"disk_{label}"), None)
+    return check is not None and check.status == "bad"
+
+
+def _trees_on(label: str) -> tuple[Any, ...]:
+    """The policies whose files actually sit on the volume `label` names.
+
+    `load_live()` hands back a policy for every registered tree, and running
+    all of them is what made a low RUNTIME volume sweep the operator's home
+    tree, under a row titled for the runtime tree. It also broke the
+    assumption `run_repairs` makes that two repairs are independent: whichever
+    fired first did the other's work, so the second reported clearing nothing
+    and then raised as though the sweep had found nothing to do.
+
+    `backend_logs` is why this is a filter and not a partition. Its roots are
+    under BOTH log roots (`retention/sweeps.py::backend_logs_roots`) and a
+    `Policy` runs a whole tree or none of it, so it is swept under either
+    label. That is right rather than merely tolerated: it genuinely keeps
+    files on both volumes, and anything narrower would need per root sweeping,
+    which `Policy.run` does not offer.
+
+    A tree whose roots cannot be resolved is not swallowed. The exception
+    leaves here, the repair counts a failure, and the row says it tried and
+    stopped, which is the whole contract of a repair that runs unasked.
+    """
+    from tesseract.paths import home_dir, runtime_dir
+    from tesseract.retention.policy import load_live
+
+    anchor = (home_dir() if label == "home" else runtime_dir()).resolve()
+
+    def _under(root: Path) -> bool:
+        resolved = root.resolve()
+        return resolved == anchor or anchor in resolved.parents
+
+    return tuple(
+        policy for policy in load_live() if any(_under(root) for root in policy.tree.where())
+    )
+
+
+async def _free_disk_space(label: str) -> str:
+    """Run the retention sweep early, on the trees that live here, then check
+    again.
+
+    **Why this may run unasked, in full.** A tree's retention window is a
+    decision the operator already made in config; running the sweep now
+    rather than at its scheduled hour changes no window and deletes nothing a
+    window did not already call disposable. It brings forward a deletion the
+    operator already approved. It does not lower a floor, widen a window, or
+    touch a file retention would otherwise have kept. Spends nothing and
+    writes only where the nightly stage already writes.
+
+    Idempotent by the same argument `retention/policy.py` already relies on:
+    a policy with nothing eligible removes nothing, so a repair that runs
+    against a disk that is not actually low from RETENTION'S reading (full of
+    recent, still-live data) reports honestly that it could not tell and
+    tries nothing destructive.
+
+    `disk_app` never reaches this. Every tree in `retention.policy.TREES` is
+    under `home_dir()`/`runtime_dir()`; the sealed `app/` tree is not in that
+    table and this function has no path to it. That absence is
+    `stop_rule.SEALED_TREE`'s reason working as designed, not an oversight —
+    `disk_app` stays unhealed and the row correctly says nobody has it.
+    """
+    import asyncio
+
+    from tesseract.orchestrator.diagnostics import _check_disk
+
+    policies = _trees_on(label)
+    results = await asyncio.gather(
+        *(asyncio.to_thread(policy.run) for policy in policies),
+        return_exceptions=True,
+    )
+    removed = 0
+    moved = 0
+    errored: list[str] = []
+    for policy, outcome in zip(policies, results):
+        if isinstance(outcome, BaseException):
+            errored.append(f"{policy.tree.key}: {type(outcome).__name__}: {outcome}")
+            continue
+        removed += outcome.removed
+        moved += outcome.moved
+
+    if errored:
+        # The names, not just the count. The scheduled sweep keeps them
+        # (`scheduler/tasks/retention.py` logs per tree and writes them into
+        # its record), and the early one dropped exactly that detail: the row
+        # said a tree had errored and nothing anywhere said which.
+        log.warning("repairs: retention sweep failed on %s", "; ".join(errored))
+
+    checks = await asyncio.to_thread(_check_disk)
+    check = next((c for c in checks if c.name == f"disk_{label}"), None)
+    swept = f"cleared {removed}, moved {moved}" + (
+        f", {len(errored)} tree(s) errored" if errored else ""
+    )
+    # Only `ok` is success. Reported as a failure otherwise, not as a repair
+    # that ran: running the sweep is not the promise this row makes, being
+    # above the floor afterwards is, and a repair that calls itself done
+    # because it acted is worse than the row saying nobody has it. That is why
+    # an unreadable check fails here too. `unknown` means the volume stopped
+    # answering while the sweep was running, and "I cannot tell" belongs with
+    # failure and never with success.
+    if check is None:
+        raise RuntimeError(
+            f"ran the retention sweep early ({swept}) and then could not read "
+            f"disk_{label} at all, so nothing here can say whether it helped"
+        )
+    # KNOWN, OPEN: on an ordinary install `home` and `runtime` are siblings
+    # under `install_root()` and therefore ONE physical volume, so both checks
+    # go bad together while each repair owns only half the cause. A row that
+    # swept every tree it owns and freed files still raises here, which
+    # `_run_one` counts against its breaker, and the quiet pass takes the
+    # `nothing to do` branch with no breaker traffic, so nothing ever resets
+    # the count. Three separate incidents and the row reports it has given up
+    # on a fault the pair of repairs clears every time.
+    #
+    # Deliberately NOT fixed by softening this branch. Returning normally here
+    # would report `repaired` while the disk is still full, which
+    # `test_a_repair_that_cannot_clear_the_disk_is_recorded_as_failed_not_repaired`
+    # exists to forbid, and trading that guarantee for this one is not a fix.
+    # Closing it honestly needs an outcome that is neither `repaired` nor
+    # `failed`, which is a change to the repair protocol and not to this
+    # function.
+    if check.status != "ok":
+        raise RuntimeError(
+            f"ran the retention sweep early ({swept}) and {label} is still not "
+            f"above the floor: {check.detail}"
+        )
+    return f"ran the retention sweep early ({swept}), and {label} is now above the floor"
+
+
+async def _home_disk_is_low(app: Any) -> bool:
+    return await _disk_is_low("home")
+
+
+async def _runtime_disk_is_low(app: Any) -> bool:
+    return await _disk_is_low("runtime")
+
+
+async def _free_home_disk_space(app: Any) -> str:
+    return await _free_disk_space("home")
+
+
+async def _free_runtime_disk_space(app: Any) -> str:
+    return await _free_disk_space("runtime")
+
+
+# Considered for this list and left out, on purpose rather than by omission:
+#
+# - `janitor:sweep_errors` — the janitor's own cadence already retries within
+#   its normal cycle, so an early retry buys nothing a few hours would not
+#   already have delivered, and its kill policy terminates orphaned processes
+#   and removes directories by fingerprint match, which is not a bound worth
+#   spending on a benefit that does not exist.
+# - `workers:worker_stalled` — a stale heartbeat is not proof the worker's
+#   process has died (`watchman/sources.py::_is_stale` and its own comment:
+#   a lagging heartbeat under model load is "a true operational fact and a
+#   false error"). Auto-closing a record on that alone risks discarding real,
+#   in-progress work, which is worse than the row saying nobody has it.
+#
+# Both fault the wrong direction for this list to run unasked: a repair that
+# acts and is wrong costs more than one that never exists.
+
+
 REPAIRS: tuple[Repair, ...] = (
     Repair(
         key="boot_substrates",
@@ -402,5 +579,37 @@ REPAIRS: tuple[Repair, ...] = (
         ),
         still_broken=_vector_index_is_off,
         attempt=_reattach_vector_index,
+    ),
+    Repair(
+        key="disk_home",
+        title="Clear space on the home tree",
+        what_broke=(
+            "Less than the floor the runtime checks for is free on the "
+            "volume holding the home tree"
+        ),
+        why_unasked=(
+            "it runs the same retention sweep the operator's own configured "
+            "windows already schedule for tonight, early instead of on a "
+            "new rule, and deletes nothing a window does not already call "
+            "disposable"
+        ),
+        still_broken=_home_disk_is_low,
+        attempt=_free_home_disk_space,
+    ),
+    Repair(
+        key="disk_runtime",
+        title="Clear space on the runtime tree",
+        what_broke=(
+            "Less than the floor the runtime checks for is free on the "
+            "volume holding the runtime tree"
+        ),
+        why_unasked=(
+            "it runs the same retention sweep the operator's own configured "
+            "windows already schedule for tonight, early instead of on a "
+            "new rule, and deletes nothing a window does not already call "
+            "disposable"
+        ),
+        still_broken=_runtime_disk_is_low,
+        attempt=_free_runtime_disk_space,
     ),
 )

@@ -3137,10 +3137,23 @@ class TelegramBridge:
             self._start_autosave(chat_id, session)
             return False
         if reflect is not None:
+            # Its answer is believed, the way the archive's above is. `False`
+            # means this boundary may not reflect yet, and wiping anyway is a
+            # conversation cleared with nothing written down and nothing to
+            # hand over. The thread stands and the next turn asks again.
             try:
-                reflect()
+                may_clear = reflect()
             except Exception:
                 log.exception("channel handoff: the reflection could not be started")
+                may_clear = True
+            if not may_clear:
+                log.warning(
+                    "channel handoff: %s may not reflect yet, so the thread "
+                    "stands rather than being cleared without a record",
+                    durable,
+                )
+                self._start_autosave(chat_id, session)
+                return False
         drop_record(durable)
         session.chat_session.reset()
         session.started_at = datetime.now(timezone.utc).isoformat()

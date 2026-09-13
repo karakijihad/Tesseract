@@ -99,6 +99,21 @@ boundary:
                                 # than this reads an action it repeated further
                                 # back as a new one, so raising it makes the
                                 # check see further rather than fire sooner.
+  reflection_ceiling_seconds: 300
+                                # how long one reflection may run before it is
+                                # given up on. It matters because a boundary
+                                # will not clear a conversation while its
+                                # previous reflection is still going: without
+                                # a ceiling, one provider call that never
+                                # returns leaves that conversation unable to
+                                # consolidate for as long as the process
+                                # lives, and it grows past its window with
+                                # nothing able to bound it. Generous on
+                                # purpose. A reflection is a model turn with
+                                # tool calls in it, and one measured on a long
+                                # conversation took 34 seconds; this is the
+                                # point at which it has stopped rather than
+                                # the point at which it is slow.
 
 # ─── The boundary ───────────────────────────────────────────
 # One block for every role, because it describes how the boundary works rather

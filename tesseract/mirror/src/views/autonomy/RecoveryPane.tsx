@@ -13,16 +13,12 @@ import React from 'react';
 import { Band, StateStrip, type StateLine } from '../../components/common/StateStrip';
 import { Note } from '../../components/common/Note';
 import { formatRelative } from '../../lib/time';
+import type { RecoveryAttention } from '../../lib/api';
 import { useAutonomyStore, type AutonomyLevel } from '../../stores/autonomy';
+
 
 export interface RecoveryScans {
   [scan: string]: { [bucket: string]: number };
-}
-
-export interface RecoveryAttention {
-  kind: string;
-  id: string;
-  reason: string;
 }
 
 export interface RecoverySummaryPayload {
@@ -52,34 +48,36 @@ const SCAN_LABEL: Record<string, string> = {
 // vocabulary. An agenda item and a worker open into their own record. An
 // effect opens into the same clarification card recovery already filed about
 // it: the same question, the same thread, answered from here rather than a
-// second version of it. A conversation and a scan itself have nowhere real to
-// go, so those rows keep their reason on screen and stay plain.
-const ATTENTION_OPENS: Record<string, AutonomyLevel['kind']> = {
+// second version of it. A conversation opens into the same turn record the
+// Conscience panel reads, in place, the same way: `TurnRecord` is the one
+// renderer for what a turn did, and this room reuses it rather than sending
+// the operator across to read a second version of it.
+const ATTENTION_OPENS: Partial<Record<string, AutonomyLevel['kind']>> = {
   agenda: 'agenda',
   worker: 'worker',
   effect: 'effect',
+  turn: 'turn',
 };
 
-// The plain statement for a kind `ATTENTION_OPENS` has nothing for. The row
-// stays a plain line rather than a `Row` (no click, no role=button), and this
-// is the sentence that says why in words, so a reader is told rather than
-// left to guess from the absence of a cursor. A scan failing has nothing
-// beyond the error message already on the row; a turn has a whole record,
-// just not one this room can reach, so it says where the record actually is
-// instead of claiming there is nothing more to know.
-function cannotOpenSays(kind: string): string {
-  if (kind === 'turn') {
-    return (
-      'This cannot be opened from here. The full record of what it did, ' +
-      'every step and every tool it called, is in the Conscience panel, ' +
-      'under Day, read by turn rather than by tool.'
-    );
-  }
-  return (
-    'This cannot be opened from here. The reason above is everything ' +
-    'currently known about it.'
-  );
+/** What one attention item opens as, or `undefined` when it has nowhere to
+ *  go. Everything but `turn` is a straight lookup. A `turn` needs its `day`
+ *  too, because opening it means reading one specific day's record back, and
+ *  a turn whose manifest could not be read at boot never got one: recovery
+ *  said so already, in the reason on the row, and there is nothing behind it
+ *  to open. */
+function opensAs(a: RecoveryAttention): AutonomyLevel['kind'] | undefined {
+  if (a.kind === 'turn' && !a.day) return undefined;
+  return ATTENTION_OPENS[a.kind];
 }
+
+// The plain statement for a row `opensAs` has nothing for: a scan failing,
+// which has nothing beyond the error message already on it, and a turn whose
+// record could not be read at all, which already says so on the same line.
+// One sentence covers both, because neither has anything further to add once
+// a turn WITH a day opens in place like everything else on this band.
+const CANNOT_OPEN =
+  'This cannot be opened from here. The reason above is everything ' +
+  'currently known about it.';
 
 /** What one scan found, as a sentence. Empty when it found nothing, so a scan
  *  with nothing to report is not drawn at all. */
@@ -136,7 +134,7 @@ export function RecoveryPane({
           <Band label="Left half-finished for you" count={attn.length} />
           <StateStrip
             lines={attn.map((a, i) => {
-              const opens = ATTENTION_OPENS[a.kind];
+              const opens = opensAs(a);
               return {
                 key: `${a.kind}:${a.id}:${i}`,
                 state: 'pending' as const,
@@ -145,9 +143,15 @@ export function RecoveryPane({
                 said: a.reason,
                 value: a.id,
                 onOpen: opens
-                  ? () => pushLevel({ kind: opens, id: a.id, label: a.reason || a.id })
+                  ? () =>
+                      pushLevel({
+                        kind: opens,
+                        id: a.id,
+                        label: a.reason || a.id,
+                        day: a.day,
+                      })
                   : undefined,
-                more: opens ? undefined : <p className="t-meta">{cannotOpenSays(a.kind)}</p>,
+                more: opens ? undefined : <p className="t-meta">{CANNOT_OPEN}</p>,
               };
             })}
           />

@@ -20,7 +20,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Button } from '../../components/common/Button';
 import { Fact } from '../../components/common/Fact';
 import { Input } from '../../components/common/Input';
-import { Meter, type MeterSegment, type MeterTone } from '../../components/common/Meter';
+import { Meter, type MeterSegment } from '../../components/common/Meter';
 import { Note } from '../../components/common/Note';
 import { Row } from '../../components/common/Row';
 import { Segmented } from '../../components/common/Segmented';
@@ -33,50 +33,17 @@ import {
   type DayTool,
   type DayTurn,
 } from '../../stores/conscience';
+import { OUTCOMES, clockOf, Reason, TurnRecord, OutcomeWord } from './TurnRecord';
 import './DayPanel.css';
-
-/** Plain words for every outcome the record can carry, and the order they
- *  stack in a bar: clean first, worst last, so a bar reads left to right the
- *  way the eye already scans.
- *
- *  Written here rather than read from the liveness labels, which answer a
- *  different question. That vocabulary says whether a CAPABILITY is well, and
- *  `caller_error` is correctly quiet there. A row telling the operator a
- *  failed call was "quiet" is worse than showing the raw word. */
-const OUTCOMES: readonly { key: string; word: string; tone: MeterTone }[] = [
-  { key: 'succeeded', word: 'worked', tone: 'ok' },
-  { key: 'skipped_no_work', word: 'nothing to do', tone: 'quiet' },
-  { key: 'caller_error', word: 'asked wrong', tone: 'info' },
-  { key: 'unverified', word: 'nothing to check', tone: 'unverified' },
-  { key: 'truncated', word: 'ran out of time', tone: 'quiet' },
-  { key: 'degraded', word: 'did less than it promises', tone: 'warn' },
-  { key: 'refused', word: 'not allowed to start', tone: 'warn' },
-  { key: 'skipped_upstream_failed', word: 'what it needed had not worked', tone: 'warn' },
-  { key: 'failed', word: 'failed', tone: 'bad' },
-];
-
-const WORD = new Map(OUTCOMES.map((o) => [o.key, o.word]));
-const TONE = new Map(OUTCOMES.map((o) => [o.key, o.tone]));
 
 /** How long a range reaches back when the operator turns one on. Days, and it
  *  is a starting point they then move, not a setting. */
 const SPAN_DAYS = 6;
 
-function wordFor(outcome: string): string {
-  return WORD.get(outcome) ?? outcome;
-}
-
 function shift(day: string, by: number): string {
   const at = new Date(`${day}T00:00:00`);
   at.setDate(at.getDate() + by);
   return at.toISOString().slice(0, 10);
-}
-
-function clockOf(at: string): string {
-  return new Date(at).toLocaleTimeString(undefined, {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
 }
 
 function segmentsOf(byOutcome: Record<string, number>): MeterSegment[] {
@@ -85,23 +52,6 @@ function segmentsOf(byOutcome: Record<string, number>): MeterSegment[] {
     tone: o.tone,
     label: o.word,
   }));
-}
-
-/** The runtime's own sentence about a call, which can be a captured stderr
- *  dump hundreds of characters long. The row shows what fits and the whole of
- *  it is one hover away.
- *
- *  `Hint` rather than a `title`, because the browser's tooltip waits a second,
- *  cannot be styled and never appears on touch, and a reason nobody can read
- *  on a phone is the half of this panel that matters most when away from the
- *  desk. A row with no reason renders bare: `Hint` with no label attaches no
- *  listeners, so a clean day costs nothing. */
-function Reason({ text, fallback }: { text: string; fallback: string }) {
-  return (
-    <Hint label={text || undefined} maxWidth={520}>
-      <span className="day-panel__reason t-meta">{text || fallback}</span>
-    </Hint>
-  );
 }
 
 export function DayPanel() {
@@ -296,9 +246,7 @@ function Trouble({ calls, total }: { calls: DayCall[]; total: number }) {
         <div className="day-panel__line" key={`${call.turn}-${call.tool}-${i}`}>
           <span className="day-panel__clock t-meta">{clockOf(call.at)}</span>
           <span className="day-panel__tool">{call.tool}</span>
-          <span className={`day-panel__word day-panel__word--${TONE.get(call.outcome) ?? 'quiet'}`}>
-            {wordFor(call.outcome)}
-          </span>
+          <OutcomeWord outcome={call.outcome} />
           <Reason text={call.reason} fallback={`on ${call.door}`} />
         </div>
       ))}
@@ -366,9 +314,7 @@ function Roster({
                 {(byTool.get(tool.tool) ?? []).map((call, i) => (
                   <div className="day-panel__line" key={`${call.turn}-${i}`}>
                     <span className="day-panel__clock t-meta">{clockOf(call.at)}</span>
-                    <span className={`day-panel__word day-panel__word--${TONE.get(call.outcome) ?? 'quiet'}`}>
-                      {wordFor(call.outcome)}
-                    </span>
+                    <OutcomeWord outcome={call.outcome} />
                     <span className="day-panel__clock t-meta">{Math.round(call.ms)} ms</span>
                     <Reason
                       text={
@@ -433,42 +379,9 @@ function Turns({
                   ))
                 )}
               </span>
-              <span className={`day-panel__word day-panel__word--${TONE.get(turn.outcome) ?? 'quiet'}`}>
-                {wordFor(turn.outcome)}
-              </span>
+              <OutcomeWord outcome={turn.outcome} />
             </Row>
-            {shown && (
-              <div className="day-panel__detail">
-                {calls
-                  .filter((c) => c.turn === turn.turn)
-                  .map((call, i) => (
-                    <div className="day-panel__line" key={`${call.tool}-${i}`}>
-                      <span className="day-panel__clock t-meta">{clockOf(call.at)}</span>
-                      <span className="day-panel__tool">{call.tool}</span>
-                      <span className={`day-panel__word day-panel__word--${TONE.get(call.outcome) ?? 'quiet'}`}>
-                        {wordFor(call.outcome)}
-                      </span>
-                      <Reason
-                        text={
-                          call.receipt
-                            ? `${call.receipt.kind} ${call.receipt.id}`
-                            : call.reason
-                        }
-                        fallback=""
-                      />
-                    </div>
-                  ))}
-                {turn.taskOutcome && (
-                  <p className="day-panel__task t-meta">
-                    It closed a task as {turn.taskOutcome}, decided by{' '}
-                    {turn.taskVerifiedBy === 'gate'
-                      ? "the project's own checks"
-                      : 'its own account of the work'}
-                    .
-                  </p>
-                )}
-              </div>
-            )}
+            {shown && <TurnRecord turn={turn} calls={calls} />}
           </div>
         );
       })}

@@ -161,6 +161,11 @@ class Boundary(BaseModel):
     #: judged against; at or below it there is no history to judge with and the
     #: check can never fire.
     cycle_window: int = Field(gt=0)
+    #: How long one reflection may run before it is given up on. A boundary
+    #: will not clear a conversation while its previous reflection is still
+    #: going, so without a ceiling one provider call that never returns leaves
+    #: that conversation unable to consolidate for the life of the process.
+    reflection_ceiling_seconds: float = Field(gt=0)
 
     @model_validator(mode="after")
     def _window_has_history_behind_it(self) -> "Boundary":

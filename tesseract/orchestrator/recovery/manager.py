@@ -296,6 +296,7 @@ class RecoveryManager:
         from tesseract.orchestrator.turns import (
             TurnManifestStore,
             close_interrupted,
+            turn_day,
             was_told,
             what_it_reached,
         )
@@ -331,7 +332,16 @@ class RecoveryManager:
                 close_interrupted(manifest, reason, store=store)
             except OSError:
                 log.exception("recovery: could not close turn %s", manifest.run_id)
-                summary.flag(kind="turn", id=manifest.run_id, reason="close_failed")
+                # The day is still nameable even though the write that would
+                # have filed it there failed: it comes off `manifest.started_at`
+                # the same way `closed_path` derives it, not off the file that
+                # did not get written.
+                summary.flag(
+                    kind="turn",
+                    id=manifest.run_id,
+                    reason="close_failed",
+                    day=turn_day(manifest).isoformat(),
+                )
                 continue
             # The turn closes; the task it was working does not. It moves to
             # `resume_queued` with its goal, its evidence and its history, and
@@ -355,7 +365,12 @@ class RecoveryManager:
                         ),
                     )
             summary.inc("turns", "interrupted")
-            summary.flag(kind="turn", id=manifest.run_id, reason=reason)
+            summary.flag(
+                kind="turn",
+                id=manifest.run_id,
+                reason=reason,
+                day=turn_day(manifest).isoformat(),
+            )
             # Read by `_scan_effects`, which runs after this one and knows
             # which conversation each open call belongs to. A manifest carries
             # `run_id` and no chat id, and a checkpoint carries both, so the

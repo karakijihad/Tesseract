@@ -273,6 +273,10 @@ async def after_turn(
         return
 
     answer = _requested(chat_session, label)
+    # What the TURN asked for, kept apart from `answer`, which CC-9 may turn
+    # into a RESET below. A boundary that could not happen hands this one back,
+    # not the one the runtime substituted.
+    asked = answer
     soft = answer is not None
     nudge = _take_nudge(chat_session, label)
     if not soft and not _boundary_forced(chat_session, label):
@@ -303,8 +307,6 @@ async def after_turn(
             log.info("%s may not carry on: %s", label, refused)
             answer = Continuation.RESET
 
-    _journal_nudge(nudge, answered=answer, label=label)
-
     if await _consolidate(
         app,
         session,
@@ -317,6 +319,7 @@ async def after_turn(
         carry_on=carry_on,
         ending=ending,
     ):
+        _journal_nudge(nudge, answered=answer, label=label)
         _record_boundary(
             session,
             label,
@@ -326,6 +329,28 @@ async def after_turn(
         )
         _forget_boundary_owed(chat_session, label)
         return
+
+    # Everything below is the boundary that did NOT happen, and the two lines
+    # first are about not lying in the record for it.
+    #
+    # `answered=None`: the nudge was read and no boundary was taken. Journalled
+    # before the consolidation, a refused clear wrote the observer's
+    # recommendation down as FOLLOWED, on a turn where nothing happened. The
+    # row exists so the operator can see which recommendations are worth
+    # making, and a miss counted as a hit is the one reading it must not give.
+    _journal_nudge(nudge, answered=None, label=label)
+    # And the turn's own decision goes back where it was found. `_requested`
+    # reads it by CLEARING it, so a refused clear consumed a `continue` the
+    # agent asked for and the next turn met the plain threshold instead,
+    # knowing nothing about it. The debt below is kept for exactly this
+    # reason; the decision is half of the same debt.
+    if soft and asked is not None:
+        put_back = getattr(chat_session, "request_continuation", None)
+        if put_back is not None:
+            try:
+                put_back(asked.value)
+            except Exception:
+                log.exception("could not hand %s back its own decision", label)
 
     # It could not clear, so the conversation STANDS. Nothing rewrites it: the
     # only other act that ever made room here summarised the middle away, and
@@ -565,7 +590,13 @@ def _reflect(
     announce: Callable[[str], Awaitable[None]] | None = None,
     carry_on: Callable[[str], Awaitable[None]] | None = None,
 ) -> bool:
-    """Distil what this conversation taught, without changing its shape.
+    """Distil what this conversation taught, and say whether the conversation
+    may now be cleared.
+
+    Those are two questions and the return answers the SECOND. `False` means
+    this boundary may not reflect yet, which the surface's ending honours by
+    leaving the conversation standing; `after_turn` then keeps the debt and
+    the next turn asks again. It never means "reflection produced nothing".
 
     `announce` is handed on as the delivery for the continuity package, which
     can only be built once this reflection has written its checkpoint. It is
@@ -577,8 +608,10 @@ def _reflect(
     until this reflection has written it down.
     """
     if app is None:
+        # No inbox to file a proposal in. That is a missing surface, not a
+        # boundary that may not happen, so the conversation still clears.
         log.warning("reflection skipped for %s: no app to reach the inbox with", label)
-        return False
+        return True
     from tesseract.mirror.server.handoff import hand_off
 
     try:
@@ -595,6 +628,9 @@ def _reflect(
             carry_on=carry_on,
         )
     except Exception:
+        # Fails CLOSED. Nothing here can say whether reflection started, and
+        # clearing on a maybe is how a conversation is emptied with nothing
+        # written down. The debt is kept and the next turn tries again.
         log.exception("reflection failed for %s", label)
         return False
 
