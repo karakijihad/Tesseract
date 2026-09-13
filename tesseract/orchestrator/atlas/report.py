@@ -127,6 +127,7 @@ DECLARED_AS: dict[str, str] = {
     "checkpoints": "the runtime's own logs, ledgers and archives",
     "workspace_events": "the runtime's own logs, ledgers and archives",
     "receipts": "the runtime's own logs, ledgers and archives",
+    "cost_ledger": "the runtime's own logs, ledgers and archives",
     "session_journal": "the runtime's own logs, ledgers and archives",
     "supervisor_incidents": "the runtime's own logs, ledgers and archives",
     "consolidator_proposals": "the runtime's own logs, ledgers and archives",

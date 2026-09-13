@@ -1319,8 +1319,7 @@ async def _commit_vault_raw_ingest_batch(
     the Mirror's tool registry; falls back to constructing fresh ones
     when the registry is not yet wired (CLI / test harness paths).
     """
-    from tesseract.paths import TESSERACT_HOME
-    from tesseract.scheduler.tasks.vault_raw_watch import apply_ask_batch
+    from tesseract.scheduler.tasks.vault_raw_watch import apply_ask_batch, cursor_path
 
     payload = ev.payload or {}
     files = payload.get("files") or []
@@ -1343,9 +1342,7 @@ async def _commit_vault_raw_ingest_batch(
                 decisions[relpath] = "denied"
 
     vault_manager, indexer, librarian = _resolve_vault_dependencies(app)
-    home_override = os.environ.get("TESSERACT_HOME") if app is not None else None
-    home = Path(home_override).resolve() if home_override else TESSERACT_HOME
-    cursor_path = home / "autonomy" / "vault-raw-cursors.jsonl"
+    cursor = cursor_path()
 
     try:
         summary = await apply_ask_batch(
@@ -1353,7 +1350,7 @@ async def _commit_vault_raw_ingest_batch(
             decisions=decisions,
             vault_manager=vault_manager,
             indexer=indexer,
-            cursor_path=cursor_path,
+            cursor_path=cursor,
             librarian=librarian,
         )
     except Exception as exc:  # noqa: BLE001

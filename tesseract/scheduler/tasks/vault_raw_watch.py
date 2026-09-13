@@ -743,11 +743,22 @@ def _resolve_vault_librarian(ctx: JobContext) -> Any | None:
     return None
 
 
+def cursor_path() -> Path:
+    """Where the already-seen cursor lives, named once by the job that owns it.
+
+    Three callers needed this path and each built it by hand: this job, the
+    route that applies an ask batch, and `retention/policy.py`, which declares
+    the file as kept and has to say where it is. Three copies of one path is
+    what drifts the first time it moves.
+    """
+    return _resolve_home() / "autonomy" / "vault-raw-cursors.jsonl"
+
+
 def _resolve_cursor_path(ctx: JobContext) -> Path:
     override = _cfg_get(ctx, "cursor_path")
     if override:
         return Path(override)
-    return _resolve_home() / "autonomy" / "vault-raw-cursors.jsonl"
+    return cursor_path()
 
 
 def _resolve_event_store(ctx: JobContext) -> EventStore:

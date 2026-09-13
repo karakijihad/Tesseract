@@ -49,6 +49,17 @@ from tesseract.paths import home_dir
 MARKER_NAME = "cost-tracking.recomputed.json"
 
 
+def marker_path() -> Path:
+    """Where the marker lands, named by the module that writes it.
+
+    `retention/policy.py` declares this file as kept and has to say where it
+    is. It reads the answer from here rather than joining the log root itself,
+    because a second copy of the path is the thing that drifts once one of them
+    moves.
+    """
+    return home_dir() / "logs" / MARKER_NAME
+
+
 def _prices() -> dict[str, ModelPrice]:
     """The catalog as the running app reads it, not a second parse of the
     YAML. A recompute against a different reading of the same file would be a

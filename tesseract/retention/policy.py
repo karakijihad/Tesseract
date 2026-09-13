@@ -63,6 +63,14 @@ def why_not_a_window(value: object, floor: int = MIN_KEEP_DAYS) -> str | None:
     test asserting thirty, in CI, after the fact. `may_delete=False` says the
     evidence must survive, and a window short enough to empty the live file is
     the same defect through a different door.
+
+    The floor refusal says what is true of every tree that HAS a floor, and not
+    what was true of the first one to get one. Three carry one now and each for
+    its own reader: an investigation reads the permission ledger, the roster
+    counts the helpers ledger over a fixed span, and the refinement job reads
+    the skill ledger over another. Naming the investigation here told an
+    operator shortening the helpers ledger something untrue about it, which is
+    worse than saying less.
     """
     if isinstance(value, bool) or not isinstance(value, int):
         return (
@@ -79,9 +87,8 @@ def why_not_a_window(value: object, floor: int = MIN_KEEP_DAYS) -> str | None:
     if value < floor:
         return (
             f"keep_days is {value!r}, and the shortest window this one takes "
-            f"is {floor} days. It is the record an investigation reads, and "
-            "how much of it is in front of you is not a setting that goes to "
-            "nothing."
+            f"is {floor} days. Something reads this record across a span, and "
+            "below that it would be judging on a fraction of it."
         )
     return None
 
@@ -244,10 +251,11 @@ def _registry() -> dict[str, Tree]:
     # this file unimportable from the config loader that has to read it.
     from tesseract.retention import sweeps
 
-    # The roster's own reading span, which bounds one window from below. Read
-    # rather than restated: a floor that repeats a number in another module is
-    # a floor that stops holding the day that number moves.
+    # Two reading spans that bound a window from below. Read rather than
+    # restated: a floor that repeats a number from another module is a floor
+    # that stops holding the day that number moves.
     from tesseract.agents import invocations
+    from tesseract.brain.cost.ledger import CostLedger
 
     trees = (
         Tree(
@@ -352,6 +360,31 @@ def _registry() -> dict[str, Tree]:
             ),
             sweep=sweeps.conscience,
             where=sweeps.conscience_roots,
+        ),
+        Tree(
+            key="cost_ledger",
+            title="What you have spent",
+            summary=(
+                "One row per paid model call with what it cost, and any copy "
+                "the recompute script took before rewriting the file."
+            ),
+            why=(
+                "The largest record on this machine that nothing had decided "
+                "about, and it grows with every paid call. A year of rows "
+                "rather than a month, because what you spent is your own "
+                "record. The copies taken before a price recalculation age with "
+                "it: once the figures have been checked, the copy behind them "
+                "is not the answer to anything."
+            ),
+            sweep=sweeps.cost_ledger,
+            where=sweeps.cost_ledger_roots,
+            actions=(Action.DELETE,),
+            # Twice the widest span the spend panel draws. `windows()` compares
+            # each span against the SAME span immediately before it, so its
+            # month figure reads sixty days back; a shorter window would have it
+            # comparing against a period whose rows were pruned and reporting a
+            # rise that did not happen.
+            floor_days=max(CostLedger.WINDOW_DAYS.values()) * 2,
         ),
         Tree(
             key="agent_invocations",
@@ -644,8 +677,23 @@ def _kept() -> dict[str, Kept]:
         runtime_logs_root,
     )
     from tesseract.retention.record import record_path
+    from tesseract.scheduler.tasks.vault_raw_watch import (
+        cursor_path as vault_raw_cursor_path,
+    )
+    from tesseract.scripts.recompute_cost_ledger import (
+        marker_path as cost_recompute_marker_path,
+    )
 
+    from tesseract.brain.cost.overage import unlocks_path
     from tesseract.orchestrator.autonomy.agenda_history import history_dir
+    from tesseract.orchestrator.watchman.acknowledged import (
+        store_path as watchman_acknowledged_path,
+    )
+    from tesseract.orchestrator.watchman.judge.standing import (
+        store_path as watchman_standing_path,
+    )
+    from tesseract.orchestrator.watchman.report import cursor_path as watchman_cursor_path
+    from tesseract.orchestrator.watchman.tracker import tracker_path
 
     kept = (
         Kept(
@@ -720,6 +768,29 @@ def _kept() -> dict[str, Kept]:
             ),
         ),
         Kept(
+            key="cost_recompute_marker",
+            title="The last price recalculation",
+            why=(
+                "One small file, overwritten each time the prices in your spend "
+                "record are recalculated, holding when it ran and what the "
+                "totals were before and after. It is a live note rather than a "
+                "history, so it is the same size next year as it is today."
+            ),
+            where=lambda: (cost_recompute_marker_path(),),
+        ),
+        Kept(
+            key="vault_raw_cursor",
+            title="Documents already taken into the library",
+            why=(
+                "One row per file the app has taken into your library, or asked "
+                "you about, so it knows not to offer the same document twice. "
+                "It is what the next check reads to see what it has already "
+                "seen, so removing an old row would have the app ingest a "
+                "document it ingested months ago."
+            ),
+            where=lambda: (vault_raw_cursor_path(),),
+        ),
+        Kept(
             key="autonomy_prunes",
             title="Ideas it decided not to bring you",
             why=(
@@ -771,17 +842,103 @@ def _kept() -> dict[str, Kept]:
             title="The running app's own log",
             why=(
                 "One aggregate file per process, bounded by size rotation "
-                "rather than by a window. Ageing it by date as well would be "
-                "two mechanisms holding one ceiling."
+                "rather than by a window, plus the raw console output the "
+                "supervisor captures before that file exists. Ageing either "
+                "by date as well would be two mechanisms holding one ceiling."
+            ),
+            # `root.glob` picks up whatever rotation generations exist today
+            # (`.log.1`, `.log.2`, ...) without this table hardcoding a backup
+            # count that only `mirror.yaml::logging` should own.
+            where=lambda: (
+                *(
+                    path
+                    for root in (home_logs_root(), runtime_logs_root())
+                    for name in (
+                        "mirror-backend.log",
+                        "agent-controller.log",
+                        "supervisor.log",
+                    )
+                    for path in (root / name, *root.glob(f"{name}.*"))
+                ),
+                *(
+                    path
+                    for root in (runtime_logs_root(),)
+                    for name in ("backend-console.log", "agent-controller-console.log")
+                    for path in (root / name,)
+                ),
+            ),
+        ),
+        Kept(
+            key="overage_unlocks",
+            title="When you approved spending past the cap",
+            why=(
+                "One line each time you let a spending cap be crossed for the "
+                "rest of that day, stamped with the day it happened. It only "
+                "grows on a day you actually approved an overage, which is "
+                "rare, and it is what a refusal minutes later is checked "
+                "against, so an old line is still live evidence rather than "
+                "history a window could safely take."
+            ),
+            where=lambda: (unlocks_path(),),
+        ),
+        Kept(
+            key="watchman_acknowledged",
+            title="What you have told the runtime to leave alone",
+            why=(
+                "One entry per finding you have accepted, so the hourly check "
+                "stops repeating something you already answered. The code "
+                "removes an entry the moment its condition clears, so the "
+                "file only ever holds what is still true today and there is "
+                "nothing left over for a window to trim."
+            ),
+            where=lambda: (watchman_acknowledged_path(),),
+        ),
+        Kept(
+            key="watchman_standing",
+            title="Which faults the hourly check has already reported",
+            why=(
+                "One entry per fault it is watching, so the same fault is "
+                "not announced twice. A fault that clears drops out of the "
+                "file on its own two days later, so a window here would only "
+                "race a rule the code already applies."
+            ),
+            where=lambda: (watchman_standing_path(),),
+        ),
+        Kept(
+            key="watchman_cursor",
+            title="How far the hourly check has read",
+            why=(
+                "One timestamp, overwritten every pass. It is a live pointer "
+                "rather than a history, so it is the same size next month as "
+                "it is today."
+            ),
+            where=lambda: (watchman_cursor_path(),),
+        ),
+        Kept(
+            key="watchman_tracker",
+            title="What runs on this machine on its own",
+            why=(
+                "Rebuilt whole on every hourly pass from the schedule, the "
+                "run manifest and the agent roster, so it never holds more "
+                "than the current picture. There is no history in it for a "
+                "window to remove."
+            ),
+            where=lambda: (tracker_path(),),
+        ),
+        Kept(
+            key="workspace_inbox_bookkeeping",
+            title="The card inbox's own bookkeeping",
+            why=(
+                "Two small files beside the cards themselves: which ones you "
+                "have seen, and the lock the inbox takes while it writes. "
+                "Both are overwritten in place rather than grown, so each is "
+                "the same size tomorrow as it is today and there is no "
+                "history in either for a window to remove."
             ),
             where=lambda: tuple(
-                root / name
-                for root in (home_logs_root(), runtime_logs_root())
-                for name in (
-                    "mirror-backend.log",
-                    "agent-controller.log",
-                    "supervisor.log",
-                )
+                root / "workspace" / name
+                for root in (home_logs_root(),)
+                for name in ("seen.json", ".lock")
             ),
         ),
     )
@@ -792,14 +949,49 @@ TREES: dict[str, Tree] = _registry()
 KEPT: dict[str, Kept] = _kept()
 
 
+def _category_table_problems() -> list[str]:
+    """`paths.py`'s category tables, checked against `TREES` and `KEPT`.
+
+    `paths.py` cannot import this module — `_registry()` reaches `sweeps`,
+    which reaches the session store and the observer, and a cycle through
+    either makes this file unimportable from the config loader — so this is
+    the one place a category's declared decision can be checked against the
+    registry it names. Two ways it can fail: the decision does not point at
+    either registry at all, or it names a key neither one has.
+    """
+    from tesseract import paths
+
+    problems: list[str] = []
+    categories = {**paths._HOME_LOG_DIRS, **paths._RUNTIME_LOG_DIRS}
+    for category, decision in sorted(categories.items()):
+        kind, sep, key = decision.partition(":")
+        if not sep or kind not in ("tree", "kept"):
+            problems.append(
+                f"{category!r} in tesseract/paths.py names {decision!r}, "
+                "which is not a decision — give it `tree:<key>` or "
+                "`kept:<key>`"
+            )
+            continue
+        registry = TREES if kind == "tree" else KEPT
+        if key not in registry:
+            problems.append(
+                f"{category!r} in tesseract/paths.py names {decision!r} and "
+                f"there is no {kind} {key!r} in retention/policy.py — add one "
+                "or fix the category table"
+            )
+    return problems
+
+
 def load_policies(config_dir: Path) -> tuple[Policy, ...]:
     """Resolve `retention.yaml` against the registry, or raise saying why.
 
-    Both directions are checked. A tree the code declares and the config omits
-    would age on a default nobody wrote down; a key the config names and the
-    code does not know is a policy the operator believes is in force and that
-    nothing implements — the second being the exact defect that let the memory
-    store advertise eleven exclusion categories while eight were real.
+    Three directions are checked. A tree the code declares and the config
+    omits would age on a default nobody wrote down; a key the config names and
+    the code does not know is a policy the operator believes is in force and
+    that nothing implements — the second being the exact defect that let the
+    memory store advertise eleven exclusion categories while eight were real.
+    The third is `paths.py`'s half: a log category with no decision, or one
+    naming a `Tree` or `Kept` that does not exist.
     """
     path = config_dir / "retention.yaml"
     if not path.exists():
@@ -822,6 +1014,7 @@ def load_policies(config_dir: Path) -> tuple[Policy, ...]:
             f"{key!r} is implemented and configured nowhere — it would age on a "
             "window no one wrote down"
         )
+    problems.extend(_category_table_problems())
 
     policies: list[Policy] = []
     for key, tree in sorted(TREES.items()):

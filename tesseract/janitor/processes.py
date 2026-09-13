@@ -48,7 +48,7 @@ _TERMINATE_GRACE_S = 3.0
 
 
 def _command_pattern(command: str) -> str:
-    """Match `command` where it stands as the executable of a command line.
+    r"""Match `command` where it stands as the executable of a command line.
 
     A whole whitespace-delimited token that is the command itself or a path
     ending in it, with the Windows extensions npm and the installers add.

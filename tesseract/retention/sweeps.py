@@ -429,6 +429,87 @@ def conscience(keep_days: int, action: Action) -> Swept:
 # GOVERNANCE.md §3 refuses, and this is not that.
 
 
+def cost_ledger_roots() -> tuple[Path, ...]:
+    from tesseract.paths import home_logs_root
+
+    root = home_logs_root()
+    # The live file first: the sweep unpacks it as the head so the glob has one
+    # home rather than being written out again there.
+    return (
+        root / "cost-tracking.jsonl",
+        *sorted(root.glob("cost-tracking.jsonl.before-recompute-*")),
+    )
+
+
+def cost_ledger(keep_days: int, action: Action) -> Swept:
+    """`<logs>/cost-tracking.jsonl` — one row per paid model call, and the
+    copies the recompute script takes before it rewrites the file.
+
+    The largest thing under the log tree that nothing had decided about: 2.8 MB
+    of live rows here, and 3.7 MB more in two copies from a script somebody ran
+    once in September and never came back for.
+
+    Two shapes, one window. The live file is pruned by row on `ts`. A
+    `cost-tracking.jsonl.before-recompute-<stamp>` copy is retired on the stamp
+    in its NAME, read with `_compact_stamp_date` off the full name rather than
+    the stem: `Path.stem` reads that trailing part as a suffix and hands back
+    `cost-tracking.jsonl`, so a stem-based sweep would date none of them and
+    keep every copy for ever.
+
+    **The floor is twice the widest window the panel draws.** `CostLedger.
+    WINDOW_DAYS` tops out at a month and `windows()` compares each span against
+    the SAME span immediately before it, so the month figure reads sixty days
+    back. A window under that would leave the panel comparing this month
+    against a period whose rows had been pruned, which reports a rise that did
+    not happen rather than failing.
+
+    DELETE only. The live file is pruned in place, and a copy taken before a
+    rewrite is already what an archive would be.
+    """
+    if action is not Action.DELETE:
+        raise ValueError(
+            "the cost ledger is pruned in place, and a before-recompute copy "
+            "is already the archive of one — `actions` should have refused "
+            "this at load"
+        )
+
+    live, *backups = cost_ledger_roots()
+    total = _pruned_rows(live, keep_days, "ts") if live.is_file() else Swept()
+    cutoff_day = date.today() - timedelta(days=keep_days)
+    for path in backups:
+        stamped = _compact_stamp_date(path.name)
+        if stamped is not None and stamped < cutoff_day:
+            total += _retire(path, action, path.parent / "archive")
+    return total
+
+
+def _pruned_rows(path: Path, keep_days: int, field: str) -> Swept:
+    """Rows older than the window, out of one unlocked ledger, and never a raise.
+
+    `_retire` makes the same promise one file at a time, and for the same
+    reason: a whole nightly pass over two dozen trees does not report itself
+    failed because one file could not be written this minute.
+
+    That is not theoretical on Windows, and it is measured rather than assumed:
+    `os.replace` over a file another process holds open for an append fails with
+    `PermissionError` and leaves the original whole. Two of these ledgers are
+    appended to by the supervisor, so the collision is a real event with no row
+    lost. It is reported as a failure for this tree and pruned tomorrow.
+
+    The shared part is only the not-raising and the cutoff. Each sweep below
+    still names its own file, its own dated field and its own reason for a
+    window, which is what `GOVERNANCE.md` §2 asks of it.
+    """
+    from tesseract.lib.jsonl_rolls import prune_older_than
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
+    try:
+        return Swept(removed=prune_older_than(path, cutoff, field))
+    except OSError as exc:
+        log.warning("retention: pruning %s failed: %s", path, exc)
+        return Swept(failed=1)
+
+
 def agent_invocations_roots() -> tuple[Path, ...]:
     from tesseract.agents.invocations import invocations_path
 
@@ -452,16 +533,13 @@ def agent_invocations(keep_days: int, action: Action) -> Swept:
     nothing in an old one an investigation would want back, which is the
     `usage_ledger` argument exactly.
     """
-    from tesseract.lib.jsonl_rolls import prune_older_than
-
     if action is not Action.DELETE:
         raise ValueError(
             "the invocations ledger is pruned in place — there is no archive "
             "for it, and `actions` should have refused this at load"
         )
     (path,) = agent_invocations_roots()
-    cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
-    return Swept(removed=prune_older_than(path, cutoff, "ts"))
+    return _pruned_rows(path, keep_days, "ts")
 
 
 def skill_usage_roots() -> tuple[Path, ...]:
@@ -482,16 +560,13 @@ def skill_usage(keep_days: int, action: Action) -> Swept:
 
     DELETE only, like the invocations ledger beside it and for the same reason.
     """
-    from tesseract.lib.jsonl_rolls import prune_older_than
-
     if action is not Action.DELETE:
         raise ValueError(
             "the skill usage ledger is pruned in place — there is no archive "
             "for it, and `actions` should have refused this at load"
         )
     (path,) = skill_usage_roots()
-    cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
-    return Swept(removed=prune_older_than(path, cutoff, "ts"))
+    return _pruned_rows(path, keep_days, "ts")
 
 
 def janitor_sweeps_roots() -> tuple[Path, ...]:
@@ -516,16 +591,13 @@ def janitor_sweeps(keep_days: int, action: Action) -> Swept:
     DELETE only. The row is a count and a summary line, and there is no archive
     for one.
     """
-    from tesseract.lib.jsonl_rolls import prune_older_than
-
     if action is not Action.DELETE:
         raise ValueError(
             "the janitor's record is pruned in place — there is no archive for "
             "it, and `actions` should have refused this at load"
         )
     (path,) = janitor_sweeps_roots()
-    cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
-    return Swept(removed=prune_older_than(path, cutoff, "started_at_utc"))
+    return _pruned_rows(path, keep_days, "started_at_utc")
 
 
 def tokenjuice_audit_roots() -> tuple[Path, ...]:
@@ -547,16 +619,13 @@ def tokenjuice_audit(keep_days: int, action: Action) -> Swept:
     DELETE only. Every row is a before and after token count, so an old one
     holds nothing a new one does not.
     """
-    from tesseract.lib.jsonl_rolls import prune_older_than
-
     if action is not Action.DELETE:
         raise ValueError(
             "the shortening audit is pruned in place — there is no archive for "
             "it, and `actions` should have refused this at load"
         )
     (path,) = tokenjuice_audit_roots()
-    cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
-    return Swept(removed=prune_older_than(path, cutoff, "ts"))
+    return _pruned_rows(path, keep_days, "ts")
 
 
 def session_journal_roots() -> tuple[Path, ...]:
@@ -725,8 +794,6 @@ def supervisor_incidents(keep_days: int, action: Action) -> Swept:
     reason `sessions` gives: a sweep that ignores it keeps ignoring it after
     somebody edits the registry.
     """
-    from tesseract.lib.jsonl_rolls import prune_older_than
-
     if action is not Action.DELETE:
         raise ValueError(
             "the supervisor's record is pruned in place — there is no archive "
@@ -759,12 +826,7 @@ def supervisor_incidents(keep_days: int, action: Action) -> Swept:
 
     incidents = root / "heartbeat-incidents.jsonl"
     if incidents.is_file():
-        cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
-        try:
-            total += Swept(removed=prune_older_than(incidents, cutoff, "ts"))
-        except OSError as exc:
-            log.warning("retention: pruning %s failed: %s", incidents, exc)
-            total += Swept(failed=1)
+        total += _pruned_rows(incidents, keep_days, "ts")
     return total
 
 
@@ -1189,6 +1251,8 @@ __all__ = [
     "checkpoints_roots",
     "conscience",
     "conscience_roots",
+    "cost_ledger",
+    "cost_ledger_roots",
     "consolidator_proposals",
     "consolidator_proposals_roots",
     "feedback_proposals",

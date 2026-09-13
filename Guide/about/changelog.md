@@ -16,6 +16,25 @@ installed, you do not need it: the app offers you the update itself.
 
 ## Unreleased
 
+- **Everything the app keeps about itself has a stated lifetime.** And you can
+  change it. Some of its own records had no rule at all. They grew with
+  nothing watching, and the Thrown away panel could not tell a deliberate
+  decision from something nobody had got round to. Every one of them now says
+  which it is, in plain words: most are cleared on a schedule you can change
+  from the panel, the cockpit or your phone, and the rest say why they are kept
+  for good. Nothing that was protecting you got shorter. Your conversations,
+  the record of every permission decision, and the file that stops a document
+  being taken into your library twice are all kept exactly as they were.
+- **The record of what you have spent no longer grows without limit.** It was
+  the largest thing the app had never made a decision about, along with the
+  copies a price recalculation leaves behind. It is kept for a year now, and
+  those copies are cleared once they are older than that. The window can never
+  be set shorter than the spend panel reads, so the comparison it draws between
+  this month and the month before can never be left measuring against figures
+  that have been cleared.
+- **A record the app writes down is never quietly forgotten again.** Adding one
+  without saying how long it is kept now stops the app at startup and names it,
+  rather than leaving it to be noticed months later on a panel.
 - **The app stops saying it gave up on something it is fixing.** When two
   repairs share one problem and each can only do half of it, the one that did
   its half was recorded as having failed. Three of those and the panel said it

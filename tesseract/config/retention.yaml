@@ -85,6 +85,19 @@ trees:
     keep_days: 60
     action: delete
 
+  # One row per paid model call with what it cost, plus any copy the price
+  # recalculation script took before rewriting the file. A year rather than a
+  # month because what you spent is your own record, and the rows are small.
+  # The copies age with it: once the recalculated figures have been checked,
+  # the copy behind them answers nothing. Deleted rather than archived, and
+  # `archive` is refused at load: the live file is pruned inside itself, and a
+  # copy taken before a rewrite is already what an archive would be. The
+  # shortest window this one takes is twice the widest span the spend panel
+  # draws, which is set in code.
+  cost_ledger:
+    keep_days: 365
+    action: delete
+
   # One row per helper the assistant called on, and when. A year rather than a
   # month, and that is the whole point of the row: a helper MISSING from this
   # file has never run, which is how the roster tells an unused helper from a

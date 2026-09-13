@@ -150,44 +150,60 @@ def runtime_dir() -> Path:
 # them between machines; half is this machine's operational output and never
 # leaves it. Kept as data in one place so a new category is a decision made
 # here rather than guessed at a call site.
-_HOME_LOG_DIRS = frozenset(
-    {
-        "sessions", "observer", "conscience", "autonomy", "consolidator",
-        "feedback-sweep", "skills", "schedule", "channels", "workspace",
-        # Which tools actually get called, and in how many sessions. The
-        # operator's own working habits rather than a machine's — the answer
-        # decides which schemas ride every turn, and it should be the same
-        # answer on the second PC.
-        "usage",
-        # Which agent cards were reached, and when. Same argument as `usage`
-        # one layer up: it decides which cards are worth keeping, and a card
-        # invoked daily on one machine is not an unused card because the
-        # second PC has never called it.
-        "agents",
-    }
-)
-_RUNTIME_LOG_DIRS = frozenset(
-    {
-        "audit", "circuit-breakers", "supervisor", "janitor", "provider-health",
-        "tokenjuice", "governor",
-        # One line each time the runtime put something right about itself, or
-        # tried to and could not. Machine-local for the same reason
-        # `circuit-breakers` is: what broke and what was done about it is a
-        # fact about THIS machine, and carrying it to the second PC would
-        # describe an outage that never happened there.
-        "repairs",
-        # One file per boot, named for its boot id. Machine ops: which run of
-        # this process on this machine said what. Never synced — a per-launch
-        # file travelling to the other PC is noise, not history.
-        "backend",
-        # One row each time the event loop was blocked long enough to threaten
-        # liveness, with what it was doing. As machine-local as `backend`: the
-        # stall belongs to this PC's disk, drivers and load, and carrying it to
-        # the second machine would describe a slowdown that never happened
-        # there.
-        "loop-stalls",
-    }
-)
+#
+# Each value is that category's retention decision: `tree:<key>` names a
+# `Tree` in `retention/policy.py::TREES`, `kept:<key>` a `Kept` in `KEPT`.
+# `retention/policy.py` is the one file allowed to import both this module and
+# that registry, so it is where the value is checked against the registry it
+# names — this module only ever reads its own keys, in `log_dir()` below,
+# exactly as it read the frozenset this replaces.
+_HOME_LOG_DIRS: dict[str, str] = {
+    "sessions": "tree:session_journal",
+    "observer": "tree:observer_logs",
+    "conscience": "tree:conscience",
+    "autonomy": "kept:autonomy_prunes",
+    "consolidator": "tree:consolidator_proposals",
+    "feedback-sweep": "tree:feedback_proposals",
+    "skills": "tree:skill_usage",
+    "schedule": "tree:scheduler_runs",
+    "channels": "kept:channel_conversations",
+    "workspace": "tree:workspace_events",
+    # Which tools actually get called, and in how many sessions. The
+    # operator's own working habits rather than a machine's — the answer
+    # decides which schemas ride every turn, and it should be the same
+    # answer on the second PC.
+    "usage": "tree:usage_ledger",
+    # Which agent cards were reached, and when. Same argument as `usage`
+    # one layer up: it decides which cards are worth keeping, and a card
+    # invoked daily on one machine is not an unused card because the
+    # second PC has never called it.
+    "agents": "tree:agent_invocations",
+}
+_RUNTIME_LOG_DIRS: dict[str, str] = {
+    "audit": "kept:audit_log",
+    "circuit-breakers": "kept:breaker_state",
+    "supervisor": "tree:supervisor_incidents",
+    "janitor": "tree:janitor_sweeps",
+    "provider-health": "kept:provider_health",
+    "tokenjuice": "tree:tokenjuice_audit",
+    "governor": "kept:governor_pauses",
+    # One line each time the runtime put something right about itself, or
+    # tried to and could not. Machine-local for the same reason
+    # `circuit-breakers` is: what broke and what was done about it is a
+    # fact about THIS machine, and carrying it to the second PC would
+    # describe an outage that never happened there.
+    "repairs": "kept:repair_attempts",
+    # One file per boot, named for its boot id. Machine ops: which run of
+    # this process on this machine said what. Never synced — a per-launch
+    # file travelling to the other PC is noise, not history.
+    "backend": "tree:backend_logs",
+    # One row each time the event loop was blocked long enough to threaten
+    # liveness, with what it was doing. As machine-local as `backend`: the
+    # stall belongs to this PC's disk, drivers and load, and carrying it to
+    # the second machine would describe a slowdown that never happened
+    # there.
+    "loop-stalls": "tree:loop_stalls",
+}
 
 
 # The state paths a tool-written artifact can land in. `file_write` anchors
