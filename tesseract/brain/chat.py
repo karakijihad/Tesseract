@@ -3940,6 +3940,27 @@ class ChatSession:
             boundary=boundary,
         )
 
+    def _for_history(self, tool_name: str, output: str) -> str:
+        """What a tool's output becomes in model history.
+
+        **One function, because both append sites need the same answer and
+        only one of them was giving it.** The normal loop wrapped an
+        `untrusted_source` result; the interrupted path appended the raw
+        output, so a result already produced when that loop was cut short
+        reached history with no fence. Found by an audit lens, and it is the
+        same shape as the two defects before it: the decision lived in a
+        condition rather than in a name, so a second caller could forget it.
+
+        Wrapping is unconditional for such a tool. `is_wrapped` cannot tell an
+        envelope this runtime built from an untrusted body shaped like one,
+        because both are the same string, and `wrap` neutralises its own
+        markers in the body so the result always carries exactly one fence.
+        """
+        tool_obj = self.registry.get(tool_name) if self.registry else None
+        if tool_obj is not None and getattr(tool_obj, "untrusted_source", False):
+            return _wrap_untrusted(tool=tool_name, output=output)
+        return output
+
     async def _run_pending_calls(
         self,
         pending_calls: list[ToolCall],
@@ -4136,10 +4157,7 @@ class ChatSession:
                 # on a real double-wrap. `wrap` defuses our markers out of
                 # the body, so wrapping here always yields exactly one
                 # fence, whatever the body claimed to be.
-                content = result.output
-                tool_obj = self.registry.get(tc.name) if self.registry else None
-                if tool_obj is not None and getattr(tool_obj, "untrusted_source", False):
-                    content = _wrap_untrusted(tool=tc.name, output=content)
+                content = self._for_history(tc.name, result.output)
                 self.history.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
@@ -4236,7 +4254,13 @@ class ChatSession:
                         self.history.append({
                             "role": "tool",
                             "tool_call_id": tc.id,
-                            "content": results[i][1].output,
+                            # Through the same function as the normal path.
+                            # This branch appended the raw output, so a result
+                            # that had already been produced when the loop was
+                            # interrupted reached model history with no fence
+                            # at all — the one place the envelope was decided
+                            # twice, and the copy that forgot.
+                            "content": self._for_history(tc.name, results[i][1].output),
                             "timestamp": _now_iso(),
                         })
                     else:

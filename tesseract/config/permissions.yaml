@@ -446,6 +446,10 @@ workspace_cards:
       # file, so it left the file alone and asked. Approving that on its own
       # would pick one wording over the other with nothing left to read.
       kb_merge_conflict: ask
+      # Rewrites what the assistant has been told about how to work, read off
+      # your own transcripts. Changing that while nobody is looking is the
+      # same objection the catalog edit above is held for.
+      feedback_sweep: ask
 
 # ─────────────────────────────────────────────────────────────────────────
 # Read-only self-verification allowlist. `PermissionPolicy._bash_readonly_posture`

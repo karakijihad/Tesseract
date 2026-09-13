@@ -416,7 +416,14 @@ def _numbers(ev: Any) -> str:
         return ""
     if not window:
         return ""
-    live = sorted(window.items())[-1][1]
+    # Numeric, not lexical. `reuse_by_version` keys by the version STRING, and
+    # a version is a whole number with no padding, so `sorted` puts "10"
+    # before "2" and this took the wrong revision as the live one the moment a
+    # playbook reached double figures. `playbook_record` already orders by
+    # `version_number` for the same reason; this was the copy that did not.
+    from tesseract.brain.playbook_contract import version_number
+
+    live = max(window.items(), key=lambda kv: version_number(kv[0]) or 0)[1]
     if live.trouble is None:
         return f". Read {live.loads} times, nothing has graded it yet"
     return (

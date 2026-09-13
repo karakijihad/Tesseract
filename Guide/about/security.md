@@ -917,6 +917,23 @@ of a record before it is written, and the write is refused outright if that
 check cannot run. The Autonomy panel shows it alongside the others so the set is
 readable in one place, with no control beside it.
 
+Two things about how that removal is done, because both were wrong until
+2026-09-13 and one of them let a credential through. The values are taken out
+of the record's own fields, before the file is written out, rather than being
+searched for in the finished file. A saved value that contains a space, which
+is how an app password is usually given to you, could be split across two
+lines when the file was laid out, and a search of the finished text then found
+nothing to remove. And what replaces a removed value says which account it
+belonged to, which is a note in square brackets: written into a finished file
+that note was read back as a list rather than as text, and the record stopped
+being readable at all, so nothing could show it to you or delete it. One
+record on this machine was in that state and has been repaired.
+
+After the file is laid out it is read back the way anything reading it later
+would, and the write is refused if it does not come back as the record it
+claims to be, or if anything a reader could get out of it is still one of your
+saved values.
+
 You can turn any of the other eight off, from the Autonomy panel under Health,
 and the change applies to the next record without a restart. Three layers decide
 what is on: the shipped default in the code, `config/memory.yaml` under

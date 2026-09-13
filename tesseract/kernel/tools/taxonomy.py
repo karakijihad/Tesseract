@@ -17,7 +17,11 @@ Order is glossary order.
 
 from __future__ import annotations
 
-# slug → heading, in the order the glossary renders them.
+# slug → heading, in the order the glossary renders them. The tool payload
+# (`adapters/openai.py::_namespace_entries`) sorts instead, because there
+# what matters is that the same registry renders the same bytes, and a
+# sort says so without resting on this dict's insertion order. Neither
+# order is authoritative over the other; they answer different questions.
 GROUPS: dict[str, str] = {
     "remembering": "Remembering",
     "research-library": "Research library",

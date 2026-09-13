@@ -208,6 +208,7 @@ class SkillRefinementJob(BaseJob):
         proposed rewrite. The caller needs the difference: a card that is only
         a flag is the job's degraded path, not its output.
         """
+        from tesseract.kernel.tools.untrusted_envelope import strip
         from tesseract.workspace_events import WorkspaceEvent
 
         name = cand["skill"]
@@ -264,10 +265,14 @@ class SkillRefinementJob(BaseJob):
                 "stats": _stats_payload(cand),
                 "current_markdown": current,
                 "proposed_markdown": proposed,
-                # The same block the model was given. On the card so the
-                # operator judges the proposal against what produced it,
-                # rather than against the summary line.
-                "evidence": evidence,
+                # The same block the model was given, WITHOUT the fence, which
+                # is addressed to the model and not to a person. The card
+                # renders this straight into a `<pre>`, so the operator was
+                # reading the markers and the whole system note telling them
+                # to treat the text as data rather than instructions. The
+                # model still gets the fenced copy: `_propose_revision` is
+                # handed `evidence` itself.
+                "evidence": strip(evidence),
             },
         )
         try:

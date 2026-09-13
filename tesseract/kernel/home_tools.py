@@ -655,7 +655,10 @@ def write_tools_index(registry: Any, tools_dir: Path | None = None) -> None:
         # Which file last produced which names, from the same record that
         # made deletion and renaming work in `_sync_locked` above.
         file_of: dict[str, str] = {}
-        for path, record in _loaded.items():
+        # Snapshotted: `_sync_locked` calls this while holding the scan
+        # lock, but nothing stops another caller reading the map while a
+        # scan rebuilds it, and a dict resized during iteration raises.
+        for path, record in dict(_loaded).items():
             for name in record.names:
                 file_of[name] = path.name
 

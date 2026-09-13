@@ -76,6 +76,15 @@ EventKind = Literal[
 #: from the only view a phone had.
 DECIDABLE_KINDS: tuple[str, ...] = (
     "agent_approval",
+    # The inbox has always drawn Approve and Reject for a sweep and the route
+    # has always accepted them, and this list is what every OTHER surface
+    # reads: `/queue`, the return note's "Waiting on you", the notifier, and
+    # `workspace_decide`. Missing here, a pending sweep was a card the desk
+    # could answer and the phone could not see, which is the exact
+    # under-reporting this list's own note describes. It is pinned `ask` in
+    # `permissions.yaml` so being listed here does not make it auto under
+    # `free`.
+    "feedback_sweep",
     "skill_approval",
     "skill_refinement",
     "working_set_proposal",

@@ -43,10 +43,16 @@ CACHE_BOUNDARY = "_cache_boundary"
 #: which every projection strips before the payload reaches a provider.
 #: `defer_loading` is the one exception: a deferring adapter puts it back,
 #: because there it is the provider's own vocabulary rather than ours.
-#: `group` is the same kind of key as `defer_loading` — it rides along on a
-#: deferred entry only so a deferring adapter can bucket it into a
-#: `namespace` (`OpenAIAdapter._namespace_entries`), and is never copied into
-#: the wire entry that names it.
+#: `group` is the same kind of key as `defer_loading`: it rides along on a
+#: deferred entry only so a deferring adapter can bucket it into a `namespace`
+#: (`OpenAIAdapter._namespace_entries`). Naming it here is DEFENSIVE and not
+#: load-bearing, which is worth saying so nobody reads it as the thing keeping
+#: `group` off the wire. `schemas_for_adapter` sets it only in the branch that
+#: also sets `defer_loading`, and the non-deferring projection drops every
+#: deferred entry before it strips anything, so no entry carrying `group` ever
+#: reaches the strip. It is listed because the classification could grow a
+#: reason to stamp `group` on a loaded tool, and the day it does this should
+#: already be right.
 _PAYLOAD_KEYS = frozenset({"defer_loading", "_runtime_search", "group"})
 
 

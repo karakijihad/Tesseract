@@ -21,7 +21,11 @@ export type EventKind =
   | 'yaml_change_proposal'
   | 'kb_merge_conflict'
   | 'clarification'
-  | 'project_proposal';
+  | 'project_proposal'
+  | 'vault_raw_ingest_batch'
+  | 'recovery_summary'
+  | 'runtime_lock_deny'
+  | 'strategist_summary';
 
 export type OperatorPostSource = 'button' | 'scratchpad' | 'voice' | 'hotkey' | 'telegram';
 

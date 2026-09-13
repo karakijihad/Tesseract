@@ -40,6 +40,10 @@ export const KIND_LABEL: Record<EventKind, string> = {
   kb_merge_conflict: 'KB conflict',
   clarification: 'Question',
   project_proposal: 'An idea',
+  vault_raw_ingest_batch: 'To the library',
+  recovery_summary: 'After a restart',
+  runtime_lock_deny: 'Blocked write',
+  strategist_summary: 'The week',
 };
 
 // Kinds where Approve/Reject map to a real backend effect — the operator's
@@ -55,8 +59,17 @@ const ACTIONABLE_KINDS = new Set<EventKind>([
   'agent_approval',
   'skill_approval',
   'skill_refinement',
+  // Files land in the vault on approve; the route has carried a commit
+  // handler for this since it was written, and the frontend never knew the
+  // kind, so the card drew no label and its only control was refused.
+  'vault_raw_ingest_batch',
   'mission_reflection_proposal',
   'yaml_change_proposal',
+  // Dormant today, nothing files one, and it carries the same gap the
+  // two above had: decidable on the backend and drawn with Resolve,
+  // which the route refuses. Listed so it is not a stuck card the day
+  // the merge path starts filing them again.
+  'kb_merge_conflict',
   // Approving one changes no file and creates nothing. It changes the card's
   // own state, which is what the next morning reads to know an idea is worth
   // starting, so Approve and Decline are the real decision and not a Resolve.

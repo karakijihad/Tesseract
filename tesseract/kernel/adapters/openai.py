@@ -36,7 +36,7 @@ from tesseract.kernel.adapters.base import (
 )
 from tesseract.kernel.adapters.errors import classify_exception
 from tesseract.kernel.state import ToolCall
-from tesseract.kernel.tools.taxonomy import heading_for
+from tesseract.kernel.tools.taxonomy import GROUPS, heading_for
 
 logger = logging.getLogger(__name__)
 
@@ -87,26 +87,50 @@ def _namespace_entries(deferred: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     Measured 2026-09-11 (M1 in the probe): grouping deferred tools under a
     `namespace` whose description names its members matches today's flat
-    selection accuracy (3/5) at 10,005 tokens against 26,659 — bare
-    namespaces (no member names) drop accuracy to 1/5, so the names are
-    load-bearing and stay in the description, never trimmed as a saving.
+    selection accuracy (3/5) at 10,005 tokens against 26,659. Bare namespaces
+    (no member names) drop accuracy to 1/5, so the names are load-bearing and
+    stay in the description, never trimmed as a saving.
+
+    The two halves were measured hours apart and the roster moved between
+    them: 26,659 at 158 tools, 10,005 at 159. The extra one is deferred, so it
+    costs the second figure almost nothing, but the denominators are written
+    down rather than smoothed, because a comparison whose sides were taken on
+    different rosters should say so.
 
     One namespace per taxonomy group, sorted by slug for a stable payload;
     each namespace's members are sorted by name in both the description and
-    the `tools` array, for the same reason.
+    the `tools` array, for the same reason. Sorted rather than in the
+    taxonomy's own declared order because what matters here is that the same
+    registry renders the same bytes, and `sorted` says so without depending on
+    a dict's insertion order staying put.
+
+    **A tool whose group this file does not know still travels.** Not every
+    tool passes through the boot gate that validates `group`: an MCP server's
+    tools are constructed and registered after boot (`mcp_client/remote_tool.py`
+    declares no group at all, so they inherit `Tool.group = ""`), and they are
+    `tier="extended"`, so they defer. Looking their heading up would raise
+    `KeyError` inside `stream()` and end the turn before it reached the
+    provider. Skipping them instead would be quieter and worse: they would
+    vanish from the payload and the model could not call them.
+
+    So an unknown slug goes in a catch-all namespace and stays reachable. The
+    grouping is the part we lose, and losing the grouping is survivable in a
+    way that losing the turn or losing the tool is not.
     """
     by_group: dict[str, list[dict[str, Any]]] = {}
     for t in deferred:
-        by_group.setdefault(t.get("group", ""), []).append(t)
+        slug = t.get("group") or ""
+        by_group.setdefault(slug if slug in GROUPS else "", []).append(t)
 
     namespaces: list[dict[str, Any]] = []
     for slug in sorted(by_group):
         members = sorted(by_group[slug], key=lambda t: t["name"])
         names = ", ".join(t["name"] for t in members)
+        heading = heading_for(slug) if slug else "Everything else"
         namespaces.append({
             "type": "namespace",
-            "name": slug.replace("-", "_"),
-            "description": f"{heading_for(slug)}. Contains: {names}.",
+            "name": slug.replace("-", "_") if slug else "everything_else",
+            "description": f"{heading}. Contains: {names}.",
             "tools": [_function_entry(t, defer=True) for t in members],
         })
     return namespaces

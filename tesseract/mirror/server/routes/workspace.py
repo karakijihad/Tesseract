@@ -86,6 +86,7 @@ _RESOLVABLE_KINDS = {
     "recovery_summary",     # Boot reconciliation report; nothing to gate, Resolve dismisses
     "strategist_summary",   # Weekly initiative curator one-shot; informational
     "runtime_lock_deny",    # SU-1/SU-5 — audit surface for lock-deny attempts; informational
+    "skill_retirement",     # a revision measured worse and was withdrawn; the act already happened
 }
 
 # Per-event decision locks. `post_decision` reads the event, runs commit

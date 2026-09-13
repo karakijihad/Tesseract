@@ -304,6 +304,22 @@ async def _maybe_register_tool_write(
         return ""
     if readable_state_prefix(relative) != "tools":
         return ""
+    # The prefix says "somewhere under tools/", and the scan reads only the
+    # directory's own children (`_sync_locked` walks `iterdir()`, not a tree).
+    # A file one level down therefore registers nothing and, before this check,
+    # produced no note either: the write succeeded in silence, which is exactly
+    # the failure this hook exists to end. Say it instead.
+    try:
+        from tesseract.paths import user_tools_dir
+
+        if path.parent != user_tools_dir():
+            return (
+                ". Tools are only loaded from the top of that folder, so "
+                "nothing in this file is registered. Move it directly into "
+                f"{user_tools_dir()} to have it loaded."
+            )
+    except Exception:
+        return ""
     provider = context.tool_registry_provider
     if provider is None:
         return ""

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 import yaml
+from pydantic import ValidationError
 
 from tesseract.memory.derivation import (
     DerivationRefusal,
@@ -267,6 +268,70 @@ MEMORY_SUBDIRS: tuple[str, ...] = (
 )
 
 
+def _what_survived(content: str) -> str:
+    """Why the rendered record must not be written, or "" when it may be.
+
+    Read back the way a READER will, because what is owed is a property of
+    the bytes that land and not of the calls that produced them. Two
+    questions, and each is a failure this write path has actually had:
+
+    1. **Does it still parse, as the record it claims to be?** A redaction
+       marker dropped into rendered YAML re-reads as a flow sequence, which
+       turns a string field into a list and fails validation for ever after.
+       A record the store cannot read back is one `memory_forget` cannot
+       delete and retrieval silently skips.
+    2. **Can a reader get a stored secret out of it?** Asked of the PARSED
+       values and of the body, not of the raw text, because the raw text is
+       where line folding hides one: `yaml.dump` breaks a long scalar at a
+       space, and a credential containing spaces stops being a contiguous
+       run. Parsing puts it back together, which is exactly what an attacker
+       reading the file would do.
+
+    Returns a reason rather than raising, so the caller logs it and refuses
+    the write. A store that cannot be read raises out of `secret_values` and
+    the caller turns that into a refusal too: fail closed.
+    """
+    from tesseract.credentials.redaction import secret_values
+
+    head, sep, rest = content.partition("\n---\n")
+    if not sep:
+        return "the rendered record has no frontmatter block"
+    parsed = yaml.safe_load(head[len("---\n"):])
+    if not isinstance(parsed, dict):
+        return "the rendered frontmatter is not a mapping"
+    try:
+        MemoryFrontmatter(**parsed)
+    except ValidationError as exc:
+        # The FIELDS, never the exception text. Pydantic puts `input_value=`
+        # in its message, so a value that both survived redaction and failed
+        # validation would be echoed into the log by the one check whose job
+        # is to stop exactly that value reaching a file.
+        fields = sorted({str(e.get("loc", ("?",))[0]) for e in exc.errors()})
+        return (
+            "the rendered record would not read back as a memory: "
+            f"{', '.join(fields)}"
+        )
+    except Exception:  # noqa: BLE001 — any other parse failure is a refusal too
+        return "the rendered record would not read back as a memory"
+
+    def _strings(value: object):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                yield from _strings(key)
+                yield from _strings(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                yield from _strings(item)
+
+    readable = [*_strings(parsed), rest]
+    for label, secret in secret_values():
+        if secret and any(secret in text for text in readable):
+            return f"a stored credential ({label}) survived into the record"
+    return ""
+
+
 def _inside(path: Path, root: Path) -> bool:
     """Whether `path` really lands inside `root`, symlinks followed.
 
@@ -356,7 +421,13 @@ class MemoryStore:
             if not base.exists():
                 continue
             direct = base / target
-            if direct.exists() and _inside(direct, root):
+            # `is_file`, not `exists`: a DIRECTORY named `mem_x.md` satisfies
+            # `exists` and is not a record. Handing one back broke property 4
+            # below on the very callers it is written for: `read` and `delete`
+            # then raise `PermissionError` out of `open` and `unlink` instead
+            # of answering "no such memory". The recursive branch below always
+            # checked this; the fast path did not.
+            if direct.is_file() and _inside(direct, root):
                 return direct
             for path in base.rglob(target):
                 if path.is_file() and _inside(path, root):
@@ -434,7 +505,25 @@ class MemoryStore:
 
         Public so external callers (memory_save's type_mismatch guard) can
         route through the same JSONL sink instead of writing directly.
+
+        **Redacted, like the records beside it.** These rows carry a record's
+        title, and `write` is the backstop for a credential that got past the
+        wall on the way in: taking one out of the `.md` and writing it
+        verbatim into a durable JSONL in the same directory is not removing
+        it. If the check cannot run the row is written without the fields that
+        could carry one, because a forensic row that has lost its title is
+        worth more than one that leaks.
         """
+        try:
+            from tesseract.credentials.redaction import redact_payload
+
+            entry = redact_payload(entry)
+        except Exception:  # noqa: BLE001
+            entry = {
+                k: v for k, v in entry.items()
+                if k not in ("title", "reason", "detail")
+            }
+            entry["redaction"] = "unavailable"
         entry["timestamp"] = datetime.now(timezone.utc).isoformat()
         events_dir = self._store_dir / "events"
         events_dir.mkdir(parents=True, exist_ok=True)
@@ -549,8 +638,6 @@ class MemoryStore:
         # Operator-set tags survive AFTER the kind tag. Idempotent on
         # repeat writes — set semantics enforced by `_inject_kind_tag`.
         frontmatter = _inject_kind_tag(frontmatter)
-        yaml_dict = frontmatter.to_yaml_dict()
-        content = "---\n" + yaml.dump(yaml_dict, default_flow_style=False, sort_keys=False) + "---\n\n" + body
 
         # A memory is the most durable of the four places a credential can
         # land: it survives the conversation, it is retrieved into later
@@ -563,15 +650,33 @@ class MemoryStore:
         # is a backstop. It REFUSES the write when the store cannot be read,
         # which is the one degradation that is safe here: an unwritten memory
         # is recoverable and a durable one is not.
-        # A check that cannot run refuses the write, and that INCLUDES the
-        # check failing to import. It used to set `redact = None` and carry on,
-        # so the one condition the comment above calls unsafe was the one
-        # condition that wrote the record anyway. `SECURITY.md` states the
-        # stronger rule to the operator, and this is the code that owes it.
+        #
+        # **On the VALUES, before they are serialised, and never on the
+        # rendered document.** Scrubbing the finished text got both halves of
+        # its job wrong, and each failure was reachable:
+        #
+        #   A secret was missed. `yaml.dump` folds a long plain scalar at a
+        #   space, so a credential that CONTAINS one is split across two lines
+        #   and no longer occurs as a contiguous run. A Gmail app password is
+        #   four space-separated groups, which is the exact shape, and it went
+        #   to disk unredacted.
+        #
+        #   A secret that WAS caught corrupted the record. The marker opens
+        #   with `[`, so dropped into a rendered scalar it re-reads as a YAML
+        #   flow sequence, and the field is a list where a string belongs. The
+        #   record then fails validation for ever: the store cannot read it
+        #   back, `memory_forget` cannot delete it, retrieval skips it. One is
+        #   on disk from 2026-09-07.
+        #
+        # Redacting the structure fixes both at once. `redact_payload` walks
+        # keys and values and hands back the identical object where nothing
+        # matched, so an install with no credentials saved pays no copy, and
+        # `yaml.dump` quotes the marker because it is quoting a string.
         try:
-            from tesseract.credentials.redaction import redact
+            from tesseract.credentials.redaction import redact, redact_payload
 
-            content = redact(content)
+            yaml_dict = redact_payload(frontmatter.to_yaml_dict())
+            body = redact(body)
         except Exception as exc:  # noqa: BLE001
             self.log_event("writes.jsonl", {
                 "memory_id": frontmatter.id,
@@ -584,6 +689,40 @@ class MemoryStore:
                 "Memory %s not written: it could not be checked for "
                 "credentials (%s)", frontmatter.id, exc,
             )
+            return False
+
+        content = "---\n" + yaml.dump(yaml_dict, default_flow_style=False, sort_keys=False) + "---\n\n" + body
+
+        # And then read it back the way a reader will, because the guarantee
+        # owed here is about the BYTES that land, not about the call that was
+        # made. Two things are checked and each is one of the failures above:
+        # the document still parses as the record it claims to be, and nothing
+        # a reader can get out of it is a stored secret. A check that cannot
+        # run refuses the write, which INCLUDES the check failing to import:
+        # that used to set `redact = None` and carry on, so the one condition
+        # the comment above calls unsafe was the one condition that wrote the
+        # record anyway. `SECURITY.md` states the stronger rule to the
+        # operator, and this is the code that owes it.
+        try:
+            unsafe = _what_survived(content)
+        except Exception:  # noqa: BLE001
+            # The traceback goes to the logger, which is scrubbed by
+            # `logsetup._CredentialRedactionFilter` (message AND exception
+            # text). The returned reason carries no value of its own for the
+            # same reason `_what_survived` names fields rather than quoting
+            # pydantic: a YAML scanner error quotes the line it choked on,
+            # and that line is the one whose value is in question.
+            logger.exception("Memory %s could not be checked", frontmatter.id)
+            unsafe = "the written record could not be checked"
+        if unsafe:
+            self.log_event("writes.jsonl", {
+                "memory_id": frontmatter.id,
+                "type": frontmatter.type.value,
+                "title": frontmatter.title,
+                "status": "blocked",
+                "reason": "unsafe_record",
+            })
+            logger.error("Memory %s not written: %s", frontmatter.id, unsafe)
             return False
 
         tmp = path.with_suffix(".tmp")
