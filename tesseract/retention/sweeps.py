@@ -412,6 +412,443 @@ def conscience(keep_days: int, action: Action) -> Swept:
     return total
 
 
+# The four ledgers below are one growing JSONL each, and each is pruned by row
+# through `lib/jsonl_rolls.prune_older_than` rather than by a function on the
+# module that owns the file. That is a deliberate departure from what
+# `usage_ledger`, `approvals_ledger` and `scheduler_runs` do, and the reason
+# they do it does not apply here: they moved the prune onto the owning module to
+# get at that module's LOCK, and none of these four has one, because nothing
+# ever pruned them. Two of them are written by the supervisor in another
+# process, where no lock either side could take would join them. So the prune
+# holds its ground a different way — it stats the file before and after and
+# abandons itself rather than write a file missing a row — and a lock added to
+# four modules would buy nothing a reader could rely on.
+#
+# Each still names its own file, its own timestamp field and its own reason for
+# a window. A shared sweep taking a directory from config is the thing
+# GOVERNANCE.md §3 refuses, and this is not that.
+
+
+def agent_invocations_roots() -> tuple[Path, ...]:
+    from tesseract.agents.invocations import invocations_path
+
+    return (invocations_path(),)
+
+
+def agent_invocations(keep_days: int, action: Action) -> Swept:
+    """`<logs>/agents/invocations.jsonl` — one row per agent card that was used
+    to build a call.
+
+    Its own module says this table is what eventually trims it. What that
+    module also says, and what bounds the window from below, is that a name
+    ABSENT from the file has never been invoked: `last_invocations` returns a
+    mapping so absence reads as a state, and the roster's keep, rewrite or
+    delete judgement is made on it. So a row removed does not merely shorten a
+    count, it turns "used a while ago" into "never used". `floor_days` reads
+    `COUNT_WINDOW_DAYS` off that module rather than restating it, so the window
+    can never be set below the span the roster counts over.
+
+    DELETE only. The row holds a name, an instant and the caller, so there is
+    nothing in an old one an investigation would want back, which is the
+    `usage_ledger` argument exactly.
+    """
+    from tesseract.lib.jsonl_rolls import prune_older_than
+
+    if action is not Action.DELETE:
+        raise ValueError(
+            "the invocations ledger is pruned in place — there is no archive "
+            "for it, and `actions` should have refused this at load"
+        )
+    (path,) = agent_invocations_roots()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
+    return Swept(removed=prune_older_than(path, cutoff, "ts"))
+
+
+def skill_usage_roots() -> tuple[Path, ...]:
+    from tesseract.brain.skill_usage import usage_log_path
+
+    return (usage_log_path(),)
+
+
+def skill_usage(keep_days: int, action: Action) -> Swept:
+    """`<logs>/skills/usage.jsonl` — one row per skill body the assistant read,
+    and one per correction attributed to a skill afterwards.
+
+    Read by the skill refinement job over a window of its own, set in
+    `config/schedule.yaml`. That window is days and this one is months, so the
+    job sees a whole span of evidence rather than the tail of one. `floor_days`
+    is well above it deliberately: a window short enough to empty what the job
+    reads would leave it deciding a skill keeps failing on two rows.
+
+    DELETE only, like the invocations ledger beside it and for the same reason.
+    """
+    from tesseract.lib.jsonl_rolls import prune_older_than
+
+    if action is not Action.DELETE:
+        raise ValueError(
+            "the skill usage ledger is pruned in place — there is no archive "
+            "for it, and `actions` should have refused this at load"
+        )
+    (path,) = skill_usage_roots()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
+    return Swept(removed=prune_older_than(path, cutoff, "ts"))
+
+
+def janitor_sweeps_roots() -> tuple[Path, ...]:
+    from tesseract.paths import log_dir
+
+    return (log_dir("janitor") / "sweeps.jsonl",)
+
+
+def janitor_sweeps(keep_days: int, action: Action) -> Swept:
+    """`<runtime logs>/janitor/sweeps.jsonl` — one row per clean-up the janitor
+    ran, which is one per supervisor boot.
+
+    The watchman reads it for sweeps that ERRORED, within a window of hours, and
+    a sweep that cleaned nothing is not a finding at all. So nothing reads an old
+    row: what it answers is whether the clean-up is failing now.
+
+    Written by the supervisor process while this runs in the backend, which is
+    why the prune abandons itself rather than lose a row. The dated field is
+    `started_at_utc`, not `ts`: a row is written when the sweep finishes and
+    carries both, and the start is when the work it describes happened.
+
+    DELETE only. The row is a count and a summary line, and there is no archive
+    for one.
+    """
+    from tesseract.lib.jsonl_rolls import prune_older_than
+
+    if action is not Action.DELETE:
+        raise ValueError(
+            "the janitor's record is pruned in place — there is no archive for "
+            "it, and `actions` should have refused this at load"
+        )
+    (path,) = janitor_sweeps_roots()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
+    return Swept(removed=prune_older_than(path, cutoff, "started_at_utc"))
+
+
+def tokenjuice_audit_roots() -> tuple[Path, ...]:
+    from tesseract.kernel.tokenjuice.audit import audit_dir
+
+    return (audit_dir() / "audit.jsonl",)
+
+
+def tokenjuice_audit(keep_days: int, action: Action) -> Swept:
+    """`<runtime logs>/tokenjuice/audit.jsonl` — one row each time a tool result
+    was shortened before it reached the model.
+
+    The highest write rate of the four: a row per call rather than per boot or
+    per day. Nothing in the runtime reads it, which is the point of a window
+    here rather than a longer one. It exists so a person can check that a rule
+    which shortens a result is shortening the right ones, and that question is
+    asked about this week's calls.
+
+    DELETE only. Every row is a before and after token count, so an old one
+    holds nothing a new one does not.
+    """
+    from tesseract.lib.jsonl_rolls import prune_older_than
+
+    if action is not Action.DELETE:
+        raise ValueError(
+            "the shortening audit is pruned in place — there is no archive for "
+            "it, and `actions` should have refused this at load"
+        )
+    (path,) = tokenjuice_audit_roots()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
+    return Swept(removed=prune_older_than(path, cutoff, "ts"))
+
+
+def session_journal_roots() -> tuple[Path, ...]:
+    from tesseract.paths import log_dir
+
+    return (log_dir("sessions"),)
+
+
+def session_journal(keep_days: int, action: Action) -> Swept:
+    """`<logs>/sessions/` — the day by day record of your own sessions, and one
+    journal per session of the background work it started. Two shapes:
+
+    - `YYYY-MM-DD.jsonl`, one file per day, holding a line each time a session
+      closed, a conversation was compacted, a boundary was consolidated, and
+      once a night the summary of every background job that ran. Measured here:
+      509 session-close lines in one day against one summary line.
+    - `<session_id>/spawns.jsonl`, one directory per session, holding what it
+      started and what came back. Read only when a session is resumed, to find
+      work that vanished when the app restarted.
+
+    **The nightly summary line is never removed, whatever the window says.**
+    That is not tidiness, it is the thing that keeps the largest log on the
+    machine ageing at all: `scheduler_runs` prunes a day of job rows only once
+    `_day_has_rollup` finds that summary, and HOLDS the day for ever when it
+    does not. Deleting a day file here would therefore stop a 5 MB log ageing,
+    silently and permanently, from the far side of the table. So a day past the
+    window keeps its summary lines and loses the rest, and the file goes only
+    when there were none. Counted as `held`, which is this table's word for
+    what a window reached and a sweep kept anyway.
+
+    A day past the window has no writer: `append_log_entry` always files into
+    TODAY's file, so nothing appends to a file this rewrites and the
+    stat-guarded prune the supervisor's record needs is not needed here.
+
+    The journals age on the newest file inside rather than the directory's own
+    mtime, for the reason `lane_archives` gives: on Windows a directory's mtime
+    does not follow a write into it, so a session still being written to looks
+    stale.
+
+    DELETE only. A day file is rewritten in place, and there is no archive for
+    part of a file to move into.
+
+    What is counted is lines for the day files and directories for the
+    journals, which is the unit each of those loses things in. The table
+    already mixes the two across trees (`usage_ledger` counts rows,
+    `lane_archives` counts directories); saying so here is what keeps a reader
+    of one number from taking it for the other.
+    """
+    from tesseract.janitor.scratch import _rmtree
+
+    if action is not Action.DELETE:
+        raise ValueError(
+            "a day's record is rewritten in place, keeping the nightly "
+            "summary — there is nowhere for part of a file to be archived to, "
+            "and `actions` should have refused this at load"
+        )
+
+    (root,) = session_journal_roots()
+    if not root.is_dir():
+        return Swept()
+    cutoff_day = date.today() - timedelta(days=keep_days)
+    cutoff_mtime = time.time() - keep_days * _DAY_S
+    total = Swept()
+
+    for child in sorted(root.iterdir()):
+        if child.is_dir():
+            if child.name == "archive":
+                continue
+            try:
+                if _newest_mtime(child) >= cutoff_mtime:
+                    continue
+                _rmtree(child)
+                total += Swept(removed=1)
+            except OSError as exc:
+                log.warning("retention: spawn journal %s failed: %s", child, exc)
+                total += Swept(failed=1)
+            continue
+        if child.suffix != ".jsonl":
+            continue
+        stamped = _stamp_date(child.stem)
+        if stamped is None or stamped >= cutoff_day:
+            continue
+        total += _prune_day_keeping_summaries(child)
+    return total
+
+
+def _prune_day_keeping_summaries(path: Path) -> Swept:
+    """Drop everything in one day's record except the nightly job summaries.
+
+    The summary rows are what `_day_has_rollup` reads, so they outlive the
+    window. A row this cannot read as JSON is KEPT: an unreadable line is not
+    evidence it is disposable, and the cost of guessing wrong is the rollup.
+    """
+    from tesseract.lib.jsonl_rolls import rewrite
+
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        log.warning("retention: could not read %s: %s", path, exc)
+        return Swept(failed=1)
+
+    keep: list[str] = []
+    dropped = 0
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            summary = json.loads(line).get("type") == "scheduler"
+        except ValueError:
+            summary = True
+        if summary:
+            keep.append(line)
+        else:
+            dropped += 1
+    if not dropped:
+        return Swept()
+    try:
+        if keep:
+            rewrite(path, keep)
+            return Swept(removed=dropped, held=len(keep))
+        path.unlink()
+        return Swept(removed=dropped)
+    except OSError as exc:
+        log.warning("retention: pruning %s failed: %s", path, exc)
+        return Swept(failed=1)
+
+
+def supervisor_incidents_roots() -> tuple[Path, ...]:
+    from tesseract.paths import log_dir
+
+    return (log_dir("supervisor"),)
+
+
+def supervisor_incidents(keep_days: int, action: Action) -> Swept:
+    """`<runtime logs>/supervisor/` — everything the supervisor wrote down when
+    the app was in trouble. Three shapes, one window, named here because a
+    reader of this table should not have to guess which of them a row covers.
+
+    - `backend-stack-<pid>-<stamp>.txt`, one file per stack it dumped over a
+      backend that stopped answering. The bulk of the directory by an order of
+      magnitude, and the reason it needs a window at all.
+    - `crash-storm-archive/<stamp>.json`, one file per crash storm that was
+      cleared. Rare by design, and kept for the same span as the stacks so a
+      storm and the dumps around it go together rather than one outliving the
+      other and describing half an outage.
+    - `heartbeat-incidents.jsonl`, one row per health probe that failed enough
+      times to matter. Pruned by row and never removed as a file, because it is
+      one file for every incident there has ever been.
+
+    The argument for a window is `loop_stalls`': written only when it happens,
+    so a healthy machine adds nothing for weeks, and what it answers is whether
+    this week is worse than last. A stack from the spring explains nothing
+    about today.
+
+    The two file shapes age on the stamp in the name and not on an mtime, like
+    every dated artifact here. The row prune is `lib/jsonl_rolls.
+    prune_older_than`, which abandons itself rather than lose a row: the
+    supervisor appends to that file from its own process while this runs in the
+    backend, so there is no lock the two could share.
+
+    DELETE only, and `actions` says so at load. Not policy but capability, the
+    `usage_ledger` distinction: the incident rows are pruned in place and there
+    is no archive for a row to move into, so a tree that archived two of its
+    three shapes and deleted from the third would be reporting one word for two
+    different acts. The argument is still read rather than assumed, for the
+    reason `sessions` gives: a sweep that ignores it keeps ignoring it after
+    somebody edits the registry.
+    """
+    from tesseract.lib.jsonl_rolls import prune_older_than
+
+    if action is not Action.DELETE:
+        raise ValueError(
+            "the supervisor's record is pruned in place — there is no archive "
+            "for an incident row to move into, and `actions` should have "
+            "refused this at load"
+        )
+
+    (root,) = supervisor_incidents_roots()
+    if not root.is_dir():
+        return Swept()
+    cutoff_day = date.today() - timedelta(days=keep_days)
+    total = Swept()
+
+    # The archive directory `_retire` takes is unreachable here: `action` is
+    # DELETE or this function has already raised. It is named rather than
+    # omitted because the parameter is not optional, and naming the place a
+    # future ARCHIVE would go is better than a path that would be invented at
+    # the moment somebody widened `actions`.
+    for path in sorted(root.glob("backend-stack-*.txt")):
+        stamped = _compact_stamp_date(path.stem)
+        if stamped is not None and stamped < cutoff_day:
+            total += _retire(path, action, root / "archive")
+
+    storms = root / "crash-storm-archive"
+    if storms.is_dir():
+        for path in sorted(storms.glob("*.json")):
+            stamped = _compact_stamp_date(path.stem)
+            if stamped is not None and stamped < cutoff_day:
+                total += _retire(path, action, storms / "archive")
+
+    incidents = root / "heartbeat-incidents.jsonl"
+    if incidents.is_file():
+        cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
+        try:
+            total += Swept(removed=prune_older_than(incidents, cutoff, "ts"))
+        except OSError as exc:
+            log.warning("retention: pruning %s failed: %s", incidents, exc)
+            total += Swept(failed=1)
+    return total
+
+
+def _compact_stamp_date(stem: str) -> date | None:
+    """The date out of a `...YYYYMMDDTHHMMSS...` stem, or `None`.
+
+    The supervisor stamps its files with a compact instant rather than a dashed
+    date (`backend-stack-11268-20260909T105351.108767Z`), so `_stamp_date` one
+    function down reads nothing from them and would leave every dump in place
+    for ever. Read from the LAST such run of digits, not the first: a pid is
+    also a run of digits and a four-digit one would otherwise be parsed as the
+    year.
+    """
+    for chunk in reversed(stem.replace("-", " ").replace("_", " ").split()):
+        head = chunk.split("T")[0]
+        if len(head) == 8 and head.isdigit():
+            try:
+                return date(int(head[:4]), int(head[4:6]), int(head[6:8]))
+            except ValueError:
+                return None
+    return None
+
+
+def consolidator_proposals_roots() -> tuple[Path, ...]:
+    from tesseract.paths import log_dir
+
+    return (log_dir("consolidator"),)
+
+
+def consolidator_proposals(keep_days: int, action: Action) -> Swept:
+    """`<logs>/consolidator/YYYY-MM-DD.jsonl` — what the feedback consolidator
+    proposed on the day it ran.
+
+    One file per run, rewritten rather than appended, holding every merge,
+    soul edit and archive it suggested. The file is NOT what the operator acts
+    on: `feedback_consolidator.py::_emit_inbox_events` puts each proposal on a
+    workspace card carrying `keep`, `absorb`, `memory_id` and the reason
+    inline, and passes the path only as provenance. So a card outlives its file
+    and still works, which is what makes a window here safe at all.
+
+    Aged on the name rather than the mtime, like every other dated artifact: an
+    mtime makes a file that a backup touched look young forever.
+    """
+    (root,) = consolidator_proposals_roots()
+    if not root.is_dir():
+        return Swept()
+    cutoff = date.today() - timedelta(days=keep_days)
+    total = Swept()
+    for path in sorted(root.glob("*.jsonl")):
+        stamped = _stamp_date(path.stem)
+        if stamped is not None and stamped < cutoff:
+            total += _retire(path, action, root / "archive")
+    return total
+
+
+def feedback_proposals_roots() -> tuple[Path, ...]:
+    from tesseract.paths import log_dir
+
+    return (log_dir("feedback-sweep"),)
+
+
+def feedback_proposals(keep_days: int, action: Action) -> Swept:
+    """`<logs>/feedback-sweep/YYYY-MM-DD.jsonl` — the memories the nightly
+    sweep proposed from that day's conversations.
+
+    The same shape and the same argument as `consolidator_proposals` one
+    function up, and a separate sweep rather than a shared one because they are
+    separate trees with separate windows: the consolidator reads the memory
+    store and this reads transcripts, and a day on which one ran is not a day
+    the other did. What the operator acts on is the card
+    (`feedback_sweep.py::_emit_inbox_events`), not the file.
+    """
+    (root,) = feedback_proposals_roots()
+    if not root.is_dir():
+        return Swept()
+    cutoff = date.today() - timedelta(days=keep_days)
+    total = Swept()
+    for path in sorted(root.glob("*.jsonl")):
+        stamped = _stamp_date(path.stem)
+        if stamped is not None and stamped < cutoff:
+            total += _retire(path, action, root / "archive")
+    return total
+
+
 def _stamp_date(stem: str) -> date | None:
     """The date out of a `YYYY-MM-DDTHHMM` stem, or `None` if it is not one.
 
@@ -742,6 +1179,8 @@ def _drop_empty_months(root: Path) -> None:
 __all__ = [
     "agenda_records",
     "agenda_records_roots",
+    "agent_invocations",
+    "agent_invocations_roots",
     "approvals_ledger",
     "approvals_ledger_roots",
     "backend_logs",
@@ -750,6 +1189,12 @@ __all__ = [
     "checkpoints_roots",
     "conscience",
     "conscience_roots",
+    "consolidator_proposals",
+    "consolidator_proposals_roots",
+    "feedback_proposals",
+    "feedback_proposals_roots",
+    "janitor_sweeps",
+    "janitor_sweeps_roots",
     "lane_archives",
     "lane_archives_roots",
     "loop_stalls",
@@ -758,10 +1203,18 @@ __all__ = [
     "observer_logs_roots",
     "scheduler_runs",
     "scheduler_runs_roots",
+    "session_journal",
+    "session_journal_roots",
     "sessions",
     "sessions_roots",
+    "supervisor_incidents",
+    "supervisor_incidents_roots",
     "receipts",
     "receipts_roots",
+    "skill_usage",
+    "skill_usage_roots",
+    "tokenjuice_audit",
+    "tokenjuice_audit_roots",
     "turn_manifests",
     "turn_manifests_roots",
     "usage_ledger",

@@ -724,6 +724,16 @@ def read_repairs(attempts: "Iterable[Any]") -> SourceRead:
         if outcome == "repaired":
             severity = INFO
             summary = f"the runtime fixed it: {broke}"
+        elif outcome == "did its part":
+            # INFO, like `repaired`, because it is the runtime working rather
+            # than a fault. The fault itself is still reported, by whichever
+            # source reads it, so treating this as BAD would say the same
+            # thing twice and leave a reader looking for two problems.
+            severity = INFO
+            summary = (
+                f"the runtime did everything it can about this on its own, and "
+                f"it is still true: {broke}"
+            )
         elif outcome == "held":
             severity = BAD
             summary = (

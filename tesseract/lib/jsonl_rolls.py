@@ -11,6 +11,14 @@ between the read and the replace.
 What does NOT differ, and touches no lock, is reading a row's timestamp and
 replacing the file atomically. Those live here so a fix to the crash-safety
 pattern reaches both.
+
+`prune_older_than` is for the other case: an append-only JSONL that NO lock
+protects, because nothing ever pruned it and its writer never needed one. Two
+of those are written by the supervisor process while the sweep runs in the
+backend, so a lock on either side would not join them. It stats the file before
+the read and again before the replace, and abandons the prune when the file
+moved in between, so the row the append-during-rewrite would have lost is
+simply pruned by the next run instead.
 """
 
 from __future__ import annotations
@@ -49,4 +57,57 @@ def rewrite(path: Path, lines: list[str]) -> None:
         raise
 
 
-__all__ = ["rewrite", "row_time"]
+def prune_older_than(path: Path, cutoff: datetime, field: str) -> int:
+    """Drop rows dated before `cutoff` from an unlocked JSONL. Returns how many.
+
+    Returns 0 for a file that does not exist, has nothing old enough, or was
+    written to while this was reading it. The last of those is the point: the
+    two ledgers this was written for are appended to by the supervisor process
+    and pruned by the backend, so there is no lock either could take, and a
+    plain read-partition-replace loses a row that arrived in between. Here the
+    file's size and mtime are read before and after, and a change abandons the
+    whole prune rather than writing a file that is missing a row. The next run
+    does it, a day later, on a file nobody is touching.
+
+    What remains is the instant between the final stat and the replace, which
+    cannot be closed without a lock both processes take. On Windows it is not
+    even a lost row: a replace over a file another process holds open fails,
+    which the caller reports as a failure rather than as a sweep that worked.
+
+    A row whose timestamp will not parse is KEPT, for the reason `row_time`
+    gives: an unreadable date is not a licence to guess which side of the
+    window it falls on.
+    """
+    try:
+        before = path.stat()
+    except OSError:
+        return 0
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return 0
+
+    keep: list[str] = []
+    removed = 0
+    for line in lines:
+        if not line.strip():
+            continue
+        stamped = row_time(line, field)
+        if stamped is not None and stamped < cutoff:
+            removed += 1
+            continue
+        keep.append(line)
+    if not removed:
+        return 0
+
+    try:
+        after = path.stat()
+    except OSError:
+        return 0
+    if (after.st_size, after.st_mtime_ns) != (before.st_size, before.st_mtime_ns):
+        return 0
+    rewrite(path, keep)
+    return removed
+
+
+__all__ = ["prune_older_than", "rewrite", "row_time"]

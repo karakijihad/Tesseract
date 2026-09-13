@@ -244,6 +244,11 @@ def _registry() -> dict[str, Tree]:
     # this file unimportable from the config loader that has to read it.
     from tesseract.retention import sweeps
 
+    # The roster's own reading span, which bounds one window from below. Read
+    # rather than restated: a floor that repeats a number in another module is
+    # a floor that stops holding the day that number moves.
+    from tesseract.agents import invocations
+
     trees = (
         Tree(
             key="observer_logs",
@@ -347,6 +352,158 @@ def _registry() -> dict[str, Tree]:
             ),
             sweep=sweeps.conscience,
             where=sweeps.conscience_roots,
+        ),
+        Tree(
+            key="agent_invocations",
+            title="Which helpers get used",
+            summary=(
+                "One row per helper the assistant called on, and when: the "
+                "answer to which of them earn their place."
+            ),
+            why=(
+                "A helper missing from this file has never run, which is how "
+                "the roster tells an unused one from a busy one. So a year "
+                "rather than a month: the question is whether you still need a "
+                "helper at all, and that is not answered by the last fortnight. "
+                "A row is a name and a time, so a year of them is smaller than "
+                "one screenshot."
+            ),
+            sweep=sweeps.agent_invocations,
+            where=sweeps.agent_invocations_roots,
+            actions=(Action.DELETE,),
+            # Read off the roster rather than restated. The window may never be
+            # shorter than the span the roster counts over, or the counts it
+            # shows go quietly wrong instead of loudly.
+            floor_days=invocations.COUNT_WINDOW_DAYS,
+        ),
+        Tree(
+            key="skill_usage",
+            title="Which instructions it read, and how they went",
+            summary=(
+                "One row each time the assistant read a set of instructions, "
+                "and one each time you corrected it afterwards."
+            ),
+            why=(
+                "It is the evidence behind rewriting a set of instructions that "
+                "keeps going wrong, and that judgement needs a run of weeks "
+                "rather than a few rows. The job that reads it looks at a much "
+                "shorter span, so this window is what gives it something to "
+                "look at."
+            ),
+            sweep=sweeps.skill_usage,
+            where=sweeps.skill_usage_roots,
+            actions=(Action.DELETE,),
+            # Comfortably above the span the refinement job reads, which is set
+            # in `schedule.yaml` and is days. A window near it would leave that
+            # job judging a whole skill on two rows.
+            floor_days=30,
+        ),
+        Tree(
+            key="janitor_sweeps",
+            title="Every tidy-up at start-up",
+            summary=(
+                "One row per tidy-up run when the app started: what it found "
+                "and what it could not do."
+            ),
+            why=(
+                "Only the recent rows are read, and only for a tidy-up that "
+                "reported an error. One that cleaned nothing is not worth "
+                "reading at all, so what an old row answers is nothing."
+            ),
+            sweep=sweeps.janitor_sweeps,
+            where=sweeps.janitor_sweeps_roots,
+            actions=(Action.DELETE,),
+        ),
+        Tree(
+            key="tokenjuice_audit",
+            title="Results it shortened",
+            summary=(
+                "One row each time a tool result was shortened before the "
+                "assistant read it, with the size before and after."
+            ),
+            why=(
+                "A row per call rather than per day, so this is the fastest "
+                "growing of the small records here. It is for checking that "
+                "shortening is hitting the right results, which is a question "
+                "about recent calls. Nothing else reads it."
+            ),
+            sweep=sweeps.tokenjuice_audit,
+            where=sweeps.tokenjuice_audit_roots,
+            actions=(Action.DELETE,),
+        ),
+        Tree(
+            key="session_journal",
+            title="Your day by day session record",
+            summary=(
+                "One file per day of when your sessions ended and what was "
+                "consolidated, plus a journal per session of what it started."
+            ),
+            why=(
+                "Most of it is one line each time a session closed, and there "
+                "are hundreds of those a day against a handful worth reading. "
+                "The nightly summary of background jobs is the exception and is "
+                "kept for good: it is what lets the job log itself be trimmed, "
+                "so losing it would quietly stop the biggest record on the "
+                "machine from ever being cleared."
+            ),
+            sweep=sweeps.session_journal,
+            where=sweeps.session_journal_roots,
+            # A day's file is rewritten with its summary lines still in it, so
+            # there is nothing to archive: half a file cannot be moved aside.
+            actions=(Action.DELETE,),
+        ),
+        Tree(
+            key="supervisor_incidents",
+            title="When the app stopped answering",
+            summary=(
+                "What the watchdog wrote down each time the app stopped "
+                "answering: the stacks it captured and the restarts it forced."
+            ),
+            why=(
+                "Nothing is written here while the app is well, so a good month "
+                "adds nothing at all and a bad afternoon adds a few hundred "
+                "kilobytes of captured stacks. What it is for is telling this "
+                "week apart from last week, and a capture from the spring "
+                "explains nothing about today."
+            ),
+            sweep=sweeps.supervisor_incidents,
+            where=sweeps.supervisor_incidents_roots,
+            # The incident rows are pruned in place and there is no archive for
+            # a row to move to, so `archive` is a word two thirds of this tree
+            # could honour and the third could not.
+            actions=(Action.DELETE,),
+        ),
+        Tree(
+            key="consolidator_proposals",
+            title="Tidying it suggested for your memory",
+            summary=(
+                "What the memory tidy-up suggested on each day it ran: merges, "
+                "edits to the soul, records to retire."
+            ),
+            why=(
+                "One file per run, and every suggestion in it also arrives as a "
+                "card you can act on. The card carries what it would change, so "
+                "it still works after the file has gone. What ages here is the "
+                "working notes behind a suggestion you have already seen."
+            ),
+            sweep=sweeps.consolidator_proposals,
+            where=sweeps.consolidator_proposals_roots,
+        ),
+        Tree(
+            key="feedback_proposals",
+            title="Memories it suggested from your chats",
+            summary=(
+                "The memories the nightly reading of your conversations "
+                "suggested saving, one file per day."
+            ),
+            why=(
+                "Same as the row above and for the same reason: the suggestion "
+                "reaches you as a card holding what it would save, so the file "
+                "is the working note behind it rather than the thing itself. "
+                "The conversations it read have their own window."
+            ),
+            sweep=sweeps.feedback_proposals,
+            where=sweeps.feedback_proposals_roots,
         ),
         Tree(
             key="approvals_ledger",
@@ -561,6 +718,53 @@ def _kept() -> dict[str, Kept]:
                 record_path(),
                 record_path().with_suffix(".json.writing"),
             ),
+        ),
+        Kept(
+            key="autonomy_prunes",
+            title="Ideas it decided not to bring you",
+            why=(
+                "One line each time the assistant dropped an idea before it "
+                "reached your list, because it repeated one already there or "
+                "said nothing worth acting on. The file rolls over at a fixed "
+                "size and keeps one older copy behind it, so it already has a "
+                "ceiling. A window by date could never reach it in any case: "
+                "something is written to it most days, so by that measure the "
+                "file is never old."
+            ),
+            # The live file and the one generation behind it, by name rather
+            # than as the directory: what bounds this is the roll at 2 MB in
+            # `prune_ledger.py`, and that argument is about these two files
+            # and would not hold for a third thing written beside them.
+            where=lambda: (
+                log_dir("autonomy") / "pruned.jsonl",
+                log_dir("autonomy") / "pruned.jsonl.1",
+            ),
+        ),
+        Kept(
+            key="channel_conversations",
+            title="Conversations you had elsewhere",
+            why=(
+                "Every message you have sent or received through a connected "
+                "chat app, kept the way the conversations in this app are. "
+                "Nothing here deletes a conversation for you. There is no "
+                "archive for a chat held elsewhere to move into, so a window "
+                "could only throw it away, and that is your decision rather "
+                "than this table's."
+            ),
+            where=lambda: (log_dir("channels"),),
+        ),
+        Kept(
+            key="breaker_state",
+            title="What the app has switched off",
+            why=(
+                "One file per part of the app that was switched off after it "
+                "failed too many times, and it is how the next start knows "
+                "the part is still off. It is the current state rather than a "
+                "history, so dropping an old line could quietly switch "
+                "something back on while the fault that stopped it is still "
+                "there."
+            ),
+            where=lambda: (log_dir("circuit-breakers"),),
         ),
         Kept(
             key="process_logs",

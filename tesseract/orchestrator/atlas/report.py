@@ -84,7 +84,11 @@ NOT_INDEXED: tuple[tuple[str, str], ...] = (
         "the runtime's own logs, ledgers and archives",
         "what the observer wrote, what the backend wrote, what the drift check "
         "wrote, what was approved, what it cost, what each tool left behind, "
-        "and the copies a finished lane or worker left behind. Each is a "
+        "the copies a finished lane or worker left behind, what the watchdog "
+        "captured when the app stopped answering, what each tidy-up at start-up "
+        "did, what the memory jobs suggested, what was shortened before the "
+        "assistant read it, and the day by day record of your own sessions. "
+        "Each is a "
         "stream or a running account rather "
         "than a thing to look up, and the map reaches one through the record "
         "that cites it. Drawing them is how a map that fits on a screen becomes "
@@ -123,6 +127,18 @@ DECLARED_AS: dict[str, str] = {
     "checkpoints": "the runtime's own logs, ledgers and archives",
     "workspace_events": "the runtime's own logs, ledgers and archives",
     "receipts": "the runtime's own logs, ledgers and archives",
+    "session_journal": "the runtime's own logs, ledgers and archives",
+    "supervisor_incidents": "the runtime's own logs, ledgers and archives",
+    "consolidator_proposals": "the runtime's own logs, ledgers and archives",
+    "feedback_proposals": "the runtime's own logs, ledgers and archives",
+    "janitor_sweeps": "the runtime's own logs, ledgers and archives",
+    "tokenjuice_audit": "the runtime's own logs, ledgers and archives",
+    # Both under "skills and agents" rather than the logs entry: neither is a
+    # stream the map reaches through something citing it. They are the evidence
+    # behind judging a card or a set of instructions, and a builder that read
+    # the roster and the workshop would draw them.
+    "agent_invocations": "skills and agents",
+    "skill_usage": "skills and agents",
 }
 
 

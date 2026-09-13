@@ -9,6 +9,12 @@ installed, you do not need it: the app offers you the update itself.
 
 ## Unreleased
 
+- **The app stops saying it gave up on something it is fixing.** When two
+  repairs share one problem and each can only do half of it, the one that did
+  its half was recorded as having failed. Three of those and the panel said it
+  had stopped trying, about something it was putting right every time. It now
+  has a way to say it did what it could, and only says it gave up when it
+  genuinely cannot help.
 - **Two things going wrong at once are now two things.** Every check the app
   makes about itself, disk space, the local models, the voice files, shared
   one identity when it reported a problem. So two of them failing in the same

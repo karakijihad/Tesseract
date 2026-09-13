@@ -85,6 +85,85 @@ trees:
     keep_days: 60
     action: delete
 
+  # One row per helper the assistant called on, and when. A year rather than a
+  # month, and that is the whole point of the row: a helper MISSING from this
+  # file has never run, which is how the roster tells an unused helper from a
+  # busy one, so a short window would report a helper you used in the spring as
+  # one you have never used. A row is a name and a time. Deleted rather than
+  # archived, and `archive` is refused at load: the rows are pruned inside their
+  # file and there is nowhere for a row to be moved to. The shortest window this
+  # one takes is the span the roster counts over, which is set in code.
+  agent_invocations:
+    keep_days: 365
+    action: delete
+
+  # One row each time the assistant read a set of instructions, and one each
+  # time you corrected it afterwards. It is the evidence behind rewriting
+  # instructions that keep going wrong, and the job that reads it looks at a
+  # much shorter span, so this is what gives that job something to read.
+  # Pruned inside its file, so `archive` is refused at load.
+  skill_usage:
+    keep_days: 90
+    action: delete
+
+  # One row per tidy-up run when the app started. Only recent rows are read,
+  # and only for a tidy-up that reported an error, so an old row answers
+  # nothing. Pruned inside its file, so `archive` is refused at load.
+  janitor_sweeps:
+    keep_days: 90
+    action: delete
+
+  # One row each time a tool result was shortened before the assistant read it.
+  # A row per call rather than per day, which makes it the fastest growing of
+  # the small records here. Nothing in the app reads it: it is there so you can
+  # check that shortening is hitting the right results, and that is a question
+  # about recent calls. Pruned inside its file, so `archive` is refused at load.
+  tokenjuice_audit:
+    keep_days: 30
+    action: delete
+
+  # Your day by day session record: a line each time a session closed or a
+  # conversation was consolidated, and one journal per session of the
+  # background work it started. Hundreds of close lines a day against a handful
+  # worth reading, which is what this window is for.
+  #
+  # The nightly summary of background jobs inside these files is NOT removed,
+  # whatever this says. `scheduler_runs` above only trims a day of job rows
+  # once that summary exists, so deleting it would stop the largest log on the
+  # machine ageing for ever. Deleted rather than archived, and `archive` is
+  # refused at load: the file is rewritten with its summaries still in it, and
+  # half a file cannot be moved aside.
+  session_journal:
+    keep_days: 30
+    action: delete
+
+  # Everything the watchdog wrote down while the app was in trouble: one file
+  # per stack it captured from a backend that stopped answering, one per crash
+  # storm it cleared, and one row per failed health check. Written only when
+  # something goes wrong, so a healthy machine adds nothing for weeks. The
+  # captured stacks are by far the largest part. Deleted rather than archived,
+  # and `archive` is refused at load: the rows are pruned inside their file and
+  # there is nowhere for a row to be moved to.
+  supervisor_incidents:
+    keep_days: 30
+    action: delete
+
+  # One file per run of the memory tidy-up, holding every merge, soul edit and
+  # retirement it suggested that day. Deleted rather than archived: each
+  # suggestion also arrives as a card carrying what it would change, so the
+  # card is the copy you act on and this is the working note behind it. Set
+  # `archive` if you want the old notes kept in consolidator/archive/.
+  consolidator_proposals:
+    keep_days: 30
+    action: delete
+
+  # The same shape one directory over: the memories the nightly reading of your
+  # conversations suggested saving. Its own window rather than a shared one,
+  # because a day the consolidator ran is not a day this ran.
+  feedback_proposals:
+    keep_days: 30
+    action: delete
+
   # Every permission decision the runtime has made — the record an
   # investigation reads. Rows older than the window move to a dated file in
   # approvals-archive/ and are never dropped; `delete` is refused at load.

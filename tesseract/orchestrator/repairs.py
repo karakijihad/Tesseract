@@ -57,6 +57,7 @@ __all__ = [
     "MAX_CONSECUTIVE_FAILURES",
     "REPAIRS",
     "Attempt",
+    "DidItsPart",
     "Repair",
     "attempts_path",
     "reset_repair_breakers",
@@ -94,9 +95,20 @@ class Repair:
 class Attempt:
     """What came of one repair on one pass.
 
-    ``outcome`` is one of five words and they are the words that go on a
-    screen: ``repaired``, ``failed``, ``nothing to do``, ``could not tell``,
-    ``held``.
+    ``outcome`` is one of six words and they are the words that go on a
+    screen: ``repaired``, ``did its part``, ``failed``, ``nothing to do``,
+    ``could not tell``, ``held``.
+
+    ``did its part`` exists because two repairs can share one postcondition
+    while each owns only half of its cause. `disk_home` and `disk_runtime`
+    measure volumes that are siblings under `install_root()` and are usually
+    one physical disk, so both go bad together, and a repair that swept every
+    tree it owns has done everything it can while the fault is still there.
+    Calling that ``repaired`` would claim the disk is no longer full; calling
+    it ``failed`` counted a breaker failure against a row that worked, and
+    nothing reset the count because the quiet pass is ``nothing to do`` and
+    takes no breaker traffic. Three incidents and the row said it had given up
+    on a fault the pair cleared every time.
     """
 
     key: str
@@ -184,7 +196,18 @@ def _breaker(key: str):
 #: state it exists to report --- and it is declared KEPT, so nothing sweeps it.
 #: The breaker IS that record: its trip is in `circuit-breakers/`,
 #: `breaker_status` names it, and the attempt still reaches the caller.
-_WORTH_RECORDING = frozenset({"repaired", "failed", "could not tell"})
+_WORTH_RECORDING = frozenset({"repaired", "did its part", "failed", "could not tell"})
+
+
+class DidItsPart(Exception):
+    """Raised by an `attempt` that ran, did everything it owns, and left the
+    fault standing because the rest of its cause belongs to another row.
+
+    Not an error, and deliberately an exception rather than a return value: an
+    `attempt` returns the sentence for a repair that WORKED, and a repair that
+    did not finish must not be able to say so by accident. Raising makes the
+    partial case something the author has to reach for.
+    """
 
 
 async def _run_one(repair: Repair, app: Any) -> Attempt:
@@ -221,6 +244,17 @@ async def _run_one(repair: Repair, app: Any) -> Attempt:
 
     try:
         said = await repair.attempt(app)
+    except DidItsPart as exc:
+        # Caught BEFORE the generic handler, and recorded as a SUCCESS. The
+        # repair ran and did everything it owns; the fault outliving it is
+        # another row's half, not this one's failure. The breaker exists to
+        # stop a repair that cannot help, and this one helped.
+        #
+        # `still_broken` is unchanged and still reads the fault, so the row
+        # keeps reporting until the fault actually goes, and a pass where this
+        # repair can do nothing at all raises normally and counts.
+        breaker.record_success()
+        return made("did its part", str(exc))
     except Exception as exc:  # noqa: BLE001
         breaker.record_failure(f"{type(exc).__name__}: {exc}")
         return made("failed", f"{type(exc).__name__}: {exc}")
@@ -494,22 +528,24 @@ async def _free_disk_space(label: str) -> str:
             f"ran the retention sweep early ({swept}) and then could not read "
             f"disk_{label} at all, so nothing here can say whether it helped"
         )
-    # KNOWN, OPEN: on an ordinary install `home` and `runtime` are siblings
-    # under `install_root()` and therefore ONE physical volume, so both checks
-    # go bad together while each repair owns only half the cause. A row that
-    # swept every tree it owns and freed files still raises here, which
-    # `_run_one` counts against its breaker, and the quiet pass takes the
-    # `nothing to do` branch with no breaker traffic, so nothing ever resets
-    # the count. Three separate incidents and the row reports it has given up
-    # on a fault the pair of repairs clears every time.
+    # On an ordinary install `home` and `runtime` are siblings under
+    # `install_root()` and therefore ONE physical volume, so both checks go bad
+    # together while each repair owns only half the cause.
     #
-    # Deliberately NOT fixed by softening this branch. Returning normally here
-    # would report `repaired` while the disk is still full, which
-    # `test_a_repair_that_cannot_clear_the_disk_is_recorded_as_failed_not_repaired`
-    # exists to forbid, and trading that guarantee for this one is not a fix.
-    # Closing it honestly needs an outcome that is neither `repaired` nor
-    # `failed`, which is a change to the repair protocol and not to this
-    # function.
+    # Freed something and the volume is still low: this row swept every tree it
+    # owns, so what is left is the other row's. `DidItsPart` says exactly that
+    # and is recorded as a success, which is neither the `repaired` that would
+    # claim the disk is no longer full nor the `failed` that counted against a
+    # row that worked.
+    #
+    # Freed nothing and the volume is still low: retention has nothing left to
+    # give and this genuinely cannot help, so it raises and the breaker counts
+    # it. Three of those is the state the operator must hear about.
+    if check.status == "bad" and (removed or moved):
+        raise DidItsPart(
+            f"ran the retention sweep early ({swept}). {label} is still below "
+            f"the floor, and what is left is not this row's to free"
+        )
     if check.status != "ok":
         raise RuntimeError(
             f"ran the retention sweep early ({swept}) and {label} is still not "

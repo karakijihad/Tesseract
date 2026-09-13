@@ -354,7 +354,7 @@ class WatchmanJob(BaseJob):
             )
             # Each count only when it is not zero: `repaired=0` on every quiet
             # tick says nothing and crowds out the line that does.
-            for word in ("repaired", "failed"):
+            for word in ("repaired", "did its part", "failed"):
                 count = sum(1 for a in repaired if a.outcome == word)
                 if count:
                     detail += f" {word}={count}"
